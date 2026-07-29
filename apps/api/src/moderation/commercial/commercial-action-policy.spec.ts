@@ -31,6 +31,7 @@ const BASE_INPUT: CommercialActionPolicyInput = {
   hasNonCampaignDirectDealEvidence: false,
   hasHighRiskEvidence: false,
   hasEscalationRiskEvidence: false,
+  hasLocalEscalationOfferEvidence: false,
   hasStructuredTransportEvidence: false,
   hasReviewOnlyTransportEvidence: false,
   hasConservativeRecallEvidence: false,
@@ -94,6 +95,7 @@ describe('commercial action policy', () => {
         campaignStrength: 'STRONG',
         hasHighRiskEvidence: true,
         hasEscalationRiskEvidence: true,
+        hasLocalEscalationOfferEvidence: true,
         reviewRecommended: false,
       }),
     ).toBe('REVIEW_ONLY');
@@ -106,6 +108,7 @@ describe('commercial action policy', () => {
         campaignStrength: 'STRONG',
         hasHighRiskEvidence: true,
         hasEscalationRiskEvidence: true,
+        hasLocalEscalationOfferEvidence: true,
         reviewRecommended: true,
       }),
     ).toBe('REVIEW_ONLY');
@@ -152,8 +155,27 @@ describe('commercial action policy', () => {
         hasDirectDealEvidence: true,
         hasNonCampaignDirectDealEvidence: true,
         hasEscalationRiskEvidence: true,
+        hasLocalEscalationOfferEvidence: true,
       }),
     ).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('keeps non-local escalation evidence non-actionable', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'HIGH_RISK',
+      subtype: 'GOODS',
+      hasHighRiskEvidence: true,
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasEscalationRiskEvidence: true,
+      hasLocalEscalationOfferEvidence: false,
+    });
+
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.actionable).toBe(false);
+    expect(decision.recordable).toBe(false);
+    expect(decision.suppressionReasons).toContain('non-local-escalation-offer');
   });
 
   it('does not escalate non-escalation risk evidence by itself', () => {
@@ -234,6 +256,7 @@ describe('commercial action policy', () => {
         hasNonCampaignDirectDealEvidence: true,
         hasHighRiskEvidence: true,
         hasEscalationRiskEvidence: true,
+        hasLocalEscalationOfferEvidence: true,
         hasReviewCappedRecallEvidence: true,
       }),
     ).toBe('DELETE_AND_ESCALATE');
@@ -261,6 +284,7 @@ describe('commercial action policy', () => {
       hasNonCampaignDirectDealEvidence: true,
       hasHighRiskEvidence: true,
       hasEscalationRiskEvidence: true,
+      hasLocalEscalationOfferEvidence: true,
       hasStructuredTransportEvidence: true,
     });
 
@@ -360,6 +384,7 @@ describe('commercial action policy', () => {
         hasNonCampaignDirectDealEvidence: true,
         hasHighRiskEvidence: true,
         hasEscalationRiskEvidence: true,
+        hasLocalEscalationOfferEvidence: true,
         hasConservativeRecallEvidence: true,
       }),
     ).toBe('DELETE_AND_ESCALATE');
@@ -449,6 +474,7 @@ describe('commercial action policy', () => {
       hasNonCampaignDirectDealEvidence: true,
       hasHighRiskEvidence: true,
       hasEscalationRiskEvidence: true,
+      hasLocalEscalationOfferEvidence: true,
       featureVector: {
         ...BASE_INPUT.featureVector,
         businessContext: 1,

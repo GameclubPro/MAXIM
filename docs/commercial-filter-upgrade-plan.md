@@ -37,11 +37,18 @@ docker compose -p infra -f infra/docker-compose.yml exec -T api-admin \
   --since "$SINCE" \
   --until "$UNTIL" \
   --limit all \
+  --page-size 500 \
+  --current-only \
   --sample 0 \
   --export-jsonl /tmp/commercial-audit-48h.jsonl \
   --export-corpus-jsonl /tmp/commercial-corpus-48h.jsonl \
   --export-all-corpus
 ```
+
+`--limit all` всегда используется вместе с `--page-size`. Обычный production-аудит
+запускается с `--current-only`: историческое сопоставление `COMMERCIAL_AD` по
+`chat_id/message_id` допускается только после отдельной проверенной миграции с
+частичным индексом `(chat_id, message_id, created_at, id)`.
 
 Для shadow-проверки всех чатов, включая те, где фильтр выключен, добавлять
 `--shadow-all-chats`. Этот режим только принудительно включает commercial

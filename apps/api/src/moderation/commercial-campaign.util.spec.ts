@@ -80,4 +80,29 @@ describe('commercial-campaign util', () => {
     });
     expect(hasCommercialCampaignEvidence(afterTtl)).toBe(false);
   });
+
+  it('evicts expired unique campaign keys during a chronological audit', () => {
+    const tracker = new InMemoryCommercialCampaignTracker(60);
+    const startedAt = Date.parse('2026-04-19T10:00:00.000Z');
+
+    for (let index = 0; index < 2_000; index += 1) {
+      tracker.track({
+        createdAt: new Date(startedAt + index),
+        chatId: `chat-${index}`,
+        senderId: `user-${index}`,
+        text: `Уникальное объявление номер ${index}, подробности в личных сообщениях`,
+      });
+    }
+
+    expect(tracker.retainedKeyCount).toBeGreaterThan(10_000);
+
+    tracker.track({
+      createdAt: new Date(startedAt + 121 * 60 * 1_000),
+      chatId: 'final-chat',
+      senderId: 'final-user',
+      text: 'Последнее уникальное объявление, подробности в личных сообщениях',
+    });
+
+    expect(tracker.retainedKeyCount).toBeLessThan(10);
+  });
 });

@@ -7,7 +7,7 @@ import {
 } from '../prisma/prisma-client';
 import { config as loadEnv } from 'dotenv';
 import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, unlink } from 'node:fs/promises';
+import { access, link, mkdir, open, unlink, type FileHandle } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
   InMemoryCommercialCampaignTracker,
@@ -19,6 +19,10 @@ import {
 } from '../moderation/commercial/commercial-safe-context';
 import { COMMERCIAL_HARD_NEGATIVE_REASON_PREFIXES } from '../moderation/commercial/commercial-suppressors';
 import { RuleEngineService, type RuleViolation } from '../moderation/rule-engine.service';
+import {
+  withCommercialAuditRunLock,
+  type CommercialAuditRunLock,
+} from './commercial-audit-run-lock.util';
 import { sanitizeCommercialCorpusText } from './commercial-corpus-sanitization.util';
 
 const DEFAULT_LOOKBACK_DAYS = 7;
@@ -26,6 +30,8 @@ const DEFAULT_LIMIT = 1500;
 const DEFAULT_SAMPLE = 6;
 const PROGRESS_EVERY = 250;
 const MAX_CAMPAIGN_WARMUP_HOURS = 7 * 24;
+const MAX_AUDIT_PAGE_SIZE = 5_000;
+const AUDIT_STREAM_BUFFER_BYTES = 1024 * 1024;
 
 export const AUDIT_MESSAGE_EVENT_TYPES = ['message_created', 'message_edited'] as const;
 
@@ -36,6 +42,7 @@ type CliOptions = {
   since: Date;
   until: Date;
   limit: number | null;
+  pageSize?: number;
   sample: number;
   chatId?: string;
   exportJsonlPath?: string;
@@ -53,7 +60,7 @@ type AuditCandidateScope = {
   requireCommercialAdsFilterEnabled: boolean;
 };
 
-type AuditCandidateRow = {
+export type AuditCandidateRow = {
   webhookEventId: string;
   eventType: string;
   createdAt: Date;
@@ -70,6 +77,10 @@ type AuditCandidateRow = {
   historicalMetadata: Prisma.JsonValue | null;
   hasHistoricalCommercialEvent: boolean;
 };
+
+export type AuditCandidateCursor = Readonly<
+  Pick<AuditCandidateRow, 'createdAt' | 'webhookEventId'>
+>;
 
 type ChatContext = {
   settings: ChatSettings;
@@ -89,7 +100,7 @@ type AuditSkipReason =
   | 'own-bot'
   | 'local-admin';
 
-type AuditCategory = 'stable_hit' | 'historical_only' | 'current_only' | 'stable_clear';
+export type AuditCategory = 'stable_hit' | 'historical_only' | 'current_only' | 'stable_clear';
 type AuditPolicyCategory =
   | 'hard_delete'
   | 'gray_zone'
@@ -216,6 +227,7 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
   const until = readDateOption(args, '--until') ?? now;
   const parsedLimit = readLimitOption(args, '--limit');
   const limit = parsedLimit === undefined ? DEFAULT_LIMIT : parsedLimit;
+  const pageSize = readNonNegativeIntOption(args, '--page-size');
   const sample = readNonNegativeIntOption(args, '--sample') ?? DEFAULT_SAMPLE;
   const chatId = readStringOption(args, '--chat-id');
   const rawExportJsonlPath = readStringOption(args, '--export-jsonl');
@@ -241,6 +253,15 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
   if (campaignWarmupHours > 0 && limit !== null) {
     throw new Error('--campaign-warmup-hours requires --limit all');
   }
+  if (pageSize !== undefined && (pageSize <= 0 || pageSize > MAX_AUDIT_PAGE_SIZE)) {
+    throw new Error(`--page-size must be an integer between 1 and ${MAX_AUDIT_PAGE_SIZE}`);
+  }
+  if (pageSize !== undefined && limit !== null) {
+    throw new Error('--page-size requires --limit all');
+  }
+  if (limit === null && pageSize === undefined) {
+    throw new Error('--limit all requires --page-size <1..5000>');
+  }
   if (exportJsonlPath && exportCorpusJsonlPath && exportJsonlPath === exportCorpusJsonlPath) {
     throw new Error('--export-jsonl and --export-corpus-jsonl must resolve to different paths');
   }
@@ -249,6 +270,7 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
     since,
     until,
     limit,
+    ...(pageSize !== undefined ? { pageSize } : {}),
     sample,
     ...(chatId ? { chatId } : {}),
     ...(exportJsonlPath ? { exportJsonlPath } : {}),
@@ -374,22 +396,76 @@ function readStringOption(args: readonly string[], name: string): string | undef
   return value.trim() || undefined;
 }
 
+export function compareAuditCandidateKeys(
+  left: AuditCandidateCursor,
+  right: AuditCandidateCursor,
+): number {
+  const timeDifference = left.createdAt.getTime() - right.createdAt.getTime();
+  if (timeDifference !== 0) {
+    return timeDifference;
+  }
+  if (left.webhookEventId === right.webhookEventId) {
+    return 0;
+  }
+  return left.webhookEventId < right.webhookEventId ? -1 : 1;
+}
+
+export function resolveNextAuditCandidateCursor(
+  rows: readonly AuditCandidateCursor[],
+): AuditCandidateCursor | null {
+  const last = rows.at(-1);
+  return last
+    ? {
+        createdAt: new Date(last.createdAt.getTime()),
+        webhookEventId: last.webhookEventId,
+      }
+    : null;
+}
+
+type AuditCandidatePageOptions = {
+  pageSize: number;
+  cursor?: AuditCandidateCursor;
+};
+
+export function buildAuditCandidateCursorSql(cursor?: AuditCandidateCursor): Prisma.Sql {
+  return cursor
+    ? Prisma.sql`and (w.created_at, w.id) > (${cursor.createdAt}, ${cursor.webhookEventId})`
+    : Prisma.sql``;
+}
+
+function buildAuditCandidateQueryParts(options: CliOptions) {
+  const scope = resolveAuditCandidateScope(options);
+  return {
+    loadSince: resolveAuditLoadSince(options),
+    chatFilterSql: options.chatId ? Prisma.sql`and c.id = ${options.chatId}` : Prisma.sql``,
+    settingsJoinSql:
+      scope.settingsJoin === 'left'
+        ? Prisma.sql`left join chat_settings s on s.chat_id = c.id`
+        : Prisma.sql`join chat_settings s on s.chat_id = c.id`,
+    commercialFilterSql: scope.requireCommercialAdsFilterEnabled
+      ? Prisma.sql`and s.commercial_ads_filter_enabled = true`
+      : Prisma.sql``,
+    messageEventTypesSql: Prisma.join([...AUDIT_MESSAGE_EVENT_TYPES]),
+  };
+}
+
 async function loadCandidates(
   prisma: PrismaClient,
   options: CliOptions,
+  page?: AuditCandidatePageOptions,
 ): Promise<AuditCandidateRow[]> {
-  const loadSince = resolveAuditLoadSince(options);
-  const chatFilterSql = options.chatId ? Prisma.sql`and c.id = ${options.chatId}` : Prisma.sql``;
-  const limitSql = options.limit === null ? Prisma.sql`` : Prisma.sql`limit ${options.limit}`;
-  const scope = resolveAuditCandidateScope(options);
-  const settingsJoinSql =
-    scope.settingsJoin === 'left'
-      ? Prisma.sql`left join chat_settings s on s.chat_id = c.id`
-      : Prisma.sql`join chat_settings s on s.chat_id = c.id`;
-  const commercialFilterSql = scope.requireCommercialAdsFilterEnabled
-    ? Prisma.sql`and s.commercial_ads_filter_enabled = true`
-    : Prisma.sql``;
-  const messageEventTypesSql = Prisma.join([...AUDIT_MESSAGE_EVENT_TYPES]);
+  const { loadSince, chatFilterSql, settingsJoinSql, commercialFilterSql, messageEventTypesSql } =
+    buildAuditCandidateQueryParts(options);
+  const limitSql = page
+    ? Prisma.sql`limit ${page.pageSize}`
+    : options.limit === null
+      ? Prisma.sql``
+      : Prisma.sql`limit ${options.limit}`;
+  const cursorSql = buildAuditCandidateCursorSql(page?.cursor);
+  const baseOrderSql = page
+    ? Prisma.sql`order by w.created_at asc, w.id asc`
+    : Prisma.sql`order by w.created_at desc, w.id desc`;
+  const resultOrderSql = Prisma.sql`order by base."createdAt" asc, base."webhookEventId" asc`;
   const historicalColumnsSql = options.currentOnly
     ? Prisma.sql`
         null::text as "historicalEventId",
@@ -415,7 +491,7 @@ async function loadCandidates(
           where e.chat_id = base."chatId"
             and e.message_id = base."messageId"
             and e.rule_code = 'COMMERCIAL_AD'
-          order by e.created_at asc
+          order by e.created_at asc, e.id asc
           limit 1
         ) historical on true
       `;
@@ -446,7 +522,8 @@ async function loadCandidates(
         and coalesce(w.normalized_payload #>> '{message,messageId}', '') <> ''
         ${commercialFilterSql}
         ${chatFilterSql}
-      order by w.created_at desc
+        ${cursorSql}
+      ${baseOrderSql}
       ${limitSql}
     )
     select
@@ -454,13 +531,14 @@ async function loadCandidates(
       ${historicalColumnsSql}
     from base
     ${historicalJoinSql}
-    order by base."createdAt" desc
+    ${resultOrderSql}
   `);
 }
 
 async function loadChatContexts(
   prisma: PrismaClient,
   chatIds: readonly string[],
+  activeAt: Date,
 ): Promise<Map<string, ChatContext>> {
   if (chatIds.length === 0) {
     return new Map();
@@ -476,7 +554,7 @@ async function loadChatContexts(
       settings: true,
       domains: {
         where: {
-          OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
+          OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: activeAt } }],
         },
         select: {
           domain: true,
@@ -521,6 +599,25 @@ async function loadChatContexts(
       ] satisfies [string, ChatContext];
     }),
   );
+}
+
+async function ensureChatContexts(
+  prisma: PrismaClient,
+  cache: Map<string, ChatContext | null>,
+  candidates: readonly Pick<AuditCandidateRow, 'chatId'>[],
+  activeAt: Date,
+): Promise<void> {
+  const missingChatIds = Array.from(
+    new Set(candidates.map((candidate) => candidate.chatId).filter((chatId) => !cache.has(chatId))),
+  );
+  if (missingChatIds.length === 0) {
+    return;
+  }
+
+  const loaded = await loadChatContexts(prisma, missingChatIds, activeAt);
+  for (const chatId of missingChatIds) {
+    cache.set(chatId, loaded.get(chatId) ?? null);
+  }
 }
 
 function buildIdVariants(value: string | null | undefined): Set<string> {
@@ -1167,6 +1264,8 @@ type StagedAuditJsonlOutput = AuditJsonlOutput & {
   temporaryPath: string;
 };
 
+type PublishableAuditJsonlOutput = Pick<StagedAuditJsonlOutput, 'pathname' | 'temporaryPath'>;
+
 function errorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('code' in error)) {
     return null;
@@ -1214,31 +1313,21 @@ async function stageAuditJsonlOutput(output: AuditJsonlOutput): Promise<StagedAu
   return { ...output, temporaryPath };
 }
 
-export async function publishAuditJsonlOutputs(
-  outputs: readonly AuditJsonlOutput[],
-): Promise<void> {
-  // Caught failures roll back the pair, but process death between hard links can leave one output.
-  const resolvedOutputs = outputs.map((output) => ({
-    ...output,
-    pathname: resolve(output.pathname),
-  }));
-  if (new Set(resolvedOutputs.map((output) => output.pathname)).size !== resolvedOutputs.length) {
+function resolveAuditJsonlPathnames(pathnames: readonly string[]): string[] {
+  const resolved = pathnames.map((pathname) => resolve(pathname));
+  if (new Set(resolved).size !== resolved.length) {
     throw new Error('Audit JSONL output paths must resolve to different files');
   }
+  return resolved;
+}
 
-  for (const output of resolvedOutputs) {
-    await mkdir(dirname(output.pathname), { recursive: true });
-  }
-
-  const staged: StagedAuditJsonlOutput[] = [];
+async function publishStagedAuditJsonlOutputs(
+  staged: readonly PublishableAuditJsonlOutput[],
+): Promise<void> {
   const publishedPaths: string[] = [];
   let publicationError: unknown;
 
   try {
-    for (const output of resolvedOutputs) {
-      staged.push(await stageAuditJsonlOutput(output));
-    }
-
     for (const output of staged) {
       try {
         await link(output.temporaryPath, output.pathname);
@@ -1276,6 +1365,245 @@ export async function publishAuditJsonlOutputs(
   if (cleanupErrors.length > 0) {
     throw new AggregateError(cleanupErrors, 'Audit JSONL temporary cleanup failed');
   }
+}
+
+export async function publishAuditJsonlOutputs(
+  outputs: readonly AuditJsonlOutput[],
+): Promise<void> {
+  // Caught failures roll back the pair, but process death between hard links can leave one output.
+  const resolvedPathnames = resolveAuditJsonlPathnames(outputs.map((output) => output.pathname));
+  const resolvedOutputs = outputs.map((output, index) => ({
+    ...output,
+    pathname: resolvedPathnames[index],
+  }));
+
+  for (const output of resolvedOutputs) {
+    await mkdir(dirname(output.pathname), { recursive: true });
+  }
+
+  const staged: StagedAuditJsonlOutput[] = [];
+  try {
+    for (const output of resolvedOutputs) {
+      staged.push(await stageAuditJsonlOutput(output));
+    }
+  } catch (error) {
+    const cleanupErrors = await unlinkOutputs(staged.map((output) => output.temporaryPath));
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        'Audit JSONL staging failed and temporary cleanup was incomplete',
+      );
+    }
+    throw error;
+  }
+
+  await publishStagedAuditJsonlOutputs(staged);
+}
+
+export type AuditJsonlStreamTarget<T> = {
+  pathname: string;
+  serialize(value: T): Record<string, unknown>;
+};
+
+type StreamedAuditJsonlOutput<T> = PublishableAuditJsonlOutput & {
+  serialize(value: T): Record<string, unknown>;
+  handle: FileHandle;
+  buffer: string;
+  bufferBytes: number;
+  recordsWritten: number;
+  closed: boolean;
+};
+
+export type AuditJsonlStreamWriter<T> = {
+  append(value: T): Promise<void>;
+  publish(): Promise<void>;
+  abort(): Promise<void>;
+};
+
+export async function openAuditJsonlOutputStreams<T>(
+  targets: readonly AuditJsonlStreamTarget<T>[],
+): Promise<AuditJsonlStreamWriter<T>> {
+  if (targets.length === 0) {
+    throw new Error('At least one audit JSONL output path is required');
+  }
+  const targetSnapshots = targets.map((target) => ({
+    pathname: target.pathname,
+    serialize: target.serialize,
+  }));
+  const resolvedPathnames = resolveAuditJsonlPathnames(
+    targetSnapshots.map((target) => target.pathname),
+  );
+  const resolvedTargets = targetSnapshots.map((target, index) => {
+    const pathname = resolvedPathnames[index];
+    if (!pathname) {
+      throw new Error('Audit JSONL stream target resolution mismatch');
+    }
+    return { ...target, pathname };
+  });
+  for (const target of resolvedTargets) {
+    await mkdir(dirname(target.pathname), { recursive: true });
+    try {
+      await access(target.pathname);
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') {
+        continue;
+      }
+      throw error;
+    }
+    throw new Error(`Refusing to overwrite existing audit export: ${target.pathname}`);
+  }
+
+  const outputs: StreamedAuditJsonlOutput<T>[] = [];
+  try {
+    for (const target of resolvedTargets) {
+      const temporaryPath = `${target.pathname}.${process.pid}.${randomUUID()}.tmp`;
+      const handle = await open(temporaryPath, 'wx', 0o600);
+      outputs.push({
+        pathname: target.pathname,
+        temporaryPath,
+        serialize: target.serialize,
+        handle,
+        buffer: '',
+        bufferBytes: 0,
+        recordsWritten: 0,
+        closed: false,
+      });
+    }
+  } catch (error) {
+    const closeErrors: unknown[] = [];
+    for (const output of outputs) {
+      try {
+        await output.handle.close();
+      } catch (closeError) {
+        closeErrors.push(closeError);
+      }
+    }
+    const cleanupErrors = await unlinkOutputs(outputs.map((output) => output.temporaryPath));
+    if (closeErrors.length > 0 || cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...closeErrors, ...cleanupErrors],
+        'Audit JSONL stream setup failed and temporary cleanup was incomplete',
+      );
+    }
+    throw error;
+  }
+
+  let state: 'open' | 'closed' | 'failed' | 'finished' = 'open';
+
+  const flushOutput = async (output: StreamedAuditJsonlOutput<T>): Promise<void> => {
+    if (!output.buffer) {
+      return;
+    }
+    const payload = output.buffer;
+    output.buffer = '';
+    output.bufferBytes = 0;
+    await output.handle.writeFile(payload, 'utf8');
+  };
+
+  const closeOutputs = async (sync: boolean): Promise<unknown[]> => {
+    const errors: unknown[] = [];
+    for (const output of outputs) {
+      if (output.closed) {
+        continue;
+      }
+      if (sync) {
+        try {
+          await output.handle.sync();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        await output.handle.close();
+        output.closed = true;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    return errors;
+  };
+
+  const abort = async (): Promise<void> => {
+    if (state === 'finished') {
+      return;
+    }
+    state = 'failed';
+    const closeErrors = await closeOutputs(false);
+    const cleanupErrors = await unlinkOutputs(outputs.map((output) => output.temporaryPath));
+    if (closeErrors.length > 0 || cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [...closeErrors, ...cleanupErrors],
+        'Audit JSONL stream abort cleanup was incomplete',
+      );
+    }
+    state = 'finished';
+  };
+
+  const abortAfterError = async (error: unknown): Promise<never> => {
+    try {
+      await abort();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Audit JSONL stream failed and temporary cleanup was incomplete',
+      );
+    }
+    throw error;
+  };
+
+  return {
+    async append(value) {
+      if (state !== 'open') {
+        throw new Error('Audit JSONL stream is not open');
+      }
+
+      try {
+        const serializedOutputs = outputs.map((output) => ({
+          output,
+          payload: `${JSON.stringify(output.serialize(value))}\n`,
+        }));
+        for (const { output, payload } of serializedOutputs) {
+          output.buffer += payload;
+          output.bufferBytes += Buffer.byteLength(payload, 'utf8');
+          output.recordsWritten += 1;
+          if (output.bufferBytes >= AUDIT_STREAM_BUFFER_BYTES) {
+            await flushOutput(output);
+          }
+        }
+      } catch (error) {
+        await abortAfterError(error);
+      }
+    },
+    async publish() {
+      if (state !== 'open') {
+        throw new Error('Audit JSONL stream is not open');
+      }
+      try {
+        for (const output of outputs) {
+          if (output.recordsWritten === 0) {
+            output.buffer = '\n';
+          }
+          await flushOutput(output);
+        }
+        const closeErrors = await closeOutputs(true);
+        if (closeErrors.length > 0) {
+          throw new AggregateError(closeErrors, 'Audit JSONL stream close failed');
+        }
+        state = 'closed';
+      } catch (error) {
+        await abortAfterError(error);
+      }
+
+      try {
+        await publishStagedAuditJsonlOutputs(outputs);
+        state = 'finished';
+      } catch (error) {
+        state = 'failed';
+        throw error;
+      }
+    },
+    abort,
+  };
 }
 
 function buildAuditJsonlOutput(
@@ -1359,27 +1687,119 @@ export function formatAuditSampleLines(record: AuditRecord): string[] {
   ];
 }
 
-async function main() {
-  const options = readCliOptions(process.argv.slice(2));
+export function retainNewestAuditSample(
+  samples: Map<AuditCategory, AuditRecord[]>,
+  record: AuditRecord,
+  limit: number,
+): void {
+  if (limit <= 0) {
+    return;
+  }
+  const records = samples.get(record.category) ?? [];
+  records.push(record);
+  if (records.length > limit) {
+    records.shift();
+  }
+  samples.set(record.category, records);
+}
+
+export function readNewestAuditSamples(
+  samples: ReadonlyMap<AuditCategory, readonly AuditRecord[]>,
+  category: AuditCategory,
+): AuditRecord[] {
+  return [...(samples.get(category) ?? [])].reverse();
+}
+
+export function* iterateLockedAuditCandidateRows<T>(
+  rows: readonly T[],
+  runLock: CommercialAuditRunLock,
+): Generator<T> {
+  for (const row of rows) {
+    runLock.assertHeld();
+    yield row;
+  }
+}
+
+async function* iterateAuditCandidatePages(
+  prisma: PrismaClient,
+  options: CliOptions & { pageSize: number },
+  runLock: CommercialAuditRunLock,
+): AsyncGenerator<AuditCandidateRow[]> {
+  let cursor: AuditCandidateCursor | undefined;
+
+  while (true) {
+    runLock.assertHeld();
+    const page = await loadCandidates(prisma, options, {
+      pageSize: options.pageSize,
+      ...(cursor ? { cursor } : {}),
+    });
+    runLock.assertHeld();
+    if (page.length === 0) {
+      return;
+    }
+    for (let index = 1; index < page.length; index += 1) {
+      if (compareAuditCandidateKeys(page[index - 1], page[index]) >= 0) {
+        throw new Error('Commercial audit candidate page is not strictly ordered');
+      }
+    }
+    if (cursor && compareAuditCandidateKeys(cursor, page[0]) >= 0) {
+      throw new Error('Commercial audit candidate page did not advance past its cursor');
+    }
+
+    yield page;
+
+    const nextCursor = resolveNextAuditCandidateCursor(page);
+    if (!nextCursor) {
+      return;
+    }
+    cursor = nextCursor;
+    if (page.length < options.pageSize) {
+      return;
+    }
+  }
+}
+
+async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditRunLock) {
   const prisma = createPrismaClient();
   const ruleEngine = new RuleEngineService(NOOP_REDIS_COUNTER as never);
+  let streamWriter: AuditJsonlStreamWriter<AuditRecord> | undefined;
 
   try {
     await prisma.$connect();
-    const candidates = await loadCandidates(prisma, options);
+    runLock.assertHeld();
+    const paged = options.pageSize !== undefined;
+    const candidates = paged ? null : await loadCandidates(prisma, options);
+    runLock.assertHeld();
     const auditScope = resolveAuditCandidateScope(options);
     const loadSince = resolveAuditLoadSince(options);
-    const orderedCandidates = [...candidates].sort(
-      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
-    );
-    const targetCandidateCount = candidates.filter(
+    const orderedCandidates = [...(candidates ?? [])].sort(compareAuditCandidateKeys);
+    let loadedCandidateCount = candidates?.length ?? 0;
+    let targetCandidateCount = (candidates ?? []).filter(
       (item) => item.createdAt.getTime() >= options.since.getTime(),
     ).length;
-    const chatContexts = await loadChatContexts(
-      prisma,
-      Array.from(new Set(candidates.map((item) => item.chatId))),
-    );
+    const chatContexts = new Map<string, ChatContext | null>();
+    const chatContextActiveAt = new Date();
+    if (!paged) {
+      await ensureChatContexts(prisma, chatContexts, candidates ?? [], chatContextActiveAt);
+    }
     const campaignTracker = new InMemoryCommercialCampaignTracker();
+
+    const streamTargets: AuditJsonlStreamTarget<AuditRecord>[] = [];
+    if (paged && options.exportJsonlPath) {
+      streamTargets.push({
+        pathname: options.exportJsonlPath,
+        serialize: serializeAuditRecord,
+      });
+    }
+    if (paged && options.exportCorpusJsonlPath) {
+      streamTargets.push({
+        pathname: options.exportCorpusJsonlPath,
+        serialize: serializeAuditCorpusRecord,
+      });
+    }
+    if (streamTargets.length > 0) {
+      streamWriter = await openAuditJsonlOutputStreams(streamTargets);
+    }
 
     const skipCounts = new Map<AuditSkipReason, number>();
     const categoryCounts = new Map<AuditCategory, number>();
@@ -1402,7 +1822,10 @@ async function main() {
     let enforcementFalsePositiveCandidates = 0;
     let grayEnforcementCandidates = 0;
     let campaignOnlyEnforcementCandidates = 0;
+    let processedCandidateCount = 0;
+    let retainedRecordCount = 0;
     const auditedRecords: AuditRecord[] = [];
+    const pagedSamples = new Map<AuditCategory, AuditRecord[]>();
 
     console.log(
       [
@@ -1414,202 +1837,277 @@ async function main() {
         `chatFilter=${options.chatId ? 'single-chat' : 'all'}`,
         `scope=${auditScope.logLabel}`,
         `currentOnly=${options.currentOnly ? 'yes' : 'no'}`,
-        `loadedCandidates=${candidates.length}`,
-        `targetCandidates=${targetCandidateCount}`,
+        ...(paged
+          ? [
+              `pageSize=${options.pageSize}`,
+              'exportOrder=chronological',
+              'loadedCandidates=paged',
+              'targetCandidates=paged',
+            ]
+          : [
+              `loadedCandidates=${loadedCandidateCount}`,
+              `targetCandidates=${targetCandidateCount}`,
+            ]),
       ].join(' '),
     );
 
-    for (const [index, row] of orderedCandidates.entries()) {
-      const isTargetWindow = row.createdAt.getTime() >= options.since.getTime();
-      const update = row.normalizedPayload as MaxUpdate;
-      const chatContext = chatContexts.get(row.chatId);
-      const skipReason = resolveSkipReason(row, update, chatContext);
-      if (skipReason) {
-        if (isTargetWindow) {
-          pushCount(skipCounts, skipReason);
+    const candidatePages: AsyncIterable<readonly AuditCandidateRow[]> =
+      options.pageSize !== undefined
+        ? iterateAuditCandidatePages(prisma, { ...options, pageSize: options.pageSize }, runLock)
+        : (async function* () {
+            yield orderedCandidates;
+          })();
+
+    for await (const candidatePage of candidatePages) {
+      if (paged) {
+        loadedCandidateCount += candidatePage.length;
+        targetCandidateCount += candidatePage.filter(
+          (item) => item.createdAt.getTime() >= options.since.getTime(),
+        ).length;
+      }
+      await ensureChatContexts(prisma, chatContexts, candidatePage, chatContextActiveAt);
+
+      for (const row of iterateLockedAuditCandidateRows(candidatePage, runLock)) {
+        processedCandidateCount += 1;
+        const isTargetWindow = row.createdAt.getTime() >= options.since.getTime();
+        const update = row.normalizedPayload as MaxUpdate;
+        const chatContext = chatContexts.get(row.chatId) ?? undefined;
+        const skipReason = resolveSkipReason(row, update, chatContext);
+        if (skipReason) {
+          if (isTargetWindow) {
+            pushCount(skipCounts, skipReason);
+          }
+          if (processedCandidateCount % PROGRESS_EVERY === 0) {
+            console.log(
+              paged
+                ? `processed=${processedCandidateCount}`
+                : `processed=${processedCandidateCount}/${orderedCandidates.length}`,
+            );
+          }
+          continue;
         }
-        continue;
-      }
-      if (!chatContext) {
-        if (isTargetWindow) {
-          pushCount(skipCounts, 'missing-chat-context');
+        if (!chatContext) {
+          if (isTargetWindow) {
+            pushCount(skipCounts, 'missing-chat-context');
+          }
+          if (processedCandidateCount % PROGRESS_EVERY === 0) {
+            console.log(
+              paged
+                ? `processed=${processedCandidateCount}`
+                : `processed=${processedCandidateCount}/${orderedCandidates.length}`,
+            );
+          }
+          continue;
         }
-        continue;
-      }
 
-      const senderId = (update.message?.senderId ?? row.senderId ?? '').trim();
-      const text = typeof update.message?.text === 'string' ? update.message.text : row.text;
-      const commercialCampaignContext = campaignTracker.track({
-        createdAt: row.createdAt,
-        chatId: row.chatId,
-        senderId,
-        text,
-      });
-      if (!isTargetWindow) {
-        warmupTrackedCount += 1;
-        if ((index + 1) % PROGRESS_EVERY === 0) {
-          console.log(`processed=${index + 1}/${orderedCandidates.length}`);
-        }
-        continue;
-      }
-      const detectionSettings = resolveAuditDetectionSettings(chatContext.settings, options);
-      const detection = await ruleEngine.detect({
-        chatId: row.chatId,
-        userId: senderId,
-        text,
-        settings: detectionSettings,
-        domainAllowlist: chatContext.domainAllowlist,
-        effectiveLength: text.length,
-        skipDuplicateState: true,
-        commercialCampaignContext,
-      });
-      evaluatedCount += 1;
-
-      const current = snapshotFromViolation(extractCommercialViolation(detection.violations));
-      const historical = snapshotFromHistorical(
-        row.hasHistoricalCommercialEvent,
-        row.historicalScore,
-        row.historicalMetadata,
-      );
-      const category = deriveCategory(historical.hit, current.hit);
-      const segment = deriveSegment({
-        text,
-        currentSubtype: current.primarySubtype,
-        historicalSubtype: historical.primarySubtype,
-        currentSignals: current.matchedSignals,
-        historicalSignals: historical.matchedSignals,
-      });
-      const safeContextBucket = deriveSafeContextBucket({ text, current, historical });
-      const policyCategory = derivePolicyCategory({ category, current });
-      const corpusLabel = deriveCorpusLabel({ category, policyCategory, current, historical });
-
-      pushCount(categoryCounts, category);
-      pushCount(policyCategoryCounts, policyCategory);
-      pushCount(corpusLabelCounts, corpusLabel.label);
-      pushCount(segmentCounts, `${category}:${segment}`);
-      pushCount(safeContextBucketCounts, safeContextBucket);
-      pushCount(eventTypeCounts, row.eventType);
-      for (const signal of current.matchedSignals) {
-        pushCount(currentSignalCounts, signal);
-      }
-      if (current.primarySubtype) {
-        pushCount(currentSubtypeCounts, current.primarySubtype);
-      }
-      if (current.classifierVersion) {
-        pushCount(currentClassifierVersionCounts, current.classifierVersion);
-      }
-      if (current.reviewRecommended) {
-        currentReviewRecommendedCount += 1;
-      }
-      for (const reason of current.reviewReasons) {
-        pushCount(currentReviewReasonCounts, reason);
-      }
-      for (const reason of current.classifierReasons) {
-        pushCount(currentClassifierReasonCounts, reason);
-      }
-
-      const shouldRetainRecord =
-        options.exportAllCorpus ||
-        (options.includeStableHits
-          ? category !== 'stable_clear'
-          : category === 'historical_only' ||
-            category === 'current_only' ||
-            policyCategory !== 'none');
-      if (shouldRetainRecord) {
-        const sanitizedText = sanitizeAuditText(text);
-        const sanitizedBaseline = await resolveCorpusSanitizedBaseline({
-          corpusExportRequested: Boolean(options.exportCorpusJsonlPath),
-          retainedForCorpus: shouldRetainRecord,
-          rawText: text,
-          sanitizedText,
-          current,
-          detectSanitized: async () =>
-            snapshotFromViolation(
-              extractCommercialViolation(
-                (
-                  await ruleEngine.detect({
-                    chatId: row.chatId,
-                    userId: senderId,
-                    text: sanitizedText,
-                    settings: detectionSettings,
-                    domainAllowlist: chatContext.domainAllowlist,
-                    effectiveLength: sanitizedText.length,
-                    skipDuplicateState: true,
-                    commercialCampaignContext,
-                  })
-                ).violations,
-              ),
-            ),
-        });
-        auditedRecords.push({
-          category,
-          policyCategory,
-          segment,
-          safeContextBucket,
-          ...corpusLabel,
+        const senderId = (update.message?.senderId ?? row.senderId ?? '').trim();
+        const text = typeof update.message?.text === 'string' ? update.message.text : row.text;
+        const commercialCampaignContext = campaignTracker.track({
           createdAt: row.createdAt,
-          webhookEventId: row.webhookEventId,
-          eventType: row.eventType,
           chatId: row.chatId,
-          chatTitle: row.chatTitle,
-          chatEntityType: row.chatEntityType,
-          messageId: row.messageId,
           senderId,
           text,
-          sanitizedText,
-          historical,
-          current,
-          ...(sanitizedBaseline ? { sanitizedBaseline } : {}),
-          settings: pickAuditCorpusSettings(detectionSettings),
+        });
+        if (!isTargetWindow) {
+          warmupTrackedCount += 1;
+          if (processedCandidateCount % PROGRESS_EVERY === 0) {
+            console.log(
+              paged
+                ? `processed=${processedCandidateCount}`
+                : `processed=${processedCandidateCount}/${orderedCandidates.length}`,
+            );
+          }
+          continue;
+        }
+        const detectionSettings = resolveAuditDetectionSettings(chatContext.settings, options);
+        const detection = await ruleEngine.detect({
+          chatId: row.chatId,
+          userId: senderId,
+          text,
+          settings: detectionSettings,
+          domainAllowlist: chatContext.domainAllowlist,
+          effectiveLength: text.length,
+          skipDuplicateState: true,
           commercialCampaignContext,
         });
-      }
+        evaluatedCount += 1;
 
-      if (
-        corpusLabel.label === 'negative_candidate' &&
-        (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
-      ) {
-        deleteFalsePositiveCandidates += 1;
-      }
-      if (
-        corpusLabel.label === 'gray_candidate' &&
-        (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
-      ) {
-        grayDeleteCandidates += 1;
-      }
-      if (
-        policyCategory === 'campaign_only' &&
-        (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
-      ) {
-        campaignOnlyDeleteCandidates += 1;
-      }
-      if (
-        corpusLabel.label === 'negative_candidate' &&
-        isCommercialEnforcementAction(current.actionBand)
-      ) {
-        enforcementFalsePositiveCandidates += 1;
-      }
-      if (
-        corpusLabel.label === 'gray_candidate' &&
-        isCommercialEnforcementAction(current.actionBand)
-      ) {
-        grayEnforcementCandidates += 1;
-      }
-      if (policyCategory === 'campaign_only' && isCommercialEnforcementAction(current.actionBand)) {
-        campaignOnlyEnforcementCandidates += 1;
-      }
+        const current = snapshotFromViolation(extractCommercialViolation(detection.violations));
+        const historical = snapshotFromHistorical(
+          row.hasHistoricalCommercialEvent,
+          row.historicalScore,
+          row.historicalMetadata,
+        );
+        const category = deriveCategory(historical.hit, current.hit);
+        const segment = deriveSegment({
+          text,
+          currentSubtype: current.primarySubtype,
+          historicalSubtype: historical.primarySubtype,
+          currentSignals: current.matchedSignals,
+          historicalSignals: historical.matchedSignals,
+        });
+        const safeContextBucket = deriveSafeContextBucket({ text, current, historical });
+        const policyCategory = derivePolicyCategory({ category, current });
+        const corpusLabel = deriveCorpusLabel({ category, policyCategory, current, historical });
 
-      if ((index + 1) % PROGRESS_EVERY === 0) {
-        console.log(`processed=${index + 1}/${orderedCandidates.length}`);
+        pushCount(categoryCounts, category);
+        pushCount(policyCategoryCounts, policyCategory);
+        pushCount(corpusLabelCounts, corpusLabel.label);
+        pushCount(segmentCounts, `${category}:${segment}`);
+        pushCount(safeContextBucketCounts, safeContextBucket);
+        pushCount(eventTypeCounts, row.eventType);
+        for (const signal of current.matchedSignals) {
+          pushCount(currentSignalCounts, signal);
+        }
+        if (current.primarySubtype) {
+          pushCount(currentSubtypeCounts, current.primarySubtype);
+        }
+        if (current.classifierVersion) {
+          pushCount(currentClassifierVersionCounts, current.classifierVersion);
+        }
+        if (current.reviewRecommended) {
+          currentReviewRecommendedCount += 1;
+        }
+        for (const reason of current.reviewReasons) {
+          pushCount(currentReviewReasonCounts, reason);
+        }
+        for (const reason of current.classifierReasons) {
+          pushCount(currentClassifierReasonCounts, reason);
+        }
+
+        const shouldRetainRecord =
+          options.exportAllCorpus ||
+          (options.includeStableHits
+            ? category !== 'stable_clear'
+            : category === 'historical_only' ||
+              category === 'current_only' ||
+              policyCategory !== 'none');
+        if (shouldRetainRecord) {
+          retainedRecordCount += 1;
+          const shouldStoreSample =
+            paged &&
+            options.sample > 0 &&
+            category !== 'stable_clear' &&
+            (category !== 'stable_hit' || options.includeStableHits);
+          if (!paged || streamWriter || shouldStoreSample) {
+            const sanitizedText = sanitizeAuditText(text);
+            const sanitizedBaseline = await resolveCorpusSanitizedBaseline({
+              corpusExportRequested: Boolean(options.exportCorpusJsonlPath),
+              retainedForCorpus: shouldRetainRecord,
+              rawText: text,
+              sanitizedText,
+              current,
+              detectSanitized: async () =>
+                snapshotFromViolation(
+                  extractCommercialViolation(
+                    (
+                      await ruleEngine.detect({
+                        chatId: row.chatId,
+                        userId: senderId,
+                        text: sanitizedText,
+                        settings: detectionSettings,
+                        domainAllowlist: chatContext.domainAllowlist,
+                        effectiveLength: sanitizedText.length,
+                        skipDuplicateState: true,
+                        commercialCampaignContext,
+                      })
+                    ).violations,
+                  ),
+                ),
+            });
+            const auditRecord: AuditRecord = {
+              category,
+              policyCategory,
+              segment,
+              safeContextBucket,
+              ...corpusLabel,
+              createdAt: row.createdAt,
+              webhookEventId: row.webhookEventId,
+              eventType: row.eventType,
+              chatId: row.chatId,
+              chatTitle: row.chatTitle,
+              chatEntityType: row.chatEntityType,
+              messageId: row.messageId,
+              senderId,
+              text,
+              sanitizedText,
+              historical,
+              current,
+              ...(sanitizedBaseline ? { sanitizedBaseline } : {}),
+              settings: pickAuditCorpusSettings(detectionSettings),
+              commercialCampaignContext,
+            };
+
+            if (paged) {
+              if (shouldStoreSample) {
+                retainNewestAuditSample(pagedSamples, auditRecord, options.sample);
+              }
+              if (streamWriter) {
+                await streamWriter.append(auditRecord);
+              }
+            } else {
+              auditedRecords.push(auditRecord);
+            }
+          }
+        }
+
+        if (
+          corpusLabel.label === 'negative_candidate' &&
+          (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
+        ) {
+          deleteFalsePositiveCandidates += 1;
+        }
+        if (
+          corpusLabel.label === 'gray_candidate' &&
+          (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
+        ) {
+          grayDeleteCandidates += 1;
+        }
+        if (
+          policyCategory === 'campaign_only' &&
+          (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
+        ) {
+          campaignOnlyDeleteCandidates += 1;
+        }
+        if (
+          corpusLabel.label === 'negative_candidate' &&
+          isCommercialEnforcementAction(current.actionBand)
+        ) {
+          enforcementFalsePositiveCandidates += 1;
+        }
+        if (
+          corpusLabel.label === 'gray_candidate' &&
+          isCommercialEnforcementAction(current.actionBand)
+        ) {
+          grayEnforcementCandidates += 1;
+        }
+        if (
+          policyCategory === 'campaign_only' &&
+          isCommercialEnforcementAction(current.actionBand)
+        ) {
+          campaignOnlyEnforcementCandidates += 1;
+        }
+
+        if (processedCandidateCount % PROGRESS_EVERY === 0) {
+          console.log(
+            paged
+              ? `processed=${processedCandidateCount}`
+              : `processed=${processedCandidateCount}/${orderedCandidates.length}`,
+          );
+        }
       }
     }
 
-    auditedRecords.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+    auditedRecords.sort((left, right) => -compareAuditCandidateKeys(left, right));
 
     const exportable = auditedRecords;
 
     console.log('');
     console.log('Summary');
+    if (paged) {
+      console.log(`loaded_candidates=${loadedCandidateCount}`);
+      console.log(`target_candidates=${targetCandidateCount}`);
+    }
     console.log(`evaluated=${evaluatedCount}`);
     console.log(`warmup_tracked=${warmupTrackedCount}`);
     console.log(`skipped=${[...skipCounts.values()].reduce((sum, value) => sum + value, 0)}`);
@@ -1696,9 +2194,9 @@ async function main() {
         continue;
       }
 
-      const rows = auditedRecords
-        .filter((record) => record.category === category)
-        .slice(0, options.sample);
+      const rows = paged
+        ? readNewestAuditSamples(pagedSamples, category)
+        : auditedRecords.filter((record) => record.category === category).slice(0, options.sample);
       if (rows.length === 0) {
         continue;
       }
@@ -1712,26 +2210,40 @@ async function main() {
       }
     }
 
-    const jsonlOutputs: AuditJsonlOutput[] = [];
-    if (options.exportJsonlPath) {
-      jsonlOutputs.push(buildAuditJsonlOutput(options.exportJsonlPath, exportable));
+    runLock.assertHeld();
+    if (paged) {
+      await streamWriter?.publish();
+    } else {
+      const jsonlOutputs: AuditJsonlOutput[] = [];
+      if (options.exportJsonlPath) {
+        jsonlOutputs.push(buildAuditJsonlOutput(options.exportJsonlPath, exportable));
+      }
+      if (options.exportCorpusJsonlPath) {
+        jsonlOutputs.push(buildAuditCorpusJsonlOutput(options.exportCorpusJsonlPath, exportable));
+      }
+      await publishAuditJsonlOutputs(jsonlOutputs);
     }
-    if (options.exportCorpusJsonlPath) {
-      jsonlOutputs.push(buildAuditCorpusJsonlOutput(options.exportCorpusJsonlPath, exportable));
-    }
-    await publishAuditJsonlOutputs(jsonlOutputs);
 
     if (options.exportJsonlPath) {
       console.log('');
-      console.log(`exported=${exportable.length} path=${options.exportJsonlPath}`);
+      console.log(`exported=${retainedRecordCount} path=${options.exportJsonlPath}`);
     }
     if (options.exportCorpusJsonlPath) {
       console.log('');
-      console.log(`exported_corpus=${exportable.length} path=${options.exportCorpusJsonlPath}`);
+      console.log(`exported_corpus=${retainedRecordCount} path=${options.exportCorpusJsonlPath}`);
     }
   } finally {
-    await prisma.$disconnect();
+    try {
+      await streamWriter?.abort();
+    } finally {
+      await prisma.$disconnect();
+    }
   }
+}
+
+async function main() {
+  const options = readCliOptions(process.argv.slice(2));
+  await withCommercialAuditRunLock((runLock) => runCommercialAudit(options, runLock));
 }
 
 if (require.main === module) {

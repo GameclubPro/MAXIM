@@ -177,6 +177,7 @@ export type CommercialSignalEvidenceProfile = {
   hasIndependentCommercialOfferEvidence: boolean;
   hasTransactionalDirectDealEvidence: boolean;
   hasNonCampaignDirectDealEvidence: boolean;
+  hasLocalEscalationOfferEvidence: boolean;
   hasActionDirectDealEvidence: boolean;
   hasRawActionDirectDealEvidence: boolean;
 };
@@ -207,12 +208,12 @@ export function resolveCommercialSignalEvidence(
 
   const hasHighRiskEvidence = hasPrefix('risk:');
   const hasEscalationRiskEvidence = hasAny(ESCALATION_RISK_SIGNALS);
+  const hasLocalEscalationOfferEvidence = matchedSignals.includes('locality:escalation-offer');
   const hasStructuredTransportEvidence = hasAny(STRUCTURED_TRANSPORT_SIGNALS);
   const hasReviewOnlyTransportEvidence = hasAny(REVIEW_ONLY_TRANSPORT_SIGNALS);
   const hasWarnCappedRecallEvidence = hasPrefix(WARN_CAPPED_RECALL_PREFIX);
   const hasReviewCappedRecallEvidence = hasPrefix(REVIEW_CAPPED_RECALL_PREFIX);
-  const hasBoundedRecallEvidence =
-    hasWarnCappedRecallEvidence || hasReviewCappedRecallEvidence;
+  const hasBoundedRecallEvidence = hasWarnCappedRecallEvidence || hasReviewCappedRecallEvidence;
   const boundedRecallLabels = new Set(
     matchedSignals.flatMap((signal) => {
       if (signal.startsWith(WARN_CAPPED_RECALL_PREFIX)) {
@@ -239,9 +240,7 @@ export function resolveCommercialSignalEvidence(
       !boundedRecallCompanionSignals.has(signal) &&
       !(hasBoundedGoodsRecallSource && signal === 'goods-retail:multi-sku') &&
       ![...boundedRecallLabels].some((label) =>
-        INDEPENDENT_COMMERCIAL_OFFER_PREFIXES.some(
-          (prefix) => signal === `${prefix}${label}`,
-        ),
+        INDEPENDENT_COMMERCIAL_OFFER_PREFIXES.some((prefix) => signal === `${prefix}${label}`),
       ) &&
       !STRUCTURED_TRANSPORT_SIGNALS.has(signal) &&
       !CONSERVATIVE_RECALL_SIGNALS.has(signal) &&
@@ -257,7 +256,7 @@ export function resolveCommercialSignalEvidence(
   const hasTransactionalDirectDealEvidence = hasAny(TRANSACTION_DIRECT_DEAL_SIGNALS);
   const hasNonCampaignDirectDealEvidence =
     hasPriceEvidence || hasPhoneEvidence || hasLinkEvidence || hasTransactionalDirectDealEvidence;
-  const hasActionDirectDealEvidence =
+  const hasRawActionDirectDealEvidence =
     (hasPriceEvidence && (hasStrongContactEvidence || hasLinkEvidence)) ||
     (hasLinkEvidence && hasStrongContactEvidence) ||
     (hasTransactionalDirectDealEvidence && hasStrongContactEvidence) ||
@@ -266,6 +265,9 @@ export function resolveCommercialSignalEvidence(
         hasStrongContactEvidence ||
         hasLinkEvidence ||
         hasTransactionalDirectDealEvidence));
+  const hasActionDirectDealEvidence =
+    hasRawActionDirectDealEvidence &&
+    (!hasEscalationRiskEvidence || hasLocalEscalationOfferEvidence);
 
   return {
     hasPriceEvidence,
@@ -283,9 +285,14 @@ export function resolveCommercialSignalEvidence(
     hasIndependentCommercialOfferEvidence,
     hasTransactionalDirectDealEvidence,
     hasNonCampaignDirectDealEvidence,
+    hasLocalEscalationOfferEvidence,
     hasActionDirectDealEvidence,
-    hasRawActionDirectDealEvidence: hasActionDirectDealEvidence,
+    hasRawActionDirectDealEvidence,
   };
+}
+
+export function isCommercialEscalationRiskSignal(signal: string): boolean {
+  return ESCALATION_RISK_SIGNALS.has(signal);
 }
 
 export function hasStrongCommercialCampaignEvidence(

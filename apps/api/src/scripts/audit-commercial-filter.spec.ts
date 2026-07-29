@@ -1,19 +1,27 @@
 import {
   AUDIT_MESSAGE_EVENT_TYPES,
+  buildAuditCandidateCursorSql,
+  compareAuditCandidateKeys,
   derivePolicyCategory,
   deriveSafeContextBucket,
   deriveAuditEventFingerprint,
   formatAuditSampleLines,
   isCommercialEnforcementAction,
+  iterateLockedAuditCandidateRows,
+  openAuditJsonlOutputStreams,
   publishAuditJsonlOutputs,
+  readNewestAuditSamples,
   readCliOptions,
+  resolveNextAuditCandidateCursor,
   resolveAuditCandidateScope,
   resolveAuditChatSettings,
   resolveAuditDetectionSettings,
   resolveAuditLoadSince,
   resolveCorpusSanitizedBaseline,
+  retainNewestAuditSample,
   sanitizeAuditText,
   serializeAuditCorpusRecord,
+  type AuditJsonlStreamTarget,
   type AuditRecord,
 } from './audit-commercial-filter';
 import type { ChatSettings } from '../prisma/prisma-client';
@@ -88,11 +96,18 @@ function buildAuditRecord(overrides: Partial<AuditRecord> = {}): AuditRecord {
   };
 }
 
+function passthroughStreamTarget(pathname: string) {
+  return {
+    pathname,
+    serialize: (value: Record<string, unknown>) => value,
+  };
+}
+
 describe('audit-commercial-filter CLI options', () => {
-  it('keeps --limit all as an unlimited audit', () => {
-    expect(readCliOptions(['--limit', 'all']).limit).toBeNull();
-    expect(readCliOptions(['--limit=all']).limit).toBeNull();
-    expect(readCliOptions(['--limit=ALL']).limit).toBeNull();
+  it('keeps --limit all as an unlimited paged audit', () => {
+    expect(readCliOptions(['--limit', 'all', '--page-size', '750']).limit).toBeNull();
+    expect(readCliOptions(['--limit=all', '--page-size=750']).limit).toBeNull();
+    expect(readCliOptions(['--limit=ALL', '--page-size', '750']).limit).toBeNull();
   });
 
   it('uses the default limit only when --limit is omitted', () => {
@@ -114,6 +129,34 @@ describe('audit-commercial-filter CLI options', () => {
   it('keeps missing option values explicit', () => {
     expect(() => readCliOptions(['--limit'])).toThrow('--limit requires a value');
     expect(() => readCliOptions(['--sample'])).toThrow('--sample requires a value');
+    expect(() => readCliOptions(['--page-size'])).toThrow('--page-size requires a value');
+  });
+
+  it('enables bounded paging only for unlimited audits', () => {
+    expect(readCliOptions(['--limit', 'all', '--page-size', '750']).pageSize).toBe(750);
+    expect(readCliOptions(['--limit=all', '--page-size=5000']).pageSize).toBe(5000);
+    expect(() => readCliOptions(['--limit', 'all'])).toThrow(
+      '--limit all requires --page-size <1..5000>',
+    );
+
+    expect(() => readCliOptions(['--page-size', '750'])).toThrow(
+      '--page-size requires --limit all',
+    );
+    expect(() => readCliOptions(['--limit', '100', '--page-size', '50'])).toThrow(
+      '--page-size requires --limit all',
+    );
+  });
+
+  it('rejects unsafe page sizes', () => {
+    expect(() => readCliOptions(['--limit', 'all', '--page-size', '0'])).toThrow(
+      '--page-size must be an integer between 1 and 5000',
+    );
+    expect(() => readCliOptions(['--limit', 'all', '--page-size', '5001'])).toThrow(
+      '--page-size must be an integer between 1 and 5000',
+    );
+    expect(() => readCliOptions(['--limit', 'all', '--page-size', '1.5'])).toThrow(
+      '--page-size must be a non-negative integer',
+    );
   });
 
   it('rejects audit and corpus outputs that resolve to the same path', () => {
@@ -145,12 +188,15 @@ describe('audit-commercial-filter CLI options', () => {
       '2026-07-21T11:20:41.000Z',
       '--limit',
       'all',
+      '--page-size',
+      '750',
       '--campaign-warmup-hours',
       '36',
       '--current-only',
     ]);
 
     expect(options.campaignWarmupHours).toBe(36);
+    expect(options.pageSize).toBe(750);
     expect(options.currentOnly).toBe(true);
     expect(resolveAuditLoadSince(options).toISOString()).toBe('2026-07-19T23:20:41.000Z');
   });
@@ -171,6 +217,77 @@ describe('audit-commercial-filter CLI options', () => {
     expect(() => readCliOptions(['--sample', '1e6'])).toThrow(
       '--sample must be a non-negative integer',
     );
+  });
+});
+
+describe('commercial audit keyset pagination', () => {
+  it('uses the event id as a stable cursor tie-breaker without gaps', () => {
+    const firstTimestamp = new Date('2026-07-28T10:00:00.000Z');
+    const secondTimestamp = new Date('2026-07-28T10:00:01.000Z');
+    const rows = [
+      { createdAt: firstTimestamp, webhookEventId: 'event-a' },
+      { createdAt: firstTimestamp, webhookEventId: 'event-b' },
+      { createdAt: firstTimestamp, webhookEventId: 'event-c' },
+      { createdAt: secondTimestamp, webhookEventId: 'event-a' },
+    ];
+
+    const firstPage = rows.slice(0, 2);
+    const cursor = resolveNextAuditCandidateCursor(firstPage);
+    expect(cursor).toEqual(firstPage[1]);
+    expect(cursor).not.toBe(firstPage[1]);
+    expect(rows.filter((row) => cursor && compareAuditCandidateKeys(cursor, row) < 0)).toEqual(
+      rows.slice(2),
+    );
+    expect(compareAuditCandidateKeys(rows[0], rows[1])).toBeLessThan(0);
+    expect(compareAuditCandidateKeys(rows[2], rows[3])).toBeLessThan(0);
+    expect(resolveNextAuditCandidateCursor([])).toBeNull();
+  });
+
+  it('uses an index-seekable row-value cursor predicate', () => {
+    const createdAt = new Date('2026-07-28T10:00:00.000Z');
+    const query = buildAuditCandidateCursorSql({
+      createdAt,
+      webhookEventId: 'event-b',
+    });
+
+    expect(query.strings.join('?').replace(/\s+/gu, ' ').trim()).toBe(
+      'and (w.created_at, w.id) > (?, ?)',
+    );
+    expect(query.values).toEqual([createdAt, 'event-b']);
+  });
+
+  it('stops the current page before processing another row after lock loss', () => {
+    const lockError = new Error('Commercial audit run lock session was lost');
+    const assertHeld = jest
+      .fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw lockError;
+      });
+    const rows = iterateLockedAuditCandidateRows(['first', 'second', 'third'], { assertHeld });
+
+    expect(rows.next()).toEqual({ done: false, value: 'first' });
+    expect(() => rows.next()).toThrow(lockError);
+    expect(assertHeld).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('paged commercial audit samples', () => {
+  it('retains only the newest bounded records and reads them newest-first', () => {
+    const samples = new Map<AuditRecord['category'], AuditRecord[]>();
+    const records = [
+      buildAuditRecord({ createdAt: new Date('2026-07-28T10:00:00.000Z') }),
+      buildAuditRecord({ createdAt: new Date('2026-07-28T10:00:01.000Z') }),
+      buildAuditRecord({ createdAt: new Date('2026-07-28T10:00:02.000Z') }),
+    ];
+
+    for (const record of records) {
+      retainNewestAuditSample(samples, record, 2);
+    }
+
+    expect(readNewestAuditSamples(samples, 'current_only')).toEqual([records[2], records[1]]);
+    retainNewestAuditSample(samples, records[0], 0);
+    expect(readNewestAuditSamples(samples, 'current_only')).toHaveLength(2);
   });
 });
 
@@ -500,6 +617,183 @@ describe('audit JSONL publication', () => {
       await expect(access(auditPath)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readFile(corpusPath, 'utf8')).toBe('existing corpus\n');
       expect((await readdir(directory)).sort()).toEqual(['corpus.jsonl']);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('streamed audit JSONL publication', () => {
+  it('fails before staging when a final output already exists', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-existing-'));
+    const outputPath = join(directory, 'audit.jsonl');
+
+    try {
+      await writeFile(outputPath, 'existing\n', { mode: 0o600 });
+      await expect(
+        openAuditJsonlOutputStreams([passthroughStreamTarget(outputPath)]),
+      ).rejects.toThrow('Refusing to overwrite existing audit export');
+      expect(await readFile(outputPath, 'utf8')).toBe('existing\n');
+      expect(await readdir(directory)).toEqual(['audit.jsonl']);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('streams paired records to mode 0600 outputs and publishes only on success', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-'));
+    const auditPath = join(directory, 'nested', 'audit.jsonl');
+    const corpusPath = join(directory, 'nested', 'corpus.jsonl');
+
+    try {
+      const writer = await openAuditJsonlOutputStreams([
+        {
+          pathname: auditPath,
+          serialize: (value: { sequence: number }) => ({ sequence: value.sequence }),
+        },
+        {
+          pathname: corpusPath,
+          serialize: (value: { sequence: number }) => ({ corpusSequence: value.sequence }),
+        },
+      ]);
+      await writer.append({ sequence: 1 });
+      await writer.append({ sequence: 2 });
+
+      await expect(access(auditPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(access(corpusPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await writer.publish();
+
+      expect(await readFile(auditPath, 'utf8')).toBe('{"sequence":1}\n{"sequence":2}\n');
+      expect(await readFile(corpusPath, 'utf8')).toBe(
+        '{"corpusSequence":1}\n{"corpusSequence":2}\n',
+      );
+      expect((await stat(auditPath)).mode & 0o777).toBe(0o600);
+      expect((await stat(corpusPath)).mode & 0o777).toBe(0o600);
+      expect((await readdir(join(directory, 'nested'))).sort()).toEqual([
+        'audit.jsonl',
+        'corpus.jsonl',
+      ]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('snapshots each pathname and serializer binding before asynchronous setup', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-snapshot-'));
+    const outputPath = join(directory, 'audit.jsonl');
+    const targets: AuditJsonlStreamTarget<{ sequence: number }>[] = [
+      {
+        pathname: outputPath,
+        serialize: (value: { sequence: number }) => ({ original: value.sequence }),
+      },
+    ];
+
+    try {
+      const opening = openAuditJsonlOutputStreams(targets);
+      targets[0] = {
+        pathname: join(directory, 'mutated.jsonl'),
+        serialize: (value) => ({ mutated: value.sequence }),
+      };
+      const writer = await opening;
+      await writer.append({ sequence: 1 });
+      await writer.publish();
+
+      expect(await readFile(outputPath, 'utf8')).toBe('{"original":1}\n');
+      await expect(access(targets[0].pathname)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('removes staged data when a streamed audit is aborted', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-abort-'));
+    const outputPath = join(directory, 'audit.jsonl');
+
+    try {
+      const writer = await openAuditJsonlOutputStreams([passthroughStreamTarget(outputPath)]);
+      await writer.append({ incomplete: true });
+      await writer.abort();
+
+      await expect(access(outputPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans up immediately and prevents publication after serialization fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-error-'));
+    const outputPath = join(directory, 'audit.jsonl');
+
+    try {
+      const writer = await openAuditJsonlOutputStreams([passthroughStreamTarget(outputPath)]);
+      await expect(writer.append({ unsupported: 1n })).rejects.toThrow();
+      await expect(writer.publish()).rejects.toThrow('Audit JSONL stream is not open');
+
+      await expect(access(outputPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('appends records after flushing the bounded stream buffer', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-flush-'));
+    const outputPath = join(directory, 'audit.jsonl');
+    const largeValue = 'x'.repeat(1024 * 1024);
+
+    try {
+      const writer = await openAuditJsonlOutputStreams([passthroughStreamTarget(outputPath)]);
+      await writer.append({ largeValue });
+      await writer.append({ afterFlush: true });
+      await writer.publish();
+
+      const lines = (await readFile(outputPath, 'utf8')).trim().split('\n');
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0])).toEqual({ largeValue });
+      expect(JSON.parse(lines[1])).toEqual({ afterFlush: true });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back a paired publication if the second final output already exists', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-collision-'));
+    const auditPath = join(directory, 'audit.jsonl');
+    const corpusPath = join(directory, 'corpus.jsonl');
+
+    try {
+      const writer = await openAuditJsonlOutputStreams([
+        {
+          pathname: auditPath,
+          serialize: (value: { audit: string; corpus: string }) => ({ audit: value.audit }),
+        },
+        {
+          pathname: corpusPath,
+          serialize: (value: { audit: string; corpus: string }) => ({ corpus: value.corpus }),
+        },
+      ]);
+      await writer.append({ audit: 'new', corpus: 'new' });
+      await writeFile(corpusPath, 'existing corpus\n', { mode: 0o600 });
+
+      await expect(writer.publish()).rejects.toThrow('Refusing to overwrite existing audit export');
+      await expect(access(auditPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(corpusPath, 'utf8')).toBe('existing corpus\n');
+      expect(await readdir(directory)).toEqual(['corpus.jsonl']);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the existing one-newline empty-export serialization', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-audit-stream-empty-'));
+    const outputPath = join(directory, 'audit.jsonl');
+
+    try {
+      const writer = await openAuditJsonlOutputStreams([passthroughStreamTarget(outputPath)]);
+      await writer.publish();
+      expect(await readFile(outputPath, 'utf8')).toBe('\n');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

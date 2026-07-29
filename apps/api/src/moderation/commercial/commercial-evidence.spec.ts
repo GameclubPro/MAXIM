@@ -178,11 +178,23 @@ describe('commercial evidence profile', () => {
       },
     },
     {
-      label: 'high risk with strong handle',
+      label: 'high risk with non-local strong handle',
       signals: ['risk:loan-leadgen', 'contact:handle'],
       expected: {
         hasHighRiskEvidence: true,
         hasStrongContactEvidence: true,
+        hasRawActionDirectDealEvidence: true,
+        hasLocalEscalationOfferEvidence: false,
+        hasActionDirectDealEvidence: false,
+      },
+    },
+    {
+      label: 'high risk with local strong handle',
+      signals: ['risk:loan-leadgen', 'contact:handle', 'locality:escalation-offer'],
+      expected: {
+        hasHighRiskEvidence: true,
+        hasStrongContactEvidence: true,
+        hasLocalEscalationOfferEvidence: true,
         hasActionDirectDealEvidence: true,
       },
     },
@@ -390,7 +402,12 @@ describe('commercial evidence profile', () => {
       state: buildState({
         hasContact: true,
         hasDealChannel: true,
-        matchedSignals: ['risk:loan-leadgen', 'deal-channel:link', 'contact:handle'],
+        matchedSignals: [
+          'risk:loan-leadgen',
+          'deal-channel:link',
+          'contact:handle',
+          'locality:escalation-offer',
+        ],
       }),
       appliedThresholds: STRICT_THRESHOLDS,
     });

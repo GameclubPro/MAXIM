@@ -365,8 +365,7 @@ export class CommercialAdDetector {
 
     if (hasBoundedRecallEvidence) {
       confidenceScore = Math.max(confidenceScore, appliedThresholds.warnThreshold);
-      decisionBand =
-        confidenceScore >= appliedThresholds.deleteThreshold ? 'HIGH' : 'MEDIUM';
+      decisionBand = confidenceScore >= appliedThresholds.deleteThreshold ? 'HIGH' : 'MEDIUM';
     }
 
     if (confidenceScore < appliedThresholds.warnThreshold) {
@@ -403,9 +402,7 @@ function collectAmbiguousTransportReviewSignals(params: {
 }): string[] {
   const hasTransportCandidate = [params.rawLoweredText, params.normalizedText].some(
     (text) =>
-      text.length >= 20 &&
-      text.length <= 300 &&
-      AMBIGUOUS_TRANSPORT_REVIEW_PREFILTER.test(text),
+      text.length >= 20 && text.length <= 300 && AMBIGUOUS_TRANSPORT_REVIEW_PREFILTER.test(text),
   );
   if (!hasTransportCandidate) {
     return [];
@@ -565,6 +562,7 @@ function hasCommercialDiscussionHardNegative(
       signal === 'context:commercial-review-question' ||
       signal === 'context:channel-ad-due-diligence' ||
       signal === 'context:marketplace-review-complaint' ||
+      signal === 'context:reported-escalation-risk' ||
       signal === 'context:leadgen-training-recap' ||
       signal === 'context:local-news-subscribe' ||
       signal === 'context:moderation-ad-discussion' ||

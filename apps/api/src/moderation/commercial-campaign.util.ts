@@ -46,6 +46,11 @@ type InMemoryExpiringSet = {
   members: Set<string>;
 };
 
+type InMemoryExpiryQueue = {
+  entries: Array<{ key: string; expiresAtMs: number }>;
+  head: number;
+};
+
 function hashCampaignKeyPart(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 20);
 }
@@ -309,8 +314,13 @@ export function buildCommercialCampaignSenderVelocityChatsKey(
 
 export class InMemoryCommercialCampaignTracker {
   private readonly sets = new Map<string, InMemoryExpiringSet>();
+  private readonly expiryQueues = new Map<number, InMemoryExpiryQueue>();
 
   constructor(private readonly ttlSec = COMMERCIAL_CAMPAIGN_WINDOW_SEC) {}
+
+  get retainedKeyCount(): number {
+    return this.sets.size;
+  }
 
   track(params: {
     createdAt: Date;
@@ -324,6 +334,7 @@ export class InMemoryCommercialCampaignTracker {
     }
 
     const createdAtMs = params.createdAt.getTime();
+    this.pruneExpiredSets(createdAtMs);
     const fingerprint = buildCommercialCampaignFingerprint(params.text);
     const senderDistinctChatCount = this.addToSetWithTtl(
       buildCommercialCampaignSenderChatsKey(normalizedSenderId),
@@ -446,10 +457,37 @@ export class InMemoryCommercialCampaignTracker {
         members: new Set([member]),
       };
       this.sets.set(key, next);
+      this.enqueueExpiry(key, next.expiresAtMs, ttlSec);
       return next.members.size;
     }
 
     existing.members.add(member);
     return existing.members.size;
+  }
+
+  private enqueueExpiry(key: string, expiresAtMs: number, ttlSec: number): void {
+    const queue = this.expiryQueues.get(ttlSec) ?? { entries: [], head: 0 };
+    queue.entries.push({ key, expiresAtMs });
+    this.expiryQueues.set(ttlSec, queue);
+  }
+
+  private pruneExpiredSets(createdAtMs: number): void {
+    for (const queue of this.expiryQueues.values()) {
+      while (queue.head < queue.entries.length) {
+        const entry = queue.entries[queue.head];
+        if (entry.expiresAtMs > createdAtMs) {
+          break;
+        }
+        queue.head += 1;
+        if (this.sets.get(entry.key)?.expiresAtMs === entry.expiresAtMs) {
+          this.sets.delete(entry.key);
+        }
+      }
+
+      if (queue.head >= 1_024 && queue.head * 2 >= queue.entries.length) {
+        queue.entries.splice(0, queue.head);
+        queue.head = 0;
+      }
+    }
   }
 }

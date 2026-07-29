@@ -1,4 +1,5 @@
 import { replaceUrlsInText } from '../common/url-text.util';
+import { normalizeCommercialPhoneConfusables } from '../moderation/commercial/commercial-phone';
 
 const NUMBER_SEPARATOR_CHARS = String.raw`\s()./\\‐‑‒–—―-`;
 const EMAIL_ATOM_CHARS = String.raw`\p{L}\p{N}!#$%&'*+/=?^_\x60{|}~\x2d`;
@@ -24,6 +25,14 @@ const OBFUSCATED_PHONE_SEPARATOR_PATTERN = String.raw`(?:${KEYCAP_MARK_PATTERN}|
 const HAS_OBFUSCATED_PHONE_SEPARATOR_PATTERN = new RegExp(OBFUSCATED_PHONE_SEPARATOR_PATTERN, 'u');
 const PHONE_SEPARATOR_PATTERN = String.raw`(?:[${NUMBER_SEPARATOR_CHARS}]|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})*`;
 const PHONE_DIGIT_PATTERN = String.raw`\d(?:${KEYCAP_MARK_PATTERN})?`;
+const ADJACENT_NUMERIC_SEQUENCE_BEFORE_PATTERN = new RegExp(
+  String.raw`\d${PHONE_SEPARATOR_PATTERN}$`,
+  'u',
+);
+const ADJACENT_NUMERIC_SEQUENCE_AFTER_PATTERN = new RegExp(
+  String.raw`^${PHONE_SEPARATOR_PATTERN}\d`,
+  'u',
+);
 const CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN = new RegExp(
   String.raw`(?<![\d+])\+[1-9](?:${KEYCAP_MARK_PATTERN})?(?:${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN}){6,14}(?!${PHONE_SEPARATOR_PATTERN}${PHONE_DIGIT_PATTERN})`,
   'gu',
@@ -41,7 +50,7 @@ const SHORT_LOCAL_PHONE_CANDIDATE_PATTERN =
 const MAX_DEEP_LINK_PATTERN = /max:\/\/[^\s<>'"`()[\]{}]+/giu;
 const HANDLE_PATTERN = /@[a-z0-9_]{4,32}/giu;
 
-const PHONE_CONTEXT_TERM = String.raw`(?:телефон(?:а|у|ом|ы)?|тел\.?|номер\s+телефона|звон(?:ить|ите|ок|ки)|контакт(?:ы|ный\s+номер)?|связь|для\s+связи|ватсап|whats?app|viber)`;
+const PHONE_CONTEXT_TERM = String.raw`(?:телефон(?:а|у|ом|ы)?|тел\.?|номер\s+телефона|(?:пишите?|звоните?|обращайтесь)\s+по\s+номер[у]?|звон(?:ить|ите|ок|ки)|контакт(?:ы|ный\s+номер)?|связь|для\s+связи|ватсап|whats?app|viber)`;
 const FINANCIAL_CONTEXT_TERM = String.raw`(?:р\s*[/.\\-]\s*с|расч[её]тн\p{L}*\s+сч[её]т\p{L}*|банковск\p{L}*\s+сч[её]т\p{L}*|корр?(?:еспондентск\p{L}*)?\.?\s*сч[её]т\p{L}*|сч[её]т\s+(?:получателя|банка)|номер\s+сч[её]та|карт(?:а|ы|у|е|ой)|card|pan|сч[её]т)`;
 const ADJACENT_CONTEXT_SEPARATOR = String.raw`[\s:;,#№()./\\‐‑‒–—―-]`;
 const PHONE_ADJACENT_CONTEXT_SEPARATOR = String.raw`(?:${ADJACENT_CONTEXT_SEPARATOR}|[•|]|${EMOJI_PHONE_SEPARATOR_PATTERN})`;
@@ -67,6 +76,9 @@ const PHONE_CONTEXT_PATTERNS = createAdjacentContextPatterns(
   PHONE_ADJACENT_CONTEXT_SEPARATOR,
 );
 const FINANCIAL_CONTEXT_PATTERNS = createAdjacentContextPatterns(FINANCIAL_CONTEXT_TERM);
+const NON_PHONE_IDENTIFIER_CONTEXT_PATTERNS = createAdjacentContextPatterns(
+  String.raw`(?:заказ(?:а|у|ом|е|ы)?|код(?:а|у|ом|е|ы)?|номер\s+заказа|маркировк\p{L}*|парти\p{L}*|инн|огрн|снилс)`,
+);
 
 function hasAdjacentContext(
   source: string,
@@ -77,6 +89,19 @@ function hasAdjacentContext(
   const before = source.slice(Math.max(0, start - 80), start);
   const after = source.slice(start + matchLength, start + matchLength + 80);
   return patterns.before.test(before) || patterns.after.test(after);
+}
+
+function isEmbeddedInLongerNumericSequence(
+  source: string,
+  start: number,
+  matchLength: number,
+): boolean {
+  const before = source.slice(Math.max(0, start - 32), start);
+  const after = source.slice(start + matchLength, start + matchLength + 32);
+  return (
+    ADJACENT_NUMERIC_SEQUENCE_BEFORE_PATTERN.test(before) ||
+    ADJACENT_NUMERIC_SEQUENCE_AFTER_PATTERN.test(after)
+  );
 }
 
 function redactCandidates(
@@ -126,6 +151,10 @@ function looksLikeStructuredPhone(value: string): boolean {
   return digitCount(value) >= 10;
 }
 
+function looksLikeBareRussianPhone(value: string): boolean {
+  return /^[78]\d{10}$/u.test(value);
+}
+
 function hasObfuscatedPhoneSeparator(value: string): boolean {
   return HAS_OBFUSCATED_PHONE_SEPARATOR_PATTERN.test(value);
 }
@@ -149,7 +178,8 @@ function redactFinancialNumbers(value: string): string {
 }
 
 function redactPhones(value: string): string {
-  const withoutInternationalPhones = value.replace(INTERNATIONAL_PHONE_PATTERN, '[phone]');
+  const normalized = normalizeCommercialPhoneConfusables(value);
+  const withoutInternationalPhones = normalized.replace(INTERNATIONAL_PHONE_PATTERN, '[phone]');
   const withoutObfuscatedInternationalPhones = redactCandidates(
     withoutInternationalPhones,
     CONTEXTUAL_OBFUSCATED_INTERNATIONAL_PHONE_PATTERN,
@@ -163,24 +193,51 @@ function redactPhones(value: string): string {
     RUSSIAN_PHONE_CANDIDATE_PATTERN,
     '[phone]',
     (match, offset, input) => {
+      if (isEmbeddedInLongerNumericSequence(input, offset, match.length)) {
+        return false;
+      }
       const hasPhoneContext = hasAdjacentContext(
         input,
         offset,
         match.length,
         PHONE_CONTEXT_PATTERNS,
       );
+      const hasIdentifierContext = hasAdjacentContext(
+        input,
+        offset,
+        match.length,
+        NON_PHONE_IDENTIFIER_CONTEXT_PATTERNS,
+      );
+      if (hasIdentifierContext && !hasPhoneContext) {
+        return false;
+      }
       return hasObfuscatedPhoneSeparator(match)
-        ? hasPhoneContext
-        : looksLikeStructuredPhone(match) || hasPhoneContext;
+        ? true
+        : looksLikeStructuredPhone(match) || hasPhoneContext || looksLikeBareRussianPhone(match);
     },
   );
   const withoutLocalPhones = redactCandidates(
     withoutRussianPhones,
     LOCAL_PHONE_CANDIDATE_PATTERN,
     '[phone]',
-    (match, offset, input) =>
-      looksLikeStructuredPhone(match) ||
-      hasAdjacentContext(input, offset, match.length, PHONE_CONTEXT_PATTERNS),
+    (match, offset, input) => {
+      if (isEmbeddedInLongerNumericSequence(input, offset, match.length)) {
+        return false;
+      }
+      const hasPhoneContext = hasAdjacentContext(
+        input,
+        offset,
+        match.length,
+        PHONE_CONTEXT_PATTERNS,
+      );
+      const hasIdentifierContext = hasAdjacentContext(
+        input,
+        offset,
+        match.length,
+        NON_PHONE_IDENTIFIER_CONTEXT_PATTERNS,
+      );
+      return !hasIdentifierContext && (looksLikeStructuredPhone(match) || hasPhoneContext);
+    },
   );
   return redactCandidates(
     withoutLocalPhones,

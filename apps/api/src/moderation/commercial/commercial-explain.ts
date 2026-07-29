@@ -80,6 +80,7 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     hasHighRiskEvidence: evidence.hasHighRiskEvidence,
     hasEscalationRiskEvidence:
       detection.hasEscalationRiskEvidence ?? evidence.hasEscalationRiskEvidence,
+    hasLocalEscalationOfferEvidence: evidence.hasLocalEscalationOfferEvidence,
     hasStructuredTransportEvidence: evidence.hasStructuredTransportEvidence,
     hasReviewOnlyTransportEvidence: evidence.hasReviewOnlyTransportEvidence,
     hasWarnCappedRecallEvidence: evidence.hasWarnCappedRecallEvidence,

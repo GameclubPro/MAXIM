@@ -30,6 +30,7 @@ export type CommercialActionPolicyInput = {
   hasNonCampaignDirectDealEvidence: boolean;
   hasHighRiskEvidence: boolean;
   hasEscalationRiskEvidence: boolean;
+  hasLocalEscalationOfferEvidence: boolean;
   hasStructuredTransportEvidence: boolean;
   hasReviewOnlyTransportEvidence: boolean;
   hasWarnCappedRecallEvidence?: boolean;
@@ -86,6 +87,25 @@ export function resolveCommercialActionPolicy(
       confidenceScore: input.confidenceScore,
       actionScore,
       reviewPriority: 'NONE',
+      suppressionReasons,
+    });
+  }
+
+  if (input.hasEscalationRiskEvidence && !input.hasLocalEscalationOfferEvidence) {
+    suppressionReasons.push('non-local-escalation-offer');
+    return buildDecision({
+      actionBand:
+        input.hasIndependentCommercialOfferEvidence && input.hasNonCampaignDirectDealEvidence
+          ? 'WARN'
+          : 'REVIEW_ONLY',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority:
+        input.hasIndependentCommercialOfferEvidence && input.hasNonCampaignDirectDealEvidence
+          ? 'LOW'
+          : reviewPriority === 'NONE'
+            ? 'HIGH'
+            : reviewPriority,
       suppressionReasons,
     });
   }
@@ -179,6 +199,7 @@ export function resolveCommercialActionPolicy(
     input.confidenceScore >= input.deleteThreshold &&
     actionScore >= input.deleteThreshold &&
     input.hasEscalationRiskEvidence &&
+    input.hasLocalEscalationOfferEvidence &&
     !safeContextDeleteSuppressed &&
     input.missingRequiredAnchors.length === 0
   ) {
@@ -302,7 +323,7 @@ function resolveCommercialActionScore(input: CommercialActionPolicyInput): numbe
   if (input.hasHighRiskEvidence) {
     score += COMMERCIAL_ENGINE_CONFIG.actionPolicy.scoreAdjustments.highRisk;
   }
-  if (input.hasEscalationRiskEvidence) {
+  if (input.hasEscalationRiskEvidence && input.hasLocalEscalationOfferEvidence) {
     score += COMMERCIAL_ENGINE_CONFIG.actionPolicy.scoreAdjustments.escalationRisk;
   }
   if (input.campaignStrength === 'STANDARD') {
@@ -334,7 +355,7 @@ function resolveCommercialReviewPriority(
   if (input.confidenceScore < input.warnThreshold) {
     return 'NONE';
   }
-  if (input.hasEscalationRiskEvidence) {
+  if (input.hasEscalationRiskEvidence && input.hasLocalEscalationOfferEvidence) {
     return 'URGENT';
   }
   if (

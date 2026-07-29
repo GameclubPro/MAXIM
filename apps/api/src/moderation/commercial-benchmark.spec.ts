@@ -112,6 +112,18 @@ function readCommercialSubtype(value: unknown): CommercialSubtype | null {
     : null;
 }
 
+function calculateSubtypeAccuracy(params: {
+  totalPositiveCases: number;
+  detectedPositiveCases: number;
+  detectedSubtypeMisses: number;
+}): number {
+  if (params.totalPositiveCases === 0) {
+    return 1;
+  }
+
+  return (params.detectedPositiveCases - params.detectedSubtypeMisses) / params.totalPositiveCases;
+}
+
 describe('commercial deterministic benchmark', () => {
   const useMedianGate = isCommercialBenchmarkMedianGateEnabled(process.env);
   let hotPathMetrics: CommercialBenchmarkPercentiles | null = null;
@@ -130,6 +142,16 @@ describe('commercial deterministic benchmark', () => {
         adversarial: adversarialMetrics,
       })}\n`,
     );
+  });
+
+  it('counts undetected positive cases as subtype errors', () => {
+    expect(
+      calculateSubtypeAccuracy({
+        totalPositiveCases: 4,
+        detectedPositiveCases: 3,
+        detectedSubtypeMisses: 1,
+      }),
+    ).toBe(0.5);
   });
 
   it('warms service-phone commercial paths before the first measured detection', async () => {
@@ -300,8 +322,11 @@ describe('commercial deterministic benchmark', () => {
     const grayRecall =
       grayPositiveCases.length > 0 ? grayTruePositives / grayPositiveCases.length : 1;
     const falsePositiveRate = falsePositives.length / COMMERCIAL_NEGATIVE_CASES.length;
-    const subtypeAccuracy =
-      (COMMERCIAL_POSITIVE_CASES.length - subtypeMisses.length) / COMMERCIAL_POSITIVE_CASES.length;
+    const subtypeAccuracy = calculateSubtypeAccuracy({
+      totalPositiveCases: COMMERCIAL_POSITIVE_CASES.length,
+      detectedPositiveCases: truePositives,
+      detectedSubtypeMisses: subtypeMisses.length,
+    });
     const report = {
       confusionMatrix: {
         TP: truePositives,
@@ -327,9 +352,9 @@ describe('commercial deterministic benchmark', () => {
     expect(hardEnforcementRecall).toBeGreaterThanOrEqual(0.98);
     expect(grayRecall).toBeGreaterThanOrEqual(0.8);
     expect(recall).toBeGreaterThanOrEqual(0.95);
+    expect(falsePositives).toEqual([]);
     expect(falsePositiveRate).toBeLessThanOrEqual(0.001);
     expect(subtypeAccuracy).toBeGreaterThanOrEqual(0.93);
-    expect(falsePositives).toEqual([]);
     expect(deleteFalsePositives).toEqual([]);
     expect(deleteWithoutStrongEvidence).toEqual([]);
     expect(unsafeDeleteActions).toEqual([]);

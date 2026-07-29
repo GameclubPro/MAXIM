@@ -1,4 +1,5 @@
 import { normalizeForDetection } from '../rule-engine-normalization';
+import { normalizeCommercialPhoneConfusables } from './commercial-phone';
 
 const SPACED_LETTER_SEQUENCE_PATTERN =
   /(?:^|(?<=[\s.,:;!?/+-]))\p{L}(?:[\s.,:;!?/+-]+\p{L}){2,}(?=$|[\s.,:;!?/+-])/gu;
@@ -78,6 +79,7 @@ export function normalizeCommercialRawText(value: string): string {
   if (ZERO_WIDTH_TEST_PATTERN.test(normalized)) {
     normalized = normalized.replace(ZERO_WIDTH_PATTERN, '');
   }
+  normalized = normalizeCommercialPhoneConfusables(normalized);
   if (COMMERCIAL_OBFUSCATED_URL_HINT_PATTERN.test(normalized)) {
     normalized = normalizeObfuscatedUrls(normalized);
   }

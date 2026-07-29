@@ -124,7 +124,7 @@
 
 - Preview expired global-spammer cleanup before deletion: `npm run spammers:archive-expired --workspace @maxim/api -- --dry-run --json`.
 - Audit commercial decisions locally with `npm run moderation:audit-commercial --workspace @maxim/api -- --since <iso> --until <iso> --limit <n>`.
-- On VPS, run the built commercial audit inside `api-admin` with `node apps/api/dist/apps/api/src/scripts/audit-commercial-filter.js` and explicit bounded `--since`, `--until`, and `--limit` arguments.
+- On VPS, run the built commercial audit inside `api-admin` with `node apps/api/dist/apps/api/src/scripts/audit-commercial-filter.js` and explicit bounded `--since`, `--until`, and `--limit` arguments. Full-window audits must use `--limit all --page-size <1..5000>` so candidates and JSONL exports remain memory-bounded. Use `--current-only` for routine full-window production audits until the historical `COMMERCIAL_AD` lookup has a reviewed `(chat_id, message_id, created_at, id)` partial index.
 - Sanitized corpus export uses `--export-corpus-jsonl <path>` and, for full corpus-gate validation, `--export-all-corpus`. Validate with `npm run moderation:validate-commercial-corpus --workspace @maxim/api -- --input <path>`; relative inputs resolve from `apps/api`.
 
 ## VK Parsing

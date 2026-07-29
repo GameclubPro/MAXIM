@@ -125,24 +125,18 @@ export function deriveCommercialSafeContextBucket(params: {
   const hasLinkOrRiskSignal = matchedSignals.some(
     (signal) => signal.startsWith('deal-channel:') || signal.startsWith('risk:'),
   );
-  const hasActionableOfferSignal =
-    hasSelfPromoSignal ||
-    matchedSignals.some(
-      (signal) =>
-        signal.startsWith('contact:') ||
-        signal.startsWith('deal-channel:') ||
-        signal.startsWith('cta:') ||
-        signal === 'transaction:price' ||
-        signal === 'transaction:implied-price' ||
-        signal === 'transaction:keywords',
-    );
-  const hasEscalationOffer = hasEscalationRiskEvidence && hasActionableOfferSignal;
+  const hasEscalationOffer =
+    hasEscalationRiskEvidence && signalEvidence.hasLocalEscalationOfferEvidence;
   const hasSignal = (signal: string): boolean => negativeSignals.includes(signal);
   const hasSignalPrefix = (prefix: string): boolean =>
     negativeSignals.some((signal) => signal.startsWith(prefix));
 
   if (hasSignal('context:moderation-ad-discussion') || hasSignal('context:quoted-ad-example')) {
     return 'rules_or_moderation_context';
+  }
+
+  if (hasSignal('context:reported-escalation-risk') && !hasEscalationOffer) {
+    return 'spam_complaint_or_fraud_warning';
   }
 
   if (
