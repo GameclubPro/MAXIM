@@ -1,5 +1,6 @@
 import { channelSettingsSchema } from '@maxim/contracts';
 import {
+  applyChannelSettingsEnableTransitions,
   normalizeChannelAutoPostButtonsMode,
   normalizeChannelSettings,
   readChannelSettings,
@@ -57,4 +58,36 @@ describe('channel auto post button mode', () => {
       expect(normalizeChannelSettings(settings).autoPostButtonsMode).toBe(mode);
     },
   );
+
+  it.each([
+    ['OFF', 'SUGGEST'],
+    ['COMMENTS', 'BOTH'],
+    ['SUGGEST', 'SUGGEST'],
+    ['BOTH', 'BOTH'],
+  ] as const)(
+    'adds the suggestion button when suggestions are enabled from %s mode',
+    (mode, expectedMode) => {
+      const settings = channelSettingsSchema.parse({
+        autoPostButtonsMode: mode,
+        postSuggestionsEnabled: true,
+      });
+
+      expect(
+        applyChannelSettingsEnableTransitions(settings, { postSuggestionsEnabled: false })
+          .autoPostButtonsMode,
+      ).toBe(expectedMode);
+    },
+  );
+
+  it('preserves an explicit OFF mode after suggestions are already enabled', () => {
+    const settings = channelSettingsSchema.parse({
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: true,
+    });
+
+    expect(
+      applyChannelSettingsEnableTransitions(settings, { postSuggestionsEnabled: true })
+        .autoPostButtonsMode,
+    ).toBe('OFF');
+  });
 });

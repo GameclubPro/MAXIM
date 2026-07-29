@@ -21366,7 +21366,7 @@ describe('AdminService.updateChannelSettings', () => {
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
-  it('syncs auto post buttons mode with the comments and suggestion toggles', async () => {
+  it('enables the auto post suggestion button when suggestions are turned on', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -21400,7 +21400,7 @@ describe('AdminService.updateChannelSettings', () => {
       },
     );
 
-    expect(result.autoPostButtonsMode).toBe('OFF');
+    expect(result.autoPostButtonsMode).toBe('SUGGEST');
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
@@ -21408,7 +21408,7 @@ describe('AdminService.updateChannelSettings', () => {
           channelSettings: expect.objectContaining({
             upsert: expect.objectContaining({
               update: expect.objectContaining({
-                autoPostButtonsMode: 'OFF',
+                autoPostButtonsMode: 'SUGGEST',
               }),
             }),
           }),

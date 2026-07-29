@@ -5,6 +5,18 @@ export type BroadcastSystemButtonPreview = {
   text: string;
 };
 
+export function enableChannelSuggestionAutoPostButton(
+  mode: ChannelAutoPostButtonsMode,
+): ChannelAutoPostButtonsMode {
+  if (mode === 'OFF') {
+    return 'SUGGEST';
+  }
+  if (mode === 'COMMENTS') {
+    return 'BOTH';
+  }
+  return mode;
+}
+
 export function buildChatBroadcastSystemButtons(options: {
   commentsEnabled?: boolean;
   commentsChatBroadcastsEnabled?: boolean;

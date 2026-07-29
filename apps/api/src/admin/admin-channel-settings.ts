@@ -27,6 +27,32 @@ export function normalizeChannelAutoPostButtonsMode(
   return settings.autoPostButtonsMode;
 }
 
+export function enableChannelSuggestionAutoPostButton(
+  mode: ChannelSettings['autoPostButtonsMode'],
+): ChannelSettings['autoPostButtonsMode'] {
+  if (mode === 'OFF') {
+    return 'SUGGEST';
+  }
+  if (mode === 'COMMENTS') {
+    return 'BOTH';
+  }
+  return mode;
+}
+
+export function applyChannelSettingsEnableTransitions(
+  settings: ChannelSettings,
+  current: Pick<ChannelSettings, 'postSuggestionsEnabled'> | null,
+): ChannelSettings {
+  if (!settings.postSuggestionsEnabled || current?.postSuggestionsEnabled === true) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    autoPostButtonsMode: enableChannelSuggestionAutoPostButton(settings.autoPostButtonsMode),
+  };
+}
+
 export function sanitizeStoredChannelSettings(settings: unknown): unknown {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
     return settings;
@@ -231,7 +257,17 @@ export async function saveChannelSettings(params: {
     throw new BadRequestException(parsed.error.format());
   }
   const normalizedSettings = normalizeChannelSettings(parsed.data, params.chatId);
-  const botAssignmentData = await params.resolveBotAssignmentData();
+  const [currentSettings, botAssignmentData] = await Promise.all([
+    params.prisma.channelSettings.findUnique({
+      where: { chatId: params.chatId },
+      select: { postSuggestionsEnabled: true },
+    }),
+    params.resolveBotAssignmentData(),
+  ]);
+  const settingsToSave = applyChannelSettingsEnableTransitions(
+    normalizedSettings,
+    currentSettings,
+  );
 
   await params.prisma.chat.upsert({
     where: { id: params.chatId },
@@ -243,7 +279,7 @@ export async function saveChannelSettings(params: {
       ...botAssignmentData,
       channelSettings: {
         create: {
-          ...normalizedSettings,
+          ...settingsToSave,
         },
       },
     },
@@ -254,10 +290,10 @@ export async function saveChannelSettings(params: {
       channelSettings: {
         upsert: {
           update: {
-            ...normalizedSettings,
+            ...settingsToSave,
           },
           create: {
-            ...normalizedSettings,
+            ...settingsToSave,
           },
         },
       },
@@ -270,7 +306,7 @@ export async function saveChannelSettings(params: {
       actorUserId: params.actorUserId,
       action: 'UPDATE_CHANNEL_SETTINGS',
       payload: {
-        ...normalizedSettings,
+        ...settingsToSave,
         source: params.source,
       },
     },
@@ -278,5 +314,5 @@ export async function saveChannelSettings(params: {
   await params.chatContextCache.invalidate(params.chatId);
   await params.refreshExecutionReadiness();
 
-  return normalizedSettings;
+  return settingsToSave;
 }

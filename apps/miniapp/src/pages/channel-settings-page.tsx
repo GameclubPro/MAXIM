@@ -125,7 +125,10 @@ import {
   type BroadcastComposerDraft,
 } from '../lib/broadcast-composer-draft';
 import { normalizeComposerBroadcastImages } from '../lib/broadcast-image-list-basic';
-import { buildChannelBroadcastSystemButtons } from '../lib/broadcast-system-buttons';
+import {
+  buildChannelBroadcastSystemButtons,
+  enableChannelSuggestionAutoPostButton,
+} from '../lib/broadcast-system-buttons';
 import { saveUntilLatestDraftIsPersisted } from '../lib/latest-draft-save';
 import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
@@ -1551,6 +1554,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ...current,
         [key]: value,
       };
+
+      if (key === 'postSuggestionsEnabled' && value === true && !current.postSuggestionsEnabled) {
+        nextDraft.autoPostButtonsMode = enableChannelSuggestionAutoPostButton(
+          current.autoPostButtonsMode,
+        );
+      }
 
       nextDraft.autoPostButtonsMode = sanitizeAutoPostButtonsMode(nextDraft.autoPostButtonsMode);
 
