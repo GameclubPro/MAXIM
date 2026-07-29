@@ -32,6 +32,12 @@ const PUBLIC_TRAINING_OR_HELP_PATTERN =
 const BRAND_MENTION_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:отзыв|жалоба|подскажите|посоветуйте|кто\s+знает)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,100})(?:wildberries|wb|вб|ozon|озон|авито|банк|маркетплейс[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 
+const PROFESSIONAL_APPAREL_RETAIL_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:люкс\s+качеств[\p{L}\p{N}_-]*|фабричн[\p{L}\p{N}_-]*\s+качеств[\p{L}\p{N}_-]*|производств[\p{L}\p{N}_-]*\s+(?:турци[\p{L}\p{N}_-]*|иванов[\p{L}\p{N}_-]*)|купить\s+и\s+заказать|предоплат[\p{L}\p{N}_-]*|размерн[\p{L}\p{N}_-]*\s+ряд|нов[\p{L}\p{N}_-]*\s+поступлени[\p{L}\p{N}_-]*|в\s+наличи[ие]|ассортимент[\p{L}\p{N}_-]*|каталог[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+
+const NATIONWIDE_APPAREL_FULFILLMENT_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:доставк[\p{L}\p{N}\s.,:;()/%+-]{0,50}росси[\p{L}\p{N}_-]*|транспортн[\p{L}\p{N}\s.,:;()/%+-]{0,20}компан[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+
 const DIRECT_DEAL_SIGNAL_PREFIXES = ['contact:', 'deal-channel:', 'transaction:'] as const;
 
 const COMMERCIAL_SELF_PROMO_SIGNAL_PREFIXES = [
@@ -106,9 +112,31 @@ export function deriveCommercialSafeContextBucket(params: {
         signal.startsWith('intent:') ||
         signal.startsWith('recall-source:service-specialty:'),
     );
+  const hasExplicitPrivateSaleSignal = negativeSignals.some(
+    (signal) =>
+      signal.startsWith('private:') ||
+      signal.startsWith('private-single:') ||
+      signal.startsWith('private-goods:'),
+  );
+  const hasStrongExplicitPrivateSaleSignal = negativeSignals.some(
+    (signal) =>
+      signal.startsWith('private:') ||
+      signal.startsWith('private-single:') ||
+      (signal.startsWith('private-goods:') &&
+        signal !== 'private-goods:apparel-size' &&
+        signal !== 'private-goods:measurements'),
+  );
+  const hasProfessionalApparelRetailOverride =
+    !hasStrongExplicitPrivateSaleSignal &&
+    matchedSignals.includes('goods-retail:apparel-retail-order-flow') &&
+    PROFESSIONAL_APPAREL_RETAIL_PATTERN.test(text) &&
+    NATIONWIDE_APPAREL_FULFILLMENT_PATTERN.test(text);
   const hasProfessionalPrivateSaleOverride =
     hasProfessionalLocalRetailOrder ||
     hasProfessionalServiceOffer ||
+    hasProfessionalApparelRetailOverride ||
+    (!hasExplicitPrivateSaleSignal &&
+      matchedSignals.includes('goods-retail:professional-retail-structure')) ||
     (hasDirectDealSignal &&
       matchedSignals.some(
         (signal) =>
@@ -178,7 +206,7 @@ export function deriveCommercialSafeContextBucket(params: {
     return 'public_training_or_help';
   }
 
-  if (hasSignalPrefix('job-seeking:') && !hasEscalationOffer) {
+  if (hasSignalPrefix('job-seeking:') && !hasEscalationOffer && !hasProfessionalServiceOffer) {
     return 'ordinary_recruitment';
   }
 

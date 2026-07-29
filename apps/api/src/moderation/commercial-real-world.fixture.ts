@@ -2130,6 +2130,36 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 77,
     },
   },
+  {
+    label: 'professional fish doorstep delivery from 24 hour safe-context audit',
+    text: `Продаём в Хабаровске икру кеты по 7000 руб. за кг и кету по 500 руб. за кг. Доставка до подъезда бесплатно. Пишите или звоните +7 900 000 01 01.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:professional-retail-structure',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'construction crew seeking jobs from 24 hour safe-context audit',
+    text: `Строительная бригада ищет работы. Строим дома, бани и беседки под ключ, ремонтируем кровлю, фасады и заборы. Пенсионерам скидка 10%. Звоните +7 900 000 01 02.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'intent:строительная-бригада',
+      'service-specialty:construction-crew-self-offer',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -2878,6 +2908,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'home dairy recommendation request from final prod audit guard',
     text: `Кто покупал козье молоко и творог у соседей, посоветуйте проверенные контакты.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private owner dacha from 24 hour safe-context audit',
+    text: `Продам дачу в СНТ: дом 48 кв. м, участок 5 соток, баня и теплицы. Мебель остаётся. Телефон +7 900 000 01 04, Светлана, собственник.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

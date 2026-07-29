@@ -178,6 +178,30 @@ describe('commercial action policy', () => {
     expect(decision.suppressionReasons).toContain('non-local-escalation-offer');
   });
 
+  it('keeps an independent offer actionable beside a non-local warning context', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'HIGH_RISK',
+      subtype: 'SERVICES',
+      safeContextBucket: 'spam_complaint_or_fraud_warning',
+      hasHighRiskEvidence: true,
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasEscalationRiskEvidence: true,
+      hasLocalEscalationOfferEvidence: false,
+      hasIndependentCommercialOfferEvidence: true,
+      hasWarnCappedRecallEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('WARN');
+    expect(decision.actionable).toBe(true);
+    expect(decision.suppressionReasons).toContain('non-local-escalation-offer');
+    expect(decision.suppressionReasons).not.toContain(
+      'safe-context:spam_complaint_or_fraud_warning',
+    );
+    expect(decision.suppressionReasons).not.toContain('bounded-recall-warn-cap');
+  });
+
   it('does not escalate non-escalation risk evidence by itself', () => {
     expect(
       actionOf({
@@ -222,17 +246,35 @@ describe('commercial action policy', () => {
     expect(decision.suppressionReasons).not.toContain('bounded-recall-review-cap');
   });
 
-  it('keeps a rescue cap when neighboring evidence is not independently deletable', () => {
-    expect(
-      actionOf({
-        evidenceTier: 'DIRECT',
-        safeContextBucket: 'private_one_off_sale',
-        hasDirectDealEvidence: true,
-        hasNonCampaignDirectDealEvidence: true,
-        hasIndependentCommercialOfferEvidence: true,
-        hasWarnCappedRecallEvidence: true,
-      }),
-    ).toBe('WARN');
+  it('keeps a safe context non-actionable before applying a rescue cap', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      safeContextBucket: 'private_one_off_sale',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasIndependentCommercialOfferEvidence: true,
+      hasWarnCappedRecallEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.actionable).toBe(false);
+    expect(decision.suppressionReasons).toContain('safe-context:private_one_off_sale');
+    expect(decision.suppressionReasons).not.toContain('bounded-recall-warn-cap');
+  });
+
+  it('keeps bounded high-risk recall ahead of a weak private-context collision', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'HIGH_RISK',
+      safeContextBucket: 'private_one_off_sale',
+      hasHighRiskEvidence: true,
+      hasWarnCappedRecallEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('WARN');
+    expect(decision.suppressionReasons).toContain('bounded-recall-warn-cap');
+    expect(decision.suppressionReasons).not.toContain('safe-context:private_one_off_sale');
   });
 
   it('does not let a rescue cap weaken an independently deletable offer', () => {

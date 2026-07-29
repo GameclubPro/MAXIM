@@ -44,6 +44,7 @@ export function resolveCommercialActionPolicy(
 ): CommercialActionPolicyDecision {
   const suppressionReasons: string[] = [];
   const actionScore = resolveCommercialActionScore(input);
+  const safeContextDeleteSuppressed = shouldSuppressDeleteForSafeContext(input);
   const hasIndependentDeleteEligibleOffer =
     input.hasIndependentCommercialOfferEvidence &&
     input.hasNonCampaignDirectDealEvidence &&
@@ -52,7 +53,7 @@ export function resolveCommercialActionPolicy(
     actionScore >= input.deleteThreshold &&
     input.fpRisk < COMMERCIAL_ENGINE_CONFIG.actionPolicy.highFpRiskThreshold &&
     input.missingRequiredAnchors.length === 0 &&
-    !shouldSuppressDeleteForSafeContext(input) &&
+    !safeContextDeleteSuppressed &&
     !shouldSuppressDeleteForSubtype(input);
   const reviewPriority = resolveCommercialReviewPriority({
     ...input,
@@ -106,6 +107,21 @@ export function resolveCommercialActionPolicy(
           : reviewPriority === 'NONE'
             ? 'HIGH'
             : reviewPriority,
+      suppressionReasons,
+    });
+  }
+
+  if (
+    safeContextDeleteSuppressed &&
+    input.safeContextBucket === 'private_one_off_sale' &&
+    !input.hasHighRiskEvidence
+  ) {
+    suppressionReasons.push(`safe-context:${input.safeContextBucket}`);
+    return buildDecision({
+      actionBand: 'REVIEW_ONLY',
+      confidenceScore: input.confidenceScore,
+      actionScore,
+      reviewPriority,
       suppressionReasons,
     });
   }
@@ -185,11 +201,6 @@ export function resolveCommercialActionPolicy(
     suppressionReasons.push('missing-subtype-anchor');
   }
 
-  const safeContextDeleteSuppressed = shouldSuppressDeleteForSafeContext(input);
-  if (safeContextDeleteSuppressed) {
-    suppressionReasons.push(`safe-context:${input.safeContextBucket}`);
-  }
-
   const subtypeDeleteSuppressed = shouldSuppressDeleteForSubtype(input);
   if (subtypeDeleteSuppressed) {
     suppressionReasons.push(`subtype-policy:${input.subtype}`);
@@ -231,6 +242,7 @@ export function resolveCommercialActionPolicy(
   }
 
   if (safeContextDeleteSuppressed) {
+    suppressionReasons.push(`safe-context:${input.safeContextBucket}`);
     return buildDecision({
       actionBand: 'REVIEW_ONLY',
       confidenceScore: input.confidenceScore,
