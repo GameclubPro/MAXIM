@@ -11,6 +11,13 @@ export function buildMaxActionNoExecutableRouteMessage(
   return `MAX ${actionType} has no executable routed bot candidate for chat ${chatId}`;
 }
 
+export function buildMaxActionRouteQuarantinedMessage(
+  actionType: MaxActionJob['actionType'],
+  chatId: string,
+): string {
+  return `MAX ${actionType} route is quarantined for chat ${chatId}`;
+}
+
 export class MaxActionNoExecutableRouteError extends UnrecoverableError {
   readonly code = MAX_ACTION_NO_EXECUTABLE_ROUTE_ERROR_CODE;
   readonly preDispatch = true;
@@ -34,7 +41,7 @@ export class MaxActionRouteQuarantinedError extends Error {
     readonly retryAt: Date,
     readonly quarantinedCandidateBotIds: readonly string[],
   ) {
-    super(`MAX ${actionType} route is quarantined for chat ${chatId}`);
+    super(buildMaxActionRouteQuarantinedMessage(actionType, chatId));
     this.name = 'MaxActionRouteQuarantinedError';
   }
 }

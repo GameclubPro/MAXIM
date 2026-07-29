@@ -2,7 +2,10 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
-import { buildMaxActionNoExecutableRouteMessage } from '../max/max-action-dispatch-error';
+import {
+  buildMaxActionNoExecutableRouteMessage,
+  buildMaxActionRouteQuarantinedMessage,
+} from '../max/max-action-dispatch-error';
 import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
@@ -428,11 +431,18 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       const legacyPreDispatchNoRouteFailure =
         existing.failedReason ===
         buildMaxActionNoExecutableRouteMessage('SEND_MESSAGE', params.chatId);
+      const preDispatchRouteQuarantineFailure =
+        existing.failedReason ===
+        buildMaxActionRouteQuarantinedMessage('SEND_MESSAGE', params.chatId);
       const recoverableLegacyOpenFailure =
         params.transition === 'open' &&
         transitionRuntimeVersion === undefined &&
         this.isRecoverableCurrentOpenFailure(existing.failedReason);
-      if (!legacyPreDispatchNoRouteFailure && !recoverableLegacyOpenFailure) {
+      if (
+        !legacyPreDispatchNoRouteFailure &&
+        !preDispatchRouteQuarantineFailure &&
+        !recoverableLegacyOpenFailure
+      ) {
         this.logger.warn(
           {
             chatId: params.chatId,
