@@ -53,8 +53,10 @@ import {
 import { extractUrlsFromText } from '../common/url-text.util';
 import {
   prepareVkParsingPublishPayload,
+  resolveEffectiveVkParsingTextFormat,
   resolveVkParsingPostSkipReason,
   type PreparedVkPublishPayload,
+  type VkParsingTextFormat,
 } from './vk-parsing-content';
 import { VkPublishService } from './vk-publish.service';
 
@@ -995,11 +997,11 @@ export class SafetyDeskService {
     const photoUrls = this.readStringArray(post.photoUrls);
     const videoUrls = this.readStringArray(post.videoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
+    const textFormat = this.resolveReviewPostTextFormat(post);
     const prepared = this.preparePublishPayload(post, photoUrls, videoUrls, linkUrls);
     const preparedLinkUrls = prepared?.linkUrls ?? linkUrls;
     const reviewText = prepared?.text ?? post.text;
-    const reviewTextFormat =
-      prepared?.textFormat ?? (post.textFormat === 'markdown' ? 'markdown' : 'plain');
+    const reviewTextFormat = prepared?.textFormat ?? textFormat;
     const visibleText =
       reviewTextFormat === 'markdown' ? stripSupportedMarkdownToPlainText(reviewText) : reviewText;
     const inlineLinkUrls = [
@@ -1028,7 +1030,7 @@ export class SafetyDeskService {
       risk,
       title: this.buildTitle(post),
       text: post.text,
-      textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
+      textFormat,
       previewHtml: this.buildReviewPreviewHtml(post, prepared),
       domains,
       photoUrls,
@@ -1206,8 +1208,7 @@ export class SafetyDeskService {
     prepared: PreparedVkPublishPayload | null,
   ): string {
     const text = prepared?.text ?? post.text;
-    const textFormat =
-      prepared?.textFormat ?? (post.textFormat === 'markdown' ? 'markdown' : 'plain');
+    const textFormat = prepared?.textFormat ?? this.resolveReviewPostTextFormat(post);
     const baseHtml = text.trim()
       ? textFormat === 'markdown'
         ? renderSupportedMarkdownAsHtml(text, { linkMode: 'underline' })
@@ -1280,7 +1281,9 @@ export class SafetyDeskService {
       SAFETY_DESK_ACTOR_USER_ID,
       {
         text: post.text,
-        ...(post.textFormat === 'markdown' ? { textFormat: 'markdown' as const } : {}),
+        ...(this.resolveReviewPostTextFormat(post) === 'markdown'
+          ? { textFormat: 'markdown' as const }
+          : {}),
         photoUrls,
         videoUrls,
         linkUrls,
@@ -1336,7 +1339,7 @@ export class SafetyDeskService {
     const prepared = prepareVkParsingPublishPayload(
       {
         text: post.text,
-        textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
+        textFormat: this.resolveReviewPostTextFormat(post),
         photoUrls,
         videoUrls,
         linkUrls,
@@ -1354,6 +1357,16 @@ export class SafetyDeskService {
     }
 
     return prepared;
+  }
+
+  private resolveReviewPostTextFormat(
+    post: Pick<ReviewPostRow, 'text' | 'textFormat' | 'manualContentEditedAt'>,
+  ): VkParsingTextFormat {
+    return resolveEffectiveVkParsingTextFormat({
+      text: post.text,
+      textFormat: post.textFormat,
+      manualContentEditedAt: post.manualContentEditedAt,
+    });
   }
 
   private resolveVkParsingSettings(post: ReviewPostRow) {

@@ -860,6 +860,36 @@ describe('SafetyDeskService', () => {
     );
   });
 
+  it('renders and approves untouched imported VK strong markup as markdown', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    const post = createReviewPost({
+      text: '**АРАХИСОВАЯ ПАСТА**',
+      textFormat: 'plain',
+      manualContentEditedAt: null,
+      photoUrls: [],
+      linkUrls: [],
+    });
+    prisma.vkParsingPost.findMany.mockResolvedValue([post]);
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    const queue = await service.getQueue();
+    await service.approveItem('post-1', 'maxim', {});
+
+    expect(queue.items[0]).toMatchObject({
+      textFormat: 'markdown',
+      previewHtml: '<p><strong>АРАХИСОВАЯ ПАСТА</strong></p>',
+    });
+    expect(vkPublishService.publishPost).toHaveBeenCalledWith(
+      'channel-1',
+      'post-1',
+      'safety-desk-owner',
+      expect.objectContaining({
+        text: '**АРАХИСОВАЯ ПАСТА**',
+        textFormat: 'markdown',
+      }),
+    );
+  });
+
   it('includes manually entered bare links in Safety Desk risk domains', async () => {
     const { prisma, service } = createFixture();
     prisma.vkParsingPost.findMany.mockResolvedValue([

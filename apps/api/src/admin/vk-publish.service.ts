@@ -58,6 +58,7 @@ import {
   computeVkParsingPostContentHash,
   describeVkParsingSkipReason,
   prepareVkParsingPublishPayload,
+  resolveEffectiveVkParsingTextFormat,
   resolveVkParsingPostSkipReason,
   VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT,
   type PreparedVkPublishPayload,
@@ -2154,7 +2155,11 @@ export class VkPublishService {
     const prepared = prepareVkParsingPublishPayload(
       {
         text: post.text,
-        textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
+        textFormat: resolveEffectiveVkParsingTextFormat({
+          text: post.text,
+          textFormat: post.textFormat,
+          manualContentEditedAt: post.manualContentEditedAt,
+        }),
         photoUrls,
         videoUrls,
         linkUrls,

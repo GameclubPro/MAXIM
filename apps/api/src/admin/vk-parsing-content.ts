@@ -5,10 +5,11 @@ import {
 } from './vk-parsing-attachments';
 
 export type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER' | 'NO_SUPPORTED_CONTENT';
+export type VkParsingTextFormat = 'plain' | 'markdown';
 
 export type PreparedVkPublishPayload = {
   text: string;
-  textFormat: 'plain' | 'markdown';
+  textFormat: VkParsingTextFormat;
   photoUrls: string[];
   videoUrls: string[];
   linkUrls: string[];
@@ -57,6 +58,26 @@ export const VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT: VkParsingSkipReason = 'NO
 const VK_INLINE_LINK_PATTERN =
   /(?:https?:\/\/|www\.|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/)(?:\\[\\`*_[\]()~+]|[^\s<>()\]["'`{}])+/giu;
 const VK_MARKDOWN_LINK_PATTERN = /\[([^\]\n]+)\]\((?:https?:\/\/|max:\/\/)[^\s)]+\)/giu;
+const VK_IMPORTED_STRONG_MARKUP_PATTERN =
+  /(?<![\\*])\*\*(?!\*)[^\r\n\u2028\u2029*]*[^\s*][^\r\n\u2028\u2029*]*(?<!\\)\*\*(?!\*)/u;
+
+export function hasVkParsingImportedStrongMarkup(text: string): boolean {
+  return VK_IMPORTED_STRONG_MARKUP_PATTERN.test(text);
+}
+
+export function resolveEffectiveVkParsingTextFormat(params: {
+  text: string;
+  textFormat: unknown;
+  manualContentEditedAt?: Date | string | null;
+}): VkParsingTextFormat {
+  if (params.textFormat === 'markdown') {
+    return 'markdown';
+  }
+  if (params.manualContentEditedAt !== null && params.manualContentEditedAt !== undefined) {
+    return 'plain';
+  }
+  return hasVkParsingImportedStrongMarkup(params.text) ? 'markdown' : 'plain';
+}
 
 export function composeVkParsingPublishText(text: string, linkUrls: string[]): string {
   const base = text.trim();

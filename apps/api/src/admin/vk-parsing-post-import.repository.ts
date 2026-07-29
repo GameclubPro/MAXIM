@@ -7,6 +7,7 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import type { VkParsingTextFormat } from './vk-parsing-content';
 
 export type ExistingVkPostImportState = {
   id: string;
@@ -28,6 +29,7 @@ export type VkParsingNormalizedPostForImport = {
   vkPostId: number;
   vkPublishedAt: Date | null;
   text: string;
+  textFormat: VkParsingTextFormat;
   url: string;
   photoUrls: string[];
   videoUrls: string[];
@@ -250,6 +252,7 @@ export class VkParsingPostImportRepository {
         ${post.vkPostId},
         ${post.vkPublishedAt},
         ${post.text},
+        ${post.textFormat},
         ${post.url},
         ${this.toJsonbSql(post.photoUrls.slice(0, VK_PARSING_MAX_PHOTOS))},
         ${this.toJsonbSql(post.videoUrls.slice(0, VK_PARSING_MAX_VIDEOS))},
@@ -278,6 +281,7 @@ export class VkParsingPostImportRepository {
         "vk_post_id",
         "vk_published_at",
         "text",
+        "text_format",
         "url",
         "photo_urls",
         "video_urls",
@@ -310,7 +314,7 @@ export class VkParsingPostImportRepository {
           WHEN "vk_parsing_posts"."manual_content_edited_at" IS NOT NULL
             AND "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"
           THEN "vk_parsing_posts"."text_format"
-          ELSE 'plain'
+          ELSE EXCLUDED."text_format"
         END,
         "manual_content_edited_at" = CASE
           WHEN "vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"

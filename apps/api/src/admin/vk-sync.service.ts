@@ -11,7 +11,11 @@ import {
   type VkParsingUnsupportedAttachmentSummary,
   type VkParsingVideoMediaIdentity,
 } from './vk-parsing-attachments';
-import { computeVkParsingPostContentHash } from './vk-parsing-content';
+import {
+  computeVkParsingPostContentHash,
+  resolveEffectiveVkParsingTextFormat,
+  type VkParsingTextFormat,
+} from './vk-parsing-content';
 import {
   classifyVkParsingMediaPreflightError,
   classifyVkParsingSyncError,
@@ -46,6 +50,7 @@ type NormalizedVkPost = {
   vkPostId: number;
   vkPublishedAt: Date | null;
   text: string;
+  textFormat: VkParsingTextFormat;
   url: string;
   photoUrls: string[];
   videoUrls: string[];
@@ -627,6 +632,7 @@ export class VkSyncService {
       vkPostId,
       vkPublishedAt,
       text,
+      textFormat: resolveEffectiveVkParsingTextFormat({ text, textFormat: 'plain' }),
       url: `https://vk.ru/wall${vkOwnerId}_${vkPostId}`,
       photoUrls,
       videoUrls,

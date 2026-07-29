@@ -13,6 +13,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveEffectiveVkParsingTextFormat } from './vk-parsing-content';
 import { VK_MEDIA_STATUS_FAILED } from './vk-parsing-media-cache.service';
 import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 import type { VkParsingUnsupportedAttachmentSummary } from './vk-parsing-attachments';
@@ -351,7 +352,11 @@ export class VkParsingFeedService {
       vkPostId: post.vkPostId,
       vkPublishedAt: post.vkPublishedAt ? post.vkPublishedAt.toISOString() : null,
       text: post.text,
-      textFormat: post.textFormat === 'markdown' ? 'markdown' : 'plain',
+      textFormat: resolveEffectiveVkParsingTextFormat({
+        text: post.text,
+        textFormat: post.textFormat,
+        manualContentEditedAt: post.manualContentEditedAt,
+      }),
       url: post.url,
       photoUrls: this.readStringArray(post.photoUrls),
       videoUrls: this.readStringArray(post.videoUrls),

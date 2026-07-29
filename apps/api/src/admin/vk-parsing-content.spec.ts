@@ -2,7 +2,9 @@ import {
   computeVkParsingPostContentHash,
   composeVkParsingPublishText,
   describeVkParsingSkipReason,
+  hasVkParsingImportedStrongMarkup,
   prepareVkParsingPublishPayload,
+  resolveEffectiveVkParsingTextFormat,
   resolveVkParsingPostSkipReason,
   stripVkParsingLinksFromText,
 } from './vk-parsing-content';
@@ -12,6 +14,51 @@ describe('vk-parsing-content', () => {
     stripLinksEnabled: false,
     skipAdsEnabled: false,
   };
+
+  it('recognizes only paired non-empty single-line VK strong markup', () => {
+    expect(
+      hasVkParsingImportedStrongMarkup(
+        '**АРАХИСОВАЯ ПАСТА: ПОЛЬЗА И ВРЕД**\nТекст поста\n**КАК ВЫБРАТЬ?**',
+      ),
+    ).toBe(true);
+    expect(hasVkParsingImportedStrongMarkup('Префикс **Заголовок** и продолжение')).toBe(true);
+
+    for (const text of [
+      '*одинарные звездочки*',
+      '**незакрытый текст',
+      '****',
+      '**   **',
+      '**первая строка\nвторая строка**',
+      '***жирный курсив***',
+      '\\**экранированный текст**',
+    ]) {
+      expect(hasVkParsingImportedStrongMarkup(text)).toBe(false);
+    }
+  });
+
+  it('infers markdown only for untouched imported VK text', () => {
+    expect(
+      resolveEffectiveVkParsingTextFormat({
+        text: '**Заголовок**',
+        textFormat: 'plain',
+        manualContentEditedAt: null,
+      }),
+    ).toBe('markdown');
+    expect(
+      resolveEffectiveVkParsingTextFormat({
+        text: '**Заголовок**',
+        textFormat: 'plain',
+        manualContentEditedAt: new Date('2026-07-30T10:00:00.000Z'),
+      }),
+    ).toBe('plain');
+    expect(
+      resolveEffectiveVkParsingTextFormat({
+        text: 'Текст без разметки',
+        textFormat: 'markdown',
+        manualContentEditedAt: new Date('2026-07-30T10:00:00.000Z'),
+      }),
+    ).toBe('markdown');
+  });
 
   it('appends selected links that are missing from the text', () => {
     expect(

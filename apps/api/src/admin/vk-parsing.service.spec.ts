@@ -1020,6 +1020,37 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('imports paired VK strong markup as markdown', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    const text = '**АРАХИСОВАЯ ПАСТА: ПОЛЬЗА И ВРЕД**';
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text,
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    const rawValues = readExecuteRawValues(prisma);
+    const textIndex = rawValues.indexOf(text);
+    expect(textIndex).toBeGreaterThanOrEqual(0);
+    expect(rawValues[textIndex + 1]).toBe('markdown');
+    expect(readExecuteRawSql(prisma)).toContain('"text_format"');
+  });
+
   it('hydrates VK video attachments through video.get when wall.get omits direct files', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();
@@ -2522,7 +2553,7 @@ describe('VkParsingService', () => {
     );
   });
 
-  it('publishes queued scheduled VK posts with link filtering enabled', async () => {
+  it('renders imported VK strong markup in queued background publications', async () => {
     const maxRoutedPublicationService = {
       publish: jest.fn().mockImplementation(async (request: any) => {
         const prepared = await request.prepareAttempt({ botId: 'bot-2', job: {} });
@@ -2543,7 +2574,7 @@ describe('VkParsingService', () => {
     const source = createSource();
     const post = createPostRow({
       source,
-      text: 'Продам авто https://example.com\nvk.com/club',
+      text: '**Продам авто** https://example.com\nvk.com/club',
       linkUrls: ['https://example.com/car'],
       publishIdempotencyKey: 'publish-key-1',
     });
@@ -2578,7 +2609,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         entityId: 'channel-1',
         logicalIdempotencyKey: 'vk-parsing:publish:post-1:publish-key-1',
-        text: 'Продам авто',
+        text: '<strong>Продам авто</strong>',
+        options: expect.objectContaining({ textFormat: 'html' }),
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       }),
@@ -5015,6 +5047,7 @@ describe('VkParsingService', () => {
 
     expect(readExecuteRawValues(prisma)).toContain('CHANGED_AFTER_PUBLISH');
     expect(readExecuteRawSql(prisma)).toContain('"text_format" = CASE');
+    expect(readExecuteRawSql(prisma)).toContain('ELSE EXCLUDED."text_format"');
     expect(readExecuteRawSql(prisma)).toContain('"manual_content_edited_at" IS NOT NULL');
     expect(readExecuteRawSql(prisma)).toContain(
       '"vk_parsing_posts"."content_hash" = EXCLUDED."content_hash"',
