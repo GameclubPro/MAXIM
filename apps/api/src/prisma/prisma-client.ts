@@ -12,6 +12,8 @@ export type PrismaPoolConfig = Pick<
   | 'idleTimeoutMillis'
   | 'max'
   | 'maxLifetimeSeconds'
+  | 'options'
+  | 'statement_timeout'
 >;
 
 export function readPrismaPoolConfig(env: Record<string, unknown> = process.env): PrismaPoolConfig {

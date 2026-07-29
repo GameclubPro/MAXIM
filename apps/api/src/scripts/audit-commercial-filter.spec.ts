@@ -1,6 +1,9 @@
 import {
   AUDIT_MESSAGE_EVENT_TYPES,
+  assertCommercialAuditNotAborted,
+  buildAuditCandidatePageSql,
   buildAuditCandidateCursorSql,
+  buildAuditScanWindowSql,
   compareAuditCandidateKeys,
   derivePolicyCategory,
   deriveSafeContextBucket,
@@ -9,9 +12,11 @@ import {
   isCommercialEnforcementAction,
   iterateLockedAuditCandidateRows,
   openAuditJsonlOutputStreams,
+  parseAuditCandidatePageRows,
   publishAuditJsonlOutputs,
   readNewestAuditSamples,
   readCliOptions,
+  resolveCommercialAuditPrismaPoolConfig,
   resolveNextAuditCandidateCursor,
   resolveAuditCandidateScope,
   resolveAuditChatSettings,
@@ -221,6 +226,25 @@ describe('audit-commercial-filter CLI options', () => {
 });
 
 describe('commercial audit keyset pagination', () => {
+  it('uses a single non-parallel query connection with a bounded server statement timeout', () => {
+    expect(
+      resolveCommercialAuditPrismaPoolConfig(
+        {
+          application_name: 'api-admin',
+          max: 12,
+          options: '-c work_mem=16MB',
+          statement_timeout: 60_000,
+        },
+        42,
+      ),
+    ).toEqual({
+      application_name: 'maxim_commercial_audit_query_42',
+      max: 1,
+      options: '-c max_parallel_workers_per_gather=0',
+      statement_timeout: 10_000,
+    });
+  });
+
   it('uses the event id as a stable cursor tie-breaker without gaps', () => {
     const firstTimestamp = new Date('2026-07-28T10:00:00.000Z');
     const secondTimestamp = new Date('2026-07-28T10:00:01.000Z');
@@ -254,6 +278,155 @@ describe('commercial audit keyset pagination', () => {
       'and (w.created_at, w.id) > (?, ?)',
     );
     expect(query.values).toEqual([createdAt, 'event-b']);
+  });
+
+  it('bounds the raw indexed scan before JSON predicates and chat joins', () => {
+    const loadSince = new Date('2026-07-28T10:00:00.000Z');
+    const until = new Date('2026-07-29T10:00:00.000Z');
+    const cursor = {
+      createdAt: new Date('2026-07-28T11:00:00.000Z'),
+      webhookEventId: 'event-b',
+    };
+    const scanSql = buildAuditScanWindowSql({
+      loadSince,
+      until,
+      pageSize: 500,
+      cursor,
+    });
+    const scanShape = scanSql.strings.join('?').replace(/\s+/gu, ' ').trim();
+
+    expect(scanShape).toContain('from webhook_events w');
+    expect(scanShape).toContain("and w.status = 'PROCESSED'");
+    expect(scanShape).toContain('and (w.created_at, w.id) > (?, ?)');
+    expect(scanShape).toContain('order by w.created_at asc, w.id asc limit ?');
+    expect(scanShape).not.toContain(' join ');
+    expect(scanShape).not.toContain('normalized_payload ->>');
+    expect(scanSql.values).toEqual([loadSince, until, cursor.createdAt, 'event-b', 500]);
+
+    const options = readCliOptions([
+      '--since',
+      loadSince.toISOString(),
+      '--until',
+      until.toISOString(),
+      '--limit',
+      'all',
+      '--page-size',
+      '500',
+      '--current-only',
+    ]);
+    const pageSql = buildAuditCandidatePageSql(options, { pageSize: 500, cursor });
+    const pageShape = pageSql.strings.join('?').replace(/\s+/gu, ' ').trim();
+    const boundedLimitOffset = pageShape.indexOf('limit ?');
+    const candidateBaseOffset = pageShape.indexOf('base as (');
+
+    expect(pageShape).toContain('with scan_page as materialized (');
+    expect(boundedLimitOffset).toBeGreaterThan(0);
+    expect(candidateBaseOffset).toBeGreaterThan(boundedLimitOffset);
+    expect(pageShape.indexOf('join chats c')).toBeGreaterThan(candidateBaseOffset);
+    expect(pageShape.indexOf("normalized_payload ->> 'type' in")).toBeGreaterThan(
+      candidateBaseOffset,
+    );
+  });
+
+  it('advances with the raw scan cursor when a page has no commercial candidates', () => {
+    const loadSince = new Date('2026-07-28T10:00:00.000Z');
+    const until = new Date('2026-07-29T10:00:00.000Z');
+    const scanCursorCreatedAt = new Date('2026-07-28T10:05:00.000Z');
+    const page = parseAuditCandidatePageRows([
+      {
+        scannedCount: 500,
+        scanCursorCreatedAt,
+        scanCursorWebhookEventId: 'raw-event-500',
+        webhookEventId: null,
+        eventType: null,
+        createdAt: null,
+        botId: null,
+        chatId: null,
+        chatTitle: null,
+        chatEntityType: null,
+        messageId: null,
+        senderId: null,
+        text: null,
+        normalizedPayload: null,
+        historicalEventId: null,
+        historicalScore: null,
+        historicalMetadata: null,
+        hasHistoricalCommercialEvent: false,
+      },
+    ]);
+
+    expect(page).not.toBeNull();
+    if (!page) {
+      throw new Error('Expected a non-empty raw scan page');
+    }
+    expect(page.candidates).toEqual([]);
+    expect(page.cursor).toEqual({
+      createdAt: scanCursorCreatedAt,
+      webhookEventId: 'raw-event-500',
+    });
+
+    const nextScanSql = buildAuditScanWindowSql({
+      loadSince,
+      until,
+      pageSize: 500,
+      cursor: page.cursor,
+    });
+    expect(nextScanSql.values).toEqual([
+      loadSince,
+      until,
+      scanCursorCreatedAt,
+      'raw-event-500',
+      500,
+    ]);
+  });
+
+  it('recognizes the terminal empty scan sentinel and rejects a contradictory cursor', () => {
+    const terminalSentinel = {
+      scannedCount: 0,
+      scanCursorCreatedAt: null,
+      scanCursorWebhookEventId: null,
+      webhookEventId: null,
+      eventType: null,
+      createdAt: null,
+      botId: null,
+      chatId: null,
+      chatTitle: null,
+      chatEntityType: null,
+      messageId: null,
+      senderId: null,
+      text: null,
+      normalizedPayload: null,
+      historicalEventId: null,
+      historicalScore: null,
+      historicalMetadata: null,
+      hasHistoricalCommercialEvent: false,
+    };
+
+    expect(parseAuditCandidatePageRows([terminalSentinel])).toBeNull();
+    expect(() =>
+      parseAuditCandidatePageRows([
+        {
+          ...terminalSentinel,
+          scanCursorCreatedAt: new Date('2026-07-28T10:05:00.000Z'),
+          scanCursorWebhookEventId: 'unexpected-cursor',
+        },
+      ]),
+    ).toThrow('Commercial audit empty scan page returned a cursor');
+  });
+
+  it('stops row processing when an interrupt signal is observed', () => {
+    const controller = new AbortController();
+    const interruptError = new Error('Commercial audit interrupted by SIGTERM');
+    controller.abort(interruptError);
+
+    expect(() => assertCommercialAuditNotAborted(controller.signal)).toThrow(interruptError);
+    expect(() =>
+      iterateLockedAuditCandidateRows(
+        ['first'],
+        { assertHeld: jest.fn() },
+        controller.signal,
+      ).next(),
+    ).toThrow(interruptError);
   });
 
   it('stops the current page before processing another row after lock loss', () => {

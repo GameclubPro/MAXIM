@@ -3,7 +3,9 @@ import {
   createPrismaClient,
   Prisma,
   PrismaClient,
+  readPrismaPoolConfig,
   type ChatSettings,
+  type PrismaPoolConfig,
 } from '../prisma/prisma-client';
 import { config as loadEnv } from 'dotenv';
 import { createHash, randomUUID } from 'node:crypto';
@@ -32,6 +34,7 @@ const PROGRESS_EVERY = 250;
 const MAX_CAMPAIGN_WARMUP_HOURS = 7 * 24;
 const MAX_AUDIT_PAGE_SIZE = 5_000;
 const AUDIT_STREAM_BUFFER_BYTES = 1024 * 1024;
+const AUDIT_STATEMENT_TIMEOUT_MS = 10_000;
 
 export const AUDIT_MESSAGE_EVENT_TYPES = ['message_created', 'message_edited'] as const;
 
@@ -90,6 +93,19 @@ type ChatContext = {
 };
 
 const DEFAULT_AUDIT_CHAT_SETTINGS = chatSettingsSchema.parse({}) as unknown as ChatSettings;
+
+export function resolveCommercialAuditPrismaPoolConfig(
+  baseConfig: PrismaPoolConfig = readPrismaPoolConfig(),
+  processId = process.pid,
+): PrismaPoolConfig {
+  return {
+    ...baseConfig,
+    application_name: `maxim_commercial_audit_query_${processId}`,
+    max: 1,
+    options: '-c max_parallel_workers_per_gather=0',
+    statement_timeout: AUDIT_STATEMENT_TIMEOUT_MS,
+  };
+}
 
 type AuditSkipReason =
   | 'missing-chat-context'
@@ -427,10 +443,63 @@ type AuditCandidatePageOptions = {
   cursor?: AuditCandidateCursor;
 };
 
+type AuditCandidatePage = {
+  candidates: AuditCandidateRow[];
+  cursor: AuditCandidateCursor;
+  scannedCount: number;
+};
+
+type AuditCandidatePageQueryRow = {
+  scannedCount: number;
+  scanCursorCreatedAt: Date | null;
+  scanCursorWebhookEventId: string | null;
+  webhookEventId: string | null;
+  eventType: string | null;
+  createdAt: Date | null;
+  botId: string | null;
+  chatId: string | null;
+  chatTitle: string | null;
+  chatEntityType: string | null;
+  messageId: string | null;
+  senderId: string | null;
+  text: string | null;
+  normalizedPayload: Prisma.JsonValue | null;
+  historicalEventId: string | null;
+  historicalScore: number | null;
+  historicalMetadata: Prisma.JsonValue | null;
+  hasHistoricalCommercialEvent: boolean;
+};
+
+type AuditScanWindowOptions = AuditCandidatePageOptions & {
+  loadSince: Date;
+  until: Date;
+};
+
 export function buildAuditCandidateCursorSql(cursor?: AuditCandidateCursor): Prisma.Sql {
   return cursor
     ? Prisma.sql`and (w.created_at, w.id) > (${cursor.createdAt}, ${cursor.webhookEventId})`
     : Prisma.sql``;
+}
+
+export function buildAuditScanWindowSql(options: AuditScanWindowOptions): Prisma.Sql {
+  const cursorSql = buildAuditCandidateCursorSql(options.cursor);
+
+  // FLAG: Keep JSON predicates and joins outside this bounded materialized scan. Putting them
+  // here lets PostgreSQL choose a repeated full-window scan for every cursor page.
+  return Prisma.sql`
+    select
+      w.id,
+      w.created_at,
+      w.bot_id,
+      w.normalized_payload
+    from webhook_events w
+    where w.created_at >= ${options.loadSince}
+      and w.created_at <= ${options.until}
+      and w.status = 'PROCESSED'
+      ${cursorSql}
+    order by w.created_at asc, w.id asc
+    limit ${options.pageSize}
+  `;
 }
 
 function buildAuditCandidateQueryParts(options: CliOptions) {
@@ -449,52 +518,49 @@ function buildAuditCandidateQueryParts(options: CliOptions) {
   };
 }
 
+function buildHistoricalCandidateQueryParts(options: Pick<CliOptions, 'currentOnly'>) {
+  return {
+    historicalColumnsSql: options.currentOnly
+      ? Prisma.sql`
+          null::text as "historicalEventId",
+          null::double precision as "historicalScore",
+          null::jsonb as "historicalMetadata",
+          false as "hasHistoricalCommercialEvent"
+        `
+      : Prisma.sql`
+          historical.id as "historicalEventId",
+          historical.score as "historicalScore",
+          historical.metadata as "historicalMetadata",
+          (historical.id is not null) as "hasHistoricalCommercialEvent"
+        `,
+    historicalJoinSql: options.currentOnly
+      ? Prisma.sql``
+      : Prisma.sql`
+          left join lateral (
+            select
+              e.id,
+              e.score,
+              e.metadata
+            from moderation_events e
+            where e.chat_id = base."chatId"
+              and e.message_id = base."messageId"
+              and e.rule_code = 'COMMERCIAL_AD'
+            order by e.created_at asc, e.id asc
+            limit 1
+          ) historical on true
+        `,
+  };
+}
+
 async function loadCandidates(
   prisma: PrismaClient,
   options: CliOptions,
-  page?: AuditCandidatePageOptions,
 ): Promise<AuditCandidateRow[]> {
   const { loadSince, chatFilterSql, settingsJoinSql, commercialFilterSql, messageEventTypesSql } =
     buildAuditCandidateQueryParts(options);
-  const limitSql = page
-    ? Prisma.sql`limit ${page.pageSize}`
-    : options.limit === null
-      ? Prisma.sql``
-      : Prisma.sql`limit ${options.limit}`;
-  const cursorSql = buildAuditCandidateCursorSql(page?.cursor);
-  const baseOrderSql = page
-    ? Prisma.sql`order by w.created_at asc, w.id asc`
-    : Prisma.sql`order by w.created_at desc, w.id desc`;
+  const limitSql = options.limit === null ? Prisma.sql`` : Prisma.sql`limit ${options.limit}`;
   const resultOrderSql = Prisma.sql`order by base."createdAt" asc, base."webhookEventId" asc`;
-  const historicalColumnsSql = options.currentOnly
-    ? Prisma.sql`
-        null::text as "historicalEventId",
-        null::double precision as "historicalScore",
-        null::jsonb as "historicalMetadata",
-        false as "hasHistoricalCommercialEvent"
-      `
-    : Prisma.sql`
-        historical.id as "historicalEventId",
-        historical.score as "historicalScore",
-        historical.metadata as "historicalMetadata",
-        (historical.id is not null) as "hasHistoricalCommercialEvent"
-      `;
-  const historicalJoinSql = options.currentOnly
-    ? Prisma.sql``
-    : Prisma.sql`
-        left join lateral (
-          select
-            e.id,
-            e.score,
-            e.metadata
-          from moderation_events e
-          where e.chat_id = base."chatId"
-            and e.message_id = base."messageId"
-            and e.rule_code = 'COMMERCIAL_AD'
-          order by e.created_at asc, e.id asc
-          limit 1
-        ) historical on true
-      `;
+  const { historicalColumnsSql, historicalJoinSql } = buildHistoricalCandidateQueryParts(options);
 
   return prisma.$queryRaw<AuditCandidateRow[]>(Prisma.sql`
     with base as (
@@ -522,8 +588,7 @@ async function loadCandidates(
         and coalesce(w.normalized_payload #>> '{message,messageId}', '') <> ''
         ${commercialFilterSql}
         ${chatFilterSql}
-        ${cursorSql}
-      ${baseOrderSql}
+      order by w.created_at desc, w.id desc
       ${limitSql}
     )
     select
@@ -533,6 +598,154 @@ async function loadCandidates(
     ${historicalJoinSql}
     ${resultOrderSql}
   `);
+}
+
+function mapAuditCandidatePageRow(row: AuditCandidatePageQueryRow): AuditCandidateRow | null {
+  if (row.webhookEventId === null) {
+    return null;
+  }
+  if (
+    typeof row.eventType !== 'string' ||
+    !(row.createdAt instanceof Date) ||
+    typeof row.chatId !== 'string' ||
+    typeof row.messageId !== 'string' ||
+    typeof row.text !== 'string' ||
+    row.normalizedPayload === null ||
+    typeof row.hasHistoricalCommercialEvent !== 'boolean'
+  ) {
+    throw new Error('Commercial audit candidate page returned an invalid candidate row');
+  }
+
+  return {
+    webhookEventId: row.webhookEventId,
+    eventType: row.eventType,
+    createdAt: row.createdAt,
+    botId: row.botId,
+    chatId: row.chatId,
+    chatTitle: row.chatTitle,
+    chatEntityType: row.chatEntityType,
+    messageId: row.messageId,
+    senderId: row.senderId,
+    text: row.text,
+    normalizedPayload: row.normalizedPayload,
+    historicalEventId: row.historicalEventId,
+    historicalScore: row.historicalScore,
+    historicalMetadata: row.historicalMetadata,
+    hasHistoricalCommercialEvent: row.hasHistoricalCommercialEvent,
+  };
+}
+
+export function parseAuditCandidatePageRows(
+  rows: readonly AuditCandidatePageQueryRow[],
+): AuditCandidatePage | null {
+  const summary = rows[0];
+  if (!summary || !Number.isInteger(summary.scannedCount) || summary.scannedCount < 0) {
+    throw new Error('Commercial audit scan page returned an invalid summary');
+  }
+  if (summary.scannedCount === 0) {
+    if (summary.scanCursorCreatedAt !== null || summary.scanCursorWebhookEventId !== null) {
+      throw new Error('Commercial audit empty scan page returned a cursor');
+    }
+    return null;
+  }
+  if (
+    !(summary.scanCursorCreatedAt instanceof Date) ||
+    typeof summary.scanCursorWebhookEventId !== 'string'
+  ) {
+    throw new Error('Commercial audit non-empty scan page returned no cursor');
+  }
+
+  return {
+    scannedCount: summary.scannedCount,
+    cursor: {
+      createdAt: summary.scanCursorCreatedAt,
+      webhookEventId: summary.scanCursorWebhookEventId,
+    },
+    candidates: rows
+      .map(mapAuditCandidatePageRow)
+      .filter((row): row is AuditCandidateRow => row !== null),
+  };
+}
+
+export function buildAuditCandidatePageSql(
+  options: CliOptions,
+  page: AuditCandidatePageOptions,
+): Prisma.Sql {
+  const { loadSince, chatFilterSql, settingsJoinSql, commercialFilterSql, messageEventTypesSql } =
+    buildAuditCandidateQueryParts(options);
+  const { historicalColumnsSql, historicalJoinSql } = buildHistoricalCandidateQueryParts(options);
+  const scanWindowSql = buildAuditScanWindowSql({
+    loadSince,
+    until: options.until,
+    pageSize: page.pageSize,
+    ...(page.cursor ? { cursor: page.cursor } : {}),
+  });
+
+  return Prisma.sql`
+    with scan_page as materialized (
+      ${scanWindowSql}
+    ),
+    scan_summary as (
+      select
+        count(*)::integer as "scannedCount",
+        (
+          select w.created_at
+          from scan_page w
+          order by w.created_at desc, w.id desc
+          limit 1
+        ) as "scanCursorCreatedAt",
+        (
+          select w.id
+          from scan_page w
+          order by w.created_at desc, w.id desc
+          limit 1
+        ) as "scanCursorWebhookEventId"
+      from scan_page
+    ),
+    base as (
+      select
+        w.id as "webhookEventId",
+        w.normalized_payload ->> 'type' as "eventType",
+        w.created_at as "createdAt",
+        w.bot_id as "botId",
+        c.id as "chatId",
+        c.title as "chatTitle",
+        c.entity_type::text as "chatEntityType",
+        w.normalized_payload #>> '{message,messageId}' as "messageId",
+        nullif(w.normalized_payload #>> '{message,senderId}', '') as "senderId",
+        w.normalized_payload #>> '{message,text}' as "text",
+        w.normalized_payload as "normalizedPayload"
+      from scan_page w
+      join chats c
+        on c.id = w.normalized_payload #>> '{message,chatId}'
+      ${settingsJoinSql}
+      where w.normalized_payload ->> 'type' in (${messageEventTypesSql})
+        and coalesce(w.normalized_payload #>> '{message,text}', '') <> ''
+        and coalesce(w.normalized_payload #>> '{message,messageId}', '') <> ''
+        ${commercialFilterSql}
+        ${chatFilterSql}
+    )
+    select
+      scan_summary.*,
+      base.*,
+      ${historicalColumnsSql}
+    from scan_summary
+    left join base on true
+    ${historicalJoinSql}
+    order by base."createdAt" asc nulls last, base."webhookEventId" asc nulls last
+  `;
+}
+
+async function loadCandidatePage(
+  prisma: PrismaClient,
+  options: CliOptions,
+  page: AuditCandidatePageOptions,
+): Promise<AuditCandidatePage | null> {
+  const rows = await prisma.$queryRaw<AuditCandidatePageQueryRow[]>(
+    buildAuditCandidatePageSql(options, page),
+  );
+
+  return parseAuditCandidatePageRows(rows);
 }
 
 async function loadChatContexts(
@@ -1710,11 +1923,23 @@ export function readNewestAuditSamples(
   return [...(samples.get(category) ?? [])].reverse();
 }
 
+export function assertCommercialAuditNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Commercial audit was interrupted');
+}
+
 export function* iterateLockedAuditCandidateRows<T>(
   rows: readonly T[],
   runLock: CommercialAuditRunLock,
+  signal?: AbortSignal,
 ): Generator<T> {
   for (const row of rows) {
+    assertCommercialAuditNotAborted(signal);
     runLock.assertHeld();
     yield row;
   }
@@ -1724,51 +1949,64 @@ async function* iterateAuditCandidatePages(
   prisma: PrismaClient,
   options: CliOptions & { pageSize: number },
   runLock: CommercialAuditRunLock,
+  signal?: AbortSignal,
 ): AsyncGenerator<AuditCandidateRow[]> {
   let cursor: AuditCandidateCursor | undefined;
 
   while (true) {
+    assertCommercialAuditNotAborted(signal);
     runLock.assertHeld();
-    const page = await loadCandidates(prisma, options, {
+    const page = await loadCandidatePage(prisma, options, {
       pageSize: options.pageSize,
       ...(cursor ? { cursor } : {}),
     });
+    assertCommercialAuditNotAborted(signal);
     runLock.assertHeld();
-    if (page.length === 0) {
+    if (!page) {
       return;
     }
-    for (let index = 1; index < page.length; index += 1) {
-      if (compareAuditCandidateKeys(page[index - 1], page[index]) >= 0) {
+    for (let index = 1; index < page.candidates.length; index += 1) {
+      if (compareAuditCandidateKeys(page.candidates[index - 1], page.candidates[index]) >= 0) {
         throw new Error('Commercial audit candidate page is not strictly ordered');
       }
     }
-    if (cursor && compareAuditCandidateKeys(cursor, page[0]) >= 0) {
-      throw new Error('Commercial audit candidate page did not advance past its cursor');
+    if (cursor && compareAuditCandidateKeys(cursor, page.cursor) >= 0) {
+      throw new Error('Commercial audit scan page did not advance past its cursor');
+    }
+    if (
+      cursor &&
+      page.candidates[0] &&
+      compareAuditCandidateKeys(cursor, page.candidates[0]) >= 0
+    ) {
+      throw new Error('Commercial audit candidate page crossed its scan cursor');
     }
 
-    yield page;
+    yield page.candidates;
 
-    const nextCursor = resolveNextAuditCandidateCursor(page);
-    if (!nextCursor) {
-      return;
-    }
-    cursor = nextCursor;
-    if (page.length < options.pageSize) {
+    cursor = page.cursor;
+    if (page.scannedCount < options.pageSize) {
       return;
     }
   }
 }
 
-async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditRunLock) {
-  const prisma = createPrismaClient();
+async function runCommercialAudit(
+  options: CliOptions,
+  runLock: CommercialAuditRunLock,
+  signal?: AbortSignal,
+) {
+  const prisma = createPrismaClient(undefined, resolveCommercialAuditPrismaPoolConfig());
   const ruleEngine = new RuleEngineService(NOOP_REDIS_COUNTER as never);
   let streamWriter: AuditJsonlStreamWriter<AuditRecord> | undefined;
 
   try {
+    assertCommercialAuditNotAborted(signal);
     await prisma.$connect();
+    assertCommercialAuditNotAborted(signal);
     runLock.assertHeld();
     const paged = options.pageSize !== undefined;
     const candidates = paged ? null : await loadCandidates(prisma, options);
+    assertCommercialAuditNotAborted(signal);
     runLock.assertHeld();
     const auditScope = resolveAuditCandidateScope(options);
     const loadSince = resolveAuditLoadSince(options);
@@ -1781,6 +2019,7 @@ async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditR
     const chatContextActiveAt = new Date();
     if (!paged) {
       await ensureChatContexts(prisma, chatContexts, candidates ?? [], chatContextActiveAt);
+      assertCommercialAuditNotAborted(signal);
     }
     const campaignTracker = new InMemoryCommercialCampaignTracker();
 
@@ -1853,12 +2092,18 @@ async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditR
 
     const candidatePages: AsyncIterable<readonly AuditCandidateRow[]> =
       options.pageSize !== undefined
-        ? iterateAuditCandidatePages(prisma, { ...options, pageSize: options.pageSize }, runLock)
+        ? iterateAuditCandidatePages(
+            prisma,
+            { ...options, pageSize: options.pageSize },
+            runLock,
+            signal,
+          )
         : (async function* () {
             yield orderedCandidates;
           })();
 
     for await (const candidatePage of candidatePages) {
+      assertCommercialAuditNotAborted(signal);
       if (paged) {
         loadedCandidateCount += candidatePage.length;
         targetCandidateCount += candidatePage.filter(
@@ -1866,8 +2111,9 @@ async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditR
         ).length;
       }
       await ensureChatContexts(prisma, chatContexts, candidatePage, chatContextActiveAt);
+      assertCommercialAuditNotAborted(signal);
 
-      for (const row of iterateLockedAuditCandidateRows(candidatePage, runLock)) {
+      for (const row of iterateLockedAuditCandidateRows(candidatePage, runLock, signal)) {
         processedCandidateCount += 1;
         const isTargetWindow = row.createdAt.getTime() >= options.since.getTime();
         const update = row.normalizedPayload as MaxUpdate;
@@ -2210,6 +2456,7 @@ async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditR
       }
     }
 
+    assertCommercialAuditNotAborted(signal);
     runLock.assertHeld();
     if (paged) {
       await streamWriter?.publish();
@@ -2223,6 +2470,8 @@ async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditR
       }
       await publishAuditJsonlOutputs(jsonlOutputs);
     }
+    assertCommercialAuditNotAborted(signal);
+    runLock.assertHeld();
 
     if (options.exportJsonlPath) {
       console.log('');
@@ -2243,7 +2492,29 @@ async function runCommercialAudit(options: CliOptions, runLock: CommercialAuditR
 
 async function main() {
   const options = readCliOptions(process.argv.slice(2));
-  await withCommercialAuditRunLock((runLock) => runCommercialAudit(options, runLock));
+  const interruptController = new AbortController();
+  const interrupt = (signalName: 'SIGINT' | 'SIGTERM') => {
+    if (interruptController.signal.aborted) {
+      return;
+    }
+    console.error(
+      `Commercial audit received ${signalName}; waiting for bounded query and export cleanup`,
+    );
+    interruptController.abort(new Error(`Commercial audit interrupted by ${signalName}`));
+  };
+  const onSigint = () => interrupt('SIGINT');
+  const onSigterm = () => interrupt('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+
+  try {
+    await withCommercialAuditRunLock((runLock) =>
+      runCommercialAudit(options, runLock, interruptController.signal),
+    );
+  } finally {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+  }
 }
 
 if (require.main === module) {
