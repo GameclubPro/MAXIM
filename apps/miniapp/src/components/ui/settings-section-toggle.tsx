@@ -1,3 +1,4 @@
+import { NavArrowRight } from 'iconoir-react';
 import type { ReactElement } from 'react';
 import { cn } from '../../lib/cn';
 import './settings-section-toggle.css';
@@ -23,6 +24,29 @@ export type SettingsSectionIconName =
 
 export type SettingsSectionTone = 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
 
+const SETTINGS_SECTION_SEARCH_ALIASES: Record<string, string> = {
+  Автопостинг: 'публикации расписание посты',
+  Команды: 'администратор команды бота',
+  'Коммерческая реклама': 'реклама продажи услуги ссылки',
+  Комментарии: 'обсуждение посты модерация',
+  'Мат и оскорбления': 'мат ругань токсичность фильтр',
+  'Ночной режим': 'тишина расписание закрыть чат ночь',
+  Обсуждение: 'комментарии посты модерация',
+  Ограничения: 'антиспам спамеры лимит сообщений длина фото видео стикеры телефон',
+  Опросы: 'голосование голоса варианты',
+  Повторы: 'дубликаты одинаковые сообщения антидубль',
+  Подписка: 'обязательная подписка каналы доступ',
+  'Посты из VK': 'вконтакте импорт парсинг автопубликация',
+  Правила: 'пост описание чат',
+  Предложения: 'предложить пост пользовательские публикации',
+  Приветствие: 'новички вход вступление',
+  Розыгрыши: 'конкурс призы победители участники',
+  Ссылки: 'домены белый список срок действия блокировка',
+  'Сообщения и боты': 'удаление сервисные сообщения боты',
+  'Стиль речи': 'тон ответы бота сообщения',
+  'Стоп-слова': 'слова домены запрет черный список',
+};
+
 type SettingsSectionToggleProps = {
   title: string;
   summary?: string;
@@ -31,7 +55,6 @@ type SettingsSectionToggleProps = {
   tone: SettingsSectionTone;
   open: boolean;
   controls: string;
-  hideChevron?: boolean;
   onClick: () => void;
 };
 
@@ -373,12 +396,25 @@ export function SettingsSectionIcon({ name }: { name: SettingsSectionIconName })
 
 export function SettingsSectionToggle({
   title,
+  summary,
+  status,
   icon,
   tone,
   open,
   controls,
   onClick,
 }: SettingsSectionToggleProps) {
+  const trimmedSummary = summary?.trim() ?? '';
+  const trimmedStatus = status?.trim() ?? '';
+  const summaryId = `${controls}-entry-summary`;
+  const statusId = `${controls}-entry-status`;
+  const descriptionIds = [trimmedSummary ? summaryId : '', trimmedStatus ? statusId : '']
+    .filter(Boolean)
+    .join(' ');
+  const searchText = [title, trimmedSummary, trimmedStatus, SETTINGS_SECTION_SEARCH_ALIASES[title]]
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <button
       type="button"
@@ -386,6 +422,8 @@ export function SettingsSectionToggle({
       aria-expanded={open}
       aria-controls={controls}
       aria-label={title}
+      aria-describedby={descriptionIds || undefined}
+      data-settings-search={searchText}
       onClick={onClick}
     >
       <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
@@ -393,7 +431,22 @@ export function SettingsSectionToggle({
       </span>
 
       <span className="settings-section__toggle-main">
-        <h3>{title}</h3>
+        <span className="settings-section__title">{title}</span>
+        {trimmedSummary ? (
+          <span id={summaryId} className="settings-section__summary">
+            {trimmedSummary}
+          </span>
+        ) : null}
+      </span>
+
+      {trimmedStatus ? (
+        <span id={statusId} className={cn('settings-section__status-chip', `is-${tone}`)}>
+          {trimmedStatus}
+        </span>
+      ) : null}
+
+      <span className="settings-section__chevron" aria-hidden>
+        <NavArrowRight className="settings-section__chevron-icon" />
       </span>
     </button>
   );

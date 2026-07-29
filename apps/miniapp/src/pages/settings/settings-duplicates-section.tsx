@@ -131,7 +131,6 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
           open={expanded}
           controls="settings-duplicates-content"
           onClick={() => toggleSection('duplicates')}
-          hideChevron
         />
       </div>
 
@@ -434,7 +433,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                   >
                     <div className="duplicate-stage__top">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="duplicate-stage__title">Когда включать модерацию</span>
+                        <span className="duplicate-stage__title">Порог реакции</span>
                         <SettingsHintAnchor
                           hintKey="duplicateModerationStart"
                           openHintKey={openHintKey}
@@ -479,11 +478,11 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                           fieldErrors.duplicateWarnMaxCount && 'field--error',
                         )}
                       >
-                        <span className="duplicate-stage__field-label">Разрешено дублей</span>
+                        <span className="duplicate-stage__field-label">До реакции</span>
                         <div
                           className="duplicate-count-stepper"
                           role="group"
-                          aria-label="Разрешено дублей"
+                          aria-label="Количество дублей до реакции"
                         >
                           <button
                             type="button"

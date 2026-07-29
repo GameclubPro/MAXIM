@@ -128,7 +128,6 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
           open={expanded}
           controls="settings-stop-words-content"
           onClick={() => toggleSection('stopWords')}
-          hideChevron
         />
       </div>
 

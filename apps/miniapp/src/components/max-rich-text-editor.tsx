@@ -12,7 +12,11 @@ import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markd
 import { cn } from '../lib/cn';
 import { renderPlainTextAsEditorHtml, renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
 import { parseEditorLinkHref, serializeEditorLinkMarkdown } from '../lib/max-rich-text-link';
-import { useNativeBackHandler } from '../lib/native-back';
+import {
+  isElementInTopmostNativeBackModal,
+  NATIVE_BACK_RICH_TEXT_LINK_PRIORITY,
+  useNativeBackHandler,
+} from '../lib/native-back';
 import './max-rich-text-editor.css';
 
 export type MaxRichTextEditorHandle = {
@@ -164,13 +168,18 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
 
     useNativeBackHandler(
       () => {
+        const root = editorRef.current?.parentElement;
+        if (!root || !isElementInTopmostNativeBackModal(root)) {
+          return false;
+        }
+
         editingLinkRef.current = null;
         setLinkEditorOpen(false);
         setLinkError('');
         focusEditor();
         return true;
       },
-      { enabled: linkEditorOpen, priority: 570 },
+      { enabled: linkEditorOpen, priority: NATIVE_BACK_RICH_TEXT_LINK_PRIORITY },
     );
 
     const restoreOrCreateEditorRange = useCallback(() => {

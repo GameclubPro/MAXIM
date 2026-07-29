@@ -98,8 +98,8 @@
     display: inline-grid;
     place-items: center;
     flex: 0 0 auto;
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
     border: 1px solid rgba(132, 152, 169, 0.22);
     border-radius: 14px;
     background: rgba(239, 245, 248, 0.9);
@@ -127,9 +127,9 @@
   .bot-message-editor-sheet__tool {
     display: inline-grid;
     place-items: center;
-    flex: 1 0 42px;
-    min-width: 42px;
-    min-height: 40px;
+    flex: 1 0 44px;
+    min-width: 44px;
+    min-height: 44px;
     border: 1px solid rgba(13, 126, 170, 0.16);
     border-radius: 13px;
     background: #f1f6f8;
@@ -205,8 +205,8 @@
     right: 8px;
     display: inline-grid;
     place-items: center;
-    width: 34px;
-    height: 34px;
+    width: 44px;
+    height: 44px;
     border: 1px solid rgba(16, 36, 54, 0.12);
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.94);
@@ -225,7 +225,7 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    min-height: 42px;
+    min-height: 44px;
     border: 1px solid rgba(13, 126, 170, 0.18);
     border-radius: 14px;
     background: #eef7fb;

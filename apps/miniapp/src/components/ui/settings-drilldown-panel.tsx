@@ -1,4 +1,13 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
@@ -30,6 +39,7 @@ type SettingsDrilldownPanelProps = {
   keepFooterVisibleWhenKeyboardOpen?: boolean;
   confirmCloseWhen?: boolean;
   onDiscardChanges?: () => void;
+  initialFocusRef?: RefObject<HTMLElement | null>;
 };
 
 let activeDrilldownLocks = 0;
@@ -128,12 +138,13 @@ export function SettingsDrilldownPanel({
   keepFooterVisibleWhenKeyboardOpen = false,
   confirmCloseWhen = false,
   onDiscardChanges,
+  initialFocusRef,
 }: SettingsDrilldownPanelProps) {
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const isKeyboardOpen = useKeyboardOpen(120, open);
-  useDialogFocusTrap(open, panelRef, panelRef);
+  useDialogFocusTrap(open, panelRef, initialFocusRef ?? panelRef);
 
   const requestClose = useCallback(() => {
     if (confirmCloseWhen) {

@@ -88,7 +88,6 @@ export function SettingsCommentsSection({
           open={expanded}
           controls="settings-comments-content"
           onClick={onToggleSection}
-          hideChevron
         />
       </div>
 

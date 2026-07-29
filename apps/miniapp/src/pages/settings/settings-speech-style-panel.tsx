@@ -3,12 +3,14 @@ import {
   BOT_SPEECH_STYLE_OPTIONS,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
+import { useRef } from 'react';
 import botSpeechRobotImage from '../../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../../police.webp';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import { cn } from '../../lib/cn';
+import { resolveRadioGroupNavigationIndex } from '../../lib/radio-group-navigation';
 
 type SpeechStylePreviewSamples = {
   greeting: string;
@@ -70,6 +72,8 @@ export default function SettingsSpeechStylePanel({
   onSave,
 }: SettingsSpeechStylePanelProps) {
   const isDirty = selectedStyle !== activeStyle;
+  const selectedOptionRef = useRef<HTMLButtonElement | null>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   return (
     <SettingsDrilldownPanel
@@ -82,6 +86,7 @@ export default function SettingsSpeechStylePanel({
       onClose={onClose}
       confirmCloseWhen={isDirty}
       onDiscardChanges={onDiscard}
+      initialFocusRef={selectedOptionRef}
       footer={
         isDirty ? (
           <div className="settings-drilldown__footer-actions">
@@ -107,17 +112,42 @@ export default function SettingsSpeechStylePanel({
     >
       <div id="settings-bot-speech-style" className="settings-speech-preview">
         <div className="settings-speech-style-grid" role="radiogroup" aria-label="Стиль речи бота">
-          {BOT_SPEECH_STYLE_OPTIONS.map((option) => (
+          {BOT_SPEECH_STYLE_OPTIONS.map((option, index) => (
             <button
               key={option.value}
+              ref={(node) => {
+                optionRefs.current[index] = node;
+                if (selectedStyle === option.value) {
+                  selectedOptionRef.current = node;
+                }
+              }}
               type="button"
               role="radio"
               aria-checked={selectedStyle === option.value}
+              tabIndex={selectedStyle === option.value ? 0 : -1}
               className={cn(
                 'settings-speech-style-option',
                 selectedStyle === option.value && 'is-active',
               )}
               onClick={() => onSelect(option.value)}
+              onKeyDown={(event) => {
+                const nextIndex = resolveRadioGroupNavigationIndex(
+                  index,
+                  BOT_SPEECH_STYLE_OPTIONS.length,
+                  event.key,
+                );
+                if (nextIndex === null) {
+                  return;
+                }
+
+                event.preventDefault();
+                const nextOption = BOT_SPEECH_STYLE_OPTIONS[nextIndex];
+                if (!nextOption) {
+                  return;
+                }
+                onSelect(nextOption.value);
+                optionRefs.current[nextIndex]?.focus();
+              }}
               disabled={isSaving}
             >
               {selectedStyle === option.value ? (

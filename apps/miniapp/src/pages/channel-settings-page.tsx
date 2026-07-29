@@ -38,6 +38,7 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
+import type { ManagedGiveawayCardHandle } from '../components/managed-giveaway-card';
 import type { ManagedPollWorkspaceHandle } from '../components/managed-poll-workspace';
 import {
   BroadcastHistoryFilterTabs,
@@ -871,6 +872,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const latestDraftKeyRef = useRef('');
   const isDirtyRef = useRef(false);
   const pollWorkspaceRef = useRef<ManagedPollWorkspaceHandle | null>(null);
+  const giveawayCardRef = useRef<ManagedGiveawayCardHandle | null>(null);
   const [expandedSections, setExpandedSections] = useState<
     Record<ChannelSettingsSectionKey, boolean>
   >(INITIAL_EXPANDED_CHANNEL_SECTIONS);
@@ -1485,6 +1487,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
     toggleSection('polls');
+  }
+
+  function requestGiveawaySectionClose() {
+    if (giveawayCardRef.current && !giveawayCardRef.current.requestClose()) {
+      return;
+    }
+    closeSection('giveaway');
+  }
+
+  function toggleGiveawaySection() {
+    if (expandedSections.giveaway) {
+      requestGiveawaySectionClose();
+      return;
+    }
+    toggleSection('giveaway');
   }
 
   const normalizedDraft = useMemo(
@@ -3036,7 +3053,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Обсуждение"
-            summary=""
+            summary={commentsCardSummary}
             status={commentsCardStatus}
             icon="comments"
             tone="sky"
@@ -3136,7 +3153,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
               title="Посты из VK"
-              summary=""
+              summary="Импорт и автопубликация из VK"
               status="Импорт"
               icon="links"
               tone="ink"
@@ -3161,7 +3178,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               {expandedSections.vkParsing ? (
                 <div className="settings-section__collapse-inner">
                   {canAccessVkParsing ? (
-                    <Suspense fallback={null}>
+                    <Suspense fallback={<SkeletonCard lines={4} />}>
                       <LazyVkParsingCard
                         api={api}
                         chatId={chatId}
@@ -3197,7 +3214,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Предложения"
-            summary=""
+            summary={postSuggestionsCardSummary}
             status={postSuggestionsCardStatus}
             icon="spark"
             tone="mint"
@@ -3326,7 +3343,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <PublicationWorkspaceHandoff
             entityType="channel"
             entityId={chatId}
-            variant="settings-entry"
+            variant="settings-tile"
           />
         </GlassCard>
       ) : null}
@@ -3726,7 +3743,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
               title="Опросы"
-              summary=""
+              summary="Создание, публикация и результаты"
               status="Голоса"
               icon={<StatsUpSquare aria-hidden focusable="false" />}
               tone="mint"
@@ -3773,13 +3790,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
               title="Розыгрыши"
-              summary=""
+              summary="Запуск, участники и итоги"
               status=""
               icon="gift"
               tone="amber"
               open={expandedSections.giveaway}
               controls="channel-settings-giveaway"
-              onClick={() => toggleSection('giveaway')}
+              onClick={toggleGiveawaySection}
             />
           </div>
 
@@ -3790,7 +3807,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             summary="Запуск и итоги"
             tone="amber"
             className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway settings-drilldown__panel--channel-giveaway"
-            onClose={() => toggleSection('giveaway')}
+            onClose={requestGiveawaySectionClose}
           >
             <div
               id="channel-settings-giveaway"
@@ -3798,8 +3815,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             >
               {expandedSections.giveaway ? (
                 <div className="settings-section__collapse-inner">
-                  <Suspense fallback={null}>
-                    <LazyManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
+                  <Suspense fallback={<SkeletonCard lines={4} />}>
+                    <LazyManagedGiveawayCard
+                      ref={giveawayCardRef}
+                      api={api}
+                      entityType="channel"
+                      entityId={chatId}
+                      onClosePanel={() => closeSection('giveaway')}
+                    />
                   </Suspense>
                 </div>
               ) : null}

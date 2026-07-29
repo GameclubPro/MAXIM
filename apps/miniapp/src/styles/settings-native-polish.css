@@ -411,18 +411,18 @@
 
   body.settings-drilldown-open
     .settings-drilldown
-    .settings-drilldown__panel--broadcast-screen
+    :is(.settings-drilldown__panel--broadcast-screen, .settings-drilldown__panel--rules-screen)
     .broadcast-publish-bar
     .broadcast-publish-bar__primary:disabled {
     border-color: var(--border-subtle);
     background: var(--surface-card-muted);
-    color: var(--text-secondary);
+    color: var(--text-primary);
     opacity: 1;
   }
 
   body.settings-drilldown-open
     .settings-drilldown
-    .settings-drilldown__panel--broadcast-screen
+    :is(.settings-drilldown__panel--broadcast-screen, .settings-drilldown__panel--rules-screen)
     .broadcast-publish-bar
     .broadcast-publish-bar__primary:disabled
     :is(span, svg) {

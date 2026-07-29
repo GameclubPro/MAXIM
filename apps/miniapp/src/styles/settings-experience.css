@@ -48,9 +48,9 @@
 
   .settings-home-sticky-header .compact-page-header__back,
   .channel-settings-screen__sticky-header .compact-page-header__back {
-    width: 40px;
-    min-width: 40px;
-    height: 40px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
     background: var(--surface-card-muted);
@@ -128,8 +128,8 @@
   .settings-home-entry--priority .settings-section__toggle,
   .settings-home-entry--list .settings-section__toggle,
   .channel-settings-card .settings-section__toggle {
-    min-height: 56px;
-    padding: 8px 10px;
+    min-height: 70px;
+    padding: 9px 10px;
     gap: 10px;
     overflow: hidden;
     border: 1px solid var(--border-subtle);
@@ -224,12 +224,82 @@
     height: 19px;
   }
 
-  .settings-home-entry .settings-section__toggle-main h3,
-  .settings-home-entry--list .settings-section__toggle-main h3,
-  .channel-settings-card .settings-section__toggle-main h3 {
+  .settings-home-entry .settings-section__title,
+  .settings-home-entry--list .settings-section__title,
+  .channel-settings-card .settings-section__title {
     font-size: 0.94rem;
     font-weight: 760;
     line-height: 1.2;
+  }
+
+  .settings-home-entry .settings-section__toggle-main,
+  .channel-settings-card .settings-section__toggle-main {
+    gap: 3px;
+  }
+
+  .settings-home-entry .settings-section__summary,
+  .channel-settings-card .settings-section__summary {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 560;
+    line-height: 1.25;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+
+  .settings-home-entry .settings-section__status-chip,
+  .channel-settings-card .settings-section__status-chip {
+    max-width: 78px;
+    min-height: 24px;
+    padding-inline: 7px;
+    border-color: var(--border-subtle);
+    border-radius: 6px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+    font-size: 0.66rem;
+    font-weight: 720;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .settings-home-entry .settings-section__status-chip.is-sky,
+  .channel-settings-card .settings-section__status-chip.is-sky {
+    color: var(--text-primary);
+  }
+
+  .settings-home-entry .settings-section__status-chip.is-mint,
+  .channel-settings-card .settings-section__status-chip.is-mint {
+    color: var(--text-primary);
+  }
+
+  .settings-home-entry .settings-section__status-chip.is-amber,
+  .channel-settings-card .settings-section__status-chip.is-amber {
+    color: var(--text-primary);
+  }
+
+  .settings-home-entry .settings-section__status-chip.is-rose,
+  .channel-settings-card .settings-section__status-chip.is-rose {
+    color: var(--text-primary);
+  }
+
+  .settings-home-entry .settings-section__status-chip.is-ink,
+  .channel-settings-card .settings-section__status-chip.is-ink {
+    color: var(--text-secondary);
+  }
+
+  .settings-home-entry .settings-section__chevron,
+  .channel-settings-card .settings-section__chevron {
+    display: grid;
+    width: 18px;
+    height: 24px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+    box-shadow: none;
   }
 
   body.settings-home-page-open .bottom-nav,
@@ -271,6 +341,10 @@
     box-shadow: var(--shadow-md);
   }
 
+  .settings-drilldown__panel:focus {
+    outline: none;
+  }
+
   .settings-drilldown__header,
   .settings-drilldown__panel--broadcast-screen .settings-drilldown__header,
   .settings-drilldown__panel--post-suggestions-screen .settings-drilldown__header {
@@ -278,6 +352,7 @@
     padding: 9px 10px;
     border-bottom-color: var(--border-subtle);
     background: var(--surface-card);
+    box-shadow: inset 3px 0 0 var(--settings-panel-accent);
   }
 
   .settings-drilldown__header::before {
@@ -360,8 +435,32 @@
 
   .settings-drilldown .settings-native-toggle:has(.settings-native-switch input:checked),
   .settings-drilldown .channel-settings-toggle-card.is-on {
-    border-color: var(--border-strong);
+    border-color: var(--settings-panel-accent-border);
     background: var(--surface-card);
+  }
+
+  .settings-drilldown .settings-info-button,
+  .settings-drilldown__panel--channel-comments .settings-info-button,
+  .settings-drilldown__panel--post-suggestions .settings-info-button,
+  .settings-drilldown__panel--channel-giveaway .settings-info-button,
+  .settings-drilldown .settings-edit-button {
+    display: grid;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    place-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    box-shadow: none;
+  }
+
+  .settings-drilldown :is(.settings-info-button, .settings-edit-button):focus-visible {
+    outline: 3px solid var(--app-focus-ring);
+    outline-offset: 1px;
   }
 
   .settings-drilldown .settings-native-toggle:has(.night-window-grid) {
@@ -483,6 +582,13 @@
     font-weight: 750;
     letter-spacing: 0;
     text-transform: none;
+  }
+
+  body.settings-drilldown-open
+    .settings-drilldown
+    .settings-drilldown__panel--limits
+    .settings-subsection-divider {
+    display: flex;
   }
 
   .settings-drilldown__footer,
@@ -1110,28 +1216,6 @@
 
   body.settings-drilldown-open
     .settings-drilldown
-    .settings-drilldown__panel--post-suggestions-screen:has(
-      .channel-settings-toggle-card:not(.is-on)
-    ) {
-    width: min(100%, 760px);
-    min-height: 0;
-    height: auto;
-    max-height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
-    margin: auto 0 0;
-    border-radius: 14px 14px 0 0;
-  }
-
-  body.settings-drilldown-open
-    .settings-drilldown
-    .settings-drilldown__panel--post-suggestions-screen:has(
-      .channel-settings-toggle-card:not(.is-on)
-    )
-    .settings-drilldown__content {
-    flex: 0 1 auto;
-  }
-
-  body.settings-drilldown-open
-    .settings-drilldown
     :is(
       .settings-drilldown__panel--channel-comments,
       .settings-drilldown__panel--post-suggestions-screen
@@ -1310,16 +1394,6 @@
     border: 0;
     border-radius: 0;
     box-shadow: none;
-  }
-
-  body.settings-drilldown-open
-    .settings-drilldown
-    .settings-drilldown__panel--post-suggestions-screen:has(
-      .channel-settings-toggle-card:not(.is-on)
-    ) {
-    position: absolute;
-    inset: auto 0 0;
-    margin: 0 auto;
   }
 
   html:not([data-max-theme='dark'])
@@ -1841,6 +1915,56 @@
     background: var(--surface-page);
   }
 
+  @media (max-width: 430px) {
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-stage__controls {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-stage__field
+      input {
+      padding-right: 50px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-stage__suffix {
+      right: 8px;
+      font-size: 0.66rem;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-count-stepper {
+      width: 100%;
+      grid-template-columns: 44px minmax(44px, 1fr) 44px;
+      gap: 6px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-count-stepper__button {
+      width: 44px;
+      height: 44px;
+    }
+
+    body.settings-drilldown-open
+      .settings-drilldown
+      .settings-drilldown__panel--duplicates
+      .duplicate-count-stepper__value {
+      min-width: 0;
+    }
+  }
+
   @media (max-width: 380px) {
     .settings-home-sticky-header .compact-page-header__bar,
     .channel-settings-screen__sticky-header .compact-page-header__bar {
@@ -1849,8 +1973,6 @@
       padding-left: 8px;
     }
 
-    .settings-home-sticky-header .compact-page-header__back,
-    .channel-settings-screen__sticky-header .compact-page-header__back,
     .settings-home-sticky-header .compact-page-header__entity-avatar,
     .channel-settings-screen__sticky-header .compact-page-header__entity-avatar {
       width: 38px;
@@ -1867,9 +1989,16 @@
     .settings-home-entry--priority .settings-section__toggle,
     .settings-home-entry--list .settings-section__toggle,
     .channel-settings-card .settings-section__toggle {
-      min-height: 52px;
+      min-height: 68px;
       padding: 7px 8px;
       gap: 8px;
+    }
+
+    .settings-home-entry .settings-section__status-chip,
+    .channel-settings-card .settings-section__status-chip {
+      max-width: 66px;
+      padding-inline: 5px;
+      font-size: 0.62rem;
     }
 
     .settings-home-entry .settings-section__icon-badge,
@@ -1903,52 +2032,5 @@
       font-size: 0.72rem;
     }
 
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--duplicates
-      .duplicate-stage__controls {
-      grid-template-columns: minmax(0, 1fr) minmax(112px, 0.72fr);
-      gap: 6px;
-    }
-
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--duplicates
-      .duplicate-stage__field
-      input {
-      padding-right: 50px;
-    }
-
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--duplicates
-      .duplicate-stage__suffix {
-      right: 8px;
-      font-size: 0.66rem;
-    }
-
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--duplicates
-      .duplicate-count-stepper {
-      width: 100%;
-      grid-template-columns: 34px minmax(34px, 1fr) 34px;
-      gap: 4px;
-    }
-
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--duplicates
-      .duplicate-count-stepper__button {
-      width: 34px;
-      height: 34px;
-    }
-
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--duplicates
-      .duplicate-count-stepper__value {
-      min-width: 0;
-    }
   }
 }

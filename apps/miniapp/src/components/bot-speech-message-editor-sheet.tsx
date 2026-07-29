@@ -1,14 +1,24 @@
 import type { BotSpeechMediaImage } from '@maxim/contracts/settings';
 import { hasCustomBotSpeechText } from '@maxim/contracts/bot-speech';
 import { Camera as IconoirCamera } from 'iconoir-react';
-import { type ChangeEvent, useCallback, useLayoutEffect, useRef, useState } from 'react';
+import {
+  type ChangeEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
 import { cn } from '../lib/cn';
+import { isTopmostModalDialog, useDialogFocusTrap } from '../lib/dialog-focus';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { useNativeBackHandler } from '../lib/native-back';
 import './bot-speech-message-editor-sheet.css';
+import './bot-speech-message-editor-sheet-a11y.css';
 
 type BotSpeechMessageEditorSheetProps = {
   title: string;
@@ -24,6 +34,7 @@ type BotSpeechMessageEditorSheetProps = {
 
 const BOT_MESSAGE_EDITOR_MAX_LENGTH = 1000;
 const BOT_MESSAGE_EDITOR_IMAGE_MAX_BYTES = 4_000_000;
+const BOT_MESSAGE_EDITOR_NATIVE_BACK_PRIORITY = 700;
 const BOT_MESSAGE_PLACEHOLDER_LABELS: Readonly<Record<string, string>> = {
   user: 'Имя',
   bot_character_name: 'Имя бота',
@@ -92,6 +103,9 @@ export function BotSpeechMessageEditorSheet({
   onReset,
   onClose,
 }: BotSpeechMessageEditorSheetProps) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [imageError, setImageError] = useState('');
@@ -109,6 +123,8 @@ export function BotSpeechMessageEditorSheet({
     resolveFileInputActivationMode(
       typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
     ) === 'native-tap';
+
+  useDialogFocusTrap(true, panelRef, closeButtonRef);
 
   useLayoutEffect(() => {
     const body = document.body;
@@ -132,8 +148,28 @@ export function BotSpeechMessageEditorSheet({
       onClose();
       return true;
     },
-    { enabled: true, priority: 540 },
+    { enabled: true, priority: BOT_MESSAGE_EDITOR_NATIVE_BACK_PRIORITY },
   );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      const panel = panelRef.current;
+      if (!panel || !isTopmostModalDialog(panel)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const applyTextModifier = useCallback((tool: MaxMarkdownTool) => {
     editorRef.current?.applyTool(tool);
@@ -168,25 +204,27 @@ export function BotSpeechMessageEditorSheet({
   }
 
   const sheet = (
-    <div
-      className="bot-message-editor-sheet"
-      role="dialog"
-      aria-modal="true"
-      aria-label={ariaLabel}
-    >
+    <div className="bot-message-editor-sheet">
       <button
         type="button"
         className="bot-message-editor-sheet__backdrop"
         aria-label="Закрыть редактор"
         onClick={onClose}
+        tabIndex={-1}
       />
       <section
+        ref={panelRef}
         className="bot-message-editor-sheet__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label={ariaLabel}
+        aria-labelledby={titleId}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="bot-message-editor-sheet__header">
           <div className="bot-message-editor-sheet__title-wrap">
-            <h2>{title}</h2>
+            <h2 id={titleId}>{title}</h2>
             <span
               className={cn(
                 'bot-message-editor-sheet__counter',
@@ -199,6 +237,7 @@ export function BotSpeechMessageEditorSheet({
             </span>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             className="bot-message-editor-sheet__close"
             aria-label="Закрыть редактор"

@@ -61,7 +61,6 @@ export function SettingsExtraSection({
           open={expanded}
           controls="settings-extra-content"
           onClick={onToggleSection}
-          hideChevron
         />
       </div>
 

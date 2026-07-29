@@ -62,6 +62,7 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
+import type { ManagedGiveawayCardHandle } from '../components/managed-giveaway-card';
 import { AdminContactToggle } from '../components/admin-contact-toggle';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
@@ -475,6 +476,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   } | null>(null);
   const [pendingMailingPublishReview, setPendingMailingPublishReview] =
     useState<PendingBroadcastPublishReview | null>(null);
+  const [rulesResetConfirmationOpen, setRulesResetConfirmationOpen] = useState(false);
   const [applyTargetSheet, setApplyTargetSheet] = useState<{
     section: ApplySectionKey;
     sourceSettings: ChatSettings;
@@ -521,6 +523,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
   const rulesDraftRef = useRef<ChatRules | null>(null);
+  const giveawayCardRef = useRef<ManagedGiveawayCardHandle | null>(null);
   const previousRulesServerSnapshotRef = useRef('');
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(null);
@@ -2960,10 +2963,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (typeof window !== 'undefined' && !window.confirm('Удалить опубликованный пост правил?')) {
-      return;
-    }
+    setRulesResetConfirmationOpen(true);
+  }
 
+  function confirmResetPublishedRules() {
+    setRulesResetConfirmationOpen(false);
     resetPublishedRulesMutation.mutate();
   }
 
@@ -3936,6 +3940,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
+  function requestGiveawaySectionClose() {
+    if (giveawayCardRef.current && !giveawayCardRef.current.requestClose()) {
+      return;
+    }
+    closeSection('giveaway');
+  }
+
+  function toggleGiveawaySection() {
+    if (expandedSections.giveaway) {
+      requestGiveawaySectionClose();
+      return;
+    }
+    toggleSection('giveaway');
+  }
+
   if (!chatId) {
     return (
       <GlassCard>
@@ -4354,8 +4373,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : '23:00-08:00';
   const nightForceCloseSummary = draft?.nightModeForceCloseEnabled
     ? draft.nightModeForceCloseForever
-      ? 'Группа закрыта вручную бессрочно'
-      : `Группа закрыта вручную на ${formatNightForceCloseDuration(
+      ? 'Чат закрыт вручную без срока'
+      : `Чат закрыт вручную на ${formatNightForceCloseDuration(
           draft.nightModeForceCloseDays,
           draft.nightModeForceCloseHours,
         )}`
@@ -4365,11 +4384,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : draft?.nightModeEnabled
       ? `${nightWindowLabel} • ${nightTimezoneLabel}`
       : 'Выключено';
-  const nightCardStatus = draft?.nightModeEnabled
-    ? nightForceCloseSummary
-      ? 'Закрыто'
-      : nightWindowLabel
-    : 'Выкл';
+  const nightCardStatus = nightForceCloseSummary
+    ? 'Закрыто'
+    : draft?.nightModeEnabled
+      ? nightWindowLabel
+      : 'Выкл';
   const requiredSubscriptionSelectedCount = draft?.requiredSubscriptionChannelIds.length ?? 0;
   const requiredSubscriptionStaleCount = selectedUnavailableRequiredSubscriptionChannels.length;
   const requiredSubscriptionUnavailableCount =
@@ -5359,7 +5378,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.links}
                   controls="settings-links-content"
                   onClick={() => toggleSection('links')}
-                  hideChevron
                 />
               </div>
 
@@ -5910,7 +5928,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.rules}
                   controls="settings-rules-content"
                   onClick={() => toggleSection('rules')}
-                  hideChevron
                 />
               </div>
 
@@ -6186,14 +6203,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Розыгрыши"
-                    summary=""
+                    summary="Запуск, участники и итоги"
                     status=""
                     icon="gift"
                     tone="amber"
                     open={expandedSections.giveaway}
                     controls="settings-giveaway-content"
-                    onClick={() => toggleSection('giveaway')}
-                    hideChevron
+                    onClick={toggleGiveawaySection}
                   />
                 </div>
 
@@ -6201,10 +6217,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   id="settings-giveaway-content"
                   open={expandedSections.giveaway}
                   title="Розыгрыши"
-                  summary=""
+                  summary="Запуск, участники и итоги"
                   tone="amber"
                   className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
-                  onClose={() => toggleSection('giveaway')}
+                  onClose={requestGiveawaySectionClose}
                 >
                   <div
                     id="settings-giveaway-content"
@@ -6215,8 +6231,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   >
                     {expandedSections.giveaway ? (
                       <div className="settings-section__collapse-inner">
-                        <Suspense fallback={null}>
-                          <LazyManagedGiveawayCard api={api} entityType="chat" entityId={chatId} />
+                        <Suspense fallback={<SkeletonCard lines={4} />}>
+                          <LazyManagedGiveawayCard
+                            ref={giveawayCardRef}
+                            api={api}
+                            entityType="chat"
+                            entityId={chatId}
+                            onClosePanel={() => closeSection('giveaway')}
+                          />
                         </Suspense>
                       </div>
                     ) : null}
@@ -6240,7 +6262,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.greeting}
                   controls="settings-greeting-content"
                   onClick={() => toggleSection('greeting')}
-                  hideChevron
                 />
               </div>
 
@@ -6530,7 +6551,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.profanityFilter}
                   controls="settings-profanity-filter-content"
                   onClick={() => toggleSection('profanityFilter')}
-                  hideChevron
                 />
               </div>
 
@@ -6948,7 +6968,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     open={expandedSections.mailing}
                     controls="settings-mailing-content"
                     onClick={() => toggleSection('mailing')}
-                    hideChevron
                   />
                 </div>
 
@@ -7365,14 +7384,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Посты из VK"
-                    summary=""
+                    summary="Импорт и автопубликация из VK"
                     status="Импорт"
                     icon="links"
                     tone="ink"
                     open={expandedSections.vkParsing}
                     controls="settings-vk-parsing-content"
                     onClick={() => toggleSection('vkParsing')}
-                    hideChevron
                   />
                 </div>
 
@@ -7394,7 +7412,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {expandedSections.vkParsing ? (
                       <div className="settings-section__collapse-inner">
                         {canAccessVkParsing ? (
-                          <Suspense fallback={null}>
+                          <Suspense fallback={<SkeletonCard lines={4} />}>
                             <LazyVkParsingCard
                               api={api}
                               chatId={chatId ?? ''}
@@ -7473,7 +7491,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.requiredSubscription}
                   controls="settings-required-subscription-content"
                   onClick={() => toggleSection('requiredSubscription')}
-                  hideChevron
                 />
               </div>
 
@@ -7920,8 +7937,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Стиль речи"
-                  summary=""
-                  status=""
+                  summary="Тон ответов и сообщений бота"
+                  status={BOT_SPEECH_STYLE_METADATA[activeSpeechStyle ?? 'ROBOT'].label}
                   icon="comments"
                   tone="mint"
                   open={speechStylePanelOpen}
@@ -7998,6 +8015,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             }
           }}
           onClose={() => setMailingButtonsSheetOpen(false)}
+        />
+      </Suspense>
+
+      <Suspense fallback={null}>
+        <LazyActionConfirmSheet
+          id="rules-reset-confirmation"
+          open={rulesResetConfirmationOpen}
+          title="Удалить пост правил?"
+          summary="Опубликованный пост будет удалён. Черновик правил останется в настройках."
+          confirmLabel="Удалить пост"
+          confirmBusyLabel="Удаляем..."
+          cancelLabel="Оставить"
+          tone="danger"
+          isBusy={isResettingPublishedRules}
+          onClose={() => setRulesResetConfirmationOpen(false)}
+          onConfirm={confirmResetPublishedRules}
         />
       </Suspense>
 

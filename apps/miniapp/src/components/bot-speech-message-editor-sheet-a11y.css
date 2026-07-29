@@ -1,0 +1,23 @@
+@layer components {
+  .bot-message-editor-sheet__panel:focus {
+    outline: none;
+  }
+
+  .bot-message-editor-sheet__rich-editor:focus-within {
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+  }
+
+  .bot-message-editor-sheet__media-button:focus-within {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .bot-message-editor-sheet__rich-editor .max-rich-text-editor__link-panel input {
+    height: 44px;
+  }
+
+  .bot-message-editor-sheet__rich-editor .max-rich-text-editor__link-panel button {
+    min-width: 44px;
+    height: 44px;
+  }
+}

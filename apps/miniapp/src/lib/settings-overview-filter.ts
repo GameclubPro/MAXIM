@@ -13,10 +13,20 @@ function normalizeSearchValue(value: string): string {
 
 function readEntrySearchText(entry: HTMLElement): string {
   const title = entry.querySelector<HTMLElement>(
-    '.settings-section__toggle-main h3, .settings-speech-style-card__title',
+    '.settings-section__title, .settings-speech-style-card__title',
+  );
+  const nestedSearchText = Array.from(
+    entry.querySelectorAll<HTMLElement>('[data-settings-search]'),
+    (element) => element.dataset.settingsSearch,
   );
   return normalizeSearchValue(
-    [entry.dataset.settingsSearch, entry.getAttribute('aria-label'), title?.textContent]
+    [
+      entry.dataset.settingsSearch,
+      ...nestedSearchText,
+      entry.getAttribute('aria-label'),
+      title?.textContent,
+      entry.textContent,
+    ]
       .filter(Boolean)
       .join(' '),
   );

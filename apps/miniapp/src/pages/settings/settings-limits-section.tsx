@@ -117,7 +117,6 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
           open={expanded}
           controls="settings-limits-content"
           onClick={() => toggleSection('limits')}
-          hideChevron
         />
       </div>
 
@@ -140,6 +139,14 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
         >
           {expanded ? (
             <div className="settings-section__collapse-inner">
+              <div
+                className="settings-subsection-divider"
+                role="separator"
+                aria-label="Защита от спама"
+              >
+                <span>Защита от спама</span>
+              </div>
+
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
                   <div className="settings-native-toggle__title-wrap">
@@ -229,6 +236,14 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                     Удаляются только подтвержденные.
                   </p>
                 ) : null}
+              </div>
+
+              <div
+                className="settings-subsection-divider"
+                role="separator"
+                aria-label="Лимиты активности"
+              >
+                <span>Лимиты активности</span>
               </div>
 
               <div
@@ -595,6 +610,14 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
                     Стикеры считаются отдельно и не попадают в лимит фото.
                   </p>
                 ) : null}
+              </div>
+
+              <div
+                className="settings-subsection-divider"
+                role="separator"
+                aria-label="Разрешённые типы сообщений"
+              >
+                <span>Разрешённые типы</span>
               </div>
 
               <div className="settings-native-toggle">

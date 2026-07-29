@@ -99,7 +99,6 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
           open={expanded}
           controls="settings-commercial-filter-content"
           onClick={() => toggleSection('commercialFilter')}
-          hideChevron
         />
       </div>
 

@@ -343,8 +343,8 @@ const baseScenarios = [
       {
         searchParams: {
           focus: 'broadcast',
-          legacyKind: 'autopost',
-          legacyId: 'autopost-preview-soil',
+          legacyKind: 'broadcast',
+          legacyId: 'broadcast-preview-1',
         },
       },
     ],

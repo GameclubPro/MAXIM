@@ -10,13 +10,17 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  forwardRef,
   lazy,
   Suspense,
+  useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
+  type ForwardedRef,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -67,6 +71,16 @@ const LazyActionConfirmSheet = lazy(async () => {
 });
 
 type GiveawayEditorMode = 'closed' | 'create' | 'edit';
+export type ManagedGiveawayCardHandle = {
+  requestClose: () => boolean;
+};
+
+type ManagedGiveawayCardProps = {
+  api: ApiTransport;
+  entityType: 'chat' | 'channel';
+  entityId: string;
+  onClosePanel: () => void;
+};
 type GiveawayEditorStepId = 'basics' | 'conditions' | 'prizes';
 type GiveawayPrizeMode = 'same' | 'different';
 type GiveawayHintKey =
@@ -83,7 +97,7 @@ type GiveawayHintKey =
 type GiveawayValidationResult = { valid: boolean; message: string };
 type GiveawayValidationFocusTarget = 'title' | 'endsAt' | 'channels' | 'prizes';
 type GiveawayConfirmationAction =
-  | { kind: 'discard-editor'; origin: 'back' | 'reset' }
+  | { kind: 'discard-editor'; origin: 'back' | 'reset'; closePanel?: boolean }
   | { kind: 'cancel-draft'; giveawayId: string }
   | { kind: 'close'; giveawayId: string; title: string }
   | { kind: 'reroll'; giveawayId: string; winnerId: string; winnerName: string }
@@ -690,15 +704,10 @@ function formatCompactMetricDate(value: string | null, fallback: string): string
   });
 }
 
-export function ManagedGiveawayCard({
-  api,
-  entityType,
-  entityId,
-}: {
-  api: ApiTransport;
-  entityType: 'chat' | 'channel';
-  entityId: string;
-}) {
+function ManagedGiveawayCardImpl(
+  { api, entityType, entityId, onClosePanel }: ManagedGiveawayCardProps,
+  ref: ForwardedRef<ManagedGiveawayCardHandle>,
+) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [editorMode, setEditorMode] = useState<GiveawayEditorMode>('closed');
@@ -1132,7 +1141,7 @@ export function ManagedGiveawayCard({
     deliverMutation.isPending ||
     deleteMutation.isPending;
 
-  const clearEditor = () => {
+  const clearEditor = useCallback(() => {
     setPendingConfirmation(null);
     setEditorMode('closed');
     setEditingGiveawayId(null);
@@ -1145,7 +1154,7 @@ export function ManagedGiveawayCard({
     setChannelModalSelection([]);
     setChannelLinkValue('');
     setResolvedExternalChannels({});
-  };
+  }, []);
 
   const applyEditorPayload = (giveaway: ManagedGiveawayDetails) => {
     const nextDraft = toEditorDraft(giveaway);
@@ -1971,7 +1980,11 @@ export function ManagedGiveawayCard({
     }
 
     if (action.kind === 'discard-editor') {
+      const closePanel = action.closePanel === true;
       clearEditor();
+      if (closePanel) {
+        onClosePanel();
+      }
       return;
     }
 
@@ -2013,15 +2026,43 @@ export function ManagedGiveawayCard({
       return;
     }
 
+    const closePanel =
+      pendingConfirmation?.kind === 'discard-editor' && pendingConfirmation.closePanel === true;
     const saved = await saveEditor();
     if (!saved) {
       return;
     }
 
     clearEditor();
+    if (closePanel) {
+      onClosePanel();
+    }
   };
 
   const isEditingOpen = editorMode !== 'closed';
+  useImperativeHandle(
+    ref,
+    () => ({
+      requestClose: () => {
+        if (isBusy || pendingConfirmation) {
+          return false;
+        }
+
+        if (!isEditingOpen) {
+          return true;
+        }
+
+        if (hasUnsavedEditorChanges) {
+          setPendingConfirmation({ kind: 'discard-editor', origin: 'back', closePanel: true });
+          return false;
+        }
+
+        clearEditor();
+        return true;
+      },
+    }),
+    [clearEditor, hasUnsavedEditorChanges, isBusy, isEditingOpen, pendingConfirmation],
+  );
   useEffect(() => {
     void import('./ui/action-confirm-sheet');
   }, []);
@@ -2048,7 +2089,7 @@ export function ManagedGiveawayCard({
       requestCloseEditor();
       return true;
     },
-    { enabled: isEditingOpen && pendingConfirmation === null, priority: 540 },
+    { enabled: isEditingOpen && pendingConfirmation === null, priority: 640 },
   );
   const publicationTextReady = Boolean(draft?.description.trim());
   const canSaveEditor = Boolean(draft) && validation.valid && (editorMode === 'create' || isDirty);
@@ -3504,3 +3545,5 @@ export function ManagedGiveawayCard({
     </div>
   );
 }
+
+export const ManagedGiveawayCard = forwardRef(ManagedGiveawayCardImpl);

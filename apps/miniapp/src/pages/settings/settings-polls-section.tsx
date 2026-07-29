@@ -51,14 +51,13 @@ export function SettingsPollsSection({
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Опросы"
-          summary=""
+          summary="Создание, публикация и результаты"
           status="Голоса"
           icon={<StatsUpSquare aria-hidden focusable="false" />}
           tone="mint"
           open={expanded}
           controls="settings-polls-content"
           onClick={toggleSection}
-          hideChevron
         />
       </div>
 

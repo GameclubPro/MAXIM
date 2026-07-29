@@ -146,7 +146,6 @@ export function SettingsAdminCommandsSection({
           open={expanded}
           controls="settings-commands-content"
           onClick={onToggleSection}
-          hideChevron
         />
       </div>
 

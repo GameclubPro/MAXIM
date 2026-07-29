@@ -25,7 +25,14 @@ export function PublicationWorkspaceHandoff({
           'publication-workspace-handoff--settings-tile settings-section__toggle is-stateless',
       )}
       to={`/publications?compose=1&entityType=${entityType}&entityId=${encodeURIComponent(entityId)}`}
-      aria-label={variant !== 'action' ? 'Открыть посты' : undefined}
+      aria-label={
+        variant !== 'action' ? 'Посты. Публикации и расписание. Статус: открыть' : undefined
+      }
+      data-settings-search={
+        variant !== 'action'
+          ? 'Посты Публикации и расписание автопостинг отправка создать'
+          : undefined
+      }
     >
       {variant === 'settings-tile' ? (
         <>
@@ -33,7 +40,12 @@ export function PublicationWorkspaceHandoff({
             <SettingsSectionIcon name="send" />
           </span>
           <span className="settings-section__toggle-main">
-            <h3>Посты</h3>
+            <span className="settings-section__title">Посты</span>
+            <span className="settings-section__summary">Публикации и расписание</span>
+          </span>
+          <span className="settings-section__status-chip is-mint">Открыть</span>
+          <span className="settings-section__chevron" aria-hidden>
+            <NavArrowRight className="settings-section__chevron-icon" />
           </span>
         </>
       ) : variant === 'settings-entry' ? (

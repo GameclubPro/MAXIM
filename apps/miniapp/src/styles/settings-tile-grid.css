@@ -39,7 +39,7 @@
   .channel-settings-screen > .channel-settings-card {
     grid-column: 1 / -1;
     min-width: 0;
-    min-height: 60px;
+    min-height: 68px;
     height: auto;
     padding: 0;
     border: 0;
@@ -66,15 +66,15 @@
     > .settings-section__toggle {
     position: relative;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: 36px minmax(0, 1fr) minmax(0, max-content) 18px;
+    grid-template-rows: auto;
     grid-template-areas: none;
     align-items: center;
     width: 100%;
-    min-height: 60px;
+    min-height: 68px;
     height: auto;
     gap: 10px;
-    padding: 8px 10px;
+    padding: 9px 10px;
     overflow: hidden;
     border: 1px solid var(--border-subtle);
     border-inline-start: 3px solid var(--accent);
@@ -90,7 +90,7 @@
     .settings-sections-shell
     .settings-home-entry
     .settings-section__toggle {
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: auto;
     grid-template-areas: none;
   }
 
@@ -234,14 +234,14 @@
     display: grid;
     justify-content: stretch;
     text-align: left;
+    gap: 3px;
   }
 
   body.settings-home-page-open
     .settings-sections--chat-home
     .settings-home-entry
-    .settings-section__toggle-main
-    h3,
-  .channel-settings-screen .settings-section__toggle-main h3 {
+    .settings-section__title,
+  .channel-settings-screen .settings-section__title {
     display: -webkit-box;
     margin: 0;
     overflow: hidden;
@@ -259,13 +259,81 @@
   body.settings-home-page-open
     .settings-sections--chat-home
     .settings-home-entry
-    :is(.settings-section__status-chip, .settings-section__chevron),
+    .settings-section__summary,
   .channel-settings-screen
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle
-    :is(.settings-section__status-chip, .settings-section__chevron) {
-    display: none;
+    .settings-section__summary {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 560;
+    line-height: 1.25;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__status-chip,
+  .channel-settings-screen
+    > .channel-settings-card
+    > .settings-section__head
+    > .settings-section__toggle
+    .settings-section__status-chip {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: center;
+    max-width: 78px;
+    min-height: 24px;
+    padding: 0 7px;
+    border-color: var(--border-subtle);
+    border-radius: 6px;
+    background: var(--surface-card-muted);
+    box-shadow: none;
+    font-size: 0.66rem;
+    font-weight: 720;
+    letter-spacing: 0;
+    line-height: 1;
+    text-transform: none;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__chevron,
+  .channel-settings-screen
+    > .channel-settings-card
+    > .settings-section__head
+    > .settings-section__toggle
+    .settings-section__chevron {
+    grid-column: 4;
+    grid-row: 1;
+    display: grid;
+    width: 18px;
+    height: 24px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+    box-shadow: none;
+  }
+
+  body.settings-home-page-open
+    .settings-sections--chat-home
+    .settings-home-entry
+    .settings-section__chevron-icon,
+  .channel-settings-screen
+    > .channel-settings-card
+    > .settings-section__head
+    > .settings-section__toggle
+    .settings-section__chevron-icon {
+    width: 18px;
+    height: 18px;
   }
 
   .channel-settings-screen > .channel-settings-card .publication-workspace-handoff--settings-entry {
@@ -433,6 +501,32 @@
       > .channel-settings-card
       .publication-workspace-handoff--settings-entry {
       padding-inline: 8px;
+    }
+
+    body.settings-home-page-open
+      .settings-sections--chat-home
+      .settings-home-entry
+      .settings-section__toggle,
+    .channel-settings-screen
+      > .channel-settings-card
+      > .settings-section__head
+      > .settings-section__toggle {
+      grid-template-columns: 34px minmax(0, 1fr) minmax(0, max-content) 16px;
+      gap: 7px;
+    }
+
+    body.settings-home-page-open
+      .settings-sections--chat-home
+      .settings-home-entry
+      .settings-section__status-chip,
+    .channel-settings-screen
+      > .channel-settings-card
+      > .settings-section__head
+      > .settings-section__toggle
+      .settings-section__status-chip {
+      max-width: 66px;
+      padding-inline: 5px;
+      font-size: 0.62rem;
     }
   }
 }
