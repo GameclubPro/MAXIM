@@ -9,7 +9,11 @@ import {
   ShieldCheck,
   WarningCircle,
 } from 'iconoir-react';
-import type { VkParsingPost, VkParsingSettings } from '@maxim/contracts';
+import type {
+  ChannelPostSignatureSettings,
+  VkParsingPost,
+  VkParsingSettings,
+} from '@maxim/contracts';
 import { lazy, Suspense } from 'react';
 import { cn } from '../../lib/cn';
 import { MaxMarkdownPreview } from '../max-markdown-preview';
@@ -32,6 +36,7 @@ const LazyPostEditor = lazy(async () => {
 type PostCardProps = {
   post: VkParsingPost;
   settings: VkParsingSettings;
+  postSignature: ChannelPostSignatureSettings;
   channelLinkUrl?: string;
   isEditing: boolean;
   isPublishing: boolean;
@@ -71,6 +76,7 @@ function renderStatusIcon(post: VkParsingPost) {
 export function PostCard({
   post,
   settings,
+  postSignature,
   channelLinkUrl,
   isEditing,
   isPublishing,
@@ -187,8 +193,8 @@ export function PostCard({
             selectedVideoUrls={selectedVideoUrls}
             selectedLinkUrls={selectedLinkUrls}
             stripLinksEnabled={settings.stripLinksEnabled}
-            appendChannelLinkEnabled={settings.appendChannelLinkEnabled}
-            channelLinkText={settings.channelLinkText}
+            appendChannelLinkEnabled={postSignature.enabled}
+            channelLinkText={postSignature.text}
             channelLinkUrl={channelLinkUrl}
             preserveLinkUrls={
               unsupportedVideoFallbackUrl ? [unsupportedVideoFallbackUrl] : undefined

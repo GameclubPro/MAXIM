@@ -158,6 +158,45 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
   });
 
+  it('allows saving a channel post signature through the mutation tunnel', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({ enabled: true, text: 'Читать канал' });
+    const body = Buffer.from(payload, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ enabled: true, text: 'Читать канал' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method: 'PATCH',
+        path: '/channels/channel-1/post-signature',
+        body,
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      TEST_USER,
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/channels/channel-1/post-signature',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: payload,
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
   it('allows refreshing a published giveaway keyboard through the mutation tunnel', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

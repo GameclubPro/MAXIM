@@ -2,6 +2,7 @@ import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
+  channelPostSignatureSettingsSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
   managedEntityAccessRecheckResponseSchema,
@@ -18,6 +19,7 @@ import {
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   sendBroadcastResultSchema,
+  updateChannelPostSignatureRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   addVkParsingSourceRequestSchema,
@@ -32,6 +34,7 @@ import {
   type BroadcastHandoffState,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
+  type ChannelPostSignatureSettings,
   type ManagedEntityAccessRecheckResponse,
   type ManagedBroadcastCalendarResponse,
   type ManagedBroadcastDetails,
@@ -47,6 +50,7 @@ import {
   type PublishChannelEngagementResult,
   type SendBroadcastTestResult,
   type UpdateManagedAutopostRuleRequest,
+  type UpdateChannelPostSignatureRequest,
   type UpdateVkParsingSettingsRequest,
   type VkParsingCapability,
   type VkParsingFeed,
@@ -157,6 +161,27 @@ export async function getChannelSettingsScreen(
     signal: request.signal,
   });
   return channelSettingsScreenResponseSchema.parse(response);
+}
+
+export async function getChannelPostSignature(
+  api: ApiTransport,
+  chatId: string,
+): Promise<ChannelPostSignatureSettings> {
+  const response = await api.request(`/channels/${chatId}/post-signature`);
+  return channelPostSignatureSettingsSchema.parse(response);
+}
+
+export async function updateChannelPostSignature(
+  api: ApiTransport,
+  chatId: string,
+  data: UpdateChannelPostSignatureRequest,
+): Promise<ChannelPostSignatureSettings> {
+  const requestBody = updateChannelPostSignatureRequestSchema.parse(data);
+  const response = await api.request(`/channels/${chatId}/post-signature`, {
+    method: 'PATCH',
+    body: JSON.stringify(requestBody),
+  });
+  return channelPostSignatureSettingsSchema.parse(response);
 }
 
 export async function recheckChannelManagedEntityAccess(

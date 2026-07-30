@@ -30,6 +30,10 @@
       "types": "./dist/channel-dialog.d.ts",
       "default": "./dist/channel-dialog.js"
     },
+    "./channel-post-signature": {
+      "types": "./dist/channel-post-signature.d.ts",
+      "default": "./dist/channel-post-signature.js"
+    },
     "./chat-participants": {
       "types": "./dist/chat-participants.d.ts",
       "default": "./dist/chat-participants.js"

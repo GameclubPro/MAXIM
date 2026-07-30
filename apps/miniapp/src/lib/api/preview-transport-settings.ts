@@ -3,6 +3,7 @@ import {
   applySectionToAllResponseSchema,
   applySettingsTargetSchema,
   broadcastHandoffStateSchema,
+  channelPostSignatureSettingsSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
   chatRulesSchema,
@@ -16,6 +17,7 @@ import {
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   sendBroadcastTestResultSchema,
+  updateChannelPostSignatureRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   type BroadcastHandoffResponse,
@@ -197,6 +199,7 @@ export function buildChannelSettingsScreen(
   );
   return channelSettingsScreenResponseSchema.parse({
     settings: state.channelSettings,
+    postSignature: state.channelPostSignature,
     header: {
       id: channelId,
       title: resolveChannelTitle(channelId, state),
@@ -660,6 +663,23 @@ export async function handleChannelRequest(
 
   if (tail[0] === 'settings-screen' && method === 'GET') {
     return cloneJson(buildChannelSettingsScreen(state, channelId));
+  }
+
+  if (tail[0] === 'post-signature' && tail.length === 1) {
+    if (method === 'GET') {
+      return cloneJson(state.channelPostSignature);
+    }
+
+    if (method === 'PATCH') {
+      const payload = updateChannelPostSignatureRequestSchema.parse(parseJsonBody(init));
+      state.channelPostSignature = channelPostSignatureSettingsSchema.parse({
+        ...state.channelPostSignature,
+        ...payload,
+      });
+      state.channelVkParsing.settings.appendChannelLinkEnabled = state.channelPostSignature.enabled;
+      state.channelVkParsing.settings.channelLinkText = state.channelPostSignature.text;
+      return cloneJson(state.channelPostSignature);
+    }
   }
 
   if (tail[0] === 'bots' && tail[1] === 'plan' && method === 'GET') {

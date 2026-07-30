@@ -14,6 +14,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import type { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import type { SystemModeSnapshot } from '../system/system-mode.service';
 import type { AdminReadBypassOptions } from './admin.service.support';
+import type { ChannelPostSignatureService } from './channel-post-signature.service';
 
 export type ManagedBroadcastButtonContextOptions = {
   customButtons?: BroadcastLinkButton[];
@@ -47,6 +48,7 @@ export type AdminManagedBroadcastRuntimeContext = {
   readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService;
   readonly managedEntityAccessLossService?: ManagedEntityAccessLossService;
   readonly maxRoutedPublicationService?: MaxRoutedPublicationService;
+  readonly channelPostSignatureService?: ChannelPostSignatureService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
@@ -82,6 +84,7 @@ type AdminManagedBroadcastRuntimeContextTarget = {
   backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService;
   managedEntityAccessLossService?: ManagedEntityAccessLossService;
   maxRoutedPublicationService?: MaxRoutedPublicationService;
+  channelPostSignatureService?: ChannelPostSignatureService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
@@ -133,6 +136,9 @@ export function createAdminManagedBroadcastRuntimeContext(
     },
     get maxRoutedPublicationService(): MaxRoutedPublicationService | undefined {
       return typedTarget.maxRoutedPublicationService;
+    },
+    get channelPostSignatureService(): ChannelPostSignatureService | undefined {
+      return typedTarget.channelPostSignatureService;
     },
     get managedBroadcastDegradePauseLogAtMs(): number {
       return typedTarget.managedBroadcastDegradePauseLogAtMs;

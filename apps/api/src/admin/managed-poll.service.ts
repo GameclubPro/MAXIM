@@ -65,6 +65,7 @@ import {
   resolveManagedBroadcastUploadRetryDelayMs,
 } from './admin-managed-broadcast-media';
 import { AdminService } from './admin.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import {
   BROADCAST_IMAGE_MAX_BYTES,
   BROADCAST_IMAGES_TOTAL_MAX_BYTES,
@@ -155,6 +156,7 @@ export class ManagedPollService {
     @Optional() private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
+    @Optional() private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {}
 
   async processPendingPollRenderRepairs(): Promise<number> {
@@ -473,11 +475,24 @@ export class ManagedPollService {
     try {
       const publicationPoll = await this.findPoll(chatId, poll.id);
       const result = buildManagedPollOptionResults(publicationPoll.options, new Map());
-      const text = buildManagedPollMessageText({
+      const baseText = buildManagedPollMessageText({
         question: publicationPoll.question,
         questionFormat: this.normalizeQuestionFormat(publicationPoll.questionFormat),
       });
-      const textFormat = this.resolveQuestionTextFormat(publicationPoll.questionFormat);
+      const baseTextFormat = this.resolveQuestionTextFormat(publicationPoll.questionFormat);
+      const preparedText = this.channelPostSignatureService
+        ? await this.channelPostSignatureService.preparePostText(
+            chatId,
+            { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
+            {
+              entityType,
+              trafficClass: 'interactive',
+              sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
+            },
+          )
+        : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
+      const text = preparedText.text;
+      const textFormat = preparedText.textFormat;
       const messageOptions: MaxSendMessageOptions = {
         ...(textFormat ? { textFormat } : {}),
         buttons: buildManagedPollButtons(publicationPoll.id, result.options),
@@ -844,7 +859,7 @@ export class ManagedPollService {
         await this.renderPollPublication(chatId, poll.id, 'vote-media');
         return;
       }
-      const messageEdit = this.buildCallbackMessageEdit(poll);
+      const messageEdit = await this.buildCallbackMessageEdit(poll);
       try {
         await this.maxClient.answerCallback(callbackId, notification, messageEdit, {
           ...this.buildMaxOptions(
@@ -1075,11 +1090,25 @@ export class ManagedPollService {
       if (!poll.publicationMessageId) {
         return true;
       }
-      const text = buildManagedPollMessageText({
+      const baseText = buildManagedPollMessageText({
         question: poll.question,
         questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
       });
-      const textFormat = this.resolveQuestionTextFormat(poll.questionFormat);
+      const baseTextFormat = this.resolveQuestionTextFormat(poll.questionFormat);
+      const entityType = this.managedEntityTypeFromPrisma(poll.chat.entityType);
+      const preparedText = this.channelPostSignatureService
+        ? await this.channelPostSignatureService.preparePostText(
+            chatId,
+            { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
+            {
+              entityType,
+              trafficClass: action === 'background-repair' ? 'background' : 'interactive',
+              sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
+            },
+          )
+        : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
+      const text = preparedText.text;
+      const textFormat = preparedText.textFormat;
       const options =
         poll.status === ManagedPollStatus.ACTIVE
           ? {
@@ -1090,7 +1119,6 @@ export class ManagedPollService {
           : textFormat
             ? { textFormat }
             : undefined;
-      const entityType = this.managedEntityTypeFromPrisma(poll.chat.entityType);
       const botId =
         poll.publicationBotId ?? (await this.resolveFallbackPollBotId(chatId, entityType));
       try {
@@ -1131,14 +1159,27 @@ export class ManagedPollService {
     return false;
   }
 
-  private buildCallbackMessageEdit(
+  private async buildCallbackMessageEdit(
     poll: Awaited<ReturnType<ManagedPollService['loadPollAggregate']>>,
   ) {
-    const text = buildManagedPollMessageText({
+    const baseText = buildManagedPollMessageText({
       question: poll.question,
       questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
     });
-    const textFormat = this.resolveQuestionTextFormat(poll.questionFormat);
+    const baseTextFormat = this.resolveQuestionTextFormat(poll.questionFormat);
+    const preparedText = this.channelPostSignatureService
+      ? await this.channelPostSignatureService.preparePostText(
+          poll.chatId,
+          { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
+          {
+            entityType: this.managedEntityTypeFromPrisma(poll.chat.entityType),
+            trafficClass: 'critical',
+            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
+          },
+        )
+      : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
+    const text = preparedText.text;
+    const textFormat = preparedText.textFormat;
     return {
       text,
       ...(poll.status === ManagedPollStatus.ACTIVE || textFormat

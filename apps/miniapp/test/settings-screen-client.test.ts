@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   channelSettingsSchema,
   chatRulesSchema,
   chatSettingsSchema,
   type ChannelSettingsScreenResponse,
   type ChatSettingsScreenResponse,
 } from '@maxim/contracts';
-import { getChannelSettingsScreen } from '../src/lib/api/channel-settings-client';
+import {
+  getChannelPostSignature,
+  getChannelSettingsScreen,
+  updateChannelPostSignature,
+} from '../src/lib/api/channel-settings-client';
 import { getSettingsScreen } from '../src/lib/api/chat-settings-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
@@ -52,6 +57,10 @@ function createChatSettingsScreenResponse(): ChatSettingsScreenResponse {
 function createChannelSettingsScreenResponse(): ChannelSettingsScreenResponse {
   return {
     settings: channelSettingsSchema.parse({}),
+    postSignature: {
+      enabled: false,
+      text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+    },
     header: {
       id: 'channel-1',
       title: 'Канал',
@@ -81,6 +90,24 @@ test('chat settings screen client only adds prefetch query when requested', asyn
   assert.equal(calls[0]?.init?.signal, controller.signal);
   assert.equal(calls[1]?.path, '/chats/chat-1/settings-screen?prefetch=1');
   assert.equal(calls[1]?.init?.signal, controller.signal);
+});
+
+test('channel post signature client uses its independent GET and PATCH endpoints', async () => {
+  const calls: ApiCall[] = [];
+  const api = createApiMock({ enabled: true, text: 'Читать канал' }, calls);
+
+  const current = await getChannelPostSignature(api, 'channel-1');
+  const updated = await updateChannelPostSignature(api, 'channel-1', {
+    enabled: true,
+    text: 'Читать канал',
+  });
+
+  assert.deepEqual(current, { enabled: true, text: 'Читать канал' });
+  assert.deepEqual(updated, current);
+  assert.equal(calls[0]?.path, '/channels/channel-1/post-signature');
+  assert.equal(calls[1]?.path, '/channels/channel-1/post-signature');
+  assert.equal(calls[1]?.init?.method, 'PATCH');
+  assert.equal(calls[1]?.init?.body, JSON.stringify(current));
 });
 
 test('channel settings screen client only adds prefetch query when requested', async () => {

@@ -54,6 +54,7 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
       title: 'Канал администраторов',
       entityType: ChatEntityType.CHANNEL,
       vkParsingSettings: null,
+      channelSettings: null,
     },
     source: {
       id: 'source-1',
@@ -842,6 +843,10 @@ describe('SafetyDeskService', () => {
             skipAdsEnabled: false,
             appendChannelLinkEnabled: true,
             channelLinkText: 'Наш канал',
+          },
+          channelSettings: {
+            postSignatureEnabled: true,
+            postSignatureText: 'Наш канал',
           },
         },
       }),

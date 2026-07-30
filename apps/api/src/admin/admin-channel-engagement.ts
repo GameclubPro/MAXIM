@@ -35,6 +35,10 @@ export type BuildChannelEngagementDialogArtifactsParams = {
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
 };
 
+type ChannelEngagementTextPayload = Pick<MaxSendMessageOptions, 'textFormat'> & {
+  text: string;
+};
+
 type ChannelEngagementMaxClient = Pick<
   MaxClientService,
   'editMessageInlineKeyboard' | 'sendMessageImmediateWithResolvedLink'
@@ -58,12 +62,16 @@ export async function publishChannelEngagementMessage(params: {
   buildDialogArtifacts: (
     params: BuildChannelEngagementDialogArtifactsParams,
   ) => ChannelEngagementDialogArtifacts;
+  prepareText?: (payload: ChannelEngagementTextPayload) => Promise<ChannelEngagementTextPayload>;
   generateThreadId?: () => string;
 }): Promise<PublishChannelEngagementResult> {
   const parsed = publishChannelEngagementRequestSchema.safeParse(params.body);
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }
+  const messagePayload = params.prepareText
+    ? await params.prepareText({ text: parsed.data.text })
+    : { text: parsed.data.text };
 
   const persistedSettings = await params.prisma.channelSettings.upsert({
     where: { chatId: params.chatId },
@@ -144,11 +152,12 @@ export async function publishChannelEngagementMessage(params: {
     try {
       const options = {
         buttons,
-      } satisfies Pick<MaxSendMessageOptions, 'buttons'>;
+        ...(messagePayload.textFormat ? { textFormat: messagePayload.textFormat } : {}),
+      } satisfies Pick<MaxSendMessageOptions, 'buttons' | 'textFormat'>;
       await params.maxClient.editMessageInlineKeyboard(
         params.chatId,
         messageId,
-        parsed.data.text,
+        messagePayload.text,
         options,
         buildRequestOptions(authorBotId),
       );
@@ -172,10 +181,11 @@ export async function publishChannelEngagementMessage(params: {
     try {
       const options = {
         buttons,
+        ...(messagePayload.textFormat ? { textFormat: messagePayload.textFormat } : {}),
       } satisfies MaxSendMessageOptions;
       const published = await params.maxClient.sendMessageImmediateWithResolvedLink(
         params.chatId,
-        parsed.data.text,
+        messagePayload.text,
         options,
         buildRequestOptions(authorBotId),
       );

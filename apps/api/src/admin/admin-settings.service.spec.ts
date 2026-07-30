@@ -167,6 +167,11 @@ function createService(
     botAssignmentData?: { botId?: string; primaryBotId?: string };
     botSpeechPreviewProfile?: { persona: 'male' | 'female' | 'neutral'; characterName: string };
     currentSettings?: Record<string, unknown> | null;
+    channelPostSignatureService?: {
+      getSettings: jest.Mock;
+      preparePostText: jest.Mock;
+      updateSettings: jest.Mock;
+    };
     domainAllowlistDetails?: Array<Record<string, unknown>>;
     managedBroadcasts?: Array<Record<string, unknown>>;
     managedEntityHeader?: Record<string, unknown>;
@@ -290,16 +295,14 @@ function createService(
       update: jest.fn().mockResolvedValue({}),
     },
     channelSettings: {
-      findUnique: jest
-        .fn()
-        .mockResolvedValue(
-          options.persistedChannelSettings
-            ? {
-                postSuggestionsEnabled:
-                  options.persistedChannelSettings.postSuggestionsEnabled === true,
-              }
-            : null,
-        ),
+      findUnique: jest.fn().mockResolvedValue(
+        options.persistedChannelSettings
+          ? {
+              postSuggestionsEnabled:
+                options.persistedChannelSettings.postSuggestionsEnabled === true,
+            }
+          : null,
+      ),
       upsert: jest
         .fn()
         .mockResolvedValue(options.persistedChannelSettings ?? createPersistedChannelSettings()),
@@ -361,6 +364,21 @@ function createService(
   const nightModeTransitionScheduler = options.nightModeTransitionScheduler ?? {
     reconcileChats: jest.fn().mockResolvedValue(undefined),
   };
+  const channelPostSignatureService = options.channelPostSignatureService ?? {
+    getSettings: jest.fn().mockResolvedValue({
+      enabled: false,
+      text: 'Подписаться на канал',
+    }),
+    preparePostText: jest
+      .fn()
+      .mockImplementation((_chatId, payload) =>
+        Promise.resolve({ ...payload, signatureApplied: false }),
+      ),
+    updateSettings: jest.fn().mockResolvedValue({
+      enabled: true,
+      text: 'Читать канал',
+    }),
+  };
   const service = new AdminSettingsService(
     legacyAdminService as never,
     prisma as never,
@@ -370,10 +388,13 @@ function createService(
     manualModerationService as never,
     managedBroadcastService as never,
     nightModeTransitionScheduler as never,
+    undefined,
+    channelPostSignatureService as never,
   );
 
   return {
     chatContextCache,
+    channelPostSignatureService,
     legacyAdminService,
     managedBroadcastService,
     managedEntitiesService,
@@ -804,6 +825,10 @@ describe('AdminSettingsService chat rules', () => {
     });
 
     expect(result.settings.commentsEnabled).toBe(true);
+    expect(result.postSignature).toEqual({
+      enabled: false,
+      text: 'Подписаться на канал',
+    });
     expect(result.header).toEqual(channelHeader);
     expect(result.managedBroadcasts).toHaveLength(1);
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
@@ -831,6 +856,38 @@ describe('AdminSettingsService chat rules', () => {
         skipAdminCheck: true,
         skipEntityCheck: true,
       },
+    );
+  });
+
+  it('checks channel access and delegates independent post signature reads and updates', async () => {
+    const { channelPostSignatureService, legacyAdminService, service } = createService();
+
+    await expect(service.getChannelPostSignature('channel-1', user as never)).resolves.toEqual({
+      enabled: false,
+      text: 'Подписаться на канал',
+    });
+    await expect(
+      service.updateChannelPostSignature('channel-1', user as never, {
+        enabled: true,
+        text: 'Читать канал',
+      }),
+    ).resolves.toEqual({ enabled: true, text: 'Читать канал' });
+
+    expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
+      'channel-1',
+      'admin-1',
+      'channel',
+    );
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
+      'channel-1',
+      'admin-1',
+      'channel',
+    );
+    expect(channelPostSignatureService.getSettings).toHaveBeenCalledWith('channel-1');
+    expect(channelPostSignatureService.updateSettings).toHaveBeenCalledWith(
+      'channel-1',
+      'admin-1',
+      { enabled: true, text: 'Читать канал' },
     );
   });
 
@@ -911,19 +968,20 @@ describe('AdminSettingsService chat rules', () => {
   });
 
   it('publishes channel engagement without routing through legacy publishChannelEngagementMessage', async () => {
-    const { legacyAdminService, maxClient, prisma, service } = createService({
-      botAssignmentData: {
-        botId: 'bot-1',
-        primaryBotId: 'bot-1',
-      },
-      persistedChannelSettings: createPersistedChannelSettings({
-        chatId: 'channel-1',
-        engagementPublishedMessageId: null,
-        engagementPublishedThreadId: null,
-        engagementPublishedAt: null,
-        postSuggestionsEntryMode: 'BOT',
-      }),
-    });
+    const { channelPostSignatureService, legacyAdminService, maxClient, prisma, service } =
+      createService({
+        botAssignmentData: {
+          botId: 'bot-1',
+          primaryBotId: 'bot-1',
+        },
+        persistedChannelSettings: createPersistedChannelSettings({
+          chatId: 'channel-1',
+          engagementPublishedMessageId: null,
+          engagementPublishedThreadId: null,
+          engagementPublishedAt: null,
+          postSuggestionsEntryMode: 'BOT',
+        }),
+      });
 
     const result = await service.publishChannelEngagementMessage('channel-1', user as never, {
       text: 'Нажмите кнопку ниже.',
@@ -948,6 +1006,15 @@ describe('AdminSettingsService chat rules', () => {
       'channel',
     );
     expect(legacyAdminService.publishChannelEngagementMessage).not.toHaveBeenCalled();
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledWith(
+      'channel-1',
+      { text: 'Нажмите кнопку ниже.' },
+      {
+        entityType: 'channel',
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      },
+    );
     expect(legacyAdminService.resolveChannelEngagementActionBotId).toHaveBeenCalledWith(
       'channel-1',
     );

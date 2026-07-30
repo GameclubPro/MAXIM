@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
+import { channelPostSignatureSettingsSchema } from './channel-post-signature.js';
 export * from './bot-speech.js';
 export * from './broadcast-common.js';
 export * from './channel-stats.js';
@@ -2672,6 +2673,7 @@ export type ChatSettingsScreenResponse = z.infer<typeof chatSettingsScreenRespon
 
 export const channelSettingsScreenResponseSchema = z.object({
   settings: channelSettingsSchema,
+  postSignature: channelPostSignatureSettingsSchema,
   header: managedEntityHeaderSchema,
   managedBroadcasts: z.array(managedBroadcastSummarySchema),
 });

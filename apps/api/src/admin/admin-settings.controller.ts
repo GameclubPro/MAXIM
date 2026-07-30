@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { AdminSettingsService } from './admin-settings.service';
@@ -89,6 +100,20 @@ export class AdminSettingsController {
     @Body() body: unknown,
   ) {
     return this.settingsService.updateChannelSettings(chatId, user, body);
+  }
+
+  @Get('channels/:chatId/post-signature')
+  getChannelPostSignature(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.settingsService.getChannelPostSignature(chatId, user);
+  }
+
+  @Patch('channels/:chatId/post-signature')
+  updateChannelPostSignature(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.settingsService.updateChannelPostSignature(chatId, user, body);
   }
 
   @Post('channels/:chatId/engagement-publish')

@@ -319,6 +319,7 @@ import {
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import type { ChannelPostSignatureService } from './channel-post-signature.service';
 import type {
   ManagedBroadcastButtonContextOptions,
   ManagedBroadcastButtonContextResult,
@@ -702,6 +703,10 @@ export class AdminManagedBroadcastRuntime {
 
   private get maxRoutedPublicationService(): MaxRoutedPublicationService | undefined {
     return this.context.maxRoutedPublicationService;
+  }
+
+  private get channelPostSignatureService(): ChannelPostSignatureService | undefined {
+    return this.context.channelPostSignatureService;
   }
 
   private get managedBroadcastDegradePauseLogAtMs(): number {
@@ -4173,14 +4178,29 @@ export class AdminManagedBroadcastRuntime {
     const hasMedia = Boolean(media.imagePayload) || Boolean(media.attachments?.length);
     const hasMeaningfulText = normalizedSourceText.trim().length > 0;
     const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
-    const messageText = shouldUseRichText
+    const baseMessageText = shouldUseRichText
       ? renderSupportedMarkdownAsHtml(normalizedSourceText, { blockMode: 'raw' })
       : hasMeaningfulText
         ? normalizedSourceText
         : hasMedia
           ? ' '
           : '';
-    const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
+    const baseTextFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText
+      ? 'html'
+      : undefined;
+    const preparedText = this.channelPostSignatureService
+      ? await this.channelPostSignatureService.preparePostText(
+          chatId,
+          { text: baseMessageText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
+          {
+            entityType,
+            trafficClass: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+          },
+        )
+      : { text: baseMessageText, textFormat: baseTextFormat, signatureApplied: false };
+    const messageText = preparedText.text;
+    const textFormat = preparedText.textFormat;
     const messageOptions =
       broadcastButtons.length > 0 || hasMedia || textFormat
         ? {

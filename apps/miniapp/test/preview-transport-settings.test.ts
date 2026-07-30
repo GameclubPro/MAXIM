@@ -32,6 +32,7 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     }>;
   };
   const channelSettings = (await api.request('/channels/preview-channel/settings-screen')) as {
+    postSignature: { enabled: boolean; text: string };
     managedBroadcasts: Array<{
       id: string;
       targetMode: string;
@@ -62,6 +63,10 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     unknown: 0,
   });
   assert.equal(channelSettings.managedBroadcasts[0]?.targetMode, 'current');
+  assert.deepEqual(channelSettings.postSignature, {
+    enabled: false,
+    text: 'Подписаться на канал',
+  });
   assert.equal(channelSettings.managedBroadcasts[0]?.blockedChats, 0);
   assert.deepEqual(channelSettings.managedBroadcasts[0]?.failureBreakdown, {
     transient: 0,
@@ -69,6 +74,25 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     quarantined: 0,
     unknown: 0,
   });
+});
+
+test('preview channel signature update is isolated from channel settings', async () => {
+  const api = createPreviewApiTransport();
+
+  await api.request('/channels/preview-channel/post-signature', {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled: true, text: 'Читать дальше' }),
+  });
+  const signature = (await api.request('/channels/preview-channel/post-signature')) as {
+    enabled: boolean;
+    text: string;
+  };
+  const screen = (await api.request('/channels/preview-channel/settings-screen')) as {
+    postSignature: { enabled: boolean; text: string };
+  };
+
+  assert.deepEqual(signature, { enabled: true, text: 'Читать дальше' });
+  assert.deepEqual(screen.postSignature, signature);
 });
 
 test('preview access query exposes deterministic lost and degraded settings diagnostics', async () => {

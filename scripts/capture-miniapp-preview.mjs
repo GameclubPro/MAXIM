@@ -791,6 +791,18 @@ const scenarioBehaviors = [
     name: 'channel-settings',
   },
   {
+    name: 'channel-settings-post-signature',
+    beforeShot: async (page) => {
+      const signatureToggle = page.getByRole('checkbox', { name: 'Подпись публикаций' });
+      await signatureToggle.check();
+      const signatureText = page.getByRole('textbox', { name: 'Текст ссылки' });
+      await signatureText.fill('Читать канал');
+      await signatureText.blur();
+      await page.getByText('Сохранено', { exact: true }).waitFor({ state: 'visible' });
+      await page.waitForTimeout(250);
+    },
+  },
+  {
     name: 'channel-settings-access-degraded',
     beforeShot: async (page) => {
       await page.locator('.managed-access-alert').waitFor({ state: 'visible' });
@@ -833,13 +845,19 @@ const scenarioBehaviors = [
   {
     name: 'channel-settings-vk-parsing-editor',
     beforeShot: async (page) => {
+      const signatureToggle = page.getByRole('checkbox', { name: 'Подпись публикаций' });
+      await signatureToggle.check();
+      const signatureText = page.getByRole('textbox', { name: 'Текст ссылки' });
+      await signatureText.fill('Наш канал');
+      await signatureText.blur();
+      await page.getByText('Сохранено', { exact: true }).waitFor({ state: 'visible' });
+      await openSettingsSection(
+        page,
+        'Посты из VK',
+        '.settings-drilldown__panel--vk-parsing',
+      );
       const card = page.locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card');
       await card.waitFor({ state: 'visible' });
-      const channelLinkToggle = card.getByRole('checkbox', {
-        name: 'Добавлять ссылку на канал в конце поста',
-      });
-      await channelLinkToggle.check();
-      await card.getByRole('textbox', { name: 'Текст ссылки на канал' }).fill('Наш канал');
       await card.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
       await card.locator('.vk-parsing-editor__composer').waitFor({ state: 'visible' });
       await card.getByRole('button', { name: 'Форматирование', exact: true }).click();

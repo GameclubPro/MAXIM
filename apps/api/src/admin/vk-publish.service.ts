@@ -53,6 +53,7 @@ import {
 import { AdminService } from './admin.service';
 import { BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS } from './admin.service.support';
 import { VkParsingAccessService } from './vk-parsing-access.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { parseVkWallPostAttachments } from './vk-parsing-attachments';
 import {
   computeVkParsingPostContentHash,
@@ -192,6 +193,8 @@ export class VkPublishService {
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
     @Optional()
     private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
+    @Optional()
+    private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
     this.publishLeaseTtlMs =
@@ -209,6 +212,9 @@ export class VkPublishService {
     chatId: string,
     trafficClass: MaxApiTrafficClass = 'interactive',
   ): Promise<void> {
+    if (this.channelPostSignatureService) {
+      return this.channelPostSignatureService.assertChannelLinkAvailable(chatId, trafficClass);
+    }
     await this.resolveChannelLink(chatId, trafficClass);
   }
 
@@ -3025,6 +3031,27 @@ export class VkPublishService {
           .filter(Boolean)
           .join('\n')
       : payload.text;
+
+    if (this.channelPostSignatureService) {
+      const signed = await this.channelPostSignatureService.preparePostText(
+        chatId,
+        {
+          text: contentHtml,
+          ...(usesRichText ? { textFormat: 'html' as const } : {}),
+          engagementText,
+        },
+        {
+          trafficClass,
+          sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+          maxLength: VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
+        },
+      );
+      return {
+        text: signed.text,
+        textFormat: signed.textFormat,
+        engagementText: signed.engagementText ?? engagementText,
+      };
+    }
 
     if (!settings.appendChannelLinkEnabled) {
       this.assertMaxMessageTextLength(contentHtml);

@@ -743,6 +743,8 @@ model ChannelSettings {
   commentsAntiSpamEnabled      Boolean                    @default(false) @map("comments_anti_spam_enabled")
   commentsLimitTwoInRowEnabled Boolean                    @default(false) @map("comments_limit_two_in_row_enabled")
   commentsMessageText          String                     @default("") @map("comments_message_text")
+  postSignatureEnabled         Boolean                    @default(false) @map("post_signature_enabled")
+  postSignatureText            String                     @default("Подписаться на канал") @map("post_signature_text")
   engagementPublishedMessageId String?                    @map("engagement_published_message_id")
   engagementPublishedBotId     String?                    @map("engagement_published_bot_id")
   engagementPublishedThreadId  String?                    @map("engagement_published_thread_id")

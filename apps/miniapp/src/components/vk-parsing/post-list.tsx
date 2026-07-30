@@ -1,9 +1,14 @@
-import type { VkParsingPost, VkParsingSettings } from '@maxim/contracts';
+import type {
+  ChannelPostSignatureSettings,
+  VkParsingPost,
+  VkParsingSettings,
+} from '@maxim/contracts';
 import { PostCard } from './post-card';
 
 type PostListProps = {
   posts: VkParsingPost[];
   settings: VkParsingSettings;
+  postSignature: ChannelPostSignatureSettings;
   channelLinkUrl?: string;
   editingPostId: string | null;
   publishingPostId: string | null;
@@ -26,6 +31,7 @@ type PostListProps = {
 export function PostList({
   posts,
   settings,
+  postSignature,
   channelLinkUrl,
   editingPostId,
   publishingPostId,
@@ -55,6 +61,7 @@ export function PostList({
           key={post.id}
           post={post}
           settings={settings}
+          postSignature={postSignature}
           channelLinkUrl={channelLinkUrl}
           isEditing={editingPostId === post.id}
           isPublishing={publishingPostId === post.id}

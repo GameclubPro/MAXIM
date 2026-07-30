@@ -11,6 +11,7 @@ import {
   type ChannelDialogNotificationMode,
   type ChannelDialogNotificationScope,
   type ChannelDialogType,
+  type ChannelPostSignatureSettings,
   type ChannelSettings,
   type ChatRules,
   type ChatSettings,
@@ -96,6 +97,7 @@ export type PreviewState = {
   spammerReviewCandidates: GlobalSpammerReviewCandidate[];
   channelHeaderParticipantsCount: number;
   channelSettings: ChannelSettings;
+  channelPostSignature: ChannelPostSignatureSettings;
   channelPolls: ManagedPollDetails[];
   channelPollVoters: ManagedPollVoter[];
   channelGiveaways: ManagedGiveawayDetails[];
@@ -324,6 +326,10 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     engagementMessageText: 'Есть идея или обратная связь? Выберите действие ниже.',
     autoPostButtonsMode: 'BOTH',
   });
+  const channelPostSignature: ChannelPostSignatureSettings = {
+    enabled: false,
+    text: 'Подписаться на канал',
+  };
   const channelPolls = [
     managedPollDetailsSchema.parse({
       id: 'poll-channel-active',
@@ -844,6 +850,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     channelDialogs,
     channelDialogThreads: {},
     channelSettings,
+    channelPostSignature,
     channelPolls,
     channelPollVoters,
     channelBroadcasts,

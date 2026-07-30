@@ -20,7 +20,7 @@ import {
   type SafetyDeskQueueResponse,
   type SafetyDeskRiskLevel,
 } from '@maxim/contracts/safety-desk';
-import { VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT } from '@maxim/contracts';
+import { CHANNEL_POST_SIGNATURE_DEFAULT_TEXT } from '@maxim/contracts';
 import {
   BadRequestException,
   ConflictException,
@@ -62,7 +62,14 @@ import { VkPublishService } from './vk-publish.service';
 
 type ReviewPostRow = Prisma.VkParsingPostGetPayload<{
   include: {
-    chat: { select: { title: true; entityType: true; vkParsingSettings: true } };
+    chat: {
+      select: {
+        title: true;
+        entityType: true;
+        vkParsingSettings: true;
+        channelSettings: { select: { postSignatureEnabled: true; postSignatureText: true } };
+      };
+    };
     source: true;
   };
 }>;
@@ -935,7 +942,16 @@ export class SafetyDeskService {
         },
       },
       include: {
-        chat: { select: { title: true, entityType: true, vkParsingSettings: true } },
+        chat: {
+          select: {
+            title: true,
+            entityType: true,
+            vkParsingSettings: true,
+            channelSettings: {
+              select: { postSignatureEnabled: true, postSignatureText: true },
+            },
+          },
+        },
         source: true,
       },
       orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
@@ -952,7 +968,16 @@ export class SafetyDeskService {
     const post = await this.prisma.vkParsingPost.findFirst({
       where: this.buildReviewPostWhere(itemId, options),
       include: {
-        chat: { select: { title: true, entityType: true, vkParsingSettings: true } },
+        chat: {
+          select: {
+            title: true,
+            entityType: true,
+            vkParsingSettings: true,
+            channelSettings: {
+              select: { postSignatureEnabled: true, postSignatureText: true },
+            },
+          },
+        },
         source: true,
       },
     });
@@ -1222,10 +1247,12 @@ export class SafetyDeskService {
             .join('')
         : '';
     const linkText = (
-      post.chat.vkParsingSettings?.channelLinkText ?? VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT
+      post.chat.channelSettings?.postSignatureText ?? CHANNEL_POST_SIGNATURE_DEFAULT_TEXT
     ).trim();
     const signatureHtml =
-      post.chat.vkParsingSettings?.appendChannelLinkEnabled && linkText
+      post.chat.entityType === ChatEntityType.CHANNEL &&
+      post.chat.channelSettings?.postSignatureEnabled &&
+      linkText
         ? `<p><u>${escapeSafetyDeskHtml(linkText)}</u></p>`
         : '';
 

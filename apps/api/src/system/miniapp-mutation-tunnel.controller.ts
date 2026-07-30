@@ -69,6 +69,10 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     ),
   },
   { method: 'PUT', pattern: new RegExp(`^/channels/${ENTITY_ID_SEGMENT}/settings$`) },
+  {
+    method: 'PATCH',
+    pattern: new RegExp(`^/channels/${ENTITY_ID_SEGMENT}/post-signature$`),
+  },
   { method: 'PUT', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/rules$`) },
   { method: 'POST', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/rules/(publish|handoff)$`) },
   { method: 'DELETE', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/rules/publish$`) },

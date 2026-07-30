@@ -31,6 +31,7 @@ import { AdminManagedEntitiesController } from './admin-managed-entities.control
 import { AdminSettingsController } from './admin-settings.controller';
 import { AdminVkParsingController } from './admin-vk-parsing.controller';
 import { ChannelDialogService } from './channel-dialog.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { CHANNEL_DIALOG_LEGACY_PORT } from './channel-dialog-legacy.port';
 import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
@@ -118,6 +119,7 @@ import { SupportRequestsService } from './support-requests.service';
     AdminDialogLinkService,
     AdminSettingsService,
     ChannelDialogService,
+    ChannelPostSignatureService,
     ChannelStatsCollectorService,
     ManualModerationService,
     GlobalSpammerIntelligenceService,
@@ -169,6 +171,7 @@ import { SupportRequestsService } from './support-requests.service';
     AdminDialogLinkService,
     AdminSettingsService,
     ChannelDialogService,
+    ChannelPostSignatureService,
     ManualModerationService,
     ManagedAutopostService,
     {

@@ -1,5 +1,6 @@
 import {
   addAdminRequestSchema,
+  CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   chatSettingsScreenResponseSchema,
   channelSettingsScreenResponseSchema,
   channelStatsQuerySchema,
@@ -284,6 +285,7 @@ import {
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
 import { createAdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
   hasRetriableManagedBroadcastAttachment,
@@ -723,6 +725,8 @@ export class AdminService implements OnModuleDestroy {
     private readonly moderationDeleteIntentService?: ModerationDeleteIntentService,
     @Optional()
     private readonly manualMessageCleanupService?: AdminManualMessageCleanupService,
+    @Optional()
+    private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -6897,11 +6901,13 @@ export class AdminService implements OnModuleDestroy {
     });
     await this.ensureEntityType(chatId, user.userId, 'channel');
 
-    const [settings, header, managedBroadcasts] = await Promise.all([
+    const [settings, postSignature, header, managedBroadcasts] = await Promise.all([
       this.getChannelSettings(chatId, user, {
         skipAdminCheck: true,
         skipEntityCheck: true,
       }),
+      this.channelPostSignatureService?.getSettings(chatId) ??
+        Promise.resolve({ enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT }),
       this.getChannelHeader(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.listChannelManagedBroadcasts(chatId, user, {
         skipAdminCheck: true,
@@ -6911,6 +6917,7 @@ export class AdminService implements OnModuleDestroy {
 
     return channelSettingsScreenResponseSchema.parse({
       settings,
+      postSignature,
       header,
       managedBroadcasts,
     });
@@ -6937,6 +6944,7 @@ export class AdminService implements OnModuleDestroy {
 
   async publishChannelEngagementMessage(chatId: string, user: AuthUser, body: unknown) {
     await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    const channelPostSignatureService = this.channelPostSignatureService;
     return publishChannelEngagementMessageValue({
       prisma: this.prisma,
       maxClient: this.maxClient,
@@ -6946,6 +6954,16 @@ export class AdminService implements OnModuleDestroy {
       resolveBotId: () => this.resolveChannelEngagementActionBotId(chatId),
       resolveEditBotId: () => this.resolveChannelEngagementEditBotId(chatId),
       buildDialogArtifacts: (params) => this.buildChannelEngagementDialogArtifacts(params),
+      ...(channelPostSignatureService
+        ? {
+            prepareText: (payload) =>
+              channelPostSignatureService.preparePostText(chatId, payload, {
+                entityType: 'channel',
+                trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+              }),
+          }
+        : {}),
     });
   }
 
@@ -18297,6 +18315,20 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('В предложке нет текста или медиа для публикации.');
     }
 
+    const preparedMessageText = this.channelPostSignatureService
+      ? await this.channelPostSignatureService.preparePostText(
+          chatId,
+          {
+            text: messageTextPayload.text,
+            textFormat: messageTextPayload.textFormat,
+          },
+          {
+            entityType: 'channel',
+            trafficClass: 'interactive',
+            sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+          },
+        )
+      : messageTextPayload;
     const messageOptions: Pick<
       MaxSendMessageOptions,
       'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
@@ -18304,11 +18336,11 @@ export class AdminService implements OnModuleDestroy {
       ...(buttonContext.buttons.length > 0 ? { buttons: buttonContext.buttons } : {}),
       ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
       ...(media.attachments?.length ? { attachments: media.attachments } : {}),
-      textFormat: messageTextPayload.textFormat,
+      textFormat: preparedMessageText.textFormat,
     };
     const published = await this.publishMessageWithRetry(
       chatId,
-      messageTextPayload.text,
+      preparedMessageText.text,
       messageOptions,
       resolvedBotId,
     );

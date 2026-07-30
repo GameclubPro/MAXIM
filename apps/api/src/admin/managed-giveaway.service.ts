@@ -94,6 +94,7 @@ import {
   type BackgroundRuntimeGovernorDecision,
 } from '../system/background-runtime-governor.service';
 import { AdminService } from './admin.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { isPrismaKnownError } from './admin-legacy-utils';
 import { MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS } from './admin.service.support';
 
@@ -285,6 +286,7 @@ export class ManagedGiveawayService {
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
     @Optional() private readonly maxActionLedgerService?: MaxActionLedgerService,
+    @Optional() private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
@@ -601,10 +603,21 @@ export class ManagedGiveawayService {
     let maxSendAccepted = false;
     let dispatchedPublicationBotId = publicationBotId ?? null;
     try {
-      const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
+      const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
+      const basePublicationTextPayload = this.buildFormattedGiveawayTextPayload(
         this.buildGiveawayPublicationText(giveaway),
       );
-      const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
+      const publicationTextPayload = this.channelPostSignatureService
+        ? await this.channelPostSignatureService.preparePostText(
+            sourceChatId,
+            basePublicationTextPayload,
+            {
+              entityType,
+              trafficClass: sendOptions.trafficClass,
+              sourceTag: sendOptions.sourceTag,
+            },
+          )
+        : basePublicationTextPayload;
       const publication = this.maxRoutedPublicationService
         ? await this.maxRoutedPublicationService.publish({
             entityId: sourceChatId,
@@ -3181,7 +3194,19 @@ export class ManagedGiveawayService {
     giveaway: PersistedGiveawayWithRelations,
     source: GiveawayActionSource = 'miniapp',
   ): Promise<boolean> {
-    const resultsTextPayload = this.buildGiveawayResultsTextPayload(giveaway);
+    const baseResultsTextPayload = this.buildGiveawayResultsTextPayload(giveaway);
+    const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
+    const resultsTextPayload = this.channelPostSignatureService
+      ? await this.channelPostSignatureService.preparePostText(
+          giveaway.sourceChatId,
+          baseResultsTextPayload,
+          {
+            entityType: this.fromPrismaEntityType(giveaway.entityType),
+            trafficClass: sendOptions.trafficClass,
+            sourceTag: sendOptions.sourceTag,
+          },
+        )
+      : baseResultsTextPayload;
     const resultsSendLockKey = this.buildGiveawaySendLockKey(giveaway.id, 'results');
     if (!giveaway.resultsMessageId?.trim()) {
       this.assertProductionRoutedPublicationAvailable();
@@ -3269,7 +3294,6 @@ export class ManagedGiveawayService {
             (await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId)) ??
             null);
         dispatchedResultsBotId = resultsBotId;
-        const sendOptions = buildManagedGiveawayMaxApiOptions(source, 'send');
         const result = this.maxRoutedPublicationService
           ? await this.maxRoutedPublicationService.publish({
               entityId: giveaway.sourceChatId,

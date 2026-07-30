@@ -14,6 +14,9 @@
       "@maxim/contracts/bot-speech": ["packages/contracts/src/bot-speech.ts"],
       "@maxim/contracts/broadcast": ["packages/contracts/src/broadcast.ts"],
       "@maxim/contracts/channel-dialog": ["packages/contracts/src/channel-dialog.ts"],
+      "@maxim/contracts/channel-post-signature": [
+        "packages/contracts/src/channel-post-signature.ts"
+      ],
       "@maxim/contracts/channel-stats": ["packages/contracts/src/channel-stats.ts"],
       "@maxim/contracts/chat-participants": ["packages/contracts/src/chat-participants.ts"],
       "@maxim/contracts/giveaway": ["packages/contracts/src/giveaway.ts"],

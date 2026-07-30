@@ -1,4 +1,9 @@
-import type { VkParsingSettings, VkParsingSource } from '@maxim/contracts';
+import {
+  CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+  type ChannelPostSignatureSettings,
+  type VkParsingSettings,
+  type VkParsingSource,
+} from '@maxim/contracts';
 import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { Pagination } from './vk-parsing/pagination';
@@ -23,6 +28,7 @@ type VkParsingCardProps = {
   active: boolean;
   entityType?: VkParsingEntityType;
   channelLinkUrl?: string;
+  postSignature?: ChannelPostSignatureSettings;
 };
 
 function parseTimeMinutes(value: string | null | undefined): number | null {
@@ -158,6 +164,7 @@ export function VkParsingCard({
   active,
   entityType = 'channel',
   channelLinkUrl,
+  postSignature = { enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT },
 }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;
@@ -178,7 +185,6 @@ export function VkParsingCard({
           publishedCount={publishedCount}
           isSaving={state.isSavingSettings}
           isSavingSource={state.isSavingSource}
-          entityType={entityType}
           onUpdateSetting={state.updateSetting}
           onUpdateSources={state.updateSources}
           onApplyPreset={state.applyPresetToAllSources}
@@ -242,6 +248,7 @@ export function VkParsingCard({
         <PostList
           posts={posts}
           settings={settings}
+          postSignature={postSignature}
           channelLinkUrl={channelLinkUrl}
           editingPostId={state.editingPostId}
           publishingPostId={state.publishingPostId}

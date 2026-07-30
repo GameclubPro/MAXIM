@@ -125,114 +125,6 @@
     gap: 6px;
   }
 
-  .vk-channel-link-setting {
-    min-width: 0;
-    margin-top: 7px;
-    padding-top: 7px;
-    border-top: 1px solid var(--vk-line);
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .vk-channel-link-setting__toggle {
-    min-width: 0;
-    min-height: 44px;
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr) 44px;
-    align-items: center;
-    gap: 7px;
-    cursor: pointer;
-  }
-
-  .vk-channel-link-setting__icon {
-    width: 30px;
-    height: 30px;
-    border-radius: var(--vk-radius);
-    display: inline-grid;
-    place-items: center;
-    color: var(--vk-muted-strong);
-    background: var(--vk-soft);
-  }
-
-  .vk-channel-link-setting__icon svg {
-    width: 17px;
-    height: 17px;
-  }
-
-  .vk-channel-link-setting__toggle > strong {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--vk-ink);
-    font-size: 11.5px;
-    font-weight: 780;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .settings-drilldown__panel--vk-parsing .vk-channel-link-setting__switch {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
-    justify-content: flex-end;
-  }
-
-  .settings-drilldown__panel--vk-parsing
-    .vk-channel-link-setting__switch
-    input:focus-visible
-    + .toggle-switch {
-    outline: 2px solid var(--settings-panel-accent-border-strong);
-    outline-offset: 2px;
-  }
-
-  .vk-channel-link-setting.is-on .vk-channel-link-setting__icon {
-    color: var(--vk-accent-dark);
-    background: var(--vk-accent-soft);
-  }
-
-  .vk-channel-link-setting__field {
-    position: relative;
-    min-width: 0;
-    grid-column: 2 / -1;
-    display: grid;
-    gap: 4px;
-  }
-
-  .vk-channel-link-setting__field input {
-    width: 100%;
-    min-width: 0;
-    height: 38px;
-    border: 1px solid var(--vk-line-strong);
-    border-radius: var(--vk-radius);
-    padding: 0 10px;
-    outline: none;
-    color: var(--vk-accent-dark);
-    background: var(--vk-surface);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 740;
-  }
-
-  .vk-channel-link-setting__field input:focus {
-    border-color: var(--settings-panel-accent-border-strong);
-    box-shadow: 0 0 0 3px var(--settings-panel-glow);
-  }
-
-  .vk-channel-link-setting__field.is-invalid input {
-    border-color: var(--vk-danger);
-    box-shadow: 0 0 0 3px var(--vk-danger-soft);
-  }
-
-  .vk-channel-link-setting__error {
-    color: var(--vk-danger);
-    font-size: 10.5px;
-    font-weight: 700;
-    line-height: 1.25;
-  }
-
   .vk-autopost-status {
     min-width: 0;
     display: grid;
@@ -2528,7 +2420,6 @@
       .vk-rollback-form input,
       .vk-rollback-form select,
       .vk-queue-item input,
-      .vk-channel-link-setting__field input,
       .vk-parsing-editor__rich-text .max-rich-text-editor__link-panel input
     ) {
     border-color: var(--vk-line-strong);

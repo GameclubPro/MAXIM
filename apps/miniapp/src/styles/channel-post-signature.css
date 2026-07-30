@@ -1,0 +1,172 @@
+@layer pages {
+  .channel-settings-card.channel-post-signature {
+    display: grid;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+
+  .channel-post-signature__head {
+    min-height: 70px;
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+  }
+
+  .channel-post-signature__icon {
+    width: 42px;
+    height: 42px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+  }
+
+  .channel-post-signature.is-on .channel-post-signature__icon {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .channel-post-signature__icon svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .channel-post-signature__title {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .channel-post-signature__title h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.94rem;
+    line-height: 1.2;
+    letter-spacing: 0;
+  }
+
+  .channel-post-signature__title span {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.2;
+  }
+
+  .channel-post-signature__switch {
+    flex: 0 0 auto;
+  }
+
+  .channel-post-signature__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-card-muted);
+  }
+
+  .channel-post-signature__field {
+    min-width: 0;
+  }
+
+  .channel-post-signature__field input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .channel-post-signature__preview {
+    min-width: 0;
+    display: grid;
+    align-content: center;
+    gap: 4px;
+    padding: 8px 10px;
+    border-left: 2px solid var(--accent);
+  }
+
+  .channel-post-signature__preview > span,
+  .channel-post-signature__field > span {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
+  .channel-post-signature__preview a,
+  .channel-post-signature__preview strong {
+    width: fit-content;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-size: 0.88rem;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  .channel-post-signature__preview a {
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
+  }
+
+  .channel-post-signature__preview small {
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .channel-post-signature__save-state {
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 5px 10px;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 650;
+  }
+
+  .channel-post-signature__save-state.is-error {
+    color: var(--danger);
+  }
+
+  .channel-post-signature__save-state button {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+    color: inherit;
+  }
+
+  .channel-post-signature__save-state button svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  @media (max-width: 520px) {
+    .channel-post-signature__body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .channel-post-signature__preview {
+      border-left: 0;
+      border-top: 2px solid var(--accent);
+      padding: 10px 0 2px;
+    }
+  }
+}

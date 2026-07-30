@@ -15,10 +15,11 @@ import {
   type VkParsingHealthSummary,
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import { type VkParsingPublishReason, type VkParsingSyncReason } from './vk-parsing.queue';
 import { VkPublishService } from './vk-publish.service';
@@ -44,6 +45,8 @@ export class VkParsingService {
     private readonly sourceService: VkSourceService,
     private readonly syncService: VkSyncService,
     private readonly publishService: VkPublishService,
+    @Optional()
+    private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {}
 
   getSyncIntervalMs(): number {
@@ -94,6 +97,19 @@ export class VkParsingService {
       ...parsed.data,
       ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
     };
+
+    if (
+      this.channelPostSignatureService &&
+      (parsed.data.appendChannelLinkEnabled !== undefined ||
+        parsed.data.channelLinkText !== undefined)
+    ) {
+      await this.channelPostSignatureService.updateFromLegacyVkSettings(chatId, {
+        ...(parsed.data.appendChannelLinkEnabled !== undefined
+          ? { enabled: parsed.data.appendChannelLinkEnabled }
+          : {}),
+        ...(parsed.data.channelLinkText !== undefined ? { text: parsed.data.channelLinkText } : {}),
+      });
+    }
 
     await this.prisma.vkParsingSettings.upsert({
       where: { chatId },

@@ -9,8 +9,6 @@ import type {
 import { cn } from '../../lib/cn';
 import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
-import type { VkParsingEntityType } from '../../lib/api/vk-parsing-client';
-import { ChannelLinkSetting } from './channel-link-setting';
 
 type SchedulerPanelProps = {
   settings: VkParsingSettings;
@@ -20,7 +18,6 @@ type SchedulerPanelProps = {
   publishedCount: number;
   isSaving: boolean;
   isSavingSource: boolean;
-  entityType: VkParsingEntityType;
   onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => Promise<boolean>;
   onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => void;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
@@ -148,7 +145,6 @@ export function SchedulerPanel({
   publishedCount,
   isSaving,
   isSavingSource,
-  entityType,
   onUpdateSetting,
   onUpdateSources,
   onApplyPreset,
@@ -205,10 +201,6 @@ export function SchedulerPanel({
           }
         />
       </div>
-
-      {entityType === 'channel' ? (
-        <ChannelLinkSetting settings={settings} disabled={isSaving} onUpdate={onUpdateSetting} />
-      ) : null}
 
       <details className="vk-autopost-advanced">
         <summary>Параметры</summary>

@@ -414,10 +414,10 @@ describe('ManagedPollService image callback rendering', () => {
     expect(render).not.toHaveBeenCalled();
   });
 
-  it('builds callback edits from only authored question and option labels', () => {
+  it('builds callback edits from only authored question and option labels', async () => {
     const service = new ManagedPollService({} as never, {} as never, {} as never, {} as never);
 
-    const edit = (service as any).buildCallbackMessageEdit({
+    const edit = await (service as any).buildCallbackMessageEdit({
       id: 'poll-1',
       question: 'Текст администратора',
       questionFormat: 'plain',

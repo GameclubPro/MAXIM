@@ -6,6 +6,8 @@ module.exports = {
     '^@maxim/contracts/bot-speech$': '<rootDir>/../../packages/contracts/src/bot-speech.ts',
     '^@maxim/contracts/broadcast$': '<rootDir>/../../packages/contracts/src/broadcast.ts',
     '^@maxim/contracts/channel-dialog$': '<rootDir>/../../packages/contracts/src/channel-dialog.ts',
+    '^@maxim/contracts/channel-post-signature$':
+      '<rootDir>/../../packages/contracts/src/channel-post-signature.ts',
     '^@maxim/contracts/channel-stats$': '<rootDir>/../../packages/contracts/src/channel-stats.ts',
     '^@maxim/contracts/chat-participants$':
       '<rootDir>/../../packages/contracts/src/chat-participants.ts',

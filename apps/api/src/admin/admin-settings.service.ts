@@ -1,11 +1,13 @@
 import {
   channelSettingsScreenResponseSchema,
   chatSettingsScreenResponseSchema,
+  CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   type ApplySectionTargetPreviewResponse,
   type ApplySectionToAllResponse,
   type ApplySettingsTarget,
+  type ChannelPostSignatureSettings,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
   type ChatRules,
@@ -15,10 +17,16 @@ import {
   type PublishChatRulesResult,
   type ResolveRequiredSubscriptionChannelResponse,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { MaxClientService } from '../max/max-client.service';
+import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import {
@@ -37,6 +45,7 @@ import {
 } from './admin-settings-apply';
 import { AdminService } from './admin.service';
 import { AdminManualMessageCleanupService } from './admin-manual-message-cleanup.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { sanitizePublicManagedEntityHeader } from './admin-managed-entity-header';
 import {
   type AdminActionSource,
@@ -70,6 +79,8 @@ export class AdminSettingsService {
     private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
     @Optional()
     private readonly manualMessageCleanupService?: AdminManualMessageCleanupService,
+    @Optional()
+    private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {}
 
   async getSettings(
@@ -350,8 +361,10 @@ export class AdminSettingsService {
       );
     }
 
-    const [settings, header, managedBroadcasts] = await Promise.all([
+    const [settings, postSignature, header, managedBroadcasts] = await Promise.all([
       this.getChannelSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.channelPostSignatureService?.getSettings(chatId) ??
+        Promise.resolve({ enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT }),
       this.managedEntitiesService.getChannelHeader(chatId, user, {
         skipAdminCheck: true,
         skipEntityCheck: true,
@@ -364,6 +377,7 @@ export class AdminSettingsService {
 
     return channelSettingsScreenResponseSchema.parse({
       settings,
+      postSignature,
       header,
       managedBroadcasts,
     });
@@ -390,12 +404,36 @@ export class AdminSettingsService {
     });
   }
 
+  async getChannelPostSignature(
+    chatId: string,
+    user: AuthUser,
+  ): Promise<ChannelPostSignatureSettings> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
+    if (!this.channelPostSignatureService) {
+      throw new ServiceUnavailableException('Настройки подписи публикаций недоступны.');
+    }
+    return this.channelPostSignatureService.getSettings(chatId);
+  }
+
+  async updateChannelPostSignature(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ChannelPostSignatureSettings> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    if (!this.channelPostSignatureService) {
+      throw new ServiceUnavailableException('Настройки подписи публикаций недоступны.');
+    }
+    return this.channelPostSignatureService.updateSettings(chatId, user.userId, body);
+  }
+
   async publishChannelEngagementMessage(
     chatId: string,
     user: AuthUser,
     body: unknown,
   ): Promise<PublishChannelEngagementResult> {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    const channelPostSignatureService = this.channelPostSignatureService;
     return publishChannelEngagementMessageValue({
       prisma: this.prisma,
       maxClient: this.maxClient,
@@ -406,6 +444,16 @@ export class AdminSettingsService {
       resolveEditBotId: () => this.legacyAdminService.resolveChannelEngagementEditBotId(chatId),
       buildDialogArtifacts: (params) =>
         this.legacyAdminService.buildChannelEngagementDialogArtifacts(params),
+      ...(channelPostSignatureService
+        ? {
+            prepareText: (payload) =>
+              channelPostSignatureService.preparePostText(chatId, payload, {
+                entityType: 'channel',
+                trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+              }),
+          }
+        : {}),
     });
   }
 

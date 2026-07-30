@@ -1,7 +1,10 @@
 import {
+  CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+  CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH,
   type BroadcastImage,
   type BroadcastLinkButton,
   type ChannelAutoPostButtonsMode,
+  type ChannelPostSignatureSettings,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
   type ChannelSuggestionEntryMode,
@@ -10,7 +13,11 @@ import {
   type ManagedBroadcastDetails,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { RefreshDouble as IconoirRefreshDouble, StatsUpSquare } from 'iconoir-react';
+import {
+  Link as IconoirLink,
+  RefreshDouble as IconoirRefreshDouble,
+  StatsUpSquare,
+} from 'iconoir-react';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-native-controls.css';
 import '../styles/settings-home-compact.css';
@@ -25,6 +32,7 @@ import '../styles/broadcast-autopost-polish.css';
 import '../styles/settings-tile-grid.css';
 import '../styles/settings-native-polish.css';
 import '../styles/settings-experience.css';
+import '../styles/channel-post-signature.css';
 import {
   Suspense,
   lazy,
@@ -76,6 +84,7 @@ import {
   retryChannelManagedBroadcast,
   sendChannelBroadcast,
   sendChannelBroadcastTest,
+  updateChannelPostSignature,
   updateChannelManagedAutopostRule,
   updateChannelManagedBroadcast,
   updateChannelSettings,
@@ -132,7 +141,7 @@ import {
 import { saveUntilLatestDraftIsPersisted } from '../lib/latest-draft-save';
 import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
-import { maxNotify, setMaxClosingConfirmation } from '../lib/max-bridge';
+import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -159,6 +168,19 @@ type PendingBroadcastPublishReview = {
   broadcastId: string | null;
   payload: SendBroadcastPayload;
 };
+
+function normalizePostSignatureSettings(
+  value: ChannelPostSignatureSettings,
+): ChannelPostSignatureSettings {
+  return {
+    enabled: value.enabled,
+    text: value.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+  };
+}
+
+function postSignatureSettingsKey(value: ChannelPostSignatureSettings): string {
+  return JSON.stringify(normalizePostSignatureSettings(value));
+}
 
 function normalizeBroadcastImageList(images: BroadcastImage[]): BroadcastImage[] {
   return normalizeComposerBroadcastImages(images);
@@ -865,10 +887,28 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const routeAvatarUrl = routeState.avatarUrl;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
+  const [postSignatureDraft, setPostSignatureDraft] = useState<ChannelPostSignatureSettings | null>(
+    null,
+  );
+  const [savedPostSignature, setSavedPostSignature] = useState<ChannelPostSignatureSettings | null>(
+    null,
+  );
+  const [postSignatureSaveState, setPostSignatureSaveState] = useState<
+    'idle' | 'saving' | 'saved' | 'error'
+  >('idle');
   const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isSavingChannelSettingsForBroadcast, setIsSavingChannelSettingsForBroadcast] =
     useState(false);
   const saveInFlightRef = useRef<Promise<ChannelSettings> | null>(null);
+  const postSignatureSaveInFlightRef = useRef<{
+    chatId: string;
+    promise: Promise<void>;
+  } | null>(null);
+  const activePostSignatureChatIdRef = useRef(chatId);
+  const latestPostSignatureRef = useRef<ChannelPostSignatureSettings | null>(null);
+  const latestPostSignatureKeyRef = useRef('');
+  const savedPostSignatureKeyRef = useRef('');
+  const postSignatureInitializedChatIdRef = useRef('');
   const broadcastSettingsSaveInFlightRef = useRef(false);
   const lastFailedDraftKeyRef = useRef<string | null>(null);
   const latestNormalizedDraftRef = useRef<ChannelSettings | null>(null);
@@ -889,6 +929,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastButtonErrors, setBroadcastButtonErrors] = useState<
     BroadcastLinkButtonFieldErrors[]
   >([]);
+  activePostSignatureChatIdRef.current = chatId;
   const [broadcastImageEnabled, setBroadcastImageEnabled] = useState(false);
   const [broadcastImageBase64, setBroadcastImageBase64] = useState('');
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
@@ -1100,6 +1141,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     refetch: settingsScreenQuery.refetch,
   };
   const channelHeader = settingsScreenQuery.data?.header ?? null;
+  const loadedPostSignature = settingsScreenQuery.data?.postSignature ?? null;
   const vkParsingCapabilityQuery = useQuery({
     queryKey: queryKeys.channelVkParsingCapability(chatId),
     queryFn: () => getChannelVkParsingCapability(api, chatId ?? ''),
@@ -1193,6 +1235,30 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setAutosaveState('idle');
     lastFailedDraftKeyRef.current = null;
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    if (!loadedPostSignature) {
+      return;
+    }
+    const loadedKey = postSignatureSettingsKey(loadedPostSignature);
+    const isNewChannel = postSignatureInitializedChatIdRef.current !== chatId;
+    if (!isNewChannel && loadedKey === savedPostSignatureKeyRef.current) {
+      return;
+    }
+    const canAdoptServerValue =
+      postSignatureSaveInFlightRef.current?.chatId !== chatId &&
+      latestPostSignatureKeyRef.current === savedPostSignatureKeyRef.current;
+    if (!isNewChannel && !canAdoptServerValue) {
+      return;
+    }
+    postSignatureInitializedChatIdRef.current = chatId;
+    latestPostSignatureRef.current = loadedPostSignature;
+    latestPostSignatureKeyRef.current = loadedKey;
+    savedPostSignatureKeyRef.current = loadedKey;
+    setPostSignatureDraft(loadedPostSignature);
+    setSavedPostSignature(loadedPostSignature);
+    setPostSignatureSaveState('idle');
+  }, [chatId, loadedPostSignature]);
 
   useEffect(() => {
     if (!broadcastHandoffStateQuery.data || !handoffRequested) {
@@ -1536,13 +1602,102 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     return normalizedDraftKey !== normalizedSavedSnapshotKey;
   }, [normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot, normalizedSavedSnapshotKey]);
 
+  const isPostSignatureDirty = Boolean(
+    postSignatureDraft &&
+    savedPostSignature &&
+    (postSignatureDraft.enabled !== savedPostSignature.enabled ||
+      postSignatureDraft.text.trim() !== savedPostSignature.text),
+  );
+
   useEffect(() => {
-    const shouldBlockClose = isDirty || autosaveState === 'saving';
+    const shouldBlockClose =
+      isDirty ||
+      autosaveState === 'saving' ||
+      isPostSignatureDirty ||
+      postSignatureSaveState === 'saving';
     setMaxClosingConfirmation(shouldBlockClose);
     return () => {
       setMaxClosingConfirmation(false);
     };
-  }, [autosaveState, isDirty]);
+  }, [autosaveState, isDirty, isPostSignatureDirty, postSignatureSaveState]);
+
+  function updatePostSignatureDraft(next: ChannelPostSignatureSettings): ChannelPostSignatureSettings {
+    const normalized = normalizePostSignatureSettings(next);
+    latestPostSignatureRef.current = normalized;
+    latestPostSignatureKeyRef.current = postSignatureSettingsKey(normalized);
+    setPostSignatureDraft(normalized);
+    if (latestPostSignatureKeyRef.current === savedPostSignatureKeyRef.current) {
+      setPostSignatureSaveState('idle');
+    } else if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
+      setPostSignatureSaveState('idle');
+    }
+    return normalized;
+  }
+
+  function persistLatestPostSignature(): Promise<void> {
+    const currentOperation = postSignatureSaveInFlightRef.current;
+    if (currentOperation?.chatId === chatId) {
+      return currentOperation.promise;
+    }
+
+    const operationChatId = chatId;
+    const operation = (async () => {
+      while (
+        activePostSignatureChatIdRef.current === operationChatId &&
+        latestPostSignatureRef.current &&
+        latestPostSignatureKeyRef.current !== savedPostSignatureKeyRef.current
+      ) {
+        const payload = normalizePostSignatureSettings(latestPostSignatureRef.current);
+        const payloadKey = postSignatureSettingsKey(payload);
+        setPostSignatureSaveState('saving');
+        try {
+          const saved = await updateChannelPostSignature(api, operationChatId, payload);
+          const savedKey = postSignatureSettingsKey(saved);
+          queryClient.setQueryData<ChannelSettingsScreenResponse>(
+            queryKeys.channelSettingsScreen(operationChatId),
+            (current) => (current ? { ...current, postSignature: saved } : current),
+          );
+          if (activePostSignatureChatIdRef.current !== operationChatId) {
+            return;
+          }
+          savedPostSignatureKeyRef.current = savedKey;
+          setSavedPostSignature(saved);
+          setPostSignatureDraft((current) =>
+            current && postSignatureSettingsKey(current) === payloadKey ? saved : current,
+          );
+          setPostSignatureSaveState(
+            latestPostSignatureKeyRef.current === savedKey ? 'saved' : 'saving',
+          );
+        } catch (error: unknown) {
+          if (activePostSignatureChatIdRef.current !== operationChatId) {
+            return;
+          }
+          setPostSignatureSaveState('error');
+          pushToast({
+            tone: 'danger',
+            title: 'Подпись не сохранена',
+            description: normalizeApiError(error),
+          });
+          maxNotify('error');
+          return;
+        }
+      }
+    })();
+    const trackedOperation = { chatId: operationChatId, promise: operation };
+    void operation.finally(() => {
+      if (postSignatureSaveInFlightRef.current === trackedOperation) {
+        postSignatureSaveInFlightRef.current = null;
+      }
+    });
+
+    postSignatureSaveInFlightRef.current = trackedOperation;
+    return operation;
+  }
+
+  function savePostSignature(next: ChannelPostSignatureSettings): void {
+    updatePostSignatureDraft(next);
+    void persistLatestPostSignature();
+  }
 
   const patchDraft = <K extends keyof ChannelSettings>(key: K, value: ChannelSettings[K]) => {
     setDraft((current) => {
@@ -2109,6 +2264,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  const postSignature = postSignatureDraft ?? {
+    enabled: false,
+    text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+  };
   const showHeaderSaveRetry = autosaveState === 'error';
   const normalizedBroadcastButtons = trimBroadcastLinkButtons(broadcastButtons);
   const broadcastSystemButtons = buildChannelBroadcastSystemButtons({
@@ -3058,6 +3217,112 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         />
       </Suspense>
 
+      <GlassCard
+        className={cn(
+          'channel-settings-card channel-post-signature',
+          postSignature.enabled && 'is-on',
+        )}
+        elevated
+      >
+        <div className="channel-post-signature__head">
+          <span className="channel-post-signature__icon" aria-hidden>
+            <IconoirLink />
+          </span>
+          <div className="channel-post-signature__title">
+            <h3>Подпись публикаций</h3>
+            <span>{postSignature.enabled ? 'Включена' : 'Выключена'}</span>
+          </div>
+          <label className="settings-native-switch channel-post-signature__switch">
+            <input
+              type="checkbox"
+              checked={postSignature.enabled}
+              aria-label="Подпись публикаций"
+              onChange={(event) =>
+                savePostSignature({ ...postSignature, enabled: event.target.checked })
+              }
+            />
+            <span className="toggle-switch" aria-hidden>
+              <span className="toggle-switch__thumb" />
+            </span>
+          </label>
+        </div>
+
+        {postSignature.enabled ? (
+          <div className="channel-post-signature__body">
+            <label className="field channel-post-signature__field">
+              <span>Текст ссылки</span>
+              <input
+                type="text"
+                value={postSignature.text}
+                maxLength={CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH}
+                onChange={(event) => {
+                  const next = { ...postSignature, text: event.target.value };
+                  latestPostSignatureRef.current = next;
+                  latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
+                  setPostSignatureDraft(next);
+                  if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
+                    setPostSignatureSaveState('idle');
+                  }
+                }}
+                onBlur={() => savePostSignature(postSignature)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            </label>
+
+            <div className="channel-post-signature__preview">
+              <span>Предпросмотр</span>
+              {resolvedChannelLink ? (
+                <a
+                  href={resolvedChannelLink}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    openMaxBotLink(resolvedChannelLink);
+                  }}
+                >
+                  {postSignature.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT}
+                </a>
+              ) : (
+                <strong>{postSignature.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT}</strong>
+              )}
+              <small>{resolvedChannelLink || 'Ссылка канала недоступна'}</small>
+            </div>
+          </div>
+        ) : null}
+
+        {postSignatureSaveState !== 'idle' ? (
+          <div
+            className={cn(
+              'channel-post-signature__save-state',
+              postSignatureSaveState === 'error' && 'is-error',
+            )}
+            role="status"
+            aria-live="polite"
+          >
+            <span>
+              {postSignatureSaveState === 'saving'
+                ? 'Сохраняем...'
+                : postSignatureSaveState === 'error'
+                  ? 'Не сохранено'
+                  : 'Сохранено'}
+            </span>
+            {postSignatureSaveState === 'error' ? (
+              <button
+                type="button"
+                aria-label="Повторить сохранение подписи"
+                title="Повторить"
+                onClick={() => savePostSignature(postSignature)}
+              >
+                <IconoirRefreshDouble aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </GlassCard>
+
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
@@ -3193,6 +3458,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         chatId={chatId}
                         active={expandedSections.vkParsing}
                         channelLinkUrl={resolvedChannelLink}
+                        postSignature={postSignature}
                       />
                     </Suspense>
                   ) : vkParsingCapability ? (
