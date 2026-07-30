@@ -136,6 +136,16 @@ type VkParsingVideoPublishMedia = {
   candidateUrls: string[];
 };
 
+type VkPublishJobRecoveryOutcome = 'missing' | 'healthy' | 'retried' | 'conflict' | 'failed';
+type VkPublishJobEnqueueOutcome = Exclude<VkPublishJobRecoveryOutcome, 'missing'> | 'created';
+
+type VkPublishRecoveryCursor = {
+  publishScheduledAt: Date;
+  publishQueuedAt: Date;
+  updatedAt: Date;
+  id: string;
+};
+
 type VkParsingDownloadedMedia = {
   buffer: Buffer;
   fileName: string;
@@ -158,9 +168,9 @@ const MAX_SEND_AMBIGUOUS_RETRY_BLOCK_MESSAGE =
   'MAX мог уже принять эту публикацию. Сначала сверьте сообщение в MAX вручную; повторная отправка заблокирована.';
 const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
 const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
+const VK_PUBLISH_SCHEDULE_DRIFT_TOLERANCE_MS = 5_000;
 // FLAG: One missed daily cycle may catch up; older automatic output stays available for admin review.
 const VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS = 24 * 60 * 60_000;
-const VK_AUTOPUBLISH_RECOVERY_CHAT_SPACING_MS = VK_PARSING_SCHEDULE_STEP_MS;
 const VK_VIDEO_MAX_BYTES = MAX_VIDEO_UPLOAD_MAX_BYTES;
 const VK_VIDEO_FETCH_TIMEOUT_MS = 60_000;
 const VK_VIDEO_UPLOAD_TIMEOUT_MS = 120_000;
@@ -175,6 +185,8 @@ export class VkPublishService {
   private readonly publishLeaseTtlMs: number;
   private readonly mediaConcurrency: number;
   private readonly videoFailedPreflightTtlMs: number;
+  private duePublishRecoveryCursorId: string | null = null;
+  private futurePublishRecoveryCursor: VkPublishRecoveryCursor | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -227,13 +239,6 @@ export class VkPublishService {
     }
 
     const settingsByChatId = new Map<string, VkParsingSettingsLike>();
-    const nextAutoPublishRecoveryAtByChatId = new Map<string, Date>();
-    const recoveryBatchPostIdsByChatId = new Map<string, string[]>();
-    for (const post of posts) {
-      const ids = recoveryBatchPostIdsByChatId.get(post.chatId) ?? [];
-      ids.push(post.id);
-      recoveryBatchPostIdsByChatId.set(post.chatId, ids);
-    }
     let recovered = 0;
     let expiredAutoPublishRecoveries = 0;
     for (const post of posts) {
@@ -255,16 +260,16 @@ export class VkPublishService {
         continue;
       }
       const reason = post.publishReason;
-      let recoverablePost = post;
+      const recoverablePost = post;
 
       if (
         reason === 'autopublish' &&
         this.isBeyondAutoPublishRecoveryFreshnessHorizon(recoverablePost, now)
       ) {
-        const cleared = await this.clearQueuedAutoPublishPost(
+        const cleared = await this.clearRecoverableQueuedAutoPublishPost(
           recoverablePost.id,
           idempotencyKey,
-          recoverablePost.publishLockedAt,
+          recoverablePost,
         );
         if (cleared) {
           expiredAutoPublishRecoveries += 1;
@@ -279,58 +284,22 @@ export class VkPublishService {
       }
 
       if (reason === 'autopublish' && !this.canAutoPublishPost(recoverablePost, settings)) {
-        await this.clearQueuedAutoPublishPost(
+        await this.clearRecoverableQueuedAutoPublishPost(
           recoverablePost.id,
           idempotencyKey,
-          recoverablePost.publishLockedAt,
+          recoverablePost,
         );
         continue;
       }
 
-      let recoveredScheduleAt = recoverablePost.publishScheduledAt;
-      let enforceRecoveredScheduleDelay = false;
-      if (reason === 'autopublish') {
-        if (!nextAutoPublishRecoveryAtByChatId.has(recoverablePost.chatId)) {
-          nextAutoPublishRecoveryAtByChatId.set(
-            recoverablePost.chatId,
-            await this.resolveInitialAutoPublishRecoveryAt(
-              recoverablePost.chatId,
-              recoveryBatchPostIdsByChatId.get(recoverablePost.chatId) ?? [],
-              now,
-            ),
-          );
-        }
-        recoveredScheduleAt = this.resolveAutoPublishRecoveryScheduleAt(
-          recoverablePost,
-          now,
-          nextAutoPublishRecoveryAtByChatId,
-        );
-        enforceRecoveredScheduleDelay =
-          recoverablePost.publishScheduledAt?.getTime() !== recoveredScheduleAt.getTime();
-        const rescheduledPost = await this.persistAutoPublishRecoverySchedule(
-          recoverablePost,
-          idempotencyKey,
-          recoveredScheduleAt,
-        );
-        if (!rescheduledPost) {
-          continue;
-        }
-        recoverablePost = rescheduledPost;
-        nextAutoPublishRecoveryAtByChatId.set(
-          recoverablePost.chatId,
-          new Date(recoveredScheduleAt.getTime() + VK_AUTOPUBLISH_RECOVERY_CHAT_SPACING_MS),
-        );
-      }
-
-      const queued = await this.addPublishJob(
+      const outcome = await this.addPublishJob(
         recoverablePost,
         reason,
         idempotencyKey,
         now,
-        recoveredScheduleAt,
-        enforceRecoveredScheduleDelay,
+        recoverablePost.publishScheduledAt,
       );
-      if (queued) {
+      if (outcome === 'created' || outcome === 'retried') {
         recovered += 1;
       }
     }
@@ -345,74 +314,15 @@ export class VkPublishService {
     return recovered;
   }
 
-  private async resolveInitialAutoPublishRecoveryAt(
-    chatId: string,
-    recoveryBatchPostIds: readonly string[],
-    now: Date,
-  ): Promise<Date> {
-    const freshOwnershipAfter = new Date(
-      now.getTime() - VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS,
-    );
-    const latestReserved = await this.prisma.vkParsingPost.aggregate({
-      where: {
-        chatId,
-        ...(recoveryBatchPostIds.length > 0 ? { id: { notIn: [...recoveryBatchPostIds] } } : {}),
-        status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
-        publishReason: 'autopublish',
-        publishQueuedAt: { gte: freshOwnershipAfter },
-        publishScheduledAt: { gt: now },
-        publishIdempotencyKey: { not: null },
-      },
-      _max: { publishScheduledAt: true },
-    });
-    const latestReservedAt = latestReserved._max.publishScheduledAt;
-    return latestReservedAt
-      ? new Date(latestReservedAt.getTime() + VK_AUTOPUBLISH_RECOVERY_CHAT_SPACING_MS)
-      : now;
-  }
-
   private isBeyondAutoPublishRecoveryFreshnessHorizon(
-    post: Pick<VkParsingPostWithSource, 'publishQueuedAt'>,
+    post: Pick<VkParsingPostWithSource, 'publishQueuedAt' | 'publishScheduledAt'>,
     now: Date,
   ): boolean {
-    const ownershipStartedAt = post.publishQueuedAt;
+    const effectiveDueAt = post.publishScheduledAt ?? post.publishQueuedAt;
     return (
-      ownershipStartedAt !== null &&
-      now.getTime() - ownershipStartedAt.getTime() > VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS
+      effectiveDueAt !== null &&
+      now.getTime() - effectiveDueAt.getTime() > VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS
     );
-  }
-
-  private resolveAutoPublishRecoveryScheduleAt(
-    post: Pick<VkParsingPostWithSource, 'chatId' | 'publishScheduledAt'>,
-    now: Date,
-    nextByChatId: ReadonlyMap<string, Date>,
-  ): Date {
-    const intendedAt = post.publishScheduledAt ?? now;
-    const nextForChat = nextByChatId.get(post.chatId) ?? now;
-    return new Date(Math.max(now.getTime(), intendedAt.getTime(), nextForChat.getTime()));
-  }
-
-  private async persistAutoPublishRecoverySchedule(
-    post: VkParsingPostWithSource,
-    idempotencyKey: string,
-    scheduledAt: Date,
-  ): Promise<VkParsingPostWithSource | null> {
-    if (post.publishScheduledAt?.getTime() === scheduledAt.getTime()) {
-      return post;
-    }
-
-    const updated = await this.prisma.vkParsingPost.updateMany({
-      where: {
-        id: post.id,
-        publishIdempotencyKey: idempotencyKey,
-        publishReason: 'autopublish',
-        publishScheduledAt: post.publishScheduledAt,
-        publishLockedAt: post.publishLockedAt,
-        status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
-      },
-      data: { publishScheduledAt: scheduledAt },
-    });
-    return updated.count > 0 ? { ...post, publishScheduledAt: scheduledAt } : null;
   }
 
   private async findRecoverableStalePublishPosts(
@@ -444,12 +354,17 @@ export class VkPublishService {
           {
             OR: [{ publishScheduledAt: null }, { publishScheduledAt: { lte: now } }],
           },
+          ...(this.duePublishRecoveryCursorId
+            ? [{ id: { gt: this.duePublishRecoveryCursorId } }]
+            : []),
         ],
       },
       include: { source: true },
-      orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }, { updatedAt: 'asc' }],
+      orderBy: { id: 'asc' },
       take: this.queueBatchSize,
     });
+    this.duePublishRecoveryCursorId =
+      duePosts.length === this.queueBatchSize ? (duePosts.at(-1)?.id ?? null) : null;
     if (duePosts.length >= this.queueBatchSize) {
       return duePosts;
     }
@@ -457,18 +372,75 @@ export class VkPublishService {
     const futurePosts = await this.prisma.vkParsingPost.findMany({
       where: {
         ...baseWhere,
-        AND: [recoverableReasonWhere],
+        AND: [
+          recoverableReasonWhere,
+          ...(this.futurePublishRecoveryCursor
+            ? [this.buildFuturePublishRecoveryCursorWhere(this.futurePublishRecoveryCursor)]
+            : []),
+        ],
         publishScheduledAt: { gt: now },
       },
       include: { source: true },
-      orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }, { updatedAt: 'asc' }],
+      orderBy: [
+        { publishScheduledAt: 'asc' },
+        { publishQueuedAt: 'asc' },
+        { updatedAt: 'asc' },
+        { id: 'asc' },
+      ],
       take: this.queueBatchSize - duePosts.length,
     });
+    this.advanceFuturePublishRecoveryCursor(futurePosts, this.queueBatchSize - duePosts.length);
     if (futurePosts.length === 0) {
       return duePosts;
     }
 
     return [...duePosts, ...futurePosts];
+  }
+
+  private buildFuturePublishRecoveryCursorWhere(
+    cursor: VkPublishRecoveryCursor,
+  ): Prisma.VkParsingPostWhereInput {
+    return {
+      OR: [
+        { publishScheduledAt: { gt: cursor.publishScheduledAt } },
+        {
+          publishScheduledAt: cursor.publishScheduledAt,
+          publishQueuedAt: { gt: cursor.publishQueuedAt },
+        },
+        {
+          publishScheduledAt: cursor.publishScheduledAt,
+          publishQueuedAt: cursor.publishQueuedAt,
+          updatedAt: { gt: cursor.updatedAt },
+        },
+        {
+          publishScheduledAt: cursor.publishScheduledAt,
+          publishQueuedAt: cursor.publishQueuedAt,
+          updatedAt: cursor.updatedAt,
+          id: { gt: cursor.id },
+        },
+      ],
+    };
+  }
+
+  private advanceFuturePublishRecoveryCursor(
+    posts: readonly VkParsingPostWithSource[],
+    requestedCount: number,
+  ): void {
+    const lastPost = posts.at(-1);
+    if (
+      posts.length < requestedCount ||
+      !lastPost?.publishScheduledAt ||
+      !lastPost.publishQueuedAt
+    ) {
+      this.futurePublishRecoveryCursor = null;
+      return;
+    }
+    this.futurePublishRecoveryCursor = {
+      publishScheduledAt: lastPost.publishScheduledAt,
+      publishQueuedAt: lastPost.publishQueuedAt,
+      updatedAt: lastPost.updatedAt,
+      id: lastPost.id,
+    };
   }
 
   async publishPost(
@@ -922,11 +894,7 @@ export class VkPublishService {
       params.reason === 'autopublish' &&
       this.isBeyondAutoPublishRecoveryFreshnessHorizon(post, now)
     ) {
-      const cleared = await this.clearQueuedAutoPublishPost(
-        post.id,
-        params.idempotencyKey,
-        post.publishLockedAt,
-      );
+      const cleared = await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
       if (cleared) {
         this.logger.warn(
           { postId: post.id, chatId: post.chatId },
@@ -939,7 +907,7 @@ export class VkPublishService {
       params.reason === 'autopublish' &&
       post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
     ) {
-      await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post.publishLockedAt);
+      await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
       return;
     }
 
@@ -960,11 +928,7 @@ export class VkPublishService {
       const settings = await this.getSettingsForChat(post.chatId);
       if (params.reason === 'autopublish') {
         if (!this.canAutoPublishPost(post, settings)) {
-          await this.clearQueuedAutoPublishPost(
-            post.id,
-            params.idempotencyKey,
-            post.publishLockedAt,
-          );
+          await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
           return;
         }
         const deferredUntil = await this.resolveDeferredPublishAt(post, settings, now);
@@ -1050,7 +1014,7 @@ export class VkPublishService {
       }
 
       try {
-        const scheduledAt = await this.resolveInitialAutoPublishAt(post, settings, queuedForSource);
+        const scheduledAt = await this.resolveInitialAutoPublishAt(post, settings);
         const queued = await this.enqueuePostPublish(post, 'autopublish', scheduledAt);
         queuedBySourceId.set(post.sourceId, queuedForSource + queued);
       } catch (error) {
@@ -1639,16 +1603,13 @@ export class VkPublishService {
     idempotencyKey: string,
     createdAt: Date,
     scheduledAt: Date | null = null,
-    enforceScheduledDelay = false,
-  ): Promise<boolean> {
+  ): Promise<VkPublishJobEnqueueOutcome> {
     const delay = scheduledAt ? Math.max(0, scheduledAt.getTime() - Date.now()) : 0;
     const job = this.buildPublishJob(post, reason, idempotencyKey, createdAt);
     const jobId = this.buildPublishJobId(post.id, idempotencyKey);
-    const recovered = await this.recoverExistingPublishJob(jobId, job, {
-      replaceForDelay: enforceScheduledDelay && delay > 0,
-    });
-    if (recovered !== null) {
-      return recovered;
+    const recoveryOutcome = await this.recoverExistingPublishJob(jobId, job, scheduledAt);
+    if (recoveryOutcome !== 'missing') {
+      return recoveryOutcome;
     }
 
     await this.publishQueue.add(VK_PUBLISH_JOB_NAME, job, {
@@ -1656,7 +1617,7 @@ export class VkPublishService {
       delay,
       ...VK_PARSING_PUBLISH_RETRY_POLICY,
     });
-    return true;
+    return 'created';
   }
 
   private buildPublishJob(
@@ -1678,12 +1639,12 @@ export class VkPublishService {
   private async recoverExistingPublishJob(
     jobId: string,
     job: VkParsingPublishJob,
-    options: { replaceForDelay: boolean } = { replaceForDelay: false },
-  ): Promise<boolean | null> {
+    scheduledAt: Date | null,
+  ): Promise<VkPublishJobRecoveryOutcome> {
     try {
       const existingJob = await this.publishQueue.getJob(jobId);
       if (!existingJob) {
-        return null;
+        return 'missing';
       }
 
       const state = await existingJob.getState();
@@ -1693,15 +1654,37 @@ export class VkPublishService {
           { jobId, postId: job.postId },
           'Removed orphaned VK parsing publish job before recovery',
         );
-        return null;
+        return 'missing';
       }
-      if (options.replaceForDelay && state !== 'active') {
+      if (!this.isMatchingPublishJob(existingJob.data, job)) {
+        if (state === 'active') {
+          this.logger.error(
+            { jobId, postId: job.postId, state },
+            'Quarantined active VK parsing publish job with mismatched ownership payload',
+          );
+          return 'conflict';
+        }
         await existingJob.remove();
         this.logger.warn(
           { jobId, postId: job.postId, state },
-          'Replaced VK parsing publish job to enforce recovery delay',
+          'Removed inactive VK parsing publish job with mismatched ownership payload',
         );
-        return null;
+        return 'missing';
+      }
+      if (!this.isMatchingPublishJobSchedule(existingJob, state, scheduledAt)) {
+        if (state === 'active') {
+          this.logger.error(
+            { jobId, postId: job.postId, state, scheduledAt },
+            'Quarantined active VK parsing publish job with schedule drift',
+          );
+          return 'conflict';
+        }
+        await existingJob.remove();
+        this.logger.warn(
+          { jobId, postId: job.postId, state, scheduledAt },
+          'Removed inactive VK parsing publish job with schedule drift',
+        );
+        return 'missing';
       }
       if (state === 'failed' || state === 'completed') {
         await existingJob.updateData(job);
@@ -1709,9 +1692,10 @@ export class VkPublishService {
           resetAttemptsMade: true,
           resetAttemptsStarted: true,
         });
+        return 'retried';
       }
 
-      return true;
+      return 'healthy';
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -1721,8 +1705,57 @@ export class VkPublishService {
         },
         'Failed to recover VK parsing publish job',
       );
-      return false;
+      return 'failed';
     }
+  }
+
+  private isMatchingPublishJob(
+    actual: VkParsingPublishJob | null | undefined,
+    expected: VkParsingPublishJob,
+  ): boolean {
+    return (
+      actual?.postId === expected.postId &&
+      actual.chatId === expected.chatId &&
+      actual.reason === expected.reason &&
+      actual.idempotencyKey === expected.idempotencyKey
+    );
+  }
+
+  private isMatchingPublishJobSchedule(
+    existingJob: {
+      timestamp?: number;
+      delay?: number;
+      attemptsMade?: number;
+      attemptsStarted?: number;
+      processedOn?: number;
+    },
+    state: string,
+    scheduledAt: Date | null,
+  ): boolean {
+    if (state === 'active') {
+      return true;
+    }
+    const nowMs = Date.now();
+    const expectedAtMs = scheduledAt?.getTime() ?? nowMs;
+    if (state === 'delayed') {
+      if (
+        Number(existingJob.attemptsMade) > 0 ||
+        Number(existingJob.attemptsStarted) > 0 ||
+        (typeof existingJob.processedOn === 'number' && existingJob.processedOn > 0)
+      ) {
+        return true;
+      }
+      const timestamp = Number(existingJob.timestamp);
+      const delay = Number(existingJob.delay);
+      if (!Number.isFinite(timestamp) || !Number.isFinite(delay)) {
+        return true;
+      }
+      return Math.abs(timestamp + delay - expectedAtMs) <= VK_PUBLISH_SCHEDULE_DRIFT_TOLERANCE_MS;
+    }
+    if (state === 'failed' || state === 'completed') {
+      return expectedAtMs <= nowMs + 1_000;
+    }
+    return true;
   }
 
   private sortAutoPublishCandidates(posts: VkParsingPostWithSource[]): VkParsingPostWithSource[] {
@@ -1834,7 +1867,6 @@ export class VkPublishService {
   private async resolveInitialAutoPublishAt(
     post: VkParsingPostWithSource,
     settings: VkParsingSettingsLike,
-    queuedForSource: number,
   ): Promise<Date> {
     const now = new Date();
     if (post.source.publishMode === VK_SOURCE_PUBLISH_MODE_IMMEDIATE) {
@@ -1867,7 +1899,10 @@ export class VkPublishService {
         : 30;
     const sourceSpacingMs = Math.max(
       5 * 60_000,
-      Math.max(publishIntervalMinutes, minPublishIntervalMinutes) * 60_000,
+      Math.max(
+        settings.distributeEvenlyEnabled ? publishIntervalMinutes : 0,
+        minPublishIntervalMinutes,
+      ) * 60_000,
     );
     const chatSpacingMs = settings.roundRobinEnabled ? 60_000 : 0;
     const latestChatQueued = settings.roundRobinEnabled
@@ -1882,7 +1917,7 @@ export class VkPublishService {
       : null;
     const baseMs = Math.max(
       now.getTime(),
-      sourceLastAt.getTime() + sourceSpacingMs * Math.max(1, queuedForSource + 1),
+      sourceLastAt.getTime() + sourceSpacingMs,
       latestChatQueued?._max.publishScheduledAt
         ? latestChatQueued._max.publishScheduledAt.getTime() + chatSpacingMs
         : 0,
@@ -2300,15 +2335,19 @@ export class VkPublishService {
   private async clearQueuedAutoPublishPost(
     postId: string,
     idempotencyKey?: string | null,
-    expectedPublishLockedAt?: Date | null,
+    expected?: Pick<VkParsingPostWithSource, 'publishLockedAt' | 'publishScheduledAt' | 'status'>,
   ): Promise<boolean> {
     const cleared = await this.prisma.vkParsingPost.updateMany({
       where: {
         id: postId,
         publishReason: 'autopublish',
         ...(idempotencyKey ? { publishIdempotencyKey: idempotencyKey } : {}),
-        ...(expectedPublishLockedAt !== undefined
-          ? { publishLockedAt: expectedPublishLockedAt }
+        ...(expected
+          ? {
+              publishLockedAt: expected.publishLockedAt,
+              publishScheduledAt: expected.publishScheduledAt,
+              status: expected.status,
+            }
           : {}),
       },
       data: {
@@ -2320,6 +2359,57 @@ export class VkPublishService {
       },
     });
     return cleared.count > 0;
+  }
+
+  private async clearRecoverableQueuedAutoPublishPost(
+    postId: string,
+    idempotencyKey: string,
+    expected: Pick<
+      VkParsingPostWithSource,
+      'chatId' | 'publishLockedAt' | 'publishScheduledAt' | 'status'
+    >,
+  ): Promise<boolean> {
+    const jobId = this.buildPublishJobId(postId, idempotencyKey);
+    try {
+      const existingJob = await this.publishQueue.getJob(jobId);
+      if (!existingJob) {
+        return this.clearQueuedAutoPublishPost(postId, idempotencyKey, expected);
+      }
+      if (
+        !this.isMatchingPublishJob(existingJob.data, {
+          postId,
+          chatId: expected.chatId,
+          reason: 'autopublish',
+          idempotencyKey,
+        })
+      ) {
+        this.logger.error(
+          { postId, jobId },
+          'Skipped VK autopublish ownership cleanup because its queue payload does not match',
+        );
+        return false;
+      }
+      if ((await existingJob.getState()) === 'active') {
+        this.logger.warn(
+          { postId, jobId },
+          'Skipped VK autopublish ownership cleanup because its queue job is active',
+        );
+        return false;
+      }
+      // BullMQ remove is the execution fence: it fails if a worker acquires the job after getState.
+      await existingJob.remove();
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          postId,
+          jobId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Skipped VK autopublish ownership cleanup because its queue job could not be fenced',
+      );
+      return false;
+    }
+    return this.clearQueuedAutoPublishPost(postId, idempotencyKey, expected);
   }
 
   private buildPublishJobId(postId: string, idempotencyKey: string): string {
