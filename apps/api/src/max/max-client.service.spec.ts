@@ -2958,6 +2958,71 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('preserves an existing inline keyboard when a text-only decorator edits the message', async () => {
+    const existingKeyboard = {
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [
+          [
+            {
+              type: 'link',
+              text: 'Открыть',
+              url: 'https://major-maksimov.ru/app/',
+            },
+          ],
+        ],
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-edit-preserve-keyboard-1',
+                    text: 'Исходный текст',
+                    attachments: [
+                      { type: 'image', payload: { token: 'image-token-1' } },
+                      existingKeyboard,
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard(
+      'chat-1',
+      'mid-edit-preserve-keyboard-1',
+      'Исходный текст<br><br><a href="https://max.ru/channel">Канал</a>',
+      {
+        textFormat: 'html',
+        preserveExistingInlineKeyboard: true,
+      },
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        data: expect.objectContaining({
+          format: 'html',
+          attachments: [{ type: 'image', payload: { token: 'image-token-1' } }, existingKeyboard],
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('omits text when editing inline keyboard on forwarded messages with empty body text', async () => {
     const httpService = {
       request: jest

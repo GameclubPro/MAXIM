@@ -247,6 +247,37 @@ describe('channel auto-post runtime', () => {
     });
   });
 
+  it('passes an existing inline keyboard to signature-only repair when explicitly enabled', async () => {
+    const manager = createScanManager(() => 10_000);
+    const attach = jest.fn().mockResolvedValue('attached');
+
+    await manager.processListedMessages({
+      chatId: 'channel-1',
+      messages: [
+        {
+          id: 'signed-repair',
+          timestamp: 103,
+          body: {
+            text: 'Пост',
+            attachments: [{ type: 'inline_keyboard', payload: { buttons: [] } }],
+          },
+        },
+      ],
+      adminUserIds: [],
+      settingsUpdatedAtMs: 102,
+      maxNewMessagesPerScan: 1,
+      processMessagesWithInlineKeyboard: true,
+      attach,
+    });
+
+    expect(attach).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'signed-repair',
+        hasInlineKeyboard: true,
+      }),
+    );
+  });
+
   it('leaves in-progress messages unadvanced so a later repair scan can retry them', async () => {
     const manager = createScanManager(() => 10_000);
 

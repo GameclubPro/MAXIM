@@ -1,4 +1,6 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { BadRequestException } from '@nestjs/common';
+import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import { ModerationService } from './moderation.service';
 
 function expectChannelAutoPostOptions(overrides: Record<string, unknown> = {}) {
@@ -992,6 +994,284 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it('appends the configured signature to a manual channel post without engagement buttons', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Наука и Факты',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+            commentsEnabled: false,
+            postSignatureEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: 'Новый пост в канале\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
+
+    await service.handleUpdate(createChannelPostUpdate());
+
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledWith(
+      'channel-1',
+      { text: 'Новый пост в канале' },
+      {
+        entityType: 'channel',
+        trafficClass: 'background',
+        sourceTag: 'channel_auto_post',
+      },
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-1',
+      'Новый пост в канале\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      expect.objectContaining({
+        buttons: [],
+        textFormat: 'html',
+        preserveExistingInlineKeyboard: true,
+      }),
+      expectChannelAutoPostOptions(),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-1',
+          signatureApplied: true,
+          includeCommentsButton: false,
+          includeSuggestButton: false,
+        }),
+      }),
+    });
+  });
+
+  it('applies the signature and engagement buttons in one manual-post edit', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-combined-1',
+      text: '**Пост**',
+      textFormat: 'markdown',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
+          postSignatureEnabled: true,
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'webhook',
+      senderId: 'admin-1',
+    });
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-combined-1',
+      '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
+        textFormat: 'html',
+      }),
+      expectChannelAutoPostOptions(),
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).not.toHaveProperty(
+      'preserveExistingInlineKeyboard',
+    );
+  });
+
+  it('does not duplicate a signature after an ambiguous successful edit is retried', async () => {
+    const prisma = {
+      channelSettings: {
+        findUnique: jest.fn().mockResolvedValue({
+          postSignatureEnabled: true,
+          postSignatureText: 'Наука и Факты',
+        }),
+      },
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }),
+      },
+      channelAudienceSnapshot: {
+        findFirst: jest.fn().mockResolvedValue({ link: 'https://max.ru/science' }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ambiguousEditError = new Error('MAX edit response timed out');
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValueOnce(ambiguousEditError),
+    };
+    const channelPostSignatureService = new ChannelPostSignatureService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+    );
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
+    const params = {
+      chatId: 'channel-1',
+      messageId: 'mid-signature-timeout-1',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          autoPostButtonsMode: 'OFF',
+          commentsEnabled: false,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
+          postSignatureEnabled: true,
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    } as const;
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        ...params,
+        text: 'Пост',
+      }),
+    ).rejects.toBe(ambiguousEditError);
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        ...params,
+        text: 'Пост\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+      }),
+    ).resolves.toBe('noop');
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminally skips a local signature validation failure', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const channelPostSignatureService = {
+      preparePostText: jest
+        .fn()
+        .mockRejectedValue(new BadRequestException('Текст вместе с подписью слишком длинный.')),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-signature-too-long-1',
+        text: 'Пост',
+        linkType: null,
+        managedChannel: {
+          channelSettings: {
+            autoPostButtonsMode: 'OFF',
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+            postSignatureEnabled: true,
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: null,
+      }),
+    ).resolves.toBe('skipped');
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
+        payload: expect.objectContaining({
+          messageId: 'mid-signature-too-long-1',
+          status: 400,
+        }),
+      }),
+    });
+  });
+
   it('auto-attaches the comments button when comments are enabled and the mode includes comments', async () => {
     const prisma = {
       chat: {
@@ -1274,6 +1554,9 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.channelSettings.findMany).toHaveBeenNthCalledWith(1, {
       where: {
         OR: [
+          {
+            postSignatureEnabled: true,
+          },
           {
             autoPostButtonsMode: {
               in: ['COMMENTS', 'BOTH'],
@@ -1699,10 +1982,11 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'SUGGEST',
-            postSuggestionsEnabled: true,
-            postSuggestionsButtonText: '📰 Предложить пост',
+            autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
             commentsEnabled: false,
+            postSignatureEnabled: true,
             updatedAt: new Date('2026-03-06T15:00:00.000Z'),
             chat: {
               admins: [
@@ -1733,7 +2017,10 @@ describe('ModerationService channel auto post buttons', () => {
           sender: {
             user_id: 'admin-1',
           },
-          body: null,
+          body: {
+            text: '',
+            attachments: [{ type: 'inline_keyboard', payload: { buttons: [] } }],
+          },
           link: {
             type: 'forward',
             message: {
@@ -1756,6 +2043,13 @@ describe('ModerationService channel auto post buttons', () => {
       notifyModerators: jest.fn(),
     };
     const adminService = createAdminServiceMock();
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: 'Пересланный пост\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
 
     const service = new ModerationService(
       prisma as never,
@@ -1769,6 +2063,7 @@ describe('ModerationService channel auto post buttons', () => {
       undefined,
       adminService as never,
     );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
 
     await (service as any).processChannelAutoPostButtons();
 
@@ -1777,16 +2072,11 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-polled-forward-1',
-      'Пересланный пост',
+      'Пересланный пост\n\n<a href="https://max.ru/science">Наука и Факты</a>',
       expect.objectContaining({
-        buttons: [
-          [
-            expect.objectContaining({
-              type: 'link',
-              text: '📰 Предложить пост',
-            }),
-          ],
-        ],
+        buttons: [],
+        textFormat: 'html',
+        preserveExistingInlineKeyboard: true,
       }),
       {
         trafficClass: 'background',

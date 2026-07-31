@@ -156,12 +156,24 @@ export class ChannelPostSignatureService {
     const signatureHtml = `<a href="${escapeMaxHtmlAttribute(channelLink)}">${escapeMaxHtmlText(
       settings.text,
     )}</a>`;
-    const text = [baseHtml.trim(), signatureHtml].filter(Boolean).join('\n\n');
+    const normalizedBaseHtml = baseHtml.trim();
+    const signatureAlreadyPresent = normalizedBaseHtml.endsWith(signatureHtml);
+    const text = signatureAlreadyPresent
+      ? normalizedBaseHtml
+      : [normalizedBaseHtml, signatureHtml].filter(Boolean).join('\n\n');
     const maxLength = options.maxLength ?? CHANNEL_POST_MAX_TEXT_LENGTH;
     if (text.length > maxLength) {
       throw new BadRequestException(
         `Текст вместе с подписью слишком длинный. Максимум ${maxLength} символов.`,
       );
+    }
+    if (signatureAlreadyPresent) {
+      return {
+        ...input,
+        text,
+        textFormat: 'html',
+        signatureApplied: false,
+      };
     }
     const engagementText = [
       (input.engagementText ?? input.text).trim(),

@@ -76,6 +76,7 @@ import { ManagedEntityAccessLossService } from '../max/managed-entity-access-los
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
+import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
 import { ManagedPollService } from '../admin/managed-poll.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -199,10 +200,13 @@ import {
   type GlobalSpammerObservationSource,
 } from './global-spammer-intelligence.service';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
+import { extractHttpStatusCode } from '../common/http-error.util';
 import {
+  buildChannelAutoPostButtons,
   ChannelAutoPostScanManager,
   extractChannelAutoPostMessageLinkType,
   isChannelAutoPostMessage,
+  prepareChannelAutoPostDecoration,
   resolveChannelAutoPostButtonVisibility,
   resolveChannelAutoPostEventTimestampMs,
   resolveChannelAutoPostMessageText,
@@ -593,6 +597,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly moderationDeleteIntentService?: ModerationDeleteIntentService,
     @Optional()
     private readonly maxActionLedgerService?: MaxActionLedgerService,
+    @Optional()
+    private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
@@ -13929,6 +13935,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         where: {
           OR: [
             {
+              postSignatureEnabled: true,
+            },
+            {
               autoPostButtonsMode: {
                 in: ['COMMENTS', 'BOTH'],
               },
@@ -14104,12 +14113,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       throw error;
     }
+    const buttonVisibility = resolveChannelAutoPostButtonVisibility(managedChannel.channelSettings);
     await this.channelAutoPostScanManager.processListedMessages({
       chatId,
       messages,
       adminUserIds: managedChannel.adminUserIds,
       settingsUpdatedAtMs: managedChannel.channelSettings.updatedAt.getTime(),
       maxNewMessagesPerScan,
+      processMessagesWithInlineKeyboard:
+        managedChannel.channelSettings.postSignatureEnabled === true &&
+        !buttonVisibility.includeCommentsButton &&
+        !buttonVisibility.includeSuggestButton,
       attach: (normalized) =>
         this.tryAutoAttachChannelMessageButtons({
           chatId,
@@ -14267,6 +14281,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<ChannelAutoPostAttachOutcome> {
     const { chatId, messageId, text, textFormat, linkType, managedChannel, source, senderId } =
       params;
+    const { includeCommentsButton, includeSuggestButton } = resolveChannelAutoPostButtonVisibility(
+      managedChannel.channelSettings,
+    );
+    const postSignatureEnabled = managedChannel.channelSettings.postSignatureEnabled === true;
+    if (!includeCommentsButton && !includeSuggestButton && !postSignatureEnabled) {
+      return 'noop';
+    }
+    if (postSignatureEnabled && !this.channelPostSignatureService) {
+      this.logger.error(
+        { chatId, messageId, source },
+        'Channel post signature service is unavailable for manual post decoration',
+      );
+      return 'noop';
+    }
+
     const autoAttachBotId = await this.resolveAutoAttachMutationBotId({
       chatId,
       source,
@@ -14278,12 +14307,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
       ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
     } as const;
-    const { includeCommentsButton, includeSuggestButton } = resolveChannelAutoPostButtonVisibility(
-      managedChannel.channelSettings,
-    );
-    if (!includeCommentsButton && !includeSuggestButton) {
-      return 'noop';
-    }
 
     const claim = await this.replacementAttachMarkerStore.claimChannelAutoPost({
       chatId,
@@ -14303,30 +14326,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const threadId = randomUUID();
-    const buttons = this.buildChannelAutoPostButtons(
-      chatId,
-      threadId,
+    const buttons = buildChannelAutoPostButtons(
       managedChannel.channelSettings,
-      includeCommentsButton,
-      includeSuggestButton,
-      autoAttachBotId,
+      { includeCommentsButton, includeSuggestButton },
+      (type, buttonText, suggestionEntryMode) =>
+        this.buildChannelDialogButton(
+          chatId,
+          type,
+          threadId,
+          buttonText,
+          autoAttachBotId,
+          suggestionEntryMode,
+        ),
     );
-    if (buttons.length === 0) {
-      await this.replacementAttachMarkerStore.completeChannelAutoPost({
-        chatId,
-        messageId,
-        lockToken: claim.lockToken,
-        status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
-        source,
-        botId: autoAttachBotId,
-        linkType,
-        deliveryMode: null,
-        lastError: 'No channel auto-post buttons to attach.',
-        lastStatusCode: null,
-      });
-      return 'noop';
-    }
-
     let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
       'edit_message';
     let replacementMessageId: string | null = null;
@@ -14337,16 +14349,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let originalCleanupError: string | null = null;
     let originalCleanupStatusCode: number | null = null;
     let replacementSendStarted = false;
+    let signatureApplied = false;
 
     try {
+      const preparedText = await prepareChannelAutoPostDecoration({
+        chatId,
+        text,
+        textFormat,
+        postSignatureEnabled,
+        signatureService: this.channelPostSignatureService,
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      });
+      signatureApplied = preparedText.signatureApplied;
+      if (buttons.length === 0 && !preparedText.signatureApplied) {
+        await this.replacementAttachMarkerStore.completeChannelAutoPost({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
+          source,
+          botId: autoAttachBotId,
+          linkType,
+          deliveryMode: null,
+          lastError: 'No channel post decoration to apply.',
+          lastStatusCode: null,
+        });
+        return 'noop';
+      }
+      const preserveExistingInlineKeyboard = buttons.length === 0;
+
       if (linkType === 'forward') {
         const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(
           chatId,
           messageId,
-          text,
+          preparedText.text,
           {
             buttons,
-            ...(textFormat ? { textFormat } : {}),
+            ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
+            ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
             beforeSend: async () => {
               await this.replacementAttachMarkerStore.recordChannelReplacementSendStarted({
                 chatId,
@@ -14426,10 +14466,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.maxClient.editMessageInlineKeyboard(
           chatId,
           messageId,
-          text,
+          preparedText.text,
           {
             buttons,
-            ...(textFormat ? { textFormat } : {}),
+            ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
+            ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
             debugContext: {
               screen: 'channel-auto-post',
               action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
@@ -14624,6 +14665,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             threadId,
             includeCommentsButton,
             includeSuggestButton,
+            signatureApplied,
             autoPostButtonsMode: managedChannel.channelSettings.autoPostButtonsMode ?? 'OFF',
             suggestionEntryMode: managedChannel.channelSettings.postSuggestionsEntryMode,
             deliveryMode,
@@ -14788,44 +14830,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isChannelMessage(update: MaxUpdate): boolean {
     return isChannelAutoPostMessage(update);
-  }
-
-  private buildChannelAutoPostButtons(
-    chatId: string,
-    threadId: string,
-    settings: PersistedChannelSettings,
-    includeCommentsButton: boolean,
-    includeSuggestButton: boolean,
-    botId?: string | null,
-  ): MaxMessageButton[][] {
-    const rows: MaxMessageButton[][] = [];
-
-    if (includeCommentsButton) {
-      rows.push([
-        this.buildChannelDialogButton(
-          chatId,
-          'comments',
-          threadId,
-          formatCommentsButtonText('💬 Комментарии', 0),
-          botId,
-        ),
-      ]);
-    }
-
-    if (includeSuggestButton) {
-      rows.push([
-        this.buildChannelDialogButton(
-          chatId,
-          'suggest',
-          threadId,
-          settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
-          botId,
-          settings.postSuggestionsEntryMode,
-        ),
-      ]);
-    }
-
-    return rows;
   }
 
   private shouldAutoAttachChatCommentsButton(
@@ -15920,8 +15924,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractStatusCode(error: unknown): number | null {
-    const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
-    return typeof maybeStatus === 'number' ? maybeStatus : null;
+    return extractHttpStatusCode(error);
   }
 
   private extractErrorSummary(error: unknown): string {

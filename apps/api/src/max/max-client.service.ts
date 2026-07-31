@@ -319,6 +319,13 @@ export type MaxSendMessageOptions = {
   };
 };
 
+type MaxEditableMessageOptions = Pick<
+  MaxSendMessageOptions,
+  'button' | 'buttons' | 'debugContext' | 'textFormat'
+> & {
+  preserveExistingInlineKeyboard?: boolean;
+};
+
 type MaxImmediateSendMessageOptions = MaxSendMessageOptions & {
   beforeSend?: () => Promise<void>;
 };
@@ -1118,7 +1125,7 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     sourceMessageId: string,
     fallbackText: string | null,
-    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'> & {
+    options?: MaxEditableMessageOptions & {
       beforeSend?: () => Promise<void>;
     },
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
@@ -1228,7 +1235,7 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     messageId: string,
     text: string | null,
-    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'>,
+    options?: MaxEditableMessageOptions,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ) {
     const message = await this.getMessageById(messageId, requestOptions);
@@ -4874,13 +4881,19 @@ export class MaxClientService implements OnModuleDestroy {
 
   private buildEditableMessageAttachments(
     message: Record<string, unknown> | null,
-    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+    options?: MaxEditableMessageOptions,
   ): Record<string, unknown>[] {
-    const existingAttachments = this.extractEditableAttachments(message).filter(
+    const editableAttachments = this.extractEditableAttachments(message);
+    const existingAttachmentsWithoutKeyboard = editableAttachments.filter(
       (attachment) => this.readLowerString(attachment.type) !== 'inline_keyboard',
     );
     const keyboardAttachment = this.buildInlineKeyboardAttachment(options);
-    return keyboardAttachment ? [...existingAttachments, keyboardAttachment] : existingAttachments;
+    if (keyboardAttachment) {
+      return [...existingAttachmentsWithoutKeyboard, keyboardAttachment];
+    }
+    return options?.preserveExistingInlineKeyboard
+      ? editableAttachments
+      : existingAttachmentsWithoutKeyboard;
   }
 
   private extractReplyMessageLink(

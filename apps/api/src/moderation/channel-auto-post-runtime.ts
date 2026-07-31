@@ -1,7 +1,9 @@
 import type { MaxUpdate } from '@maxim/contracts';
 
+import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderMaxTextMarkupAsHtml, type MaxTextMarkup } from '../common/max-text-markup.util';
-import type { MaxSendMessageOptions } from '../max/max-client.service';
+import type { MaxMessageButton, MaxSendMessageOptions } from '../max/max-client.service';
+import type { ChannelSettings as PersistedChannelSettings } from '../prisma/prisma-client';
 import { extractRawMessageNode } from './moderation-update-extractors';
 
 export type ChannelAutoPostMessageText = {
@@ -48,6 +50,7 @@ type ProcessChannelAutoPostListedMessagesParams = {
   adminUserIds: readonly string[];
   settingsUpdatedAtMs: number;
   maxNewMessagesPerScan: number;
+  processMessagesWithInlineKeyboard?: boolean;
   attach: (message: ChannelAutoPostListedMessage) => Promise<ChannelAutoPostAttachOutcome>;
 };
 
@@ -346,6 +349,84 @@ export function resolveChannelAutoPostButtonVisibility(settings: {
   };
 }
 
+type ChannelDialogButtonBuilder = (
+  type: 'comments' | 'suggest',
+  text: string,
+  suggestionEntryMode?: PersistedChannelSettings['postSuggestionsEntryMode'],
+) => MaxMessageButton;
+
+export function buildChannelAutoPostButtons(
+  settings: Pick<
+    PersistedChannelSettings,
+    'postSuggestionsButtonText' | 'postSuggestionsEntryMode'
+  >,
+  visibility: ReturnType<typeof resolveChannelAutoPostButtonVisibility>,
+  buildButton: ChannelDialogButtonBuilder,
+): MaxMessageButton[][] {
+  const rows: MaxMessageButton[][] = [];
+  if (visibility.includeCommentsButton) {
+    rows.push([buildButton('comments', formatCommentsButtonText('💬 Комментарии', 0))]);
+  }
+  if (visibility.includeSuggestButton) {
+    rows.push([
+      buildButton(
+        'suggest',
+        settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+        settings.postSuggestionsEntryMode,
+      ),
+    ]);
+  }
+  return rows;
+}
+
+type ChannelPostSignaturePreparer = {
+  preparePostText: (
+    chatId: string,
+    input: { text: string; textFormat?: MaxSendMessageOptions['textFormat'] },
+    options: { entityType: 'channel'; trafficClass: 'background'; sourceTag: string },
+  ) => Promise<{
+    text: string;
+    textFormat?: MaxSendMessageOptions['textFormat'];
+    signatureApplied: boolean;
+  }>;
+};
+
+export async function prepareChannelAutoPostDecoration(params: {
+  chatId: string;
+  text: string | null;
+  textFormat?: MaxSendMessageOptions['textFormat'] | null;
+  postSignatureEnabled: boolean;
+  signatureService?: ChannelPostSignaturePreparer;
+  sourceTag: string;
+}): Promise<{
+  text: string | null;
+  textFormat?: MaxSendMessageOptions['textFormat'];
+  signatureApplied: boolean;
+}> {
+  if (!params.postSignatureEnabled) {
+    return {
+      text: params.text,
+      textFormat: params.textFormat ?? undefined,
+      signatureApplied: false,
+    };
+  }
+  if (!params.signatureService) {
+    throw new Error('Channel post signature service is unavailable.');
+  }
+  return params.signatureService.preparePostText(
+    params.chatId,
+    {
+      text: params.text ?? '',
+      ...(params.textFormat ? { textFormat: params.textFormat } : {}),
+    },
+    {
+      entityType: 'channel',
+      trafficClass: 'background',
+      sourceTag: params.sourceTag,
+    },
+  );
+}
+
 export class ChannelAutoPostScanManager {
   private readonly now: () => number;
   private cursor = 0;
@@ -507,7 +588,7 @@ export class ChannelAutoPostScanManager {
       if (
         (normalized.senderId && !params.adminUserIds.includes(normalized.senderId)) ||
         normalized.timestampMs < params.settingsUpdatedAtMs ||
-        normalized.hasInlineKeyboard
+        (normalized.hasInlineKeyboard && !params.processMessagesWithInlineKeyboard)
       ) {
         scanState = this.advance(scanState, normalized);
         this.states.set(params.chatId, scanState);

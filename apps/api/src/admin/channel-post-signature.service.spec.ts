@@ -110,6 +110,36 @@ describe('ChannelPostSignatureService', () => {
     expect(result.textFormat).toBe('html');
   });
 
+  it('does not append the same trailing channel signature twice', async () => {
+    const { service } = createFixture();
+    const signedText = 'Новость\n\n<a href="https://max.ru/channel/news">Читать канал</a>';
+
+    await expect(
+      service.preparePostText(
+        'channel-1',
+        { text: signedText, textFormat: 'html' },
+        { entityType: 'channel' },
+      ),
+    ).resolves.toEqual({
+      text: signedText,
+      textFormat: 'html',
+      signatureApplied: false,
+    });
+  });
+
+  it('still enforces the text limit when the trailing signature is already present', async () => {
+    const { service } = createFixture();
+    const signedText = `Новость\n\n<a href="https://max.ru/channel/news">Читать канал</a>`;
+
+    await expect(
+      service.preparePostText(
+        'channel-1',
+        { text: signedText, textFormat: 'html' },
+        { entityType: 'channel', maxLength: signedText.length - 1 },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('rejects a post when the rendered text and signature exceed the MAX limit', async () => {
     const { service } = createFixture();
 
