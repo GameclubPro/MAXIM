@@ -1119,7 +1119,7 @@ type RepairScheduleReservation = {
 };
 
 function isLiveRepairQueueState(state: RepairQueueEvidence['state']): boolean {
-  return ['active', 'delayed', 'waiting', 'prioritized'].includes(state);
+  return ['active', 'delayed', 'waiting', 'prioritized', 'waiting-children'].includes(state);
 }
 
 function isExactPristineInactiveQueueReservation(
@@ -1876,6 +1876,23 @@ async function applyRepairEntry(
   }
 }
 
+async function assertFrozenRepairQueueEvidence(
+  queue: Queue<VkParsingPublishJob>,
+  document: VkPublishRepairPlanDocument,
+): Promise<void> {
+  for (const batch of chunks(document.entries, document.batchSize)) {
+    const currentEvidence = await Promise.all(
+      batch.map((entry) => inspectQueueJob(queue, entry.facts)),
+    );
+    currentEvidence.forEach((current, index) => {
+      const planned = batch[index]!;
+      if (hashRepairPlan(current) !== hashRepairPlan(planned.queue)) {
+        throw new Error(`Frozen BullMQ evidence changed for post ${planned.postId}`);
+      }
+    });
+  }
+}
+
 export async function applyVkPublishRepairPlan(
   prisma: PrismaClient,
   queue: Queue<VkParsingPublishJob>,
@@ -1920,6 +1937,10 @@ export async function applyVkPublishRepairPlan(
     await assertFrozenOwnershipSnapshot(prisma, plan.document);
   };
   const repairEntries = plan.document.entries.filter((entry) => entry.action === 'repair');
+  if (repairEntries.length > 0) {
+    await assertMutationSafe();
+    await assertFrozenRepairQueueEvidence(queue, plan.document);
+  }
   for (const batch of chunks(repairEntries, plan.document.batchSize)) {
     for (const entry of batch) {
       repairs.push(

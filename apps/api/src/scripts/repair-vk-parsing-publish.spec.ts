@@ -1033,7 +1033,7 @@ describe('VK parsing publish repair CLI', () => {
         queue: createQueueEvidence({
           presence: 'present',
           name: 'publish-vk-post',
-          state: 'delayed',
+          state: 'waiting-children',
           postId: facts.postId,
           chatId: facts.chatId,
           reason: 'autopublish',
@@ -1060,6 +1060,77 @@ describe('VK parsing publish repair CLI', () => {
       assertFrozenOwnershipSnapshot({ vkParsingPost: { count } } as never, document),
     ).rejects.toThrow('Found 1 VK publish ownership rows after the frozen cutoff');
     expect(count).toHaveBeenCalledTimes(2);
+  });
+
+  it('rechecks skipped ownership queue evidence under the lock before the first mutation', async () => {
+    const skipped = createFacts({
+      access: { ...createFacts().access, capableBotIds: [] },
+    });
+    const repairable = createFacts({
+      postId: 'post-2',
+      sourceId: 'source-2',
+      publishIdempotencyKey: 'ownership-key-2',
+      publishScheduledAt: null,
+    });
+    const document = buildDeterministicRepairPlan(
+      CUTOFF,
+      2,
+      2,
+      2,
+      [skipped, repairable].map((facts) => ({
+        facts,
+        queue: createQueueEvidence({
+          jobId: `vk-parsing-publish__${facts.postId}__${facts.publishIdempotencyKey}`,
+        }),
+        ledger: createLedgerEvidence(),
+      })),
+    );
+    const changedSkippedJob = {
+      name: 'publish-vk-post',
+      data: {
+        postId: skipped.postId,
+        chatId: skipped.chatId,
+        reason: 'autopublish',
+        idempotencyKey: skipped.publishIdempotencyKey,
+      },
+      timestamp: CUTOFF.getTime(),
+      delay: 60 * 60_000,
+      attemptsMade: 0,
+      attemptsStarted: 0,
+      processedOn: undefined,
+      finishedOn: undefined,
+      getState: jest.fn().mockResolvedValue('delayed'),
+    };
+    const getJob = jest.fn((jobId: string) =>
+      Promise.resolve(jobId.includes(skipped.postId) ? changedSkippedJob : null),
+    );
+    const count = jest
+      .fn()
+      .mockImplementation(({ where }) =>
+        Promise.resolve(Object.hasOwn(where.publishQueuedAt, 'gt') ? 0 : 2),
+      );
+    const queue = {
+      isPaused: jest.fn().mockResolvedValue(true),
+      getJobCounts: jest.fn().mockResolvedValue({ active: 0 }),
+      getJob,
+    };
+    const redis = { eval: jest.fn().mockResolvedValue(1) };
+
+    await expect(
+      applyVkPublishRepairPlan(
+        { vkParsingPost: { count } } as never,
+        queue as never,
+        redis as never,
+        'token-1',
+        {
+          planHash: hashRepairPlan(document),
+          document,
+          queue: { paused: true, active: 0 },
+        },
+      ),
+    ).rejects.toThrow('Frozen BullMQ evidence changed for post post-1');
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+    expect(getJob).toHaveBeenCalledTimes(2);
   });
 
   it('rechecks the frozen pause immediately before each successful apply mutation', async () => {
@@ -1121,6 +1192,7 @@ describe('VK parsing publish repair CLI', () => {
         .fn()
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
         .mockResolvedValue(added);
       const queue = {
         isPaused: jest.fn().mockResolvedValue(true),
@@ -1141,21 +1213,27 @@ describe('VK parsing publish repair CLI', () => {
         orphanJobs: [],
       });
 
-      expect(redis.eval).toHaveBeenCalledTimes(3);
-      expect(count).toHaveBeenCalledTimes(6);
-      expect(ledgerFindUnique.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(redis.eval).toHaveBeenCalledTimes(4);
+      expect(count).toHaveBeenCalledTimes(8);
+      expect(redis.eval.mock.invocationCallOrder[0]).toBeLessThan(
+        getJob.mock.invocationCallOrder[0]!,
+      );
+      expect(getJob.mock.invocationCallOrder[0]).toBeLessThan(
         redis.eval.mock.invocationCallOrder[1]!,
       );
-      expect(redis.eval.mock.invocationCallOrder[1]).toBeLessThan(
-        updateMany.mock.invocationCallOrder[0]!,
-      );
-      expect(updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(ledgerFindUnique.mock.invocationCallOrder[0]).toBeLessThan(
         redis.eval.mock.invocationCallOrder[2]!,
       );
       expect(redis.eval.mock.invocationCallOrder[2]).toBeLessThan(
-        getJob.mock.invocationCallOrder[1]!,
+        updateMany.mock.invocationCallOrder[0]!,
       );
-      expect(getJob).toHaveBeenCalledTimes(3);
+      expect(updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+        redis.eval.mock.invocationCallOrder[3]!,
+      );
+      expect(redis.eval.mock.invocationCallOrder[3]).toBeLessThan(
+        getJob.mock.invocationCallOrder[2]!,
+      );
+      expect(getJob).toHaveBeenCalledTimes(4);
       expect(queue.add).toHaveBeenCalledTimes(1);
     } finally {
       jest.useRealTimers();
