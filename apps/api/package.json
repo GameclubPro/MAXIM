@@ -85,7 +85,7 @@
     "ioredis": "^5.11.0",
     "luxon": "^3.7.2",
     "nestjs-pino": "^4.6.1",
-    "pg": "8.20.0",
+    "pg": "8.22.0",
     "pino-pretty": "^13.0.0",
     "prisma": "^7.9.0",
     "reflect-metadata": "^0.2.2",
