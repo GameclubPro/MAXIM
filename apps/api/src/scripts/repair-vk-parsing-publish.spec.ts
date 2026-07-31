@@ -635,7 +635,7 @@ describe('VK parsing publish repair CLI', () => {
     );
   });
 
-  it('preserves an exact repairable job actual slot until that row is planned', () => {
+  it('releases every repairable reservation before assigning deterministic slots', () => {
     const first = createFacts({
       postId: 'post-1',
       sourceId: 'source-1',
@@ -680,9 +680,74 @@ describe('VK parsing publish repair CLI', () => {
     expect(
       plan.entries.map((entry) => [entry.postId, entry.action, entry.nextScheduledAt]),
     ).toEqual([
-      ['post-1', 'repair', '2026-07-31T10:30:00.000Z'],
-      ['post-2', 'already_correct', '2026-07-31T10:00:00.000Z'],
+      ['post-1', 'repair', '2026-07-31T10:00:00.000Z'],
+      ['post-2', 'repair', '2026-07-31T10:15:00.000Z'],
     ]);
+  });
+
+  it('produces only already-correct entries when rebuilt from its applied schedule', () => {
+    const first = createFacts({
+      postId: 'post-1',
+      sourceId: 'source-1',
+      publishIdempotencyKey: 'ownership-key-1',
+      publishScheduledAt: '2026-07-31T10:30:00.000Z',
+      source: { ...createFacts().source, priority: 'HIGH' },
+    });
+    const second = createFacts({
+      postId: 'post-2',
+      sourceId: 'source-2',
+      publishIdempotencyKey: 'ownership-key-2',
+      publishScheduledAt: '2026-07-31T10:00:00.000Z',
+      source: { ...createFacts().source, priority: 'NORMAL' },
+    });
+    const toAssessed = (facts: RepairCandidateFacts, dueAtDriftMs = 0) => ({
+      facts,
+      queue: createQueueEvidence({
+        presence: 'present' as const,
+        jobId: `vk-parsing-publish__${facts.postId}__${facts.publishIdempotencyKey}`,
+        name: 'publish-vk-post',
+        state: 'delayed',
+        postId: facts.postId,
+        chatId: facts.chatId,
+        reason: 'autopublish',
+        idempotencyKey: facts.publishIdempotencyKey,
+        dueAt: facts.publishScheduledAt
+          ? new Date(Date.parse(facts.publishScheduledAt) + dueAtDriftMs).toISOString()
+          : null,
+      }),
+      ledger: createLedgerEvidence({
+        jobId: `vk-parsing:publish:${facts.postId}:${facts.publishIdempotencyKey}`,
+      }),
+    });
+    const firstPlan = buildDeterministicRepairPlan(
+      CUTOFF,
+      40,
+      10,
+      2,
+      [first, second].map((facts) => toAssessed(facts)),
+    );
+    const appliedFacts = firstPlan.entries.map((entry) =>
+      createFacts({
+        ...(entry.postId === first.postId ? first : second),
+        publishScheduledAt: entry.nextScheduledAt,
+      }),
+    );
+    const postApplyPlan = buildDeterministicRepairPlan(
+      CUTOFF,
+      40,
+      10,
+      2,
+      appliedFacts.map((facts) => toAssessed(facts, 1)),
+    );
+
+    expect(firstPlan.entries.map((entry) => entry.action)).toEqual(['repair', 'repair']);
+    expect(postApplyPlan.entries.map((entry) => entry.action)).toEqual([
+      'already_correct',
+      'already_correct',
+    ]);
+    expect(postApplyPlan.entries.map((entry) => entry.nextScheduledAt)).toEqual(
+      firstPlan.entries.map((entry) => entry.nextScheduledAt),
+    );
   });
 
   it('fills an earlier free chat slot when a prior candidate is constrained to later work hours', () => {

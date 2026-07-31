@@ -1163,23 +1163,6 @@ function addRepairScheduleReservation(
   reservationsByKey.set(key, reservations);
 }
 
-function removeRepairScheduleReservation(
-  reservationsByKey: Map<string, RepairScheduleReservation[]>,
-  key: string,
-  postId: string,
-): void {
-  const reservations = reservationsByKey.get(key);
-  if (!reservations) {
-    return;
-  }
-  const remaining = reservations.filter((reservation) => reservation.postId !== postId);
-  if (remaining.length === 0) {
-    reservationsByKey.delete(key);
-  } else {
-    reservationsByKey.set(key, remaining);
-  }
-}
-
 function hasRepairScheduleConflict(
   candidateMs: number,
   facts: RepairCandidateFacts,
@@ -1243,10 +1226,21 @@ export function buildDeterministicRepairPlan(
   const occupiedChatSchedules = new Map<string, RepairScheduleReservation[]>();
   const occupiedSourceSchedules = new Map<string, RepairScheduleReservation[]>();
   const plannedBySource = new Map<string, number>();
-  // FLAG: Reserve every exact, pristine live job from BullMQ evidence first. Repairable rows release
-  // their own reservation only when they are assigned a replacement slot below.
+  const repairablePostIds = new Set(
+    assessed
+      .filter(
+        ({ facts, queue, ledger }) => classifyRepairCandidate(facts, queue, ledger) === null,
+      )
+      .map(({ facts }) => facts.postId),
+  );
+  // FLAG: Keep exact, pristine jobs that the repair cannot mutate as fixed reservations. Release
+  // every repairable row before planning so one pass reaches the same deterministic fixed point
+  // that a post-apply dry-run will calculate.
   for (const { facts, queue } of assessed) {
-    if (!isExactPristineInactiveQueueReservation(facts, queue)) {
+    if (
+      repairablePostIds.has(facts.postId) ||
+      !isExactPristineInactiveQueueReservation(facts, queue)
+    ) {
       continue;
     }
     const fixedAtMs = Date.parse(queue.dueAt ?? '');
@@ -1264,8 +1258,6 @@ export function buildDeterministicRepairPlan(
     let nextScheduledAt: string | null = null;
     let action: RepairPlanEntry['action'] = 'skip';
     if (!skipReason) {
-      removeRepairScheduleReservation(occupiedChatSchedules, facts.chatId, facts.postId);
-      removeRepairScheduleReservation(occupiedSourceSchedules, facts.sourceId, facts.postId);
       const sourceSpacingMs = resolveRepairSourceSpacingMs(facts);
       const plannedForSource = plannedBySource.get(facts.sourceId) ?? 0;
       const dailyLimit = Math.max(1, facts.source.dailyLimit);
@@ -1291,8 +1283,7 @@ export function buildDeterministicRepairPlan(
         : 'repair';
       const reservation = {
         postId: facts.postId,
-        scheduledAtMs:
-          action === 'already_correct' && queue.dueAt ? Date.parse(queue.dueAt) : scheduledAtMs,
+        scheduledAtMs,
         sourceSpacingMs,
       };
       addRepairScheduleReservation(occupiedChatSchedules, facts.chatId, reservation);
