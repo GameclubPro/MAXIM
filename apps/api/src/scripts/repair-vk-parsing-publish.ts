@@ -885,6 +885,25 @@ export function classifyRepairCandidate(
   queue: RepairQueueEvidence,
   ledger: RepairLedgerEvidence,
 ): RepairSkipReason | null {
+  // FLAG: A cancelled or otherwise invalid DB owner must not hide a live BullMQ execution hazard.
+  // Validate present queue evidence first so apply remains fail-closed for active, attempted,
+  // malformed, or unsupported jobs even when the DB row itself is not repairable.
+  if (queue.presence === 'present') {
+    if (queue.state === 'active') {
+      return 'queue_active';
+    }
+    if (
+      queue.attemptsMade > 0 ||
+      queue.attemptsStarted > 0 ||
+      queue.processedOn ||
+      queue.finishedOn
+    ) {
+      return 'queue_attempted';
+    }
+    if (!isExactPristineInactiveQueueReservation(facts, queue)) {
+      return 'queue_invalid';
+    }
+  }
   if (facts.publishReason === 'manual-retry' || facts.publishReason === 'manual-schedule') {
     return 'manual_ownership';
   }
@@ -923,25 +942,6 @@ export function classifyRepairCandidate(
     facts.access.capableBotIds.length === 0
   ) {
     return hasAccessLoss(facts) ? 'access_loss' : 'access_unproven';
-  }
-  if (queue.presence === 'present') {
-    if (queue.state === 'active') {
-      return 'queue_active';
-    }
-    if (
-      queue.attemptsMade > 0 ||
-      queue.attemptsStarted > 0 ||
-      queue.processedOn ||
-      queue.finishedOn
-    ) {
-      return 'queue_attempted';
-    }
-    if (
-      !queuePayloadMatches(facts, queue) ||
-      !['delayed', 'waiting', 'prioritized'].includes(queue.state)
-    ) {
-      return 'queue_invalid';
-    }
   }
   if (ledger.presence === 'present') {
     if (ledger.status === MaxActionLedgerStatus.IN_PROGRESS) {
@@ -1105,47 +1105,95 @@ function orderAssessedRepairRows(assessed: readonly AssessedRepairRow[]): Assess
 function resolveRepairSourceSpacingMs(facts: RepairCandidateFacts): number {
   return (
     Math.max(
-      15,
+      5,
       facts.source.minPublishIntervalMinutes,
       ...(facts.settings?.distributeEvenlyEnabled ? [facts.source.publishIntervalMinutes] : []),
     ) * 60_000
   );
 }
 
-type FixedRepairReservation = {
+type RepairScheduleReservation = {
+  postId: string;
   scheduledAtMs: number;
   sourceSpacingMs: number;
 };
+
+function isLiveRepairQueueState(state: RepairQueueEvidence['state']): boolean {
+  return ['active', 'delayed', 'waiting', 'prioritized'].includes(state);
+}
 
 function isExactPristineInactiveQueueReservation(
   facts: RepairCandidateFacts,
   queue: RepairQueueEvidence,
 ): boolean {
+  const idempotencyKey = facts.publishIdempotencyKey;
+  const dueAtMs = queue.dueAt ? Date.parse(queue.dueAt) : Number.NaN;
   return (
     queue.presence === 'present' &&
+    Boolean(idempotencyKey) &&
+    queue.jobId === buildPublishJobId(facts.postId, idempotencyKey ?? '') &&
     queuePayloadMatches(facts, queue) &&
+    ['autopublish', 'manual-retry', 'manual-schedule'].includes(queue.reason ?? '') &&
     ['delayed', 'waiting', 'prioritized'].includes(queue.state) &&
     queue.attemptsMade === 0 &&
     queue.attemptsStarted === 0 &&
     !queue.processedOn &&
-    !queue.finishedOn
+    !queue.finishedOn &&
+    Number.isFinite(dueAtMs)
   );
 }
 
-function hasFixedReservationConflict(
+function addRepairScheduleReservation(
+  reservationsByKey: Map<string, RepairScheduleReservation[]>,
+  key: string,
+  reservation: RepairScheduleReservation,
+): void {
+  const reservations = reservationsByKey.get(key) ?? [];
+  const insertAt = reservations.findIndex(
+    (current) =>
+      current.scheduledAtMs > reservation.scheduledAtMs ||
+      (current.scheduledAtMs === reservation.scheduledAtMs &&
+        current.postId.localeCompare(reservation.postId) > 0),
+  );
+  if (insertAt === -1) {
+    reservations.push(reservation);
+  } else {
+    reservations.splice(insertAt, 0, reservation);
+  }
+  reservationsByKey.set(key, reservations);
+}
+
+function removeRepairScheduleReservation(
+  reservationsByKey: Map<string, RepairScheduleReservation[]>,
+  key: string,
+  postId: string,
+): void {
+  const reservations = reservationsByKey.get(key);
+  if (!reservations) {
+    return;
+  }
+  const remaining = reservations.filter((reservation) => reservation.postId !== postId);
+  if (remaining.length === 0) {
+    reservationsByKey.delete(key);
+  } else {
+    reservationsByKey.set(key, remaining);
+  }
+}
+
+function hasRepairScheduleConflict(
   candidateMs: number,
   facts: RepairCandidateFacts,
-  fixedChatReservations: ReadonlyMap<string, readonly FixedRepairReservation[]>,
-  fixedSourceReservations: ReadonlyMap<string, readonly FixedRepairReservation[]>,
+  occupiedChatSchedules: ReadonlyMap<string, readonly RepairScheduleReservation[]>,
+  occupiedSourceSchedules: ReadonlyMap<string, readonly RepairScheduleReservation[]>,
 ): boolean {
-  const chatConflict = (fixedChatReservations.get(facts.chatId) ?? []).some(
+  const chatConflict = (occupiedChatSchedules.get(facts.chatId) ?? []).some(
     (reservation) => Math.abs(candidateMs - reservation.scheduledAtMs) < REPAIR_CHAT_SPACING_MS,
   );
   if (chatConflict) {
     return true;
   }
   const sourceSpacingMs = resolveRepairSourceSpacingMs(facts);
-  return (fixedSourceReservations.get(facts.sourceId) ?? []).some(
+  return (occupiedSourceSchedules.get(facts.sourceId) ?? []).some(
     (reservation) =>
       Math.abs(candidateMs - reservation.scheduledAtMs) <
       Math.max(sourceSpacingMs, reservation.sourceSpacingMs),
@@ -1155,14 +1203,14 @@ function hasFixedReservationConflict(
 function resolveEarliestUnreservedRepairScheduleAt(
   candidateMs: number,
   facts: RepairCandidateFacts,
-  fixedChatReservations: ReadonlyMap<string, readonly FixedRepairReservation[]>,
-  fixedSourceReservations: ReadonlyMap<string, readonly FixedRepairReservation[]>,
+  occupiedChatSchedules: ReadonlyMap<string, readonly RepairScheduleReservation[]>,
+  occupiedSourceSchedules: ReadonlyMap<string, readonly RepairScheduleReservation[]>,
 ): number {
   let currentMs = candidateMs;
   for (let step = 0; step < REPAIR_MAX_SCHEDULE_LOOKAHEAD_STEPS; step += 1) {
     if (
       isAllowedRepairTime(new Date(currentMs), facts) &&
-      !hasFixedReservationConflict(currentMs, facts, fixedChatReservations, fixedSourceReservations)
+      !hasRepairScheduleConflict(currentMs, facts, occupiedChatSchedules, occupiedSourceSchedules)
     ) {
       return currentMs;
     }
@@ -1192,42 +1240,23 @@ export function buildDeterministicRepairPlan(
   },
   ownershipRowsAfterCutoff = 0,
 ): VkPublishRepairPlanDocument {
-  const nextChatAt = new Map<string, number>();
-  const nextSourceAt = new Map<string, number>();
-  const fixedChatReservations = new Map<string, FixedRepairReservation[]>();
-  const fixedSourceReservations = new Map<string, FixedRepairReservation[]>();
+  const occupiedChatSchedules = new Map<string, RepairScheduleReservation[]>();
+  const occupiedSourceSchedules = new Map<string, RepairScheduleReservation[]>();
   const plannedBySource = new Map<string, number>();
-  for (const { facts, queue, ledger } of assessed) {
-    const skipReason = classifyRepairCandidate(facts, queue, ledger);
-    const fixedAtMs = queue.dueAt
-      ? Date.parse(queue.dueAt)
-      : facts.publishScheduledAt
-        ? Date.parse(facts.publishScheduledAt)
-        : Number.NaN;
-    if (
-      !skipReason ||
-      !isExactPristineInactiveQueueReservation(facts, queue) ||
-      !Number.isFinite(fixedAtMs) ||
-      fixedAtMs < startAt.getTime()
-    ) {
+  // FLAG: Reserve every exact, pristine live job from BullMQ evidence first. Repairable rows release
+  // their own reservation only when they are assigned a replacement slot below.
+  for (const { facts, queue } of assessed) {
+    if (!isExactPristineInactiveQueueReservation(facts, queue)) {
       continue;
     }
+    const fixedAtMs = Date.parse(queue.dueAt ?? '');
     const reservation = {
+      postId: facts.postId,
       scheduledAtMs: fixedAtMs,
       sourceSpacingMs: resolveRepairSourceSpacingMs(facts),
     };
-    const chatReservations = fixedChatReservations.get(facts.chatId) ?? [];
-    chatReservations.push(reservation);
-    fixedChatReservations.set(facts.chatId, chatReservations);
-    const sourceReservations = fixedSourceReservations.get(facts.sourceId) ?? [];
-    sourceReservations.push(reservation);
-    fixedSourceReservations.set(facts.sourceId, sourceReservations);
-  }
-  for (const reservations of [
-    ...fixedChatReservations.values(),
-    ...fixedSourceReservations.values(),
-  ]) {
-    reservations.sort((left, right) => left.scheduledAtMs - right.scheduledAtMs);
+    addRepairScheduleReservation(occupiedChatSchedules, facts.chatId, reservation);
+    addRepairScheduleReservation(occupiedSourceSchedules, facts.sourceId, reservation);
   }
   const ordered = orderAssessedRepairRows(assessed);
   const entries = ordered.map(({ facts, queue, ledger }): RepairPlanEntry => {
@@ -1235,6 +1264,8 @@ export function buildDeterministicRepairPlan(
     let nextScheduledAt: string | null = null;
     let action: RepairPlanEntry['action'] = 'skip';
     if (!skipReason) {
+      removeRepairScheduleReservation(occupiedChatSchedules, facts.chatId, facts.postId);
+      removeRepairScheduleReservation(occupiedSourceSchedules, facts.sourceId, facts.postId);
       const sourceSpacingMs = resolveRepairSourceSpacingMs(facts);
       const plannedForSource = plannedBySource.get(facts.sourceId) ?? 0;
       const dailyLimit = Math.max(1, facts.source.dailyLimit);
@@ -1246,23 +1277,27 @@ export function buildDeterministicRepairPlan(
       const candidateMs = Math.max(
         startAt.getTime(),
         dailyWindowStartMs,
-        nextChatAt.get(facts.chatId) ?? startAt.getTime(),
-        nextSourceAt.get(facts.sourceId) ?? startAt.getTime(),
         Number.isFinite(lastPublishedFloorMs) ? lastPublishedFloorMs : 0,
       );
       const scheduledAtMs = resolveEarliestUnreservedRepairScheduleAt(
         candidateMs,
         facts,
-        fixedChatReservations,
-        fixedSourceReservations,
+        occupiedChatSchedules,
+        occupiedSourceSchedules,
       );
       nextScheduledAt = new Date(scheduledAtMs).toISOString();
-      nextChatAt.set(facts.chatId, scheduledAtMs + REPAIR_CHAT_SPACING_MS);
-      nextSourceAt.set(facts.sourceId, scheduledAtMs + sourceSpacingMs);
-      plannedBySource.set(facts.sourceId, plannedForSource + 1);
       action = schedulesMatch(facts.publishScheduledAt, nextScheduledAt, queue)
         ? 'already_correct'
         : 'repair';
+      const reservation = {
+        postId: facts.postId,
+        scheduledAtMs:
+          action === 'already_correct' && queue.dueAt ? Date.parse(queue.dueAt) : scheduledAtMs,
+        sourceSpacingMs,
+      };
+      addRepairScheduleReservation(occupiedChatSchedules, facts.chatId, reservation);
+      addRepairScheduleReservation(occupiedSourceSchedules, facts.sourceId, reservation);
+      plannedBySource.set(facts.sourceId, plannedForSource + 1);
     }
     return {
       postId: facts.postId,
@@ -1861,6 +1896,17 @@ export async function applyVkPublishRepairPlan(
   if (plan.document.ownershipRowsAfterCutoff !== 0) {
     throw new Error(
       `Plan contains ${plan.document.ownershipRowsAfterCutoff} ownership rows after cutoff`,
+    );
+  }
+  const unsafeLiveEntry = plan.document.entries.find(
+    (entry) =>
+      entry.queue.presence === 'present' &&
+      isLiveRepairQueueState(entry.queue.state) &&
+      !isExactPristineInactiveQueueReservation(entry.facts, entry.queue),
+  );
+  if (unsafeLiveEntry) {
+    throw new Error(
+      `Plan contains unreservable live BullMQ evidence for post ${unsafeLiveEntry.postId}`,
     );
   }
   const assertMutationSafe = async (): Promise<void> => {

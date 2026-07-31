@@ -135,6 +135,67 @@ function createLedgerEvidence(overrides: Partial<RepairLedgerEvidence> = {}): Re
   };
 }
 
+function createRepairPostRow(facts: RepairCandidateFacts): Record<string, unknown> {
+  const toDate = (value: string | null): Date | null => (value ? new Date(value) : null);
+  return {
+    id: facts.postId,
+    sourceId: facts.sourceId,
+    chatId: facts.chatId,
+    status: facts.status,
+    createdAt: new Date(facts.createdAt),
+    updatedAt: new Date(facts.updatedAt),
+    vkPublishedAt: toDate(facts.vkPublishedAt),
+    publishedMessageId: facts.publishedMessageId,
+    publishedAtMax: toDate(facts.publishedAtMax),
+    autoPublishedAt: toDate(facts.autoPublishedAt),
+    autoPublishError: facts.autoPublishError,
+    publishQueuedAt: toDate(facts.publishQueuedAt),
+    publishScheduledAt: toDate(facts.publishScheduledAt),
+    publishCancelledAt: toDate(facts.publishCancelledAt),
+    publishCancelledByUserId: facts.publishCancelledByUserId,
+    publishLockedAt: toDate(facts.publishLockedAt),
+    publishAttemptCount: facts.publishAttemptCount,
+    publishIdempotencyKey: facts.publishIdempotencyKey,
+    publishReason: facts.publishReason,
+    lastError: facts.lastError,
+    source: {
+      id: facts.sourceId,
+      ...facts.source,
+      autoPublishEnabledAt: toDate(facts.source.autoPublishEnabledAt),
+      autoPublishPausedAt: toDate(facts.source.autoPublishPausedAt),
+      lastAutoPublishedAt: toDate(facts.source.lastAutoPublishedAt),
+      updatedAt: new Date(facts.source.updatedAt),
+    },
+    chat: {
+      entityType: facts.access.entityType,
+      routingState: facts.access.routingState,
+      updatedAt: new Date(facts.updatedAt),
+      vkParsingSettings: facts.settings
+        ? {
+            ...facts.settings,
+            autoPublishEnabledAt: toDate(facts.settings.autoPublishEnabledAt),
+            updatedAt: new Date(facts.settings.updatedAt),
+          }
+        : null,
+      botMemberships: facts.access.memberships.map((membership) => ({
+        botId: membership.botId,
+        status: membership.status,
+        botAccessState: membership.accessState,
+        botAccessCheckedAt: toDate(membership.accessCheckedAt),
+        botAccessExpiresAt: toDate(membership.accessExpiresAt),
+        permissionsSnapshot: {
+          checkedAt: membership.accessCheckedAt,
+          isAdmin: membership.accessState === 'CONFIRMED_ADMIN',
+          isOwner: membership.accessState === 'CONFIRMED_OWNER',
+          permissions: membership.permissions,
+        },
+        sendRouteQuarantinedUntil: toDate(membership.quarantinedUntil),
+        updatedAt: new Date(membership.updatedAt),
+      })),
+    },
+  };
+}
+
 describe('VK parsing publish repair CLI', () => {
   it('defaults to a bounded dry-run and requires an explicit frozen apply plan', () => {
     expect(readVkPublishRepairOptions([], CUTOFF)).toEqual({
@@ -289,6 +350,7 @@ describe('VK parsing publish repair CLI', () => {
       chatId: facts.chatId,
       reason: 'autopublish',
       idempotencyKey: facts.publishIdempotencyKey,
+      dueAt: facts.publishScheduledAt,
     });
     expect(
       classifyRepairCandidate(facts, { ...exactQueue, state: 'active' }, createLedgerEvidence()),
@@ -343,6 +405,7 @@ describe('VK parsing publish repair CLI', () => {
           chatId: facts.chatId,
           reason: 'autopublish',
           idempotencyKey: facts.publishIdempotencyKey,
+          dueAt: facts.publishScheduledAt,
         }),
         createLedgerEvidence({
           presence: 'present',
@@ -353,6 +416,42 @@ describe('VK parsing publish repair CLI', () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it('does not let cancelled or invalid ownership hide unsafe live queue evidence', () => {
+    const facts = createFacts();
+    const exactQueue = createQueueEvidence({
+      presence: 'present',
+      name: 'publish-vk-post',
+      state: 'delayed',
+      postId: facts.postId,
+      chatId: facts.chatId,
+      reason: 'autopublish',
+      idempotencyKey: facts.publishIdempotencyKey,
+      dueAt: facts.publishScheduledAt,
+    });
+
+    expect(
+      classifyRepairCandidate(
+        { ...facts, publishCancelledAt: CUTOFF.toISOString() },
+        { ...exactQueue, state: 'active' },
+        createLedgerEvidence(),
+      ),
+    ).toBe('queue_active');
+    expect(
+      classifyRepairCandidate(
+        { ...facts, status: 'PUBLISHED' },
+        { ...exactQueue, idempotencyKey: 'different-key' },
+        createLedgerEvidence(),
+      ),
+    ).toBe('queue_invalid');
+    expect(
+      classifyRepairCandidate(
+        { ...facts, publishCancelledAt: CUTOFF.toISOString() },
+        exactQueue,
+        createLedgerEvidence(),
+      ),
+    ).toBe('cancelled');
   });
 
   it('builds stable bounded slots per chat and source while preserving ownership keys', () => {
@@ -534,6 +633,94 @@ describe('VK parsing publish repair CLI', () => {
     expect(plan.entries.find((entry) => entry.postId === 'post-2')?.nextScheduledAt).toBe(
       '2026-07-31T11:30:00.000Z',
     );
+  });
+
+  it('preserves an exact repairable job actual slot until that row is planned', () => {
+    const first = createFacts({
+      postId: 'post-1',
+      sourceId: 'source-1',
+      publishIdempotencyKey: 'ownership-key-1',
+      publishScheduledAt: null,
+      source: { ...createFacts().source, priority: 'HIGH' },
+    });
+    const exact = createFacts({
+      postId: 'post-2',
+      sourceId: 'source-2',
+      publishIdempotencyKey: 'ownership-key-2',
+      publishScheduledAt: CUTOFF.toISOString(),
+      source: { ...createFacts().source, priority: 'NORMAL' },
+    });
+    const plan = buildDeterministicRepairPlan(
+      CUTOFF,
+      40,
+      10,
+      2,
+      [first, exact].map((facts) => ({
+        facts,
+        queue:
+          facts.postId === exact.postId
+            ? createQueueEvidence({
+                presence: 'present',
+                jobId: `vk-parsing-publish__${facts.postId}__${facts.publishIdempotencyKey}`,
+                name: 'publish-vk-post',
+                state: 'delayed',
+                postId: facts.postId,
+                chatId: facts.chatId,
+                reason: 'autopublish',
+                idempotencyKey: facts.publishIdempotencyKey,
+                dueAt: '2026-07-31T10:00:04.000Z',
+              })
+            : createQueueEvidence({
+                jobId: `vk-parsing-publish__${facts.postId}__${facts.publishIdempotencyKey}`,
+              }),
+        ledger: createLedgerEvidence(),
+      })),
+    );
+
+    expect(
+      plan.entries.map((entry) => [entry.postId, entry.action, entry.nextScheduledAt]),
+    ).toEqual([
+      ['post-1', 'repair', '2026-07-31T10:30:00.000Z'],
+      ['post-2', 'already_correct', '2026-07-31T10:00:00.000Z'],
+    ]);
+  });
+
+  it('fills an earlier free chat slot when a prior candidate is constrained to later work hours', () => {
+    const constrained = createFacts({
+      postId: 'post-1',
+      sourceId: 'source-1',
+      publishIdempotencyKey: 'ownership-key-1',
+      source: { ...createFacts().source, priority: 'HIGH' },
+      settings: {
+        ...createFacts().settings!,
+        workHoursStart: '12:00',
+        workHoursEnd: '13:00',
+      },
+    });
+    const flexible = createFacts({
+      postId: 'post-2',
+      sourceId: 'source-2',
+      publishIdempotencyKey: 'ownership-key-2',
+      source: { ...createFacts().source, priority: 'NORMAL' },
+    });
+    const plan = buildDeterministicRepairPlan(
+      CUTOFF,
+      40,
+      10,
+      2,
+      [constrained, flexible].map((facts) => ({
+        facts,
+        queue: createQueueEvidence({
+          jobId: `vk-parsing-publish__${facts.postId}__${facts.publishIdempotencyKey}`,
+        }),
+        ledger: createLedgerEvidence(),
+      })),
+    );
+
+    expect(plan.entries.map((entry) => [entry.postId, entry.nextScheduledAt])).toEqual([
+      ['post-1', '2026-07-31T12:00:00.000Z'],
+      ['post-2', '2026-07-31T10:00:00.000Z'],
+    ]);
   });
 
   it('round-robins sources within one chat while preserving source order', () => {
@@ -838,6 +1025,34 @@ describe('VK parsing publish repair CLI', () => {
     ).rejects.toThrow('Selected ownership snapshot is truncated: 0/1');
   });
 
+  it('refuses apply when invalid ownership still has unreservable live queue evidence', async () => {
+    const facts = createFacts({ status: 'PUBLISHED' });
+    const document = buildDeterministicRepairPlan(CUTOFF, 1, 1, 1, [
+      {
+        facts,
+        queue: createQueueEvidence({
+          presence: 'present',
+          name: 'publish-vk-post',
+          state: 'delayed',
+          postId: facts.postId,
+          chatId: facts.chatId,
+          reason: 'autopublish',
+          idempotencyKey: 'different-key',
+          dueAt: facts.publishScheduledAt,
+        }),
+        ledger: createLedgerEvidence(),
+      },
+    ]);
+
+    await expect(
+      applyVkPublishRepairPlan({} as never, {} as never, {} as never, 'token-1', {
+        planHash: hashRepairPlan(document),
+        document,
+        queue: { paused: true, active: 0 },
+      }),
+    ).rejects.toThrow('Plan contains unreservable live BullMQ evidence for post post-1');
+  });
+
   it('refuses a frozen snapshot when ownership appears after cutoff', async () => {
     const document = buildDeterministicRepairPlan(CUTOFF, 1, 1, 1, [], CUTOFF, [], undefined, 0);
     const count = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(1);
@@ -845,6 +1060,145 @@ describe('VK parsing publish repair CLI', () => {
       assertFrozenOwnershipSnapshot({ vkParsingPost: { count } } as never, document),
     ).rejects.toThrow('Found 1 VK publish ownership rows after the frozen cutoff');
     expect(count).toHaveBeenCalledTimes(2);
+  });
+
+  it('rechecks the frozen pause immediately before each successful apply mutation', async () => {
+    jest.useFakeTimers().setSystemTime(CUTOFF);
+    try {
+      const facts = createFacts({ publishScheduledAt: null });
+      const document = buildDeterministicRepairPlan(
+        CUTOFF,
+        1,
+        1,
+        1,
+        [
+          {
+            facts,
+            queue: createQueueEvidence(),
+            ledger: createLedgerEvidence(),
+          },
+        ],
+        new Date('2026-07-31T11:00:00.000Z'),
+      );
+      const entry = document.entries[0]!;
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const auditCreate = jest.fn().mockResolvedValue({});
+      const postFindUnique = jest.fn().mockResolvedValue(createRepairPostRow(facts));
+      const ledgerFindUnique = jest.fn().mockResolvedValue(null);
+      const count = jest
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(Object.hasOwn(where.publishQueuedAt, 'gt') ? 0 : 1),
+        );
+      const prisma = {
+        vkParsingPost: { findUnique: postFindUnique, count },
+        maxActionLedgerEntry: { findUnique: ledgerFindUnique },
+        $transaction: jest.fn((callback) =>
+          callback({
+            vkParsingPost: { updateMany },
+            auditLog: { create: auditCreate },
+          }),
+        ),
+      };
+      const added = {
+        id: createQueueEvidence().jobId,
+        name: 'publish-vk-post',
+        data: {
+          postId: facts.postId,
+          chatId: facts.chatId,
+          reason: 'autopublish',
+          idempotencyKey: facts.publishIdempotencyKey,
+        },
+        timestamp: Date.parse(entry.nextScheduledAt!),
+        delay: 0,
+        attemptsMade: 0,
+        attemptsStarted: 0,
+        processedOn: undefined,
+        finishedOn: undefined,
+        getState: jest.fn().mockResolvedValue('delayed'),
+      };
+      const getJob = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(added);
+      const queue = {
+        isPaused: jest.fn().mockResolvedValue(true),
+        getJobCounts: jest.fn().mockResolvedValue({ active: 0 }),
+        getJob,
+        add: jest.fn().mockResolvedValue({}),
+      };
+      const redis = { eval: jest.fn().mockResolvedValue(1) };
+
+      await expect(
+        applyVkPublishRepairPlan(prisma as never, queue as never, redis as never, 'token-1', {
+          planHash: hashRepairPlan(document),
+          document,
+          queue: { paused: true, active: 0 },
+        }),
+      ).resolves.toEqual({
+        repairs: [{ postId: facts.postId, result: 'applied' }],
+        orphanJobs: [],
+      });
+
+      expect(redis.eval).toHaveBeenCalledTimes(3);
+      expect(count).toHaveBeenCalledTimes(6);
+      expect(ledgerFindUnique.mock.invocationCallOrder[0]).toBeLessThan(
+        redis.eval.mock.invocationCallOrder[1]!,
+      );
+      expect(redis.eval.mock.invocationCallOrder[1]).toBeLessThan(
+        updateMany.mock.invocationCallOrder[0]!,
+      );
+      expect(updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+        redis.eval.mock.invocationCallOrder[2]!,
+      );
+      expect(redis.eval.mock.invocationCallOrder[2]).toBeLessThan(
+        getJob.mock.invocationCallOrder[1]!,
+      );
+      expect(getJob).toHaveBeenCalledTimes(3);
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps report-only orphan evidence untouched during apply', async () => {
+    const document = buildDeterministicRepairPlan(CUTOFF, 1, 1, 0, []);
+    const orphanQueue = createQueueEvidence({
+      presence: 'present',
+      jobId: 'vk-parsing-publish__orphan-post__orphan-key',
+      name: 'publish-vk-post',
+      state: 'delayed',
+      postId: 'orphan-post',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'orphan-key',
+      dueAt: '2026-08-01T10:00:00.000Z',
+    });
+    document.orphanScan.entries.push({
+      jobId: orphanQueue.jobId,
+      action: 'report_only',
+      skipReason: null,
+      evidenceHash: hashRepairPlan(orphanQueue),
+      queue: orphanQueue,
+      ledger: createLedgerEvidence(),
+    });
+    const getJob = jest.fn();
+
+    await expect(
+      applyVkPublishRepairPlan(
+        {} as never,
+        { getJob } as never,
+        { eval: jest.fn() } as never,
+        'token-1',
+        {
+          planHash: hashRepairPlan(document),
+          document,
+          queue: { paused: true, active: 0 },
+        },
+      ),
+    ).resolves.toEqual({ repairs: [], orphanJobs: [] });
+    expect(getJob).not.toHaveBeenCalled();
   });
 
   it('reports a lost heartbeat lock to the apply owner', async () => {
