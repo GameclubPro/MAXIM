@@ -67,6 +67,20 @@ type ChannelStatsViewWindowSummary = {
   reactions24h: number;
 };
 
+type ChannelStatsFixedWindowPostRow = {
+  id: string;
+  publishedAt: Date;
+  viewsAt24h: number | null;
+  viewsAt24hCapturedAt: Date | null;
+  viewsAt48h: number | null;
+  viewsAt48hCapturedAt: Date | null;
+};
+
+const CHANNEL_STATS_FIXED_WINDOW_LOOKBACK_MS = 30 * TWENTY_FOUR_HOURS_MS;
+const CHANNEL_STATS_FIXED_WINDOW_POST_LIMIT = 30;
+const CHANNEL_STATS_FIXED_WINDOW_MIN_SAMPLE = 3;
+const CHANNEL_STATS_MILESTONE_TOLERANCE_MS = 3 * ONE_HOUR_MS;
+
 type ChannelStatsDailyRow = ChannelStatsResponse['summary']['daily'][number];
 type ChannelStatsDailySource = ChannelStatsDailyRow['source'];
 type ChannelStatsDailyConfidence = ChannelStatsDailyRow['confidence'];
@@ -166,6 +180,9 @@ export class AdminChannelStatsRuntime {
     const summaryWeekFrom = new Date(now.getTime() - 7 * TWENTY_FOUR_HOURS_MS);
     const summarySixteenDaysFrom = new Date(now.getTime() - 16 * TWENTY_FOUR_HOURS_MS);
     const summaryViewsFrom = new Date(now.getTime() - 2 * TWENTY_FOUR_HOURS_MS);
+    const fixedWindowFrom = new Date(now.getTime() - CHANNEL_STATS_FIXED_WINDOW_LOOKBACK_MS);
+    const fixedWindow24hTo = new Date(now.getTime() - TWENTY_FOUR_HOURS_MS);
+    const fixedWindow48hTo = new Date(now.getTime() - 2 * TWENTY_FOUR_HOURS_MS);
 
     await this.refreshChannelStatsAudienceWithinResponseBudget(chatId);
 
@@ -180,7 +197,9 @@ export class AdminChannelStatsRuntime {
       syncState,
       periodPosts,
       summaryPosts,
-      anyPost,
+      fixedWindowPosts24h,
+      fixedWindowPosts48h,
+      anyPostWithViews,
       membershipBucketRows,
       contentBucketRows,
       summaryAudienceSnapshots,
@@ -305,8 +324,47 @@ export class AdminChannelStatsRuntime {
               latestSnapshotAt: true,
             },
           }),
+      this.prisma.channelPost.findMany({
+        where: {
+          chatId,
+          publishedAt: { gte: fixedWindowFrom, lte: fixedWindow24hTo },
+        },
+        orderBy: [{ publishedAt: 'desc' }, { id: 'desc' }],
+        take: CHANNEL_STATS_FIXED_WINDOW_POST_LIMIT,
+        select: {
+          id: true,
+          publishedAt: true,
+          viewsAt24h: true,
+          viewsAt24hCapturedAt: true,
+          viewsAt48h: true,
+          viewsAt48hCapturedAt: true,
+        },
+      }),
+      this.prisma.channelPost.findMany({
+        where: {
+          chatId,
+          publishedAt: { gte: fixedWindowFrom, lte: fixedWindow48hTo },
+        },
+        orderBy: [{ publishedAt: 'desc' }, { id: 'desc' }],
+        take: CHANNEL_STATS_FIXED_WINDOW_POST_LIMIT,
+        select: {
+          id: true,
+          publishedAt: true,
+          viewsAt24h: true,
+          viewsAt24hCapturedAt: true,
+          viewsAt48h: true,
+          viewsAt48hCapturedAt: true,
+        },
+      }),
       this.prisma.channelPost.findFirst({
-        where: { chatId },
+        where: {
+          chatId,
+          OR: [
+            { viewsAt24h: { not: null } },
+            { viewsAt48h: { not: null } },
+            { viewSnapshots: { some: {} } },
+          ],
+        },
         select: { id: true },
       }),
       selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to: now, bucket }),
@@ -481,6 +539,8 @@ export class AdminChannelStatsRuntime {
       audienceSnapshots: summaryAudienceSnapshots,
       summaryPosts,
       summaryWindowRows,
+      fixedWindowPosts24h,
+      fixedWindowPosts48h,
       viewWindows: isOverviewMode
         ? this.buildChannelStatsViewWindowSummaryFromContentRows(summaryContentRows, now)
         : undefined,
@@ -623,7 +683,7 @@ export class AdminChannelStatsRuntime {
       },
       meta: {
         maxSnapshotAvailable,
-        viewsAvailable: Boolean(anyPost),
+        viewsAvailable: Boolean(anyPostWithViews),
         churnAvailable,
         officialCoverageFrom: this.resolveOfficialCoverageFrom(
           syncState,
@@ -675,7 +735,7 @@ export class AdminChannelStatsRuntime {
     void userId;
     return [
       chatId,
-      'views-posts-v1',
+      'views-posts-v2',
       query.range,
       `mode=${query.mode ?? 'full'}`,
       `activity=${query.includeActivityPreview ? 1 : 0}`,
@@ -1306,6 +1366,8 @@ export class AdminChannelStatsRuntime {
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>;
     summaryPosts?: ChannelStatsPostRow[];
     summaryWindowRows: ChannelStatsSummaryWindowRow[];
+    fixedWindowPosts24h?: ChannelStatsFixedWindowPostRow[];
+    fixedWindowPosts48h?: ChannelStatsFixedWindowPostRow[];
     viewWindows?: ChannelStatsViewWindowSummary;
     summaryMembershipRows?: ChannelStatsMembershipBucketRow[];
     summaryMembershipCoverageFrom?: Date | null;
@@ -1358,6 +1420,12 @@ export class AdminChannelStatsRuntime {
       viewWindows.totalLast24h > 0 && viewWindows.reactions24h > 0
         ? Math.round((viewWindows.reactions24h / viewWindows.totalLast24h) * 10_000) / 100
         : null;
+    const reach = this.buildChannelStatsReachSummary({
+      posts24h: params.fixedWindowPosts24h ?? [],
+      posts48h: params.fixedWindowPosts48h ?? [],
+      subscriberDenominator: currentParticipants,
+      now: params.now,
+    });
 
     return {
       subscribers: {
@@ -1374,7 +1442,118 @@ export class AdminChannelStatsRuntime {
         last48h: viewWindows.last48h,
         er24,
       },
+      reach,
       daily,
+    };
+  }
+
+  buildChannelStatsReachSummary(params: {
+    posts24h: ChannelStatsFixedWindowPostRow[];
+    posts48h: ChannelStatsFixedWindowPostRow[];
+    subscriberDenominator: number | null;
+    now: Date;
+  }): ChannelStatsResponse['summary']['reach'] {
+    const resolveSamples = (
+      posts: ChannelStatsFixedWindowPostRow[],
+      milestoneMs: number,
+      readViews: (post: ChannelStatsFixedWindowPostRow) => number | null,
+      readCapturedAt: (post: ChannelStatsFixedWindowPostRow) => Date | null,
+    ) => {
+      const cohortFromMs = params.now.getTime() - CHANNEL_STATS_FIXED_WINDOW_LOOKBACK_MS;
+      const eligibleToMs = params.now.getTime() - milestoneMs;
+
+      return posts
+        .filter((post) => {
+          const publishedAtMs = post.publishedAt.getTime();
+          return publishedAtMs >= cohortFromMs && publishedAtMs <= eligibleToMs;
+        })
+        .sort(
+          (left, right) =>
+            right.publishedAt.getTime() - left.publishedAt.getTime() ||
+            right.id.localeCompare(left.id),
+        )
+        .slice(0, CHANNEL_STATS_FIXED_WINDOW_POST_LIMIT)
+        .flatMap((post) => {
+          const views = readViews(post);
+          const capturedAt = readCapturedAt(post);
+          if (!Number.isSafeInteger(views) || (views ?? -1) < 0 || !capturedAt) {
+            return [];
+          }
+
+          const milestoneAtMs = post.publishedAt.getTime() + milestoneMs;
+          const capturedAtMs = capturedAt.getTime();
+          if (
+            capturedAtMs < milestoneAtMs ||
+            capturedAtMs > milestoneAtMs + CHANNEL_STATS_MILESTONE_TOLERANCE_MS ||
+            capturedAtMs > params.now.getTime()
+          ) {
+            return [];
+          }
+
+          return [{ views: views as number, capturedAt }];
+        });
+    };
+    const samples24h = resolveSamples(
+      params.posts24h,
+      TWENTY_FOUR_HOURS_MS,
+      (post) => post.viewsAt24h,
+      (post) => post.viewsAt24hCapturedAt,
+    );
+    const samples48h = resolveSamples(
+      params.posts48h,
+      2 * TWENTY_FOUR_HOURS_MS,
+      (post) => post.viewsAt48h,
+      (post) => post.viewsAt48hCapturedAt,
+    );
+    const resolveCoverage = (
+      sampleSize: number,
+    ): ChannelStatsResponse['summary']['reach']['coverage24h'] => {
+      if (sampleSize === 0) {
+        return 'unavailable';
+      }
+
+      return sampleSize < CHANNEL_STATS_FIXED_WINDOW_MIN_SAMPLE ? 'insufficient' : 'ready';
+    };
+    const coverage24h = resolveCoverage(samples24h.length);
+    const coverage48h = resolveCoverage(samples48h.length);
+    const averageViews24h =
+      coverage24h === 'ready'
+        ? Math.round(
+            samples24h.reduce((total, sample) => total + sample.views, 0) / samples24h.length,
+          )
+        : null;
+    const averageViews48h =
+      coverage48h === 'ready'
+        ? Math.round(
+            samples48h.reduce((total, sample) => total + sample.views, 0) / samples48h.length,
+          )
+        : null;
+    const subscriberDenominator =
+      Number.isSafeInteger(params.subscriberDenominator) && (params.subscriberDenominator ?? 0) > 0
+        ? params.subscriberDenominator
+        : null;
+    const capturedAtValues = [...samples24h, ...samples48h].map((sample) => sample.capturedAt);
+    const asOf =
+      capturedAtValues.length > 0
+        ? new Date(
+            Math.max(...capturedAtValues.map((capturedAt) => capturedAt.getTime())),
+          ).toISOString()
+        : null;
+
+    return {
+      averageViews24h,
+      averageViews48h,
+      err48Percent:
+        averageViews48h !== null && subscriberDenominator !== null
+          ? Math.round((averageViews48h / subscriberDenominator) * 1_000) / 10
+          : null,
+      subscriberDenominator,
+      sampleSize24h: samples24h.length,
+      sampleSize48h: samples48h.length,
+      coverage24h,
+      coverage48h,
+      asOf,
+      method: 'post-age-cohort',
     };
   }
 

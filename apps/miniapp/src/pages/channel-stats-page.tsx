@@ -54,12 +54,12 @@ import {
   isChannelStatsResponseForRange,
   resolveAudienceChartAverageGrowthLabel,
   resolveAudienceChartDisplayValue,
-  resolveChannelStatsAverageViews,
+  resolveChannelReachMetric,
   resolveChannelStatsSliderIndex,
   resolveInitialAudienceChartIndex,
   shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
-import { formatStatisticsRangeLabel, resolveStatisticsTitle } from '../lib/statistics-display';
+import { resolveStatisticsTitle } from '../lib/statistics-display';
 import {
   buildStatisticsRouteSearch,
   parseChannelStatisticsRouteQuery,
@@ -174,12 +174,8 @@ const CHART_DETAIL_DAY_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
   month: 'long',
   timeZone: 'Europe/Moscow',
 });
-const PERCENT_INTEGER_FORMATTER = new Intl.NumberFormat('ru-RU', {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
 const PERCENT_ONE_DECIMAL_FORMATTER = new Intl.NumberFormat('ru-RU', {
-  minimumFractionDigits: 1,
+  minimumFractionDigits: 0,
   maximumFractionDigits: 1,
 });
 const POST_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
@@ -383,9 +379,7 @@ function formatPercent(value: number | null): string {
     return '—';
   }
 
-  const formatter =
-    value > 0 && value < 10 ? PERCENT_ONE_DECIMAL_FORMATTER : PERCENT_INTEGER_FORMATTER;
-  return `${formatter.format(value)}%`;
+  return `${PERCENT_ONE_DECIMAL_FORMATTER.format(value)}%`;
 }
 
 function formatSignedPercent(value: number | null, maximumFractionDigits = 2): string {
@@ -513,30 +507,6 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     stats.official.content.posts > 0
       ? Math.round(displayViews / stats.official.content.posts)
       : null;
-  const resolveTopPostsAverageSince = (hours: number) => {
-    const toMs = new Date(stats.period.to).getTime();
-    if (!Number.isFinite(toMs)) {
-      return null;
-    }
-
-    const fromMs = toMs - hours * 60 * 60 * 1000;
-    const posts = stats.official.content.topPosts.filter((post) => {
-      const publishedAtMs = new Date(post.publishedAt).getTime();
-      return Number.isFinite(publishedAtMs) && publishedAtMs >= fromMs && publishedAtMs <= toMs;
-    });
-    if (posts.length === 0) {
-      return null;
-    }
-
-    const views = posts.reduce((total, post) => total + Math.max(0, post.viewsDelta), 0);
-    return Math.round(views / posts.length);
-  };
-  const last24hAverage = resolveTopPostsAverageSince(24) ?? perPost;
-  const last48hAverage = resolveTopPostsAverageSince(48) ?? last24hAverage;
-  const er24 =
-    displayViews > 0
-      ? Math.round((stats.official.content.reactions / displayViews) * 10_000) / 100
-      : null;
   const dailyByDate = new Map<string, number | null>();
   stats.official.series.participants
     .slice()
@@ -597,9 +567,21 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     },
     views: {
       perPost,
-      last24h: last24hAverage,
-      last48h: last48hAverage,
-      er24,
+      last24h: null,
+      last48h: null,
+      er24: null,
+    },
+    reach: {
+      averageViews24h: null,
+      averageViews48h: null,
+      err48Percent: null,
+      subscriberDenominator: null,
+      sampleSize24h: 0,
+      sampleSize48h: 0,
+      coverage24h: 'unavailable',
+      coverage48h: 'unavailable',
+      asOf: null,
+      method: 'post-age-cohort',
     },
     daily,
   };
@@ -1583,19 +1565,29 @@ function ChannelStatsOverview({
   onRangeChange: (range: ChannelStatsRange) => void;
 }) {
   const summary = resolveChannelStatsSummary(stats);
-  const selectedPeriodAverageViews = resolveChannelStatsAverageViews(stats);
+  const averageViews24h = resolveChannelReachMetric(summary.reach, 'averageViews24h');
+  const averageViews48h = resolveChannelReachMetric(summary.reach, 'averageViews48h');
+  const err48 = resolveChannelReachMetric(summary.reach, 'err48Percent');
   const summaryDailyRows = summary.daily.slice(-9).reverse();
   const hasTopPosts = stats.official.content.topPosts.length > 0;
   const hasBestWindows = stats.signals.bestWindows.some((window) => window.posts > 0);
   const hasDetailPanels = hasTopPosts || hasBestWindows;
-  const periodLabel = formatStatisticsRangeLabel(stats.period.range);
-  const netGrowth = stats.meta.churnAvailable ? stats.official.audience.net : null;
-  const netGrowthPeriodLabel = stats.meta.churnAvailable ? periodLabel : 'Неполный период';
-  const viewsPeriodLabel = stats.meta.viewsAvailable ? periodLabel : 'Нет данных';
-  const engagement =
-    stats.meta.viewsAvailable && stats.official.content.views > 0
-      ? (stats.official.content.reactions / stats.official.content.views) * 100
-      : null;
+
+  const formatReachCaption = (
+    metric: ReturnType<typeof resolveChannelReachMetric>,
+    readyLabel = `Постов в выборке: ${formatCount(metric.sampleSize)}`,
+  ) => {
+    if (metric.coverage === 'ready') {
+      return readyLabel;
+    }
+    if (metric.coverage === 'insufficient') {
+      return metric.sampleSize > 0
+        ? `Недостаточно данных · постов: ${formatCount(metric.sampleSize)}`
+        : 'Недостаточно данных';
+    }
+
+    return 'Нет данных';
+  };
 
   return (
     <section
@@ -1611,21 +1603,24 @@ function ChannelStatsOverview({
               <span>Сейчас</span>
             </article>
             <article className="channel-summary-card channel-summary-card--compact">
-              <small>Чистый рост</small>
-              <strong className={`is-${getSignedTone(netGrowth)}`}>
-                {formatSignedCount(netGrowth)}
-              </strong>
-              <span>{netGrowthPeriodLabel}</span>
+              <small>Средние просмотры за 24 ч</small>
+              <strong>{formatCount(averageViews24h.value)}</strong>
+              <span>{formatReachCaption(averageViews24h)}</span>
             </article>
             <article className="channel-summary-card channel-summary-card--compact">
-              <small>Просмотры / пост</small>
-              <strong>{formatCount(selectedPeriodAverageViews)}</strong>
-              <span>{viewsPeriodLabel}</span>
+              <small>Средние просмотры за 48 ч</small>
+              <strong>{formatCount(averageViews48h.value)}</strong>
+              <span>{formatReachCaption(averageViews48h)}</span>
             </article>
-            <article className="channel-summary-card channel-summary-card--compact">
-              <small>Вовлечённость</small>
-              <strong>{formatPercent(engagement)}</strong>
-              <span>{stats.meta.viewsAvailable ? 'Реакции от просмотров' : 'Нет данных'}</span>
+            <article
+              className="channel-summary-card channel-summary-card--compact"
+              title="Средние просмотры поста за первые 48 часов / подписчики × 100"
+            >
+              <small>Охват подписчиков за 48 ч</small>
+              <strong>{formatPercent(err48.value)}</strong>
+              <span>
+                {formatReachCaption(err48, `ERR48 · выборка: ${formatCount(err48.sampleSize)}`)}
+              </span>
             </article>
           </div>
 
@@ -1797,7 +1792,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     return isMembershipActivityPage(snapshot) ? snapshot : null;
   }, [chatId, range, section]);
   const statsQuery = useQuery({
-    queryKey: queryKeys.channelStats(chatId, range),
+    queryKey: queryKeys.channelStats(chatId, range, 'full'),
     queryFn: ({ signal }) =>
       getChannelStats(
         api,
@@ -1806,6 +1801,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         { signal },
         {
           includeActivityPreview: false,
+          mode: 'full',
         },
       ),
     enabled: Boolean(chatId),
@@ -1857,7 +1853,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           return;
         }
 
-        const queryKey = queryKeys.channelStats(chatId, range);
+        const queryKey = queryKeys.channelStats(chatId, range, 'full');
         if (!queryClient.getQueryData(queryKey)) {
           queryClient.setQueryData(queryKey, snapshot);
         }

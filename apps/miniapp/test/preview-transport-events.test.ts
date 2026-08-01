@@ -64,3 +64,31 @@ test('preview channel stats overview mirrors production lightweight fields', asy
   assert.equal(stats.comparison.deltas.averageViewsPerPost.current, expectedAverage);
   assert.equal(stats.activityFeed.items.length, 0);
 });
+
+test('preview post-age reach metrics stay fixed across chart ranges', async () => {
+  const api = createPreviewApiTransport();
+  const stats24h = (await api.request(
+    '/channels/preview-channel/stats?range=24h&mode=full',
+  )) as ChannelStatsResponse;
+  const stats30d = (await api.request(
+    '/channels/preview-channel/stats?range=30d&mode=full',
+  )) as ChannelStatsResponse;
+
+  const { asOf: asOf24h, ...reach24h } = stats24h.summary.reach;
+  const { asOf: asOf30d, ...reach30d } = stats30d.summary.reach;
+  assert.deepEqual(reach24h, reach30d);
+  assert.equal(Number.isFinite(Date.parse(asOf24h ?? '')), true);
+  assert.equal(Number.isFinite(Date.parse(asOf30d ?? '')), true);
+  assert.equal(stats24h.summary.reach.method, 'post-age-cohort');
+  assert.equal(stats24h.summary.reach.coverage24h, 'ready');
+  assert.equal(stats24h.summary.reach.coverage48h, 'ready');
+  assert.equal(
+    stats24h.summary.reach.err48Percent,
+    Math.round(
+      ((stats24h.summary.reach.averageViews48h ?? 0) /
+        (stats24h.summary.reach.subscriberDenominator ?? 1)) *
+        100 *
+        10,
+    ) / 10,
+  );
+});

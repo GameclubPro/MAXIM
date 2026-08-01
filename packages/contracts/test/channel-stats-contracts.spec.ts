@@ -71,6 +71,51 @@ describe('channel stats contract exports', () => {
       source: 'flow',
       confidence: 'medium',
     });
+    expect(result.reach).toEqual({
+      averageViews24h: null,
+      averageViews48h: null,
+      err48Percent: null,
+      subscriberDenominator: null,
+      sampleSize24h: 0,
+      sampleSize48h: 0,
+      coverage24h: 'unavailable',
+      coverage48h: 'unavailable',
+      asOf: null,
+      method: 'post-age-cohort',
+    });
+  });
+
+  it('accepts fixed post-age averages and ERR48 above 100 percent', () => {
+    const result = channelStatsSummarySchema.parse({
+      subscribers: {
+        current: 1000,
+        todayDelta: null,
+        weekDelta: null,
+        sixteenDaysDelta: null,
+      },
+      views: {
+        perPost: null,
+        last24h: null,
+        last48h: null,
+        er24: null,
+      },
+      reach: {
+        averageViews24h: 1400,
+        averageViews48h: 1500,
+        err48Percent: 150,
+        subscriberDenominator: 1000,
+        sampleSize24h: 3,
+        sampleSize48h: 3,
+        coverage24h: 'ready',
+        coverage48h: 'ready',
+        asOf: '2026-03-07T11:00:00.000Z',
+        method: 'post-age-cohort',
+      },
+      daily: [],
+    });
+
+    expect(result.reach.err48Percent).toBe(150);
+    expect(result.reach.method).toBe('post-age-cohort');
   });
 
   it('defaults missing daily audience source metadata for cached payloads', () => {

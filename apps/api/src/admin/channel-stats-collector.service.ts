@@ -25,6 +25,9 @@ import {
 
 const CHANNEL_STATS_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 const CHANNEL_STATS_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+const CHANNEL_POST_VIEWS_24H_MS = 24 * 60 * 60 * 1000;
+const CHANNEL_POST_VIEWS_48H_MS = 48 * 60 * 60 * 1000;
+const CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS = 3 * 60 * 60 * 1000;
 const CHANNEL_STATS_STALE_MS = 2 * 60 * 60 * 1000;
 const CHANNEL_STATS_ALL_LOCK_TTL_MS = 30 * 60 * 1000;
 const CHANNEL_STATS_CHAT_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -44,6 +47,7 @@ const CHANNEL_STATS_AUDIENCE_CATCH_UP_INTERVAL_MS = 5 * 60 * 1000;
 const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS = 360;
 const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS = 30;
 const CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS = 6;
+const CHANNEL_STATS_MILESTONE_CATCH_UP_MAX_POSTS = 200;
 type ChannelStatsSyncResult = {
   audienceSynced: boolean;
   viewsSynced: boolean;
@@ -480,6 +484,16 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   private async syncScheduledChannels(options?: { audienceOnly?: boolean }) {
+    const milestoneCatchUpThrottled = await this.syncDuePostViewMilestones(new Date());
+    if (milestoneCatchUpThrottled) {
+      const backoffMs = await this.activateBackgroundSyncBackoff();
+      this.logger.warn(
+        { reason: 'scheduled', backoffMs },
+        'Paused channel view milestone catch-up after MAX API throttling',
+      );
+      return;
+    }
+
     const channels = await this.prisma.chat.findMany({
       where: { entityType: ChatEntityType.CHANNEL },
       select: {
@@ -538,6 +552,90 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       .sort((left, right) => this.compareScheduledViewsSyncCandidates(left, right))
       .slice(0, CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS);
     await this.syncScheduledViews(viewsCandidates, audienceResult.syncedAudienceAtByChatId);
+  }
+
+  private async syncDuePostViewMilestones(now: Date): Promise<boolean> {
+    const duePosts = await this.prisma.channelPost.findMany({
+      where: {
+        OR: [
+          {
+            viewsAt24h: null,
+            publishedAt: {
+              gte: new Date(
+                now.getTime() - CHANNEL_POST_VIEWS_24H_MS - CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS,
+              ),
+              lte: new Date(now.getTime() - CHANNEL_POST_VIEWS_24H_MS),
+            },
+          },
+          {
+            viewsAt48h: null,
+            publishedAt: {
+              gte: new Date(
+                now.getTime() - CHANNEL_POST_VIEWS_48H_MS - CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS,
+              ),
+              lte: new Date(now.getTime() - CHANNEL_POST_VIEWS_48H_MS),
+            },
+          },
+        ],
+      },
+      orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }],
+      take: CHANNEL_STATS_MILESTONE_CATCH_UP_MAX_POSTS,
+      select: {
+        chatId: true,
+        messageId: true,
+      },
+    });
+    const postsByChatId = new Map<string, string[]>();
+    for (const post of duePosts) {
+      const messageIds = postsByChatId.get(post.chatId) ?? [];
+      messageIds.push(post.messageId);
+      postsByChatId.set(post.chatId, messageIds);
+    }
+
+    let throttled = false;
+    for (const [chatId, messageIds] of postsByChatId) {
+      await this.withRedisLock(
+        `channel-stats:chat:${chatId}`,
+        CHANNEL_STATS_CHAT_LOCK_TTL_MS,
+        async () => {
+          const statsBotId = await this.resolveCapabilityRouteBotId(chatId, 'channel_stats');
+          for (const messageId of messageIds) {
+            try {
+              const snapshot = await this.maxClient.getMessageSnapshot(chatId, messageId, {
+                trafficClass: 'background',
+                sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+                ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
+                ...(statsBotId ? { botId: statsBotId } : {}),
+              });
+              if (snapshot) {
+                await this.upsertOfficialMessages(chatId, [snapshot], now);
+              }
+            } catch (error: unknown) {
+              if (this.isMaxApiThrottleError(error)) {
+                throttled = true;
+                return;
+              }
+
+              const payload = {
+                chatId,
+                messageId,
+                err: error instanceof Error ? error.message : String(error),
+              };
+              if (this.isMaxApiNotFoundError(error)) {
+                this.logger.debug(payload, 'Skipped unavailable channel post milestone');
+              } else {
+                this.logger.warn(payload, 'Failed to capture due channel post view milestone');
+              }
+            }
+          }
+        },
+      );
+      if (throttled) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private async syncScheduledAudienceCatchUp(channels: ChannelScheduledSyncCandidate[]): Promise<{
@@ -817,7 +915,11 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     capturedAt: Date,
   ) {
     for (const message of messages) {
-      const views = Math.max(message.views ?? 0, 0);
+      const publishedAt = new Date(message.publishedAt);
+      const views =
+        typeof message.views === 'number' && Number.isFinite(message.views)
+          ? Math.max(message.views, 0)
+          : null;
       const reactions = message.reactions
         .filter((item) => item.count > 0)
         .map((item) => ({
@@ -838,38 +940,80 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         create: {
           chatId,
           messageId: message.messageId,
-          publishedAt: new Date(message.publishedAt),
+          publishedAt,
           url: message.url,
           previewUrl: message.previewUrl,
-          latestViews: views,
+          ...(views !== null ? { latestViews: views, latestSnapshotAt: capturedAt } : {}),
           latestReactions:
             reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
           latestReactionsTotal: reactionsTotal,
-          latestSnapshotAt: capturedAt,
         },
         update: {
-          publishedAt: new Date(message.publishedAt),
+          publishedAt,
           url: message.url,
           previewUrl: message.previewUrl,
-          latestViews: views,
+          ...(views !== null ? { latestViews: views, latestSnapshotAt: capturedAt } : {}),
           latestReactions:
             reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
           latestReactionsTotal: reactionsTotal,
-          latestSnapshotAt: capturedAt,
         },
         select: {
           id: true,
+          viewSnapshots: {
+            orderBy: [{ capturedAt: 'desc' }, { id: 'desc' }],
+            take: 1,
+            select: { views: true },
+          },
         },
       });
 
-      await this.prisma.channelPostViewSnapshot.create({
-        data: {
-          channelPostId: post.id,
-          views,
-          reactionsTotal,
-          capturedAt,
-        },
-      });
+      if (views === null) {
+        continue;
+      }
+
+      if (post.viewSnapshots[0]?.views !== views) {
+        await this.prisma.channelPostViewSnapshot.create({
+          data: {
+            channelPostId: post.id,
+            views,
+            reactionsTotal,
+            capturedAt,
+          },
+        });
+      }
+
+      const postAgeMs = capturedAt.getTime() - publishedAt.getTime();
+      if (
+        postAgeMs >= CHANNEL_POST_VIEWS_24H_MS &&
+        postAgeMs <= CHANNEL_POST_VIEWS_24H_MS + CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS
+      ) {
+        await this.prisma.channelPost.updateMany({
+          where: {
+            id: post.id,
+            viewsAt24h: null,
+          },
+          data: {
+            viewsAt24h: views,
+            viewsAt24hCapturedAt: capturedAt,
+          },
+        });
+      }
+
+      if (
+        postAgeMs >= CHANNEL_POST_VIEWS_48H_MS &&
+        postAgeMs <= CHANNEL_POST_VIEWS_48H_MS + CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS
+      ) {
+        await this.prisma.channelPost.updateMany({
+          where: {
+            id: post.id,
+            viewsAt48h: null,
+          },
+          data: {
+            viewsAt48h: views,
+            viewsAt48hCapturedAt: capturedAt,
+          },
+        });
+      }
     }
   }
 

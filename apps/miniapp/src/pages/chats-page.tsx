@@ -1061,7 +1061,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadChannelStatsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: channelStatsQueryKey(chatId, DEFAULT_CHANNEL_STATS_RANGE),
+        queryKey: channelStatsQueryKey(chatId, DEFAULT_CHANNEL_STATS_RANGE, 'overview'),
         queryFn: async ({ signal }) => {
           const { getChannelStats } = await import('../lib/api/channel-stats-client');
           return getChannelStats(

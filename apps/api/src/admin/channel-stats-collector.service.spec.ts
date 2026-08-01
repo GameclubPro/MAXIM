@@ -1,4 +1,4 @@
-import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { MAX_API_SOURCE_TAGS, type MaxChannelMessageSnapshot } from '../max/max-client.service';
 import { MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
@@ -23,7 +23,9 @@ function createPrismaMock() {
       findFirst: jest.fn().mockResolvedValue(null),
     },
     channelPost: {
-      upsert: jest.fn().mockResolvedValue({ id: 'post-1' }),
+      findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn().mockResolvedValue({ id: 'post-1', viewSnapshots: [] }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     channelPostViewSnapshot: {
       create: jest.fn().mockResolvedValue(undefined),
@@ -104,6 +106,40 @@ function createScheduledChannelCandidate(params: {
       ? [{ capturedAt: params.latestAudienceSnapshotAt }]
       : [],
   };
+}
+
+function createPostSnapshot(params: {
+  messageId: string;
+  publishedAt: string;
+  views: number | null;
+}): MaxChannelMessageSnapshot {
+  return {
+    chatId: 'channel-1',
+    messageId: params.messageId,
+    publishedAt: params.publishedAt,
+    publishedAtMs: Date.parse(params.publishedAt),
+    url: `https://max.ru/news/${params.messageId}`,
+    previewUrl: null,
+    views: params.views,
+    reactionsTotal: null,
+    reactions: [],
+  };
+}
+
+async function upsertPostSnapshots(
+  service: ChannelStatsCollectorService,
+  messages: MaxChannelMessageSnapshot[],
+  capturedAt: Date,
+) {
+  await (
+    service as unknown as {
+      upsertOfficialMessages: (
+        chatId: string,
+        snapshots: MaxChannelMessageSnapshot[],
+        capturedAt: Date,
+      ) => Promise<void>;
+    }
+  ).upsertOfficialMessages('channel-1', messages, capturedAt);
 }
 
 describe('ChannelStatsCollectorService', () => {
@@ -254,6 +290,259 @@ describe('ChannelStatsCollectorService', () => {
         lastAudienceSyncAt: new Date('2026-03-07T12:00:00.000Z'),
         lastViewsSyncAt: new Date('2026-03-07T12:00:00.000Z'),
       }),
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('preserves the last known view state when MAX omits post views', async () => {
+    const prisma = createPrismaMock();
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    await upsertPostSnapshots(
+      service,
+      [
+        createPostSnapshot({
+          messageId: 'mid-without-views',
+          publishedAt: '2026-03-06T12:00:00.000Z',
+          views: null,
+        }),
+      ],
+      new Date('2026-03-07T12:00:00.000Z'),
+    );
+
+    const upsert = prisma.channelPost.upsert.mock.calls[0]?.[0];
+    expect(upsert.create).not.toHaveProperty('latestViews');
+    expect(upsert.create).not.toHaveProperty('latestSnapshotAt');
+    expect(upsert.update).not.toHaveProperty('latestViews');
+    expect(upsert.update).not.toHaveProperty('latestSnapshotAt');
+    expect(prisma.channelPostViewSnapshot.create).not.toHaveBeenCalled();
+    expect(prisma.channelPost.updateMany).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not store another raw snapshot when the confirmed view count is unchanged', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelPost.upsert.mockResolvedValue({
+      id: 'post-1',
+      viewSnapshots: [{ views: 240 }],
+    });
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    await upsertPostSnapshots(
+      service,
+      [
+        createPostSnapshot({
+          messageId: 'mid-unchanged',
+          publishedAt: '2026-03-06T12:00:00.000Z',
+          views: 240,
+        }),
+      ],
+      new Date('2026-03-07T12:00:00.000Z'),
+    );
+
+    expect(prisma.channelPostViewSnapshot.create).not.toHaveBeenCalled();
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
+      where: { id: 'post-1', viewsAt24h: null },
+      data: {
+        viewsAt24h: 240,
+        viewsAt24hCapturedAt: new Date('2026-03-07T12:00:00.000Z'),
+      },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    {
+      label: '24-hour lower boundary, including a confirmed zero',
+      publishedAt: '2026-03-06T12:00:00.000Z',
+      views: 0,
+      where: { id: 'post-1', viewsAt24h: null },
+      data: {
+        viewsAt24h: 0,
+        viewsAt24hCapturedAt: new Date('2026-03-07T12:00:00.000Z'),
+      },
+    },
+    {
+      label: '48-hour upper boundary',
+      publishedAt: '2026-03-05T09:00:00.000Z',
+      views: 480,
+      where: { id: 'post-1', viewsAt48h: null },
+      data: {
+        viewsAt48h: 480,
+        viewsAt48hCapturedAt: new Date('2026-03-07T12:00:00.000Z'),
+      },
+    },
+  ])('materializes the $label milestone only once', async ({ publishedAt, views, where, data }) => {
+    const prisma = createPrismaMock();
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const capturedAt = new Date('2026-03-07T12:00:00.000Z');
+
+    await upsertPostSnapshots(
+      service,
+      [createPostSnapshot({ messageId: 'mid-milestone', publishedAt, views })],
+      capturedAt,
+    );
+
+    expect(prisma.channelPostViewSnapshot.create).toHaveBeenCalledWith({
+      data: {
+        channelPostId: 'post-1',
+        views,
+        reactionsTotal: 0,
+        capturedAt,
+      },
+    });
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({ where, data });
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not backfill milestones outside their three-hour capture windows', async () => {
+    const prisma = createPrismaMock();
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    await upsertPostSnapshots(
+      service,
+      [
+        createPostSnapshot({
+          messageId: 'mid-before-24h',
+          publishedAt: '2026-03-06T12:00:00.001Z',
+          views: 240,
+        }),
+        createPostSnapshot({
+          messageId: 'mid-after-27h',
+          publishedAt: '2026-03-06T08:59:59.999Z',
+          views: 270,
+        }),
+      ],
+      new Date('2026-03-07T12:00:00.000Z'),
+    );
+
+    expect(prisma.channelPostViewSnapshot.create).toHaveBeenCalledTimes(2);
+    expect(prisma.channelPost.updateMany).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('prioritizes due milestones with exact message lookups and the capability bot', async () => {
+    const now = new Date('2026-03-07T12:00:00.000Z');
+    const prisma = createPrismaMock();
+    prisma.channelPost.findMany.mockResolvedValue([
+      { chatId: 'channel-1', messageId: 'mid-due-48h' },
+      { chatId: 'channel-1', messageId: 'mid-due-24h' },
+    ]);
+    prisma.channelPost.upsert.mockImplementation(
+      ({ where }: { where: { chatId_messageId: { messageId: string } } }) =>
+        Promise.resolve({ id: where.chatId_messageId.messageId, viewSnapshots: [] }),
+    );
+    const snapshots = new Map([
+      [
+        'mid-due-48h',
+        createPostSnapshot({
+          messageId: 'mid-due-48h',
+          publishedAt: '2026-03-05T11:00:00.000Z',
+          views: 480,
+        }),
+      ],
+      [
+        'mid-due-24h',
+        createPostSnapshot({
+          messageId: 'mid-due-24h',
+          publishedAt: '2026-03-06T11:00:00.000Z',
+          views: 240,
+        }),
+      ],
+    ]);
+    const maxClient = {
+      getMessageSnapshot: jest.fn((_chatId: string, messageId: string) =>
+        Promise.resolve(snapshots.get(messageId) ?? null),
+      ),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'capability',
+        chatId: 'channel-1',
+        primaryBotId: 'primary-bot',
+        botId: 'stats-bot',
+        candidateBotIds: ['stats-bot'],
+        reason: 'alternate_confirmed',
+        capability: 'channel_stats',
+      }),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const throttled = await (
+      service as unknown as {
+        syncDuePostViewMilestones: (capturedAt: Date) => Promise<boolean>;
+      }
+    ).syncDuePostViewMilestones(now);
+
+    expect(throttled).toBe(false);
+    expect(prisma.channelPost.findMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            viewsAt24h: null,
+            publishedAt: {
+              gte: new Date('2026-03-06T09:00:00.000Z'),
+              lte: new Date('2026-03-06T12:00:00.000Z'),
+            },
+          },
+          {
+            viewsAt48h: null,
+            publishedAt: {
+              gte: new Date('2026-03-05T09:00:00.000Z'),
+              lte: new Date('2026-03-05T12:00:00.000Z'),
+            },
+          },
+        ],
+      },
+      orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }],
+      take: 200,
+      select: { chatId: true, messageId: true },
+    });
+    expect(maxClient.getMessageSnapshot).toHaveBeenCalledTimes(2);
+    expect(maxClient.getMessageSnapshot).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-due-48h',
+      expect.objectContaining({
+        botId: 'stats-bot',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
+      where: { id: 'mid-due-48h', viewsAt48h: null },
+      data: { viewsAt48h: 480, viewsAt48hCapturedAt: now },
+    });
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
+      where: { id: 'mid-due-24h', viewsAt24h: null },
+      data: { viewsAt24h: 240, viewsAt24hCapturedAt: now },
     });
 
     await service.onModuleDestroy();

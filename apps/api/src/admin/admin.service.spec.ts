@@ -19043,7 +19043,9 @@ describe('AdminService.getChannelStats', () => {
     ];
     prisma.channelPost.findMany
       .mockResolvedValueOnce(channelPosts)
-      .mockResolvedValueOnce(summaryPosts);
+      .mockResolvedValueOnce(summaryPosts)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
     prisma.channelPostViewSnapshot.findMany.mockResolvedValue([
       {
         channelPostId: 'post-1',
@@ -19181,6 +19183,11 @@ describe('AdminService.getChannelStats', () => {
         last48h: 200,
         er24: 2.69,
       },
+      reach: expect.objectContaining({
+        coverage24h: 'unavailable',
+        coverage48h: 'unavailable',
+        method: 'post-age-cohort',
+      }),
       daily: expect.any(Array),
     });
     expect(result.summary.daily.at(-1)).toEqual({
@@ -19583,7 +19590,20 @@ describe('AdminService.getChannelStats', () => {
       topReactions: [],
     });
     expect(result.comparison.series).toBeUndefined();
-    expect(prisma.channelPost.findMany).not.toHaveBeenCalled();
+    expect(prisma.channelPost.findMany).toHaveBeenCalledTimes(2);
+    for (const [query] of prisma.channelPost.findMany.mock.calls) {
+      expect(query).toEqual(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            chatId: 'channel-1',
+            publishedAt: expect.objectContaining({
+              gte: new Date('2026-02-05T12:00:00.000Z'),
+            }),
+          }),
+          take: 30,
+        }),
+      );
+    }
     const querySqlTexts = prisma.$queryRaw.mock.calls.map((call) => extractSqlText(call));
     expect(querySqlTexts.join('\n')).not.toContain('audit_logs');
     expect(querySqlTexts.join('\n')).not.toContain('channel_post_view_snapshots');

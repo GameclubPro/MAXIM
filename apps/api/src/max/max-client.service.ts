@@ -1342,6 +1342,7 @@ export class MaxClientService implements OnModuleDestroy {
           trafficClass?: MaxApiTrafficClass;
           sourceTag?: string;
           ignoreFailureMetricStatuses?: readonly number[];
+          botId?: string;
         } = 10,
   ): Promise<Record<string, unknown>[]> {
     const options =
@@ -1354,6 +1355,7 @@ export class MaxClientService implements OnModuleDestroy {
             trafficClass: countOrOptions.trafficClass,
             sourceTag: countOrOptions.sourceTag,
             ignoreFailureMetricStatuses: countOrOptions.ignoreFailureMetricStatuses,
+            botId: countOrOptions.botId,
           };
     const data = await this.executeChatRequest(
       chatId,
@@ -1374,6 +1376,7 @@ export class MaxClientService implements OnModuleDestroy {
         trafficClass: options.trafficClass,
         sourceTag: options.sourceTag,
         ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
+        botId: options.botId,
       },
     );
     return this.normalizeMessageRows(data);
@@ -1389,6 +1392,7 @@ export class MaxClientService implements OnModuleDestroy {
       trafficClass?: MaxApiTrafficClass;
       sourceTag?: string;
       ignoreFailureMetricStatuses?: readonly number[];
+      botId?: string;
     } = {},
   ): Promise<MaxChannelMessageSnapshot[]> {
     const fromMs = this.normalizeMessageTimestamp(options.from ?? null);
@@ -1396,16 +1400,18 @@ export class MaxClientService implements OnModuleDestroy {
     const count = Math.min(Math.max(options.count ?? 100, 1), 100);
     const maxPages = Math.min(Math.max(options.maxPages ?? 60, 1), 200);
     const snapshots = new Map<string, MaxChannelMessageSnapshot>();
-    let cursorTo: number | null = toMs;
+    let cursorFrom = toMs;
     let previousSignature = '';
 
     for (let page = 0; page < maxPages; page += 1) {
       const rows = await this.listMessages(chatId, {
         count,
-        ...(cursorTo !== null ? { to: cursorTo } : {}),
+        from: cursorFrom,
+        ...(fromMs !== null ? { to: fromMs } : {}),
         trafficClass: options.trafficClass,
         sourceTag: options.sourceTag,
         ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
+        botId: options.botId,
       });
       if (rows.length === 0) {
         break;
@@ -1449,11 +1455,11 @@ export class MaxClientService implements OnModuleDestroy {
       }
 
       const nextCursor = oldest.publishedAtMs - 1_000;
-      if (cursorTo !== null && nextCursor >= cursorTo) {
+      if (nextCursor >= cursorFrom) {
         break;
       }
 
-      cursorTo = nextCursor;
+      cursorFrom = nextCursor;
 
       if (rows.length < count) {
         break;
@@ -4139,7 +4145,12 @@ export class MaxClientService implements OnModuleDestroy {
       ...incoming,
       url: incoming.url ?? current.url,
       previewUrl: incoming.previewUrl ?? current.previewUrl,
-      views: Math.max(current.views ?? 0, incoming.views ?? 0),
+      views:
+        current.views === null
+          ? incoming.views
+          : incoming.views === null
+            ? current.views
+            : Math.max(current.views, incoming.views),
       reactionsTotal: Math.max(current.reactionsTotal ?? 0, incoming.reactionsTotal ?? 0),
       reactions: this.mergeMessageReactions([...current.reactions, ...incoming.reactions]),
     };

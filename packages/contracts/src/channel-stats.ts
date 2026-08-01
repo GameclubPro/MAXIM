@@ -70,6 +70,36 @@ export const channelStatsTopPostSchema = z.object({
 });
 export type ChannelStatsTopPost = z.infer<typeof channelStatsTopPostSchema>;
 
+export const channelStatsReachCoverageSchema = z.enum(['unavailable', 'insufficient', 'ready']);
+export type ChannelStatsReachCoverage = z.infer<typeof channelStatsReachCoverageSchema>;
+
+export const channelStatsReachSchema = z.object({
+  averageViews24h: z.number().int().min(0).nullable(),
+  averageViews48h: z.number().int().min(0).nullable(),
+  err48Percent: z.number().min(0).nullable(),
+  subscriberDenominator: z.number().int().positive().nullable(),
+  sampleSize24h: z.number().int().min(0),
+  sampleSize48h: z.number().int().min(0),
+  coverage24h: channelStatsReachCoverageSchema,
+  coverage48h: channelStatsReachCoverageSchema,
+  asOf: z.string().datetime().nullable(),
+  method: z.literal('post-age-cohort'),
+});
+export type ChannelStatsReach = z.infer<typeof channelStatsReachSchema>;
+
+const EMPTY_CHANNEL_STATS_REACH: ChannelStatsReach = {
+  averageViews24h: null,
+  averageViews48h: null,
+  err48Percent: null,
+  subscriberDenominator: null,
+  sampleSize24h: 0,
+  sampleSize48h: 0,
+  coverage24h: 'unavailable',
+  coverage48h: 'unavailable',
+  asOf: null,
+  method: 'post-age-cohort',
+};
+
 export const channelStatsSummarySchema = z.object({
   subscribers: z.object({
     current: z.number().int().min(0).nullable(),
@@ -85,6 +115,7 @@ export const channelStatsSummarySchema = z.object({
     last48h: z.number().int().min(0).nullable(),
     er24: z.number().nullable(),
   }),
+  reach: channelStatsReachSchema.default(EMPTY_CHANNEL_STATS_REACH),
   daily: z.array(
     z.object({
       date: z.string().min(1),

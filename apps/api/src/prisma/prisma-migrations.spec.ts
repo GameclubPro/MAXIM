@@ -13,6 +13,36 @@ function readSchema(): string {
 }
 
 describe('Prisma migrations', () => {
+  it('backfills channel view milestones only from bounded post-age snapshots', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260801120000_add_channel_post_view_milestones');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('viewsAt24h           Int?');
+    expect(schema).toContain('viewsAt24hCapturedAt DateTime?');
+    expect(schema).toContain('viewsAt48h           Int?');
+    expect(schema).toContain('viewsAt48hCapturedAt DateTime?');
+    expect(compact).toContain(`posts."published_at" >= CURRENT_TIMESTAMP - INTERVAL '30 days'`);
+    expect(compact).toContain(
+      `snapshots."captured_at" >= posts."published_at" + INTERVAL '24 hours'`,
+    );
+    expect(compact).toContain(
+      `snapshots."captured_at" <= posts."published_at" + INTERVAL '27 hours'`,
+    );
+    expect(compact).toContain(
+      `snapshots."captured_at" >= posts."published_at" + INTERVAL '48 hours'`,
+    );
+    expect(compact).toContain(
+      `snapshots."captured_at" <= posts."published_at" + INTERVAL '51 hours'`,
+    );
+    expect(compact).toContain('ORDER BY snapshots."captured_at" ASC, snapshots."id" ASC LIMIT 1');
+    expect(compact).toContain('CASE WHEN snapshot_24h."views" > 0 THEN snapshot_24h."views" END');
+    expect(compact).toContain('CASE WHEN snapshot_48h."views" > 0 THEN snapshot_48h."views" END');
+    expect(compact).not.toContain('latest_views');
+    expect(compact).toContain('CREATE INDEX CONCURRENTLY "channel_posts_24h_milestone_due_idx"');
+    expect(compact).toContain('CREATE INDEX CONCURRENTLY "channel_posts_48h_milestone_due_idx"');
+  });
+
   it('resets every thematic codeword column before the later database drop', () => {
     const migration = readMigration('20260716043000_retire_thematic_codeword_settings');
     const compact = migration.replace(/\s+/g, ' ').trim();

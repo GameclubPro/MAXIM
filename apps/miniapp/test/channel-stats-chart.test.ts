@@ -5,6 +5,7 @@ import {
   resolveAudienceChartAverageGrowthLabel,
   resolveAudienceChartDisplayValue,
   resolveAverageViewsFromSeries,
+  resolveChannelReachMetric,
   resolveChannelStatsAverageViews,
   resolveChannelStatsSliderIndex,
   resolveInitialAudienceChartIndex,
@@ -145,6 +146,77 @@ test('does not render unavailable channel views as a real zero', () => {
   };
 
   assert.equal(resolveChannelStatsAverageViews(stats), null);
+});
+
+test('post-age reach metrics only expose ready cohort values', () => {
+  const reach = {
+    averageViews24h: 240,
+    averageViews48h: 320,
+    err48Percent: 20,
+    subscriberDenominator: 1_600,
+    sampleSize24h: 12,
+    sampleSize48h: 9,
+    coverage24h: 'ready' as const,
+    coverage48h: 'ready' as const,
+  };
+
+  assert.deepEqual(resolveChannelReachMetric(reach, 'averageViews24h'), {
+    value: 240,
+    coverage: 'ready',
+    sampleSize: 12,
+  });
+  assert.deepEqual(resolveChannelReachMetric(reach, 'averageViews48h'), {
+    value: 320,
+    coverage: 'ready',
+    sampleSize: 9,
+  });
+  assert.deepEqual(resolveChannelReachMetric(reach, 'err48Percent'), {
+    value: 20,
+    coverage: 'ready',
+    sampleSize: 9,
+  });
+});
+
+test('post-age reach metrics never promote partial or invalid data to a real zero', () => {
+  const insufficientReach = {
+    averageViews24h: 0,
+    averageViews48h: 500,
+    err48Percent: 25,
+    subscriberDenominator: 2_000,
+    sampleSize24h: 2,
+    sampleSize48h: 1,
+    coverage24h: 'insufficient' as const,
+    coverage48h: 'insufficient' as const,
+  };
+
+  assert.deepEqual(resolveChannelReachMetric(insufficientReach, 'averageViews24h'), {
+    value: null,
+    coverage: 'insufficient',
+    sampleSize: 2,
+  });
+  assert.deepEqual(resolveChannelReachMetric(insufficientReach, 'err48Percent'), {
+    value: null,
+    coverage: 'insufficient',
+    sampleSize: 1,
+  });
+  assert.deepEqual(
+    resolveChannelReachMetric(
+      {
+        ...insufficientReach,
+        averageViews48h: 300,
+        err48Percent: 30,
+        subscriberDenominator: null,
+        sampleSize48h: 5,
+        coverage48h: 'ready',
+      },
+      'err48Percent',
+    ),
+    {
+      value: null,
+      coverage: 'unavailable',
+      sampleSize: 5,
+    },
+  );
 });
 
 test('channel chart slider supports arrows and boundary keys', () => {

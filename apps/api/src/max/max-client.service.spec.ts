@@ -4545,9 +4545,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('parses official message snapshots with views and deduplicates pages', async () => {
+  it('parses official message snapshots, preserves missing views, and deduplicates pages', async () => {
     const latestTs = Date.parse('2026-03-07T09:00:00.000Z');
     const previousTs = Date.parse('2026-03-06T09:00:00.000Z');
+    const rangeFromTs = Date.parse('2026-03-06T00:00:00.000Z');
     const rangeToTs = Date.parse('2026-03-07T12:00:00.000Z');
     const httpService = {
       request: jest
@@ -4584,7 +4585,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 {
                   timestamp: previousTs,
                   body: { mid: 'mid-1' },
-                  stat: { views: 120, reactions: { count: 12 } },
+                  stat: { reactions: { count: 12 } },
                   url: 'https://max.ru/news/post-1',
                 },
               ],
@@ -4598,7 +4599,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 {
                   timestamp: previousTs,
                   body: { mid: 'mid-1' },
-                  stat: { views: 120 },
                   url: 'https://max.ru/news/post-1',
                 },
               ],
@@ -4607,12 +4607,22 @@ describe('MaxClientService inline keyboard guardrails', () => {
         ),
     };
     const service = createService(httpService);
+    const botRegistry = (service as any).botRegistry;
+    const defaultBot = botRegistry.getDefaultBot();
+    botRegistry.getBotById.mockImplementation((botId?: string | null) =>
+      botId === 'stats-bot'
+        ? { ...defaultBot, id: 'stats-bot', token: 'stats-token' }
+        : !botId || botId === defaultBot.id
+          ? defaultBot
+          : null,
+    );
 
     const result = await service.listMessageSnapshots('channel-1', {
       from: '2026-03-06T00:00:00.000Z',
       to: '2026-03-07T12:00:00.000Z',
       count: 2,
       maxPages: 3,
+      botId: 'stats-bot',
     });
 
     expect(result).toEqual([
@@ -4637,7 +4647,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         publishedAtMs: previousTs,
         url: 'https://max.ru/news/post-1',
         previewUrl: null,
-        views: 120,
+        views: null,
         reactionsTotal: 12,
         reactions: [],
       },
@@ -4651,8 +4661,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
         params: {
           chat_id: 'channel-1',
           count: 2,
-          to: Math.floor(rangeToTs / 1_000),
+          from: Math.floor(rangeToTs / 1_000),
+          to: Math.floor(rangeFromTs / 1_000),
         },
+        headers: { Authorization: 'stats-token' },
       }),
     );
     expect(httpService.request).toHaveBeenNthCalledWith(
@@ -4663,7 +4675,59 @@ describe('MaxClientService inline keyboard guardrails', () => {
         params: {
           chat_id: 'channel-1',
           count: 2,
-          to: Math.floor((previousTs - 1_000) / 1_000),
+          from: Math.floor((previousTs - 1_000) / 1_000),
+          to: Math.floor(rangeFromTs / 1_000),
+        },
+        headers: { Authorization: 'stats-token' },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps messages published exactly on both snapshot range boundaries', async () => {
+    const rangeFromTs = Date.parse('2026-03-06T09:00:00.000Z');
+    const rangeToTs = Date.parse('2026-03-07T12:00:00.000Z');
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                timestamp: rangeToTs,
+                body: { mid: 'mid-upper-boundary' },
+                stat: { views: 200 },
+              },
+              {
+                timestamp: rangeFromTs,
+                body: { mid: 'mid-lower-boundary' },
+                stat: { views: 100 },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.listMessageSnapshots('channel-1', {
+      from: rangeFromTs,
+      to: rangeToTs,
+      count: 100,
+      maxPages: 1,
+    });
+
+    expect(result.map((snapshot) => snapshot.messageId)).toEqual([
+      'mid-upper-boundary',
+      'mid-lower-boundary',
+    ]);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: {
+          chat_id: 'channel-1',
+          count: 100,
+          from: Math.floor(rangeToTs / 1_000),
+          to: Math.floor(rangeFromTs / 1_000),
         },
       }),
     );

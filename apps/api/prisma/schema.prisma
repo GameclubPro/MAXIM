@@ -2625,6 +2625,10 @@ model ChannelPost {
   url                  String?
   previewUrl           String?   @map("preview_url")
   latestViews          Int       @default(0) @map("latest_views")
+  viewsAt24h           Int?      @map("views_at_24h")
+  viewsAt24hCapturedAt DateTime? @map("views_at_24h_captured_at")
+  viewsAt48h           Int?      @map("views_at_48h")
+  viewsAt48hCapturedAt DateTime? @map("views_at_48h_captured_at")
   latestReactions      Json?     @map("latest_reactions")
   latestReactionsTotal Int       @default(0) @map("latest_reactions_total")
   latestSnapshotAt     DateTime? @map("latest_snapshot_at")
@@ -2638,6 +2642,8 @@ model ChannelPost {
   @@index([chatId, publishedAt(sort: Desc)])
   @@index([chatId, latestSnapshotAt(sort: Desc)])
   @@index([chatId, latestViews(sort: Desc), publishedAt(sort: Desc)], map: "channel_posts_chat_latest_views_published_idx")
+  @@index([viewsAt24h, publishedAt, chatId, id], map: "channel_posts_24h_milestone_due_idx")
+  @@index([viewsAt48h, publishedAt, chatId, id], map: "channel_posts_48h_milestone_due_idx")
   @@map("channel_posts")
 }
 

@@ -10,6 +10,27 @@ export type ViewsSeriesPoint = {
   views: number;
 };
 
+export type ChannelReachCoverage = 'unavailable' | 'insufficient' | 'ready';
+
+export type ChannelReachSummary = {
+  averageViews24h: number | null;
+  averageViews48h: number | null;
+  err48Percent: number | null;
+  subscriberDenominator: number | null;
+  sampleSize24h: number;
+  sampleSize48h: number;
+  coverage24h: ChannelReachCoverage;
+  coverage48h: ChannelReachCoverage;
+};
+
+export type ChannelReachMetric = 'averageViews24h' | 'averageViews48h' | 'err48Percent';
+
+export type ChannelReachMetricPresentation = {
+  value: number | null;
+  coverage: ChannelReachCoverage;
+  sampleSize: number;
+};
+
 export type ViewsDisplayStats = {
   channel?: {
     id?: string;
@@ -69,6 +90,51 @@ export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): numbe
   }
 
   return 0;
+}
+
+export function resolveChannelReachMetric(
+  reach: ChannelReachSummary | null | undefined,
+  metric: ChannelReachMetric,
+): ChannelReachMetricPresentation {
+  const is24HourMetric = metric === 'averageViews24h';
+  const coverage = is24HourMetric ? reach?.coverage24h : reach?.coverage48h;
+  const sampleSizeValue = is24HourMetric ? reach?.sampleSize24h : reach?.sampleSize48h;
+  const sampleSize =
+    typeof sampleSizeValue === 'number' && Number.isFinite(sampleSizeValue)
+      ? Math.max(0, Math.trunc(sampleSizeValue))
+      : 0;
+  const normalizedCoverage: ChannelReachCoverage =
+    coverage === 'ready' || coverage === 'insufficient' ? coverage : 'unavailable';
+
+  if (normalizedCoverage !== 'ready') {
+    return {
+      value: null,
+      coverage: normalizedCoverage,
+      sampleSize,
+    };
+  }
+
+  const rawValue = reach?.[metric];
+  const hasValidValue = typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue >= 0;
+  const hasValidErrDenominator =
+    metric !== 'err48Percent' ||
+    (typeof reach?.subscriberDenominator === 'number' &&
+      Number.isFinite(reach.subscriberDenominator) &&
+      reach.subscriberDenominator > 0);
+
+  if (!hasValidValue || !hasValidErrDenominator) {
+    return {
+      value: null,
+      coverage: 'unavailable',
+      sampleSize,
+    };
+  }
+
+  return {
+    value: rawValue,
+    coverage: 'ready',
+    sampleSize,
+  };
 }
 
 export function resolveChannelStatsSliderIndex(

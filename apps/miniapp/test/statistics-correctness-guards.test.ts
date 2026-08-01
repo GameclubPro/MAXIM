@@ -10,6 +10,10 @@ const channelStatsPageSource = readFileSync(
   new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
   'utf8',
 );
+const chatsPageSource = readFileSync(
+  new URL('../src/pages/chats-page.tsx', import.meta.url),
+  'utf8',
+);
 
 test('chat statistics identity only consumes a dashboard validated for the current route', () => {
   assert.match(
@@ -54,15 +58,25 @@ test('statistics pages expose truthful unavailable and partial metric states', (
   assert.match(eventsPageSource, /participantsTotalPresentation\.status === 'loading'/u);
   assert.match(eventsPageSource, /Количество участников недоступно/u);
   assert.match(eventsPageSource, /className="events-dashboard__hero-number"/u);
-  assert.match(
-    channelStatsPageSource,
-    /stats\.meta\.churnAvailable \? stats\.official\.audience\.net : null/u,
-  );
-  assert.match(
-    channelStatsPageSource,
-    /stats\.meta\.viewsAvailable \? periodLabel : 'Нет данных'/u,
-  );
+  assert.match(channelStatsPageSource, /metric\.coverage === 'insufficient'/u);
+  assert.match(channelStatsPageSource, /resolveChannelReachMetric\(summary\.reach/u);
+  assert.match(channelStatsPageSource, /Недостаточно данных/u);
+  assert.doesNotMatch(channelStatsPageSource, /resolveTopPostsAverageSince/u);
+  assert.doesNotMatch(channelStatsPageSource, /Реакции от просмотров/u);
   assert.match(channelStatsPageSource, /!stats \|\| !stats\.meta\.churnAvailable/u);
+});
+
+test('channel statistics keep overview and full request caches isolated', () => {
+  assert.match(
+    channelStatsPageSource,
+    /queryKey: queryKeys\.channelStats\(chatId, range, 'full'\)/u,
+  );
+  assert.match(channelStatsPageSource, /includeActivityPreview: false,\s*mode: 'full'/u);
+  assert.match(
+    chatsPageSource,
+    /channelStatsQueryKey\(chatId, DEFAULT_CHANNEL_STATS_RANGE, 'overview'\)/u,
+  );
+  assert.match(chatsPageSource, /includeActivityPreview: false,\s*mode: 'overview'/u);
 });
 
 test('statistics navigation and chart controls retain explicit semantics', () => {
