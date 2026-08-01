@@ -28,6 +28,7 @@ const CHANNEL_STATS_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 const CHANNEL_POST_VIEWS_24H_MS = 24 * 60 * 60 * 1000;
 const CHANNEL_POST_VIEWS_48H_MS = 48 * 60 * 60 * 1000;
 const CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS = 3 * 60 * 60 * 1000;
+const CHANNEL_POST_VIEWS_MILESTONE_RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const CHANNEL_STATS_STALE_MS = 2 * 60 * 60 * 1000;
 const CHANNEL_STATS_ALL_LOCK_TTL_MS = 30 * 60 * 1000;
 const CHANNEL_STATS_CHAT_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -48,6 +49,15 @@ const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS = 360;
 const CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS = 30;
 const CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS = 6;
 const CHANNEL_STATS_MILESTONE_CATCH_UP_MAX_POSTS = 200;
+const CHANNEL_STATS_PRIORITY_MILESTONE_MAX_POSTS = 20;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MIN_CHANNELS = 4;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS = 12;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_PAGES = 2;
+const CHANNEL_STATS_ENDPOINT_SLOW_MAX_PAGES = 1;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_STALE_MS = 30 * 60 * 1000;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_TARGET_CYCLE_MS = 12 * 60 * 60 * 1000;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_CAPACITY_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const CHANNEL_STATS_PRIORITY_AUDIENCE_SLOW_MAX_CHANNELS = 2;
 type ChannelStatsSyncResult = {
   audienceSynced: boolean;
   viewsSynced: boolean;
@@ -70,7 +80,14 @@ type ChannelStartupSyncCandidate = {
   } | null;
 };
 
-type ChannelScheduledSyncCandidate = ChannelStartupSyncCandidate & {
+type ChannelScheduledSyncCandidate = {
+  id: string;
+  channelStatsSyncState: {
+    lastAudienceSyncAt: Date | null;
+    lastViewsSyncAt: Date | null;
+    lastViewsDiscoveryAt: Date | null;
+    lastViewsAttemptAt: Date | null;
+  } | null;
   channelAudienceSnapshots: Array<{
     capturedAt: Date;
   }>;
@@ -99,6 +116,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private backgroundSyncSlowUntilMs = 0;
   private subscriptionCoverageFrom: Date | null = null;
   private degradePauseLogAtMs = 0;
+  private priorityViewsCapacityLogAtMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -214,6 +232,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         where: { chatId },
         select: {
           lastViewsSyncAt: true,
+          lastViewsDiscoveryAt: true,
           lastAudienceSyncAt: true,
         },
       }),
@@ -225,8 +244,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       nowMs - latestAudienceSnapshot.capturedAt.getTime() > staleMs ||
       !syncState?.lastAudienceSyncAt ||
       nowMs - syncState.lastAudienceSyncAt.getTime() > staleMs;
-    const viewsStale =
-      !syncState?.lastViewsSyncAt || nowMs - syncState.lastViewsSyncAt.getTime() > staleMs;
+    const viewsStale = this.isViewsDiscoveryStale(syncState, staleMs, nowMs);
 
     if (!audienceStale && !viewsStale) {
       return;
@@ -257,7 +275,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
     const shouldPauseStatsEndpointRefresh =
       isStatsEndpointRefresh &&
-      ((await this.isBackgroundWorkPaused('scheduled')) ||
+      ((await this.isBackgroundWorkPaused('scheduled', {
+        allowMaxApiCapacitySlowPath: true,
+      })) ||
         (await this.isBackgroundSyncBackoffActive()));
     if (shouldPauseStatsEndpointRefresh) {
       return;
@@ -266,7 +286,14 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     const syncResult = await this.syncChannel(chatId, {
       reason: options?.reason ?? 'opportunistic',
       markOpportunistic: true,
-      ...(isStatsEndpointRefresh ? { maxPages: this.endpointSyncMaxPages } : {}),
+      ...(isStatsEndpointRefresh
+        ? {
+            maxPages: this.isBackgroundSyncSlowActive()
+              ? CHANNEL_STATS_ENDPOINT_SLOW_MAX_PAGES
+              : this.endpointSyncMaxPages,
+            viewsMode: 'discovery' as const,
+          }
+        : {}),
       ...(refreshedAudienceForStatsEndpoint
         ? { skipAudience: true, audienceSyncedAt: audienceSyncedAtForStatsEndpoint ?? undefined }
         : {}),
@@ -414,12 +441,15 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     channelsOverride?: Array<{ id: string }>,
     options?: {
       audienceOnly?: boolean;
+      priorityViewsLane?: boolean;
     },
   ) {
     if (
       !this.backgroundEnabled ||
       this.scheduledSyncInFlight ||
-      (await this.isBackgroundWorkPaused(reason)) ||
+      (await this.isBackgroundWorkPaused(reason, {
+        allowMaxApiCapacitySlowPath: options?.priorityViewsLane === true,
+      })) ||
       (await this.isBackgroundSyncBackoffActive())
     ) {
       return;
@@ -432,7 +462,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         CHANNEL_STATS_ALL_LOCK_TTL_MS,
         async () => {
           if (reason === 'scheduled' && !channelsOverride) {
-            await this.syncScheduledChannels({ audienceOnly: options?.audienceOnly ?? false });
+            await this.syncScheduledChannels({
+              audienceOnly: options?.audienceOnly ?? false,
+              priorityViewsLane: options?.priorityViewsLane ?? false,
+            });
             return;
           }
 
@@ -480,11 +513,24 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   private async syncScheduledAudienceCatchUpOnly(reason: 'scheduled') {
-    await this.syncChannels(reason, undefined, { audienceOnly: true });
+    await this.syncChannels(reason, undefined, {
+      audienceOnly: true,
+      priorityViewsLane: true,
+    });
   }
 
-  private async syncScheduledChannels(options?: { audienceOnly?: boolean }) {
-    const milestoneCatchUpThrottled = await this.syncDuePostViewMilestones(new Date());
+  private async syncScheduledChannels(options?: {
+    audienceOnly?: boolean;
+    priorityViewsLane?: boolean;
+  }) {
+    const priorityViewsLane = options?.priorityViewsLane === true;
+    const slowActive = this.isBackgroundSyncSlowActive();
+    const milestoneCatchUpThrottled = await this.syncDuePostViewMilestones(
+      new Date(),
+      priorityViewsLane || slowActive
+        ? CHANNEL_STATS_PRIORITY_MILESTONE_MAX_POSTS
+        : CHANNEL_STATS_MILESTONE_CATCH_UP_MAX_POSTS,
+    );
     if (milestoneCatchUpThrottled) {
       const backoffMs = await this.activateBackgroundSyncBackoff();
       this.logger.warn(
@@ -502,6 +548,8 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           select: {
             lastAudienceSyncAt: true,
             lastViewsSyncAt: true,
+            lastViewsDiscoveryAt: true,
+            lastViewsAttemptAt: true,
           },
         },
         channelAudienceSnapshots: {
@@ -513,6 +561,26 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       orderBy: { updatedAt: 'desc' },
     });
     const nowMs = Date.now();
+    if (priorityViewsLane) {
+      const recentViewsCandidates = channels
+        .filter((channel) =>
+          this.isViewsDiscoveryStale(
+            channel.channelStatsSyncState,
+            CHANNEL_STATS_PRIORITY_RECENT_VIEWS_STALE_MS,
+            nowMs,
+          ),
+        )
+        .sort((left, right) => this.compareScheduledViewsDiscoveryCandidates(left, right))
+        .slice(0, this.resolvePriorityViewsMaxChannels(channels.length));
+      const recentViewsThrottled = await this.syncScheduledViews(recentViewsCandidates, new Map(), {
+        maxPages: CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_PAGES,
+        viewsMode: 'discovery',
+      });
+      if (recentViewsThrottled) {
+        return;
+      }
+    }
+
     const audienceCandidates = channels
       .filter((channel) =>
         this.isAudienceSnapshotStale(
@@ -523,7 +591,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         ),
       )
       .sort((left, right) => this.compareScheduledAudienceSyncCandidates(left, right))
-      .slice(0, this.resolveScheduledAudienceCatchUpMaxChannels());
+      .slice(0, this.resolveScheduledAudienceCatchUpMaxChannels({ priorityViewsLane, slowActive }));
     const audienceResult = await this.syncScheduledAudienceCatchUp(audienceCandidates);
     if (audienceResult.throttled) {
       return;
@@ -533,7 +601,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       return;
     }
 
-    if (this.isBackgroundSyncSlowActive()) {
+    if (slowActive) {
       return;
     }
 
@@ -554,54 +622,96 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     await this.syncScheduledViews(viewsCandidates, audienceResult.syncedAudienceAtByChatId);
   }
 
-  private async syncDuePostViewMilestones(now: Date): Promise<boolean> {
+  private async syncDuePostViewMilestones(
+    now: Date,
+    maxPosts = CHANNEL_STATS_MILESTONE_CATCH_UP_MAX_POSTS,
+  ): Promise<boolean> {
+    const retryBefore = new Date(now.getTime() - CHANNEL_POST_VIEWS_MILESTONE_RETRY_COOLDOWN_MS);
     const duePosts = await this.prisma.channelPost.findMany({
       where: {
-        OR: [
+        AND: [
           {
-            viewsAt24h: null,
-            publishedAt: {
-              gte: new Date(
-                now.getTime() - CHANNEL_POST_VIEWS_24H_MS - CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS,
-              ),
-              lte: new Date(now.getTime() - CHANNEL_POST_VIEWS_24H_MS),
-            },
+            OR: [
+              { viewMilestoneLastAttemptAt: null },
+              { viewMilestoneLastAttemptAt: { lte: retryBefore } },
+            ],
           },
           {
-            viewsAt48h: null,
-            publishedAt: {
-              gte: new Date(
-                now.getTime() - CHANNEL_POST_VIEWS_48H_MS - CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS,
-              ),
-              lte: new Date(now.getTime() - CHANNEL_POST_VIEWS_48H_MS),
-            },
+            OR: [
+              {
+                viewsAt24h: null,
+                publishedAt: {
+                  gte: new Date(
+                    now.getTime() -
+                      CHANNEL_POST_VIEWS_24H_MS -
+                      CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS,
+                  ),
+                  lte: new Date(now.getTime() - CHANNEL_POST_VIEWS_24H_MS),
+                },
+              },
+              {
+                viewsAt48h: null,
+                publishedAt: {
+                  gte: new Date(
+                    now.getTime() -
+                      CHANNEL_POST_VIEWS_48H_MS -
+                      CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS,
+                  ),
+                  lte: new Date(now.getTime() - CHANNEL_POST_VIEWS_48H_MS),
+                },
+              },
+            ],
           },
         ],
       },
-      orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }],
-      take: CHANNEL_STATS_MILESTONE_CATCH_UP_MAX_POSTS,
+      orderBy: [
+        { viewMilestoneLastAttemptAt: { sort: 'asc', nulls: 'first' } },
+        { publishedAt: 'asc' },
+        { id: 'asc' },
+      ],
+      take: maxPosts,
       select: {
+        id: true,
         chatId: true,
         messageId: true,
       },
     });
-    const postsByChatId = new Map<string, string[]>();
+    const postsByChatId = new Map<string, Array<{ id: string; messageId: string }>>();
     for (const post of duePosts) {
-      const messageIds = postsByChatId.get(post.chatId) ?? [];
-      messageIds.push(post.messageId);
-      postsByChatId.set(post.chatId, messageIds);
+      const posts = postsByChatId.get(post.chatId) ?? [];
+      posts.push({ id: post.id, messageId: post.messageId });
+      postsByChatId.set(post.chatId, posts);
     }
 
     let throttled = false;
-    for (const [chatId, messageIds] of postsByChatId) {
+    for (const [chatId, posts] of postsByChatId) {
       await this.withRedisLock(
         `channel-stats:chat:${chatId}`,
         CHANNEL_STATS_CHAT_LOCK_TTL_MS,
         async () => {
-          const statsBotId = await this.resolveCapabilityRouteBotId(chatId, 'channel_stats');
-          for (const messageId of messageIds) {
+          let statsBotId: string | undefined;
+          try {
+            statsBotId = await this.resolveCapabilityRouteBotId(chatId, 'channel_stats');
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId,
+                postCount: posts.length,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Failed to resolve a channel post milestone route',
+            );
+            await this.markViewMilestoneAttempts(
+              posts.map((post) => post.id),
+              now,
+            );
+            return;
+          }
+
+          const attemptedPostIds: string[] = [];
+          for (const post of posts) {
             try {
-              const snapshot = await this.maxClient.getMessageSnapshot(chatId, messageId, {
+              const snapshot = await this.maxClient.getMessageSnapshot(chatId, post.messageId, {
                 trafficClass: 'background',
                 sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
                 ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
@@ -610,15 +720,17 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               if (snapshot) {
                 await this.upsertOfficialMessages(chatId, [snapshot], now);
               }
+              attemptedPostIds.push(post.id);
             } catch (error: unknown) {
               if (this.isMaxApiThrottleError(error)) {
                 throttled = true;
-                return;
+                break;
               }
 
+              attemptedPostIds.push(post.id);
               const payload = {
                 chatId,
-                messageId,
+                messageId: post.messageId,
                 err: error instanceof Error ? error.message : String(error),
               };
               if (this.isMaxApiNotFoundError(error)) {
@@ -628,6 +740,8 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               }
             }
           }
+
+          await this.markViewMilestoneAttempts(attemptedPostIds, now);
         },
       );
       if (throttled) {
@@ -636,6 +750,17 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }
 
     return false;
+  }
+
+  private async markViewMilestoneAttempts(postIds: string[], attemptedAt: Date): Promise<void> {
+    if (postIds.length === 0) {
+      return;
+    }
+
+    await this.prisma.channelPost.updateMany({
+      where: { id: { in: postIds } },
+      data: { viewMilestoneLastAttemptAt: attemptedAt },
+    });
   }
 
   private async syncScheduledAudienceCatchUp(channels: ChannelScheduledSyncCandidate[]): Promise<{
@@ -676,18 +801,52 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private async syncScheduledViews(
     channels: ChannelScheduledSyncCandidate[],
     syncedAudienceAtByChatId: Map<string, Date>,
-  ) {
+    options?: {
+      maxPages?: number;
+      viewsMode?: 'full' | 'discovery';
+    },
+  ): Promise<boolean> {
     for (const [index, channel] of channels.entries()) {
       if (index > 0) {
         await this.sleepBetweenChannels('scheduled');
       }
 
       const audienceSyncedAt = syncedAudienceAtByChatId.get(channel.id);
-      const syncResult = await this.syncChannel(channel.id, {
-        reason: 'scheduled',
-        skipAudience: true,
-        ...(audienceSyncedAt ? { audienceSyncedAt } : {}),
-      });
+      let syncResult: ChannelStatsSyncResult;
+      try {
+        syncResult = await this.syncChannel(channel.id, {
+          reason: 'scheduled',
+          skipAudience: true,
+          ...(options?.maxPages ? { maxPages: options.maxPages } : {}),
+          ...(options?.viewsMode ? { viewsMode: options.viewsMode } : {}),
+          ...(audienceSyncedAt ? { audienceSyncedAt } : {}),
+        });
+      } catch (error: unknown) {
+        await this.markViewsSyncAttempt(channel.id, new Date());
+        if (this.isMaxApiThrottleError(error)) {
+          const backoffMs = await this.activateBackgroundSyncBackoff();
+          this.logger.warn(
+            {
+              reason: 'scheduled',
+              chatId: channel.id,
+              backoffMs,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Paused background channel stats sync after MAX API throttling',
+          );
+          return true;
+        }
+
+        this.logger.warn(
+          {
+            reason: 'scheduled',
+            chatId: channel.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Skipped one channel after an unexpected stats sync failure',
+        );
+        continue;
+      }
       if (syncResult.throttled) {
         const backoffMs = await this.activateBackgroundSyncBackoff();
         this.logger.warn(
@@ -698,9 +857,19 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           },
           'Paused background channel stats sync after MAX API throttling',
         );
-        break;
+        return true;
       }
     }
+
+    return false;
+  }
+
+  private async markViewsSyncAttempt(chatId: string, attemptedAt: Date): Promise<void> {
+    await this.prisma.channelStatsSyncState.upsert({
+      where: { chatId },
+      create: { chatId, lastViewsAttemptAt: attemptedAt },
+      update: { lastViewsAttemptAt: attemptedAt },
+    });
   }
 
   private shouldSyncChannelOnStartup(channel: ChannelStartupSyncCandidate): boolean {
@@ -760,9 +929,71 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     left: ChannelScheduledSyncCandidate,
     right: ChannelScheduledSyncCandidate,
   ): number {
-    const leftSyncedAtMs = left.channelStatsSyncState?.lastViewsSyncAt?.getTime() ?? null;
-    const rightSyncedAtMs = right.channelStatsSyncState?.lastViewsSyncAt?.getTime() ?? null;
+    const leftSyncedAtMs = this.resolveScheduledViewsCursorMs(left, 'full');
+    const rightSyncedAtMs = this.resolveScheduledViewsCursorMs(right, 'full');
     return this.compareNullableFreshness(leftSyncedAtMs, rightSyncedAtMs, left.id, right.id);
+  }
+
+  private compareScheduledViewsDiscoveryCandidates(
+    left: ChannelScheduledSyncCandidate,
+    right: ChannelScheduledSyncCandidate,
+  ): number {
+    const leftSyncedAtMs = this.resolveScheduledViewsCursorMs(left, 'discovery');
+    const rightSyncedAtMs = this.resolveScheduledViewsCursorMs(right, 'discovery');
+    return this.compareNullableFreshness(leftSyncedAtMs, rightSyncedAtMs, left.id, right.id);
+  }
+
+  private resolveScheduledViewsCursorMs(
+    channel: ChannelScheduledSyncCandidate,
+    mode: 'full' | 'discovery',
+  ): number | null {
+    const state = channel.channelStatsSyncState;
+    if (!state) {
+      return null;
+    }
+
+    const cursors = [
+      state.lastViewsSyncAt,
+      state.lastViewsAttemptAt,
+      ...(mode === 'discovery' ? [state.lastViewsDiscoveryAt] : []),
+    ].filter((value): value is Date => value instanceof Date);
+    if (cursors.length === 0) {
+      return null;
+    }
+
+    return Math.max(...cursors.map((value) => value.getTime()));
+  }
+
+  private resolvePriorityViewsMaxChannels(channelCount: number): number {
+    const passesPerTargetCycle = Math.max(
+      1,
+      Math.floor(
+        CHANNEL_STATS_PRIORITY_RECENT_VIEWS_TARGET_CYCLE_MS /
+          CHANNEL_STATS_AUDIENCE_CATCH_UP_INTERVAL_MS,
+      ),
+    );
+    const requiredChannelsPerPass = Math.max(
+      CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MIN_CHANNELS,
+      Math.ceil(channelCount / passesPerTargetCycle),
+    );
+    if (
+      requiredChannelsPerPass > CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS &&
+      Date.now() - this.priorityViewsCapacityLogAtMs >=
+        CHANNEL_STATS_PRIORITY_RECENT_VIEWS_CAPACITY_LOG_INTERVAL_MS
+    ) {
+      this.priorityViewsCapacityLogAtMs = Date.now();
+      this.logger.warn(
+        {
+          channelCount,
+          requiredChannelsPerPass,
+          maxChannelsPerPass: CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS,
+          targetCycleHours: CHANNEL_STATS_PRIORITY_RECENT_VIEWS_TARGET_CYCLE_MS / (60 * 60 * 1000),
+        },
+        'Channel views discovery fleet exceeds the bounded target-cycle capacity',
+      );
+    }
+
+    return Math.min(requiredChannelsPerPass, CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS);
   }
 
   private resolveScheduledAudienceFreshnessMs(
@@ -800,8 +1031,16 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     );
   }
 
-  private resolveScheduledAudienceCatchUpMaxChannels(): number {
-    return this.isBackgroundSyncSlowActive()
+  private resolveScheduledAudienceCatchUpMaxChannels(options?: {
+    priorityViewsLane?: boolean;
+    slowActive?: boolean;
+  }): number {
+    const slowActive = options?.slowActive ?? this.isBackgroundSyncSlowActive();
+    if (options?.priorityViewsLane && slowActive) {
+      return CHANNEL_STATS_PRIORITY_AUDIENCE_SLOW_MAX_CHANNELS;
+    }
+
+    return slowActive
       ? CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS
       : CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_MAX_CHANNELS;
   }
@@ -814,6 +1053,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       maxPages?: number;
       skipAudience?: boolean;
       audienceSyncedAt?: Date;
+      viewsMode?: 'full' | 'discovery';
     },
   ): Promise<ChannelStatsSyncResult> {
     const result: ChannelStatsSyncResult = {
@@ -833,7 +1073,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           where: { chatId },
         });
         const ensuredCoverageFrom = await this.ensureWebhookCoverage();
+        const viewsMode = options?.viewsMode ?? 'full';
         let audienceUnavailable = false;
+        let viewsAttempted = false;
 
         if (!options?.skipAudience) {
           const audienceResult = await this.syncOfficialAudienceSnapshot(chatId, {
@@ -847,6 +1089,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         }
 
         if (!result.throttled && !audienceUnavailable) {
+          viewsAttempted = true;
           try {
             const messages = await this.maxClient.listMessageSnapshots(chatId, {
               from: lookbackFrom,
@@ -879,12 +1122,19 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           result.audienceSynced || options?.audienceSyncedAt
             ? (options?.audienceSyncedAt ?? now)
             : (state?.lastAudienceSyncAt ?? null);
+        const nextViewsCoverageFrom =
+          viewsMode === 'full'
+            ? (state?.viewsCoverageFrom ?? lookbackFrom)
+            : (state?.viewsCoverageFrom ?? null);
         const nextStateCreate = {
           chatId,
-          viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
+          viewsCoverageFrom: nextViewsCoverageFrom,
           membershipCoverageFrom: nextMembershipCoverageFrom,
           lastAudienceSyncAt: nextLastAudienceSyncAt,
-          lastViewsSyncAt: result.viewsSynced ? now : (state?.lastViewsSyncAt ?? null),
+          lastViewsSyncAt:
+            result.viewsSynced && viewsMode === 'full' ? now : (state?.lastViewsSyncAt ?? null),
+          lastViewsDiscoveryAt: result.viewsSynced ? now : (state?.lastViewsDiscoveryAt ?? null),
+          lastViewsAttemptAt: viewsAttempted ? now : (state?.lastViewsAttemptAt ?? null),
           lastOpportunisticSyncAt: options?.markOpportunistic
             ? now
             : (state?.lastOpportunisticSyncAt ?? null),
@@ -894,12 +1144,14 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           where: { chatId },
           create: nextStateCreate,
           update: {
-            viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
+            ...(viewsMode === 'full' ? { viewsCoverageFrom: nextViewsCoverageFrom } : {}),
             membershipCoverageFrom: nextMembershipCoverageFrom,
             ...(result.audienceSynced || options?.audienceSyncedAt
               ? { lastAudienceSyncAt: nextLastAudienceSyncAt }
               : {}),
-            ...(result.viewsSynced ? { lastViewsSyncAt: now } : {}),
+            ...(result.viewsSynced && viewsMode === 'full' ? { lastViewsSyncAt: now } : {}),
+            ...(result.viewsSynced ? { lastViewsDiscoveryAt: now } : {}),
+            ...(viewsAttempted ? { lastViewsAttemptAt: now } : {}),
             ...(options?.markOpportunistic ? { lastOpportunisticSyncAt: now } : {}),
           },
         });
@@ -1196,6 +1448,21 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     return !syncState?.lastViewsSyncAt || nowMs - syncState.lastViewsSyncAt.getTime() > staleMs;
   }
 
+  private isViewsDiscoveryStale(
+    syncState: {
+      lastViewsSyncAt: Date | null;
+      lastViewsDiscoveryAt: Date | null;
+    } | null,
+    staleMs: number,
+    nowMs: number,
+  ): boolean {
+    const latestSuccessfulAtMs = Math.max(
+      syncState?.lastViewsSyncAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+      syncState?.lastViewsDiscoveryAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+    );
+    return !Number.isFinite(latestSuccessfulAtMs) || nowMs - latestSuccessfulAtMs > staleMs;
+  }
+
   private async isBackgroundSyncBackoffActive(): Promise<boolean> {
     const memoryActive = Date.now() < this.backgroundSyncBackoffUntilMs;
     try {
@@ -1267,11 +1534,17 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     this.scheduledCatchUpStartupTimer.unref();
   }
 
-  private async isBackgroundWorkPaused(reason: 'startup' | 'scheduled'): Promise<boolean> {
+  private async isBackgroundWorkPaused(
+    reason: 'startup' | 'scheduled',
+    options?: {
+      allowMaxApiCapacitySlowPath?: boolean;
+    },
+  ): Promise<boolean> {
     if (this.backgroundRuntimeGovernorService) {
       const decision = await this.backgroundRuntimeGovernorService.decide({
         component: 'channel-stats',
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+        ...(options?.allowMaxApiCapacitySlowPath ? { allowMaxApiCapacitySlowPath: true } : {}),
       });
       if (decision.action === 'run') {
         return false;
@@ -1291,7 +1564,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               action: decision.action,
               details: decision.reason,
               retryAfterMs: decision.retryAfterMs,
-              audienceLimit: CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS,
+              audienceLimit: options?.allowMaxApiCapacitySlowPath
+                ? CHANNEL_STATS_PRIORITY_AUDIENCE_SLOW_MAX_CHANNELS
+                : CHANNEL_STATS_SCHEDULED_AUDIENCE_CATCH_UP_SLOW_MAX_CHANNELS,
             },
             'Slowed background channel stats sync because the runtime governor detected pressure',
           );

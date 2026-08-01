@@ -92,6 +92,8 @@ function createScheduledChannelCandidate(params: {
   latestAudienceSnapshotAt?: Date | null;
   lastAudienceSyncAt?: Date | null;
   lastViewsSyncAt?: Date | null;
+  lastViewsDiscoveryAt?: Date | null;
+  lastViewsAttemptAt?: Date | null;
   syncStateMissing?: boolean;
 }) {
   return {
@@ -101,6 +103,8 @@ function createScheduledChannelCandidate(params: {
       : {
           lastAudienceSyncAt: params.lastAudienceSyncAt ?? null,
           lastViewsSyncAt: params.lastViewsSyncAt ?? null,
+          lastViewsDiscoveryAt: params.lastViewsDiscoveryAt ?? null,
+          lastViewsAttemptAt: params.lastViewsAttemptAt ?? null,
         },
     channelAudienceSnapshots: params.latestAudienceSnapshotAt
       ? [{ capturedAt: params.latestAudienceSnapshotAt }]
@@ -447,8 +451,8 @@ describe('ChannelStatsCollectorService', () => {
     const now = new Date('2026-03-07T12:00:00.000Z');
     const prisma = createPrismaMock();
     prisma.channelPost.findMany.mockResolvedValue([
-      { chatId: 'channel-1', messageId: 'mid-due-48h' },
-      { chatId: 'channel-1', messageId: 'mid-due-24h' },
+      { id: 'mid-due-48h', chatId: 'channel-1', messageId: 'mid-due-48h' },
+      { id: 'mid-due-24h', chatId: 'channel-1', messageId: 'mid-due-24h' },
     ]);
     prisma.channelPost.upsert.mockImplementation(
       ({ where }: { where: { chatId_messageId: { messageId: string } } }) =>
@@ -505,26 +509,44 @@ describe('ChannelStatsCollectorService', () => {
     expect(throttled).toBe(false);
     expect(prisma.channelPost.findMany).toHaveBeenCalledWith({
       where: {
-        OR: [
+        AND: [
           {
-            viewsAt24h: null,
-            publishedAt: {
-              gte: new Date('2026-03-06T09:00:00.000Z'),
-              lte: new Date('2026-03-06T12:00:00.000Z'),
-            },
+            OR: [
+              { viewMilestoneLastAttemptAt: null },
+              {
+                viewMilestoneLastAttemptAt: {
+                  lte: new Date('2026-03-07T11:45:00.000Z'),
+                },
+              },
+            ],
           },
           {
-            viewsAt48h: null,
-            publishedAt: {
-              gte: new Date('2026-03-05T09:00:00.000Z'),
-              lte: new Date('2026-03-05T12:00:00.000Z'),
-            },
+            OR: [
+              {
+                viewsAt24h: null,
+                publishedAt: {
+                  gte: new Date('2026-03-06T09:00:00.000Z'),
+                  lte: new Date('2026-03-06T12:00:00.000Z'),
+                },
+              },
+              {
+                viewsAt48h: null,
+                publishedAt: {
+                  gte: new Date('2026-03-05T09:00:00.000Z'),
+                  lte: new Date('2026-03-05T12:00:00.000Z'),
+                },
+              },
+            ],
           },
         ],
       },
-      orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }],
+      orderBy: [
+        { viewMilestoneLastAttemptAt: { sort: 'asc', nulls: 'first' } },
+        { publishedAt: 'asc' },
+        { id: 'asc' },
+      ],
       take: 200,
-      select: { chatId: true, messageId: true },
+      select: { id: true, chatId: true, messageId: true },
     });
     expect(maxClient.getMessageSnapshot).toHaveBeenCalledTimes(2);
     expect(maxClient.getMessageSnapshot).toHaveBeenCalledWith(
@@ -543,6 +565,151 @@ describe('ChannelStatsCollectorService', () => {
     expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
       where: { id: 'mid-due-24h', viewsAt24h: null },
       data: { viewsAt24h: 240, viewsAt24hCapturedAt: now },
+    });
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['mid-due-48h', 'mid-due-24h'] } },
+      data: { viewMilestoneLastAttemptAt: now },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps never-attempted milestones ahead after older failures leave cooldown', async () => {
+    const now = new Date('2026-03-07T12:00:00.000Z');
+    const passTimes = [
+      now,
+      new Date('2026-03-07T12:05:00.000Z'),
+      new Date('2026-03-07T12:10:00.000Z'),
+      new Date('2026-03-07T12:15:00.000Z'),
+    ];
+    const unavailablePosts = Array.from({ length: 60 }, (_, index) => ({
+      id: `post-unavailable-${index + 1}`,
+      chatId: 'channel-1',
+      messageId: `mid-unavailable-${index + 1}`,
+    }));
+    const validPost = {
+      id: 'post-valid-61',
+      chatId: 'channel-1',
+      messageId: 'mid-valid-61',
+    };
+    const prisma = createPrismaMock();
+    prisma.channelPost.findMany
+      .mockResolvedValueOnce(unavailablePosts.slice(0, 20))
+      .mockResolvedValueOnce(unavailablePosts.slice(20, 40))
+      .mockResolvedValueOnce(unavailablePosts.slice(40, 60))
+      .mockResolvedValueOnce([validPost]);
+    const maxClient = {
+      getMessageSnapshot: jest.fn((_chatId: string, messageId: string) =>
+        Promise.resolve(
+          messageId === validPost.messageId
+            ? createPostSnapshot({
+                messageId,
+                publishedAt: '2026-03-06T11:00:00.000Z',
+                views: 240,
+              })
+            : null,
+        ),
+      ),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+    );
+    const syncMilestones = (
+      service as unknown as {
+        syncDuePostViewMilestones: (capturedAt: Date, maxPosts: number) => Promise<boolean>;
+      }
+    ).syncDuePostViewMilestones.bind(service);
+
+    for (const passAt of passTimes) {
+      await syncMilestones(passAt, 20);
+    }
+
+    expect(maxClient.getMessageSnapshot).toHaveBeenCalledTimes(61);
+    expect(maxClient.getMessageSnapshot).toHaveBeenLastCalledWith(
+      'channel-1',
+      validPost.messageId,
+      expect.objectContaining({ sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC }),
+    );
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: unavailablePosts.slice(0, 20).map((post) => post.id) } },
+      data: { viewMilestoneLastAttemptAt: now },
+    });
+    expect(prisma.channelPost.findMany).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        orderBy: [
+          { viewMilestoneLastAttemptAt: { sort: 'asc', nulls: 'first' } },
+          { publishedAt: 'asc' },
+          { id: 'asc' },
+        ],
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            {
+              OR: [
+                { viewMilestoneLastAttemptAt: null },
+                {
+                  viewMilestoneLastAttemptAt: {
+                    lte: now,
+                  },
+                },
+              ],
+            },
+          ]),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('continues milestone capture after one channel route lookup fails', async () => {
+    const now = new Date('2026-03-07T12:00:00.000Z');
+    const prisma = createPrismaMock();
+    prisma.channelPost.findMany.mockResolvedValue([
+      { id: 'post-route-failed', chatId: 'channel-a', messageId: 'mid-route-failed' },
+      { id: 'post-valid', chatId: 'channel-b', messageId: 'mid-valid' },
+    ]);
+    const maxClient = {
+      getMessageSnapshot: jest.fn().mockResolvedValue(
+        createPostSnapshot({
+          messageId: 'mid-valid',
+          publishedAt: '2026-03-06T11:00:00.000Z',
+          views: 240,
+        }),
+      ),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('route cache unavailable'))
+        .mockResolvedValueOnce({ botId: 'stats-bot' }),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const throttled = await (
+      service as unknown as {
+        syncDuePostViewMilestones: (capturedAt: Date) => Promise<boolean>;
+      }
+    ).syncDuePostViewMilestones(now);
+
+    expect(throttled).toBe(false);
+    expect(maxClient.getMessageSnapshot).toHaveBeenCalledTimes(1);
+    expect(maxClient.getMessageSnapshot).toHaveBeenCalledWith(
+      'channel-b',
+      'mid-valid',
+      expect.objectContaining({ botId: 'stats-bot' }),
+    );
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['post-route-failed'] } },
+      data: { viewMilestoneLastAttemptAt: now },
     });
 
     await service.onModuleDestroy();
@@ -811,7 +978,15 @@ describe('ChannelStatsCollectorService', () => {
         lastEventAt: '2026-03-07T11:55:00.000Z',
         entityType: 'channel',
       }),
-      listMessageSnapshots: jest.fn().mockResolvedValue([]),
+      listMessageSnapshots: jest.fn().mockResolvedValue(
+        Array.from({ length: 100 }, (_, index) =>
+          createPostSnapshot({
+            messageId: `mid-endpoint-${index + 1}`,
+            publishedAt: '2026-03-07T10:00:00.000Z',
+            views: 100 + index,
+          }),
+        ),
+      ),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
         url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
         updateTypes: ['message_created', 'user_added', 'user_removed'],
@@ -835,6 +1010,87 @@ describe('ChannelStatsCollectorService', () => {
       expect.objectContaining({
         count: 100,
         maxPages: 5,
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
+    expect(prisma.channelStatsSyncState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          viewsCoverageFrom: null,
+          lastViewsSyncAt: null,
+          lastViewsDiscoveryAt: new Date('2026-03-07T12:00:00.000Z'),
+          lastViewsAttemptAt: new Date('2026-03-07T12:00:00.000Z'),
+        }),
+        update: expect.not.objectContaining({
+          viewsCoverageFrom: expect.anything(),
+          lastViewsSyncAt: expect.anything(),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps audience first and limits stats endpoint views under MAX capacity pressure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const calls: string[] = [];
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest.fn().mockImplementation(async () => {
+        calls.push('audience');
+        return {
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          participantsCount: 1240,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/news',
+          lastEventAt: '2026-03-07T11:55:00.000Z',
+          entityType: 'channel',
+        };
+      }),
+      listMessageSnapshots: jest.fn().mockImplementation(async () => {
+        calls.push('views');
+        return [];
+      }),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://major-maksimov.ru/api/webhook/max/test/secret',
+        updateTypes: ['message_created', 'user_added', 'user_removed'],
+      }),
+    };
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'slow',
+        reason: 'MAX API stack load 80.0%',
+        retryAfterMs: 60_000,
+      }),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock({ endpointMaxPages: 5 }) as never,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+
+    await service.syncChannelIfStale('channel-1', {
+      reason: 'stats_endpoint',
+    });
+
+    expect(calls).toEqual(['audience', 'views']);
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'channel-stats',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      allowMaxApiCapacitySlowPath: true,
+    });
+    expect(maxClient.listMessageSnapshots).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        count: 100,
+        maxPages: 1,
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
       }),
@@ -1280,7 +1536,7 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
-  it('runs recurring audience catch-up without heavy views work', async () => {
+  it('runs bounded recent views discovery before recurring audience catch-up', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1289,7 +1545,7 @@ describe('ChannelStatsCollectorService', () => {
         id: 'channel-stale-audience-and-views',
         latestAudienceSnapshotAt: null,
         lastAudienceSyncAt: null,
-        lastViewsSyncAt: null,
+        lastViewsSyncAt: new Date('2026-03-07T09:00:00.000Z'),
       }),
     ]);
     const maxClient = {
@@ -1326,6 +1582,336 @@ describe('ChannelStatsCollectorService', () => {
         reason: 'scheduled',
       }),
     );
+    expect(syncSpy).toHaveBeenCalledWith('channel-stale-audience-and-views', {
+      reason: 'scheduled',
+      skipAudience: true,
+      maxPages: 2,
+      viewsMode: 'discovery',
+    });
+    expect(prisma.channelPost.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 20 }));
+
+    await service.onModuleDestroy();
+  });
+
+  it('requests a bounded slow path for recurring views under MAX capacity pressure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue(
+      Array.from({ length: 837 }, (_, index) =>
+        createScheduledChannelCandidate({
+          id: `channel-stale-${String(index + 1).padStart(3, '0')}`,
+          latestAudienceSnapshotAt: null,
+          lastAudienceSyncAt: null,
+          lastViewsSyncAt: new Date('2026-03-07T09:00:00.000Z'),
+        }),
+      ),
+    );
+    const maxClient = {
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'slow',
+        reason: 'MAX API bot load 80.0%',
+        retryAfterMs: 60_000,
+      }),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    jest
+      .spyOn(
+        service as unknown as {
+          resolveInterChannelDelayMs: (reason: 'startup' | 'scheduled') => number;
+        },
+        'resolveInterChannelDelayMs',
+      )
+      .mockReturnValue(0);
+    const audienceSpy = jest.spyOn(service, 'syncAudienceSnapshotIfStale').mockResolvedValue({
+      audienceSynced: true,
+      throttled: false,
+      syncedAt: new Date('2026-03-07T12:00:00.000Z'),
+    });
+    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue({
+      audienceSynced: false,
+      viewsSynced: true,
+      throttled: false,
+    });
+
+    await (
+      service as unknown as {
+        syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+      }
+    ).syncScheduledAudienceCatchUpOnly('scheduled');
+
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'channel-stats',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      allowMaxApiCapacitySlowPath: true,
+    });
+    expect(prisma.channelPost.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 20 }));
+    expect(syncSpy.mock.calls.map(([chatId]) => chatId)).toEqual([
+      'channel-stale-001',
+      'channel-stale-002',
+      'channel-stale-003',
+      'channel-stale-004',
+      'channel-stale-005',
+      'channel-stale-006',
+    ]);
+    for (const [, options] of syncSpy.mock.calls) {
+      expect(options).toEqual({
+        reason: 'scheduled',
+        skipAudience: true,
+        maxPages: 2,
+        viewsMode: 'discovery',
+      });
+    }
+    expect(audienceSpy.mock.calls.map(([chatId]) => chatId)).toEqual([
+      'channel-stale-001',
+      'channel-stale-002',
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
+  it('sizes recurring discovery for a twelve-hour fleet cycle with a hard cap', async () => {
+    const service = new ChannelStatsCollectorService(
+      createPrismaMock() as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    const resolveLimit = (
+      service as unknown as {
+        resolvePriorityViewsMaxChannels: (channelCount: number) => number;
+      }
+    ).resolvePriorityViewsMaxChannels.bind(service);
+
+    expect(resolveLimit(1)).toBe(4);
+    expect(resolveLimit(837)).toBe(6);
+    expect(resolveLimit(1_728)).toBe(12);
+    expect(resolveLimit(2_000)).toBe(12);
+
+    await service.onModuleDestroy();
+  });
+
+  it('backs off recurring discovery after MAX throttling and skips audience work', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      createScheduledChannelCandidate({
+        id: 'channel-throttled',
+        latestAudienceSnapshotAt: null,
+        lastAudienceSyncAt: null,
+        lastViewsSyncAt: null,
+      }),
+    ]);
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'slow',
+        reason: 'MAX API stack load 80.0%',
+        retryAfterMs: 60_000,
+      }),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue({
+      audienceSynced: false,
+      viewsSynced: false,
+      throttled: true,
+    });
+    const audienceSpy = jest.spyOn(service, 'syncAudienceSnapshotIfStale');
+    const runPriorityPass = () =>
+      (
+        service as unknown as {
+          syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+        }
+      ).syncScheduledAudienceCatchUpOnly('scheduled');
+
+    await runPriorityPass();
+    await runPriorityPass();
+
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+    expect(audienceSpy).not.toHaveBeenCalled();
+    expect(prisma.chat.findMany).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('continues recurring discovery after one channel fails before its MAX list call', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const audienceAt = new Date('2026-03-07T11:45:00.000Z');
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      createScheduledChannelCandidate({
+        id: 'channel-a-route-failed',
+        latestAudienceSnapshotAt: audienceAt,
+        lastAudienceSyncAt: audienceAt,
+        lastViewsSyncAt: null,
+      }),
+      createScheduledChannelCandidate({
+        id: 'channel-b-valid',
+        latestAudienceSnapshotAt: audienceAt,
+        lastAudienceSyncAt: audienceAt,
+        lastViewsSyncAt: null,
+      }),
+    ]);
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(
+        service as unknown as {
+          resolveInterChannelDelayMs: (reason: 'startup' | 'scheduled') => number;
+        },
+        'resolveInterChannelDelayMs',
+      )
+      .mockReturnValue(0);
+    const syncSpy = jest
+      .spyOn(service, 'syncChannel')
+      .mockRejectedValueOnce(new Error('route cache unavailable'))
+      .mockResolvedValueOnce({
+        audienceSynced: false,
+        viewsSynced: true,
+        throttled: false,
+      });
+
+    await (
+      service as unknown as {
+        syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+      }
+    ).syncScheduledAudienceCatchUpOnly('scheduled');
+
+    expect(syncSpy.mock.calls.map(([chatId]) => chatId)).toEqual([
+      'channel-a-route-failed',
+      'channel-b-valid',
+    ]);
+    expect(prisma.channelStatsSyncState.upsert).toHaveBeenCalledWith({
+      where: { chatId: 'channel-a-route-failed' },
+      create: {
+        chatId: 'channel-a-route-failed',
+        lastViewsAttemptAt: new Date('2026-03-07T12:00:00.000Z'),
+      },
+      update: { lastViewsAttemptAt: new Date('2026-03-07T12:00:00.000Z') },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('rotates recurring views after failed attempts using the durable attempt cursor', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const audienceAt = new Date('2026-03-07T11:45:00.000Z');
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      createScheduledChannelCandidate({
+        id: 'channel-a-recent-failure',
+        latestAudienceSnapshotAt: audienceAt,
+        lastAudienceSyncAt: audienceAt,
+        lastViewsSyncAt: new Date('2026-03-07T09:00:00.000Z'),
+        lastViewsAttemptAt: new Date('2026-03-07T11:59:00.000Z'),
+      }),
+      ...Array.from({ length: 4 }, (_, index) =>
+        createScheduledChannelCandidate({
+          id: `channel-${String.fromCharCode(98 + index)}-older-failure`,
+          latestAudienceSnapshotAt: audienceAt,
+          lastAudienceSyncAt: audienceAt,
+          lastViewsSyncAt: new Date('2026-03-07T09:00:00.000Z'),
+          lastViewsAttemptAt: new Date(`2026-03-07T11:5${index}:00.000Z`),
+        }),
+      ),
+    ]);
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(
+        service as unknown as {
+          resolveInterChannelDelayMs: (reason: 'startup' | 'scheduled') => number;
+        },
+        'resolveInterChannelDelayMs',
+      )
+      .mockReturnValue(0);
+    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue({
+      audienceSynced: false,
+      viewsSynced: false,
+      throttled: false,
+    });
+
+    await (
+      service as unknown as {
+        syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+      }
+    ).syncScheduledAudienceCatchUpOnly('scheduled');
+
+    expect(syncSpy.mock.calls.map(([chatId]) => chatId)).toEqual([
+      'channel-b-older-failure',
+      'channel-c-older-failure',
+      'channel-d-older-failure',
+      'channel-e-older-failure',
+    ]);
+    expect(syncSpy).not.toHaveBeenCalledWith('channel-a-recent-failure', expect.anything());
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps recurring views paused for non-capacity governor pressure', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      createScheduledChannelCandidate({
+        id: 'channel-1',
+        latestAudienceSnapshotAt: null,
+        lastAudienceSyncAt: null,
+        lastViewsSyncAt: null,
+      }),
+    ]);
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'pause',
+        reason: 'user-facing queue lag 12.0s',
+        retryAfterMs: 60_000,
+      }),
+    };
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    const syncSpy = jest.spyOn(service, 'syncChannel');
+
+    await (
+      service as unknown as {
+        syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+      }
+    ).syncScheduledAudienceCatchUpOnly('scheduled');
+
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'channel-stats',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      allowMaxApiCapacitySlowPath: true,
+    });
+    expect(prisma.channelPost.findMany).not.toHaveBeenCalled();
+    expect(prisma.chat.findMany).not.toHaveBeenCalled();
     expect(syncSpy).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();

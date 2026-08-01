@@ -18,10 +18,10 @@ describe('Prisma migrations', () => {
     const migration = readMigration('20260801120000_add_channel_post_view_milestones');
     const compact = migration.replace(/\s+/g, ' ').trim();
 
-    expect(schema).toContain('viewsAt24h           Int?');
-    expect(schema).toContain('viewsAt24hCapturedAt DateTime?');
-    expect(schema).toContain('viewsAt48h           Int?');
-    expect(schema).toContain('viewsAt48hCapturedAt DateTime?');
+    expect(schema).toMatch(/^\s*viewsAt24h\s+Int\?/m);
+    expect(schema).toMatch(/^\s*viewsAt24hCapturedAt\s+DateTime\?/m);
+    expect(schema).toMatch(/^\s*viewsAt48h\s+Int\?/m);
+    expect(schema).toMatch(/^\s*viewsAt48hCapturedAt\s+DateTime\?/m);
     expect(compact).toContain(`posts."published_at" >= CURRENT_TIMESTAMP - INTERVAL '30 days'`);
     expect(compact).toContain(
       `snapshots."captured_at" >= posts."published_at" + INTERVAL '24 hours'`,
@@ -41,6 +41,20 @@ describe('Prisma migrations', () => {
     expect(compact).not.toContain('latest_views');
     expect(compact).toContain('CREATE INDEX CONCURRENTLY "channel_posts_24h_milestone_due_idx"');
     expect(compact).toContain('CREATE INDEX CONCURRENTLY "channel_posts_48h_milestone_due_idx"');
+  });
+
+  it('adds durable milestone cooldown and bounded views discovery cursors', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260801183000_add_channel_stats_collection_cursors');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toMatch(/^\s*viewMilestoneLastAttemptAt\s+DateTime\?/m);
+    expect(schema).toMatch(/^\s*lastViewsDiscoveryAt\s+DateTime\?/m);
+    expect(schema).toMatch(/^\s*lastViewsAttemptAt\s+DateTime\?/m);
+    expect(compact).toContain('ADD COLUMN "view_milestone_last_attempt_at" TIMESTAMP(3)');
+    expect(compact).toContain('ADD COLUMN "last_views_discovery_at" TIMESTAMP(3)');
+    expect(compact).toContain('ADD COLUMN "last_views_attempt_at" TIMESTAMP(3)');
+    expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE)\b/i);
   });
 
   it('resets every thematic codeword column before the later database drop', () => {

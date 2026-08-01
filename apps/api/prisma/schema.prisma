@@ -2618,22 +2618,23 @@ model ChannelAudienceSnapshot {
 }
 
 model ChannelPost {
-  id                   String    @id @default(cuid())
-  chatId               String    @map("chat_id")
-  messageId            String    @map("message_id")
-  publishedAt          DateTime  @map("published_at")
-  url                  String?
-  previewUrl           String?   @map("preview_url")
-  latestViews          Int       @default(0) @map("latest_views")
-  viewsAt24h           Int?      @map("views_at_24h")
-  viewsAt24hCapturedAt DateTime? @map("views_at_24h_captured_at")
-  viewsAt48h           Int?      @map("views_at_48h")
-  viewsAt48hCapturedAt DateTime? @map("views_at_48h_captured_at")
-  latestReactions      Json?     @map("latest_reactions")
-  latestReactionsTotal Int       @default(0) @map("latest_reactions_total")
-  latestSnapshotAt     DateTime? @map("latest_snapshot_at")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
+  id                         String    @id @default(cuid())
+  chatId                     String    @map("chat_id")
+  messageId                  String    @map("message_id")
+  publishedAt                DateTime  @map("published_at")
+  url                        String?
+  previewUrl                 String?   @map("preview_url")
+  latestViews                Int       @default(0) @map("latest_views")
+  viewsAt24h                 Int?      @map("views_at_24h")
+  viewsAt24hCapturedAt       DateTime? @map("views_at_24h_captured_at")
+  viewsAt48h                 Int?      @map("views_at_48h")
+  viewsAt48hCapturedAt       DateTime? @map("views_at_48h_captured_at")
+  viewMilestoneLastAttemptAt DateTime? @map("view_milestone_last_attempt_at")
+  latestReactions            Json?     @map("latest_reactions")
+  latestReactionsTotal       Int       @default(0) @map("latest_reactions_total")
+  latestSnapshotAt           DateTime? @map("latest_snapshot_at")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
 
   chat          Chat                      @relation(fields: [chatId], references: [id], onDelete: Cascade)
   viewSnapshots ChannelPostViewSnapshot[]
@@ -2668,6 +2669,8 @@ model ChannelStatsSyncState {
   membershipCoverageFrom  DateTime? @map("membership_coverage_from")
   lastAudienceSyncAt      DateTime? @map("last_audience_sync_at")
   lastViewsSyncAt         DateTime? @map("last_views_sync_at")
+  lastViewsDiscoveryAt    DateTime? @map("last_views_discovery_at")
+  lastViewsAttemptAt      DateTime? @map("last_views_attempt_at")
   lastOpportunisticSyncAt DateTime? @map("last_opportunistic_sync_at")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @updatedAt @map("updated_at")

@@ -744,7 +744,11 @@ export class AdminChannelStatsRuntime {
 
   shouldRefreshChannelStats(
     latestAudienceSnapshot: { capturedAt: Date } | null,
-    syncState: { lastAudienceSyncAt: Date | null; lastViewsSyncAt: Date | null } | null,
+    syncState: {
+      lastAudienceSyncAt: Date | null;
+      lastViewsSyncAt: Date | null;
+      lastViewsDiscoveryAt?: Date | null;
+    } | null,
   ): boolean {
     const nowMs = Date.now();
     const audienceStale =
@@ -752,9 +756,12 @@ export class AdminChannelStatsRuntime {
       nowMs - latestAudienceSnapshot.capturedAt.getTime() > CHANNEL_STATS_REFRESH_STALE_MS ||
       !syncState?.lastAudienceSyncAt ||
       nowMs - syncState.lastAudienceSyncAt.getTime() > CHANNEL_STATS_REFRESH_STALE_MS;
+    const latestViewsAtMs = Math.max(
+      syncState?.lastViewsSyncAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+      syncState?.lastViewsDiscoveryAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+    );
     const viewsStale =
-      !syncState?.lastViewsSyncAt ||
-      nowMs - syncState.lastViewsSyncAt.getTime() > CHANNEL_STATS_REFRESH_STALE_MS;
+      !Number.isFinite(latestViewsAtMs) || nowMs - latestViewsAtMs > CHANNEL_STATS_REFRESH_STALE_MS;
 
     return audienceStale || viewsStale;
   }

@@ -38,6 +38,24 @@ describe('AdminChannelStatsRuntime', () => {
     );
   });
 
+  it('treats a recent bounded views discovery as fresh for endpoint scheduling', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+    const runtime = new AdminChannelStatsRuntime({} as never);
+
+    expect(
+      runtime.shouldRefreshChannelStats(
+        { capturedAt: new Date('2026-03-07T11:30:00.000Z') },
+        {
+          lastAudienceSyncAt: new Date('2026-03-07T11:30:00.000Z'),
+          lastViewsSyncAt: new Date('2026-03-07T08:00:00.000Z'),
+          lastViewsDiscoveryAt: new Date('2026-03-07T11:45:00.000Z'),
+        },
+      ),
+    ).toBe(false);
+
+    jest.useRealTimers();
+  });
+
   it('calculates fixed T+24h and T+48h averages with ERR48 from subscribers', () => {
     const runtime = new AdminChannelStatsRuntime({} as never);
     const now = new Date('2026-06-30T12:00:00.000Z');
