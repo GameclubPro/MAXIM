@@ -121,7 +121,7 @@ import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import { describeVkParsingCapability } from '../lib/vk-parsing-capability';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
-import { getMe } from '../lib/api/root-client';
+import { getMe } from '../lib/api/me-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type {
   BroadcastHandoffPayload,

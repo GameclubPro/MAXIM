@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ManagedEntityAssignedBot } from '@maxim/contracts';
-import { getChats, getMe } from '../src/lib/api/root-client';
+import { getCachedBotDialogUrl, getMe } from '../src/lib/api/me-client';
+import { getChats } from '../src/lib/api/root-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 function createApiStub(response: unknown, calls: string[]): ApiTransport {
@@ -66,6 +67,26 @@ test('getMe parses the current admin profile from /me', async () => {
     canAccessSystem: true,
   });
   assert.deepEqual(calls, ['/me']);
+  assert.equal(getCachedBotDialogUrl(api), 'https://max.ru/777000_bot');
+});
+
+test('getMe keeps the last validated bot dialog URL scoped to its transport', async () => {
+  const api = createApiStub(
+    {
+      userId: 'admin-1',
+      botDialogUrl: 'https://max.ru/777000_bot',
+    },
+    [],
+  );
+  const otherApi = createApiStub({ userId: 'admin-2', botDialogUrl: null }, []);
+
+  assert.equal(getCachedBotDialogUrl(api), null);
+  assert.equal(getCachedBotDialogUrl(otherApi), null);
+  await getMe(api);
+  await getMe(otherApi);
+
+  assert.equal(getCachedBotDialogUrl(api), 'https://max.ru/777000_bot');
+  assert.equal(getCachedBotDialogUrl(otherApi), null);
 });
 
 test('getMe rejects bot dialog handoffs outside the strict MAX bot URL shape', async () => {

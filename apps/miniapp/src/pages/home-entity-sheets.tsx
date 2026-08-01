@@ -1,4 +1,11 @@
-import { useRef, type CSSProperties, type ReactNode, type SVGProps } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type SVGProps,
+} from 'react';
 import { createPortal } from 'react-dom';
 import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
 import {
@@ -8,6 +15,10 @@ import {
   SettingsGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
+import { useToast } from '../components/ui/toast';
+import { getCachedBotDialogUrl, getMe } from '../lib/api/me-client';
+import type { ApiTransport } from '../lib/api/transport';
+import { createBotDialogHandoffCoordinator } from '../lib/bot-dialog-handoff';
 import { cn } from '../lib/cn';
 import { useDialogFocusTrap } from '../lib/dialog-focus';
 import {
@@ -16,6 +27,7 @@ import {
   HOME_ENTITY_FAVORITE_TYPES,
   type HomeEntityFavoriteLabelOverrides,
 } from '../lib/home-entity-favorites';
+import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 
 type ManagedTab = 'chat' | 'channel';
@@ -27,6 +39,7 @@ type FavoriteLabelDraft = Record<ManagedEntityFavoriteType, string>;
 type FavoriteFilter = ManagedEntityFavoriteType | 'all';
 
 type HomeEntitySheetsProps = {
+  api: ApiTransport;
   connectOpen: boolean;
   favoriteTarget: SheetTarget | null;
   filterPickerOpen: boolean;
@@ -39,9 +52,7 @@ type HomeEntitySheetsProps = {
   selectedFavoriteTypes: ManagedEntityFavoriteType[];
   favoriteSaving: boolean;
   canSaveLabels: boolean;
-  returnToBotPending: boolean;
   onClose: () => void;
-  onReturnToBot: () => void;
   onFilterChange: (filter: FavoriteFilter) => void;
   onOpenLabelsEditor: () => void;
   onToggleFavorite: (favoriteType: ManagedEntityFavoriteType) => void;
@@ -133,48 +144,134 @@ function HomeSheet({
   );
 }
 
+function HomeConnectSheet({
+  api,
+  overlayStyle,
+  onClose,
+}: {
+  api: ApiTransport;
+  overlayStyle: CSSProperties | undefined;
+  onClose: () => void;
+}) {
+  const { pushToast } = useToast();
+  const [coordinator] = useState(createBotDialogHandoffCoordinator);
+  const [pending, setPending] = useState(false);
+  const botDialogUrlRef = useRef(getCachedBotDialogUrl(api));
+
+  useEffect(() => {
+    const cachedUrl = getCachedBotDialogUrl(api);
+    if (cachedUrl) {
+      botDialogUrlRef.current = cachedUrl;
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    void getMe(api, { signal: controller.signal })
+      .then((me) => {
+        if (!controller.signal.aborted) {
+          botDialogUrlRef.current = me.botDialogUrl;
+        }
+      })
+      .catch(() => undefined);
+
+    return () => controller.abort();
+  }, [api]);
+
+  useEffect(
+    () => () => {
+      coordinator.cancel();
+    },
+    [coordinator],
+  );
+
+  function closeSheet() {
+    coordinator.cancel();
+    setPending(false);
+    onClose();
+  }
+
+  async function returnToBot() {
+    setPending(true);
+    const outcome = await coordinator.run(async (signal) => {
+      const cachedUrl = botDialogUrlRef.current ?? getCachedBotDialogUrl(api);
+      if (cachedUrl) {
+        botDialogUrlRef.current = cachedUrl;
+        return cachedUrl;
+      }
+      const me = await getMe(api, { signal });
+      if (signal.aborted) {
+        return null;
+      }
+      botDialogUrlRef.current = me.botDialogUrl;
+      return me.botDialogUrl;
+    }, openMaxBotLinkAndClose);
+
+    if (outcome === 'busy' || outcome === 'opened') {
+      return;
+    }
+
+    setPending(false);
+    if (outcome === 'failed') {
+      pushToast({
+        title: 'Не удалось открыть диалог',
+        description: 'Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+    }
+  }
+
+  return (
+    <HomeSheet
+      sheetKey="connect"
+      title="Подключить чат или канал"
+      panelClassName="home-connect__panel"
+      overlayStyle={overlayStyle}
+      onClose={closeSheet}
+    >
+      <ol className="home-connect__steps" role="list">
+        <li>
+          <span aria-label="Шаг 1">1</span>
+          <div>
+            <strong>Добавьте бота в администраторы</strong>
+            <small>Включите доступ ко всем сообщениям.</small>
+          </div>
+        </li>
+        <li>
+          <span aria-label="Шаг 2">2</span>
+          <div>
+            <strong>Перешлите боту любое сообщение или пост</strong>
+            <small>Из нужного чата или канала в личный диалог с ботом.</small>
+          </div>
+        </li>
+      </ol>
+      <div className="home-connect__handoff">
+        <p>Бот проверит права и добавит чат или канал.</p>
+        <button
+          type="button"
+          className="button button--accent"
+          onClick={() => void returnToBot()}
+          disabled={pending}
+        >
+          <SendGlyph aria-hidden focusable="false" />
+          {pending ? 'Открываем...' : 'Открыть диалог с ботом'}
+        </button>
+      </div>
+    </HomeSheet>
+  );
+}
+
 export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
   const overlayStyle = useVisualViewportOverlayStyle(true);
 
   if (props.connectOpen) {
     return (
-      <HomeSheet
+      <HomeConnectSheet
         key="connect"
-        sheetKey="connect"
-        title="Подключить чат или канал"
-        panelClassName="home-connect__panel"
+        api={props.api}
         overlayStyle={overlayStyle}
         onClose={props.onClose}
-      >
-        <ol className="home-connect__steps" role="list">
-          <li>
-            <span aria-label="Шаг 1">1</span>
-            <div>
-              <strong>Добавьте бота в администраторы</strong>
-              <small>Включите доступ ко всем сообщениям.</small>
-            </div>
-          </li>
-          <li>
-            <span aria-label="Шаг 2">2</span>
-            <div>
-              <strong>Перешлите боту любое сообщение или пост</strong>
-              <small>Из нужного чата или канала в личный диалог с ботом.</small>
-            </div>
-          </li>
-        </ol>
-        <div className="home-connect__handoff">
-          <p>Бот проверит права и добавит чат или канал.</p>
-          <button
-            type="button"
-            className="button button--accent"
-            onClick={props.onReturnToBot}
-            disabled={props.returnToBotPending}
-          >
-            <SendGlyph aria-hidden focusable="false" />
-            {props.returnToBotPending ? 'Открываем...' : 'Открыть диалог с ботом'}
-          </button>
-        </div>
-      </HomeSheet>
+      />
     );
   }
 

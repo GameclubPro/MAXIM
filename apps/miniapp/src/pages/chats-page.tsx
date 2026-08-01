@@ -31,9 +31,7 @@ import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { describeApiError } from '../lib/api-error';
-import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
-import { createBotDialogHandoffCoordinator } from '../lib/bot-dialog-handoff';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
 import {
@@ -63,7 +61,6 @@ import {
   toggleHomeEntityFavoriteType,
 } from '../lib/home-entity-favorites';
 import { getInitDataUserId } from '../lib/init-data';
-import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import {
   buildHomeView,
   normalizeEntityType,
@@ -251,9 +248,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
-  const [botDialogUrl, setBotDialogUrl] = useState<string | null>(null);
-  const [openingBotDialog, setOpeningBotDialog] = useState(false);
-  const botDialogHandoffRef = useRef(createBotDialogHandoffCoordinator());
   const homeRootRef = useRef<HTMLDivElement | null>(null);
   const virtualListViewportRef = useRef<HTMLElement | null>(null);
   const homeOverlayTriggerRef = useRef<HTMLElement | null>(null);
@@ -694,7 +688,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     document.body.classList.add('chats-home-page-open');
 
     return () => {
-      botDialogHandoffRef.current.cancel();
       document.body.classList.remove('chats-home-page-open');
     };
   }, []);
@@ -882,11 +875,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     const controller = new AbortController();
 
-    void getMe(api, { signal: controller.signal })
+    void import('../lib/api/me-client')
+      .then(({ getMe }) => getMe(api, { signal: controller.signal }))
       .then((me) => {
         if (!controller.signal.aborted) {
           setCurrentUserId(me.userId);
-          setBotDialogUrl(me.botDialogUrl);
         }
       })
       .catch(() => undefined);
@@ -968,7 +961,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }
 
   function closeHomeEntitySheet() {
-    botDialogHandoffRef.current.cancel();
     if (favoriteLabelsEditorOpen) {
       setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
     }
@@ -976,7 +968,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     setFavoriteFilterPickerOpen(false);
     setFavoritePicker(null);
     setConnectSheetOpen(false);
-    setOpeningBotDialog(false);
   }
 
   async function openConnectSheet(trigger: HTMLElement) {
@@ -998,33 +989,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     setFavoriteFilterPickerOpen(false);
     setFavoritePicker(null);
     setConnectSheetOpen(true);
-  }
-
-  async function returnToBot() {
-    setOpeningBotDialog(true);
-    const outcome = await botDialogHandoffRef.current.run(async (signal) => {
-      if (botDialogUrl) {
-        return botDialogUrl;
-      }
-      const me = await getMe(api, { signal });
-      if (signal.aborted) {
-        return null;
-      }
-      setCurrentUserId(me.userId);
-      setBotDialogUrl(me.botDialogUrl);
-      return me.botDialogUrl;
-    }, openMaxBotLinkAndClose);
-
-    if (outcome === 'failed') {
-      setOpeningBotDialog(false);
-      pushToast({
-        title: 'Не удалось открыть диалог',
-        description: 'Попробуйте ещё раз.',
-        tone: 'danger',
-      });
-    } else if (outcome === 'cancelled') {
-      setOpeningBotDialog(false);
-    }
   }
 
   function updateFavoriteLabelDraft(favoriteType: ManagedEntityFavoriteType, value: string) {
@@ -1348,6 +1312,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {homeOverlayOpen ? (
         <Suspense fallback={null}>
           <LazyHomeEntitySheets
+            api={api}
             connectOpen={connectSheetOpen}
             favoriteTarget={favoritePicker}
             filterPickerOpen={favoriteFilterPickerOpen}
@@ -1360,9 +1325,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             selectedFavoriteTypes={selectedSheetFavoriteTypes}
             favoriteSaving={sheetFavoriteSaving}
             canSaveLabels={canSaveFavoriteLabels}
-            returnToBotPending={openingBotDialog}
             onClose={closeHomeEntitySheet}
-            onReturnToBot={() => void returnToBot()}
             onFilterChange={(nextFilter) => {
               setFavoriteFilter(nextFilter);
               setFavoriteFilterPickerOpen(false);

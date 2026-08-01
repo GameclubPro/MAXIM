@@ -16,6 +16,10 @@ const sheetsSource = readFileSync(
   new URL('../src/pages/home-entity-sheets.tsx', import.meta.url),
   'utf8',
 );
+const rootClientSource = readFileSync(
+  new URL('../src/lib/api/root-client.ts', import.meta.url),
+  'utf8',
+);
 const onboardingSource = readFileSync(
   new URL('../src/components/chat-onboarding-section.tsx', import.meta.url),
   'utf8',
@@ -101,11 +105,14 @@ test('home connection flow is always available and opens the signed launch bot d
     chatsPageSource,
     /className="chats-command__connect"[\s\S]*?aria-controls="home-sheet-connect"[\s\S]*?<span>Подключить<\/span>/u,
   );
-  assert.match(chatsPageSource, /setBotDialogUrl\(me\.botDialogUrl\)/u);
-  assert.match(
-    chatsPageSource,
-    /botDialogHandoffRef\.current\.run\([\s\S]*?openMaxBotLinkAndClose/u,
-  );
+  assert.doesNotMatch(chatsPageSource, /botDialogUrl|setBotDialogUrl/u);
+  assert.match(chatsPageSource, /import\('\.\.\/lib\/api\/me-client'\)/u);
+  assert.doesNotMatch(chatsPageSource, /from '\.\.\/lib\/api\/me-client'/u);
+  assert.doesNotMatch(rootClientSource, /\bgetMe\b|\bparseMe\b|botDialogUrl/u);
+  assert.match(sheetsSource, /from '\.\.\/lib\/api\/me-client'/u);
+  assert.match(sheetsSource, /getMe\(api,[\s\S]*?botDialogUrlRef\.current = me\.botDialogUrl/u);
+  assert.match(sheetsSource, /coordinator\.run\([\s\S]*?openMaxBotLinkAndClose/u);
+  assert.doesNotMatch(chatsPageSource, /createBotDialogHandoffCoordinator|openMaxBotLinkAndClose/u);
   assert.match(chatsPageSource, /if \(showEmptyState\) \{[\s\S]*?preloadHomeEntitySheets\(\)/u);
   assert.match(chatsPageSource, /if \(connectSheetOpen\) \{[\s\S]*?closeHomeEntitySheet\(\)/u);
   assert.match(sheetsSource, /sheetKey="connect"[\s\S]*?title="Подключить чат или канал"/u);
