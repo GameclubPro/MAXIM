@@ -752,6 +752,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
       profileUrl: buildPreviewProfileUrl('designer'),
       profileHandoffUrl: buildPreviewProfileHandoffUrl('preview-admin'),
+      botDialogUrl: 'https://max.ru/maxim-bot',
       canAccessSystem: true,
     },
     systemModeSelection: 'auto',

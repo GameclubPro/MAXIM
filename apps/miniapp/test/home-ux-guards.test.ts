@@ -76,7 +76,7 @@ test('compact home controls keep direct 44px actions and one filter control', ()
   assert.match(chatsPageNativeCss, /\.chat-card__action \{[\s\S]*?min-width: 44px/u);
   assert.match(
     chatsPageNativeCss,
-    /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) repeat\(2, 44px\)/u,
+    /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto repeat\(2, 44px\)/u,
   );
   assert.match(chatsPageNativeCss, /\.chat-card__category span \{[\s\S]*?text-overflow: ellipsis/u);
   assert.match(
@@ -94,6 +94,36 @@ test('compact home controls keep direct 44px actions and one filter control', ()
     chatsPageNativeCss,
     /\.favorite-picker__header span \{[\s\S]*?color: var\(--home-muted\);/u,
   );
+});
+
+test('home connection flow is always available and opens the signed launch bot dialog', () => {
+  assert.match(
+    chatsPageSource,
+    /className="chats-command__connect"[\s\S]*?aria-controls="home-sheet-connect"[\s\S]*?<span>Подключить<\/span>/u,
+  );
+  assert.match(chatsPageSource, /setBotDialogUrl\(me\.botDialogUrl\)/u);
+  assert.match(
+    chatsPageSource,
+    /botDialogHandoffRef\.current\.run\([\s\S]*?openMaxBotLinkAndClose/u,
+  );
+  assert.match(chatsPageSource, /if \(showEmptyState\) \{[\s\S]*?preloadHomeEntitySheets\(\)/u);
+  assert.match(chatsPageSource, /if \(connectSheetOpen\) \{[\s\S]*?closeHomeEntitySheet\(\)/u);
+  assert.match(sheetsSource, /sheetKey="connect"[\s\S]*?title="Подключить чат или канал"/u);
+  assert.match(sheetsSource, /Добавьте бота в администраторы/u);
+  assert.match(sheetsSource, /Включите доступ ко всем сообщениям/u);
+  assert.match(sheetsSource, /Перешлите боту любое сообщение или пост/u);
+  assert.match(sheetsSource, /Бот проверит права и добавит чат или канал/u);
+  assert.doesNotMatch(sheetsSource, /Три коротких шага|Mini app закроется/u);
+  assert.match(sheetsSource, /Открыть диалог с ботом/u);
+  assert.match(sheetsSource, /<ol className="home-connect__steps" role="list">/u);
+  assert.match(sheetsSource, /aria-label="Шаг 1"/u);
+  assert.match(sheetsSource, /aria-label="Шаг 2"/u);
+  assert.match(chatsPageNativeCss, /\.chats-command__connect \{[\s\S]*?color: var\(--home-ink\);/u);
+  assert.match(
+    chatsPageNativeCss,
+    /\.home-connect__steps li > span \{[\s\S]*?color: var\(--home-ink\);/u,
+  );
+  assert.doesNotMatch(chatsPageSource, /closeMaxMiniApp/u);
 });
 
 test('home list keeps grouped rows at wide breakpoints', () => {
@@ -143,15 +173,23 @@ test('home reports favorite persistence failures through the shared toast', () =
   );
 });
 
-test('empty onboarding keeps the refresh action before optional detailed instructions', () => {
+test('empty onboarding promotes the shared connection flow before refresh', () => {
+  const connectIndex = onboardingSource.indexOf('onboarding-connect');
   const refreshIndex = onboardingSource.indexOf('onboarding-refresh');
-  const instructionsIndex = onboardingSource.indexOf('onboarding-instructions');
   const cards = onboardingSource.match(/<GlassCard\b/gu) ?? [];
 
+  assert.ok(connectIndex >= 0);
   assert.ok(refreshIndex >= 0);
-  assert.ok(instructionsIndex > refreshIndex);
+  assert.ok(connectIndex < refreshIndex);
   assert.equal(cards.length, 1);
-  assert.match(onboardingSource, /<summary>Показать инструкцию<\/summary>/u);
+  assert.match(onboardingSource, /aria-controls="home-sheet-connect"/u);
+  assert.match(onboardingSource, /Подключить чат или канал/u);
+  assert.match(onboardingSource, /onConnect\(event\.currentTarget\)/u);
+  assert.match(onboardingSource, /<RefreshGlyph[\s\S]*?Обновить/u);
+  assert.doesNotMatch(
+    onboardingSource,
+    /<details\b|Показать инструкцию|слово «Старт»|onboarding-diagnostics|recentSignals/u,
+  );
   assert.match(chatsPageSource, /isRefreshBlocked=\{isManualRefreshBlocked\}/u);
-  assert.match(onboardingSource, /isRefreshBlocked && refreshLabel/u);
+  assert.doesNotMatch(onboardingSource, /refreshLabel|getManagedEntityOnboardingDiagnostics/u);
 });

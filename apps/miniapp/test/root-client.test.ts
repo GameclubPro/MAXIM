@@ -47,6 +47,7 @@ test('getMe parses the current admin profile from /me', async () => {
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer',
       profileHandoffUrl: 'https://max.ru/777000_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
+      botDialogUrl: 'https://max.ru/777000_bot',
       canAccessSystem: true,
     },
     calls,
@@ -61,9 +62,35 @@ test('getMe parses the current admin profile from /me', async () => {
     avatarUrl: 'https://cdn.max/avatar.png',
     profileUrl: 'https://max.ru/designer',
     profileHandoffUrl: 'https://max.ru/777000_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
+    botDialogUrl: 'https://max.ru/777000_bot',
     canAccessSystem: true,
   });
   assert.deepEqual(calls, ['/me']);
+});
+
+test('getMe rejects bot dialog handoffs outside the strict MAX bot URL shape', async () => {
+  const invalidUrls = [
+    'https://example.com/777000_bot',
+    'https://max.ru/777000_bot/extra',
+    'https://max.ru/777000_bot?start=payload',
+    'https://max.ru/777000_bot#fragment',
+    'https://max.ru/',
+  ];
+
+  for (const botDialogUrl of invalidUrls) {
+    const me = await getMe(
+      createApiStub(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          botDialogUrl,
+        },
+        [],
+      ),
+    );
+    assert.equal(me.botDialogUrl, null, botDialogUrl);
+  }
 });
 
 test('getChats keeps refresh progress counters from the API response', async () => {

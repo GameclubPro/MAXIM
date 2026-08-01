@@ -1,4 +1,5 @@
 import { WebhookParser } from './webhook.parser';
+import { extractManagedEntityForwardedRecoveryCandidate } from '../common/managed-entity-forwarded-recovery.util';
 
 describe('WebhookParser', () => {
   const parser = new WebhookParser();
@@ -848,6 +849,71 @@ describe('WebhookParser', () => {
     expect(parsed.message?.chatId).toBe('-71527833503751');
     expect(parsed.message?.senderId).toBe('195714583');
     expect(parsed.message?.text).toContain('Пересланный пост из другого канала');
+  });
+
+  it('normalizes an official pure forward with null body for durable recovery', () => {
+    const payload = {
+      update_type: 'message_created',
+      timestamp: 1_785_541_200,
+      message: {
+        sender: {
+          user_id: 195_714_583,
+          name: 'Администратор',
+        },
+        recipient: {
+          chat_id: 195_714_583,
+          chat_type: 'dialog',
+        },
+        body: null,
+        link: {
+          type: 'forward',
+          chat_id: -71_527_833_503_751,
+          message: {
+            mid: 'source-mid-1',
+            seq: 42,
+            text: 'Пересланный пост',
+            attachments: [],
+          },
+        },
+      },
+    };
+    const parsed = parser.parse(payload, { botId: 'launch-bot' });
+    const repeated = parser.parse(payload, { botId: 'launch-bot' });
+
+    expect(parsed.message).toEqual(
+      expect.objectContaining({
+        messageId: `message_created:${parsed.updateId}`,
+        chatId: '195714583',
+        senderId: '195714583',
+      }),
+    );
+    expect(repeated.updateId).toBe(parsed.updateId);
+    expect(repeated.message?.messageId).toBe(parsed.message?.messageId);
+    expect(extractManagedEntityForwardedRecoveryCandidate(parsed)).toEqual({
+      privateChatId: '195714583',
+      sourceChatId: '-71527833503751',
+      forwarderUserId: '195714583',
+      incomingMessageId: `message_created:${parsed.updateId}`,
+      sourceMessageId: 'source-mid-1',
+    });
+  });
+
+  it('does not synthesize a message id for an incomplete pure-forward link', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      timestamp: 1_785_541_200,
+      message: {
+        sender: { user_id: 195_714_583 },
+        recipient: { chat_id: 195_714_583, chat_type: 'dialog' },
+        body: null,
+        link: {
+          type: 'forward',
+          message: { mid: 'source-mid-without-chat' },
+        },
+      },
+    });
+
+    expect(parsed.message).toBeUndefined();
   });
 
   it('keeps service join message when sender id is missing', () => {

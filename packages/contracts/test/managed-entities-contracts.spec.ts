@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   chatSummarySchema as rootChatSummarySchema,
   managedEntityHeaderSchema as rootManagedEntityHeaderSchema,
+  meSchema,
   updateManagedEntityFavoritesRequestSchema as rootUpdateManagedEntityFavoritesRequestSchema,
 } from '@maxim/contracts';
 import {
@@ -26,6 +27,24 @@ describe('managed entities contract exports', () => {
     });
 
     expect(result.favoriteTypes).toEqual(['broadcast', 'important', 'service']);
+  });
+
+  it('defaults the bot dialog handoff url without weakening URL validation', () => {
+    expect(
+      meSchema.parse({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+      }).botDialogUrl,
+    ).toBeNull();
+    expect(() =>
+      meSchema.parse({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        botDialogUrl: 'javascript:alert(1)',
+      }),
+    ).toThrow();
   });
 
   it('keeps access-loss diagnostics public and strips private bot internals', () => {

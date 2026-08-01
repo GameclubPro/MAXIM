@@ -7,6 +7,7 @@ import type {
   MaxUpdate,
 } from '@maxim/contracts';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entity-forwarded-recovery.util';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { AdminService } from '../admin/admin.service';
 import { AdminSettingsService } from '../admin/admin-settings.service';
@@ -16,6 +17,7 @@ import { ManualModerationService } from '../admin/manual-moderation.service';
 import { SupportRequestsService } from '../admin/support-requests.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxClientService } from '../max/max-client.service';
+import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisCounterService } from './redis-counter.service';
 import { PrivateControlService as LegacyPrivateControlService } from './private-control.service.legacy';
@@ -35,6 +37,8 @@ export class PrivateControlService extends LegacyPrivateControlService {
     @Optional() adminDialogLinkService?: AdminDialogLinkService,
     @Optional() supportRequestsService?: SupportRequestsService,
     @Optional() prisma?: PrismaService,
+    @Optional()
+    private readonly managedEntityHandshakeService?: ManagedEntityHandshakeService,
   ) {
     super(
       maxClient,
@@ -53,6 +57,12 @@ export class PrivateControlService extends LegacyPrivateControlService {
   }
 
   override handleUpdate(update: MaxUpdate): Promise<void> {
+    if (isManagedEntityForwardedRecoveryMessage(update)) {
+      return this.managedEntityHandshakeService
+        ? this.managedEntityHandshakeService.handleWebhookUpdate(update).then(() => undefined)
+        : Promise.resolve();
+    }
+
     return this.runWithUpdateSessionBot(update, () => super.handleUpdate(update));
   }
 

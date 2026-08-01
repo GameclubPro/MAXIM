@@ -137,6 +137,7 @@ export class ManagedEntitiesService {
   private readonly logger = new Logger(ManagedEntitiesService.name);
   private readonly dialogLinkHelper: AdminDialogLinkHelper;
   private readonly systemAccessConfig: SystemAccessConfig;
+  private readonly fallbackBotDialogId: string | null;
 
   constructor(
     @Inject(MANAGED_ENTITIES_LEGACY_PORT)
@@ -170,6 +171,9 @@ export class ManagedEntitiesService {
       maxBotLinkService: this.maxBotLinkService,
       maxBotRegistry: this.maxBotRegistry,
     });
+    this.fallbackBotDialogId =
+      normalizeOwnBotUserId(configService.get<string>('MAX_ENTRY_BOT_ID')) ??
+      normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
     this.systemAccessConfig = readSystemAccessConfig(configService);
   }
 
@@ -206,6 +210,7 @@ export class ManagedEntitiesService {
             profileHandoffBotId,
           )
         : null,
+      botDialogUrl: this.buildBotDialogUrl(user.launchBotId),
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
     };
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
@@ -248,6 +253,7 @@ export class ManagedEntitiesService {
           displayName ?? username,
           profileHandoffBotId,
         ),
+        botDialogUrl: fallback.botDialogUrl,
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
       };
     } catch (error: unknown) {
@@ -272,6 +278,19 @@ export class ManagedEntitiesService {
       );
       return fallback;
     }
+  }
+
+  private buildBotDialogUrl(launchBotId: string | null | undefined): string | null {
+    const normalizedLaunchBotId = normalizeOwnBotUserId(launchBotId ?? undefined);
+    if (this.maxBotLinkService) {
+      return (
+        this.maxBotLinkService.buildInitDataBotUrlSync(normalizedLaunchBotId) ??
+        this.maxBotLinkService.buildBotUrlSync()
+      );
+    }
+
+    const botId = normalizedLaunchBotId ?? this.fallbackBotDialogId;
+    return botId ? `https://max.ru/${encodeURIComponent(botId)}` : null;
   }
 
   private isCurrentAdminProfileEnrichmentUnavailableError(error: unknown): boolean {

@@ -15,6 +15,7 @@ import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 import {
+  canAuthenticateInitDataForBotState,
   canDiscoverChatsForBotState,
   canExecuteActionsForBotState,
   isOperationalBotState,
@@ -285,6 +286,17 @@ export class MaxBotLinkService {
 
   getContextOrDefaultBotId(): string {
     return this.resolveExecutableBotId(this.botContext.getActiveBotId()) ?? this.getEntryBotId();
+  }
+
+  buildBotUrlSync(botId?: string | null): string {
+    return `https://max.ru/${encodeURIComponent(this.resolveBotIdSync(botId))}`;
+  }
+
+  buildInitDataBotUrlSync(botId: string | null | undefined): string | null {
+    const bot = this.botRegistry.getBotById(botId);
+    return bot && canAuthenticateInitDataForBotState(bot.state)
+      ? `https://max.ru/${encodeURIComponent(bot.id)}`
+      : null;
   }
 
   getResolvedBotSync(botId?: string | null): MaxBotDefinition {

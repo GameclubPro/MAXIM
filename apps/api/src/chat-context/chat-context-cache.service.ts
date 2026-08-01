@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ChatSettings } from '../prisma/prisma-client';
 import Redis from 'ioredis';
 import {
@@ -36,6 +37,10 @@ export type ManagedEntitiesPublishedSnapshot = {
   itemsHash: string;
   items: ChatSummary[];
 };
+export type ManagedEntityPublishedSnapshotUpsert = Omit<ChatSummary, 'link' | 'avatarUrl'> & {
+  link?: ChatSummary['link'];
+  avatarUrl?: ChatSummary['avatarUrl'];
+};
 export type ManagedEntitiesPublishedDiff = {
   baseVersion: string;
   nextVersion: string;
@@ -55,6 +60,32 @@ type LocalChatContextCacheEntry = {
 
 const CHAT_CONTEXT_INVALIDATION_CHANNEL = 'chat:context:invalidate:v1';
 
+// Keep both tabs consistent without decoding snapshot JSON in Redis. Redis 7 lua-cjson encodes an
+// empty JSON array as an object after a decode/encode round trip, so the snapshots stay opaque.
+const UPSERT_MANAGED_ENTITY_PUBLISHED_SNAPSHOT_CAS_SCRIPT = `
+local function matches(actual, expected_exists, expected)
+  if expected_exists == '1' then
+    return actual == expected
+  end
+  return actual == false
+end
+
+local current = redis.call('GET', KEYS[1])
+local opposite = redis.call('GET', KEYS[2])
+if not matches(current, ARGV[1], ARGV[2]) or
+   not matches(opposite, ARGV[3], ARGV[4]) then
+  return 0
+end
+
+redis.call('SET', KEYS[1], ARGV[5], 'EX', ARGV[8])
+if ARGV[6] == 'set' then
+  redis.call('SET', KEYS[2], ARGV[7], 'EX', ARGV[8])
+elseif ARGV[6] == 'delete' then
+  redis.call('DEL', KEYS[2])
+end
+return 1
+`;
+
 @Injectable()
 export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
@@ -71,6 +102,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS = 500;
   private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_ITEMS = 100;
   private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS = 64;
+  private static readonly MANAGED_ENTITY_PUBLISHED_SNAPSHOT_CAS_MAX_ATTEMPTS = 16;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
   private readonly subscriber: Redis;
@@ -818,6 +850,139 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       'EX',
       ttlSec,
     );
+  }
+
+  async upsertManagedEntityPublishedSnapshot(
+    userId: string,
+    summary: ManagedEntityPublishedSnapshotUpsert & { entityType: ManagedEntityType },
+    ttlSec: number,
+  ): Promise<void> {
+    const normalizedUserId = userId.trim();
+    const normalizedChatId = summary.id.trim();
+    const normalizedTtlSec = Math.trunc(ttlSec);
+    if (!normalizedUserId || !normalizedChatId || normalizedTtlSec <= 0) {
+      return;
+    }
+
+    const oppositeType: ManagedEntityType = summary.entityType === 'channel' ? 'chat' : 'channel';
+    const currentKey = ChatContextCacheService.managedEntitiesPublishedSnapshotKey(
+      normalizedUserId,
+      summary.entityType,
+    );
+    const oppositeKey = ChatContextCacheService.managedEntitiesPublishedSnapshotKey(
+      normalizedUserId,
+      oppositeType,
+    );
+    const builtAt = new Date().toISOString();
+    const versionBase = `handshake:${normalizedChatId}:${randomUUID()}`;
+
+    for (
+      let attempt = 0;
+      attempt < ChatContextCacheService.MANAGED_ENTITY_PUBLISHED_SNAPSHOT_CAS_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const [currentRaw, oppositeRaw] = await this.redis.mget(currentKey, oppositeKey);
+      const currentSnapshot = this.parseManagedEntitiesPublishedSnapshot(currentRaw);
+      const oppositeSnapshot = this.parseManagedEntitiesPublishedSnapshot(oppositeRaw);
+      const current = this.removeManagedEntityFromSnapshot(currentSnapshot, normalizedChatId);
+      const opposite = this.removeManagedEntityFromSnapshot(oppositeSnapshot, normalizedChatId);
+      const previous = current.previous ?? opposite.previous;
+      const nextSummary: ChatSummary = {
+        ...summary,
+        id: normalizedChatId,
+        link: summary.link === undefined ? (previous?.link ?? null) : summary.link,
+      };
+      if (summary.avatarUrl === undefined && previous?.avatarUrl !== undefined) {
+        nextSummary.avatarUrl = previous.avatarUrl;
+      }
+
+      const nextCurrent = this.buildManagedEntitiesPublishedSnapshot(
+        currentSnapshot,
+        [nextSummary, ...current.items],
+        `${versionBase}:current`,
+        builtAt,
+      );
+      const oppositeAction = opposite.previous
+        ? opposite.items.length > 0
+          ? 'set'
+          : 'delete'
+        : 'keep';
+      const nextOpposite =
+        oppositeAction === 'set'
+          ? this.buildManagedEntitiesPublishedSnapshot(
+              oppositeSnapshot,
+              opposite.items,
+              `${versionBase}:opposite`,
+              builtAt,
+            )
+          : null;
+
+      const committed = await this.redis.eval(
+        UPSERT_MANAGED_ENTITY_PUBLISHED_SNAPSHOT_CAS_SCRIPT,
+        2,
+        currentKey,
+        oppositeKey,
+        currentRaw === null ? '0' : '1',
+        currentRaw ?? '',
+        oppositeRaw === null ? '0' : '1',
+        oppositeRaw ?? '',
+        JSON.stringify(nextCurrent),
+        oppositeAction,
+        nextOpposite ? JSON.stringify(nextOpposite) : '',
+        String(normalizedTtlSec),
+      );
+      if (Number(committed) === 1) {
+        return;
+      }
+    }
+
+    throw new Error('Managed entity published snapshot update conflicted repeatedly');
+  }
+
+  private parseManagedEntitiesPublishedSnapshot(
+    raw: string | null,
+  ): ManagedEntitiesPublishedSnapshot | null {
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return this.isManagedEntitiesPublishedSnapshot(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private removeManagedEntityFromSnapshot(
+    snapshot: ManagedEntitiesPublishedSnapshot | null,
+    chatId: string,
+  ): { items: ChatSummary[]; previous: ChatSummary | null } {
+    let previous: ChatSummary | null = null;
+    const items = (snapshot?.items ?? []).filter((item) => {
+      if (item.id === chatId) {
+        previous = item;
+        return false;
+      }
+      return true;
+    });
+    return { items, previous };
+  }
+
+  private buildManagedEntitiesPublishedSnapshot(
+    previous: ManagedEntitiesPublishedSnapshot | null,
+    items: ChatSummary[],
+    version: string,
+    builtAt: string,
+  ): ManagedEntitiesPublishedSnapshot {
+    const lastSyncedAt = previous?.lastSyncedAt ?? null;
+    return {
+      version,
+      builtAt,
+      lastSyncedAt,
+      itemCount: items.length,
+      itemsHash: createHash('sha256').update(JSON.stringify({ lastSyncedAt, items })).digest('hex'),
+      items,
+    };
   }
 
   async clearManagedEntitiesPublishedSnapshot(

@@ -23,6 +23,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function parseBotDialogUrl(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(value.trim());
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname !== 'max.ru' ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      !/^\/[^/?#\s/]+$/u.test(parsed.pathname) ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 function parseChannelOverview(value: unknown): ChatSummary['channelOverview'] {
   if (value === null || value === undefined) {
     return null;
@@ -208,6 +233,7 @@ function parseMe(value: unknown): Me {
     avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : null,
     profileUrl: typeof value.profileUrl === 'string' ? value.profileUrl : null,
     profileHandoffUrl: typeof value.profileHandoffUrl === 'string' ? value.profileHandoffUrl : null,
+    botDialogUrl: parseBotDialogUrl(value.botDialogUrl),
     ...(value.canAccessSystem === true ? { canAccessSystem: true } : {}),
   };
 }

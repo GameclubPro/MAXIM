@@ -1516,6 +1516,12 @@ export type ApplySectionTargetPreviewResponse = z.infer<
   typeof applySectionTargetPreviewResponseSchema
 >;
 
+const botDialogUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .regex(/^https:\/\/max\.ru\/[^/?#\s]+$/u);
+
 export const meSchema = z.object({
   userId: z.string(),
   username: z.string().nullable(),
@@ -1523,6 +1529,7 @@ export const meSchema = z.object({
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
   profileHandoffUrl: z.string().trim().url().nullable().default(null),
+  botDialogUrl: botDialogUrlSchema.nullable().default(null),
   canAccessSystem: z.boolean().optional(),
 });
 export type Me = z.infer<typeof meSchema>;

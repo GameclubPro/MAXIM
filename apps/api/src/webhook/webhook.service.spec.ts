@@ -547,6 +547,69 @@ describe('WebhookService', () => {
     expect(handshake.handleWebhookUpdate).toHaveBeenCalledWith(update);
   });
 
+  it('leaves forwarded recovery to the durable webhook worker', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-forwarded-recovery' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(0),
+    };
+    const handshake = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      handshake as never,
+    );
+    const update: MaxUpdate = {
+      updateId: 'u-forwarded-recovery-worker-1',
+      botId: 'bot-1',
+      type: 'message_created',
+      message: {
+        messageId: 'm-forwarded-recovery-worker-1',
+        chatId: '152517912',
+        senderId: '195714583',
+        text: 'Исходная публикация',
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      raw: {
+        update_type: 'message_created',
+        message: {
+          sender: { user_id: 195714583 },
+          recipient: { chat_id: 152517912, chat_type: 'dialog' },
+          body: {
+            mid: 'm-forwarded-recovery-worker-1',
+            seq: 1,
+            text: null,
+            attachments: null,
+          },
+          link: {
+            type: 'forward',
+            chat_id: -70000000000001,
+            message: { mid: 'mid-forwarded-source-worker-1' },
+          },
+        },
+      },
+    };
+
+    await expect(service.ingest(update, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(handshake.handleWebhookUpdate).not.toHaveBeenCalled();
+  });
+
   it('stages a user-scoped managed entity bootstrap for Старт messages before deferred handshake completes', async () => {
     const prisma = {
       webhookEvent: {

@@ -4,6 +4,7 @@ import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
 import {
   FilterGlyph,
   HOME_ENTITY_FAVORITE_ICONS,
+  SendGlyph,
   SettingsGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
@@ -26,6 +27,7 @@ type FavoriteLabelDraft = Record<ManagedEntityFavoriteType, string>;
 type FavoriteFilter = ManagedEntityFavoriteType | 'all';
 
 type HomeEntitySheetsProps = {
+  connectOpen: boolean;
   favoriteTarget: SheetTarget | null;
   filterPickerOpen: boolean;
   filterValue: FavoriteFilter;
@@ -37,7 +39,9 @@ type HomeEntitySheetsProps = {
   selectedFavoriteTypes: ManagedEntityFavoriteType[];
   favoriteSaving: boolean;
   canSaveLabels: boolean;
+  returnToBotPending: boolean;
   onClose: () => void;
+  onReturnToBot: () => void;
   onFilterChange: (filter: FavoriteFilter) => void;
   onOpenLabelsEditor: () => void;
   onToggleFavorite: (favoriteType: ManagedEntityFavoriteType) => void;
@@ -131,6 +135,48 @@ function HomeSheet({
 
 export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
   const overlayStyle = useVisualViewportOverlayStyle(true);
+
+  if (props.connectOpen) {
+    return (
+      <HomeSheet
+        key="connect"
+        sheetKey="connect"
+        title="Подключить чат или канал"
+        panelClassName="home-connect__panel"
+        overlayStyle={overlayStyle}
+        onClose={props.onClose}
+      >
+        <ol className="home-connect__steps" role="list">
+          <li>
+            <span aria-label="Шаг 1">1</span>
+            <div>
+              <strong>Добавьте бота в администраторы</strong>
+              <small>Включите доступ ко всем сообщениям.</small>
+            </div>
+          </li>
+          <li>
+            <span aria-label="Шаг 2">2</span>
+            <div>
+              <strong>Перешлите боту любое сообщение или пост</strong>
+              <small>Из нужного чата или канала в личный диалог с ботом.</small>
+            </div>
+          </li>
+        </ol>
+        <div className="home-connect__handoff">
+          <p>Бот проверит права и добавит чат или канал.</p>
+          <button
+            type="button"
+            className="button button--accent"
+            onClick={props.onReturnToBot}
+            disabled={props.returnToBotPending}
+          >
+            <SendGlyph aria-hidden focusable="false" />
+            {props.returnToBotPending ? 'Открываем...' : 'Открыть диалог с ботом'}
+          </button>
+        </div>
+      </HomeSheet>
+    );
+  }
 
   if (props.labelsEditorOpen) {
     return (

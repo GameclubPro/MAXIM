@@ -16,6 +16,7 @@ import {
   type ChatUserDisplayNameObservation,
 } from '../common/chat-user-display-name-read-model.util';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entity-forwarded-recovery.util';
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
@@ -880,7 +881,7 @@ export class WebhookService {
   }
 
   private deferManagedEntityHandshake(update: MaxUpdate): void {
-    if (!this.managedEntityHandshakeService) {
+    if (!this.managedEntityHandshakeService || isManagedEntityForwardedRecoveryMessage(update)) {
       return;
     }
 

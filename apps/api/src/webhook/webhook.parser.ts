@@ -33,7 +33,10 @@ export class WebhookParser {
     const membershipInviterId = this.extractMembershipInviterId(membershipPayload, payload);
     const chatEntityType = this.extractChatEntityType(message, payload, membershipPayload);
     const resolvedMessageId =
-      messageId || (this.isSyntheticMessageUpdateType(type) ? `${type}:${updateId}` : '');
+      messageId ||
+      (this.isSyntheticMessageUpdateType(type) || this.isPureForwardMessageCreated(type, message)
+        ? `${type}:${updateId}`
+        : '');
     const resolvedChatId = chatId || membershipChatId;
     const resolvedSenderId = senderId || membershipSenderId;
     const resolvedSenderName = senderName ?? membershipSenderName;
@@ -126,6 +129,29 @@ export class WebhookParser {
       normalized === 'dialog_removed' ||
       normalized === 'message_removed' ||
       normalized === 'chat_title_changed'
+    );
+  }
+
+  private isPureForwardMessageCreated(
+    type: string,
+    message: Record<string, unknown> | undefined,
+  ): boolean {
+    if (type.trim().toLowerCase() !== 'message_created' || !message || message.body !== null) {
+      return false;
+    }
+
+    const link = this.asRecord(message.link);
+    const linkedMessage = this.asRecord(link?.message);
+    const linkedChatId = link?.chat_id ?? link?.chatId;
+    const linkedMessageId = linkedMessage?.mid;
+    return (
+      String(link?.type ?? '')
+        .trim()
+        .toLowerCase() === 'forward' &&
+      (typeof linkedChatId === 'string' || typeof linkedChatId === 'number') &&
+      String(linkedChatId).trim().length > 0 &&
+      (typeof linkedMessageId === 'string' || typeof linkedMessageId === 'number') &&
+      String(linkedMessageId).trim().length > 0
     );
   }
 

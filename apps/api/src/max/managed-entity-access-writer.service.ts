@@ -9,7 +9,7 @@ import {
 } from '../prisma/prisma-client';
 import {
   ChatContextCacheService,
-  type ManagedEntitiesPublishedSnapshot,
+  type ManagedEntityPublishedSnapshotUpsert,
 } from '../chat-context/chat-context-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotLinkService } from './max-bot-link.service';
@@ -27,6 +27,8 @@ export type ManagedEntityAccessWriteContext = {
   botId: string;
   senderId: string | null;
   title: string;
+  link?: string | null;
+  avatarUrl?: string | null;
   entityType: ManagedEntityType;
   prismaEntityType: ChatEntityType;
   createdAt: string | null;
@@ -70,6 +72,8 @@ export class ManagedEntityAccessWriter {
           chatId: context.chatId,
           entityType: context.prismaEntityType,
           title: context.title,
+          link: context.link ?? null,
+          avatarUrl: context.avatarUrl ?? null,
           status: 'ACTIVE',
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
           lastSeenAt: now,
@@ -77,6 +81,8 @@ export class ManagedEntityAccessWriter {
         update: {
           entityType: context.prismaEntityType,
           title: context.title,
+          ...(context.link !== undefined ? { link: context.link } : {}),
+          ...(context.avatarUrl !== undefined ? { avatarUrl: context.avatarUrl } : {}),
           status: 'ACTIVE',
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
           lastSeenAt: now,
@@ -256,50 +262,44 @@ export class ManagedEntityAccessWriter {
   async patchUserVisibleState(
     context: ManagedEntityAccessWriteContext & { senderId: string },
   ): Promise<void> {
-    const summary = this.buildChatSummary(context);
-    const existing = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
+    await this.chatContextCache.upsertManagedEntityPublishedSnapshot(
       context.senderId,
-      context.entityType,
-    );
-    const nowIso = new Date().toISOString();
-    const items = [
-      summary,
-      ...(existing?.items ?? []).filter((item) => item.id.trim() !== context.chatId),
-    ];
-    const snapshot: ManagedEntitiesPublishedSnapshot = {
-      version: `handshake:${context.chatId}:${Date.now()}`,
-      builtAt: nowIso,
-      lastSyncedAt: nowIso,
-      itemCount: items.length,
-      itemsHash: this.buildItemsHash(items),
-      items,
-    };
-    await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
-      context.senderId,
-      context.entityType,
-      snapshot,
+      this.buildPublishedSnapshotUpsert(context),
       HANDSHAKE_PUBLISHED_SNAPSHOT_TTL_SEC,
     );
   }
 
+  private buildPublishedSnapshotUpsert(
+    context: ManagedEntityAccessWriteContext,
+  ): ManagedEntityPublishedSnapshotUpsert {
+    return {
+      ...this.buildChatSummaryBase(context),
+      ...(context.link !== undefined ? { link: context.link } : {}),
+      ...(context.avatarUrl !== undefined ? { avatarUrl: context.avatarUrl } : {}),
+    };
+  }
+
   private buildChatSummary(context: ManagedEntityAccessWriteContext): ChatSummary {
+    return {
+      ...this.buildChatSummaryBase(context),
+      link: context.link ?? null,
+      avatarUrl: context.avatarUrl ?? null,
+    };
+  }
+
+  private buildChatSummaryBase(
+    context: ManagedEntityAccessWriteContext,
+  ): Omit<ChatSummary, 'link' | 'avatarUrl'> {
     return {
       id: context.chatId,
       title: context.title,
       createdAt: context.createdAt ?? new Date().toISOString(),
       entityType: context.entityType,
-      link: null,
       primaryBotId: context.botId,
       assignedBots: [],
       sharedMode: 'owned',
       channelOverview: null,
     };
-  }
-
-  private buildItemsHash(items: readonly ChatSummary[]): string {
-    return Buffer.from(JSON.stringify(items.map((item) => [item.entityType, item.id, item.title])))
-      .toString('base64url')
-      .slice(0, 64);
   }
 
   private toAccessRole(access: MaxChatMemberAccess): ManagedEntityAccessRole {

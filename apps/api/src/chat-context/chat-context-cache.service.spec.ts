@@ -47,6 +47,43 @@ jest.mock('ioredis', () => {
       expire: jest
         .fn()
         .mockImplementation(async (key: string) => (store.has(key) || sets.has(key) ? 1 : 0)),
+      eval: jest
+        .fn()
+        .mockImplementation(
+          async (
+            _script: string,
+            _keyCount: number,
+            currentKey: string,
+            oppositeKey: string,
+            expectedCurrentExists: string,
+            expectedCurrent: string,
+            expectedOppositeExists: string,
+            expectedOpposite: string,
+            nextCurrent: string,
+            oppositeAction: string,
+            nextOpposite: string,
+          ) => {
+            const current = store.get(currentKey);
+            const opposite = store.get(oppositeKey);
+            const currentMatches =
+              expectedCurrentExists === '1' ? current === expectedCurrent : current === undefined;
+            const oppositeMatches =
+              expectedOppositeExists === '1'
+                ? opposite === expectedOpposite
+                : opposite === undefined;
+            if (!currentMatches || !oppositeMatches) {
+              return 0;
+            }
+
+            store.set(currentKey, nextCurrent);
+            if (oppositeAction === 'set') {
+              store.set(oppositeKey, nextOpposite);
+            } else if (oppositeAction === 'delete') {
+              store.delete(oppositeKey);
+            }
+            return 1;
+          },
+        ),
       publish: jest.fn().mockImplementation(async (channel: string, payload: string) => {
         for (const subscriber of subscribers) {
           subscriber(channel, payload);
@@ -128,7 +165,10 @@ jest.mock('ioredis', () => {
 import Redis from 'ioredis';
 import type { ChatSummary } from '@maxim/contracts';
 import type { ChatSettings } from '../prisma/prisma-client';
-import { ChatContextCacheService } from './chat-context-cache.service';
+import {
+  ChatContextCacheService,
+  type ManagedEntitiesPublishedSnapshot,
+} from './chat-context-cache.service';
 
 function buildChatSummary(chatId: string): ChatSummary {
   return {
@@ -1227,6 +1267,79 @@ describe('ChatContextCacheService', () => {
     await expect(service.getManagedEntitiesPublishedSnapshot('admin-1', 'chat')).resolves.toEqual(
       snapshot,
     );
+  });
+
+  it('atomically upserts a visible entity and removes a stale opposite-tab card', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn(),
+        upsert: jest.fn(),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results[0].value as {
+      eval: jest.Mock;
+    };
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const currentKey = 'chat:managed-view-snapshot:v1:channel:admin-1';
+    const oppositeKey = 'chat:managed-view-snapshot:v1:chat:admin-1';
+    const staleSummary = {
+      ...buildChatSummary('-100-forwarded'),
+      link: 'https://max.ru/old-link',
+      avatarUrl: 'https://cdn.max/old-avatar.png',
+    };
+    store.set(
+      oppositeKey,
+      JSON.stringify({
+        version: 'old-chat-snapshot',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:00.000Z',
+        itemCount: 1,
+        itemsHash: 'old-hash',
+        items: [staleSummary],
+      }),
+    );
+    const baseSummary = buildChatSummary('-100-forwarded');
+    const summary = {
+      id: baseSummary.id,
+      title: 'Новый канал',
+      entityType: 'channel' as const,
+      createdAt: baseSummary.createdAt,
+      avatarUrl: null as string | null,
+      channelOverview: baseSummary.channelOverview,
+      primaryBotId: baseSummary.primaryBotId,
+      assignedBots: baseSummary.assignedBots,
+      sharedMode: baseSummary.sharedMode,
+    };
+
+    await service.upsertManagedEntityPublishedSnapshot('admin-1', summary, 3600);
+
+    expect(redisInstance.eval).toHaveBeenCalledTimes(1);
+    expect(redisInstance.eval.mock.calls[0]?.slice(1, 4)).toEqual([2, currentKey, oppositeKey]);
+    expect(store.has(oppositeKey)).toBe(false);
+    const stored = JSON.parse(store.get(currentKey) ?? 'null') as ManagedEntitiesPublishedSnapshot;
+    expect(stored.version).toMatch(/^handshake:-100-forwarded:[0-9a-f-]+:current$/u);
+    expect(stored.items).toHaveLength(1);
+    expect(stored.items[0]).toEqual(
+      expect.objectContaining({
+        id: '-100-forwarded',
+        title: 'Новый канал',
+        link: 'https://max.ru/old-link',
+        avatarUrl: null,
+        assignedBots: [],
+      }),
+    );
+    expect(Array.isArray(stored.items[0]?.assignedBots)).toBe(true);
+    await expect(
+      service.getManagedEntitiesPublishedSnapshot('admin-1', 'channel'),
+    ).resolves.toEqual(stored);
   });
 
   it('stores and restores managed entities published diffs', async () => {

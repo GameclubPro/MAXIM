@@ -10,6 +10,7 @@ import {
   ManagedEntityHandshakeService,
   MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
 } from './managed-entity-handshake.service';
+import { WebhookParser } from '../webhook/webhook.parser';
 
 function createUpdate(overrides: Record<string, unknown> = {}) {
   const messageOverrides =
@@ -31,6 +32,77 @@ function createUpdate(overrides: Record<string, unknown> = {}) {
       ...messageOverrides,
     },
     ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'message')),
+  } as never;
+}
+
+const FORWARDED_PRIVATE_CHAT_ID = '152517912';
+const FORWARDED_USER_ID = '195714583';
+const FORWARDED_SOURCE_CHAT_ID = '-70000000000001';
+const FORWARDED_SOURCE_LINK = 'https://max.ru/channel/news-max';
+const FORWARDED_SOURCE_AVATAR_URL = 'https://example.test/news-max.jpg';
+const FORWARDED_ACTOR_BURST_LIMIT_MS = 5_000;
+
+type ForwardedUpdateOptions = {
+  updateId?: string;
+  incomingMessageId?: string;
+  privateChatId?: string;
+  normalizedChatId?: string;
+  forwarderUserId?: string;
+  normalizedSenderId?: string;
+  sourceChatId?: string;
+  sourceMessageId?: string | null;
+  recipientChatType?: string;
+  rawRecipientChatId?: string | number;
+  rawBody?: Record<string, unknown> | null;
+  rawLink?: Record<string, unknown> | null;
+};
+
+function createForwardedUpdate(options: ForwardedUpdateOptions = {}) {
+  const incomingMessageId = options.incomingMessageId ?? 'm-forward-1';
+  const privateChatId = options.privateChatId ?? FORWARDED_PRIVATE_CHAT_ID;
+  const forwarderUserId = options.forwarderUserId ?? FORWARDED_USER_ID;
+  const sourceChatId = options.sourceChatId ?? FORWARDED_SOURCE_CHAT_ID;
+  const sourceMessageId =
+    options.sourceMessageId === undefined ? 'mid-source-1' : options.sourceMessageId;
+  const linkedMessage = {
+    ...(sourceMessageId ? { mid: sourceMessageId } : {}),
+    text: 'Исходная публикация',
+  };
+  const link =
+    options.rawLink === undefined
+      ? {
+          type: 'forward',
+          chat_id: Number(sourceChatId),
+          message: linkedMessage,
+        }
+      : options.rawLink;
+
+  return {
+    updateId: options.updateId ?? 'u-forward-1',
+    botId: 'bot-1',
+    type: 'message_created',
+    message: {
+      messageId: incomingMessageId,
+      chatId: options.normalizedChatId ?? privateChatId,
+      senderId: options.normalizedSenderId ?? forwarderUserId,
+      text: 'Пересланная публикация',
+      createdAt: '2026-08-01T10:00:00.000Z',
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        id: incomingMessageId,
+        sender: {
+          user_id: Number(forwarderUserId),
+        },
+        recipient: {
+          chat_id: options.rawRecipientChatId ?? Number(privateChatId),
+          chat_type: options.recipientChatType ?? 'dialog',
+        },
+        body: options.rawBody ?? null,
+        link,
+      },
+    },
   } as never;
 }
 
@@ -58,6 +130,17 @@ function createFixture() {
     $transaction: jest.fn(async (operations) => operations),
   };
   const maxClient = {
+    getChatSnapshot: jest.fn().mockResolvedValue({
+      chatId: FORWARDED_SOURCE_CHAT_ID,
+      title: 'Новости MAX',
+      participantsCount: 10,
+      status: 'active',
+      isPublic: false,
+      link: FORWARDED_SOURCE_LINK,
+      lastEventAt: null,
+      entityType: 'channel',
+      avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
+    }),
     getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
       userId: 'bot-1',
       isAdmin: true,
@@ -70,6 +153,15 @@ function createFixture() {
           'admin-1',
           {
             userId: 'admin-1',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['change_chat_info'],
+          },
+        ],
+        [
+          FORWARDED_USER_ID,
+          {
+            userId: FORWARDED_USER_ID,
             isAdmin: true,
             isOwner: false,
             permissions: ['change_chat_info'],
@@ -97,6 +189,7 @@ function createFixture() {
   const chatContextCache = {
     upsertManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue(undefined),
     getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
+    upsertManagedEntityPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
     setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
     setAdminAccess: jest.fn().mockResolvedValue(undefined),
     rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
@@ -139,8 +232,22 @@ describe('ManagedEntityHandshakeService', () => {
     jest.clearAllMocks();
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('connects a chat when Старт is sent by an admin and the bot is admin', async () => {
     const fixture = createFixture();
+    fixture.chatContextCache.getManagedEntitiesPublishedSnapshot.mockResolvedValueOnce({
+      items: [
+        {
+          id: '-100',
+          title: 'Старое название',
+          link: 'https://max.ru/join/existing-chat',
+          avatarUrl: 'https://example.test/existing-chat.jpg',
+        },
+      ],
+    } as never);
 
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
 
@@ -184,12 +291,12 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
-    expect(fixture.chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
       'admin-1',
-      'chat',
       expect.objectContaining({
-        itemCount: 1,
-        items: [expect.objectContaining({ id: '-100', title: 'Команда MAX' })],
+        id: '-100',
+        title: 'Команда MAX',
+        entityType: 'chat',
       }),
       expect.any(Number),
     );
@@ -200,8 +307,20 @@ describe('ManagedEntityHandshakeService', () => {
     );
     expect(fixture.chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('-100', 'admin-1');
     expect(fixture.chatContextCache.setAdminAccess.mock.invocationCallOrder[0]).toBeLessThan(
-      fixture.chatContextCache.setManagedEntitiesPublishedSnapshot.mock.invocationCallOrder[0],
+      fixture.chatContextCache.upsertManagedEntityPublishedSnapshot.mock.invocationCallOrder[0],
     );
+    const catalogWrite = fixture.prisma.managedBotChatCatalog.upsert.mock.calls[0]?.[0] as {
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+    expect(catalogWrite.create).toEqual(
+      expect.objectContaining({
+        link: null,
+        avatarUrl: null,
+      }),
+    );
+    expect(catalogWrite.update).not.toHaveProperty('link');
+    expect(catalogWrite.update).not.toHaveProperty('avatarUrl');
     const rosterJob = {
       chatId: '-100',
       botIds: ['bot-1'],
@@ -247,6 +366,68 @@ describe('ManagedEntityHandshakeService', () => {
         status: ManagedEntityHandshakeOutcomeStatus.CONNECTED,
       }),
     );
+  });
+
+  it('connects from an official MAX forward after normalizing it through WebhookParser', async () => {
+    const fixture = createFixture();
+    const update = new WebhookParser().parse(
+      {
+        update_type: 'message_created',
+        timestamp: '2026-08-01T10:00:00.000Z',
+        message: {
+          sender: { user_id: Number(FORWARDED_USER_ID), first_name: 'Иван' },
+          recipient: {
+            chat_id: Number(FORWARDED_PRIVATE_CHAT_ID),
+            chat_type: 'dialog',
+          },
+          body: {
+            mid: 'm-forward-parser-1',
+            seq: 42,
+            text: null,
+            attachments: null,
+          },
+          link: {
+            type: 'forward',
+            chat_id: Number(FORWARDED_SOURCE_CHAT_ID),
+            message: {
+              mid: 'mid-source-parser-1',
+              seq: 7,
+              text: 'Исходная публикация',
+              attachments: null,
+            },
+          },
+        },
+      },
+      { botId: 'bot-1' },
+    );
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+
+    expect(update.message).toMatchObject({
+      messageId: 'm-forward-parser-1',
+      chatId: FORWARDED_PRIVATE_CHAT_ID,
+      senderId: FORWARDED_USER_ID,
+    });
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
+      FORWARDED_USER_ID,
+      expect.objectContaining({
+        id: FORWARDED_SOURCE_CHAT_ID,
+        entityType: 'channel',
+      }),
+      expect.any(Number),
+    );
+    expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: FORWARDED_SOURCE_CHAT_ID,
+      botIds: ['bot-1'],
+      title: 'Новости MAX',
+      entityType: 'channel',
+      source: 'handshake_start',
+    });
   });
 
   it('requires the exact Старт message in a managed chat', async () => {
@@ -728,12 +909,9 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
-    expect(fixture.chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
       'admin-1',
-      'chat',
-      expect.objectContaining({
-        items: [expect.objectContaining({ id: '-100', title: 'Команда MAX' })],
-      }),
+      expect.objectContaining({ id: '-100', title: 'Команда MAX', entityType: 'chat' }),
       expect.any(Number),
     );
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -877,5 +1055,572 @@ describe('ManagedEntityHandshakeService', () => {
       'm-start-2',
       expect.objectContaining({ immediate: true, botId: 'bot-1' }),
     );
+  });
+
+  it('connects a forwarded channel after live bot and forwarder access checks', async () => {
+    const fixture = createFixture();
+
+    await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
+      'connected',
+    );
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        sourceTag: 'managed_handshake',
+      }),
+    );
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        sourceTag: 'managed_handshake',
+      }),
+    );
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      [FORWARDED_USER_ID],
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        sourceTag: 'managed_handshake',
+      }),
+    );
+    expect(fixture.maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith({
+      chatId: FORWARDED_SOURCE_CHAT_ID,
+      primaryBotId: 'bot-1',
+      botIds: ['bot-1'],
+      title: 'Новости MAX',
+      entityType: ChatEntityType.CHANNEL,
+    });
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId_botId: {
+            chatId: FORWARDED_SOURCE_CHAT_ID,
+            userId: FORWARDED_USER_ID,
+            botId: 'bot-1',
+          },
+        },
+        create: expect.objectContaining({
+          entityType: ChatEntityType.CHANNEL,
+          state: ManagedEntityAccessState.GRANTED,
+          source: 'handshake_start',
+        }),
+      }),
+    );
+    expect(fixture.prisma.managedBotChatCatalog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          link: FORWARDED_SOURCE_LINK,
+          avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
+        }),
+        update: expect.objectContaining({
+          link: FORWARDED_SOURCE_LINK,
+          avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
+        }),
+      }),
+    );
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
+      FORWARDED_USER_ID,
+      expect.objectContaining({
+        id: FORWARDED_SOURCE_CHAT_ID,
+        title: 'Новости MAX',
+        entityType: 'channel',
+        link: FORWARDED_SOURCE_LINK,
+        avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
+      }),
+      expect.any(Number),
+    );
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      FORWARDED_PRIVATE_CHAT_ID,
+      'Готово, канал подключен.',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: 'Открыть настройки' })]],
+      }),
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: FORWARDED_SOURCE_CHAT_ID,
+        userId: FORWARDED_USER_ID,
+        entityType: ChatEntityType.CHANNEL,
+        status: ManagedEntityHandshakeOutcomeStatus.CONNECTED,
+      }),
+    );
+  });
+
+  it('connects a forwarded group chat using the live source entity type', async () => {
+    const fixture = createFixture();
+    const sourceChatId = '-70000000000002';
+    fixture.maxClient.getChatSnapshot.mockResolvedValueOnce({
+      chatId: sourceChatId,
+      title: 'Рабочая группа',
+      participantsCount: 8,
+      status: 'active',
+      isPublic: false,
+      link: null,
+      lastEventAt: null,
+      entityType: 'chat',
+      avatarUrl: null,
+    });
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createForwardedUpdate({
+          updateId: 'u-forward-chat-1',
+          incomingMessageId: 'm-forward-chat-1',
+          sourceChatId,
+          sourceMessageId: 'mid-source-chat-1',
+        }),
+      ),
+    ).resolves.toBe('connected');
+
+    expect(fixture.maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: sourceChatId,
+        title: 'Рабочая группа',
+        entityType: ChatEntityType.CHAT,
+      }),
+    );
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          chatId: sourceChatId,
+          userId: FORWARDED_USER_ID,
+          entityType: ChatEntityType.CHAT,
+          state: ManagedEntityAccessState.GRANTED,
+        }),
+      }),
+    );
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
+      FORWARDED_USER_ID,
+      expect.objectContaining({ id: sourceChatId, title: 'Рабочая группа', entityType: 'chat' }),
+      expect.any(Number),
+    );
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      FORWARDED_PRIVATE_CHAT_ID,
+      'Готово, чат подключен.',
+      expect.anything(),
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('denies forwarded recovery when the forwarder is not a source channel admin', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-01T10:00:00.000Z'));
+    const fixture = createFixture();
+    const update = createForwardedUpdate();
+    fixture.maxClient.getChatMembersAccess.mockResolvedValueOnce(
+      new Map([
+        [
+          FORWARDED_USER_ID,
+          {
+            userId: FORWARDED_USER_ID,
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          },
+        ],
+      ]),
+    );
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('denied');
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      FORWARDED_PRIVATE_CHAT_ID,
+      'Подключить канал может только владелец или администратор.',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: FORWARDED_SOURCE_CHAT_ID,
+        userId: FORWARDED_USER_ID,
+        status: ManagedEntityHandshakeOutcomeStatus.USER_DENIED,
+        reason: 'user_not_admin',
+      }),
+    );
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createForwardedUpdate({
+          updateId: 'u-forward-other-source',
+          incomingMessageId: 'm-forward-other-source',
+          sourceChatId: '-70000000000002',
+          sourceMessageId: 'mid-forward-other-source',
+        }),
+      ),
+    ).resolves.toBe('rate_limited');
+
+    jest.advanceTimersByTime(FORWARDED_ACTOR_BURST_LIMIT_MS + 1);
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies forwarded recovery when the bot is not a source channel admin', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-01T10:00:00.000Z'));
+    const fixture = createFixture();
+    const update = createForwardedUpdate();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('denied');
+
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      FORWARDED_PRIVATE_CHAT_ID,
+      'Бот не администратор канала. Назначьте бота администратором и перешлите сообщение еще раз.',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+
+    jest.advanceTimersByTime(FORWARDED_ACTOR_BURST_LIMIT_MS + 1);
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires read_all_messages for a forwarded recovery bot admin', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-01T10:00:00.000Z'));
+    const fixture = createFixture();
+    const update = createForwardedUpdate();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('denied');
+
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      FORWARDED_PRIVATE_CHAT_ID,
+      'У бота нет доступа ко всем сообщениям канала. Включите это право и перешлите сообщение еще раз.',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
+        reason: 'bot_missing_read_all_messages',
+      }),
+    );
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+
+    jest.advanceTimersByTime(FORWARDED_ACTOR_BURST_LIMIT_MS + 1);
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a forwarded recovery bot owner without read_all_messages', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: false,
+      isOwner: true,
+      permissions: [],
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(createForwardedUpdate())).resolves.toBe(
+      'connected',
+    );
+
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases forwarding throttle after a terminal source lookup denial', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-01T10:00:00.000Z'));
+    const fixture = createFixture();
+    const update = createForwardedUpdate();
+    fixture.maxClient.getChatSnapshot.mockRejectedValueOnce({
+      response: {
+        status: 403,
+        data: { code: 'chat.denied' },
+      },
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('denied');
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+
+    jest.advanceTimersByTime(FORWARDED_ACTOR_BURST_LIMIT_MS + 1);
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      FORWARDED_PRIVATE_CHAT_ID,
+      'Не удалось открыть чат или канал. Добавьте бота администратором с доступом к сообщениям и перешлите публикацию еще раз.',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+  });
+
+  it('releases forwarded recovery deduplication after a transient source lookup failure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-01T10:00:00.000Z'));
+    const fixture = createFixture();
+    const update = createForwardedUpdate();
+    fixture.maxClient.getChatSnapshot.mockRejectedValueOnce(new Error('temporary timeout'));
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('failed');
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+
+    jest.advanceTimersByTime(FORWARDED_ACTOR_BURST_LIMIT_MS + 1);
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      FORWARDED_PRIVATE_CHAT_ID,
+      'Не удалось подключить чат или канал. Перешлите сообщение еще раз позже.',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+  });
+
+  it('deduplicates repeated delivery of the same forwarded message', async () => {
+    const fixture = createFixture();
+    const update = createForwardedUpdate();
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createForwardedUpdate({
+          updateId: 'u-forward-2',
+          incomingMessageId: 'm-forward-2',
+          sourceMessageId: 'mid-source-2',
+        }),
+      ),
+    ).resolves.toBe('rate_limited');
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps a completed forwarded recovery throttled when outcome telemetry fails', async () => {
+    const fixture = createFixture();
+    const update = createForwardedUpdate();
+    fixture.handshakeOutcomes.recordOutcome.mockRejectedValueOnce(
+      new Error('outcome storage unavailable'),
+    );
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
+
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledTimes(1);
+  });
+
+  it('prunes expired handshake throttle keys and caps retained entries', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-01T10:00:00.000Z'));
+    const fixture = createFixture();
+    const internals = fixture.service as unknown as {
+      rateLimitUntilMs: Map<string, number>;
+      reserveRateLimitKey: (key: string) => boolean;
+    };
+
+    try {
+      for (let index = 0; index < 2_050; index += 1) {
+        expect(internals.reserveRateLimitKey(`test:${index}`)).toBe(true);
+      }
+      expect(internals.rateLimitUntilMs.size).toBe(2_048);
+      expect(internals.rateLimitUntilMs.has('test:0')).toBe(false);
+
+      jest.advanceTimersByTime(3 * 60 * 1_000 + 1);
+      expect(internals.reserveRateLimitKey('test:fresh')).toBe(true);
+      expect(internals.rateLimitUntilMs.size).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('connects from the bounded legacy forwarded_message shape', async () => {
+    const fixture = createFixture();
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createForwardedUpdate({
+          updateId: 'u-forward-legacy-1',
+          incomingMessageId: 'm-forward-legacy-1',
+          rawBody: {
+            forwarded_message: {
+              chat_id: Number(FORWARDED_SOURCE_CHAT_ID),
+              message_id: 'mid-source-legacy-1',
+            },
+          },
+          rawLink: null,
+        }),
+      ),
+    ).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      [FORWARDED_USER_ID],
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      FORWARDED_PRIVATE_CHAT_ID,
+      'Готово, канал подключен.',
+      expect.anything(),
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+  });
+
+  it('connects when MAX keeps sender, recipient, and incoming message ids on flat fields', async () => {
+    const fixture = createFixture();
+    const update = {
+      updateId: 'u-forward-flat-1',
+      botId: 'bot-1',
+      type: 'message_created',
+      message: {
+        messageId: 'm-forward-flat-1',
+        chatId: FORWARDED_PRIVATE_CHAT_ID,
+        senderId: FORWARDED_USER_ID,
+        text: 'Пересланная публикация',
+        createdAt: '2026-08-01T10:05:00.000Z',
+      },
+      raw: {
+        update_type: 'message_created',
+        message: {
+          message_id: 'm-forward-flat-1',
+          sender_id: Number(FORWARDED_USER_ID),
+          chat_id: Number(FORWARDED_PRIVATE_CHAT_ID),
+          link: {
+            type: 'forward',
+            chat_id: Number(FORWARDED_SOURCE_CHAT_ID),
+            message: {
+              mid: 'mid-source-flat-1',
+              text: 'Исходная публикация',
+            },
+          },
+        },
+      },
+    } as never;
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      FORWARDED_SOURCE_CHAT_ID,
+      [FORWARDED_USER_ID],
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      'without the linked source message id',
+      () => createForwardedUpdate({ sourceMessageId: null }),
+    ],
+    [
+      'when normalized and raw sender ids differ',
+      () => createForwardedUpdate({ normalizedSenderId: '195714584' }),
+    ],
+    ['with direct outer message text', () => createForwardedUpdate({ rawBody: { text: 'Старт' } })],
+  ])('ignores a malformed forwarded recovery candidate %s', async (_label, buildUpdate) => {
+    const fixture = createFixture();
+
+    await expect(fixture.service.handleWebhookUpdate(buildUpdate())).resolves.toBe('ignored');
+
+    expect(fixture.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
+
+  it('ignores a forwarded message whose source is a private dialog', async () => {
+    const fixture = createFixture();
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createForwardedUpdate({ sourceChatId: '70000000000001' }),
+      ),
+    ).resolves.toBe('ignored');
+
+    expect(fixture.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a group-chat recipient', 'chat'],
+    ['a channel recipient', 'channel'],
+  ])('ignores a forwarded message delivered to %s', async (_label, recipientChatType) => {
+    const fixture = createFixture();
+    const recipientChatId = '-80000000000001';
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createForwardedUpdate({
+          recipientChatType,
+          rawRecipientChatId: Number(recipientChatId),
+          normalizedChatId: recipientChatId,
+        }),
+      ),
+    ).resolves.toBe('ignored');
+
+    expect(fixture.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
   });
 });

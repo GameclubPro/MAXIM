@@ -126,6 +126,7 @@ function createService(
   options: {
     maxClient?: Record<string, unknown>;
     maxBotExecutionPlanner?: ReturnType<typeof createMaxBotExecutionPlannerMock> | null;
+    maxBotLinkService?: Record<string, unknown> | null;
     maxBotRegistry?: ReturnType<typeof createMaxBotRegistryMock> | null;
     maxChatAdminRosterSyncService?: { scheduleChatAdminRosterSync: jest.Mock } | null;
     config?: Parameters<typeof createConfigMock>[0];
@@ -203,6 +204,7 @@ function createService(
     options.maxBotExecutionPlanner === null
       ? undefined
       : (options.maxBotExecutionPlanner ?? createMaxBotExecutionPlannerMock());
+  const maxBotLinkService = options.maxBotLinkService ?? undefined;
   const maxBotRegistry =
     options.maxBotRegistry === null
       ? undefined
@@ -220,7 +222,7 @@ function createService(
     maxClient as never,
     configService as never,
     maxBotExecutionPlanner as never,
-    undefined,
+    maxBotLinkService as never,
     maxBotRegistry as never,
     maxChatAdminRosterSyncService as never,
   );
@@ -231,6 +233,7 @@ function createService(
     legacyAdminService,
     maxClient,
     maxBotExecutionPlanner,
+    maxBotLinkService,
     maxBotRegistry,
     maxChatAdminRosterSyncService,
     prisma,
@@ -251,6 +254,31 @@ describe('ManagedEntitiesService getMe', () => {
         'u',
       ),
     );
+
+  it('returns the dialog URL for the bot that signed the mini app launch', async () => {
+    const maxBotLinkService = {
+      buildInitDataBotUrlSync: jest
+        .fn()
+        .mockImplementation((botId?: string | null) => (botId ? `https://max.ru/${botId}` : null)),
+      buildBotUrlSync: jest.fn().mockReturnValue('https://max.ru/entry-bot'),
+    };
+    const { service } = createService({ maxBotLinkService });
+
+    await expect(
+      service.getMe({
+        userId: 'admin-1',
+        launchBotId: 'launch-bot',
+        username: null,
+        displayName: null,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        botDialogUrl: 'https://max.ru/launch-bot',
+      }),
+    );
+    expect(maxBotLinkService.buildInitDataBotUrlSync).toHaveBeenCalledWith('launch-bot');
+    expect(maxBotLinkService.buildBotUrlSync).not.toHaveBeenCalled();
+  });
 
   it('returns init data profile when username is already present', async () => {
     const maxClient = {
@@ -275,6 +303,7 @@ describe('ManagedEntitiesService getMe', () => {
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer',
       profileHandoffUrl: chatProfileHandoffUrl('Designer'),
+      botDialogUrl: 'https://max.ru/777000_bot',
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -314,6 +343,7 @@ describe('ManagedEntitiesService getMe', () => {
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer',
       profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
+      botDialogUrl: 'https://max.ru/777000_bot',
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -343,6 +373,7 @@ describe('ManagedEntitiesService getMe', () => {
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer-direct',
       profileHandoffUrl: null,
+      botDialogUrl: 'https://max.ru/777000_bot',
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -382,6 +413,7 @@ describe('ManagedEntitiesService getMe', () => {
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: null,
       profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
+      botDialogUrl: 'https://max.ru/777000_bot',
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -426,6 +458,7 @@ describe('ManagedEntitiesService getMe', () => {
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer-direct',
       profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
+      botDialogUrl: 'https://max.ru/777000_bot',
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -463,6 +496,7 @@ describe('ManagedEntitiesService getMe', () => {
         avatarUrl: null,
         profileUrl: 'https://max.ru/designer',
         profileHandoffUrl: chatProfileHandoffUrl('Designer'),
+        botDialogUrl: 'https://max.ru/777000_bot',
       });
       expect(logSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -508,6 +542,7 @@ describe('ManagedEntitiesService getMe', () => {
         avatarUrl: null,
         profileUrl: 'https://max.ru/designer',
         profileHandoffUrl: chatProfileHandoffUrl('Designer'),
+        botDialogUrl: 'https://max.ru/777000_bot',
       });
       expect(warnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -550,6 +585,7 @@ describe('ManagedEntitiesService getMe', () => {
       avatarUrl: null,
       profileUrl: null,
       profileHandoffUrl: chatProfileHandoffUrl(null),
+      botDialogUrl: 'https://max.ru/777000_bot',
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });

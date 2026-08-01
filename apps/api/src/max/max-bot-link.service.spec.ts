@@ -3919,5 +3919,20 @@ describe('MaxBotLinkService', () => {
     const url = fixture.service.buildEntryMiniappStartUrlSync('route_abc');
 
     expect(url).toBe('https://max.ru/id613002203036_bot?startapp=route_abc');
+    expect(fixture.service.buildBotUrlSync()).toBe('https://max.ru/id613002203036_bot');
+  });
+
+  it('keeps init data handoff bound to its configured dormant bot', () => {
+    const fixture = createServiceFixture();
+    const launchBot = fixture.bots[1]!;
+    launchBot.state = 'dormant';
+
+    expect(fixture.service.buildInitDataBotUrlSync(launchBot.id)).toBe(
+      `https://max.ru/${launchBot.id}`,
+    );
+
+    launchBot.state = 'disabled';
+    expect(fixture.service.buildInitDataBotUrlSync(launchBot.id)).toBeNull();
+    expect(fixture.service.buildInitDataBotUrlSync('unknown-bot')).toBeNull();
   });
 });

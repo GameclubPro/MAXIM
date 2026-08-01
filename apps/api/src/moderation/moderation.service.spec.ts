@@ -1,6 +1,7 @@
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS, type MaxUpdate } from '@maxim/contracts';
 import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
+import { WebhookParser } from '../webhook/webhook.parser';
 import { ChatRulesPublishFenceRetryError } from './chat-rules-own-bot-message-classifier';
 import { buildActiveMuteStateKey } from './moderation-state.util';
 import {
@@ -1614,6 +1615,66 @@ function createReplyToPhotoUpdate(): MaxUpdate {
 }
 
 describe('ModerationService', () => {
+  it('delivers an official pure forward from the persisted worker to private control', async () => {
+    const update = new WebhookParser().parse(
+      {
+        update_type: 'message_created',
+        timestamp: '2026-08-01T10:00:00.000Z',
+        message: {
+          sender: { user_id: 195_714_583, name: 'Тестовый пользователь' },
+          recipient: { chat_id: 195_714_583, chat_type: 'dialog' },
+          body: null,
+          link: {
+            type: 'forward',
+            chat_id: -70_000_000_000_001,
+            message: { mid: 'mid-forwarded-worker-source-1', text: 'Исходный пост' },
+          },
+        },
+      },
+      { botId: 'bot-1' },
+    );
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-pure-forward-worker-1',
+          status: 'QUEUED',
+          botId: 'bot-1',
+          normalizedPayload: update,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const privateControlService = {
+      handleUpdate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      privateControlService as never,
+    );
+
+    await expect(
+      service.processWebhookEvent('event-pure-forward-worker-1'),
+    ).resolves.toBeUndefined();
+
+    expect(update.message?.messageId).toBe(`message_created:${update.updateId}`);
+    expect(privateControlService.handleUpdate).toHaveBeenCalledWith(update);
+    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
+      where: { id: 'event-pure-forward-worker-1' },
+      data: expect.objectContaining({
+        status: 'PROCESSED',
+        errorMessage: null,
+        nextEnqueueAt: null,
+      }),
+    });
+  });
+
   it('does not re-run an already processed webhook event', async () => {
     const prisma = {
       webhookEvent: {

@@ -13,6 +13,7 @@ import {
 } from '../common/user-agreement-notice';
 import { LEGACY_PUBLICATION_WRITES_DISABLED_CODE } from '../admin/legacy-publication-write-freeze';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
+import { WebhookParser } from '../webhook/webhook.parser';
 import { createDefaultPrivateControlSession } from './private-control-session-normalizer';
 import { PrivateControlService } from './private-control.service';
 
@@ -593,6 +594,7 @@ function createHarness(
     adminDialogLinkService?: Record<string, unknown>;
     supportRequestsService?: Record<string, unknown>;
     prisma?: Record<string, unknown>;
+    managedEntityHandshakeService?: Record<string, unknown>;
   } = {},
 ) {
   const chats = [
@@ -1077,6 +1079,7 @@ function createHarness(
     adminDialogLinkService as never,
     supportRequestsService as never,
     prisma as never,
+    overrides.managedEntityHandshakeService as never,
   );
 
   return {
@@ -1585,6 +1588,58 @@ describe('PrivateControlService', () => {
     const sentMessages = maxClient.sendMessage.mock.calls.map((call) => String(call[1]));
     expect(sentMessages.some((text) => text.includes('**Майор Максимов**'))).toBe(true);
     expect(sentMessages.some((text) => text.includes('классический вид'))).toBe(false);
+  });
+
+  it('routes pure forwarded recovery through the durable worker path before private session handling', async () => {
+    const managedEntityHandshakeService = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+    const { service, maxClient, redisCounter } = createHarness({
+      managedEntityHandshakeService,
+    });
+    const update = new WebhookParser().parse(
+      {
+        update_type: 'message_created',
+        timestamp: '2026-08-01T10:00:00.000Z',
+        message: {
+          sender: {
+            user_id: 195714583,
+            name: 'Тестовый пользователь',
+          },
+          recipient: {
+            chat_id: 152517912,
+            chat_type: 'dialog',
+          },
+          body: null,
+          link: {
+            type: 'forward',
+            chat_id: -70000000000001,
+            message: {
+              mid: 'mid-forwarded-source-1',
+              text: 'Пост из исходного канала',
+            },
+          },
+        },
+      },
+      { botId: '777000_bot' },
+    );
+
+    await expect(service.handleUpdate(update)).resolves.toBeUndefined();
+
+    expect(update.message?.messageId).toBe(`message_created:${update.updateId}`);
+    expect(managedEntityHandshakeService.handleWebhookUpdate).toHaveBeenCalledWith(update);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(redisCounter.getString).not.toHaveBeenCalled();
+    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+    expect(redisCounter.deleteKey).not.toHaveBeenCalled();
+    expect(redisCounter.acquireLock).not.toHaveBeenCalled();
+    expect(redisCounter.releaseLock).not.toHaveBeenCalled();
   });
 
   it('bans a forwarded sender from private chat with the permanent ban command', async () => {

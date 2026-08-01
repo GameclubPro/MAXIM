@@ -33,6 +33,7 @@ import { useToast } from '../components/ui/toast';
 import { describeApiError } from '../lib/api-error';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
+import { createBotDialogHandoffCoordinator } from '../lib/bot-dialog-handoff';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
 import {
@@ -62,6 +63,7 @@ import {
   toggleHomeEntityFavoriteType,
 } from '../lib/home-entity-favorites';
 import { getInitDataUserId } from '../lib/init-data';
+import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import {
   buildHomeView,
   normalizeEntityType,
@@ -70,11 +72,7 @@ import {
   saveLastEntityType,
 } from '../lib/last-chat';
 import { useNativeBackHandler } from '../lib/native-back';
-import {
-  channelStatsQueryKey,
-  logsDashboardQueryKey,
-  managedEntityOnboardingDiagnosticsQueryKey,
-} from '../lib/query-key-builders';
+import { channelStatsQueryKey, logsDashboardQueryKey } from '../lib/query-key-builders';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
   MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
@@ -135,7 +133,10 @@ const LazyChatOnboardingSection = lazy(async () => {
 
 let homeEntitySheetsPromise: Promise<typeof import('./home-entity-sheets')> | null = null;
 function preloadHomeEntitySheets() {
-  homeEntitySheetsPromise ??= import('./home-entity-sheets');
+  homeEntitySheetsPromise ??= import('./home-entity-sheets').catch((error: unknown) => {
+    homeEntitySheetsPromise = null;
+    throw error;
+  });
   return homeEntitySheetsPromise;
 }
 const LazyHomeEntitySheets = lazy(preloadHomeEntitySheets);
@@ -250,9 +251,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
+  const [botDialogUrl, setBotDialogUrl] = useState<string | null>(null);
+  const [openingBotDialog, setOpeningBotDialog] = useState(false);
+  const botDialogHandoffRef = useRef(createBotDialogHandoffCoordinator());
   const homeRootRef = useRef<HTMLDivElement | null>(null);
   const virtualListViewportRef = useRef<HTMLElement | null>(null);
-  const favoriteOverlayTriggerRef = useRef<HTMLElement | null>(null);
+  const homeOverlayTriggerRef = useRef<HTMLElement | null>(null);
   const [virtualListScrollTop, setVirtualListScrollTop] = useState(0);
   const favoriteStorageScope = useMemo(() => {
     const normalizedUserId = currentUserId?.trim();
@@ -280,12 +284,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   } | null>(null);
   const [favoriteFilterPickerOpen, setFavoriteFilterPickerOpen] = useState(false);
   const [favoriteLabelsEditorOpen, setFavoriteLabelsEditorOpen] = useState(false);
+  const [connectSheetOpen, setConnectSheetOpen] = useState(false);
   const [favoriteLabelDraft, setFavoriteLabelDraft] = useState<FavoriteLabelDraft>(() =>
     createFavoriteLabelDraft(readHomeEntityFavoriteLabels(favoriteStorageScope)),
   );
   const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
-  const favoriteOverlayOpen =
-    Boolean(favoritePicker) || favoriteFilterPickerOpen || favoriteLabelsEditorOpen;
+  const homeOverlayOpen =
+    connectSheetOpen ||
+    Boolean(favoritePicker) ||
+    favoriteFilterPickerOpen ||
+    favoriteLabelsEditorOpen;
   const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
@@ -300,7 +308,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   useNativeBackHandler(
     () => {
-      if (favoriteLabelsEditorOpen) {
+      if (connectSheetOpen) {
+        closeHomeEntitySheet();
+      } else if (favoriteLabelsEditorOpen) {
         setFavoriteLabelsEditorOpen(false);
       } else if (favoritePicker) {
         setFavoritePicker(null);
@@ -309,7 +319,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       }
       return true;
     },
-    { enabled: favoriteOverlayOpen, priority: 650 },
+    { enabled: homeOverlayOpen, priority: 650 },
   );
 
   const activeEntitiesKey = getEntitiesKey(activeTab);
@@ -547,11 +557,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   function queueRefresh(tab: ManagedTab, behavior: ManagedEntitiesReloadRequest['behavior']) {
     noteRefreshRequested();
-    if (behavior === 'manual') {
-      void queryClient.invalidateQueries({
-        queryKey: managedEntityOnboardingDiagnosticsQueryKey(tab),
-      });
-    }
     setRefreshRequestByTab((current) => ({
       ...current,
       [tab]: {
@@ -689,12 +694,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     document.body.classList.add('chats-home-page-open');
 
     return () => {
+      botDialogHandoffRef.current.cancel();
       document.body.classList.remove('chats-home-page-open');
     };
   }, []);
 
   useEffect(() => {
-    if (!favoriteOverlayOpen) {
+    if (!homeOverlayOpen) {
       return undefined;
     }
 
@@ -728,16 +734,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       if (bottomNav) {
         bottomNav.inert = previousBottomNavInert;
       }
-      const restoreTarget = favoriteOverlayTriggerRef.current;
-      favoriteOverlayTriggerRef.current = null;
+      const restoreTarget = homeOverlayTriggerRef.current;
+      homeOverlayTriggerRef.current = null;
       if (restoreTarget?.isConnected) {
         window.requestAnimationFrame(() => restoreTarget.focus());
       }
     };
-  }, [favoriteOverlayOpen]);
+  }, [homeOverlayOpen]);
 
   useEffect(() => {
-    if (!favoriteOverlayOpen) {
+    if (!homeOverlayOpen) {
       return undefined;
     }
 
@@ -748,6 +754,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (connectSheetOpen) {
+        closeHomeEntitySheet();
+        return;
+      }
       if (favoriteLabelsEditorOpen) {
         setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
         setFavoriteLabelsEditorOpen(false);
@@ -762,7 +772,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [favoriteLabelsEditorOpen, favoriteOverlayOpen, favoritePicker, homeEntityFavoriteLabels]);
+  }, [
+    connectSheetOpen,
+    favoriteLabelsEditorOpen,
+    favoritePicker,
+    homeEntityFavoriteLabels,
+    homeOverlayOpen,
+  ]);
 
   useEffect(() => {
     const previousScope = favoriteStorageScopeRef.current;
@@ -870,12 +886,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       .then((me) => {
         if (!controller.signal.aborted) {
           setCurrentUserId(me.userId);
+          setBotDialogUrl(me.botDialogUrl);
         }
       })
       .catch(() => undefined);
 
     return () => controller.abort();
   }, [api]);
+
+  useEffect(() => {
+    if (showEmptyState) {
+      void preloadHomeEntitySheets();
+    }
+  }, [showEmptyState]);
 
   function prefetchChatSettings(chatId: string) {
     void chatId;
@@ -929,7 +952,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   function openFavoriteLabelsEditor(trigger?: HTMLElement) {
     if (trigger) {
-      favoriteOverlayTriggerRef.current = trigger;
+      homeOverlayTriggerRef.current = trigger;
     }
     setFavoriteFilterPickerOpen(false);
     setFavoritePicker(null);
@@ -938,19 +961,70 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }
 
   function openFavoriteFilterPicker(trigger: HTMLElement) {
-    favoriteOverlayTriggerRef.current = trigger;
+    homeOverlayTriggerRef.current = trigger;
     setFavoriteLabelsEditorOpen(false);
     setFavoritePicker(null);
     setFavoriteFilterPickerOpen(true);
   }
 
   function closeHomeEntitySheet() {
+    botDialogHandoffRef.current.cancel();
     if (favoriteLabelsEditorOpen) {
       setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
     }
     setFavoriteLabelsEditorOpen(false);
     setFavoriteFilterPickerOpen(false);
     setFavoritePicker(null);
+    setConnectSheetOpen(false);
+    setOpeningBotDialog(false);
+  }
+
+  async function openConnectSheet(trigger: HTMLElement) {
+    homeOverlayTriggerRef.current = trigger;
+    try {
+      await preloadHomeEntitySheets();
+    } catch {
+      pushToast({
+        title: 'Не удалось открыть подключение',
+        description: 'Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+      return;
+    }
+    if (!trigger.isConnected) {
+      return;
+    }
+    setFavoriteLabelsEditorOpen(false);
+    setFavoriteFilterPickerOpen(false);
+    setFavoritePicker(null);
+    setConnectSheetOpen(true);
+  }
+
+  async function returnToBot() {
+    setOpeningBotDialog(true);
+    const outcome = await botDialogHandoffRef.current.run(async (signal) => {
+      if (botDialogUrl) {
+        return botDialogUrl;
+      }
+      const me = await getMe(api, { signal });
+      if (signal.aborted) {
+        return null;
+      }
+      setCurrentUserId(me.userId);
+      setBotDialogUrl(me.botDialogUrl);
+      return me.botDialogUrl;
+    }, openMaxBotLinkAndClose);
+
+    if (outcome === 'failed') {
+      setOpeningBotDialog(false);
+      pushToast({
+        title: 'Не удалось открыть диалог',
+        description: 'Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+    } else if (outcome === 'cancelled') {
+      setOpeningBotDialog(false);
+    }
   }
 
   function updateFavoriteLabelDraft(favoriteType: ManagedEntityFavoriteType, value: string) {
@@ -1184,7 +1258,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               onPointerEnter={() => void preloadHomeEntitySheets()}
               onPointerDown={() => void preloadHomeEntitySheets()}
               onClick={(event) => {
-                favoriteOverlayTriggerRef.current = event.currentTarget;
+                homeOverlayTriggerRef.current = event.currentTarget;
                 setFavoritePicker({ entityType: activeTab, entity });
               }}
             >
@@ -1271,9 +1345,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ref={homeRootRef}
       className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}
     >
-      {favoriteOverlayOpen ? (
+      {homeOverlayOpen ? (
         <Suspense fallback={null}>
           <LazyHomeEntitySheets
+            connectOpen={connectSheetOpen}
             favoriteTarget={favoritePicker}
             filterPickerOpen={favoriteFilterPickerOpen}
             filterValue={favoriteFilter}
@@ -1285,7 +1360,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             selectedFavoriteTypes={selectedSheetFavoriteTypes}
             favoriteSaving={sheetFavoriteSaving}
             canSaveLabels={canSaveFavoriteLabels}
+            returnToBotPending={openingBotDialog}
             onClose={closeHomeEntitySheet}
+            onReturnToBot={() => void returnToBot()}
             onFilterChange={(nextFilter) => {
               setFavoriteFilter(nextFilter);
               setFavoriteFilterPickerOpen(false);
@@ -1364,6 +1441,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               ) : null}
             </div>
           </label>
+          <button
+            type="button"
+            className="chats-command__connect"
+            aria-label="Подключить чат или канал"
+            aria-haspopup="dialog"
+            aria-controls="home-sheet-connect"
+            aria-expanded={connectSheetOpen}
+            onPointerEnter={() => void preloadHomeEntitySheets()}
+            onPointerDown={() => void preloadHomeEntitySheets()}
+            onFocus={() => void preloadHomeEntitySheets()}
+            onClick={(event) => void openConnectSheet(event.currentTarget)}
+          >
+            <PlusCircleGlyph aria-hidden focusable="false" />
+            <span>Подключить</span>
+          </button>
           <button
             type="button"
             className={cn(
@@ -1466,20 +1558,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <Suspense
           fallback={
             <GlassCard>
-              <StatusState
-                tone="neutral"
-                title={activeTab === 'channel' ? 'Каналы не найдены' : 'Нет доступных чатов'}
-                description="Загружаем подсказки по подключению."
-              />
+              <div role="status" aria-label="Загрузка подключения" aria-busy="true">
+                <SkeletonCard lines={2} />
+              </div>
             </GlassCard>
           }
         >
           <LazyChatOnboardingSection
-            api={api}
             entityType={activeTab}
             isFetching={isFetching}
             isRefreshBlocked={isManualRefreshBlocked}
-            refreshLabel={refreshButtonLabel}
+            onConnect={(trigger) => void openConnectSheet(trigger)}
             onRefresh={() => handleRefresh(activeTab, 'manual')}
           />
         </Suspense>
