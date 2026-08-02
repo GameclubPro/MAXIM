@@ -23637,7 +23637,7 @@ describe('ModerationService', () => {
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     });
 
-    it('skips cross-chat tracking but still checks the known-spammer registry under pressure', async () => {
+    it('keeps duplicate detection and known-spammer checks while skipping cross-chat tracking under pressure', async () => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -23722,7 +23722,7 @@ describe('ModerationService', () => {
       expect(prisma.globalSpammer.findUnique).toHaveBeenCalledTimes(1);
       expect(prisma.moderationEvent.findFirst).toHaveBeenCalled();
       expect(ruleEngine.detect).toHaveBeenCalledWith(
-        expect.objectContaining({ skipDuplicateState: true }),
+        expect.objectContaining({ skipDuplicateState: false }),
       );
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     });
@@ -23919,7 +23919,7 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('skips duplicate state but keeps the known-spammer check near the hot-path deadline', async () => {
+    it('keeps duplicate state and the known-spammer check near the hot-path deadline', async () => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -24003,7 +24003,7 @@ describe('ModerationService', () => {
       expect(redisCounter.addToSetWithTtl).toHaveBeenCalled();
       expect(prisma.globalSpammer.findUnique).toHaveBeenCalledTimes(1);
       expect(ruleEngine.detect).toHaveBeenCalledWith(
-        expect.objectContaining({ skipDuplicateState: true }),
+        expect.objectContaining({ skipDuplicateState: false }),
       );
     });
 
@@ -24013,7 +24013,7 @@ describe('ModerationService', () => {
           upsert: jest.fn().mockResolvedValue({
             id: 'chat-1',
             title: 'Chat 1',
-            settings: createSettings(),
+            settings: createSettings({ antiDuplicateEnabled: true }),
             domains: [],
             admins: [],
           }),
@@ -24075,7 +24075,7 @@ describe('ModerationService', () => {
 
       expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
       expect(ruleEngine.detect).toHaveBeenCalledWith(
-        expect.objectContaining({ skipDuplicateState: true }),
+        expect.objectContaining({ skipDuplicateState: false }),
       );
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();

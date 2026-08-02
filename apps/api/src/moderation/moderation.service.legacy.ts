@@ -1510,16 +1510,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const effectiveMessageLength = calculateEffectiveMessageLength(update);
       const skipDuplicateStateForPressure =
         skipOptionalHotChatStages || (mode.mode === 'degrade' && !isSystemModeRecoveryWindow(mode));
-      const duplicateStateSkipReason =
-        this.resolveOptionalWebhookStageSkipReason({
-          stage: 'rule-engine.duplicate-state',
-          hotPathProfile,
-          systemMode: mode,
-          hotChatBackoffActive,
-        }) ??
-        (skipDuplicateStateForPressure
-          ? `rule-engine.duplicate-state throttled during runtime pressure (${mode.reason || mode.mode})`
-          : null);
+      const duplicateStateSkipReason = settings.antiDuplicateEnabled
+        ? null
+        : (this.resolveOptionalWebhookStageSkipReason({
+            stage: 'rule-engine.duplicate-state',
+            hotPathProfile,
+            systemMode: mode,
+            hotChatBackoffActive,
+          }) ??
+          (skipDuplicateStateForPressure
+            ? `rule-engine.duplicate-state throttled during runtime pressure (${mode.reason || mode.mode})`
+            : null));
       if (duplicateStateSkipReason) {
         this.recordOptionalWebhookStageSkip({
           stage: 'rule-engine.duplicate-state',
