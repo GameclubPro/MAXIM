@@ -374,6 +374,8 @@ preload_ci_image() (
   fi
 
   download_dir="$(mktemp -d /tmp/maxim-ci-image.XXXXXX)"
+  # Invoked indirectly by the EXIT trap below.
+  # shellcheck disable=SC2317
   cleanup_download_dir() {
     if [[ "$download_dir" == /tmp/maxim-ci-image.* && -d "$download_dir" ]]; then
       find "$download_dir" -mindepth 1 -delete
@@ -500,6 +502,8 @@ REMOTE
     "$image_ref" \
     "$exact_sha" \
     "$remote_load_script"
+  # The command is composed and shell-escaped locally before the remote shell parses it.
+  # shellcheck disable=SC2029
   ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" \
     "bash -lc $(printf '%q' "$remote_load_command")" <"$archive_path"
 

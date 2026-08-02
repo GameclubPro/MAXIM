@@ -36,6 +36,17 @@ describe('Prisma migrations', () => {
     expect(migration).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO|audit_logs|FROM)\b/u);
   });
 
+  it('tunes audit-log heap and TOAST autovacuum without running maintenance inline', () => {
+    const migration = readMigration('20260802061700_tune_audit_log_autovacuum');
+
+    expect(migration).toContain('ALTER TABLE "audit_logs" SET (');
+    expect(migration).toContain('autovacuum_vacuum_scale_factor = 0.01');
+    expect(migration).toContain('toast.autovacuum_vacuum_scale_factor = 0.01');
+    expect(migration).toContain('toast.autovacuum_vacuum_threshold = 1000');
+    expect(migration.match(/;/gu)).toHaveLength(1);
+    expect(migration).not.toMatch(/\b(?:VACUUM|REINDEX)\b/u);
+  });
+
   it('removes unused raw membership indexes and tunes autovacuum without running it', () => {
     const schema = readSchema();
     const dropMigrations = new Map([

@@ -145,15 +145,26 @@ test('keeps npm downloads out of immutable Docker dependency layers', () => {
 test('builds API production dependencies before copying runtime source', () => {
   const dockerfile = read('apps/api/Dockerfile');
   const prodDependencies = dockerfile.indexOf('FROM manifests AS prod-deps');
+  const buildStage = dockerfile.indexOf('FROM manifests AS build');
   const apiSource = dockerfile.indexOf('COPY apps/api apps/api');
 
   assert.notEqual(prodDependencies, -1);
+  assert.notEqual(buildStage, -1);
   assert.notEqual(apiSource, -1);
+  assert.ok(prodDependencies < buildStage);
   assert.ok(prodDependencies < apiSource);
+  const prodStage = dockerfile.slice(prodDependencies, buildStage);
+  const prepareRemoval = prodStage.indexOf('npm pkg delete scripts.prepare');
+  const prodInstall = prodStage.indexOf('npm ci --omit=dev');
+
+  assert.notEqual(prepareRemoval, -1);
+  assert.notEqual(prodInstall, -1);
+  assert.ok(prepareRemoval < prodInstall);
   assert.match(
-    dockerfile,
+    prodStage,
     /npm ci --omit=dev --workspace @maxim\/api --workspace @maxim\/contracts/u,
   );
+  assert.doesNotMatch(prodStage, /--ignore-scripts/u);
   assert.doesNotMatch(dockerfile, /npm prune/u);
 });
 

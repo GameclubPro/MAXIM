@@ -11,7 +11,8 @@ COPY packages/contracts/package.json packages/contracts/package.json
 
 FROM manifests AS prod-deps
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm ci --omit=dev --workspace @maxim/api --workspace @maxim/contracts
+  npm pkg delete scripts.prepare \
+  && npm ci --omit=dev --workspace @maxim/api --workspace @maxim/contracts
 
 FROM manifests AS build
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
