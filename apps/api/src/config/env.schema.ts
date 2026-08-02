@@ -248,7 +248,7 @@ const envSchema = z.object({
   MODERATION_DELETE_INTENT_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
   MODERATION_DELETE_INTENT_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(2),
   MODERATION_DELETE_INTENT_RETENTION_DAYS: z.coerce.number().int().min(7).max(365).default(90),
-  MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES: z.coerce.number().int().min(1).max(100).default(10),
+  MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES: z.coerce.number().int().min(1).max(100).default(40),
   MODERATION_DELETE_INTENT_CLEANUP_INTERVAL_MS: z.coerce
     .number()
     .int()

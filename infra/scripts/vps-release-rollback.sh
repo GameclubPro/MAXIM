@@ -284,7 +284,7 @@ recreate_service() {
   local service="$1"
   ROLLBACK_RUNTIME_STARTED=1
   echo "Recreating $service from immutable release image..."
-  docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "$service"
+  docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "$service"
   wait_for_service_running "$service"
 }
 

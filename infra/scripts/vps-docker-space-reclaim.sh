@@ -34,9 +34,7 @@ node infra/scripts/release-image-reclaim.mjs reclaim \
   --state-dir "$RELEASE_STATE_DIR" \
   --until "$MAX_AGE"
 echo
-echo "Pruning build cache older than $MAX_AGE. Docker volumes are never pruned."
-docker builder prune --all --force --filter "until=$MAX_AGE"
-echo
+echo "Shared Docker build cache, containers, volumes, and unrelated images were left untouched."
 echo "Docker disk inventory after reclaim:"
 df -h / /var/lib/docker 2>/dev/null || df -h /
 docker system df

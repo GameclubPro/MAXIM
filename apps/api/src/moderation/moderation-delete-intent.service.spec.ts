@@ -2844,4 +2844,18 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('marker."original_deleted" = false');
     expect(sql).toContain('rules."pending_cleanup_message_id" = intent."message_id"');
   });
+
+  it('keeps the default hourly retention budget bounded above observed daily intake', async () => {
+    const executeRaw = jest.fn().mockResolvedValue(100);
+    const { service } = createService({}, { $executeRaw: executeRaw });
+
+    const hourlyPurged = await service.purgeRetainedIntents();
+
+    expect(hourlyPurged).toBe(4_000);
+    expect(hourlyPurged * 24).toBeGreaterThan(58_000);
+    expect(executeRaw).toHaveBeenCalledTimes(40);
+    for (const [query] of executeRaw.mock.calls) {
+      expect(query?.values).toContain(100);
+    }
+  });
 });

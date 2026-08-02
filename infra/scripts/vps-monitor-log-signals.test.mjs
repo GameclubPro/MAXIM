@@ -91,9 +91,22 @@ test('filters successful static access logs before scanning error-like asset nam
 test('reports the hard deploy free-space floor independently from percentage warnings', () => {
   const command = readRuntimePressureCommand();
 
-  assert.match(command, /deploy_disk_hard_minimum_free_bytes="6442450944"/u);
+  assert.match(
+    monitor,
+    /source "\$ROOT_DIR\/infra\/scripts\/lib\/deploy-disk-capacity\.sh"/u,
+  );
+  assert.match(
+    monitor,
+    /printf -v disk_capacity_env 'MAXIM_API_BUILD_HARD_MIN_FREE_BYTES=%q\\n'/u,
+  );
+  assert.match(monitor, /remote_command="\$disk_capacity_env\$remote_command"/u);
+  assert.doesNotMatch(command, /source infra\/scripts\/lib\/deploy-disk-capacity\.sh/u);
+  assert.match(
+    command,
+    /deploy_disk_hard_minimum_free_bytes="\$MAXIM_API_BUILD_HARD_MIN_FREE_BYTES"/u,
+  );
   assert.match(command, /df -P -B1/u);
-  assert.match(command, /DEPLOY_DISK_BLOCKED/u);
+  assert.match(command, /API_BUILD_DISK_BLOCKED/u);
   assert.match(command, /disk_available_bytes < deploy_disk_hard_minimum_free_bytes/u);
   assert.doesNotMatch(command, /MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
 });

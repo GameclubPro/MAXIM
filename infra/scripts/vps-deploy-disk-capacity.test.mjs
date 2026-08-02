@@ -5,21 +5,27 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
-const deployScript = readFileSync(resolve(root, 'infra/scripts/vps-pull-build-up.sh'), 'utf8');
-const minimumFreeBytes = 6 * 1024 ** 3;
+const deployScript = read('infra/scripts/vps-pull-build-up.sh');
+const runtimeRollbackScript = read('infra/scripts/vps-runtime-rollback.sh');
+const immutableRollbackScript = read('infra/scripts/vps-release-rollback.sh');
+const scaleDeployScript = read('infra/scripts/vps-pull-build-up-scale.sh');
+const diskCapacityLibrary = read('infra/scripts/lib/deploy-disk-capacity.sh');
+const apiMinimumFreeBytes = 20 * 1024 ** 3;
+const staticMinimumFreeBytes = 6 * 1024 ** 3;
 
-function readShellFunction(name, nextName) {
-  const start = deployScript.indexOf(`${name}() {\n`);
-  const end = deployScript.indexOf(`\n${nextName}() {`, start);
-  assert.notEqual(start, -1, `Missing shell function: ${name}`);
-  assert.notEqual(end, -1, `Missing shell function after ${name}: ${nextName}`);
-  return deployScript.slice(start, end);
+function read(path) {
+  return readFileSync(resolve(root, path), 'utf8');
 }
 
-function runDiskPreflight(
-  availableBytes,
-  { minimumOverride, usedPercent = 79, emergencyOverride, targetPercent, criticalPercent } = {},
-) {
+function readShellFunction(script, name, nextName) {
+  const start = script.indexOf(`${name}() {\n`);
+  const end = script.indexOf(`\n${nextName}() {`, start);
+  assert.notEqual(start, -1, `Missing shell function: ${name}`);
+  assert.notEqual(end, -1, `Missing shell function after ${name}: ${nextName}`);
+  return script.slice(start, end);
+}
+
+function cleanDiskEnv() {
   const env = { ...process.env };
   for (const name of [
     'MAXIM_ALLOW_CRITICAL_DISK_DEPLOY',
@@ -31,6 +37,22 @@ function runDiskPreflight(
   ]) {
     delete env[name];
   }
+  return env;
+}
+
+function runDiskPreflight(
+  availableBytes,
+  {
+    needsApi = 1,
+    needsStatic = 0,
+    minimumOverride,
+    usedPercent = 79,
+    emergencyOverride,
+    targetPercent,
+    criticalPercent,
+  } = {},
+) {
+  const env = cleanDiskEnv();
   if (minimumOverride !== undefined) {
     env.MAXIM_DEPLOY_DISK_MIN_FREE_BYTES = String(minimumOverride);
   }
@@ -45,20 +67,13 @@ function runDiskPreflight(
   }
 
   const probe = `set -euo pipefail
-is_enabled() {
-  case "\${1:-0}" in
-    1|true|TRUE|yes|YES) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-${readShellFunction('validate_nonnegative_int', 'ensure_requested_services_running')}
-${readShellFunction('check_deploy_disk_capacity', 'validate_deploy_branch')}
+${diskCapacityLibrary}
 df() {
   [[ "$1" == "-P" && "$2" == "-B1" ]]
   printf 'Filesystem 1-blocks Used Available Capacity Mounted on\\n'
   printf '/dev/fake 107374182400 1 %s %s%% /\\n' "$AVAILABLE_BYTES" "$USED_PERCENT"
 }
-check_deploy_disk_capacity
+maxim_check_deploy_disk_capacity "$NEEDS_API" "$NEEDS_STATIC"
 `;
 
   return spawnSync('bash', ['-c', probe], {
@@ -66,6 +81,8 @@ check_deploy_disk_capacity
     env: {
       ...env,
       AVAILABLE_BYTES: String(availableBytes),
+      NEEDS_API: String(needsApi),
+      NEEDS_STATIC: String(needsStatic),
       USED_PERCENT: String(usedPercent),
     },
   });
@@ -81,21 +98,23 @@ function runSelectedImageCapacityPreflight({
   miniappImage = `maxim-miniapp-major:${targetSha}`,
   adminImage = `maxim-admin:${targetSha}`,
   legacyImage = `maxim-miniapp-legacy:${targetSha}`,
+  invalidLabelImage = '',
   buildApi = services.some((service) => service.startsWith('api-')) ? 1 : 0,
 }) {
   const probe = `set -euo pipefail
-is_enabled() {
-  case "\${1:-0}" in
-    1|true|TRUE|yes|YES) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-${readShellFunction('contains_service', 'validate_requested_services')}
-${readShellFunction('validate_nonnegative_int', 'ensure_requested_services_running')}
-${readShellFunction('is_exact_deploy_target_image_ref', 'selected_target_images_are_preloaded')}
-${readShellFunction('selected_target_images_are_preloaded', 'prepare_deploy_disk_capacity')}
-${readShellFunction('prepare_deploy_disk_capacity', 'require_preloaded_target_image')}
-${readShellFunction('check_deploy_disk_capacity', 'validate_deploy_branch')}
+${diskCapacityLibrary}
+${readShellFunction(deployScript, 'contains_service', 'validate_requested_services')}
+${readShellFunction(
+  deployScript,
+  'is_exact_deploy_target_image_ref',
+  'selected_target_images_are_preloaded',
+)}
+${readShellFunction(
+  deployScript,
+  'selected_target_images_are_preloaded',
+  'prepare_deploy_disk_capacity',
+)}
+${readShellFunction(deployScript, 'prepare_deploy_disk_capacity', 'require_preloaded_target_image')}
 mapfile -t SERVICES <<< "$SELECTED_SERVICES"
 API_SERVICES=("api-ingress")
 EXPECTED_DEPLOY_SHA="$EXPECTED_SHA"
@@ -107,7 +126,18 @@ MAXIM_ADMIN_IMAGE="$ADMIN_IMAGE"
 MAXIM_MINIAPP_LEGACY_IMAGE="$LEGACY_IMAGE"
 docker() {
   [[ "$1" == "image" && "$2" == "inspect" ]]
-  grep -Fxq -- "$3" <<< "$LOCAL_IMAGES"
+  local image_ref="$3"
+  if [[ "$3" == "--format" ]]; then
+    image_ref="$5"
+  fi
+  grep -Fxq -- "$image_ref" <<< "$LOCAL_IMAGES" || return 1
+  if [[ "$3" == "--format" ]]; then
+    if [[ "$image_ref" == "$INVALID_LABEL_IMAGE" ]]; then
+      printf 'wrong-revision|false\\n'
+    else
+      printf '%s|true\\n' "$TARGET_SHA_VALUE"
+    fi
+  fi
 }
 df() {
   [[ "$1" == "-P" && "$2" == "-B1" ]]
@@ -121,12 +151,13 @@ printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
   return spawnSync('bash', ['-c', probe], {
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...cleanDiskEnv(),
       ADMIN_IMAGE: adminImage,
       API_IMAGE: apiImage,
       AVAILABLE_BYTES: String(availableBytes),
       BUILD_API: String(buildApi),
       EXPECTED_SHA: expectedSha,
+      INVALID_LABEL_IMAGE: invalidLabelImage,
       LEGACY_IMAGE: legacyImage,
       LOCAL_IMAGES: localImages.join('\n'),
       MINIAPP_IMAGE: miniappImage,
@@ -136,26 +167,54 @@ printf 'reuse-only=%s\\n' "$REUSE_PRELOADED_TARGET_IMAGES_ONLY"
   });
 }
 
-test('rejects free space one byte below the 6 GiB default', () => {
-  const result = runDiskPreflight(minimumFreeBytes - 1);
-
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
-  assert.match(result.stderr, /not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
-});
-
-test('accepts free space exactly at and above the 6 GiB default', () => {
-  for (const availableBytes of [minimumFreeBytes, minimumFreeBytes + 1]) {
-    const result = runDiskPreflight(availableBytes);
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /minimum-free=6442450944B/u);
+test('keeps component build floors in one shared library', () => {
+  assert.match(diskCapacityLibrary, /MAXIM_API_BUILD_HARD_MIN_FREE_BYTES="21474836480"/u);
+  assert.match(diskCapacityLibrary, /MAXIM_STATIC_BUILD_HARD_MIN_FREE_BYTES="6442450944"/u);
+  for (const script of [deployScript, runtimeRollbackScript, scaleDeployScript]) {
+    assert.match(script, /source "\$ROOT_DIR\/infra\/scripts\/lib\/deploy-disk-capacity\.sh"/u);
   }
 });
 
-test('rejects malformed absolute free-space configuration', () => {
+test('enforces the 20 GiB API build floor at its exact boundary', () => {
+  const below = runDiskPreflight(apiMinimumFreeBytes - 1);
+  const equal = runDiskPreflight(apiMinimumFreeBytes);
+
+  assert.equal(below.status, 1);
+  assert.match(below.stderr, /at least 21474836480 bytes are required/u);
+  assert.match(below.stderr, /not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY/u);
+  assert.equal(equal.status, 0, equal.stderr);
+  assert.match(equal.stdout, /components=api/u);
+  assert.match(equal.stdout, /minimum-free=21474836480B/u);
+});
+
+test('uses the smaller 6 GiB floor for static-only builds', () => {
+  const below = runDiskPreflight(staticMinimumFreeBytes - 1, {
+    needsApi: 0,
+    needsStatic: 1,
+  });
+  const equal = runDiskPreflight(staticMinimumFreeBytes, {
+    needsApi: 0,
+    needsStatic: 1,
+  });
+
+  assert.equal(below.status, 1);
+  assert.match(below.stderr, /at least 6442450944 bytes are required/u);
+  assert.equal(equal.status, 0, equal.stderr);
+  assert.match(equal.stdout, /components=static/u);
+  assert.match(equal.stdout, /minimum-free=6442450944B/u);
+});
+
+test('mixed API and static builds use the higher API floor', () => {
+  const result = runDiskPreflight(apiMinimumFreeBytes - 1, { needsStatic: 1 });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /components=api\+static/u);
+  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+});
+
+test('rejects malformed capacity configuration and component flags', () => {
   for (const invalidValue of ['-1', '6GiB', '1.5']) {
-    const result = runDiskPreflight(minimumFreeBytes, { minimumOverride: invalidValue });
+    const result = runDiskPreflight(apiMinimumFreeBytes, { minimumOverride: invalidValue });
 
     assert.equal(result.status, 1);
     assert.match(
@@ -163,49 +222,62 @@ test('rejects malformed absolute free-space configuration', () => {
       /MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be a non-negative integer\./u,
     );
   }
+
+  const invalidFlag = runDiskPreflight(apiMinimumFreeBytes, { needsApi: 2 });
+  const noComponent = runDiskPreflight(apiMinimumFreeBytes, {
+    needsApi: 0,
+    needsStatic: 0,
+  });
+  assert.equal(invalidFlag.status, 1);
+  assert.match(invalidFlag.stderr, /expressed as 0 or 1/u);
+  assert.equal(noComponent.status, 1);
+  assert.match(noComponent.stderr, /requires at least one build component/u);
 });
 
 test('compares configured byte thresholds exactly without shell integer overflow', () => {
-  const leadingZeroResult = runDiskPreflight('00006442450944', {
-    minimumOverride: '00006442450944',
+  const leadingZeroResult = runDiskPreflight('00021474836480', {
+    minimumOverride: '00021474836480',
   });
   const hugeThresholdResult = runDiskPreflight('999999999999999999999999999998', {
     minimumOverride: '999999999999999999999999999999',
   });
 
   assert.equal(leadingZeroResult.status, 0, leadingZeroResult.stderr);
-  assert.match(leadingZeroResult.stdout, /available=6442450944B minimum-free=6442450944B/u);
+  assert.match(leadingZeroResult.stdout, /available=21474836480B minimum-free=21474836480B/u);
   assert.equal(hugeThresholdResult.status, 1);
   assert.match(hugeThresholdResult.stderr, /at least 999999999999999999999999999999 bytes/u);
 });
 
-test('rejects configuration that weakens the hard 6 GiB floor', () => {
-  for (const invalidValue of [0, minimumFreeBytes - 1]) {
-    const result = runDiskPreflight(minimumFreeBytes, { minimumOverride: invalidValue });
-
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be at least 6442450944\./u);
-  }
-});
-
-test('allows configuration to raise the absolute free-space floor', () => {
-  const strongerMinimum = minimumFreeBytes + 1024;
-  const belowResult = runDiskPreflight(strongerMinimum - 1, {
+test('configuration may raise but never lower the selected component floor', () => {
+  const weakApi = runDiskPreflight(apiMinimumFreeBytes, {
+    minimumOverride: staticMinimumFreeBytes,
+  });
+  const weakStatic = runDiskPreflight(staticMinimumFreeBytes, {
+    needsApi: 0,
+    needsStatic: 1,
+    minimumOverride: staticMinimumFreeBytes - 1,
+  });
+  const strongerMinimum = apiMinimumFreeBytes + 1024;
+  const raisedBelow = runDiskPreflight(strongerMinimum - 1, {
     minimumOverride: strongerMinimum,
   });
-  const equalResult = runDiskPreflight(strongerMinimum, {
+  const raisedEqual = runDiskPreflight(strongerMinimum, {
     minimumOverride: strongerMinimum,
   });
 
-  assert.equal(belowResult.status, 1);
-  assert.match(belowResult.stderr, /at least 6442451968 bytes are required/u);
-  assert.equal(equalResult.status, 0, equalResult.stderr);
-  assert.match(equalResult.stdout, /minimum-free=6442451968B/u);
+  assert.equal(weakApi.status, 1);
+  assert.match(weakApi.stderr, /at least 21474836480 for build components: api/u);
+  assert.equal(weakStatic.status, 1);
+  assert.match(weakStatic.stderr, /at least 6442450944 for build components: static/u);
+  assert.equal(raisedBelow.status, 1);
+  assert.match(raisedBelow.stderr, /at least 21474837504 bytes are required/u);
+  assert.equal(raisedEqual.status, 0, raisedEqual.stderr);
+  assert.match(raisedEqual.stdout, /minimum-free=21474837504B/u);
 });
 
 test('keeps ten percent free as the default percentage gate', () => {
-  const belowTarget = runDiskPreflight(minimumFreeBytes + 1, { usedPercent: 89 });
-  const atTarget = runDiskPreflight(minimumFreeBytes + 1, { usedPercent: 90 });
+  const belowTarget = runDiskPreflight(apiMinimumFreeBytes, { usedPercent: 89 });
+  const atTarget = runDiskPreflight(apiMinimumFreeBytes, { usedPercent: 90 });
 
   assert.equal(belowTarget.status, 0, belowTarget.stderr);
   assert.match(belowTarget.stdout, /target=90% critical=95%/u);
@@ -214,11 +286,11 @@ test('keeps ten percent free as the default percentage gate', () => {
 });
 
 test('emergency override bypasses only percentage thresholds', () => {
-  const percentOverride = runDiskPreflight(minimumFreeBytes + 1, {
+  const percentOverride = runDiskPreflight(apiMinimumFreeBytes, {
     usedPercent: 95,
     emergencyOverride: 1,
   });
-  const absoluteShortfall = runDiskPreflight(minimumFreeBytes - 1, {
+  const absoluteShortfall = runDiskPreflight(apiMinimumFreeBytes - 1, {
     usedPercent: 95,
     emergencyOverride: 1,
   });
@@ -230,7 +302,7 @@ test('emergency override bypasses only percentage thresholds', () => {
 });
 
 test('normalizes percentage thresholds before comparing them', () => {
-  const result = runDiskPreflight(minimumFreeBytes, {
+  const result = runDiskPreflight(apiMinimumFreeBytes, {
     usedPercent: '080',
     targetPercent: '080',
     criticalPercent: '090',
@@ -240,7 +312,7 @@ test('normalizes percentage thresholds before comparing them', () => {
   assert.match(result.stderr, /above the deploy target disk utilization \(80%\)/u);
 });
 
-test('skips the build capacity floor only when every selected exact-SHA image is local', () => {
+test('skips build capacity only when every selected exact-SHA image is local', () => {
   const targetSha = 'a'.repeat(40);
   const localImages = [
     `maxim-api:${targetSha}`,
@@ -248,7 +320,7 @@ test('skips the build capacity floor only when every selected exact-SHA image is
     `maxim-admin:${targetSha}`,
   ];
   const result = runSelectedImageCapacityPreflight({
-    availableBytes: 5 * 1024 ** 3,
+    availableBytes: staticMinimumFreeBytes - 1,
     expectedSha: targetSha,
     services: ['api-ingress', 'miniapp-major-static', 'admin-static'],
     localImages,
@@ -260,59 +332,108 @@ test('skips the build capacity floor only when every selected exact-SHA image is
   assert.doesNotMatch(result.stdout, /Deploy disk preflight:/u);
 });
 
-test('a missing selected exact-SHA image cannot bypass the hard capacity floor', () => {
+test('missing selected images receive the component-aware floor', () => {
   const targetSha = 'b'.repeat(40);
-  const result = runSelectedImageCapacityPreflight({
-    availableBytes: 5 * 1024 ** 3,
+  const mixedResult = runSelectedImageCapacityPreflight({
+    availableBytes: apiMinimumFreeBytes - 1,
     expectedSha: targetSha,
     services: ['api-ingress', 'miniapp-major-static'],
     localImages: [`maxim-api:${targetSha}`],
   });
+  const staticResult = runSelectedImageCapacityPreflight({
+    availableBytes: staticMinimumFreeBytes,
+    expectedSha: targetSha,
+    services: ['miniapp-major-static'],
+    localImages: [],
+    buildApi: 0,
+  });
 
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /requires a build: maxim-miniapp-major:/u);
-  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
+  assert.equal(mixedResult.status, 1);
+  assert.match(mixedResult.stderr, /requires a build: maxim-miniapp-major:/u);
+  assert.match(mixedResult.stderr, /at least 21474836480 bytes are required/u);
+  assert.equal(staticResult.status, 0, staticResult.stderr);
+  assert.match(staticResult.stdout, /components=static/u);
+  assert.match(staticResult.stdout, /reuse-only=0/u);
 });
 
-test('a local image tagged for the wrong SHA cannot bypass the hard capacity floor', () => {
+test('wrong-SHA and unknown targets cannot bypass the API floor', () => {
   const targetSha = 'c'.repeat(40);
   const wrongSha = 'd'.repeat(40);
   const wrongImage = `maxim-api:${wrongSha}`;
-  const result = runSelectedImageCapacityPreflight({
-    availableBytes: 5 * 1024 ** 3,
+  const wrongShaResult = runSelectedImageCapacityPreflight({
+    availableBytes: apiMinimumFreeBytes - 1,
     expectedSha: targetSha,
     services: ['api-ingress'],
     localImages: [wrongImage],
     apiImage: wrongImage,
   });
-
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /non-target image ref/u);
-  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
-});
-
-test('unknown deploy targets cannot bypass the hard capacity floor', () => {
-  const targetSha = 'e'.repeat(40);
-  const result = runSelectedImageCapacityPreflight({
-    availableBytes: 5 * 1024 ** 3,
+  const unknownResult = runSelectedImageCapacityPreflight({
+    availableBytes: apiMinimumFreeBytes - 1,
     expectedSha: targetSha,
     services: ['manual-unknown-static'],
     localImages: [`maxim-api:${targetSha}`],
     buildApi: 0,
   });
 
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /unknown target: manual-unknown-static/u);
-  assert.match(result.stderr, /at least 6442450944 bytes are required/u);
+  assert.equal(wrongShaResult.status, 1);
+  assert.match(wrongShaResult.stderr, /non-target image ref/u);
+  assert.match(wrongShaResult.stderr, /at least 21474836480 bytes are required/u);
+  assert.equal(unknownResult.status, 1);
+  assert.match(unknownResult.stderr, /unknown target: manual-unknown-static/u);
+  assert.match(unknownResult.stderr, /at least 21474836480 bytes are required/u);
 });
 
-test('runtime recreation is explicitly forbidden from triggering an implicit image build', () => {
-  const upCommands = deployScript
-    .split('\n')
-    .filter((line) => line.includes('docker compose') && line.includes(' up -d '));
+test('an exact-SHA tag with unverified release labels cannot bypass the API floor', () => {
+  const targetSha = 'e'.repeat(40);
+  const imageRef = `maxim-api:${targetSha}`;
+  const result = runSelectedImageCapacityPreflight({
+    availableBytes: apiMinimumFreeBytes - 1,
+    expectedSha: targetSha,
+    services: ['api-ingress'],
+    localImages: [imageRef],
+    invalidLabelImage: imageRef,
+  });
 
-  assert.ok(upCommands.length > 0, 'expected runtime docker compose up commands');
-  for (const command of upCommands) {
-    assert.match(command, / --no-build /u);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unverified release labels/u);
+  assert.match(result.stderr, /at least 21474836480 bytes are required/u);
+});
+
+test('runtime and scale builds run capacity checks before destructive work', () => {
+  assert.ok(
+    runtimeRollbackScript.indexOf('maxim_check_deploy_disk_capacity 1 0') <
+      runtimeRollbackScript.indexOf('git switch --detach'),
+  );
+  const scalePreflight = scaleDeployScript.indexOf(
+    'maxim_check_deploy_disk_capacity "$BUILD_API_IMAGE" "$BUILD_STATIC_IMAGE"',
+  );
+  assert.ok(scalePreflight < scaleDeployScript.lastIndexOf('prepare_scale_redis_named_volume'));
+  assert.ok(scalePreflight < scaleDeployScript.lastIndexOf('stop_conflicting_stacks'));
+});
+
+test('runtime recreation cannot trigger an implicit image build', () => {
+  for (const script of [
+    deployScript,
+    runtimeRollbackScript,
+    immutableRollbackScript,
+    scaleDeployScript,
+  ]) {
+    const upCommands = script
+      .split('\n')
+      .filter((line) => line.includes('docker compose') && line.includes(' up -d '));
+
+    assert.ok(upCommands.length > 0, 'expected runtime docker compose up commands');
+    for (const command of upCommands) {
+      assert.match(command, / --no-build /u);
+    }
+  }
+
+  for (const script of [deployScript, runtimeRollbackScript, scaleDeployScript]) {
+    const runCommands = script
+      .split('\n')
+      .filter((line) => line.includes('docker compose') && line.includes(' run --rm '));
+    for (const command of runCommands) {
+      assert.match(command, / --no-build /u);
+    }
   }
 });

@@ -61,6 +61,7 @@
 
 - Prefer repo wrappers:
   - commit/push: `./infra/scripts/local-commit-push.sh "<message>" main`
+  - preload a green exact-SHA CI image when the VPS cannot build: `./infra/scripts/vps-connect.sh preload-ci-image <api|miniapp|admin> <sha>`
   - deploy: `./infra/scripts/vps-connect.sh deploy main [services|--plan|--auto|--full]`
   - immutable component rollback: `./infra/scripts/vps-connect.sh rollback-release <release-id> [components...]`
   - API ref-based fallback rollback: `./infra/scripts/vps-connect.sh rollback-runtime <git-ref> [services...]`
@@ -68,7 +69,7 @@
 - Every `AGENTS.md` is excluded from `--all` unless `--include-agents` is present. The helper also refuses already-staged agent notes without that flag.
 - Local production deploy requires successful `Required` and `Analyze JavaScript and TypeScript` checks from GitHub Actions for the exact selected commit, then verifies that the synchronized VPS `HEAD` is the same SHA. Emergency bypass requires an explicit reason.
 - Active release components use full-SHA image refs and component manifests under `/var/lib/maxim-deploy`. The deploy records a new current manifest only after strict smokes; static-only deploys do not run Prisma migrations.
-- Never bypass the deploy disk preflight for a clean shared API build with less than 6 GiB free on `/var/lib/docker`. A clean API build can temporarily consume more than 15 GiB even when the final image is much smaller, so prefer reclaiming unused cache/images, expanding the disk, or preloading a reviewed immutable image when free capacity is below that observed build demand.
+- Never bypass the deploy disk preflight for a clean shared API build with less than 20 GiB free on `/var/lib/docker`; static-only builds require at least 6 GiB. `MAXIM_DEPLOY_DISK_MIN_FREE_BYTES` may raise but never lower the component floor. Prefer manifest-aware MAXIM image reclaim, expanding the disk, or preloading a reviewed immutable image; do not run host-wide Docker GC on the shared VPS.
 - Shared API or contract changes must recreate every production API role because all roles use one image; the exact list lives in `infra/AGENTS.md` and `infra/scripts/lib/deploy-topology.sh`.
 - Routine mini app work deploys and smokes `miniapp-major-static` at `https://major-maksimov.ru/app/`; never add CDN/app2/Object Storage fallback steps.
 - Safety Desk UI deploys `admin-static`; server/API authentication changes also deploy the shared API roles.

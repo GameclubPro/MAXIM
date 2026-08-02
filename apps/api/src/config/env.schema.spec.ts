@@ -177,7 +177,7 @@ describe('validateEnv boolean parsing', () => {
     expect(defaults.MODERATION_DELETE_INTENT_RETRY_HORIZON_MS).toBe(86_400_000);
     expect(defaults.MODERATION_DELETE_INTENT_RECOVERY_BATCH_SIZE).toBe(10);
     expect(defaults.MODERATION_DELETE_INTENT_RETENTION_DAYS).toBe(90);
-    expect(defaults.MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES).toBe(10);
+    expect(defaults.MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES).toBe(40);
     expect(defaults.MODERATION_DELETE_INTENT_LEASE_MS).toBeGreaterThan(
       defaults.MODERATION_DELETE_INTENT_TIMEOUT_MS,
     );

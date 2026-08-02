@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:24-alpine AS build
 WORKDIR /app
 
@@ -12,7 +14,11 @@ COPY apps/admin/package.json apps/admin/package.json
 COPY apps/api/package.json apps/api/package.json
 COPY apps/miniapp/package.json apps/miniapp/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+  HUSKY=0 npm ci \
+    --workspace @maxim/admin \
+    --workspace @maxim/contracts \
+    --include-workspace-root
 
 COPY tsconfig.base.json ./
 COPY packages/contracts packages/contracts

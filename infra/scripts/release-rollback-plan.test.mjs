@@ -185,7 +185,7 @@ test('rollback shell is syntactically valid and has no build, migration, or Git-
   assert.doesNotMatch(script, /docker (?:build|buildx)|maxim_topology_build_shared_api_image/u);
   assert.match(script, /docker image inspect --format '\{\{\.Id\}\}'/u);
   assert.match(script, /docker inspect --format '\{\{\.Image\}\}'/u);
-  assert.match(script, /--no-deps --force-recreate/u);
+  assert.match(script, /--no-deps --no-build --force-recreate/u);
   assert.match(script, /scripts\/smoke-http\.mjs/u);
   assert.match(script, /release-manifest\.mjs/u);
   assert.match(script, /Node 24 is required for immutable release rollback/u);
@@ -214,7 +214,9 @@ test('rollback shell is syntactically valid and has no build, migration, or Git-
   assert.match(script, /current\.invalid-release-rollback-/u);
   assert.ok(
     script.indexOf('ROLLBACK_RUNTIME_STARTED=1') <
-      script.indexOf('docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate'),
+      script.indexOf(
+        'docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate',
+      ),
   );
   assert.ok(
     script.indexOf('node infra/scripts/release-manifest.mjs "${COMMIT_ARGS[@]}"') <

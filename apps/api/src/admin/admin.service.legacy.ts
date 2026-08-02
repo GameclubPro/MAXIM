@@ -199,6 +199,8 @@ import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
 import { createAdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-runtime-context';
 import { AdminChannelDialogMappingRuntime } from './admin-channel-dialog-mapping-runtime';
 import { createAdminChannelDialogMappingRuntimeContext } from './admin-channel-dialog-mapping-runtime-context';
+import { AdminChannelSuggestionImageRuntime } from './admin-channel-suggestion-image-runtime';
+import { createAdminChannelSuggestionImageRuntimeContext } from './admin-channel-suggestion-image-runtime-context';
 import {
   resolveChannelSuggestionActorDisplayName as resolveChannelSuggestionActorDisplayNameValue,
   resolveChannelSuggestionAuthorAttribution as resolveChannelSuggestionAuthorAttributionValue,
@@ -584,6 +586,9 @@ export class AdminService implements OnModuleDestroy {
   );
   private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(
     createAdminChannelDialogMappingRuntimeContext(this),
+  );
+  private readonly channelSuggestionImageRuntime = new AdminChannelSuggestionImageRuntime(
+    createAdminChannelSuggestionImageRuntimeContext(this),
   );
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(
     createAdminChannelStatsRuntimeContext(this),
@@ -7273,10 +7278,15 @@ export class AdminService implements OnModuleDestroy {
     let published: Awaited<ReturnType<typeof this.publishStoredChannelSuggestion>>;
     try {
       if (action === 'publish') {
+        const images = await this.channelSuggestionImageRuntime.loadStoredImages(
+          row.id,
+          canonicalPayload,
+        );
         published = await this.publishStoredChannelSuggestion(
           row.chatId,
           row.actorUserId,
           canonicalPayload,
+          images,
         );
       } else {
         const resolvedBotId = await this.resolveDeliveryBotAssignment(row.chatId);
@@ -17598,6 +17608,7 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
+    const images = await this.channelSuggestionImageRuntime.loadStoredImages(row.id, payload);
     const delivery = await this.deliverSuggestionToAdminPrivates(
       row.id,
       row.chatId,
@@ -17608,10 +17619,7 @@ export class AdminService implements OnModuleDestroy {
           this.readTrimmedString(payload.textFormat) ?? 'plain',
         ),
         textMarkup: this.readChannelSuggestionTextMarkup(payload.textMarkup),
-        images: this.readChannelSuggestionImageAssets(payload.images),
-        imageBase64: this.readTrimmedString(payload.imageBase64),
-        imageMimeType: this.readTrimmedString(payload.imageMimeType),
-        imageFileName: this.readTrimmedString(payload.imageFileName),
+        images,
         mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
         mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
         mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
@@ -18260,6 +18268,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     actorUserId: string,
     payload: Record<string, unknown>,
+    images: ChannelSuggestionImageAsset[],
   ): Promise<{
     messageId: string | null;
     url: string | null;
@@ -18284,10 +18293,7 @@ export class AdminService implements OnModuleDestroy {
     );
     const media = await this.resolveChannelSuggestionAttachments(
       {
-        images: this.readChannelSuggestionImageAssets(payload.images),
-        imageBase64: this.readTrimmedString(payload.imageBase64),
-        imageMimeType: this.readTrimmedString(payload.imageMimeType),
-        imageFileName: this.readTrimmedString(payload.imageFileName),
+        images,
         mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
         mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
         mediaMimeType: this.readTrimmedString(payload.mediaMimeType),

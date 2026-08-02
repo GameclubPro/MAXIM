@@ -185,12 +185,13 @@ ROLLBACK_REF="${ROLLBACK_REF:?Set ROLLBACK_REF to a compatible Git ref}"
 It requires the current Postgres and Redis services to be running and ready, then checks that the
 target contains all Prisma migrations already applied. Before switching the VPS checkout it
 preserves the current Compose file and release/smoke helpers, so historical Compose cannot recreate
-stateful services. It builds a SHA-scoped shared API image, runs the API migration command,
-recreates all API roles by default, verifies image IDs, runs strict health checks, and records the
-rolled-back API component in a new release manifest. It cannot restore either static component. If
-an attempt changes runtime but does not reach a recorded manifest, stale `current.json` inventory is
-invalidated so the next deploy fails closed. Do not use `deploy main` as a substitute for rolling
-back a selected ref.
+stateful services. Before switching refs or building, it applies the same 20 GiB API build-capacity
+floor as a normal deploy. It builds a SHA-scoped shared API image, runs the API migration command,
+recreates all API roles by default with implicit Compose builds disabled, verifies image IDs, runs
+strict health checks, and records the rolled-back API component in a new release manifest. It cannot
+restore either static component. If an attempt changes runtime but does not reach a recorded
+manifest, stale `current.json` inventory is invalidated so the next deploy fails closed. Do not use
+`deploy main` as a substitute for rolling back a selected ref.
 
 If migration compatibility fails, stop and prepare an explicit database/runtime recovery plan. Do
 not bypass the preflight or attempt an ad hoc destructive migration rollback.
@@ -210,13 +211,36 @@ not bypass the preflight or attempt an ad hoc destructive migration rollback.
 Run `./infra/scripts/vps-docker-space-reclaim.sh` only after reviewing disk and release inventory.
 The helper holds the deploy lock, validates every retained manifest, preserves image IDs/refs from
 those manifests and every container, and removes only old unused immutable MAXIM release refs. It
-then prunes old BuildKit cache. It does not run a generic image, container, or volume prune.
+does not prune shared BuildKit cache, generic images, containers, or volumes.
 
-The 20 GiB deploy build-capacity floor remains mandatory whenever any selected component image is
-absent. A deploy may skip that gate only when every selected local image ref exactly matches the
-verified target commit (`maxim-api:<sha>`, `maxim-miniapp-major:<sha>`, and/or `maxim-admin:<sha>`).
-The script then runs in reuse-only mode: runtime recreation uses `--no-build`, and a target image
-that disappears after the preflight aborts the rollout instead of falling back to a build. Manual,
-full, mixed API/static, missing-image, wrong-SHA, and unknown targets receive no mode-based bypass;
-each selected exact image must be present. This exception does not remove images or volumes and
-does not alter retained release manifests.
+The shared component-aware preflight requires 20 GiB free for a clean API build and 6 GiB for a
+static-only build; mixed builds use 20 GiB. The normal deploy may skip that gate only when every
+selected local image ref exactly matches the verified target commit (`maxim-api:<sha>`,
+`maxim-miniapp-major:<sha>`, and/or `maxim-admin:<sha>`). The script then runs in reuse-only mode:
+runtime recreation uses `--no-build`, and a target image that disappears after the preflight aborts
+the rollout instead of falling back to a build. Manual, full, mixed API/static, missing-image,
+wrong-SHA, and unknown targets receive no mode-based bypass; each selected exact image must be
+present. Runtime rollback always receives the API floor. Scale deploy applies the relevant floor
+before creating/copying its Redis volume or stopping the main stack. The percentage emergency
+override never bypasses an absolute component floor, and `MAXIM_DEPLOY_DISK_MIN_FREE_BYTES` can only
+raise it.
+
+When the VPS cannot satisfy the build floor, wait for green CI on the exact main commit and stream
+only the required immutable MAXIM images from the one-day CI artifacts before the normal deploy:
+
+```bash
+DEPLOY_SHA="$(git rev-parse HEAD)"
+./infra/scripts/vps-connect.sh preload-ci-image api "$DEPLOY_SHA"
+# Add only when selected by the impact plan:
+./infra/scripts/vps-connect.sh preload-ci-image miniapp "$DEPLOY_SHA"
+./infra/scripts/vps-connect.sh preload-ci-image admin "$DEPLOY_SHA"
+./infra/scripts/vps-connect.sh deploy main --auto
+```
+
+The preload helper requires the successful `CI` push run and production-required checks for the
+same full SHA, verifies the artifact checksum and embedded image labels, and streams the archive
+directly to `docker image load`. The remote load holds the shared deploy lock and requires enough
+free space for the uncompressed archive plus a fixed 4 GiB reserve before writing Docker layers. It
+does not build, prune, stop, or recreate any service. The normal deploy revalidates the exact-SHA
+image labels, verifies the synchronized Git SHA, runs migrations when API is selected, recreates
+only the selected MAXIM components, performs strict smokes, and records the release manifest.

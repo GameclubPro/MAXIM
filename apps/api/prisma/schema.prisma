@@ -1539,10 +1539,7 @@ model ChatMembershipActivityEvent {
   eventAt    DateTime @map("event_at")
   createdAt  DateTime @default(now()) @map("created_at")
 
-  @@index([chatId, eventType, eventAt(sort: Desc)], map: "chat_membership_activity_events_chat_id_event_type_event_at_idx")
-  @@index([chatId, eventAt(sort: Desc)], map: "chat_membership_activity_events_chat_id_event_at_idx")
   @@index([chatId, userId, eventAt(sort: Desc)], map: "chat_membership_activity_events_chat_id_user_id_event_at_idx")
-  @@index([chatId, eventType, eventAt(sort: Desc), userId, createdAt(sort: Desc), id(sort: Desc)], map: "chat_membership_activity_events_dashboard_idx")
   @@map("chat_membership_activity_events")
 }
 
@@ -1721,11 +1718,29 @@ model AuditLog {
 
   chat                             Chat                             @relation(fields: [chatId], references: [id], onDelete: Cascade)
   channelSuggestionAdminDeliveries ChannelSuggestionAdminDelivery[]
+  channelSuggestionImageAssets     ChannelSuggestionImageAsset[]
 
   @@index([chatId, createdAt])
   @@index([chatId, action, createdAt], map: "audit_logs_chat_action_created_at_idx")
   @@index([action, createdAt(sort: Desc)], map: "audit_logs_action_created_at_idx")
   @@map("audit_logs")
+}
+
+model ChannelSuggestionImageAsset {
+  id             String   @id @default(cuid())
+  auditLogId     String   @map("audit_log_id")
+  position       Int
+  bytes          Bytes?
+  durablePayload Json?    @map("durable_payload")
+  mimeType       String?  @map("mime_type")
+  fileName       String?  @map("file_name")
+  sizeBytes      Int?     @map("size_bytes")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  auditLog AuditLog @relation(fields: [auditLogId], references: [id], onDelete: Cascade)
+
+  @@unique([auditLogId, position], map: "channel_suggestion_image_assets_audit_position_key")
+  @@map("channel_suggestion_image_assets")
 }
 
 model ChannelSuggestionAdminDelivery {

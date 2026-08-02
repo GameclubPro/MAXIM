@@ -8,6 +8,8 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 
 COMPOSE_FILES=(--env-file ".env" -p infra -f "infra/docker-compose.yml")
 SCALE_COMPOSE_FILES=(-p infra-scale -f "infra/docker-compose.scale.yml")
@@ -315,15 +317,16 @@ ROLLBACK_API_IMAGE="maxim-api:runtime-rollback-${TARGET_FULL_SHA}"
 echo "Runtime rollback: $CURRENT_HEAD -> $TARGET_HEAD"
 echo "Services: ${SERVICES[*]}"
 ensure_rollback_migrations_compatible
+maxim_check_deploy_disk_capacity 1 0
 git switch --detach "$TARGET_FULL_SHA"
 
 export MAXIM_API_IMAGE="$ROLLBACK_API_IMAGE"
 maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE"
 ROLLBACK_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_API_IMAGE")"
 ROLLBACK_RUNTIME_STARTED=1
-docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api-ingress \
+docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --no-build api-ingress \
   ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
-docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
+docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "${SERVICES[@]}"
 
 for service in "${SERVICES[@]}"; do
   wait_for_service_running "$service" 180

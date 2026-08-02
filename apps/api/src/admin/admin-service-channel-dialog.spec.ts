@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { channelSettingsSchema } from '@maxim/contracts';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminService } from './admin.service';
 import {
@@ -560,6 +560,69 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       authorUserId: 'user-2',
       isAdmin: false,
       avatarUrl: null,
+    });
+  });
+
+  it('lists compact suggestion image metadata without hydrating stored image assets', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        postSuggestionsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-suggestion-compact-image-1',
+        actorUserId: 'user-1',
+        payload: {
+          type: 'suggest',
+          text: 'Предложение с фотографией',
+          authorDisplayName: 'Пользователь',
+          delivered: false,
+          reviewStatus: 'pending',
+          hasImage: true,
+          imageCount: 1,
+          imageFileName: 'suggestion.jpg',
+          imageFileNames: ['suggestion.jpg'],
+        },
+        createdAt: new Date('2026-03-20T09:10:00.000Z'),
+      },
+    ]);
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const suggestionToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'suggest',
+      'channel-thread-compact-image',
+    ) as string;
+
+    const result = await service.getChannelDialog(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'suggest',
+      suggestionToken,
+    );
+
+    expect(prisma.channelSuggestionImageAsset.findMany).not.toHaveBeenCalled();
+    expect(result.messages[0]).toMatchObject({
+      id: 'channel-suggestion-compact-image-1',
+      hasImage: true,
+      imageCount: 1,
+      imageFileName: 'suggestion.jpg',
+      imageFileNames: ['suggestion.jpg'],
     });
   });
 
@@ -2882,6 +2945,224 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('prefers stored relation image bytes when a queued suggestion is delivered', async () => {
+    const prisma = createPrismaMock();
+    const relationBytes = Buffer.from('relation-image-bytes');
+    const legacyBase64 = Buffer.from('legacy-image-bytes').toString('base64');
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-relation-image-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Фото из relation',
+        delivered: false,
+        deliveredToUserIds: [],
+        deliveries: [],
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageCount: 1,
+        images: [
+          {
+            base64: legacyBase64,
+            mimeType: 'image/jpeg',
+            fileName: 'legacy.jpg',
+          },
+        ],
+      },
+      createdAt: new Date('2026-03-10T12:11:45.000Z'),
+    });
+    prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
+      {
+        position: 0,
+        bytes: relationBytes,
+        durablePayload: null,
+        mimeType: 'image/png',
+        fileName: 'relation.png',
+        sizeBytes: relationBytes.length,
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'relation-upload-1' }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-relation-image-1', url: null }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-relation-image-1');
+
+    expect(prisma.channelSuggestionImageAsset.findMany).toHaveBeenCalledWith({
+      where: { auditLogId: 'suggestion-relation-image-1' },
+      orderBy: { position: 'asc' },
+      take: 11,
+      select: {
+        position: true,
+        bytes: true,
+        durablePayload: true,
+        mimeType: true,
+        fileName: true,
+        sizeBytes: true,
+      },
+    });
+    const uploadedBytes = maxClient.uploadImage.mock.calls[0]?.[0] as Buffer;
+    expect(uploadedBytes.equals(relationBytes)).toBe(true);
+    expect(uploadedBytes.equals(Buffer.from(legacyBase64, 'base64'))).toBe(false);
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'relation.png',
+      'image/png',
+      expect.objectContaining({ sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('Фото из relation'),
+      expect.objectContaining({ imagePayload: { token: 'relation-upload-1' } }),
+      expect.objectContaining({ trafficClass: 'background' }),
+    );
+    const updatedPayload = prisma.auditLog.update.mock.calls.at(-1)?.[0]?.data?.payload as Record<
+      string,
+      unknown
+    >;
+    expect(updatedPayload.images).toEqual([
+      {
+        base64: legacyBase64,
+        mimeType: 'image/jpeg',
+        fileName: 'legacy.jpg',
+      },
+    ]);
+  });
+
+  it('falls back to the complete legacy image set when relation rows are partial', async () => {
+    const prisma = createPrismaMock();
+    const relationBytes = Buffer.from('partial-relation-image');
+    const legacyBytes = [Buffer.from('legacy-image-one'), Buffer.from('legacy-image-two')];
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-partial-relation-images-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Два фото из legacy',
+        delivered: false,
+        deliveredToUserIds: [],
+        deliveries: [],
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageCount: 2,
+        images: legacyBytes.map((bytes, index) => ({
+          base64: bytes.toString('base64'),
+          mimeType: 'image/jpeg',
+          fileName: `legacy-${index + 1}.jpg`,
+        })),
+      },
+      createdAt: new Date('2026-03-10T12:11:45.000Z'),
+    });
+    prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
+      {
+        position: 0,
+        bytes: relationBytes,
+        durablePayload: null,
+        mimeType: 'image/png',
+        fileName: 'partial-relation.png',
+        sizeBytes: relationBytes.length,
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest
+        .fn()
+        .mockResolvedValueOnce({ token: 'legacy-upload-1' })
+        .mockResolvedValueOnce({ token: 'legacy-upload-2' }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-partial-relation-1', url: null }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-partial-relation-images-1');
+
+    expect(maxClient.uploadImage).toHaveBeenCalledTimes(2);
+    expect((maxClient.uploadImage.mock.calls[0]?.[0] as Buffer).equals(legacyBytes[0])).toBe(true);
+    expect((maxClient.uploadImage.mock.calls[1]?.[0] as Buffer).equals(legacyBytes[1])).toBe(true);
+    expect(
+      maxClient.uploadImage.mock.calls.some(([bytes]) => (bytes as Buffer).equals(relationBytes)),
+    ).toBe(false);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('Два фото из legacy'),
+      expect.objectContaining({
+        attachments: [
+          { type: 'image', payload: { token: 'legacy-upload-1' } },
+          { type: 'image', payload: { token: 'legacy-upload-2' } },
+        ],
+      }),
+      expect.objectContaining({ trafficClass: 'background' }),
+    );
+  });
+
+  it('fails closed when compact relation storage is marked but its rows are missing', async () => {
+    const prisma = createPrismaMock();
+    prisma.auditLog.findUnique.mockResolvedValue({
+      id: 'suggestion-missing-relation-image-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Фото из relation',
+        delivered: false,
+        deliveredToUserIds: [],
+        deliveries: [],
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageCount: 1,
+        imageStorageVersion: 1,
+      },
+      createdAt: new Date('2026-03-10T12:11:45.000Z'),
+    });
+
+    const maxClient = {
+      uploadImage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.processChannelSuggestionDeliveryJob('suggestion-missing-relation-image-1'),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+  });
+
   it('rejects a suggestion when the per-user daily limit is reached', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -4553,13 +4834,14 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       );
     });
 
-    it('uses a direct MAX profile URL in Markdown while preserving media attachments', async () => {
-      const { maxClient, service } = createAuthorReviewHarness({
+    it('uses relation media before legacy payload without copying it into audit JSON', async () => {
+      const { maxClient, prisma, service } = createAuthorReviewHarness({
         payload: {
           text: 'Фото с места события',
+          imageCount: 2,
           images: [
-            { payload: { token: 'author-photo-1' }, mimeType: 'image/jpeg' },
-            { payload: { token: 'author-photo-2' }, mimeType: 'image/jpeg' },
+            { payload: { token: 'legacy-author-photo-1' }, mimeType: 'image/jpeg' },
+            { payload: { token: 'legacy-author-photo-2' }, mimeType: 'image/jpeg' },
           ],
         },
         remoteProfile: {
@@ -4568,6 +4850,24 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           profileUrl: 'https://max.ru/anna-profile',
         },
       });
+      prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
+        {
+          position: 0,
+          bytes: null,
+          durablePayload: { token: 'relation-author-photo-1' },
+          mimeType: 'image/jpeg',
+          fileName: 'relation-1.jpg',
+          sizeBytes: null,
+        },
+        {
+          position: 1,
+          bytes: null,
+          durablePayload: { token: 'relation-author-photo-2' },
+          mimeType: 'image/jpeg',
+          fileName: 'relation-2.jpg',
+          sizeBytes: null,
+        },
+      ]);
 
       await service.reviewChannelSuggestionByAdmin(
         'suggestion-author-review-1',
@@ -4581,11 +4881,23 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         expect.objectContaining({
           textFormat: 'markdown',
           attachments: [
-            { type: 'image', payload: { token: 'author-photo-1' } },
-            { type: 'image', payload: { token: 'author-photo-2' } },
+            { type: 'image', payload: { token: 'relation-author-photo-1' } },
+            { type: 'image', payload: { token: 'relation-author-photo-2' } },
           ],
         }),
         expect.objectContaining({ botId: 'channel-bot-author' }),
+      );
+      expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            payload: expect.objectContaining({
+              images: [
+                { payload: { token: 'legacy-author-photo-1' }, mimeType: 'image/jpeg' },
+                { payload: { token: 'legacy-author-photo-2' }, mimeType: 'image/jpeg' },
+              ],
+            }),
+          },
+        }),
       );
     });
 

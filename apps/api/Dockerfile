@@ -1,4 +1,6 @@
-FROM node:24-alpine AS base
+# syntax=docker/dockerfile:1.7
+
+FROM node:24-alpine AS manifests
 WORKDIR /app
 
 COPY package.json package-lock.json ./
@@ -6,7 +8,17 @@ COPY apps/admin/package.json apps/admin/package.json
 COPY apps/api/package.json apps/api/package.json
 COPY apps/miniapp/package.json apps/miniapp/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-RUN npm ci
+
+FROM manifests AS prod-deps
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+  npm ci --omit=dev --workspace @maxim/api --workspace @maxim/contracts
+
+FROM manifests AS build
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+  HUSKY=0 npm ci \
+    --workspace @maxim/api \
+    --workspace @maxim/contracts \
+    --include-workspace-root
 
 COPY tsconfig.base.json ./
 COPY scripts scripts
@@ -14,9 +26,6 @@ COPY packages/contracts packages/contracts
 COPY apps/api apps/api
 
 RUN npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api
-
-FROM base AS prod-deps
-RUN npm prune --omit=dev
 
 FROM node:24-alpine AS runtime
 WORKDIR /app
@@ -37,13 +46,13 @@ RUN apk add --no-cache ca-certificates \
 
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/api/node_modules ./apps/api/node_modules
-COPY --from=base /app/apps/api/dist ./apps/api/dist
-COPY --from=base /app/apps/api/package.json ./apps/api/package.json
-COPY --from=base /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
-COPY --from=base /app/apps/api/prisma ./apps/api/prisma
-COPY --from=base /app/packages/contracts/dist ./packages/contracts/dist
+COPY --from=build /app/apps/api/dist ./apps/api/dist
+COPY --from=build /app/apps/api/package.json ./apps/api/package.json
+COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
+COPY --from=build /app/apps/api/prisma ./apps/api/prisma
+COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=prod-deps /app/packages/contracts/node_modules ./packages/contracts/node_modules
-COPY --from=base /app/packages/contracts/package.json ./packages/contracts/package.json
+COPY --from=build /app/packages/contracts/package.json ./packages/contracts/package.json
 
 EXPOSE 3001
 USER node

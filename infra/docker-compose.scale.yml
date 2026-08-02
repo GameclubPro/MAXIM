@@ -21,6 +21,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     shm_size: 512m
     environment:
       POSTGRES_USER: maxim
@@ -32,6 +33,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     command: ['redis-server', '--save', '3600', '1', '--appendonly', 'no']
     stop_grace_period: 15m
     volumes:

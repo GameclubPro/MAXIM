@@ -11,6 +11,8 @@ ORIGINAL_ARGS=("$@")
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 # shellcheck source=infra/scripts/lib/change-impact-components.generated.sh
 source "$ROOT_DIR/infra/scripts/lib/change-impact-components.generated.sh"
 
@@ -304,6 +306,24 @@ is_exact_deploy_target_image_ref() {
     [[ "$image_ref" == "${image_repository}:${TARGET_SHA}" ]]
 }
 
+verified_preloaded_target_image() {
+  local image_ref="$1"
+  local labels
+
+  if ! labels="$(
+    docker image inspect \
+      --format '{{index .Config.Labels "org.opencontainers.image.revision"}}|{{index .Config.Labels "com.maxim.release-protected"}}' \
+      "$image_ref" 2>/dev/null
+  )"; then
+    echo "Selected immutable target image is not local and requires a build: $image_ref" >&2
+    return 1
+  fi
+  if [[ "$labels" != "${TARGET_SHA}|true" ]]; then
+    echo "Selected target image has unverified release labels: $image_ref ($labels)" >&2
+    return 1
+  fi
+}
+
 selected_target_images_are_preloaded() {
   local service
   local image_ref
@@ -355,8 +375,7 @@ selected_target_images_are_preloaded() {
       echo "Deploy disk preflight cannot be skipped for a non-target image ref: ${image_ref:-unset}" >&2
       return 1
     fi
-    if ! docker image inspect "$image_ref" >/dev/null 2>&1; then
-      echo "Selected immutable target image is not local and requires a build: $image_ref" >&2
+    if ! verified_preloaded_target_image "$image_ref"; then
       return 1
     fi
   done
@@ -368,6 +387,9 @@ selected_target_images_are_preloaded() {
 }
 
 prepare_deploy_disk_capacity() {
+  local needs_static_build=0
+  local service
+
   REUSE_PRELOADED_TARGET_IMAGES_ONLY=0
   if selected_target_images_are_preloaded; then
     REUSE_PRELOADED_TARGET_IMAGES_ONLY=1
@@ -375,93 +397,34 @@ prepare_deploy_disk_capacity() {
     return 0
   fi
 
-  check_deploy_disk_capacity
+  for service in "${SERVICES[@]}"; do
+    case "$service" in
+      miniapp-static|miniapp-major-static|admin-static)
+        needs_static_build=1
+        ;;
+      api-*)
+        ;;
+      *)
+        echo "Unknown deploy target reached disk preflight: $service" >&2
+        maxim_check_deploy_disk_capacity 1 1
+        return
+        ;;
+    esac
+  done
+
+  maxim_check_deploy_disk_capacity "$BUILD_API_IMAGE" "$needs_static_build"
 }
 
 require_preloaded_target_image() {
   local image_ref="$1"
 
-  if docker image inspect "$image_ref" >/dev/null 2>&1; then
+  if verified_preloaded_target_image "$image_ref"; then
     return 0
   fi
 
-  echo "Preloaded target image disappeared after the build disk preflight was skipped: $image_ref" >&2
+  echo "Preloaded target image disappeared or lost verified labels after the build disk preflight was skipped: $image_ref" >&2
   echo "Refusing fallback build; restore the exact image or satisfy the disk build preflight." >&2
   return 1
-}
-
-check_deploy_disk_capacity() {
-  local target_percent="${MAXIM_DEPLOY_DISK_TARGET_PERCENT:-${MAXIM_DEPLOY_DISK_WARN_PERCENT:-90}}"
-  local critical_percent="${MAXIM_DEPLOY_DISK_CRITICAL_PERCENT:-${MAXIM_DEPLOY_DISK_MAX_PERCENT:-95}}"
-  local hard_minimum_free_bytes="6442450944"
-  local minimum_free_bytes="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-$hard_minimum_free_bytes}"
-  local disk_path="/var/lib/docker"
-  local disk_stats
-  local available_bytes
-  local used_percent
-
-  validate_nonnegative_int "MAXIM_DEPLOY_DISK_TARGET_PERCENT" "$target_percent"
-  validate_nonnegative_int "MAXIM_DEPLOY_DISK_CRITICAL_PERCENT" "$critical_percent"
-  validate_nonnegative_int "MAXIM_DEPLOY_DISK_MIN_FREE_BYTES" "$minimum_free_bytes"
-  target_percent="$(normalize_nonnegative_int "$target_percent")"
-  critical_percent="$(normalize_nonnegative_int "$critical_percent")"
-  minimum_free_bytes="$(normalize_nonnegative_int "$minimum_free_bytes")"
-  if decimal_less_than "$minimum_free_bytes" "$hard_minimum_free_bytes"; then
-    echo "MAXIM_DEPLOY_DISK_MIN_FREE_BYTES must be at least ${hard_minimum_free_bytes}." >&2
-    exit 1
-  fi
-  if ! decimal_less_than "$target_percent" "$critical_percent" || \
-     decimal_less_than 100 "$critical_percent"; then
-    echo "Disk thresholds must satisfy target < critical <= 100." >&2
-    exit 1
-  fi
-
-  if [[ ! -d "$disk_path" ]]; then
-    disk_path="/"
-  fi
-  if ! disk_stats="$(
-    df -P -B1 "$disk_path" | awk 'NR == 2 { gsub(/%/, "", $5); print $4, $5 }'
-  )"; then
-    echo "Failed to read disk utilization for $disk_path in bytes." >&2
-    exit 1
-  fi
-  read -r available_bytes used_percent <<< "$disk_stats"
-  if [[ ! "$available_bytes" =~ ^[0-9]+$ ]] || [[ ! "$used_percent" =~ ^[0-9]+$ ]]; then
-    echo "Failed to read disk utilization for $disk_path in bytes." >&2
-    exit 1
-  fi
-  available_bytes="$(normalize_nonnegative_int "$available_bytes")"
-  used_percent="$(normalize_nonnegative_int "$used_percent")"
-
-  echo "Deploy disk preflight: path=$disk_path used=${used_percent}% available=${available_bytes}B minimum-free=${minimum_free_bytes}B target=${target_percent}% critical=${critical_percent}%"
-  if decimal_less_than "$available_bytes" "$minimum_free_bytes"; then
-    cat >&2 <<EOF
-Refusing to build with ${available_bytes} free bytes; at least ${minimum_free_bytes} bytes are required.
-Run infra/scripts/vps-docker-space-reclaim.sh after reviewing its inventory.
-This absolute free-space minimum is not bypassed by MAXIM_ALLOW_CRITICAL_DISK_DEPLOY.
-EOF
-    exit 1
-  fi
-
-  if ! decimal_less_than "$used_percent" "$target_percent" && \
-     ! is_enabled "${MAXIM_ALLOW_CRITICAL_DISK_DEPLOY:-0}"; then
-    local severity="above the deploy target"
-    if ! decimal_less_than "$used_percent" "$critical_percent"; then
-      severity="critical"
-    fi
-    cat >&2 <<EOF
-Refusing to build with ${severity} disk utilization (${used_percent}%).
-Run infra/scripts/vps-docker-space-reclaim.sh after reviewing its inventory.
-This guard never prunes Docker volumes. Set MAXIM_ALLOW_CRITICAL_DISK_DEPLOY=1 only for an explicit emergency deploy.
-EOF
-    exit 1
-  fi
-
-  if ! decimal_less_than "$used_percent" "$critical_percent"; then
-    echo "CRITICAL: deploy host disk utilization is ${used_percent}%." >&2
-  elif ! decimal_less_than "$used_percent" "$target_percent"; then
-    echo "WARNING: deploy host disk utilization is ${used_percent}%." >&2
-  fi
 }
 
 validate_deploy_branch() {
@@ -591,6 +554,7 @@ reexec_if_current_script_changed() {
 
   if ! diff_in_paths \
     "$SCRIPT_REL_PATH" \
+    "infra/scripts/lib/deploy-disk-capacity.sh" \
     "infra/scripts/lib/deploy-lock.sh" \
     "infra/scripts/lib/deploy-topology.sh" \
     "infra/scripts/lib/change-impact-components.generated.sh"; then
@@ -974,27 +938,6 @@ validate_nonnegative_int() {
   exit 1
 }
 
-normalize_nonnegative_int() {
-  local value="$1"
-  local leading_zeroes="${value%%[!0]*}"
-
-  value="${value#"$leading_zeroes"}"
-  printf '%s\n' "${value:-0}"
-}
-
-decimal_less_than() {
-  local left
-  local right
-
-  left="$(normalize_nonnegative_int "$1")"
-  right="$(normalize_nonnegative_int "$2")"
-  if [[ "${#left}" -ne "${#right}" ]]; then
-    [[ "${#left}" -lt "${#right}" ]]
-    return
-  fi
-  [[ "$left" < "$right" ]]
-}
-
 ensure_requested_services_running() {
   local service
 
@@ -1038,7 +981,7 @@ remove_stale_service_containers() {
 
 run_migrations() {
   ensure_compose_env
-  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api-ingress \
+  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --no-build api-ingress \
     ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 }
 
@@ -1131,6 +1074,11 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     require_preloaded_target_image "$MAXIM_API_IMAGE"
     echo "Reusing existing immutable API image: $MAXIM_API_IMAGE"
   else
+    if docker image inspect "$MAXIM_API_IMAGE" >/dev/null 2>&1 &&
+       ! verified_preloaded_target_image "$MAXIM_API_IMAGE"; then
+      echo "Refusing to reuse or overwrite an unverified exact-SHA API image." >&2
+      exit 1
+    fi
     maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE"
   fi
   if ! run_migrations; then
@@ -1158,8 +1106,12 @@ for service in "${SERVICES_TO_BUILD[@]}"; do
       exit 2
       ;;
   esac
-  if docker image inspect "$candidate_image_ref" >/dev/null 2>&1; then
+  if docker image inspect "$candidate_image_ref" >/dev/null 2>&1 &&
+     verified_preloaded_target_image "$candidate_image_ref"; then
     echo "Reusing existing immutable static image: $candidate_image_ref"
+  elif docker image inspect "$candidate_image_ref" >/dev/null 2>&1; then
+    echo "Refusing to reuse or overwrite an unverified exact-SHA static image: $candidate_image_ref" >&2
+    exit 1
   elif [[ "$REUSE_PRELOADED_TARGET_IMAGES_ONLY" -eq 1 ]]; then
     require_preloaded_target_image "$candidate_image_ref"
   else

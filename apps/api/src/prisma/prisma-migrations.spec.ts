@@ -13,6 +13,72 @@ function readSchema(): string {
 }
 
 describe('Prisma migrations', () => {
+  it('adds ordered channel suggestion image assets without rewriting legacy audit payloads', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260802061500_add_channel_suggestion_image_assets');
+    const indexMigration = readMigration('20260802061600_index_channel_suggestion_image_assets');
+
+    expect(schema).toContain('model ChannelSuggestionImageAsset');
+    expect(schema).toContain('channelSuggestionImageAssets     ChannelSuggestionImageAsset[]');
+    expect(schema).toContain(
+      '@@unique([auditLogId, position], map: "channel_suggestion_image_assets_audit_position_key")',
+    );
+    expect(migration).toContain('CREATE TABLE "channel_suggestion_image_assets"');
+    expect(migration).toContain('"bytes" BYTEA');
+    expect(migration).toContain('"durable_payload" JSONB');
+    expect(migration).toContain('OCTET_LENGTH("bytes") > 0');
+    expect(migration).toContain('"size_bytes" = OCTET_LENGTH("bytes")');
+    expect(migration).toContain('JSONB_TYPEOF("durable_payload") = \'object\'');
+    expect(indexMigration).toContain(
+      'CREATE UNIQUE INDEX CONCURRENTLY "channel_suggestion_image_assets_audit_position_key"',
+    );
+    expect(migration).toContain('ON DELETE CASCADE ON UPDATE CASCADE');
+    expect(migration).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO|audit_logs|FROM)\b/u);
+  });
+
+  it('removes unused raw membership indexes and tunes autovacuum without running it', () => {
+    const schema = readSchema();
+    const dropMigrations = new Map([
+      [
+        'chat_membership_activity_events_dashboard_idx',
+        readMigration('20260802054500_drop_membership_dashboard_index'),
+      ],
+      [
+        'chat_membership_activity_events_chat_id_event_type_event_at_idx',
+        readMigration('20260802054600_drop_membership_event_type_index'),
+      ],
+      [
+        'chat_membership_activity_events_chat_id_event_at_idx',
+        readMigration('20260802054700_drop_membership_event_at_index'),
+      ],
+    ]);
+    const tuningMigration = readMigration('20260802054800_tune_high_growth_table_autovacuum');
+
+    for (const [indexName, migration] of dropMigrations) {
+      expect(schema).not.toContain(indexName);
+      expect(migration).toContain(`DROP INDEX CONCURRENTLY IF EXISTS "${indexName}"`);
+      expect(migration.match(/;/gu)).toHaveLength(1);
+    }
+    expect(schema).toContain('chat_membership_activity_events_chat_id_user_id_event_at_idx');
+    expect([...dropMigrations.values()].join('\n')).not.toContain(
+      'chat_membership_activity_feed_items_chat_event_idx',
+    );
+
+    for (const tableName of [
+      'webhook_events',
+      'webhook_execution_claims',
+      'managed_entity_local_activities',
+      'max_action_ledger',
+      'vk_parsing_posts',
+      'managed_broadcasts',
+    ]) {
+      expect(tuningMigration).toContain(`ALTER TABLE "${tableName}" SET (`);
+    }
+    expect(tuningMigration).toContain('autovacuum_vacuum_scale_factor = 0.05');
+    expect(tuningMigration).toContain('autovacuum_vacuum_insert_scale_factor = 0.05');
+    expect(tuningMigration).not.toMatch(/\b(?:VACUUM|REINDEX)\b/u);
+  });
+
   it('backfills channel view milestones only from bounded post-age snapshots', () => {
     const schema = readSchema();
     const migration = readMigration('20260801120000_add_channel_post_view_milestones');

@@ -595,6 +595,7 @@ export function createPrismaMock() {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       delete: jest.fn().mockResolvedValue(undefined),
     },
+    channelSuggestionImageAsset: { findMany: jest.fn().mockResolvedValue([]) },
     dialogNotificationSubscription: {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),

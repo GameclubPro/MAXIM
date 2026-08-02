@@ -79,6 +79,23 @@ test('validates Compose with the public env while keeping the runtime env defaul
   assert.match(infraCheck, /docker compose --env-file \.env\.example/u);
 });
 
+test('caps json-file logs for stateful services in both Compose topologies', () => {
+  for (const path of ['infra/docker-compose.yml', 'infra/docker-compose.scale.yml']) {
+    const compose = read(path);
+    const postgresBlock = compose.slice(
+      compose.indexOf('  postgres:\n'),
+      compose.indexOf('  redis:\n'),
+    );
+    const redisBlock = compose.slice(
+      compose.indexOf('  redis:\n'),
+      compose.indexOf('  api-ingress:\n'),
+    );
+
+    assert.match(postgresBlock, /logging: \*default-logging/u, `${path} postgres logging`);
+    assert.match(redisBlock, /logging: \*default-logging/u, `${path} redis logging`);
+  }
+});
+
 test('validates deploy targets before synchronization or runtime side effects', () => {
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   const validation = callIndexes(deploy, 'validate_requested_services')[0];
@@ -95,6 +112,21 @@ test('validates deploy targets before synchronization or runtime side effects', 
     /MAXIM_EXPECTED_DEPLOY_SHA is required for every mutating production deploy/u,
   );
   assert.match(deploy, /if \[\[ "\$DEPLOY_MODE" == "plan" \]\]/u);
+});
+
+test('re-executes deploy entrypoints when the loaded disk-capacity library changes', () => {
+  for (const path of [
+    'infra/scripts/vps-pull-build-up.sh',
+    'infra/scripts/vps-pull-build-up-scale.sh',
+  ]) {
+    const deploy = read(path);
+    const reexecBlock = deploy.slice(
+      deploy.indexOf('reexec_if_current_script_changed()'),
+      deploy.indexOf('\n}', deploy.indexOf('reexec_if_current_script_changed()')) + 2,
+    );
+
+    assert.match(reexecBlock, /infra\/scripts\/lib\/deploy-disk-capacity\.sh/u, path);
+  }
 });
 
 test('uses component manifests, immutable refs, conditional migrations, and strict smokes', () => {
@@ -138,6 +170,7 @@ test('keeps backup preflight read-only and reclaims only manifest-aware release 
   assert.ok(reclaim.indexOf('Node 24 is required') < callIndex(reclaim, 'acquire_deploy_lock'));
   assert.match(reclaim, /acquire_deploy_lock/u);
   assert.doesNotMatch(reclaim, /docker image prune/u);
+  assert.doesNotMatch(reclaim, /docker (?:builder|buildx|system) prune/u);
   assert.doesNotMatch(reclaim, /docker volume prune/u);
   assert.doesNotMatch(reclaim, /docker container (?:prune|rm)/u);
 });

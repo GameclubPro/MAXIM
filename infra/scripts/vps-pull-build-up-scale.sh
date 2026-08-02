@@ -11,6 +11,8 @@ ORIGINAL_ARGS=("$@")
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
+# shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 
 SCALE_PROJECT_NAME="infra-scale"
 MAIN_PROJECT_NAME="infra"
@@ -132,7 +134,9 @@ reexec_if_current_script_changed() {
     return 0
   fi
 
-  if ! diff_in_paths "$SCRIPT_REL_PATH"; then
+  if ! diff_in_paths \
+    "$SCRIPT_REL_PATH" \
+    "infra/scripts/lib/deploy-disk-capacity.sh"; then
     return 0
   fi
 
@@ -308,7 +312,7 @@ recreate_service_wave() {
   fi
 
   echo "Recreating $label services: ${requested_services[*]}"
-  docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${requested_services[@]}"
+  docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "${requested_services[@]}"
 
   for service in "${requested_services[@]}"; do
     wait_for_service_running "$service" 180
@@ -324,7 +328,7 @@ ensure_requested_services_running() {
     fi
 
     echo "Requested service $service is not running after deploy waves. Recreating it explicitly..."
-    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "$service"
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "$service"
     wait_for_service_running "$service" 180
   done
 }
@@ -476,7 +480,7 @@ remove_stale_service_containers() {
 
 run_migrations() {
   ensure_compose_env
-  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api-ingress \
+  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --no-build api-ingress \
     ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 }
 
@@ -491,8 +495,6 @@ sync_branch
 reexec_if_current_script_changed
 ensure_compose_env
 warn_postgres_password_fallback
-prepare_scale_redis_named_volume
-stop_conflicting_stacks
 warn_legacy_miniapp_static_target
 ensure_service_requested_if_down "miniapp-major-static"
 if has_requested_api_service; then
@@ -518,7 +520,23 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     "Shared API image build or API-related diff detected."
 fi
 
-docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
+BUILD_STATIC_IMAGE=0
+for service in "${SERVICES[@]}"; do
+  case "$service" in
+    miniapp-static|miniapp-major-static)
+      BUILD_STATIC_IMAGE=1
+      ;;
+  esac
+done
+
+if [[ "$BUILD_API_IMAGE" -eq 1 || "$BUILD_STATIC_IMAGE" -eq 1 ]]; then
+  maxim_check_deploy_disk_capacity "$BUILD_API_IMAGE" "$BUILD_STATIC_IMAGE"
+fi
+
+prepare_scale_redis_named_volume
+stop_conflicting_stacks
+
+docker compose "${COMPOSE_FILES[@]}" up -d --no-build postgres redis
 wait_for_postgres 180
 
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then

@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+# shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
+source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 
 DURATION_SEC="${1:-${MAXIM_MONITOR_DURATION_SEC:-1800}}"
 INTERVAL_SEC="${2:-${MAXIM_MONITOR_INTERVAL_SEC:-300}}"
@@ -441,8 +443,11 @@ REMOTE
 }
 
 summarize_runtime_pressure() {
+  local disk_capacity_env
   local remote_command
 
+  printf -v disk_capacity_env 'MAXIM_API_BUILD_HARD_MIN_FREE_BYTES=%q\n' \
+    "$MAXIM_API_BUILD_HARD_MIN_FREE_BYTES"
   remote_command=$(cat <<'REMOTE'
 echo "uptime"
 uptime || true
@@ -454,12 +459,12 @@ disk_path="/var/lib/docker"
 if [[ ! -d "$disk_path" ]]; then
   disk_path="/"
 fi
-deploy_disk_hard_minimum_free_bytes="6442450944"
+deploy_disk_hard_minimum_free_bytes="$MAXIM_API_BUILD_HARD_MIN_FREE_BYTES"
 disk_stats="$(df -P -B1 "$disk_path" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $4, $5 }')"
 read -r disk_available_bytes disk_used_percent <<< "$disk_stats"
 if [[ "$disk_available_bytes" =~ ^[0-9]+$ && "$disk_used_percent" =~ ^[0-9]+$ ]]; then
   if (( disk_available_bytes < deploy_disk_hard_minimum_free_bytes )); then
-    printf "DEPLOY_DISK_BLOCKED path=%s available=%sB minimum-free=%sB\n" \
+    printf "API_BUILD_DISK_BLOCKED path=%s available=%sB minimum-free=%sB\n" \
       "$disk_path" "$disk_available_bytes" "$deploy_disk_hard_minimum_free_bytes"
   fi
   if (( disk_used_percent >= 90 )); then
@@ -482,6 +487,7 @@ if command -v iostat >/dev/null 2>&1; then
 fi
 REMOTE
 )
+  remote_command="$disk_capacity_env$remote_command"
 
   ./infra/scripts/vps-connect.sh exec "$remote_command"
 }

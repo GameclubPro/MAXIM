@@ -85,6 +85,39 @@ test('accepts an immutable baseline and concurrent future indexes', () => {
   assert.deepEqual(findPrismaMigrationViolations(root, immutablePolicyPrefix), []);
 });
 
+test('accepts an isolated concurrent index drop', () => {
+  const { root, immutablePolicyPrefix } = fixture();
+  const migration = `${futureMigrationPrefix}_drop_lookup`;
+  write(
+    root,
+    `apps/api/prisma/migrations/${migration}/migration.sql`,
+    'DROP INDEX CONCURRENTLY IF EXISTS "Example_lookup_idx";\n',
+  );
+  writePolicy(root, [immutablePolicyPrefix.rulesAfter, migration], immutablePolicyPrefix.rulesAfter);
+
+  assert.deepEqual(findPrismaMigrationViolations(root, immutablePolicyPrefix), []);
+});
+
+test('rejects a concurrent index drop combined with another statement', () => {
+  const { root, immutablePolicyPrefix } = fixture();
+  const migration = `${futureMigrationPrefix}_drop_lookup_and_tune`;
+  write(
+    root,
+    `apps/api/prisma/migrations/${migration}/migration.sql`,
+    [
+      'DROP INDEX CONCURRENTLY IF EXISTS "Example_lookup_idx";',
+      'ALTER TABLE "Example" SET (autovacuum_vacuum_scale_factor = 0.05);',
+      '',
+    ].join('\n'),
+  );
+  writePolicy(root, [immutablePolicyPrefix.rulesAfter, migration], immutablePolicyPrefix.rulesAfter);
+
+  assert.match(
+    findPrismaMigrationViolations(root, immutablePolicyPrefix).join('\n'),
+    /combines DROP INDEX CONCURRENTLY with another statement/u,
+  );
+});
+
 test('rejects edits to immutable migration SQL', () => {
   const { root, immutablePolicyPrefix } = fixture();
   write(

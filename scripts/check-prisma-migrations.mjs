@@ -250,6 +250,22 @@ function splitStatements(tokens) {
   return statements;
 }
 
+function hasUnisolatedConcurrentDropIndex(tokens) {
+  const statements = splitStatements(tokens);
+  if (statements.length <= 1) {
+    return false;
+  }
+
+  return statements.some((statement) =>
+    statement.some(
+      (token, index) =>
+        isWord(token, 'DROP') &&
+        isWord(statement[index + 1], 'INDEX') &&
+        isWord(statement[index + 2], 'CONCURRENTLY'),
+    ),
+  );
+}
+
 function analyzeTokenStream(tokens) {
   const result = {
     destructive: false,
@@ -441,10 +457,17 @@ export function findPrismaMigrationViolations(
       continue;
     }
 
-    const analysis = analyzePrismaMigrationSql(readFileSync(migrationPath, 'utf8'));
+    const migrationSql = readFileSync(migrationPath, 'utf8');
+    const analysis = analyzePrismaMigrationSql(migrationSql);
     const isNewPolicyMigration = name > immutablePolicyPrefix.rulesAfter;
     if (!isNewPolicyMigration) {
       continue;
+    }
+
+    if (hasUnisolatedConcurrentDropIndex(tokenizeSql(migrationSql))) {
+      violations.push(
+        `${name} combines DROP INDEX CONCURRENTLY with another statement; isolate it because Prisma cannot safely split this PostgreSQL syntax.`,
+      );
     }
 
     if (
