@@ -1,0 +1,4 @@
+services:
+  api-ingress:
+    image: ${MAXIM_MIGRATION_API_IMAGE:?MAXIM_MIGRATION_API_IMAGE must reference a prebuilt API image}
+    build: !reset null

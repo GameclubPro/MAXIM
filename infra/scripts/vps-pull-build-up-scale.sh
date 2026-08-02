@@ -17,6 +17,7 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-disk-capacity.sh"
 SCALE_PROJECT_NAME="infra-scale"
 MAIN_PROJECT_NAME="infra"
 COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
+MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "infra/docker-compose.runtime-no-build.yml")
 LEGACY_COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
 SCALE_REDIS_VOLUME="${SCALE_PROJECT_NAME}_redis_data"
 REDIS_DATA_COPY_IMAGE="${MAXIM_REDIS_VOLUME_COPY_IMAGE:-redis:7-alpine}"
@@ -480,7 +481,8 @@ remove_stale_service_containers() {
 
 run_migrations() {
   ensure_compose_env
-  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --no-build api-ingress \
+  MAXIM_MIGRATION_API_IMAGE="${SCALE_PROJECT_NAME}-api-ingress:latest" \
+    docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
     ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 }
 

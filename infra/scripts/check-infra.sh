@@ -12,12 +12,15 @@ done < <(find infra/scripts -type f -name '*.sh' -print0)
 
 compose_validation() {
   MAXIM_COMPOSE_SERVICE_ENV_FILE=../.env.example \
+    MAXIM_MIGRATION_API_IMAGE=maxim-api:infra-check \
     docker compose --env-file .env.example "$@" config --quiet
 }
 
 compose_validation -f infra/docker-compose.yml
 compose_validation -f infra/docker-compose.yml -f infra/docker-compose.local.yml
 compose_validation -f infra/docker-compose.yml -f infra/docker-compose.scale.yml
+compose_validation -f infra/docker-compose.yml -f infra/docker-compose.runtime-no-build.yml
+compose_validation -p infra-scale -f infra/docker-compose.scale.yml -f infra/docker-compose.runtime-no-build.yml
 node --test infra/scripts/*.test.mjs
 
 if command -v shellcheck >/dev/null 2>&1; then

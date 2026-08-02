@@ -19,6 +19,7 @@ RELEASE_RETAIN="${MAXIM_RELEASE_RETAIN:-5}"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 PRESERVED_COMPOSE_FILE=""
+PRESERVED_MIGRATION_COMPOSE_FILE=""
 RELEASE_MANIFEST_HELPER=""
 SMOKE_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
@@ -95,6 +96,7 @@ invalidate_stale_release_inventory() {
 cleanup() {
   invalidate_stale_release_inventory
   [[ -z "$PRESERVED_COMPOSE_FILE" ]] || rm -f "$PRESERVED_COMPOSE_FILE"
+  [[ -z "$PRESERVED_MIGRATION_COMPOSE_FILE" ]] || rm -f "$PRESERVED_MIGRATION_COMPOSE_FILE"
   [[ -z "$RELEASE_MANIFEST_HELPER" ]] || rm -f "$RELEASE_MANIFEST_HELPER"
   [[ -z "$SMOKE_HELPER" ]] || rm -f "$SMOKE_HELPER"
   [[ -z "$APPLIED_MIGRATIONS_FILE" ]] || rm -f "$APPLIED_MIGRATIONS_FILE"
@@ -303,13 +305,16 @@ ensure_compose_env
 refuse_conflicting_scale_stack
 ensure_stateful_services_ready
 PRESERVED_COMPOSE_FILE="$(mktemp "$ROOT_DIR/infra/.runtime-rollback-compose.XXXXXX.yml")"
+PRESERVED_MIGRATION_COMPOSE_FILE="$(mktemp "$ROOT_DIR/infra/.runtime-rollback-no-build.XXXXXX.yml")"
 RELEASE_MANIFEST_HELPER="$(mktemp --suffix=.mjs)"
 SMOKE_HELPER="$(mktemp --suffix=.mjs)"
 APPLIED_MIGRATIONS_FILE="$(mktemp)"
 cp infra/docker-compose.yml "$PRESERVED_COMPOSE_FILE"
+cp infra/docker-compose.runtime-no-build.yml "$PRESERVED_MIGRATION_COMPOSE_FILE"
 cp infra/scripts/release-manifest.mjs "$RELEASE_MANIFEST_HELPER"
 cp scripts/smoke-http.mjs "$SMOKE_HELPER"
 COMPOSE_FILES=(--env-file "$ROOT_DIR/.env" -p infra -f "$PRESERVED_COMPOSE_FILE")
+MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "$PRESERVED_MIGRATION_COMPOSE_FILE")
 CURRENT_HEAD="$(git rev-parse --short HEAD)"
 TARGET_HEAD="${TARGET_FULL_SHA:0:12}"
 ROLLBACK_API_IMAGE="maxim-api:runtime-rollback-${TARGET_FULL_SHA}"
@@ -324,7 +329,8 @@ export MAXIM_API_IMAGE="$ROLLBACK_API_IMAGE"
 maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE"
 ROLLBACK_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_API_IMAGE")"
 ROLLBACK_RUNTIME_STARTED=1
-docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --no-build api-ingress \
+MAXIM_MIGRATION_API_IMAGE="$ROLLBACK_API_IMAGE" \
+  docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
   ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "${SERVICES[@]}"
 

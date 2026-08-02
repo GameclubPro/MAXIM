@@ -9,6 +9,7 @@ const deployScript = read('infra/scripts/vps-pull-build-up.sh');
 const runtimeRollbackScript = read('infra/scripts/vps-runtime-rollback.sh');
 const immutableRollbackScript = read('infra/scripts/vps-release-rollback.sh');
 const scaleDeployScript = read('infra/scripts/vps-pull-build-up-scale.sh');
+const migrationNoBuildCompose = read('infra/docker-compose.runtime-no-build.yml');
 const diskCapacityLibrary = read('infra/scripts/lib/deploy-disk-capacity.sh');
 const apiMinimumFreeBytes = 20 * 1024 ** 3;
 const staticMinimumFreeBytes = 6 * 1024 ** 3;
@@ -411,7 +412,7 @@ test('runtime and scale builds run capacity checks before destructive work', () 
   assert.ok(scalePreflight < scaleDeployScript.lastIndexOf('stop_conflicting_stacks'));
 });
 
-test('runtime recreation cannot trigger an implicit image build', () => {
+test('runtime recreation and migrations cannot trigger implicit image builds', () => {
   for (const script of [
     deployScript,
     runtimeRollbackScript,
@@ -432,8 +433,53 @@ test('runtime recreation cannot trigger an implicit image build', () => {
     const runCommands = script
       .split('\n')
       .filter((line) => line.includes('docker compose') && line.includes(' run --rm '));
+
+    assert.ok(runCommands.length > 0, 'expected migration docker compose run commands');
     for (const command of runCommands) {
-      assert.match(command, / --no-build /u);
+      assert.match(command, /"\$\{MIGRATION_COMPOSE_FILES\[@\]\}"/u);
+      assert.match(command, / --pull never /u);
+      assert.doesNotMatch(command, / --no-build /u);
     }
   }
+
+  assert.equal(
+    migrationNoBuildCompose,
+    [
+      'services:',
+      '  api-ingress:',
+      '    image: ${MAXIM_MIGRATION_API_IMAGE:?MAXIM_MIGRATION_API_IMAGE must reference a prebuilt API image}',
+      '    build: !reset null',
+      '',
+    ].join('\n'),
+  );
+
+  const migrationComposeDefinition =
+    'MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "infra/docker-compose.runtime-no-build.yml")';
+  assert.ok(deployScript.includes(migrationComposeDefinition));
+  assert.ok(scaleDeployScript.includes(migrationComposeDefinition));
+  assert.ok(deployScript.includes('MAXIM_MIGRATION_API_IMAGE="$MAXIM_API_IMAGE" \\'));
+  assert.ok(
+    scaleDeployScript.includes(
+      'MAXIM_MIGRATION_API_IMAGE="${SCALE_PROJECT_NAME}-api-ingress:latest" \\',
+    ),
+  );
+  assert.ok(runtimeRollbackScript.includes('MAXIM_MIGRATION_API_IMAGE="$ROLLBACK_API_IMAGE" \\'));
+
+  const preservedCopy =
+    'cp infra/docker-compose.runtime-no-build.yml "$PRESERVED_MIGRATION_COMPOSE_FILE"';
+  const preservedDefinition =
+    'MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "$PRESERVED_MIGRATION_COMPOSE_FILE")';
+  const preservedCleanup =
+    '[[ -z "$PRESERVED_MIGRATION_COMPOSE_FILE" ]] || rm -f "$PRESERVED_MIGRATION_COMPOSE_FILE"';
+  const copyIndex = runtimeRollbackScript.indexOf(preservedCopy);
+  const definitionIndex = runtimeRollbackScript.indexOf(preservedDefinition);
+  const switchIndex = runtimeRollbackScript.indexOf('git switch --detach');
+  assert.notEqual(copyIndex, -1);
+  assert.notEqual(definitionIndex, -1);
+  assert.notEqual(switchIndex, -1);
+  assert.ok(runtimeRollbackScript.includes(preservedCleanup));
+  assert.ok(
+    copyIndex < definitionIndex && definitionIndex < switchIndex,
+    'runtime rollback must preserve and select the no-build overlay before switching refs',
+  );
 });

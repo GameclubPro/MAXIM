@@ -19,6 +19,7 @@ source "$ROOT_DIR/infra/scripts/lib/change-impact-components.generated.sh"
 MAIN_PROJECT_NAME="infra"
 SCALE_PROJECT_NAME="infra-scale"
 COMPOSE_FILES=(--env-file ".env" -p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
+MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "infra/docker-compose.runtime-no-build.yml")
 ALTERNATE_COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
@@ -981,7 +982,8 @@ remove_stale_service_containers() {
 
 run_migrations() {
   ensure_compose_env
-  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --no-build api-ingress \
+  MAXIM_MIGRATION_API_IMAGE="$MAXIM_API_IMAGE" \
+    docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
     ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 }
 
