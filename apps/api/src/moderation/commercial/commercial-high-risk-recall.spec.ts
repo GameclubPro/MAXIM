@@ -145,6 +145,9 @@ describe('bounded high-risk commercial recall', () => {
     expect(result).toBeDefined();
     expect(result?.matchedSignals).toContain(`risk:${testCase.ruleLabel}`);
     expect(result?.matchedSignals).toContain(`recall-cap:${testCase.cap}:${testCase.ruleLabel}`);
+    if (testCase.ruleLabel === 'divination-contact-offer') {
+      expect(result?.safeContextBucket).toBe('none');
+    }
     expect(result?.actionBand).toBe(testCase.actionBand);
     expect(result?.actionBand).not.toBe('DELETE');
     expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');

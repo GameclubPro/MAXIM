@@ -12,7 +12,11 @@ import {
   isLikelyPrivateLowQuantityGoodsListing,
   isThirdPartyServiceRecommendationWithoutCurrentOffer,
 } from './commercial-features';
-import { resolveCommercialEvidenceProfile } from './commercial-evidence';
+import {
+  isCommercialEscalationRiskSignal,
+  resolveCommercialEvidenceProfile,
+} from './commercial-evidence';
+import { resolveCommercialLocalContext } from './commercial-local-context';
 import { collectFirstPatternLabels, createCommercialTextMatcher } from './commercial-match-utils';
 import { CommercialSecondStageScorer } from './commercial-scorer';
 import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
@@ -35,12 +39,17 @@ const COMMERCIAL_WARMUP_TEXTS = [
 
 const AMBIGUOUS_TRANSPORT_REVIEW_PREFILTER =
   /(?:водител|пассажир|(?:^|[^\p{L}\p{N}_-])еду(?=$|[^\p{L}\p{N}_-]))/iu;
+const MIXED_PROTECTED_COMMERCIAL_CONTEXT_PREFILTER =
+  /(?:^|[.!?;\n])\s*(?:(?:(?:а|но)\s+)?(?:отдельно|также|другая\s+тема|по\s+другой\s+теме|ещ[её]\s+одно\s+предложение)\s*[:,-]?|(?:(?:а|но)\s+)?(?:у\s+нас|мы|наш[аи]\s+компани[яи]|я\s+(?:помогу|помогаю|предлагаю|оформлю|выдам))\b)/iu;
+const BOUNDARY_LOCAL_CURRENT_OFFER_PREFILTER =
+  /[.!?;\n]\s*[^.!?;\n]{0,320}(?:пишите?|напишите?|звоните?|обращайтесь|остав(?:ьте|ляйте)\s+заявк[\p{L}\p{N}_-]*|получите|оформите|закаж(?:ите|и|ем|у)|заказывайте|регистрируйтесь|переходите|свяжитесь|записывайтесь|запис[ьи\p{L}\p{N}_-]*\s+в\s+(?:лс|личк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu;
 
 let commercialDetectorWarmUpComplete = false;
 let commercialDetectorWarmUpInProgress = false;
 
 export type CommercialDetection = {
   rawText: string;
+  analysisText?: string;
   confidenceScore: number;
   decisionBand: CommercialDecisionBand;
   matchedSignals: string[];
@@ -148,20 +157,60 @@ export class CommercialAdDetector {
     commercialCampaignContext?: CommercialCampaignContext | null;
   }): CommercialDetection | null {
     const { settings, commercialCampaignContext } = params;
-    const rawLoweredText = normalizeCommercialRawText(params.rawLoweredText);
-    const normalizedText = normalizeCommercialText(rawLoweredText || params.normalizedText);
+    let analysisCampaignContext = commercialCampaignContext;
+    let rawLoweredText = normalizeCommercialRawText(params.rawLoweredText);
+    let normalizedText = normalizeCommercialText(rawLoweredText || params.normalizedText);
 
     if (!normalizedText || normalizedText.length < 6) {
       return null;
     }
 
     const appliedThresholds = resolveCommercialThresholds(settings);
-    const state = collectCommercialSignals({
+    let state = collectCommercialSignals({
       normalizedText,
       rawLoweredText,
       profile: appliedThresholds,
       commercialCampaignContext,
     });
+    const shouldInspectOrdinaryProtectedContext =
+      (MIXED_PROTECTED_COMMERCIAL_CONTEXT_PREFILTER.test(rawLoweredText) ||
+        (state.hasSearchRequestContext &&
+          BOUNDARY_LOCAL_CURRENT_OFFER_PREFILTER.test(rawLoweredText))) &&
+      !state.matchedSignals.some(isCommercialEscalationRiskSignal);
+    const localContext = shouldInspectOrdinaryProtectedContext
+      ? resolveCommercialLocalContext({
+          rawLoweredText,
+          escalationRiskLabels: [],
+          includeOrdinaryProtectedContext: true,
+        })
+      : null;
+    const localOfferText = localContext?.hasProtectedContext
+      ? localContext.independentCommercialOfferText
+      : null;
+    let isolatedIndependentOffer = false;
+    if (localOfferText) {
+      const localRawLoweredText = normalizeCommercialRawText(localOfferText);
+      const localNormalizedText = normalizeCommercialText(localRawLoweredText);
+      const localCampaignContext = retainSenderCommercialCampaignContext(commercialCampaignContext);
+      const localState = collectCommercialSignals({
+        normalizedText: localNormalizedText,
+        rawLoweredText: localRawLoweredText,
+        profile: appliedThresholds,
+        commercialCampaignContext: localCampaignContext,
+      });
+      if (
+        localState.matchedSignals.length > 0 &&
+        localState.hasCommercialContext &&
+        localState.hasDealSignal
+      ) {
+        localState.matchedSignals.push('locality:independent-commercial-offer');
+        rawLoweredText = localRawLoweredText;
+        normalizedText = localNormalizedText;
+        state = localState;
+        analysisCampaignContext = localCampaignContext;
+        isolatedIndependentOffer = true;
+      }
+    }
     if (state.matchedSignals.length === 0 || !state.hasCommercialContext || !state.hasDealSignal) {
       return null;
     }
@@ -173,7 +222,7 @@ export class CommercialAdDetector {
     const evidence = resolveCommercialEvidenceProfile({
       state,
       appliedThresholds,
-      commercialCampaignContext,
+      commercialCampaignContext: analysisCampaignContext,
     });
     const hasBoundedRecallEvidence = evidence.hasBoundedRecallEvidence;
 
@@ -184,9 +233,32 @@ export class CommercialAdDetector {
       return null;
     }
 
+    if (
+      state.negativeSignals.includes('search-pattern:request:specialist') &&
+      /(?:^|[.!?;\n])\s*(?:ищу|нуж(?:ен|на|ны)|посоветуйте|порекомендуйте|подскажите)\s+/iu.test(
+        rawLoweredText,
+      ) &&
+      !hasRecruitmentOfferOverride(state) &&
+      !evidence.hasEscalationRiskEvidence &&
+      !evidence.hasIndependentCommercialOfferEvidence
+    ) {
+      return null;
+    }
+
     const hasSelfPromotionalCommercialContext = hasExplicitSelfPromotionalCommercialContext(state);
     const hasPrivateLowQuantityGoodsListing =
       isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
+    const hasOnlyBareQuestionSearchContext =
+      state.negativeSignals.length > 0 &&
+      state.negativeSignals.every((signal) => signal === 'context:question');
+    const hasBareQuestionStructuredOfferEvidence =
+      hasOnlyBareQuestionSearchContext &&
+      evidence.hasStructuredCommercialContext &&
+      state.hasTransactional &&
+      (state.hasBusinessContext ||
+        state.hasCallToActionContext ||
+        state.hasServiceContext ||
+        state.hasServiceOfferContext);
 
     if (
       state.hasPrivateSaleContext &&
@@ -201,23 +273,13 @@ export class CommercialAdDetector {
       state.hasSearchRequestContext &&
       !hasSelfPromotionalCommercialContext &&
       !evidence.hasEscalationRiskEvidence &&
-      !hasBoundedRecallEvidence
+      !hasBareQuestionStructuredOfferEvidence
     ) {
       return null;
     }
 
-    const hasOnlyBareQuestionSearchContext =
-      state.negativeSignals.length > 0 &&
-      state.negativeSignals.every((signal) => signal === 'context:question');
     const hasBareQuestionSelfPromoTransactionalEvidence =
-      hasOnlyBareQuestionSearchContext &&
-      hasSelfPromotionalCommercialContext &&
-      evidence.hasStructuredCommercialContext &&
-      state.hasTransactional &&
-      (state.hasBusinessContext ||
-        state.hasCallToActionContext ||
-        state.hasServiceContext ||
-        state.hasServiceOfferContext);
+      hasBareQuestionStructuredOfferEvidence && hasSelfPromotionalCommercialContext;
 
     if (
       state.hasSearchRequestContext &&
@@ -344,7 +406,7 @@ export class CommercialAdDetector {
       decisionBand,
       appliedThresholds,
       classification,
-      commercialCampaignContext,
+      commercialCampaignContext: analysisCampaignContext,
     });
     if (secondStage) {
       confidenceScore = secondStage.adjustedConfidenceScore;
@@ -374,6 +436,7 @@ export class CommercialAdDetector {
 
     return {
       rawText: params.rawLoweredText,
+      ...(isolatedIndependentOffer ? { analysisText: rawLoweredText } : {}),
       confidenceScore,
       decisionBand,
       matchedSignals: state.matchedSignals,
@@ -383,17 +446,41 @@ export class CommercialAdDetector {
       evidenceStrength: classification.evidenceStrength,
       reviewRecommended: classification.reviewRecommended,
       reviewReasons: classification.reviewReasons,
-      campaignContext: state.hasCampaignContext ? (commercialCampaignContext ?? null) : null,
+      campaignContext: state.hasCampaignContext ? (analysisCampaignContext ?? null) : null,
       appliedThresholds,
       classifierVersion: secondStage?.classifierVersion ?? null,
       commercialProbability: secondStage?.commercialProbability ?? null,
       reviewProbability: secondStage?.reviewProbability ?? null,
-      classifierReasons: secondStage?.classifierReasons ?? [],
+      classifierReasons: [
+        ...(secondStage?.classifierReasons ?? []),
+        ...(isolatedIndependentOffer ? ['locality:isolated-independent-commercial-offer'] : []),
+      ],
       hasActionDirectDealEvidence: evidence.hasActionDirectDealEvidence,
       hasNonCampaignDirectDealEvidence: evidence.hasNonCampaignDirectDealEvidence,
       hasEscalationRiskEvidence: evidence.hasEscalationRiskEvidence,
     };
   }
+}
+
+function retainSenderCommercialCampaignContext(
+  context: CommercialCampaignContext | null | undefined,
+): CommercialCampaignContext | null {
+  if (!context) {
+    return null;
+  }
+
+  return {
+    senderDistinctChatCount: context.senderDistinctChatCount,
+    senderDistinctChatCount5m: context.senderDistinctChatCount5m,
+    senderDistinctChatCount30m: context.senderDistinctChatCount30m,
+    senderDistinctChatCount120m: context.senderDistinctChatCount120m,
+    sameTextDistinctChatCount: 0,
+    nearTextDistinctChatCount: 0,
+    repeatedPhoneDistinctChatCount: 0,
+    repeatedLinkDistinctChatCount: 0,
+    repeatedDomainDistinctChatCount: 0,
+    repeatedHandleDistinctChatCount: 0,
+  };
 }
 
 function collectAmbiguousTransportReviewSignals(params: {

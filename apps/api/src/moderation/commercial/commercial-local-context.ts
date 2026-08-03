@@ -11,10 +11,13 @@ import {
   ADS_HIGH_RISK_RAW_LINK_PATTERNS,
   ADS_LINK_PATTERN,
   ADS_PRICE_PATTERN,
+  ADS_PRIVATE_GOODS_PATTERNS,
+  ADS_PRIVATE_SINGLE_LISTING_PATTERNS,
   ADS_PROPERTY_AGENT_PATTERNS,
   ADS_PROPERTY_COMMERCIAL_PATTERNS,
   ADS_RECRUITMENT_PATTERNS,
   ADS_SERVICE_OFFER_PATTERNS,
+  ADS_SERVICE_SPECIALTY_MARKERS,
   ADS_SERVICE_SPECIALTY_PATTERNS,
   type CommercialLabeledPattern,
 } from './commercial-patterns';
@@ -49,7 +52,7 @@ const AFFIRMATIVE_ACTION_PATTERN =
 const AFFIRMATIVE_TRANSACTION_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:цен[аы]|стоимость|скидк[а-и]|бонус|депозит|доставка|оплат[аы]|оплатим|платим|вознаграждени[\p{L}\p{N}_-]*|предоплата|бронь|обязательн[\p{L}\p{N}_-]*\s+взнос|участи[ея]\s+платн[\p{L}\p{N}_-]*|в\s+наличии|вход\s+(?:по\s+)?инвайт[\p{L}\p{N}_-]*|ответ[\p{L}\p{N}_-]*\s+в\s+комментар[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*\s+в\s+профил[еья]|принима(?:ю|ем)\s+заказ[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 const AFFIRMATIVE_RESPONSE_CHANNEL_PATTERN =
-  /(?:\[(?:phone|url)\]|(?:^|[^\p{L}\p{N}_-])ссылк[\p{L}\p{N}_-]*\s+в\s+профил[еья](?=$|[^\p{L}\p{N}_-]))/iu;
+  /(?:\[(?:phone|url)\]|(?:^|[^\p{L}\p{N}_-])(?:ссылк[\p{L}\p{N}_-]*\s+в\s+профил[еья]|запис[ьи\p{L}\p{N}_-]*\s+в\s+(?:лс|личк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-]))/iu;
 const CROSS_ASSERTION_DEAL_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:скидк[а-и]|бонус|депозит|оплат[аы]|оплатим|платим|вознаграждени[\p{L}\p{N}_-]*|предоплата|бронь|билет[\p{L}\p{N}_-]*|номерок[\p{L}\p{N}_-]*|перевод\s+(?:по\s+номер[у]?|на\s+карт[уы]|оплат[ыа])|обязательн[\p{L}\p{N}_-]*\s+взнос|участи[ея]\s+платн[\p{L}\p{N}_-]*|в\s+наличии|вход\s+(?:по\s+)?инвайт[\p{L}\p{N}_-]*|ответ[\p{L}\p{N}_-]*\s+в\s+комментар[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*\s+в\s+профил[еья]|принима(?:ю|ем)\s+заказ[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
 const NEGATION_BEFORE_ACTION_PATTERN = /(?:^|[^\p{L}\p{N}_-])не\s+(?:(?:надо|нужно|стоит)\s+)?$/iu;
@@ -57,6 +60,16 @@ const QUOTED_REPORT_INTRO_PATTERN =
   /(?:мошенник[\p{L}\p{N}_-]*|спамер[\p{L}\p{N}_-]*|они|мне|нам)(?:[\p{L}\p{N}\s,()-]{0,60})(?:пишут|прислал[иа]?|рассылают|предлагают|обещают)\s*:/iu;
 const CHANNEL_AD_DUE_DILIGENCE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:кто\s+покупал|покупал[аи]?|брал[аи]?)(?:[\p{L}\p{N}\s.,:;()/%+_"«»—-]{0,80})реклам[\p{L}\p{N}_-]*/iu;
+const QUESTION_OR_RECOMMENDATION_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:посоветуйте|подскажите|кто\s+(?:знает|пользовался|обращался|заказывал)|где\s+(?:купить|найти|заказать)|ищу\s+(?:мастера|специалиста)|можно\s+ли\s+рекомендовать|рекомендую\s+(?:мастера|специалиста)|(?:мастер|специалист|подрядчик)[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,80})(?:сделал[аи]?|делал[аи]?|ремонтировал[аи]?|помог[лаи]?)(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,32})(?:нам|мне|у\s+нас))(?=$|[^\p{L}\p{N}_-])/iu;
+const GROUP_RULES_MODERATION_PATTERN =
+  /^(?=[\s\S]{0,800}(?:правил[\p{L}\p{N}_-]*|запрещ[её]н[\p{L}\p{N}_-]*))(?=[\s\S]{0,800}(?:картин[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*|реклам[\p{L}\p{N}_-]*))(?=[\s\S]{0,800}(?:нарушени[\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|удал[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|нельзя))[\s\S]{20,800}$/iu;
+const CURRENT_OFFER_RESPONSE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])запис[ьи\p{L}\p{N}_-]*\s+в\s+(?:лс|личк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const ATTRIBUTED_RESPONSE_ACTION_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:пишите?|напишите?|звоните?|обращайтесь|свяжитесь)(?:[\p{L}\p{N}\s,:-]{0,32})(?:мне|ему|ей|им|с\s+(?:ним|ней|ними)|мастеру|подрядчику|специалисту|исполнителю)(?=$|[^\p{L}\p{N}_-])/iu;
+const DEMAND_SIDE_SERVICE_FRAME_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:сломал[асоь]?|сломан[аыо]?|не\s+работает|перестал[аи]?\s+работать)(?:[\p{L}\p{N}\s,:-]{0,80})(?:холодильник[\p{L}\p{N}_-]*|техник[\p{L}\p{N}_-]*|телефон[\p{L}\p{N}_-]*|машин[а-яё-]*|окн[а-яё-]*|двер[а-яё-]*)|(?:бюджет|объ[её]м)\s*[:,-]?\s*[\d[]|(?:нуж(?:ен|на|но|ны)|требуется)(?:[\p{L}\p{N}\s,:-]{0,48})(?:ремонт|мастер|специалист))(?=$|[^\p{L}\p{N}_-])/iu;
 
 const GENERAL_COMMERCIAL_PATTERNS: readonly CommercialLabeledPattern[] = [
   ...ADS_BUSINESS_PATTERNS,
@@ -68,6 +81,10 @@ const GENERAL_COMMERCIAL_PATTERNS: readonly CommercialLabeledPattern[] = [
   ...ADS_RECRUITMENT_PATTERNS,
   ...ADS_SERVICE_OFFER_PATTERNS,
   ...ADS_SERVICE_SPECIALTY_PATTERNS,
+];
+const PROTECTED_PRIVATE_LISTING_PATTERNS: readonly CommercialLabeledPattern[] = [
+  ...ADS_PRIVATE_SINGLE_LISTING_PATTERNS,
+  ...ADS_PRIVATE_GOODS_PATTERNS,
 ];
 
 type LocalAssertion = {
@@ -81,21 +98,28 @@ export type CommercialLocalContext = {
   hasIndependentCommercialOffer: boolean;
   hasIndependentEscalationOffer: boolean;
   hasOnlyProtectedEscalationMentions: boolean;
+  hasProtectedContext: boolean;
+  independentCommercialOfferText: string | null;
 };
 
 export function resolveCommercialLocalContext(params: {
   rawLoweredText: string;
   escalationRiskLabels: readonly string[];
+  includeOrdinaryProtectedContext?: boolean;
 }): CommercialLocalContext {
+  const includeOrdinaryProtectedContext = params.includeOrdinaryProtectedContext === true;
   if (
     params.escalationRiskLabels.length === 0 &&
     !isProtectedAssertion(params.rawLoweredText) &&
-    !CHANNEL_AD_DUE_DILIGENCE_PATTERN.test(params.rawLoweredText)
+    !CHANNEL_AD_DUE_DILIGENCE_PATTERN.test(params.rawLoweredText) &&
+    !(includeOrdinaryProtectedContext && isOrdinaryProtectedAssertion(params.rawLoweredText))
   ) {
     return {
       hasIndependentCommercialOffer: false,
       hasIndependentEscalationOffer: false,
       hasOnlyProtectedEscalationMentions: false,
+      hasProtectedContext: false,
+      independentCommercialOfferText: null,
     };
   }
 
@@ -103,13 +127,16 @@ export function resolveCommercialLocalContext(params: {
   const assertions = classifyAssertions(
     splitCommercialAssertions(params.rawLoweredText),
     riskPatterns,
+    includeOrdinaryProtectedContext,
   );
-  const hasIndependentEscalationOffer = hasOfferInUnprotectedWindow(assertions, (window) =>
+  const independentEscalationOffer = findOfferInUnprotectedWindow(assertions, (window) =>
     hasEscalationOffer(window, riskPatterns),
   );
-  const hasIndependentCommercialOffer =
-    hasIndependentEscalationOffer ||
-    hasOfferInUnprotectedWindow(assertions, (window) => hasGeneralCommercialOffer(window));
+  const independentCommercialOffer =
+    independentEscalationOffer ??
+    findOfferInUnprotectedWindow(assertions, (window) => hasGeneralCommercialOffer(window));
+  const hasIndependentEscalationOffer = independentEscalationOffer !== null;
+  const hasIndependentCommercialOffer = independentCommercialOffer !== null;
   const hasProtectedEscalationMention = assertions.some(
     (assertion) => assertion.protectedFrame && hasRiskPattern(assertion, riskPatterns),
   );
@@ -119,6 +146,8 @@ export function resolveCommercialLocalContext(params: {
     hasIndependentEscalationOffer,
     hasOnlyProtectedEscalationMentions:
       riskPatterns.length > 0 && !hasIndependentEscalationOffer && hasProtectedEscalationMention,
+    hasProtectedContext: assertions.some((assertion) => assertion.protectedFrame),
+    independentCommercialOfferText: independentCommercialOffer?.text ?? null,
   };
 }
 
@@ -155,15 +184,37 @@ function splitWarningPrefixedSelfPromo(assertion: string): string[] {
 function classifyAssertions(
   assertionTexts: readonly string[],
   riskPatterns: readonly CommercialLabeledPattern[],
+  includeOrdinaryProtectedContext: boolean,
 ): LocalAssertion[] {
   const assertions: LocalAssertion[] = [];
   let protectedCarry = 0;
   let protectedQuote = false;
+  let ordinaryProtectedCarry = false;
 
-  for (const text of assertionTexts) {
+  for (let index = 0; index < assertionTexts.length; index += 1) {
+    const text = assertionTexts[index];
     const normalizedText = normalizeCommercialText(text);
     const intrinsicProtected = isProtectedAssertion(text);
+    const intrinsicOrdinaryProtected =
+      includeOrdinaryProtectedContext && isOrdinaryProtectedAssertion(text);
     const rawAssertion = { text, normalizedText, protectedFrame: false };
+    let resetsOrdinaryProtectedCarry = false;
+    if (ordinaryProtectedCarry) {
+      const ordinaryResetWindow = buildForwardAssertionWindow(assertionTexts, index);
+      const hasExplicitSelfPromotion = SELF_PROMO_RESET_PATTERN.test(text);
+      const hasUnattributedCurrentAction =
+        hasNonNegatedAffirmativeAction(ordinaryResetWindow.text) &&
+        !ATTRIBUTED_RESPONSE_ACTION_PATTERN.test(ordinaryResetWindow.text);
+      const hasCurrentResponseChannel = CURRENT_OFFER_RESPONSE_PATTERN.test(
+        ordinaryResetWindow.text,
+      );
+      resetsOrdinaryProtectedCarry =
+        hasGeneralCommercialOffer(ordinaryResetWindow) &&
+        (hasExplicitSelfPromotion ||
+          ((!DEMAND_SIDE_SERVICE_FRAME_PATTERN.test(ordinaryResetWindow.text) ||
+            hasExplicitSelfPromotion) &&
+            (hasUnattributedCurrentAction || hasCurrentResponseChannel)));
+    }
     const resetsProtectedCarry =
       protectedCarry > 0 &&
       (SELF_PROMO_RESET_PATTERN.test(text) ||
@@ -171,7 +222,11 @@ function classifyAssertions(
           (hasEscalationOffer(rawAssertion, riskPatterns) ||
             hasGeneralCommercialOffer(rawAssertion))));
     const protectedFrame =
-      intrinsicProtected || protectedQuote || (protectedCarry > 0 && !resetsProtectedCarry);
+      intrinsicProtected ||
+      intrinsicOrdinaryProtected ||
+      protectedQuote ||
+      (protectedCarry > 0 && !resetsProtectedCarry) ||
+      (ordinaryProtectedCarry && !resetsOrdinaryProtectedCarry);
 
     assertions.push({ text, normalizedText, protectedFrame });
 
@@ -193,9 +248,44 @@ function classifyAssertions(
     } else if (protectedCarry > 0) {
       protectedCarry -= 1;
     }
+
+    if (intrinsicOrdinaryProtected) {
+      ordinaryProtectedCarry = true;
+    } else if (resetsOrdinaryProtectedCarry) {
+      ordinaryProtectedCarry = false;
+    }
   }
 
   return assertions;
+}
+
+function buildForwardAssertionWindow(
+  assertionTexts: readonly string[],
+  startIndex: number,
+): LocalAssertion {
+  const parts: LocalAssertion[] = [];
+  let text = '';
+  let normalizedText = '';
+
+  for (
+    let index = startIndex;
+    index < assertionTexts.length && index < startIndex + MAX_LOCAL_WINDOW_ASSERTIONS;
+    index += 1
+  ) {
+    const partText = assertionTexts[index];
+    const partNormalizedText = normalizeCommercialText(partText);
+    const nextText = text ? `${text}. ${partText}` : partText;
+    if (nextText.length > MAX_LOCAL_WINDOW_LENGTH) {
+      break;
+    }
+    text = nextText;
+    normalizedText = normalizedText
+      ? `${normalizedText}. ${partNormalizedText}`
+      : partNormalizedText;
+    parts.push({ text: partText, normalizedText: partNormalizedText, protectedFrame: false });
+  }
+
+  return { text, normalizedText, protectedFrame: false, parts };
 }
 
 function isProtectedAssertion(text: string): boolean {
@@ -204,20 +294,30 @@ function isProtectedAssertion(text: string): boolean {
     REPORTING_OR_ATTRIBUTION_PATTERN.test(text) ||
     LOCAL_REPORTING_FRAME_PATTERN.test(text) ||
     COMPLAINT_OR_WARNING_PATTERN.test(text) ||
-    EDITORIAL_CONTACT_PATTERN.test(text)
+    EDITORIAL_CONTACT_PATTERN.test(text) ||
+    GROUP_RULES_MODERATION_PATTERN.test(text)
   );
 }
 
-function hasOfferInUnprotectedWindow(
+function isOrdinaryProtectedAssertion(text: string): boolean {
+  return (
+    CHANNEL_AD_DUE_DILIGENCE_PATTERN.test(text) ||
+    QUESTION_OR_RECOMMENDATION_PATTERN.test(text) ||
+    PROTECTED_PRIVATE_LISTING_PATTERNS.some(({ pattern }) => testPattern(pattern, text))
+  );
+}
+
+function findOfferInUnprotectedWindow(
   assertions: readonly LocalAssertion[],
   predicate: (window: LocalAssertion) => boolean,
-): boolean {
+): LocalAssertion | null {
   for (let index = 0; index < assertions.length; index += 1) {
     const first = assertions[index];
     if (first.protectedFrame) {
       continue;
     }
 
+    let matchedWindow: LocalAssertion | null = null;
     let text = '';
     let normalizedText = '';
     for (
@@ -236,20 +336,22 @@ function hasOfferInUnprotectedWindow(
       if (text.length > MAX_LOCAL_WINDOW_LENGTH) {
         break;
       }
-      if (
-        predicate({
-          text,
-          normalizedText,
-          protectedFrame: false,
-          parts: assertions.slice(index, end + 1),
-        })
-      ) {
-        return true;
+      const window = {
+        text,
+        normalizedText,
+        protectedFrame: false,
+        parts: assertions.slice(index, end + 1),
+      };
+      if (predicate(window)) {
+        matchedWindow = window;
       }
+    }
+    if (matchedWindow) {
+      return matchedWindow;
     }
   }
 
-  return false;
+  return null;
 }
 
 function hasEscalationOffer(
@@ -278,9 +380,13 @@ function hasGeneralCommercialOffer(assertion: LocalAssertion): boolean {
   if (!hasAffirmativeDealCue(assertion) || EDITORIAL_CONTACT_PATTERN.test(assertion.text)) {
     return false;
   }
-  return GENERAL_COMMERCIAL_PATTERNS.some(
-    ({ pattern }) =>
-      testPattern(pattern, assertion.text) || testPattern(pattern, assertion.normalizedText),
+  return (
+    GENERAL_COMMERCIAL_PATTERNS.some(
+      ({ pattern }) =>
+        testPattern(pattern, assertion.text) || testPattern(pattern, assertion.normalizedText),
+    ) ||
+    (CURRENT_OFFER_RESPONSE_PATTERN.test(assertion.text) &&
+      ADS_SERVICE_SPECIALTY_MARKERS.some((marker) => assertion.normalizedText.includes(marker)))
   );
 }
 

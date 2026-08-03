@@ -104,14 +104,25 @@ export function deriveCommercialSafeContextBucket(params: {
       (signal) =>
         signal === 'transaction:structured-service-offer' ||
         signal.startsWith('recall-source:service-specialty:') ||
-        signal === 'service-specialty:internet-connection-service',
+        signal === 'service-specialty:internet-connection-service' ||
+        signal === 'service-specialty:divination-self-offer' ||
+        signal === 'risk:divination-contact-offer',
     ) &&
     matchedSignals.some(
       (signal) =>
         signal.startsWith('business:') ||
         signal.startsWith('intent:') ||
-        signal.startsWith('recall-source:service-specialty:'),
+        signal.startsWith('recall-source:service-specialty:') ||
+        signal === 'service-specialty:divination-self-offer' ||
+        signal === 'risk:divination-contact-offer',
     );
+  const hasExplicitPaidServiceOffer =
+    hasPriceSignal &&
+    hasDirectDealSignal &&
+    matchedSignals.some(
+      (signal) => signal.startsWith('business:') || signal.startsWith('intent:'),
+    ) &&
+    matchedSignals.some((signal) => signal.startsWith('service-specialty:'));
   const hasExplicitPrivateSaleSignal = negativeSignals.some(
     (signal) =>
       signal.startsWith('private:') ||
@@ -210,7 +221,11 @@ export function deriveCommercialSafeContextBucket(params: {
     return 'ordinary_recruitment';
   }
 
-  if (!hasEscalationOffer && (hasSignalPrefix('search:') || hasSignalPrefix('search-pattern:'))) {
+  if (
+    !hasEscalationOffer &&
+    !hasExplicitPaidServiceOffer &&
+    (hasSignalPrefix('search:') || hasSignalPrefix('search-pattern:'))
+  ) {
     return 'request_or_recommendation';
   }
 

@@ -2160,6 +2160,51 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'independent repair offer after channel advertising question',
+    text: `Кто покупал рекламу в канале? Отдельно: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'service-specialty:appliance-repair',
+      'transaction:price',
+      'locality:independent-commercial-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'independent repair offer after third party recommendation',
+    text: `Мастер Иван сделал нам ремонт, всё отлично. Отдельно: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'service-specialty:appliance-repair',
+      'transaction:price',
+      'locality:independent-commercial-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'independent repair offer after private resale listing',
+    text: `Продам свой диван за 10000 руб, самовывоз. Отдельно: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'service-specialty:appliance-repair',
+      'transaction:price',
+      'locality:independent-commercial-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -2917,6 +2962,93 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'private owner dacha from 24 hour safe-context audit',
     text: `Продам дачу в СНТ: дом 48 кв. м, участок 5 соток, баня и теплицы. Мебель остаётся. Телефон +7 900 000 01 04, Светлана, собственник.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'channel advertising due diligence without independent offer',
+    text: `Кто покупал рекламу в канале? Поделитесь опытом.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'completed repair recommendation without current offer',
+    text: `Мастер Иван сделал нам ремонт, всё отлично. Могу рекомендовать его соседям.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private sofa resale without independent offer',
+    text: `Продам свой диван за 10000 руб, самовывоз. Телефон +7 900 123-45-67.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'repeated contractor procurement request from 24 hour audit',
+    text: `Ищу мастера по поклейке обоев
+Объем: 9 рулонов
+Бюджет: 3 500 руб. за весь объем
+Контакты: [phone]`,
+    campaignContext: {
+      senderDistinctChatCount: 8,
+      sameTextDistinctChatCount: 5,
+      repeatedPhoneDistinctChatCount: 5,
+      repeatedLinkDistinctChatCount: 0,
+      nearTextDistinctChatCount: 5,
+      repeatedDomainDistinctChatCount: 0,
+      repeatedHandleDistinctChatCount: 0,
+      senderDistinctChatCount5m: 8,
+      senderDistinctChatCount30m: 8,
+      senderDistinctChatCount120m: 8,
+    },
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'long-form local incident report from 24 hour audit',
+    text: `Смерч повредил бетонные ограждения и кровлю нескольких домов, сообщили очевидцы. Городские службы начали устранять последствия. На время ремонта опасный участок огородили. Специалисты обследовали поврежденные конструкции, убрали упавшие ветки, восстановили электроснабжение и проверили опоры. После завершения обследования доступ откроют в обычном режиме. Пострадавших нет, обстановка находится под контролем. Подписаться | Предложить новость [url] [url]`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'animal boarding donation appeal from 24 hour audit',
+    text: `ПОМОГИТЕ ОПЛАТИТЬ ПЕРЕДЕРЖКУ для спасенной собаки Юны. Стоимость передержки 7500 руб. в месяц. Сбор на Сбербанк с пометкой "Юна пожертвование" по номеру [phone].`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'animal shelter debt appeal from 24 hour audit',
+    text: `В приюте остаются 84 собаки и 27 кошек. У приюта накопился долг перед клиникой за лечение животных и корм. МЫ ОЧЕНЬ ПРОСИМ ПОМОЩИ. Нужно закрыть долг, реквизиты для пожертвований: Сбербанк, перевод по номеру [phone].`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'group rules with pictures and earning links from 24 hour audit',
+    text: `Добро пожаловать в группу. Здесь запрещены картинки и ссылки на заработок, спам и оскорбления. За нарушение правил бан.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

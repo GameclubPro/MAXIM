@@ -823,6 +823,17 @@ describe('commercial pattern regressions', () => {
     expect(result?.negativeSignals).toEqual(negativeSignals);
   });
 
+  it('keeps a question-framed structured beauty offer reviewable', () => {
+    const result = detect(
+      'Хотите гладкие волосы без ежедневной укладки? Кератиновое выпрямление и ботокс для волос. Стоимость процедуры рассчитывается индивидуально.',
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+    expect(result?.matchedSignals).toContain('service-specialty:beauty-procedure-benefit-offer');
+    expect(result?.negativeSignals).toEqual(['context:question']);
+  });
+
   it('does not classify broad bath tub retail wording as recruitment', () => {
     const result = detect(
       'Цена за полный комплект. Доставка по региону. Банный чан из нержавеющей стали, работаем по договору. Телефон +7 900 000 00 97.',
@@ -2166,6 +2177,33 @@ describe('commercial pattern regressions', () => {
     );
     expect(leadgen?.matchedSignals).toContain('risk:bank-card-leadgen');
     expect(leadgen?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not mistake pictures and links in group rules for bank-card lead generation', () => {
+    const result = detect(
+      'Добро пожаловать в группу. Здесь запрещены картинки и ссылки на заработок, спам и оскорбления. За нарушение правил бан.',
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('keeps paid group-placement terms commercial despite rules wording', () => {
+    const result = detect(
+      'Правила размещения рекламы в нашей группе: стоимость поста 1000 руб. Для заказа рекламного места пишите в личку [url].',
+    );
+
+    expect(result).not.toBeNull();
+    expect(['REVIEW_ONLY', 'WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it('keeps an independent service ad actionable after group rules', () => {
+    const result = detect(
+      'Правила группы: картинки, ссылки и спам запрещены, за нарушение бан. Ремонт холодильников, цена 2000 руб, звоните [phone].',
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.negativeSignals).not.toContain('context:moderation-ad-discussion');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
   });
 
   it.each([

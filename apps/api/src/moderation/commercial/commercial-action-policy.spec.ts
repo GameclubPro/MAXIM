@@ -263,7 +263,7 @@ describe('commercial action policy', () => {
     expect(decision.suppressionReasons).not.toContain('bounded-recall-warn-cap');
   });
 
-  it('keeps bounded high-risk recall ahead of a weak private-context collision', () => {
+  it('keeps a safe context non-actionable when bounded high-risk recall collides with it', () => {
     const decision = resolveCommercialActionPolicy({
       ...BASE_INPUT,
       evidenceTier: 'HIGH_RISK',
@@ -272,9 +272,32 @@ describe('commercial action policy', () => {
       hasWarnCappedRecallEvidence: true,
     });
 
-    expect(decision.actionBand).toBe('WARN');
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
     expect(decision.suppressionReasons).toContain('bounded-recall-warn-cap');
-    expect(decision.suppressionReasons).not.toContain('safe-context:private_one_off_sale');
+    expect(decision.suppressionReasons).toContain('safe-context:private_one_off_sale');
+  });
+
+  it('keeps a repeated contractor request non-actionable beside bounded retail recall', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      confidenceScore: 100,
+      evidenceTier: 'DIRECT',
+      subtype: 'GOODS_RETAIL',
+      safeContextBucket: 'request_or_recommendation',
+      campaignStrength: 'STRONG',
+      hasCampaignContext: true,
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasWarnCappedRecallEvidence: true,
+      hasIndependentCommercialOfferEvidence: false,
+    });
+
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.actionable).toBe(false);
+    expect(decision.recordable).toBe(false);
+    expect(decision.suppressionReasons).toEqual(
+      expect.arrayContaining(['bounded-recall-warn-cap', 'safe-context:request_or_recommendation']),
+    );
   });
 
   it('does not let a rescue cap weaken an independently deletable offer', () => {

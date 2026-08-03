@@ -1,4 +1,5 @@
 import type { ChatSettings } from '../../prisma/prisma-client';
+import type { CommercialCampaignContext } from '../commercial-campaign.util';
 import { createRuleDetectionContext } from '../rule-engine-detection-context';
 import { CommercialAdDetector } from './commercial-ad.detector';
 import { collectCommercialSignals } from './commercial-features';
@@ -21,13 +22,13 @@ const STRICT_PROFILE = {
 
 const detector = new CommercialAdDetector();
 
-function detect(text: string) {
+function detect(text: string, commercialCampaignContext: CommercialCampaignContext | null = null) {
   const context = createRuleDetectionContext({ text, settings: STRICT_SETTINGS });
   return detector.detect({
     normalizedText: context.normalizedText,
     rawLoweredText: context.rawLoweredText,
     settings: STRICT_SETTINGS,
-    commercialCampaignContext: null,
+    commercialCampaignContext,
   });
 }
 
@@ -165,5 +166,149 @@ describe('commercial clause-local context', () => {
     expect(result?.matchedSignals).toContain('risk:loan-leadgen');
     expect(result?.matchedSignals).not.toContain('locality:escalation-offer');
     expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    [
+      'question',
+      'Кто покупал рекламу в канале? Отдельно: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.',
+    ],
+    [
+      'recommendation',
+      'Мастер Иван сделал нам ремонт, всё отлично. Отдельно: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.',
+    ],
+    [
+      'private listing',
+      'Продам свой диван за 10000 руб, самовывоз. Отдельно: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.',
+    ],
+  ])('isolates an independent service offer after a protected %s clause', (_kind, text) => {
+    const baseline = detect('Ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.');
+    const result = detect(text);
+
+    expect(baseline).not.toBeNull();
+    expect(result?.actionBand).toBe(baseline?.actionBand);
+    expect(result?.actionable).toBe(baseline?.actionable);
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+    expect(result?.classifierReasons).toContain('locality:isolated-independent-commercial-offer');
+  });
+
+  it('keeps a trailing CTA in the isolated commercial block', () => {
+    const offer = 'Ремонт холодильников, цена 2000 руб. Звоните +7 900 123-45-67.';
+    const result = detect(`Кто покупал рекламу в канале? Отдельно: ${offer}`);
+
+    expect(result?.actionBand).toBe(detect(offer)?.actionBand);
+    expect(result?.matchedSignals).toContain('contact:phone');
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it('derives policy context from the isolated offer instead of a protected prefix', () => {
+    const offer = 'Ремонт холодильников, цена 2000 руб. Звоните +7 900 123-45-67.';
+    const result = detect(`Осторожно, мошенники, не переводите деньги! Отдельно: ${offer}`);
+
+    expect(result?.actionBand).toBe(detect(offer)?.actionBand);
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.rawText).toContain('осторожно');
+    expect(result?.analysisText).not.toContain('осторожно');
+  });
+
+  it.each([
+    'Кто покупал рекламу в канале? Поделитесь опытом.',
+    'Мастер Иван сделал нам ремонт, всё отлично. Могу рекомендовать его соседям.',
+    'Продам свой диван за 10000 руб, самовывоз. Телефон +7 900 123-45-67.',
+  ])('keeps a single protected assertion out of enforcement: %s', (text) => {
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(detect(text)?.actionBand ?? 'ALLOW');
+  });
+
+  it('keeps a completed-work testimonial protected after ordinary discourse wording', () => {
+    const text =
+      'Мастер Иван сделал нам ремонт. Отдельно хочу сказать: ремонт холодильника обошёлся в 2000 руб, телефон мастера +7 900 123-45-67.';
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(detect(text)?.actionBand ?? 'ALLOW');
+  });
+
+  it.each([
+    'Мастер Иван сделал нам ремонт. Отдельно отмечу стоимость: ремонт холодильника 2000 руб. Звоните ему +7 900 123-45-67.',
+    'Мастер Иван сделал нам ремонт. Отдельно отмечу стоимость: ремонт холодильника 2000 руб. Звоните мастеру +7 900 123-45-67.',
+    'Мастер Иван сделал нам ремонт. Отдельно отмечу стоимость: ремонт холодильника 2000 руб. Свяжитесь с ним по номеру +7 900 123-45-67.',
+    'Посоветуйте мастера. Холодильник сломан. Ремонт бюджет 2000 руб. Звоните мне +7 900 123-45-67.',
+    'Кто знает хорошего мастера? Холодильник не работает. Ремонт до 2000 руб. Пишите мне в личку.',
+  ])('does not isolate a demand-side or attributed offer-shaped continuation: %s', (text) => {
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(detect(text)?.actionBand ?? 'ALLOW');
+  });
+
+  it.each([
+    'Кто покупал рекламу в канале? Также: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.',
+    'Кто покупал рекламу в канале?\nРемонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.',
+  ])('isolates a strong current offer across an ordinary assertion boundary: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.actionBand).toBe(
+      detect('Ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.')?.actionBand,
+    );
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it.each([
+    'Звоните нам +7 900 123-45-67.',
+    'Пишите нам в личку.',
+    'Обращайтесь к нам +7 900 123-45-67.',
+  ])('keeps a source-side plural response in an isolated current offer: %s', (response) => {
+    const offer = `Ремонт холодильников, цена 2000 руб. ${response}`;
+    const result = detect(`Кто покупал рекламу в канале? Отдельно: ${offer}`);
+
+    expect(result?.actionBand).toBe(detect(offer)?.actionBand);
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it('keeps sender-wide campaign evidence without borrowing protected content evidence', () => {
+    const result = detect(
+      'Продам свой диван за 10000 руб, самовывоз, телефон +7 900 111-22-33. Отдельно: ремонт холодильников, цена 2000 руб, звоните +7 900 123-45-67.',
+      {
+        senderDistinctChatCount: 8,
+        sameTextDistinctChatCount: 5,
+        repeatedPhoneDistinctChatCount: 5,
+        repeatedLinkDistinctChatCount: 0,
+        nearTextDistinctChatCount: 5,
+        repeatedDomainDistinctChatCount: 0,
+        repeatedHandleDistinctChatCount: 0,
+        senderDistinctChatCount5m: 8,
+        senderDistinctChatCount30m: 8,
+        senderDistinctChatCount120m: 8,
+      },
+    );
+
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+    expect(result?.matchedSignals).toContain('campaign:sender-multi-chat');
+    expect(result?.matchedSignals).toContain('campaign:sender-velocity-5m');
+    expect(result?.matchedSignals).not.toContain('campaign:cross-chat-text');
+    expect(result?.matchedSignals).not.toContain('campaign:near-duplicate-text');
+    expect(result?.matchedSignals).not.toContain('campaign:cross-chat-phone');
+    expect(result?.campaignContext).toMatchObject({
+      senderDistinctChatCount: 8,
+      sameTextDistinctChatCount: 0,
+      nearTextDistinctChatCount: 0,
+      repeatedPhoneDistinctChatCount: 0,
+    });
+    expect(result?.campaignStrength).toBe('STRONG');
+  });
+
+  it('retains sender campaign recall for a weak isolated service offer', () => {
+    const result = detect('Кто покупал рекламу в канале? Отдельно: Маникюр, запись в личку.', {
+      senderDistinctChatCount: 8,
+      sameTextDistinctChatCount: 5,
+      repeatedPhoneDistinctChatCount: 0,
+      repeatedLinkDistinctChatCount: 0,
+      nearTextDistinctChatCount: 5,
+      repeatedDomainDistinctChatCount: 0,
+      repeatedHandleDistinctChatCount: 0,
+      senderDistinctChatCount5m: 8,
+      senderDistinctChatCount30m: 8,
+      senderDistinctChatCount120m: 8,
+    });
+
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+    expect(result?.matchedSignals).toContain('campaign:sender-multi-chat');
+    expect(result?.matchedSignals).not.toContain('campaign:cross-chat-text');
+    expect(['REVIEW_ONLY', 'WARN']).toContain(result?.actionBand);
   });
 });

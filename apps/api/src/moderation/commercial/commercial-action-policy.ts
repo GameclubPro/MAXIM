@@ -132,6 +132,16 @@ export function resolveCommercialActionPolicy(
     !input.hasEscalationRiskEvidence
   ) {
     suppressionReasons.push('bounded-recall-warn-cap');
+    if (safeContextDeleteSuppressed) {
+      suppressionReasons.push(`safe-context:${input.safeContextBucket}`);
+      return buildDecision({
+        actionBand: 'REVIEW_ONLY',
+        confidenceScore: input.confidenceScore,
+        actionScore,
+        reviewPriority,
+        suppressionReasons,
+      });
+    }
     return buildDecision({
       actionBand: 'WARN',
       confidenceScore: input.confidenceScore,

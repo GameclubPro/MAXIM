@@ -50,7 +50,7 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
   });
   const campaignStrength = resolveCommercialCampaignStrength(detection.campaignContext);
   const safeContextBucket = deriveCommercialSafeContextBucket({
-    text: detection.rawText ?? '',
+    text: detection.analysisText ?? detection.rawText ?? '',
     matchedSignals,
     negativeSignals,
     hasCommercialHit: true,

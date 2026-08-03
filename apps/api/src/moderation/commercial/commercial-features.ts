@@ -165,6 +165,16 @@ const EXPLICIT_STRUCTURED_SERVICE_INTENT = new Set([
 
 const THIRD_PARTY_SERVICE_RECOMMENDATION_PREFILTER =
   /(?:электрик|мастер|сантехник|водител|такси|химчист|ремонт|подрядчик|договор|протокол|управляющ[а-яё-]*\s+компани|(?:^|[^\p{L}\p{N}_-])акт[еу](?=$|[^\p{L}\p{N}_-]))/iu;
+const PUBLIC_SERVICE_WORK_ASSERTION_PATTERN =
+  /^(?:(?:сегодня|по\s+данн[ыа-яё-]*|в\s+город[еа]?)\s+)?(?:администраци[яи]|мчс|власт[ьи]|городск[\p{L}\p{N}_-]*\s+служб[\p{L}\p{N}_-]*|экстренн[\p{L}\p{N}_-]*\s+служб[\p{L}\p{N}_-]*|оперативн[\p{L}\p{N}_-]*\s+штаб)(?:[^.!?;\n]{0,240})(?:выполня[а-яё-]*|вед[а-яё-]*|начал[а-яё-]*|приступил[а-яё-]*|провод[а-яё-]*|ремонтиру[а-яё-]*|восстанавлива[а-яё-]*)(?:[^.!?;\n]{0,100})(?:ремонт[а-яё-]*|работ[а-яё-]*|последстви[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const PUBLIC_SERVICE_CONTACT_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:телефон|номер)(?:[\p{L}\p{N}\s,:-]{0,48})(?:диспетчер[а-яё-]*|штаб[а-яё-]*|администраци[иия]|мчс|служб[а-яё-]*|горяч[а-яё-]*\s+лини[а-яё-]*|подрядчик[а-яё-]*|подрядн[а-яё-]*\s+организаци[а-яё-]*)|(?:звоните|обращайтесь|пишите)(?:[\p{L}\p{N}\s,:-]{0,48})(?:диспетчер[а-яё-]*|штаб[а-яё-]*|администраци[иия]|мчс|служб[а-яё-]*|горяч[а-яё-]*\s+лини[а-яё-]*|подрядчик[а-яё-]*))(?=$|[^\p{L}\p{N}_-])/iu;
+const PUBLIC_SERVICE_CONTACT_ASSERTION_PATTERN =
+  /^(?:по\s+вопрос[а-яё-]*(?:[\p{L}\p{N}\s,:-]{0,32}))?(?:(?:телефон|номер)(?:[\p{L}\p{N}\s,:-]{0,48})(?:диспетчер[а-яё-]*|штаб[а-яё-]*|администраци[иия]|мчс|служб[а-яё-]*|горяч[а-яё-]*\s+лини[а-яё-]*|подрядчик[а-яё-]*|подрядн[а-яё-]*\s+организаци[а-яё-]*)|(?:звоните|обращайтесь|пишите)(?:[\p{L}\p{N}\s,:-]{0,48})(?:диспетчер[а-яё-]*|штаб[а-яё-]*|администраци[иия]|мчс|служб[а-яё-]*|горяч[а-яё-]*\s+лини[а-яё-]*|подрядчик[а-яё-]*))(?=$|[^\p{L}\p{N}_-])/iu;
+const INDEPENDENT_SERVICE_SELF_PROMO_ASSERTION_PATTERN =
+  /^(?=[^.!?;\n]{0,320}(?:ремонт[а-яё-]*|строительств[а-яё-]*|работ[а-яё-]*|услуг[а-яё-]*))(?:(?:я|мы|наш[аиоуы]?|наша|наше|наши)\b|компани[яи]\s+[\p{L}\p{N}_-]+(?:[^.!?;\n]{0,80})(?:выполня[а-яё-]*|оказыва[а-яё-]*|предлага[а-яё-]*|ремонтиру[а-яё-]*|стро[а-яё-]*))(?=$|[^\p{L}\p{N}_-])/iu;
+const INDEPENDENT_SERVICE_CTA_ASSERTION_PATTERN =
+  /^(?=[^.!?;\n]{0,320}(?:ремонт[а-яё-]*|строительств[а-яё-]*|работ[а-яё-]*|услуг[а-яё-]*))(?=[^.!?;\n]{0,320}(?:звоните|пишите|обращайтесь|закаж[а-яё-]*|запис[а-яё-]*|остав[а-яё-]*\s+заявк[а-яё-]*|цен[аы]|стоимост[ьи]|скидк[а-яё-]*))[^.!?;\n]+$/iu;
 
 const RECRUITMENT_PATTERNS_WITHOUT_LEAFLET_DAILY_SIDE_JOB = ADS_RECRUITMENT_PATTERNS.filter(
   ({ label }) => label !== 'leaflet-daily-side-job',
@@ -458,21 +468,77 @@ export function hasCommercialSpamMarkers(text: string): boolean {
 }
 
 export function hasExplicitSelfPromotionalCommercialContext(state: CommercialSignalState): boolean {
-  return (
-    state.hasIntent ||
-    state.hasPromoContext ||
-    state.hasBuyoutContext ||
-    state.hasRecruitmentContext ||
-    state.hasInfoProductContext ||
-    state.hasServiceOfferContext ||
-    state.hasServiceContext ||
-    state.hasCallToActionContext ||
-    state.hasGroupPromotionIntent ||
-    state.hasCommercialAudienceContext ||
-    state.hasPropertyAgentContext ||
-    state.hasCommercialPropertyContext ||
-    state.hasGoodsRetailContext
+  return hasExplicitSelfPromotionalSignals(state.matchedSignals);
+}
+
+function hasExplicitSelfPromotionalSignals(matchedSignals: readonly string[]): boolean {
+  const boundedRecallCompanionSignals = new Set(
+    matchedSignals
+      .filter((signal) => signal.startsWith('recall-source:'))
+      .map((signal) => signal.slice('recall-source:'.length)),
   );
+  const explicitSignalPrefixes = [
+    'intent:',
+    'promo:',
+    'buyout:',
+    'recruitment:',
+    'info:',
+    'cta:',
+    'group-promo:',
+    'group-self:',
+    'channel-placement:',
+    'audience:',
+    'property-agent:',
+    'property-commercial:',
+    'goods-retail:',
+  ];
+  const explicitResponseSignals = new Set([
+    'contact:пишите в лс',
+    'contact:пишите в лич',
+    'contact:пишите в личные сообщения',
+    'contact:писать в личку',
+    'contact:для записи',
+    'contact:по записи',
+    'contact:звоните',
+    'contact:обращайтесь',
+  ]);
+
+  return matchedSignals.some(
+    (signal) =>
+      (explicitResponseSignals.has(signal) ||
+        explicitSignalPrefixes.some((prefix) => signal.startsWith(prefix))) &&
+      !boundedRecallCompanionSignals.has(signal),
+  );
+}
+
+function hasLinkedPublicServiceEditorialFrame(rawLoweredText: string): boolean {
+  const assertions = rawLoweredText
+    .split(/[\n.!?;]+/u)
+    .map((assertion) => assertion.trim())
+    .filter(Boolean)
+    .slice(0, 64);
+
+  if (
+    assertions.some(
+      (assertion) =>
+        !PUBLIC_SERVICE_WORK_ASSERTION_PATTERN.test(assertion) &&
+        (INDEPENDENT_SERVICE_SELF_PROMO_ASSERTION_PATTERN.test(assertion) ||
+          INDEPENDENT_SERVICE_CTA_ASSERTION_PATTERN.test(assertion)),
+    )
+  ) {
+    return false;
+  }
+
+  return assertions.some((assertion, index) => {
+    if (!PUBLIC_SERVICE_WORK_ASSERTION_PATTERN.test(assertion)) {
+      return false;
+    }
+    if (PUBLIC_SERVICE_CONTACT_PATTERN.test(assertion)) {
+      return true;
+    }
+    const nextAssertion = assertions[index + 1];
+    return Boolean(nextAssertion && PUBLIC_SERVICE_CONTACT_ASSERTION_PATTERN.test(nextAssertion));
+  });
 }
 
 export function hasPrivateGoodsCommercialOverride(state: CommercialSignalState): boolean {
@@ -1756,6 +1822,19 @@ export function collectCommercialSignals(params: {
       /(?:^|[^\p{L}\p{N}_-])(?:фитнес[\s-]*клуб[\p{L}\p{N}_-]*|фитнес[\s-]*студи[\p{L}\p{N}_-]*|персональн[\p{L}\p{N}_-]*\s+тренировк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
         rawLoweredText,
       ));
+  const hasAttributedPublicServiceEditorialFrame =
+    hasLinkedPublicServiceEditorialFrame(rawLoweredText);
+  const hasExplicitLocalNewsCommercialOffer =
+    !hasAttributedPublicServiceEditorialFrame &&
+    /(?:^|[^\p{L}\p{N}_-])(?:закаж[\p{L}\p{N}_-]*|купить|прода(?:м|ю|ем|[её]тся)|запис[\p{L}\p{N}_-]*|брониру[\p{L}\p{N}_-]*|прайс[\p{L}\p{N}_-]*|скидк[\p{L}\p{N}_-]*|звоните|пишите\s+(?:в\s+)?(?:лс|личк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
+  const hasStructuredLocalNewsCommercialOffer =
+    hasPhoneContact &&
+    hasServiceOfferContext &&
+    (hasServiceContext || hasServiceSpecialtyContext || hasBusinessContext) &&
+    matchedSignals.some((signal) => signal.startsWith('intent:')) &&
+    !hasAttributedPublicServiceEditorialFrame;
 
   for (const { label, pattern } of ADS_COMMERCIAL_DISCUSSION_NEGATIVE_PATTERNS) {
     if (!(pattern.test(normalizedText) || pattern.test(rawLoweredText))) {
@@ -1764,7 +1843,11 @@ export function collectCommercialSignals(params: {
     if (
       (label === 'channel-ad-due-diligence' &&
         commercialLocalContext.hasIndependentEscalationOffer) ||
-      (label === 'public-fraud-warning' && commercialLocalContext.hasIndependentCommercialOffer)
+      (label === 'public-fraud-warning' && commercialLocalContext.hasIndependentCommercialOffer) ||
+      (label === 'moderation-ad-discussion' &&
+        commercialLocalContext.hasIndependentCommercialOffer) ||
+      (label === 'local-news-subscribe' &&
+        (hasExplicitLocalNewsCommercialOffer || hasStructuredLocalNewsCommercialOffer))
     ) {
       continue;
     }
@@ -1983,7 +2066,8 @@ export function collectCommercialSignals(params: {
     hasCallToActionContext = true;
   }
 
-  if (hasIntent && (hasPrice || hasContact || hasDealChannel)) {
+  const hasExplicitIntentSignal = matchedSignals.some((signal) => signal.startsWith('intent:'));
+  if (hasExplicitIntentSignal && (hasPrice || hasContact || hasDealChannel)) {
     addPositive('combo:intent+deal', weights.comboIntentDeal);
   }
 
@@ -2105,6 +2189,7 @@ export function collectCommercialSignals(params: {
       hasTransactional);
   if (
     hasCampaignContext &&
+    hasExplicitSelfPromotionalSignals(matchedSignals) &&
     (hasPromoContext ||
       hasBusinessContext ||
       hasBuyoutContext ||
@@ -2264,12 +2349,23 @@ export function isThirdPartyServiceRecommendation(rawLoweredText: string): boole
     /(?:^|[^\p{L}\p{N}_-])управляющ[\p{L}\p{N}_-]*\s+компани[яи](?:[\p{L}\p{N}\s.,:;()/%+_-]{0,180})(?:телефон|номер|диспетчер[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,100})подрядчик[\p{L}\p{N}_-]*(?=$|[^\p{L}\p{N}_-])/iu.test(
       rawLoweredText,
     );
+  const hasAttributedServiceContact =
+    /(?:^|[^\p{L}\p{N}_-])(?:телефон|номер)(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,48})(?:подрядчик[\p{L}\p{N}_-]*|подрядн[\p{L}\p{N}_-]*\s+организаци[\p{L}\p{N}_-]*|диспетчер[\p{L}\p{N}_-]*|мастер[\p{L}\p{N}_-]*|городск[\p{L}\p{N}_-]*\s+служб[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
+  const hasInformationalWorkStatus =
+    /(?:^|[^\p{L}\p{N}_-])(?:(?:обсуждал[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,48})ремонт[\p{L}\p{N}_-]*|ремонт[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,80})(?:запланирован[\p{L}\p{N}_-]*|ид[её]т\s+по\s+график[у]?|уже\s+заверш[её]н[\p{L}\p{N}_-]*)|(?:администраци[яи]|мчс|городск[\p{L}\p{N}_-]*\s+служб[\p{L}\p{N}_-]*|экстренн[\p{L}\p{N}_-]*\s+служб[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,120})(?:вед[еуё]т|начал[\p{L}\p{N}_-]*|приступил[\p{L}\p{N}_-]*\s+к)(?:[\p{L}\p{N}\s.,:;()/%+_-]{0,48})(?:ремонт[\p{L}\p{N}_-]*|восстановительн[\p{L}\p{N}_-]*\s+работ[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
+  const hasLinkedPublicServiceContact = hasLinkedPublicServiceEditorialFrame(rawLoweredText);
 
   return (
     (hasServiceIdentity && hasCompletedPersonalExperience) ||
     hasContractorDocumentReference ||
     hasCompletedContractorWork ||
-    hasManagingCompanyDispatcherReference
+    hasManagingCompanyDispatcherReference ||
+    hasLinkedPublicServiceContact ||
+    (hasAttributedServiceContact && hasInformationalWorkStatus)
   );
 }
 

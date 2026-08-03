@@ -160,6 +160,34 @@ describe('commercial public and object-condition safe contexts', () => {
     expect(result?.actionBand).toBe('WARN');
   });
 
+  it('keeps a repeated contractor request non-actionable despite campaign retail recall', () => {
+    const text =
+      'Ищу мастера по поклейке обоев\nОбъем: 9 рулонов\nБюджет: 3 500 руб. за весь объем\nКонтакты: [phone]';
+    const state = collect(text, REPEATED_CAMPAIGN_CONTEXT);
+
+    expect(state.negativeSignals).toEqual(
+      expect.arrayContaining(['search:ищу маст', 'search-pattern:request:specialist']),
+    );
+    expect(state.matchedSignals).toContain('recall-cap:warn:professional-retail-structure');
+    expect(state.matchedSignals).not.toContain('combo:intent+deal');
+    expect(state.matchedSignals).not.toContain('combo:campaign+self-promo');
+    expect(detect(text, REPEATED_CAMPAIGN_CONTEXT)).toBeNull();
+  });
+
+  it.each([
+    'Сегодня обсуждали ремонт фасада. Телефон подрядчика +7 900 123-45-67.',
+    'Ремонт кровли запланирован на август. Телефон подрядчика +7 900 123-45-67.',
+    'Ремонт дома идет по графику. Телефон диспетчера +7 900 123-45-67.',
+    'Ремонт холодильника уже завершен. Телефон мастера +7 900 123-45-67.',
+    'Городские службы ведут ремонт кровли. Телефон диспетчера +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Городские службы начали ремонт фасада. Телефон диспетчера +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Городские службы приступили к ремонту дороги. Телефон диспетчера +7 900 123-45-67. Подписаться | Предложить новость [url].',
+  ])('does not turn an informational service contact into campaign self-promotion: %s', (text) => {
+    const result = detect(text, REPEATED_CAMPAIGN_CONTEXT);
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+  });
+
   it('does not let apparel sizing hide nationwide retail order flow', () => {
     const text =
       'Футболка турецкая, люкс качество, размер от 58 до 62. Доставка по всей России транспортной компанией, пишите в личку или звоните +7 900 000 00 05.';
@@ -292,6 +320,117 @@ describe('commercial public and object-condition safe contexts', () => {
 
     expect(state.negativeSignals).not.toContain('context:public-training-or-event');
     expect(detect(text)).not.toBeNull();
+  });
+
+  it.each([
+    [
+      'animal boarding collection',
+      'ПОМОГИТЕ ОПЛАТИТЬ ПЕРЕДЕРЖКУ для спасенной собаки Юны. Стоимость передержки 7500 руб. в месяц. Сбор на Сбербанк с пометкой "Юна пожертвование" по номеру [phone].',
+      'public_training_or_help',
+    ],
+    [
+      'shelter treatment debt collection',
+      'В приюте остаются 84 собаки и 27 кошек. У приюта накопился долг перед клиникой за лечение животных и корм. МЫ ОЧЕНЬ ПРОСИМ ПОМОЩИ. Нужно закрыть долг, реквизиты для пожертвований: Сбербанк, перевод по номеру [phone].',
+      'public_training_or_help',
+    ],
+    [
+      'long-form local incident report',
+      'Смерч повредил бетонные ограждения и кровлю нескольких домов, сообщили очевидцы. Городские службы начали устранять последствия. На время ремонта опасный участок огородили. Специалисты обследовали поврежденные конструкции, убрали упавшие ветки, восстановили электроснабжение и проверили опоры. После завершения обследования доступ откроют в обычном режиме. Пострадавших нет, обстановка находится под контролем. Подписаться | Предложить новость [url] [url]',
+      'news_or_analytics',
+    ],
+  ])('derives a safe context for an audited %s', (_label, text, bucket) => {
+    const state = collect(text);
+
+    expect(state.negativeSignals).toContain(
+      bucket === 'news_or_analytics'
+        ? 'context:local-news-subscribe'
+        : 'context:public-help-request',
+    );
+    expect(
+      deriveCommercialSafeContextBucket({
+        text,
+        matchedSignals: state.matchedSignals,
+        negativeSignals: state.negativeSignals,
+        hasCommercialHit: true,
+      }),
+    ).toBe(bucket);
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(detect(text)?.actionBand ?? 'ALLOW');
+  });
+
+  it('does not hide breeder retail behind charity wording', () => {
+    const text =
+      'Питомник предлагает породистого щенка. Щенок ищет семью, цена 50 000 руб., открыта бронь. Телефон [phone]. Просим помочь оплатить передержку переводом по номеру [phone].';
+    const state = collect(text);
+    const result = detect(text);
+
+    expect(state.negativeSignals).not.toContain('context:public-help-request');
+    expect(result?.safeContextBucket).toBe('none');
+    expect(['WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+  });
+
+  it.each([
+    'Нужна помощь питомцу? Ветеринарная клиника проводит лечение и операции. Запись по номеру [phone], стоимость 2000 руб.',
+    'Компания предлагает передержку собак с ежедневным уходом. Стоимость 1500 руб. в сутки, запись по номеру [phone].',
+  ])('requires a donation anchor before suppressing a paid animal service: %s', (text) => {
+    const state = collect(text);
+    const result = detect(text);
+
+    expect(state.negativeSignals).not.toContain('context:public-help-request');
+    expect(result).not.toBeNull();
+    expect(result?.safeContextBucket).toBe('none');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it('does not derive editorial safety from a service CTA with a copied news footer', () => {
+    const text =
+      'СТРОИТЕЛЬНАЯ БРИГАДА: кровля, фасады и ремонт квартир под ключ. Пенсионерам скидка 15%, звоните [phone]. Компания сообщила, что городские службы рекомендуют наш сервис. Подписаться | Предложить новость [url].';
+    const state = collect(text);
+
+    expect(state.matchedSignals).toContain('intent:строительная-бригада');
+    expect(state.negativeSignals).not.toContain('context:local-news-subscribe');
+  });
+
+  it('does not derive editorial safety from a structured service offer with a phone', () => {
+    const text =
+      'Компания СтройПроф выполняет ремонт кровли и фасадов. Телефон +7 900 123-45-67. Подписаться | Предложить новость [url].';
+    const state = collect(text);
+    const result = detect(text);
+
+    expect(state.matchedSignals).toContain('intent:выполняем-работы');
+    expect(state.matchedSignals).toContain('contact:phone');
+    expect(state.negativeSignals).not.toContain('context:local-news-subscribe');
+    expect(result).not.toBeNull();
+  });
+
+  it.each([
+    'Администрация сообщила, что подрядчик выполняет ремонт кровли и фасадов. Телефон диспетчера +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'МЧС сообщило, что оперативный штаб выполняет восстановительные работы. Телефон штаба +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Власти сообщили, что подрядчик выполняет ремонт кровли и фасадов. Номер подрядчика +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Городские службы рассказали, что подрядчик выполняет ремонт фасадов. Телефон подрядной организации +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Администрация сообщает, что подрядчик выполняет ремонт кровли. Телефон подрядчика +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Городские службы выполняют ремонт кровли и фасадов. Телефон диспетчера +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Администрация сообщает, что подрядчик выполняет ремонт кровли. По вопросам звоните на горячую линию +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Администрация сообщает, что подрядчик выполняет ремонт кровли, по вопросам звоните на горячую линию +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Городские службы ведут ремонт кровли. По вопросам звоните диспетчеру +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Городские службы проводят работы по ремонту фасада. Телефон диспетчера +7 900 123-45-67. Подписаться | Предложить новость [url].',
+  ])('keeps an attributed public-service report editorial: %s', (text) => {
+    const state = collect(text);
+    const result = detect(text);
+
+    expect(state.negativeSignals).toContain('context:local-news-subscribe');
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+  });
+
+  it.each([
+    'Мы подрядчик администрации: выполняем ремонт квартир и кровли. Телефон диспетчера +7 900 123-45-67. Подписаться | Предложить новость [url].',
+    'Компания СтройПроф выполняет ремонт квартир и кровли. Телефон диспетчера +7 900 123-45-67. Городские службы сообщили о завершении работ. Подписаться | Предложить новость [url].',
+  ])('does not join unrelated official wording to hide a service advertisement: %s', (text) => {
+    const state = collect(text);
+    const result = detect(text);
+
+    expect(state.negativeSignals).not.toContain('context:local-news-subscribe');
+    expect(result).not.toBeNull();
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
   });
 
   it.each([
