@@ -6,6 +6,7 @@ import { enrichCommercialDetection } from './commercial-explain';
 import {
   collectCommercialSignals,
   hasCommercialSpamMarkers as hasCommercialSpamMarkersInText,
+  hasExplicitLinkedBoundedGroupPromotion,
   hasExplicitSelfPromotionalCommercialContext,
   hasPrivateGoodsCommercialOverride,
   hasRideShareContext,
@@ -16,11 +17,18 @@ import {
   isCommercialEscalationRiskSignal,
   resolveCommercialEvidenceProfile,
 } from './commercial-evidence';
-import { resolveCommercialLocalContext } from './commercial-local-context';
+import {
+  hasQualifiedSourceSideServiceOffer,
+  resolveCommercialLocalContext,
+  splitCommercialAssertions,
+} from './commercial-local-context';
 import { collectFirstPatternLabels, createCommercialTextMatcher } from './commercial-match-utils';
 import { CommercialSecondStageScorer } from './commercial-scorer';
 import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
-import { ADS_AMBIGUOUS_TRANSPORT_REVIEW_PATTERNS } from './commercial-patterns';
+import {
+  ADS_AMBIGUOUS_TRANSPORT_REVIEW_PATTERNS,
+  ADS_BOUNDED_WHERE_TO_BUY_REQUEST_PATTERN,
+} from './commercial-patterns';
 import { classifyCommercialDetection } from './commercial-subtypes';
 import type { CommercialLegacyEvidenceStrength } from './commercial.types';
 
@@ -41,8 +49,251 @@ const AMBIGUOUS_TRANSPORT_REVIEW_PREFILTER =
   /(?:водител|пассажир|(?:^|[^\p{L}\p{N}_-])еду(?=$|[^\p{L}\p{N}_-]))/iu;
 const MIXED_PROTECTED_COMMERCIAL_CONTEXT_PREFILTER =
   /(?:^|[.!?;\n])\s*(?:(?:(?:а|но)\s+)?(?:отдельно|также|другая\s+тема|по\s+другой\s+теме|ещ[её]\s+одно\s+предложение)\s*[:,-]?|(?:(?:а|но)\s+)?(?:у\s+нас|мы|наш[аи]\s+компани[яи]|я\s+(?:помогу|помогаю|предлагаю|оформлю|выдам))\b)/iu;
+const EXPLICIT_TOPIC_CHANGE_BOUNDARY_PATTERN =
+  /[.!?;\n…。！？；]\s*(?:(?:а|но)\s+)?(?:отдельно|другая\s+тема|по\s+другой\s+теме|ещ[её]\s+одно\s+предложение|также)\s*[:,-]\s*/giu;
 const BOUNDARY_LOCAL_CURRENT_OFFER_PREFILTER =
   /[.!?;\n]\s*[^.!?;\n]{0,320}(?:пишите?|напишите?|звоните?|обращайтесь|остав(?:ьте|ляйте)\s+заявк[\p{L}\p{N}_-]*|получите|оформите|закаж(?:ите|и|ем|у)|заказывайте|регистрируйтесь|переходите|свяжитесь|записывайтесь|запис[ьи\p{L}\p{N}_-]*\s+в\s+(?:лс|личк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu;
+const BARE_QUESTION_CURRENT_OFFER_CUE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:пиши(?:те)?|напиши(?:те)?|звони(?:те)?|обращай(?:ся|тесь)|записывай(?:ся|тесь)|запишись|запишитесь|остав(?:ьте|ляйте)\s+заявк[\p{L}\p{N}_-]*|закаж(?:и|ите)|оформите)(?=$|[^\p{L}\p{N}_-])/iu;
+const BARE_QUESTION_FIRST_PERSON_SERVICE_OFFER_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:я|мы)\s+(?:предлага(?:ю|ем)|оказыва(?:ю|ем)|помога(?:ю|ем)|дела(?:ю|ем)|провод(?:жу|им)|принима(?:ю|ем)|расскаж(?:у|ем)|оформ(?:лю|им)|подбер(?:у|ем)|созда(?:ю|дим)|устанавлива(?:ю|ем)|убира(?:ю|ем))|я\s+ясновидящ[а-яё-]*(?=[\s\S]{0,300}(?:работаю|помогаю|провожу|предсказываю|связаться\s+со\s+мной))|(?:работаем|предлагаем|оказываем|помогаем|расскажем|бер[её]м|возьм[её]м)\s+(?:строго\s+)?(?:по\s+[\p{L}\p{N}_-]+|на\s+себя|как|что|услуг[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu;
+const BUYER_OWNED_BUDGET_REQUEST_PATTERN =
+  /^(?=[\s\S]{0,100}(?:ищу|нужн(?:а|о|ы|ен)|подскажите|посоветуйте|порекомендуйте|кто\s+(?:поставля(?:ет|ют)|размеща(?:ет|ют))))(?=[\s\S]{0,300}(?:поставщик[а-яё-]*|подрядчик[а-яё-]*|поставля(?:ет|ют)|доставк[а-яё-]*|ассортимент[а-яё-]*|реклам[а-яё-]*|прайс[а-яё-]*))(?=[\s\S]{0,440}(?:бюджет|цен[ау]|прайс[а-яё-]*)\s*(?:до|не\s+более)?\s*\d)(?=[\s\S]{0,520}(?:мо[ий]\s+(?:телефон|номер)|предложени[а-яё-]*[^.!?;\n]{0,40}\sмне|(?:звоните|пишите)\s+мне))[\s\S]{20,520}$/iu;
+const BUYER_DIRECTED_RESPONSE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:свои\s+)?предложени[а-яё-]*[^.!?;\n]{0,40}\sмне|(?:звоните|пишите)\s+мне|мо[ий]\s+(?:телефон|номер))(?=$|[^\p{L}\p{N}_-])/iu;
+const LOCAL_BUYER_DIRECTED_REQUEST_PATTERN =
+  /^(?=[\s\S]{0,180}(?:ищу|подскажите|посоветуйте|порекомендуйте|кто\s+(?:выда(?:ет|ют)|оформля(?:ет|ют)|оказыва(?:ет|ют)|прода(?:е[тё]|ют))|где\s+(?:купить|найти|заказать)|нужн(?:а|о|ы|ен)))(?=[\s\S]{0,520}(?:(?:пишите?|присылайте?)(?:[^.!?;\n]{0,40})(?:свои\s+)?предложени[а-яё-]*|предложени[а-яё-]*(?:[^.!?;\n]{0,40})(?:пишите?|присылайте?)(?:[^.!?;\n]{0,24})мне|мо[ий]\s+(?:телефон|номер)|бюджет(?:[^.!?;\n]{0,40})\d))[\s\S]{12,520}$/iu;
+const EXPLICIT_OWNED_SOURCE_SIDE_OFFER_AFTER_REQUEST_PATTERN =
+  /[.!?;\n…。！？；]\s*(?:(?:а|но|также)\s+)?(?:мы|наш[аи]\s+компани[яи])\s+(?:(?:сами|теперь|также|сейчас)\s+)*(?:прода(?:ю|ем)|изготавлива(?:ю|ем)|доставля(?:ю|ем)|поставля(?:ю|ем)|оказыва(?:ю|ем)|предоставля(?:ю|ем)|устанавлива(?:ю|ем)|ремонтиру(?:ю|ем))(?=$|[^\p{L}\p{N}_-])/iu;
+const BARE_SOURCE_SIDE_OFFER_AFTER_REQUEST_PATTERN =
+  /[.!?;\n…。！？；]\s*(?:(?:а|но|также)\s+)?(?:я\s+)?(?:прода(?:ю|ем)|предлага(?:ю|ем)|оказыва(?:ю|ем)|выполня(?:ю|ем)|изготавлива(?:ю|ем))(?=$|[^\p{L}\p{N}_-])/iu;
+const THIRD_PARTY_SERVICE_QUESTION_PATTERN =
+  /^(?:(?:(?:дорогие|уважаемые)\s+(?:соседи|друзья|коллеги)|соседи|друзья|коллеги|добрый\s+день|здравствуйте)[,!]?\s*)?(?:(?:пожалуйста\s+)?(?:подскажите|скажите|кто\s+знает)[,:\s-]+)?(?:компани[яи]|фирм[аы]|сервис|организаци[яи]|ооо|ип)\s+(?:(?:["«„][^"»”“\n]{1,80}["»”“])|[\p{L}\p{N}_-]{2,40}(?:\s+[\p{L}\p{N}_-]{1,40}){0,6})\s+(?:оказыва(?:ет|ют)|устанавлива(?:ет|ют)|выполня(?:ет|ют)|предлага(?:ет|ют)|предоставля(?:ет|ют)|занима(?:ется|ются)|провод(?:ит|ят)|дела(?:ет|ют)|ремонтиру(?:ет|ют))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_EXPLICIT_ORDER_CTA_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:закаж(?:и|ите)|остав(?:ьте|ляйте)\s+заявк[а-яё-]*|оформите|получите|запиш(?:ись|итесь)|переходите|регистрируйтесь)|телефон\s+для\s+(?:заказ[а-яё-]*|запис[а-яё-]*|заявк[а-яё-]*|брони[а-яё-]*)|(?:запис[ьи]|заявк[аи]|заказ[а-яё-]*|бронировани[ея])[^?？\n]{0,40}(?:по\s+телефон[ау]?|\[phone\]))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_GENERIC_RESPONSE_CTA_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:звоните?|пишите?|обращайтесь)(?![^?？\n]{0,64}(?:(?:в|к)\s+компани[а-яё-]*|по\s+(?:номеру|телефону)\s+компани[а-яё-]*|(?:ему|ей|им|мастер[а-яё-]*|подрядчик[а-яё-]*|специалист[а-яё-]*|менеджер[а-яё-]*|представител[а-яё-]*|сотрудник[а-яё-]*)(?:\s+компани[а-яё-]*)?))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_OWNED_AVAILABILITY_PREFIX_PATTERN =
+  /^[^\p{L}\p{N}_]{0,16}(?:(?:а|но|также)\s+)?у\s+нас(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_OWNED_AVAILABILITY_OFFER_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:в\s+наличи[а-яё-]*|доставк[а-яё-]*|продаж[а-яё-]*|прода(?:ю|ем)|ассортимент[а-яё-]*|каталог[а-яё-]*|принима(?:ю|ем)\s+заказ[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_NUMERIC_PRICE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:цен[аы]|стоимост[ьи])\s*(?:от\s*)?\d{2,}|от\s+\d{2,}|\d[\d\s.,]{0,16}\s*(?:р(?:уб)?\.?|₽))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_RESPONSE_CHANNEL_PATTERN =
+  /(?:\[(?:phone|url)\]|(?:^|[^\p{L}\p{N}_-])(?:телефон|номер|звоните?|пишите?|обращайтесь|закаж(?:и|ите)|остав(?:ьте|ляйте)\s+заявк[а-яё-]*)(?=$|[^\p{L}\p{N}_-]))/iu;
+const QUESTION_SEQUENCE_ATTRIBUTED_OR_NEGATED_AVAILABILITY_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:обсужда[а-яё-]*|по\s+данн[а-яё-]*|ничего\s+не\s+прода[а-яё-]*|нет\s+в\s+наличи[а-яё-]*|их\s+(?:телефон|номер)|(?:телефон|номер)\s+(?:компани[а-яё-]*|магазин[а-яё-]*|поставщик[а-яё-]*|продавц[а-яё-]*)|пишите?\s+менеджер[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_DIRECT_SOURCE_PREFIX_PATTERN =
+  /^[^\p{L}\p{N}_]{0,16}(?:(?:а|но|также)\s+)?(?:(?:(?:я|мы)\s+)?(?:прода(?:ю|ем)|предлага(?:ю|ем)|оказыва(?:ю|ем)|выполня(?:ю|ем)|изготавлива(?:ю|ем)|доставля(?:ю|ем)|поставля(?:ю|ем)|предоставля(?:ю|ем)|устанавлива(?:ю|ем)|ремонтиру(?:ю|ем)|убира(?:ю|ем))|наш[аи]\s+компани[яи]\s+(?:прода(?:[её]т|ют)|предлага(?:ет|ют)|оказыва(?:ет|ют)|выполня(?:ет|ют)|изготавлива(?:ет|ют)|доставля(?:ет|ют)|поставля(?:ет|ют)|предоставля(?:ет|ют)|устанавлива(?:ет|ют)|ремонтиру(?:ет|ют)))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_ATTRIBUTED_INQUIRY_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:их\s+(?:телефон|номер)|(?:телефон|номер)\s+(?:компани[а-яё-]*|магазин[а-яё-]*|поставщик[а-яё-]*|продавц[а-яё-]*|справочн[а-яё-]*)|(?:звоните?|пишите?|обращайтесь)(?:[^?？\n]{0,64})(?:(?:в|к)\s+компани[а-яё-]*|менеджер[а-яё-]*|секретар[а-яё-]*|охран[а-яё-]*|ему|ей|им))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_UNRELATED_ADMIN_CTA_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:по\s+вопрос[а-яё-]*\s+собрани[а-яё-]*|запис[а-яё-]*\s+к\s+врач[а-яё-]*|пропуск[а-яё-]*\s+у\s+охран[а-яё-]*|справочн[а-яё-]*|секретар[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_NEGATED_CTA_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:никогда\s+)?не\s+(?:(?:надо|нужно|стоит)\s+)?(?:звоните?|пишите?|обращайтесь|заказывайте?|закаж(?:и|ите)|оставляйте?\s+заявк[а-яё-]*)|запрещено\s+(?:звонить|писать|заказывать))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_BUYER_TERMS_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:я\s+)?предлагаю\s+(?:оплат[а-яё-]*|цен[ау]|бюджет|ставк[ау]|вознаграждени[а-яё-]*|услови[ея])|мо[ийя]\s+(?:бюджет|цен[аы]|ставк[аи]|услови[ея])|(?:бюджет|цен[аы]|оплат[а-яё-]*|ставк[аи]|вознаграждени[а-яё-]*|услови[ея])\s*(?:до|не\s+более)?\s*\d+)(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_NON_ORDER_RESPONSE_PURPOSE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:жалоб[а-яё-]*|отзыв[а-яё-]*|исследовани[а-яё-]*|опрос[а-яё-]*|протокол[а-яё-]*|архив[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+
+function hasBareQuestionCurrentOfferCue(rawLoweredText: string): boolean {
+  return (
+    /\[(?:phone|url)\]/iu.test(rawLoweredText) ||
+    BARE_QUESTION_CURRENT_OFFER_CUE_PATTERN.test(rawLoweredText) ||
+    BARE_QUESTION_FIRST_PERSON_SERVICE_OFFER_PATTERN.test(rawLoweredText)
+  );
+}
+
+function isThirdPartyServiceQuestionSequence(rawLoweredText: string): boolean {
+  const assertions = splitCommercialAssertions(rawLoweredText);
+  const questionIndex = findThirdPartyServiceQuestionIndex(assertions);
+  return (
+    assertions.length >= 2 &&
+    questionIndex >= 0 &&
+    !hasQuestionLocalSourceSideCta(assertions, questionIndex) &&
+    !extractIndependentSourceSideOfferAroundQuestion(assertions, questionIndex)
+  );
+}
+
+function findThirdPartyServiceQuestionIndex(assertions: readonly string[]): number {
+  return assertions.findIndex(
+    (assertion) =>
+      /[?？]["'»”’“]?\s*$/u.test(assertion) && THIRD_PARTY_SERVICE_QUESTION_PATTERN.test(assertion),
+  );
+}
+
+function extractIndependentSourceSideOfferAroundQuestionFromText(
+  rawLoweredText: string,
+): string | null {
+  const assertions = splitCommercialAssertions(rawLoweredText);
+  const questionIndex = findThirdPartyServiceQuestionIndex(assertions);
+  if (assertions.length < 2 || questionIndex < 0) {
+    return null;
+  }
+  return extractIndependentSourceSideOfferAroundQuestion(assertions, questionIndex);
+}
+
+function hasQuestionLocalSourceSideCta(
+  assertions: readonly string[],
+  questionIndex: number,
+): boolean {
+  const localTail = assertions.slice(questionIndex + 1, questionIndex + 7);
+  let hasAttributedInquiry = false;
+  let hasBuyerTerms = false;
+  let inspectedLength = 0;
+  for (const assertion of localTail) {
+    inspectedLength += assertion.length;
+    if (inspectedLength > 700) {
+      break;
+    }
+    if (QUESTION_SEQUENCE_ATTRIBUTED_INQUIRY_PATTERN.test(assertion)) {
+      hasAttributedInquiry = true;
+      continue;
+    }
+    if (QUESTION_SEQUENCE_BUYER_TERMS_PATTERN.test(assertion)) {
+      hasBuyerTerms = true;
+    }
+    if (QUESTION_SEQUENCE_UNRELATED_ADMIN_CTA_PATTERN.test(assertion)) {
+      continue;
+    }
+    if (
+      QUESTION_SEQUENCE_NEGATED_CTA_PATTERN.test(assertion) ||
+      QUESTION_SEQUENCE_NON_ORDER_RESPONSE_PURPOSE_PATTERN.test(assertion) ||
+      (hasBuyerTerms && BUYER_DIRECTED_RESPONSE_PATTERN.test(assertion))
+    ) {
+      continue;
+    }
+    if (QUESTION_SEQUENCE_EXPLICIT_ORDER_CTA_PATTERN.test(assertion)) {
+      return true;
+    }
+    if (!hasAttributedInquiry && QUESTION_SEQUENCE_GENERIC_RESPONSE_CTA_PATTERN.test(assertion)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function extractIndependentSourceSideOfferAroundQuestion(
+  assertions: readonly string[],
+  questionIndex: number,
+): string | null {
+  for (let index = 0; index < assertions.length; index += 1) {
+    if (index === questionIndex) {
+      continue;
+    }
+    const sourceAssertion = assertions[index];
+    const hasDirectSource = QUESTION_SEQUENCE_DIRECT_SOURCE_PREFIX_PATTERN.test(sourceAssertion);
+    const hasOwnedAvailabilitySource =
+      QUESTION_SEQUENCE_OWNED_AVAILABILITY_PREFIX_PATTERN.test(sourceAssertion);
+    if (!hasDirectSource && !hasOwnedAvailabilitySource) {
+      continue;
+    }
+
+    const windowParts = [sourceAssertion];
+    for (let offset = 1; offset < 3 && index + offset < assertions.length; offset += 1) {
+      if (index + offset === questionIndex) {
+        break;
+      }
+      const nextAssertion = assertions[index + offset];
+      const nextWindow = `${windowParts.join('. ')}. ${nextAssertion}`;
+      if (nextWindow.length > 560) {
+        break;
+      }
+      windowParts.push(nextAssertion);
+    }
+
+    const window = windowParts.join('. ');
+    if (
+      QUESTION_SEQUENCE_BUYER_TERMS_PATTERN.test(window) &&
+      BUYER_DIRECTED_RESPONSE_PATTERN.test(window)
+    ) {
+      continue;
+    }
+    const hasOfferCue = QUESTION_SEQUENCE_OWNED_AVAILABILITY_OFFER_PATTERN.test(window);
+    const hasNumericPrice = QUESTION_SEQUENCE_NUMERIC_PRICE_PATTERN.test(window);
+    const hasResponseChannel = QUESTION_SEQUENCE_RESPONSE_CHANNEL_PATTERN.test(window);
+    const hasDirectSourceDeal =
+      hasDirectSource && (hasNumericPrice || hasResponseChannel || hasOfferCue);
+    const hasOwnedAvailabilityDeal =
+      hasOwnedAvailabilitySource &&
+      ((hasOfferCue && (hasNumericPrice || hasResponseChannel)) ||
+        (hasNumericPrice && hasResponseChannel));
+    if (
+      !QUESTION_SEQUENCE_ATTRIBUTED_OR_NEGATED_AVAILABILITY_PATTERN.test(window) &&
+      (hasDirectSourceDeal || hasOwnedAvailabilityDeal)
+    ) {
+      return window;
+    }
+  }
+
+  return null;
+}
+
+function extractExplicitIndependentOffer(rawLoweredText: string): string | null {
+  const boundedText = rawLoweredText.slice(0, 8_000);
+  const quoteState: DelimitedQuoteState = { expectedClosers: [] };
+  let quoteScanIndex = 0;
+  EXPLICIT_TOPIC_CHANGE_BOUNDARY_PATTERN.lastIndex = 0;
+  for (const boundary of boundedText.matchAll(EXPLICIT_TOPIC_CHANGE_BOUNDARY_PATTERN)) {
+    if (boundary.index === undefined) {
+      continue;
+    }
+    advanceDelimitedQuoteState(boundedText, quoteScanIndex, boundary.index, quoteState);
+    quoteScanIndex = boundary.index;
+    if (quoteState.expectedClosers.length > 0) {
+      continue;
+    }
+    const offer = boundedText.slice(boundary.index + boundary[0].length).trim();
+    if (offer) {
+      return offer;
+    }
+  }
+  return null;
+}
+
+type DelimitedQuoteState = {
+  expectedClosers: string[];
+};
+
+function advanceDelimitedQuoteState(
+  text: string,
+  start: number,
+  end: number,
+  state: DelimitedQuoteState,
+): void {
+  for (let index = start; index < end; index += 1) {
+    const character = text[index];
+    if (character === '«') {
+      state.expectedClosers.push('»');
+    } else if (character === '„') {
+      state.expectedClosers.push('“');
+    } else if (character === '“') {
+      toggleExpectedCloser(state, '“', '”');
+    } else if (character === '»' || character === '”') {
+      closeExpectedQuote(state, character);
+    } else if (character === '"' && text[index - 1] !== '\\') {
+      toggleExpectedCloser(state, '"', '"');
+    }
+  }
+}
+
+function toggleExpectedCloser(
+  state: DelimitedQuoteState,
+  closingCharacter: string,
+  openingExpectedCloser: string,
+): void {
+  if (state.expectedClosers[state.expectedClosers.length - 1] === closingCharacter) {
+    state.expectedClosers.pop();
+    return;
+  }
+  state.expectedClosers.push(openingExpectedCloser);
+}
+
+function closeExpectedQuote(state: DelimitedQuoteState, character: string): void {
+  if (state.expectedClosers[state.expectedClosers.length - 1] === character) {
+    state.expectedClosers.pop();
+  }
+}
 
 let commercialDetectorWarmUpComplete = false;
 let commercialDetectorWarmUpInProgress = false;
@@ -172,21 +423,41 @@ export class CommercialAdDetector {
       profile: appliedThresholds,
       commercialCampaignContext,
     });
+    const hasExplicitAttributedSafeContext =
+      state.negativeSignals.includes('context:quoted-ad-example') ||
+      state.negativeSignals.includes('context:attributed-commercial-report');
+    const escalationRiskLabels = state.matchedSignals
+      .filter(isCommercialEscalationRiskSignal)
+      .map((signal) => signal.slice('risk:'.length));
+    const hasMixedProtectedCommercialContext =
+      MIXED_PROTECTED_COMMERCIAL_CONTEXT_PREFILTER.test(rawLoweredText);
+    const hasSearchRequestOfferBoundary =
+      state.hasSearchRequestContext && BOUNDARY_LOCAL_CURRENT_OFFER_PREFILTER.test(rawLoweredText);
     const shouldInspectOrdinaryProtectedContext =
-      (MIXED_PROTECTED_COMMERCIAL_CONTEXT_PREFILTER.test(rawLoweredText) ||
-        (state.hasSearchRequestContext &&
-          BOUNDARY_LOCAL_CURRENT_OFFER_PREFILTER.test(rawLoweredText))) &&
-      !state.matchedSignals.some(isCommercialEscalationRiskSignal);
+      (hasMixedProtectedCommercialContext ||
+        hasExplicitAttributedSafeContext ||
+        hasSearchRequestOfferBoundary) &&
+      (escalationRiskLabels.length === 0 ||
+        hasMixedProtectedCommercialContext ||
+        hasExplicitAttributedSafeContext ||
+        hasSearchRequestOfferBoundary);
     const localContext = shouldInspectOrdinaryProtectedContext
       ? resolveCommercialLocalContext({
           rawLoweredText,
-          escalationRiskLabels: [],
+          escalationRiskLabels,
           includeOrdinaryProtectedContext: true,
         })
       : null;
-    const localOfferText = localContext?.hasProtectedContext
+    const protectedContextOfferText = localContext?.hasProtectedContext
       ? localContext.independentCommercialOfferText
       : null;
+    const explicitTopicOfferText = hasMixedProtectedCommercialContext
+      ? extractExplicitIndependentOffer(rawLoweredText)
+      : null;
+    const questionSequenceOfferText =
+      extractIndependentSourceSideOfferAroundQuestionFromText(rawLoweredText);
+    const localOfferText =
+      protectedContextOfferText ?? explicitTopicOfferText ?? questionSequenceOfferText;
     let isolatedIndependentOffer = false;
     if (localOfferText) {
       const localRawLoweredText = normalizeCommercialRawText(localOfferText);
@@ -198,10 +469,38 @@ export class CommercialAdDetector {
         profile: appliedThresholds,
         commercialCampaignContext: localCampaignContext,
       });
+      const localEscalationRiskLabels = localState.matchedSignals
+        .filter(isCommercialEscalationRiskSignal)
+        .map((signal) => signal.slice('risk:'.length));
+      const hasIndependentLocalEscalationOffer =
+        localEscalationRiskLabels.length === 0 ||
+        resolveCommercialLocalContext({
+          rawLoweredText: localRawLoweredText,
+          escalationRiskLabels: localEscalationRiskLabels,
+          includeOrdinaryProtectedContext: true,
+        }).hasIndependentEscalationOffer;
+      if (
+        explicitTopicOfferText === localOfferText &&
+        LOCAL_BUYER_DIRECTED_REQUEST_PATTERN.test(localRawLoweredText)
+      ) {
+        const offerIndex = rawLoweredText.lastIndexOf(localOfferText);
+        const prefixRawLoweredText = rawLoweredText.slice(0, Math.max(0, offerIndex)).trim();
+        const prefixState = collectCommercialSignals({
+          normalizedText: normalizeCommercialText(prefixRawLoweredText),
+          rawLoweredText: prefixRawLoweredText,
+          profile: appliedThresholds,
+          commercialCampaignContext,
+        });
+        if (!prefixState.hasCommercialContext || !prefixState.hasDealSignal) {
+          return null;
+        }
+      }
       if (
         localState.matchedSignals.length > 0 &&
         localState.hasCommercialContext &&
-        localState.hasDealSignal
+        localState.hasDealSignal &&
+        !LOCAL_BUYER_DIRECTED_REQUEST_PATTERN.test(localRawLoweredText) &&
+        hasIndependentLocalEscalationOffer
       ) {
         localState.matchedSignals.push('locality:independent-commercial-offer');
         rawLoweredText = localRawLoweredText;
@@ -227,6 +526,13 @@ export class CommercialAdDetector {
     const hasBoundedRecallEvidence = evidence.hasBoundedRecallEvidence;
 
     if (
+      isThirdPartyServiceQuestionSequence(rawLoweredText) &&
+      !evidence.hasEscalationRiskEvidence
+    ) {
+      return null;
+    }
+
+    if (
       isThirdPartyServiceRecommendationWithoutCurrentOffer(rawLoweredText, state) &&
       !evidence.hasEscalationRiskEvidence
     ) {
@@ -245,7 +551,32 @@ export class CommercialAdDetector {
       return null;
     }
 
-    const hasSelfPromotionalCommercialContext = hasExplicitSelfPromotionalCommercialContext(state);
+    const hasQualifiedSourceSideServiceContext = hasQualifiedSourceSideServiceOffer(rawLoweredText);
+    const hasBuyerOwnedBudgetRequest = BUYER_OWNED_BUDGET_REQUEST_PATTERN.test(rawLoweredText);
+    const hasBoundedWhereToBuyRequest =
+      ADS_BOUNDED_WHERE_TO_BUY_REQUEST_PATTERN.test(rawLoweredText);
+    const hasBuyerDirectedResponse = BUYER_DIRECTED_RESPONSE_PATTERN.test(rawLoweredText);
+    const hasIndependentSourceSideOfferAfterRequest =
+      EXPLICIT_OWNED_SOURCE_SIDE_OFFER_AFTER_REQUEST_PATTERN.test(rawLoweredText) ||
+      (!hasBuyerDirectedResponse &&
+        (BOUNDARY_LOCAL_CURRENT_OFFER_PREFILTER.test(rawLoweredText) ||
+          BARE_SOURCE_SIDE_OFFER_AFTER_REQUEST_PATTERN.test(rawLoweredText)));
+    if (
+      hasBuyerOwnedBudgetRequest &&
+      !hasQualifiedSourceSideServiceContext &&
+      !hasIndependentSourceSideOfferAfterRequest &&
+      !evidence.hasEscalationRiskEvidence
+    ) {
+      return null;
+    }
+    if (hasBoundedWhereToBuyRequest && !evidence.hasEscalationRiskEvidence) {
+      return null;
+    }
+    const hasSelfPromotionalCommercialContext =
+      hasExplicitSelfPromotionalCommercialContext(state, rawLoweredText) ||
+      BARE_QUESTION_FIRST_PERSON_SERVICE_OFFER_PATTERN.test(rawLoweredText) ||
+      hasQualifiedSourceSideServiceContext ||
+      hasIndependentSourceSideOfferAfterRequest;
     const hasPrivateLowQuantityGoodsListing =
       isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
     const hasOnlyBareQuestionSearchContext =
@@ -259,6 +590,14 @@ export class CommercialAdDetector {
         state.hasCallToActionContext ||
         state.hasServiceContext ||
         state.hasServiceOfferContext);
+    const hasWhoProvidesServiceDemandContext =
+      state.negativeSignals.includes('search-pattern:request:who-provides-service') &&
+      !BARE_QUESTION_FIRST_PERSON_SERVICE_OFFER_PATTERN.test(rawLoweredText) &&
+      !hasQualifiedSourceSideServiceContext;
+
+    if (hasWhoProvidesServiceDemandContext) {
+      return null;
+    }
 
     if (
       state.hasPrivateSaleContext &&
@@ -278,8 +617,9 @@ export class CommercialAdDetector {
       return null;
     }
 
-    const hasBareQuestionSelfPromoTransactionalEvidence =
-      hasBareQuestionStructuredOfferEvidence && hasSelfPromotionalCommercialContext;
+    const hasBareQuestionCurrentOfferEvidence =
+      hasBareQuestionStructuredOfferEvidence &&
+      (hasSelfPromotionalCommercialContext || hasBareQuestionCurrentOfferCue(rawLoweredText));
 
     if (
       state.hasSearchRequestContext &&
@@ -288,7 +628,7 @@ export class CommercialAdDetector {
       !state.hasDealChannel &&
       !evidence.hasEscalationRiskEvidence &&
       !hasBoundedRecallEvidence &&
-      !hasBareQuestionSelfPromoTransactionalEvidence
+      !hasBareQuestionCurrentOfferEvidence
     ) {
       return null;
     }
@@ -336,7 +676,9 @@ export class CommercialAdDetector {
       return null;
     }
 
-    if (hasCommercialDiscussionHardNegative(state, evidence.hasEscalationRiskEvidence)) {
+    if (
+      hasCommercialDiscussionHardNegative(state, evidence.hasEscalationRiskEvidence, rawLoweredText)
+    ) {
       return null;
     }
 
@@ -630,6 +972,7 @@ function isOfficialAppStoreReferenceNoise(
 function hasCommercialDiscussionHardNegative(
   state: ReturnType<typeof collectCommercialSignals>,
   hasEscalationRiskEvidence: boolean,
+  rawLoweredText: string,
 ): boolean {
   const hasCommercialAnimalAdoptionOverride =
     state.negativeSignals.includes('context:animal-adoption') &&
@@ -637,11 +980,11 @@ function hasCommercialDiscussionHardNegative(
     (state.hasContact || state.hasDealChannel || state.hasGoodsRetailContext);
   const hasCommercialFuelRetailOverride =
     state.negativeSignals.includes('context:fuel-availability-report') &&
-    state.hasPrice &&
-    (state.hasContact ||
-      state.hasDealChannel ||
-      state.hasBusinessContext ||
-      state.hasGoodsRetailContext);
+    state.matchedSignals.includes('goods-retail:explicit-fuel-retail');
+  const hasExplicitLinkedGroupPromotionOverride = hasExplicitLinkedBoundedGroupPromotion(
+    state,
+    rawLoweredText,
+  );
 
   return state.negativeSignals.some(
     (signal) =>
@@ -652,7 +995,7 @@ function hasCommercialDiscussionHardNegative(
       signal === 'context:reported-escalation-risk' ||
       signal === 'context:leadgen-training-recap' ||
       signal === 'context:local-news-subscribe' ||
-      signal === 'context:moderation-ad-discussion' ||
+      (signal === 'context:moderation-ad-discussion' && !hasExplicitLinkedGroupPromotionOverride) ||
       signal === 'context:resale-pricing-discussion' ||
       signal === 'context:channel-metrics-not-selling' ||
       signal === 'context:public-fraud-warning' ||
@@ -663,6 +1006,7 @@ function hasCommercialDiscussionHardNegative(
       signal === 'context:currency-rate-news' ||
       signal === 'context:giveaway-results-report' ||
       signal === 'context:pseudomedical-attribution-or-debunking' ||
+      (signal === 'context:fuel-price-analysis' && !hasEscalationRiskEvidence) ||
       (signal === 'context:fuel-availability-report' &&
         !hasCommercialFuelRetailOverride &&
         !hasEscalationRiskEvidence) ||

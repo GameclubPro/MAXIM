@@ -22,6 +22,7 @@ import {
   ADS_BUYOUT_PATTERNS,
   ADS_BUYOUT_DEAL_PATTERN,
   ADS_PROMO_MARKERS,
+  ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN,
   ADS_BUSINESS_MARKERS,
   ADS_BUSINESS_PATTERNS,
   ADS_HIGH_RISK_COMMERCIAL_PATTERNS,
@@ -94,6 +95,7 @@ import {
 } from './commercial-evidence';
 import { selectServiceSpecialtyPatterns } from './commercial-service-specialty-prefilter';
 import {
+  hasStrongCommercialGroupSubscribeFrame,
   resolveGroupPromotionRecall,
   resolveLocalServiceRecall,
   resolveManualLaborServiceRecall,
@@ -142,6 +144,32 @@ const IMPLICIT_STRUCTURED_SERVICE_SPECIALTIES = new Set([
   'tourist-lodging-offer',
   'well-drilling-self-offer',
 ]);
+
+const MAX_EXPLICIT_FUEL_RETAIL_TEXT_LENGTH = 8_000;
+const MAX_EXPLICIT_FUEL_RETAIL_CLAUSES = 24;
+
+const EXPLICIT_FUEL_OFFER_ANCHOR_PREFILTER =
+  /(?:бензин[а-яё-]*|дизел[а-яё-]*|топлив[а-яё-]*|нефтепродукт[а-яё-]*|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|(?:^|[^\p{L}\p{N}_-])дт(?=$|[^\p{L}\p{N}_-]))/iu;
+const EXPLICIT_FUEL_SELLER_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:азс|прода(?:ю|ем|[её]т|ют)|предлага(?:ю|ем|ет|ют)|реализу(?:ю|ем|ет|ют)|поставля(?:ю|ем|ет|ют)|(?:в|на)\s+наш(?:ем|ей)\s+(?:магазин[а-яё-]*|азс)|у\s+нас|в\s+продаже|в\s+наличии|доставк[а-яё-]*\s+топлив[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_EDITORIAL_REPORTING_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:по\s+данн[а-яё-]*|согласно\s+(?:данн[а-яё-]*|мониторинг[а-яё-]*)|мониторинг[а-яё-]*|средн[а-яё-]*\s+цен[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_SOURCE_SIDE_OWNERSHIP_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:у\s+нас|(?:в|на)\s+наш(?:ем|ей)\s+(?:магазин[а-яё-]*|азс))|(?:прода(?:ю|ем|ём)|предлага(?:ю|ем|ём)|реализу(?:ю|ем|ём)|поставля(?:ю|ем|ём)))(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_SOURCE_SIDE_CTA_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:закаж[а-яё-]*|звон[а-яё-]*|пишите?|остав(?:ьте|ляйте)\s+заявк[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_EDITORIAL_CONTACT_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:телефон|номер)\s+редакци[а-яё-]*|по\s+вопрос[а-яё-]*\s+(?:публикаци[а-яё-]*|редакци[а-яё-]*|новост[а-яё-]*)(?:[^.!?;\n]{0,80})(?:звон[а-яё-]*|пишите?)|(?:звон[а-яё-]*|пишите?)(?:[^.!?;\n]{0,48})(?:в|к)\s+редакци[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_INACTIVE_RETAIL_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:азс(?:[^.!?;\n]{0,100})(?:закры(?:т|л)[а-яё-]*|не\s+(?:работа[а-яё-]*|существу[а-яё-]*)|снесл[а-яё-]*|демонтирован[а-яё-]*|ликвидирован[а-яё-]*|прекратил[а-яё-]*\s+(?:работ[а-яё-]*|деятельност[а-яё-]*))|(?:бензин[а-яё-]*|дизел[а-яё-]*|топлив[а-яё-]*|нефтепродукт[а-яё-]*|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дт)(?:[^.!?;\n]{0,100})(?:в\s+продаже\s+больше\s+нет|больше\s+нет|не\s+(?:прода[а-яё-]*|реализу[а-яё-]*|поставля[а-яё-]*))|больше\s+не\s+(?:прода[а-яё-]*|реализу[а-яё-]*|поставля[а-яё-]*)(?:[^.!?;\n]{0,80})(?:бензин[а-яё-]*|дизел[а-яё-]*|топлив[а-яё-]*|нефтепродукт[а-яё-]*|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дт))(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_ACCESS_CLOSURE_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:дорог[а-яё-]*|проезд[а-яё-]*|подъезд[а-яё-]*|въезд[а-яё-]*|выезд[а-яё-]*|трасс[а-яё-]*)(?:[^.!?;\n]{0,48})закры[а-яё-]*|закры[а-яё-]*(?:[^.!?;\n]{0,48})(?:дорог[а-яё-]*|проезд[а-яё-]*|подъезд[а-яё-]*|въезд[а-яё-]*|выезд[а-яё-]*|трасс[а-яё-]*))(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_PARTIAL_OUTAGE_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])азс(?:[^.!?;\n]{0,100})(?:(?:временно\s+)?не\s+работа[а-яё-]*\s+(?:терминал[а-яё-]*|касс[а-яё-]*|оплат[а-яё-]*|карт[а-яё-]*|колонк[а-яё-]*|ночью|по\s+ночам|с\s+\d{1,2}(?::\d{2})?|до\s+\d{1,2}(?::\d{2})?)|закрыл[а-яё-]*\s+(?:одн[ау]\s+)?(?:колонк[ауи]|касс[ауи]|терминал[а-яё-]*))(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_CURRENT_REOPENING_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:(?:но|а)\s+)?(?:теперь|сейчас|сегодня|завтра|с\s+(?:понедельник[а-яё-]*|вторник[а-яё-]*|сред[ыа]|четверг[а-яё-]*|пятниц[ыа]|суббот[ыа]|воскресень[яе]|\d{1,2}(?:[./-]\d{1,2})?)|после\s+(?:\d{1,2}(?::\d{2})?|ремонт[а-яё-]*))\s+(?:(?:(?:снова|вновь)\s+)?(?:работа(?:ем|ет)|прода(?:ю|ем|[её]т|ют)|предлага(?:ю|ем|ет|ют)|(?:бензин[а-яё-]*|дизел[а-яё-]*|топлив[а-яё-]*|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дт)\s+в\s+наличи[а-яё-]*)|(?:(?:снова|вновь)\s+)?откры(?:лась|лись|та|то|ты)(?=[\s\S]{0,220}(?:бензин[а-яё-]*|дизел[а-яё-]*|топлив[а-яё-]*|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дт)(?:[\s\S]{0,100})(?:в\s+наличи[а-яё-]*|прода(?:ю|ем|[её]т|ют)|предлага(?:ю|ем|ет|ют)))|(?:на|в)\s+наш(?:ей|ем)\s+азс(?=[^.!?;\n]{0,180}(?:работаем|прода(?:ю|ем|[её]т|ют)|в\s+наличи[а-яё-]*)))|(?:у\s+нас|(?:на|в)\s+наш(?:ей|ем)\s+азс)(?=[^.!?;\n]{0,180}(?:работаем|прода(?:ю|ем|[её]т|ют)|в\s+наличи[а-яё-]*)))(?=$|[^\p{L}\p{N}_-])/iu;
+const FUEL_CURRENT_NAMED_RETAIL_PREFILTER =
+  /(?:^|[^\p{L}\p{N}_-])азс(?:\s+[\p{L}\p{N}_-]{2,40}){0,4}(?![\s\S]{0,260}(?:музе[йя][а-яё-]*|кафе|тогда|раньше|когда\s+она\s+работал[а-яё-]*|по\s+стар[а-яё-]*\s+объявлени[а-яё-]*))(?=[\s\S]{0,260}(?:бензин[а-яё-]*|дизел[а-яё-]*|топлив[а-яё-]*|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дт))(?=[\s\S]{0,260}(?:прода(?:ю|ем|[её]т|ют)|в\s+наличи[а-яё-]*))(?=$|[^\p{L}\p{N}_-])/iu;
 
 const RIDESHARE_SENSITIVE_TAXI_SPECIALTIES = new Set([
   'taxi-callsign-availability',
@@ -218,6 +246,7 @@ export function hasCommercialSpamMarkers(text: string): boolean {
   const hasRideShareText = ADS_RIDE_SHARE_CONTEXT_PATTERN.test(rawLoweredText);
   const hasCurrentServiceBookingOffer =
     ADS_CURRENT_SERVICE_BOOKING_OFFER_PATTERN.test(rawLoweredText);
+  const hasExplicitPropertyRepairService = isExplicitPropertyRepairService(rawLoweredText);
   const hasAnimalRescueContext = isAnimalRescueContext(rawLoweredText);
   const hasPrivateGoodsPatternContext = ADS_PRIVATE_GOODS_PATTERNS.some(({ pattern }) =>
     matchesPattern(pattern),
@@ -228,7 +257,10 @@ export function hasCommercialSpamMarkers(text: string): boolean {
   const hasPropertyPrivateContext =
     ADS_PROPERTY_PRIVATE_PATTERNS.some(
       ({ label, pattern }) =>
-        !(label === 'property-listing' && hasCurrentServiceBookingOffer) && matchesPattern(pattern),
+        !(
+          label === 'property-listing' &&
+          (hasCurrentServiceBookingOffer || hasExplicitPropertyRepairService)
+        ) && matchesPattern(pattern),
     ) || ADS_PROPERTY_CONTEXT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
   const hasPropertyAgentContext = ADS_PROPERTY_AGENT_PATTERNS.some(({ pattern }) =>
     matchesPattern(pattern),
@@ -467,8 +499,42 @@ export function hasCommercialSpamMarkers(text: string): boolean {
   );
 }
 
-export function hasExplicitSelfPromotionalCommercialContext(state: CommercialSignalState): boolean {
-  return hasExplicitSelfPromotionalSignals(state.matchedSignals);
+export function hasExplicitSelfPromotionalCommercialContext(
+  state: CommercialSignalState,
+  rawLoweredText: string,
+): boolean {
+  const nonPromoSignals = state.matchedSignals.filter((signal) => !signal.startsWith('promo:'));
+  return (
+    hasExplicitSelfPromotionalSignals(nonPromoSignals) ||
+    hasExplicitLinkedBoundedGroupPromotion(state, rawLoweredText) ||
+    (state.matchedSignals.some((signal) => signal.startsWith('promo:')) &&
+      ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN.test(rawLoweredText))
+  );
+}
+
+export function hasExplicitLinkedBoundedGroupPromotion(
+  state: CommercialSignalState,
+  rawLoweredText: string,
+): boolean {
+  if (!/(?:\[url\]|https?:\/\/)/iu.test(rawLoweredText)) {
+    return false;
+  }
+
+  const hasDirectPromotionRecall = state.matchedSignals.some(
+    (signal) =>
+      signal === 'recall-source:group-promo:explicit-group-promotion' ||
+      signal === 'recall-source:group-promo:link-exchange-group',
+  );
+  const hasAcquaintanceGroupInvitation =
+    state.matchedSignals.includes('recall-source:group-promo:weak-promo-link') &&
+    /(?:^|[^\p{L}\p{N}_-])групп[а-яё-]*(?:[^.!?\n]{0,100})знакомств[а-яё-]*(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    ) &&
+    /(?:^|[^\p{L}\p{N}_-])(?:перейдите|переходите)\s+по\s+ссылк[а-яё-]*(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
+
+  return hasDirectPromotionRecall || hasAcquaintanceGroupInvitation;
 }
 
 function hasExplicitSelfPromotionalSignals(matchedSignals: readonly string[]): boolean {
@@ -750,6 +816,7 @@ export function collectCommercialSignals(params: {
   const hasRideShareText = ADS_RIDE_SHARE_CONTEXT_PATTERN.test(rawLoweredText);
   const hasCurrentServiceBookingOffer =
     ADS_CURRENT_SERVICE_BOOKING_OFFER_PATTERN.test(rawLoweredText);
+  const hasExplicitPropertyRepairService = isExplicitPropertyRepairService(rawLoweredText);
   const hasPhoneLikeText = hasCommercialPhoneLikeText(rawLoweredText);
   const hasAnimalRescueContext = isAnimalRescueContext(rawLoweredText);
   const privateGoodsPatternHits = collectFirstPatternLabels(
@@ -764,7 +831,10 @@ export function collectCommercialSignals(params: {
   const propertyPrivateHits = [
     ...ADS_PROPERTY_PRIVATE_PATTERNS.filter(
       ({ label, pattern }) =>
-        !(label === 'property-listing' && hasCurrentServiceBookingOffer) && matchesPattern(pattern),
+        !(
+          label === 'property-listing' &&
+          (hasCurrentServiceBookingOffer || hasExplicitPropertyRepairService)
+        ) && matchesPattern(pattern),
     ).map(({ label }) => label),
     ...ADS_PROPERTY_CONTEXT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
       ({ label }) => label,
@@ -1775,6 +1845,25 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
+  const explicitFuelRetailContext = resolveExplicitFuelRetailContext(rawLoweredText);
+  const hasExplicitFuelRetailRecall = explicitFuelRetailContext.hasCurrentOffer;
+  if (hasExplicitFuelRetailRecall) {
+    addPositive('goods-retail:explicit-fuel-retail', weights.goodsRetail);
+    addPositive('recall-source:goods-retail:explicit-fuel-retail', 0);
+    addPositive('recall-cap:warn:explicit-fuel-retail', 0);
+    addPositive('transaction:bounded-recall-offer', weights.transactionalKeyword);
+    hasGoodsRetailContext = true;
+    hasBusinessContext = true;
+    hasCommercialContext = true;
+    hasIntent = true;
+    hasTransactional = true;
+    hasDealSignal = true;
+  }
+  if (explicitFuelRetailContext.hasInactiveReport && !hasExplicitFuelRetailRecall) {
+    addNegative('context:fuel-availability-report', weights.negativeMarker, true);
+    hasSearchRequestContext = true;
+  }
+
   if (ADS_MARKETPLACE_LINK_PATTERN.test(rawLoweredText) && !hasMarketplaceServiceLink) {
     addNegative('private:marketplace-link', weights.marketplaceLinkNegative);
     hasPrivateSaleContext = true;
@@ -1824,36 +1913,61 @@ export function collectCommercialSignals(params: {
       ));
   const hasAttributedPublicServiceEditorialFrame =
     hasLinkedPublicServiceEditorialFrame(rawLoweredText);
-  const hasExplicitLocalNewsCommercialOffer =
-    !hasAttributedPublicServiceEditorialFrame &&
-    /(?:^|[^\p{L}\p{N}_-])(?:закаж[\p{L}\p{N}_-]*|купить|прода(?:м|ю|ем|[её]тся)|запис[\p{L}\p{N}_-]*|брониру[\p{L}\p{N}_-]*|прайс[\p{L}\p{N}_-]*|скидк[\p{L}\p{N}_-]*|звоните|пишите\s+(?:в\s+)?(?:лс|личк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
+  const hasOwnedMerchantNewsFrame =
+    /(?:^|[^\p{L}\p{N}_-])новост[а-яё-]*(?:[^.!?;\n]{0,80})наш[а-яё-]*\s+магазин[а-яё-]*(?=$|[^\p{L}\p{N}_-])/iu.test(
       rawLoweredText,
     );
+  const hasExplicitLocalNewsCommercialOffer =
+    !hasAttributedPublicServiceEditorialFrame &&
+    (hasOwnedMerchantNewsFrame ||
+      /(?:^|[^\p{L}\p{N}_-])(?:закаж[\p{L}\p{N}_-]*|купить|прода(?:м|ю|ем|[её]тся)|запис[\p{L}\p{N}_-]*|брониру[\p{L}\p{N}_-]*|прайс[\p{L}\p{N}_-]*|звоните|пишите\s+(?:в\s+)?(?:лс|личк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
+        rawLoweredText,
+      ));
   const hasStructuredLocalNewsCommercialOffer =
     hasPhoneContact &&
     hasServiceOfferContext &&
     (hasServiceContext || hasServiceSpecialtyContext || hasBusinessContext) &&
     matchedSignals.some((signal) => signal.startsWith('intent:')) &&
     !hasAttributedPublicServiceEditorialFrame;
+  const hasExplicitLocalNewsGroupPromotion =
+    matchedSignals.includes('recall-source:group-promo:explicit-group-promotion') &&
+    hasStrongCommercialGroupSubscribeFrame(rawLoweredText) &&
+    hasOwnedMerchantNewsFrame;
+  const hasPublicHelpCommercialCatalog =
+    hasGoodsRetailContext &&
+    hasPrice &&
+    (hasContact || hasDealChannel || hasCallToActionContext) &&
+    /(?:^|[^\p{L}\p{N}_-])(?:каталог[а-яё-]*|в\s+наличи[а-яё-]*|стоимост[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
 
   for (const { label, pattern } of ADS_COMMERCIAL_DISCUSSION_NEGATIVE_PATTERNS) {
-    if (!(pattern.test(normalizedText) || pattern.test(rawLoweredText))) {
+    const matchesDiscussionContext =
+      label === 'attributed-commercial-report'
+        ? commercialLocalContext.hasAttributedCommercialReport
+        : pattern.test(normalizedText) || pattern.test(rawLoweredText);
+    if (!matchesDiscussionContext) {
       continue;
     }
     if (
       (label === 'channel-ad-due-diligence' &&
         commercialLocalContext.hasIndependentEscalationOffer) ||
       (label === 'public-fraud-warning' && commercialLocalContext.hasIndependentCommercialOffer) ||
+      (label === 'public-help-request' &&
+        (commercialLocalContext.hasIndependentCommercialOffer || hasPublicHelpCommercialCatalog)) ||
       (label === 'moderation-ad-discussion' &&
         commercialLocalContext.hasIndependentCommercialOffer) ||
       (label === 'local-news-subscribe' &&
-        (hasExplicitLocalNewsCommercialOffer || hasStructuredLocalNewsCommercialOffer))
+        (hasExplicitLocalNewsCommercialOffer ||
+          hasStructuredLocalNewsCommercialOffer ||
+          hasExplicitLocalNewsGroupPromotion))
     ) {
       continue;
     }
     if (
       (label === 'animal-adoption' ||
         label === 'fuel-availability-report' ||
+        label === 'fuel-price-analysis' ||
         label === 'public-help-request' ||
         label === 'pseudomedical-attribution-or-debunking') &&
       resolveCommercialSignalEvidence(matchedSignals).hasEscalationRiskEvidence
@@ -1878,10 +1992,17 @@ export function collectCommercialSignals(params: {
       continue;
     }
     if (
-      label === 'fuel-availability-report' &&
-      isExplicitFuelRetailOffer(rawLoweredText) &&
-      (hasContact || hasDealChannel || hasCallToActionContext)
+      (label === 'fuel-availability-report' || label === 'fuel-price-analysis') &&
+      hasExplicitFuelRetailRecall &&
+      (hasContact ||
+        hasDealChannel ||
+        hasCallToActionContext ||
+        hasBusinessContext ||
+        hasGoodsRetailContext)
     ) {
+      continue;
+    }
+    if (label === 'fuel-price-analysis' && commercialLocalContext.hasIndependentCommercialOffer) {
       continue;
     }
 
@@ -3429,6 +3550,12 @@ function isOfficialCredentialDuplicateContext(rawLoweredText: string): boolean {
   return hasOfficialIssuer && hasDuplicateCredentialRequest && !hasExplicitIllicitOverride;
 }
 
+function isExplicitPropertyRepairService(rawLoweredText: string): boolean {
+  return /(?:^|[^\p{L}\p{N}_-])(?:бригад[а-яё-]*|подрядчик[а-яё-]*|компани[яи]|мы)(?:[^.!?;\n]{0,120})(?:выполня(?:ю|ем|ет|ют)|дела(?:ю|ем|ет|ют)|предлага(?:ю|ем|ет|ют))(?:[^.!?;\n]{0,100})ремонт[а-яё-]*\s+квартир[а-яё-]*(?=[\s\S]{0,220}(?:цен[а-яё-]*|стоимост[а-яё-]*|звоните|пишите|\[phone\]|\d+[\d\s.,]{0,8}\s*(?:₽|руб)))/iu.test(
+    rawLoweredText,
+  );
+}
+
 function isCredentialCoverServiceContext(rawLoweredText: string): boolean {
   const hasIllicitDocumentAnchor =
     /(?:^|[^\p{L}\p{N}_-])(?:готов[ыа][\p{L}\p{N}_-]*\s+документ[\p{L}\p{N}_-]*|без\s+(?:обучени[\p{L}\p{N}_-]*|экзамен[\p{L}\p{N}_-]*)|внес[\p{L}\p{N}_-]*\s+в\s+(?:официальн[\p{L}\p{N}_-]*\s+)?(?:реестр|баз[\p{L}\p{N}_-]*)|конфиденциальн[\p{L}\p{N}_-]*|государственн[\p{L}\p{N}_-]*\s+образц[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
@@ -3450,10 +3577,111 @@ function isCredentialCoverServiceContext(rawLoweredText: string): boolean {
   return hasCredentialContext && hasPhysicalCoverWork;
 }
 
-function isExplicitFuelRetailOffer(rawLoweredText: string): boolean {
-  return /(?:^|[^\p{L}\p{N}_-])(?:азс(?:\s+[\p{L}\p{N}_-]+)?(?:[\p{L}\p{N}\s.,:;()/%+-]{0,180})(?:скидк[\p{L}\p{N}_-]*|карт[аые][\p{L}\p{N}_-]*|работа(?:ем|ет)|круглосуточн[\p{L}\p{N}_-]*|тел\.?|телефон|звон[\p{L}\p{N}_-]*)|доставк[\p{L}\p{N}_-]*\s+топлив[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+-]{0,180})(?:для\s+бизнес[а-яё-]*|заказ[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*|тел\.?|телефон|звон[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
-    rawLoweredText,
+function resolveExplicitFuelRetailContext(rawLoweredText: string): {
+  hasCurrentOffer: boolean;
+  hasInactiveReport: boolean;
+} {
+  const boundedRawLoweredText = rawLoweredText.slice(0, MAX_EXPLICIT_FUEL_RETAIL_TEXT_LENGTH);
+  if (
+    !EXPLICIT_FUEL_OFFER_ANCHOR_PREFILTER.test(boundedRawLoweredText) ||
+    !EXPLICIT_FUEL_SELLER_PREFILTER.test(boundedRawLoweredText)
+  ) {
+    return { hasCurrentOffer: false, hasInactiveReport: false };
+  }
+
+  const fuelOfferClauses = boundedRawLoweredText
+    .replace(/(руб|р)\./giu, '$1')
+    .split(/[.!?;\n]+/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean)
+    .slice(0, MAX_EXPLICIT_FUEL_RETAIL_CLAUSES);
+  let hasInactiveRetailCarry = false;
+  let hasInactiveReport = false;
+  const fuelOfferClauseStates = fuelOfferClauses.map((clause, index) => {
+    const transitionWindow = `${clause}. ${fuelOfferClauses[index + 1] ?? ''}`;
+    const startsInCurrentClause = (pattern: RegExp): boolean => {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(transitionWindow);
+      return match !== null && match.index < clause.length;
+    };
+    const hasInactiveClause =
+      FUEL_INACTIVE_RETAIL_PREFILTER.test(clause) &&
+      !FUEL_ACCESS_CLOSURE_PREFILTER.test(clause) &&
+      !FUEL_PARTIAL_OUTAGE_PREFILTER.test(clause);
+    if (hasInactiveClause) {
+      hasInactiveRetailCarry = true;
+      hasInactiveReport = true;
+    }
+    if (
+      startsInCurrentClause(FUEL_CURRENT_REOPENING_PREFILTER) ||
+      (!hasInactiveClause && startsInCurrentClause(FUEL_CURRENT_NAMED_RETAIL_PREFILTER))
+    ) {
+      hasInactiveRetailCarry = false;
+    }
+    return { clause, isCurrent: !hasInactiveRetailCarry };
+  });
+  const fuelOfferWindows = fuelOfferClauseStates.flatMap((_, start) =>
+    [1, 2, 3].flatMap((length) => {
+      const clauseStates = fuelOfferClauseStates.slice(start, start + length);
+      return clauseStates.length === length && clauseStates.every(({ isCurrent }) => isCurrent)
+        ? [
+            {
+              attributionWindow: [...clauseStates, fuelOfferClauseStates[start + length]]
+                .filter((state): state is { clause: string; isCurrent: boolean } => Boolean(state))
+                .map(({ clause }) => clause)
+                .join(' '),
+              offerWindow: clauseStates.map(({ clause }) => clause).join(' '),
+            },
+          ]
+        : [];
+    }),
   );
+  const isAttributedOrQuotedFuelWindow = (window: string): boolean => {
+    const hasEditorialContact = FUEL_EDITORIAL_CONTACT_PREFILTER.test(window);
+    return (
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:цитир[а-яё-]*|привод[а-яё-]*)(?:[\p{L}\p{N}\s,:«»"'-]{0,80})пример[а-яё-]*|(?:образец|пример)[а-яё-]*\s+реклам[а-яё-]*|не\s+предложени[а-яё-]*|(?:представител[а-яё-]*|поставщик[а-яё-]*|продавец[а-яё-]*)(?:[\p{L}\p{N}\s,()-]{0,80})(?:сообщил[а-яё-]*|заявил[а-яё-]*|рассказал[а-яё-]*|отметил[а-яё-]*|пояснил[а-яё-]*)\s*[:,-]?\s*[«"])/iu.test(
+        window,
+      ) ||
+      ((FUEL_EDITORIAL_REPORTING_PREFILTER.test(window) || hasEditorialContact) &&
+        !FUEL_SOURCE_SIDE_OWNERSHIP_PREFILTER.test(window) &&
+        (!FUEL_SOURCE_SIDE_CTA_PREFILTER.test(window) || hasEditorialContact))
+    );
+  };
+  const eligibleFuelOfferWindows = fuelOfferWindows
+    .filter(({ attributionWindow }) => !isAttributedOrQuotedFuelWindow(attributionWindow))
+    .map(({ offerWindow }) => offerWindow);
+  const hasEstablishedRetailFrame = eligibleFuelOfferWindows.some((window) =>
+    /(?:^|[^\p{L}\p{N}_-])(?:азс(?:\s+[\p{L}\p{N}_-]+)?(?:[\p{L}\p{N}\s.,:;()/%+-]{0,180})(?:скидк[\p{L}\p{N}_-]*|карт[аые][\p{L}\p{N}_-]*|работа(?:ем|ет)|круглосуточн[\p{L}\p{N}_-]*)|доставк[\p{L}\p{N}_-]*\s+топлив[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+-]{0,180})(?:для\s+бизнес[а-яё-]*|заказ[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*|тел\.?|телефон|звон[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
+      window,
+    ),
+  );
+  const hasDirectFuelSellerFrame = eligibleFuelOfferWindows.some(
+    (window) =>
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:прода(?:ю|ем|[её]т|ют)|предлага(?:ю|ем|ет|ют)|реализу(?:ю|ем|ет|ют)|поставля(?:ю|ем|ет|ют))(?:[^.!?\n]{0,80})(?:дт(?=$|[^\p{L}\p{N}_-])|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дизельн[а-яё-]*\s+топлив[а-яё-]*|бензин[а-яё-]*|топлив[а-яё-]*|нефтепродукт[а-яё-]*)|(?:дт(?=$|[^\p{L}\p{N}_-])|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дизельн[а-яё-]*\s+топлив[а-яё-]*|бензин[а-яё-]*|топлив[а-яё-]*|нефтепродукт[а-яё-]*)(?:[^.!?\n]{0,80})(?:прода(?:ю|ем|[её]т|ют)|предлага(?:ю|ем|ет|ют)|реализу(?:ю|ем|ет|ют)|поставля(?:ю|ем|ет|ют)|в\s+наличи[а-яё-]*|оптом|закаж[а-яё-]*|заказ[а-яё-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
+        window,
+      ) &&
+      /(?:опт[а-яё-]*|розниц[а-яё-]*|\d+[\d\s.,]{0,8}\s*(?:₽|р(?:уб)?)(?:\s*(?:за|\/)?\s*(?:литр[а-яё-]*|л))?|скидк[а-яё-]*|доставк[а-яё-]*|заказ[а-яё-]*|пишите?|звон[а-яё-]*)/iu.test(
+        window,
+      ),
+  );
+  const hasFuelGradeStoreOffer = eligibleFuelOfferWindows.some(
+    (window) =>
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:в|на)\s+наш(?:ем|ей)\s+(?:магазин[а-яё-]*|азс)|у\s+нас|в\s+продаже|в\s+наличии)(?:[\s\S]{0,100})(?:аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|дт(?=$|[^\p{L}\p{N}_-])|бензин[а-яё-]*)/iu.test(
+        window,
+      ) &&
+      /\d+[\d\s.,]{0,8}\s*(?:₽|р(?:уб)?)\s*(?:(?:за|\/)\s*)?(?:литр[а-яё-]*|л)(?=$|[^\p{L}\p{N}_-])/iu.test(
+        window,
+      ) &&
+      /(?:^|[^\p{L}\p{N}_-])(?:закаж[а-яё-]*|заказ[а-яё-]*|пишите?|звон[а-яё-]*|\[phone\])(?=$|[^\p{L}\p{N}_-])/iu.test(
+        window,
+      ),
+  );
+
+  return {
+    hasCurrentOffer:
+      hasEstablishedRetailFrame || hasDirectFuelSellerFrame || hasFuelGradeStoreOffer,
+    hasInactiveReport,
+  };
 }
 
 function hasPrivateContextMarkerHit(

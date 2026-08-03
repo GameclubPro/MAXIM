@@ -3,7 +3,11 @@ import type { CommercialCampaignContext } from '../commercial-campaign.util';
 import { createRuleDetectionContext } from '../rule-engine-detection-context';
 import { CommercialAdDetector } from './commercial-ad.detector';
 import { collectCommercialSignals } from './commercial-features';
-import { splitCommercialAssertions } from './commercial-local-context';
+import {
+  hasQualifiedSourceSideServiceOffer,
+  resolveCommercialLocalContext,
+  splitCommercialAssertions,
+} from './commercial-local-context';
 import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
 
 const STRICT_SETTINGS = {
@@ -11,6 +15,13 @@ const STRICT_SETTINGS = {
   commercialAdsSensitivity: 'STRICT',
   commercialAdsWarnThreshold: 38,
   commercialAdsDeleteThreshold: 55,
+} as unknown as ChatSettings;
+
+const BALANCED_SETTINGS = {
+  commercialAdsFilterEnabled: true,
+  commercialAdsSensitivity: 'BALANCED',
+  commercialAdsWarnThreshold: 57,
+  commercialAdsDeleteThreshold: 77,
 } as unknown as ChatSettings;
 
 const STRICT_PROFILE = {
@@ -22,12 +33,16 @@ const STRICT_PROFILE = {
 
 const detector = new CommercialAdDetector();
 
-function detect(text: string, commercialCampaignContext: CommercialCampaignContext | null = null) {
-  const context = createRuleDetectionContext({ text, settings: STRICT_SETTINGS });
+function detect(
+  text: string,
+  commercialCampaignContext: CommercialCampaignContext | null = null,
+  settings: ChatSettings = STRICT_SETTINGS,
+) {
+  const context = createRuleDetectionContext({ text, settings });
   return detector.detect({
     normalizedText: context.normalizedText,
     rawLoweredText: context.rawLoweredText,
-    settings: STRICT_SETTINGS,
+    settings,
     commercialCampaignContext,
   });
 }
@@ -127,6 +142,18 @@ describe('commercial clause-local context', () => {
     ).toEqual(['Цена 1.5 млн', 'Не открывайте 1xbet.com, сайт опасен', 'А у нас ремонт, звоните']);
   });
 
+  it('preserves question semantics when splitting a third-party service inquiry', () => {
+    const text =
+      'Компания Чисто оказывает клининг? Цена от 3000 руб? Звоните в компанию Чисто [phone]?';
+
+    expect(splitCommercialAssertions(text)).toEqual([
+      'Компания Чисто оказывает клининг?',
+      'Цена от 3000 руб?',
+      'Звоните в компанию Чисто [phone]?',
+    ]);
+    expect(hasQualifiedSourceSideServiceOffer(text)).toBe(false);
+  });
+
   it('keeps a shelter relocation narrative out of logistics moderation', () => {
     const text =
       'Приют Надежда ищет ответственную семью для своего подопечного. Ласковый, привит, готов к переезду в новый дом. Телефон волонтера +7 900 123-45-67.';
@@ -163,7 +190,7 @@ describe('commercial clause-local context', () => {
 
     expect(baseline?.actionBand).toBe('WARN');
     expect(result?.actionBand).toBe(baseline?.actionBand);
-    expect(result?.matchedSignals).toContain('risk:loan-leadgen');
+    expect(result?.analysisText).toContain('ремонт холодильников');
     expect(result?.matchedSignals).not.toContain('locality:escalation-offer');
     expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
   });
@@ -257,6 +284,110 @@ describe('commercial clause-local context', () => {
     const result = detect(`Кто покупал рекламу в канале? Отдельно: ${offer}`);
 
     expect(result?.actionBand).toBe(detect(offer)?.actionBand);
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it('scopes service negation to its verb without hiding another current offer', () => {
+    const offer =
+      'Наша команда оказывает клининг, но не ремонтирует технику. Цена от 3000 руб. Звоните [phone].';
+    const result = detect(`Подскажите, кто оказывает клининг? ${offer}`);
+
+    expect(
+      hasQualifiedSourceSideServiceOffer(
+        'Компания Чисто больше не оказывает клининг. Не звоните [phone].',
+      ),
+    ).toBe(false);
+    expect(result?.actionBand).toBe(detect(offer)?.actionBand);
+    expect(result?.actionable).toBe(true);
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it('tracks a Russian secondary quote and releases a subsequent current offer', () => {
+    const quoted =
+      'Редакция цитирует продавца: „Продаем диваны от 20000 руб. Звоните [phone]“. Это цитата, не предложение.';
+    const offer = 'Отдельно продаем цемент: цена 865 руб., доставка, звоните [phone].';
+    const result = detect(`${quoted} ${offer}`);
+
+    expect(detect(quoted)).toBeNull();
+    expect(result?.actionBand).toBe(detect(offer)?.actionBand);
+    expect(result?.actionable).toBe(true);
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it('protects a tutorial quote whose introduction is the previous assertion', () => {
+    const text =
+      'В учебном тексте дан следующий пример. «Платная коммерческая реклама: пишите админу [url]». Формулировка дана для разбора. Это цитата, не предложение.';
+
+    expect(detect(text)).toBeNull();
+  });
+
+  it.each([
+    ['strict', STRICT_SETTINGS],
+    ['balanced', BALANCED_SETTINGS],
+  ])(
+    'binds a standalone editorial disclaimer back to its closed quote in %s mode',
+    (_label, settings) => {
+      const text =
+        'Исследование о рекламе приводит пример. «Я продаю цемент по 500 руб., доставка, телефон [phone]». Это цитата, не предложение.';
+      const withThirdPartyQuestion =
+        `${text} Компания Чисто оказывает клининг? Цена от 3000 руб? ` +
+        'Звоните в компанию Чисто [phone]?';
+
+      expect(detect(text, null, settings)?.actionable ?? false).toBe(false);
+      expect(detect(withThirdPartyQuestion, null, settings)?.actionable ?? false).toBe(false);
+    },
+  );
+
+  it.each([
+    ['strict', STRICT_SETTINGS],
+    ['balanced', BALANCED_SETTINGS],
+  ])(
+    'keeps quoted escalation content outside local offer extraction in %s mode',
+    (_label, settings) => {
+      const text =
+        'Статья о мошенничестве приводит пример. «Займ без отказа 100000 руб., пишите [phone]». Это цитата, не предложение.';
+      const rawLoweredText = normalizeCommercialRawText(text.toLowerCase());
+      const localContext = resolveCommercialLocalContext({
+        rawLoweredText,
+        escalationRiskLabels: ['loan-leadgen'],
+        includeOrdinaryProtectedContext: true,
+      });
+      const result = detect(text, null, settings);
+
+      expect(localContext.hasStandaloneEditorialQuote).toBe(true);
+      expect(localContext.hasIndependentEscalationOffer).toBe(false);
+      expect(result?.matchedSignals ?? []).not.toContain('locality:escalation-offer');
+      expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+      expect(result?.actionable ?? false).toBe(false);
+    },
+  );
+
+  it.each([
+    ['strict', STRICT_SETTINGS],
+    ['balanced', BALANCED_SETTINGS],
+  ])(
+    'releases an independent offer after a standalone editorial quote in %s mode',
+    (_label, settings) => {
+      const quoted =
+        'Исследование о рекламе приводит пример. «Я продаю цемент по 500 руб., доставка, телефон [phone]». Это цитата, не предложение.';
+      const offer = 'Отдельно продаем цемент: цена 865 руб., доставка, звоните [phone].';
+      const result = detect(`${quoted} ${offer}`, null, settings);
+
+      expect(result?.actionBand).toBe(detect(offer, null, settings)?.actionBand);
+      expect(result?.actionable).toBe(true);
+      expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+    },
+  );
+
+  it('splits quote and sentence punctuation boundaries without spaces', () => {
+    const text =
+      'Редакция цитирует: «Продаем мебель. Звоните [phone]».Это цитата, не предложение.Наша компания оказывает клининг. Цена от 3000 руб. Звоните [phone].';
+    const assertions = splitCommercialAssertions(text);
+    const result = detect(text);
+
+    expect(assertions).toContain('Это цитата, не предложение');
+    expect(assertions).toContain('Наша компания оказывает клининг');
+    expect(result?.actionable).toBe(true);
     expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
   });
 

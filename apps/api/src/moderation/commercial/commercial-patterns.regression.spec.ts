@@ -401,6 +401,24 @@ describe('commercial pattern regressions', () => {
       ],
     },
     {
+      label: 'science channel direct-link teaser from twenty four hour corpus',
+      text: 'Это лишь малая часть удивительных фактов. Еще больше необычного о человеке, космосе и природе - в канале "Наука и факты". ССЫЛКА НА КАНАЛ [url]',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:subscribe-channel-link'],
+    },
+    {
+      label: 'marketplace channel private-link invitation from twenty four hour corpus',
+      text: 'Присоединяйтесь к нам в канал за ссылкой в личные сообщения. Там много товаров с маркетплейсов по низким ценам.',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:subscribe-channel-link'],
+    },
+    {
+      label: 'emoji-separated giveaway channel invitation from twenty four hour corpus',
+      text: 'ДАРИТ 50.000 РУБЛЕЙ ЗА ОДНУ ПОДПИСКУ В КАНАЛ! Как забрать деньги? Вступай в канал по ссылке - подписка автоматически делает тебя участником. Наблюдай за постами и жди результаты. [url]',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:subscribe-channel-link'],
+    },
+    {
       label: 'ai fitting app promo from forty eight hour audit miss',
       text: 'Попробуй Кадрум — AI-примерку одежды, крутые нейро-фотосессии и фото для профиля. Ссылка kadrum.ai',
       subtype: 'GOODS',
@@ -832,6 +850,281 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionBand).toBe('REVIEW_ONLY');
     expect(result?.matchedSignals).toContain('service-specialty:beauty-procedure-benefit-offer');
     expect(result?.negativeSignals).toEqual(['context:question']);
+  });
+
+  it.each([
+    [
+      'window installation with a phone',
+      'Пластиковые окна и двери. Холодно, шумно, сквозит? Пора менять! Энергосберегающие стеклопакеты, бесплатный замер. [phone]',
+    ],
+    [
+      'stretch ceiling with a phone',
+      'Натяжные потолки любой сложности. Вода с потолка? Не проблема. Бесплатный выезд и расчет, мастер со стажем более 10 лет. [phone]',
+    ],
+    [
+      'massage booking call to action',
+      'Хочешь улучшить осанку и убрать боли в спине? Записывайся на миофасциальный массаж уже сегодня!',
+    ],
+    [
+      'tattoo removal response call to action',
+      'Кто желает удалить старый татуаж бровей? Пишите в личку.',
+    ],
+    [
+      'AI service with a link',
+      'Сколько времени уходит на создание контента? Более 150 нейросетей и 500 шаблонов в одном приложении: AI-дизайнер, монтаж клипов, помощники для текстов, юрист и репетитор. Всё это примерно по цене двух чашек кофе. Бесплатно зарегистрируйтесь до официального запуска. Презентация [url]. Связь со мной [url].',
+    ],
+    [
+      'first-person bankruptcy service',
+      'Долги кажутся безвыходными? Работаем строго по ФЗ-127, берём на себя подготовку документов. Бесплатная консультация.',
+    ],
+    [
+      'who-provides rhetorical service offer',
+      'Кто занимается установкой кондиционеров? Нужен прохладный дом? Монтаж от 5000 руб., гарантия, звоните [phone].',
+    ],
+  ])('keeps a rhetorical-question current offer detectable: %s', (_label, text) => {
+    const result = detect(text);
+
+    expect(result).not.toBeNull();
+    expect(['REVIEW_ONLY', 'WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+  });
+
+  it('does not let a trailing provider question hide an earlier service advertisement', () => {
+    const result = detect(
+      'Монтаж кондиционеров от 5000 руб., гарантия, звоните [phone]. Кто занимается установкой кондиционеров?',
+    );
+
+    expect(result?.actionBand).toBe('DELETE');
+  });
+
+  it.each([
+    'Кто делает натяжные потолки? Мы устанавливаем их от 6000 руб. с гарантией, звоните [phone].',
+    'Кто делает натяжные потолки? Наша команда устанавливает их от 6000 руб. с гарантией, звоните [phone].',
+  ])('recognizes a pronoun-based source-side offer after a provider question: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.actionBand).toBe('DELETE');
+  });
+
+  it('does not let group-promotion recall weaken an actionable phone offer', () => {
+    const offer =
+      'Гелиевые шары и стильные фотозоны на заказ. Доставка к празднику, цена от 3000 руб. Пишите, звоните [phone].';
+    const withoutFooter = detect(offer);
+    const withFooter = detect(`${offer} Подписывайтесь на наши группы [url].`);
+
+    expect(withFooter?.matchedSignals).not.toContain('recall-cap:warn:explicit-group-promotion');
+    expect(withFooter?.actionBand).toBe(withoutFooter?.actionBand);
+  });
+
+  it('does not hide a store promotion behind a news-style channel title', () => {
+    const result = detect('Новости скидок и акций нашего магазина. Подписывайтесь на канал [url].');
+
+    expect(result?.matchedSignals).toContain('group-promo:explicit-group-promotion');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('keeps protest coverage with a closed-store mention editorial', () => {
+    expect(
+      detect(
+        'Новости района: магазин закрылся, прошли акции протеста. Подписывайтесь на канал [url].',
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps an explicit group invitation detectable when it also states group rules', () => {
+    const result = detect(
+      'Добро пожаловать в нашу группу для общения. Правила: реклама и спам запрещены. Переходите по ссылке ниже [url].',
+    );
+
+    expect(result?.primarySubtype).toBe('GROUP_PROMOTION');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('keeps a linked group invitation detectable inside a full rules block', () => {
+    const result = detect(
+      'Добро пожаловать в группу для общения и знакомств. Разрешены музыка и видео. Запрещены любые ссылки, спам и реклама. За нарушение удаляем. Переходите по ссылке ниже [url].',
+    );
+
+    expect(result?.primarySubtype).toBe('GROUP_PROMOTION');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('keeps a linked exchange group reviewable despite its rules block', () => {
+    const result = detect(
+      'Ссылочная радуга. Админы группы кидают ссылки на свои группы три раза в день. Спам и реклама запрещены. За нарушение правил удаление. [url]',
+    );
+
+    expect(result?.matchedSignals).toContain('group-promo:link-exchange-group');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('does not let group rules hide an embedded paid editing offer', () => {
+    const result = detect(
+      'Добро пожаловать в группу фото и видеомонтажа. Можно заказать у админов группы фото или видео монтаж. Любые ссылки, спам и реклама запрещены. За нарушение удаление. [url]',
+    );
+
+    expect(result?.matchedSignals).toContain('intent:current-service-booking-offer');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('does not read a seller fulfillment follow-up as a buyer review question', () => {
+    const result = detect(
+      'Сегодня вечером доставка бройлеров 450 р. 40 дней. [phone]. Для заказа звоните. Кто заказывал заранее позвоню.',
+    );
+
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('detects a shopping-group promotion after a separate delivery sentence', () => {
+    const result = detect(
+      'Подписывайся на нашу группу выгодных покупок. Здесь новые качественные товары, которые можно купить дешевле. Доставка по всей России. Подписывайтесь прямо сейчас [url].',
+    );
+
+    expect(result?.negativeSignals).not.toContain('search-pattern:request:delivery');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('reviews a direct manufacturer offer despite its buyer-oriented hook', () => {
+    const result = detect(
+      'Хочешь экономить на покупках? Тогда покупай напрямую у производителя. Доставка по всей России, оплата при получении. Нужна помощь в оформлении, пиши [phone] или переходи [url].',
+    );
+
+    expect(result?.matchedSignals).toContain('goods-retail:direct-manufacturer-order-offer');
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('keeps a non-breaking-hyphen online store above the request cap', () => {
+    const result = detect(
+      'Ищете стильную мебель онлайн? Юра мебельный — онлайн‑магазин качественной мебели от проверенных поставщиков. Более 100 цветов диванов, бесплатная доставка и оплата при получении. Нужна помощь с выбором? Напишите в личку [phone].',
+      {
+        commercialCampaignContext: {
+          ...REPEATED_PRIVATE_RESALE_CONTEXT,
+          repeatedPhoneDistinctChatCount: 2,
+        },
+      },
+    );
+
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('keeps standalone group rules without an invitation non-commercial', () => {
+    expect(
+      detect('Правила группы: реклама, спам и внешние ссылки запрещены. За нарушение удаление.'),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'distinguishes prohibited and current paid group placement in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      const settings = {
+        commercialAdsSensitivity,
+        commercialAdsWarnThreshold,
+        commercialAdsDeleteThreshold,
+      } as Partial<ChatSettings>;
+      const pairs = [
+        {
+          prohibited:
+            'Канал храма: расписание служб. Платная коммерческая реклама не допускается. Пишите админу, ответная ссылка [url].',
+          current:
+            'Канал храма: расписание служб. Платная коммерческая реклама: пишите админу, ответная ссылка [url].',
+        },
+        {
+          prohibited:
+            'Группа музея: афиша выставок. Платная коммерческая реклама не разрешается. Пишите админу, ответная ссылка [url].',
+          current:
+            'Группа музея: афиша выставок. Платная коммерческая реклама: пишите админу, ответная ссылка [url].',
+        },
+        {
+          prohibited:
+            'Группа садоводов: обмен опытом и советы. Платную коммерческую рекламу не размещаем. Пишите админу, ответная ссылка [url].',
+          current:
+            'Группа садоводов: обмен опытом и советы. Платная коммерческая реклама: пишите админу, ответная ссылка [url].',
+        },
+        {
+          prohibited:
+            'Чат дачников: советы по участкам. Не принимаем платную коммерческую рекламу. Пишите админу, ответная ссылка [url].',
+          current:
+            'Чат дачников: советы по участкам. Платная коммерческая реклама: пишите админу, ответная ссылка [url].',
+        },
+      ];
+
+      for (const pair of pairs) {
+        expect(detect(pair.prohibited, { settings })).toBeNull();
+        const current = detect(pair.current, { settings });
+        expect(current?.matchedSignals).toContain(
+          'recall-source:group-promo:paid-commercial-promo-group',
+        );
+        expect(current?.actionBand).toBe('WARN');
+      }
+
+      const reopened = detect(
+        'Канал храма: расписание служб. Платная коммерческая реклама не допускается. Но теперь разрешена платная коммерческая реклама: пишите админу, ответная ссылка [url].',
+        { settings },
+      );
+      expect(reopened?.matchedSignals).toContain(
+        'recall-source:group-promo:paid-commercial-promo-group',
+      );
+      expect(reopened?.actionBand).toBe('WARN');
+    },
+  );
+
+  it.each([
+    'Подпишитесь на канал храма, там расписание служб [url].',
+    'Садоводы, подпишитесь на группу для обмена опытом и советами [url].',
+    'Новости района: суд рассмотрел дело о продаже квартиры. Подпишитесь на канал [url].',
+    'Волонтеры, подпишитесь на группу для координации акции по сбору вещей и доставки гуманитарной помощи [url].',
+  ])('keeps a noncommercial group or channel invitation non-actionable: %s', (text) => {
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(detect(text)?.actionBand ?? 'ALLOW');
+  });
+
+  it.each([
+    'Ссылка на канал школы с расписанием уроков [url].',
+    'Ссылка на канал детского сада с объявлениями для родителей [url].',
+    'Ссылка на канал библиотеки с афишей бесплатных встреч [url].',
+    'Ссылка на канал храма с расписанием служб [url].',
+    'Ссылка на канал муниципальной администрации с уведомлениями для жителей [url].',
+    'Ссылка на канал волонтерского поискового отряда [url].',
+  ])('does not treat an institutional source-side channel link as promotion: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain('channel-placement:subscribe-channel-link');
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+    expect(result?.actionable ?? false).toBe(false);
+  });
+
+  it.each([
+    'Каталог скидок и распродаж обновляется каждый день. Ссылка на канал [url].',
+    'Это лишь малая часть интересных историй. Еще больше материалов в канале. Ссылка на канал [url].',
+  ])('keeps a qualified source-side channel link detectable: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals).toContain('channel-placement:subscribe-channel-link');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+  });
+
+  it.each([
+    'Могу выполнить покос травы бензо-триммером, 500р сотка. [phone]',
+    'Нужна помощь? Я ясновидящая, работаю только во благо. Провожу диагностику, связаться со мной [phone].',
+  ])('keeps an explicit first-person service offer detectable: %s', (text) => {
+    expect(['WARN', 'DELETE']).toContain(detect(text)?.actionBand);
+  });
+
+  it.each([
+    'Подскажите хорошего стоматолога для ребёнка, желательно недалеко от центра?',
+    'На массаж нужно записаться?',
+    'На прием к юристу нужно записаться?',
+    'К мастеру лучше записаться заранее?',
+    'Жители дома, подпишитесь на группу нашего ТСЖ для получения уведомлений об отключениях [url].',
+    'Пожалуйста, подпишитесь на группу детского сада для объявлений воспитателя [url].',
+    'Почему нельзя снимать работу ПВО? Публикация видео помогает противнику определить позицию, поэтому не снимайте и не выкладывайте такие записи.',
+  ])('keeps a genuine question or public-safety explanation allowed: %s', (text) => {
+    expect(detect(text)).toBeNull();
   });
 
   it('does not classify broad bath tub retail wording as recruitment', () => {
@@ -2371,6 +2664,385 @@ describe('commercial pattern regressions', () => {
 
     expect(result).not.toBeNull();
     expect(result?.actionBand).not.toBe('REVIEW_ONLY');
+  });
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'keeps a closed fuel retailer non-actionable in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      const result = detect(
+        'АЗС Энергия закрыта навсегда. Телефон справочной [phone]. Бензина в продаже больше нет.',
+        {
+          settings: {
+            commercialAdsSensitivity,
+            commercialAdsWarnThreshold,
+            commercialAdsDeleteThreshold,
+          },
+        },
+      );
+
+      expect(result?.matchedSignals ?? []).not.toContain(
+        'recall-source:goods-retail:explicit-fuel-retail',
+      );
+      expect(result?.actionable ?? false).toBe(false);
+    },
+  );
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'keeps an explicitly reopened fuel retailer actionable in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      const result = detect(
+        'АЗС Энергия раньше была закрыта. Но сейчас снова работаем: АИ-95 в наличии, скидка по карте. Телефон [phone].',
+        {
+          settings: {
+            commercialAdsSensitivity,
+            commercialAdsWarnThreshold,
+            commercialAdsDeleteThreshold,
+          },
+        },
+      );
+
+      expect(result?.matchedSignals).toContain('recall-source:goods-retail:explicit-fuel-retail');
+      expect(result?.actionable).toBe(true);
+    },
+  );
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'carries inactive fuel-retailer context across historical follow-ups in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      for (const text of [
+        'АЗС закрылась в прошлом году. Тогда бензин АИ-95 был в наличии по 70 руб/л. Звоните в архив [phone].',
+        'АЗС больше не работает. Бензин АИ-95 в наличии по 70 руб/л. Телефон справочной [phone].',
+        'АЗС закрыта. По старому объявлению бензин АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'АЗС закрылась в прошлом году. Сейчас на нашей АЗС музей. Тогда бензин АИ-95 был в наличии по 70 руб/л. Звоните в архив [phone].',
+        'АЗС закрылась в прошлом году. Сейчас там кафе. Тогда бензин АИ-95 был в наличии по 70 руб/л. Телефон архива [phone].',
+      ]) {
+        const result = detect(text, {
+          settings: {
+            commercialAdsSensitivity,
+            commercialAdsWarnThreshold,
+            commercialAdsDeleteThreshold,
+          },
+        });
+
+        expect(result?.matchedSignals ?? []).not.toContain(
+          'recall-source:goods-retail:explicit-fuel-retail',
+        );
+        expect(result?.actionable ?? false).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'recognizes current fuel sources and partial outages after inactive wording in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      for (const text of [
+        'Старая АЗС закрылась в прошлом году. Теперь на нашей АЗС АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'Старая АЗС закрылась в прошлом году. АЗС Энергия работает: АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'Проезд к АЗС Энергия закрыт на ремонт. Сама АЗС работает: АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'На АЗС Энергия временно не работает терминал оплаты. АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'На АЗС Энергия временно не работает касса. АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'На АЗС Энергия закрылась одна колонка. АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'АЗС Энергия не работает ночью. Днем АИ-95 в наличии по 70 руб/л, звоните [phone].',
+        'АЗС Энергия закрыта на ремонт. С понедельника снова работаем: АИ-95 в наличии по 70 руб/л, звоните [phone].',
+      ]) {
+        const result = detect(text, {
+          settings: {
+            commercialAdsSensitivity,
+            commercialAdsWarnThreshold,
+            commercialAdsDeleteThreshold,
+          },
+        });
+
+        expect(result?.matchedSignals).toContain('recall-source:goods-retail:explicit-fuel-retail');
+        expect(result?.actionable).toBe(true);
+      }
+    },
+  );
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'detects compensated military contract recruitment without reading fighter assembly as charity in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      const result = detect(
+        'Сбор бойцов на фронт. Помощь при заключении контракта. Единовременная выплата 200000 руб. Места ограничены. Звоните [phone].',
+        {
+          settings: {
+            commercialAdsSensitivity,
+            commercialAdsWarnThreshold,
+            commercialAdsDeleteThreshold,
+          },
+        },
+      );
+
+      expect(result?.matchedSignals).toContain('recruitment:контрактная-служба');
+      expect(result?.negativeSignals).not.toContain('context:public-help-request');
+      expect(result?.actionable).toBe(true);
+    },
+  );
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'keeps qualified fighter aid and non-commercial assembly non-actionable in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      for (const text of [
+        'Сбор помощи бойцам на фронт. Добровольный взнос можно перевести по реквизитам [url]. Поддержим надежный тыл.',
+        'Сбор бойцов перед выездом на фронт. Встречаемся у штаба, проверяем списки и экипировку.',
+        'Сбор помощи бойцам на передовой. Волонтерская организация бесплатно оказывает услуги по доставке гуманитарных грузов. Нужны вещи и медикаменты, поддержите надежный тыл. Для координации звоните [phone].',
+        'Компания добровольцев бесплатно предоставляет услуги по сборке гуманитарных наборов для бойцов. Открыт сбор помощи, перевод по реквизитам [card], звоните координатору [phone].',
+      ]) {
+        expect(
+          detect(text, {
+            settings: {
+              commercialAdsSensitivity,
+              commercialAdsWarnThreshold,
+              commercialAdsDeleteThreshold,
+            },
+          })?.actionable ?? false,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'detects commercial school-goods channel teasers without suppressing institutional channels in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      for (const text of [
+        'Скидки на товары для школы. Еще больше акций и распродаж. Ссылка на канал [url].',
+        'Школьные товары со скидкой и новые акции каждую неделю. Ссылка на канал [url].',
+        'Партнер школы №5, магазин Канцлер: скидки на канцтовары. Еще больше акций и распродаж. Ссылка на канал [url].',
+        'Школа опубликовала объявление. Отдельно: магазин Канцлер, приходите к нам за скидками [url].',
+        'Волонтеры координируют доставку гуманитарной помощи. Отдельно: наш магазин товаров, приходите к нам [url].',
+      ]) {
+        expect(
+          detect(text, {
+            settings: {
+              commercialAdsSensitivity,
+              commercialAdsWarnThreshold,
+              commercialAdsDeleteThreshold,
+            },
+          })?.actionable,
+        ).toBe(true);
+      }
+
+      for (const text of [
+        'Официальный канал школы №5. Акция по сбору макулатуры. Ссылка на канал [url].',
+        'Родителям школы: расписание уроков и новости класса. Ссылка на канал [url].',
+        'Школа 17 проводит акцию добрых дел. Призы участникам. Ссылка на канал [url].',
+        'Школа Радуга проводит акцию добрых дел. Призы участникам. Ссылка на канал [url].',
+      ]) {
+        expect(
+          detect(text, {
+            settings: {
+              commercialAdsSensitivity,
+              commercialAdsWarnThreshold,
+              commercialAdsDeleteThreshold,
+            },
+          })?.actionable ?? false,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('treats an editorial fuel price report as analytics despite its price and news footer', () => {
+    const text =
+      'По данным еженедельного мониторинга, средняя цена бензина АИ-95 выросла на 1,2 процента, а стоимость дизельного топлива снизилась на 0,4 процента. Подписаться | Предложить новость [url].';
+
+    expect(detect(text)).toBeNull();
+  });
+
+  it.each([
+    'По данным мониторинга магазина АИ-95 подорожал до 60 руб. за литр. В обзоре цитируем пример: «заказывайте по телефону [phone]». Это образец рекламы, не предложение.',
+    'По данным мониторинга магазина АИ-95 подорожал до 60 руб. за литр. В обзоре цитируем пример: «заказывайте по телефону [phone]». Это образец рекламы, а не предложение.',
+    'По данным мониторинга магазина АИ-95 подорожал до 60 руб. за литр. В обзоре приводим пример рекламы: «заказывайте по телефону [phone]». Это не предложение, а образец рекламы.',
+  ])('does not join an editorial fuel report to a quoted advertising example: %s', (text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it.each([
+    [
+      'Мы продаем АИ-95 по 60 руб. за литр, звоните [phone].',
+      'Мы продаем АИ-95 по 60 руб. за литр, звоните [phone]. В обзоре цитируем пример: «заказывайте по телефону [phone]». Это образец рекламы, не предложение.',
+    ],
+    [
+      'Ремонт холодильников, цена 2000 руб., звоните [phone].',
+      'В обзоре приводим пример рекламы: «заказывайте по телефону [phone]». Это не предложение, а образец рекламы. Отдельно: ремонт холодильников, цена 2000 руб., звоните [phone].',
+    ],
+  ])('keeps an independent offer outside a quoted advertising example', (offer, mixed) => {
+    const baseline = detect(offer);
+    const result = detect(mixed);
+
+    expect(baseline).not.toBeNull();
+    expect(result?.actionBand).toBe(baseline?.actionBand);
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it.each([
+    'По данным обзора поставщик сообщил: «Предлагает АИ-95 оптом по 60 руб. за литр». Телефон редакции [phone].',
+    'Представитель магазина заявил: «АИ-95 в наличии, заказывайте по телефону [phone]».',
+  ])('keeps an attributed fuel-seller quote editorial: %s', (text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it('treats a regulator fuel-price report as analytics', () => {
+    const text =
+      'Жители столкнулись с резким ростом цен на топливо: литр бензина доходил до 170 рублей. УФАС сообщило, что картельного сговора не выявлено, а причина связана с высокой закупочной стоимостью топлива. Региональные власти договорились о временном контроле цены. Формально рынок работал без нарушений. Продолжение [url].';
+
+    expect(detect(text)).toBeNull();
+  });
+
+  it.each([
+    'На АЗС Энергия средняя цена АИ-95 выросла за неделю до 70 руб/литр. Сегодня скидка 10% по карте, работаем круглосуточно, звоните [phone].',
+    'По данным мониторинга, средняя цена бензина выросла за неделю. Отдельно: АЗС Энергия предлагает АИ-95 по 70 руб/литр со скидкой, заказ и доставка по телефону [phone].',
+    'Продаем дизельное топливо оптом: средняя цена на рынке выросла, а у нас 65 руб. за литр, скидка от 1000 литров, пишите [phone].',
+    'По данным мониторинга цена бензина выросла. В нашем магазине АИ-95 по 60 руб. за литр, заказывайте [phone].',
+    'По данным мониторинга цена бензина выросла. В нашем магазине АИ-95 по 60 р. за литр, заказывайте [phone].',
+    'По данным мониторинга цена бензина выросла. В нашем магазине АИ-95 по 60 руб. за литр. Заказывайте [phone].',
+    'По данным мониторинга цена бензина выросла. В нашем магазине АИ-95; цена 60 руб. за литр; заказывайте [phone].',
+    'По данным мониторинга цена бензина выросла. В нашем магазине бензин по 60 руб. за литр, заказывайте [phone].',
+    'По данным мониторинга цена бензина выросла. В нашем магазине АИ‑95 по 60 руб. за литр, заказывайте [phone].',
+  ])('does not hide a current fuel offer behind price-analysis wording: %s', (text) => {
+    const result = detect(text);
+
+    expect(result).not.toBeNull();
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it('recognizes a direct abbreviated diesel offer inside fuel-price analysis', () => {
+    const result = detect(
+      'Предлагаем ДТ оптом: средняя цена на рынке выросла, 65 руб. за литр, звоните [phone].',
+    );
+
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('does not hide a medtech offer behind a fuel-abbreviation substring match', () => {
+    const result = detect(
+      'Предлагаем медтехнику оптом: средняя цена на рынке выросла, у нас 6500 руб., звоните [phone].',
+    );
+
+    expect(result?.actionBand).toBe('WARN');
+  });
+
+  it('keeps a voluntary frontline fundraiser out of commercial enforcement', () => {
+    const result = detect(
+      'Открыт добровольный сбор помощи бойцам на передовой. Нужны автомобили и квадрокоптеры, общая сумма большая. Каждый небольшой взнос помогает закрыть заявки и может спасти жизнь. Перевод по реквизитам [card], ссылка на группу [url].',
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('does not hide a military equipment shop behind aid wording', () => {
+    const result = detect(
+      'ДронСнаб — официальный магазин квадрокоптеров для бойцов на передовой. Большой ассортимент в наличии, оптовые цены, гарантия, скидка 10%, доставка по России. Заказывайте [phone].',
+    );
+
+    expect(result).not.toBeNull();
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it('does not hide a military equipment vendor behind fundraiser wording', () => {
+    const result = detect(
+      'Сбор для бойцов на передовой. Мы изготавливаем квадрокоптеры и помогаем надежному тылу, стоимость комплекта 50000 рублей, звоните [phone].',
+    );
+
+    expect(result).not.toBeNull();
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+  });
+
+  it.each([
+    'Сбор для бойцов на передовой. Оказываем услуги по сборке квадрокоптеров и помогаем надежному тылу, стоимость комплекта 50000 рублей, звоните [phone].',
+    'Сбор для бойцов на передовой. Компания предоставляет услуги по сборке квадрокоптеров и помогает надежному тылу, стоимость комплекта 50000 рублей, звоните [phone].',
+  ])('does not hide an explicit paid service behind frontline fundraiser wording: %s', (text) => {
+    const result = detect(text);
+
+    expect(result?.actionBand).toBe('DELETE');
+  });
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'keeps frontline fundraiser delivery expenses non-actionable in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      const result = detect(
+        'Сбор средств на помощь бойцам фронта. Собранные деньги пойдут на оплату доставки грузов стоимостью 5000 руб. Звоните координатору [phone].',
+        {
+          settings: {
+            commercialAdsSensitivity,
+            commercialAdsWarnThreshold,
+            commercialAdsDeleteThreshold,
+          },
+        },
+      );
+
+      expect(result?.actionable ?? false).toBe(false);
+    },
+  );
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'keeps an explicitly source-owned paid frontline delivery actionable in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      const result = detect(
+        'Сбор средств на помощь бойцам фронта. Мы оказываем платную доставку гуманитарных грузов, стоимость услуги 5000 руб. Закажите доставку [phone].',
+        {
+          settings: {
+            commercialAdsSensitivity,
+            commercialAdsWarnThreshold,
+            commercialAdsDeleteThreshold,
+          },
+        },
+      );
+
+      expect(result?.actionBand).toBe('WARN');
+      expect(result?.actionable).toBe(true);
+    },
+  );
+
+  it('keeps an offer of humanitarian help inside a frontline fundraiser non-commercial', () => {
+    expect(
+      detect(
+        'Сбор для бойцов на передовой. Оказываем помощь с доставкой гуманитарных грузов, поддерживаем надежный тыл. Любой добровольный взнос можно перевести по реквизитам [card].',
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps company-provided humanitarian help inside a frontline fundraiser non-commercial', () => {
+    expect(
+      detect(
+        'Сбор для бойцов на передовой. Компания предоставляет помощь с доставкой гуманитарных грузов и поддерживает надежный тыл. Перевод по реквизитам [card].',
+      ),
+    ).toBeNull();
+  });
+
+  it('does not confuse a drone assembly vacancy with a fundraiser', () => {
+    const result = detect(
+      'В добровольческий армейский резерв требуются бойцы: пилоты, инженеры и мастера по сборке и ремонту БПЛА. Контракт 6 месяцев, зарплата от 220000 руб., полный соцпакет. Контакты [url].',
+    );
+
+    expect(result?.primarySubtype).toBe('RECRUITMENT');
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
   });
 
   it.each([
@@ -4427,6 +5099,570 @@ describe('commercial pattern regressions', () => {
 
     expect(result?.matchedSignals ?? []).not.toContain(signal);
     expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it.each([
+    {
+      line: 3840,
+      signal: 'goods-retail:named-manufacturer-price-catalog',
+      text: 'Если давно присматриваете новую кровать, возможно, эта информация будет полезна 😊 В «Фабрике кроватей 38» изготавливают современные кровати с мягким изголовьем, которые легко впишутся практически в любой интерьер. ✔️ Ортопедическое основание уже входит в стоимость. Размеры и цены: • 80×200 — 16 900 ₽ • 90×200 — 17 900 ₽ • 120×200 — 18 900 ₽ • 140×200 — 19 900 ₽ • 160×200 — 21 900 ₽ • 180×200 — 23 900 ₽ Дополнительно можно заказать: • подъемный механизм — +3 500 ₽; • ящики для белья — +2 500 ₽. Матрас приобретается отдельно. Есть в наличие разные модели, подберем матрас именно под вас🤝 Все кровати производятся в Иркутске. Можно приехать, посмотреть образцы и выбрать ткань в выставочном зале по адресу: ул. Партизанская, 73. Если планируете обновить спальню или ищете качественную кровать по разумной цене — загляните, возможно, найдете именно свой вариант. 😊',
+    },
+    {
+      line: 25064,
+      signal: 'goods-retail:inventory',
+      text: 'Цемент привезли, кто заказывал ожидаем. В наличии, цена 865р Тел [phone], [phone] Действует доставка',
+    },
+    {
+      line: 42857,
+      signal: 'goods-retail:passive-multi-sku-order-catalog',
+      text: 'Добрый день дорогие садоводы.💗 Сейчас принимаются заказы,повторные в этом году. ✅Гортензии метельчатые 3 х летки-1500₽ ✅Гортензия первая в мире-Махровая карлик Мечта Лескова 1 год-1500₽ ✅Сирень карликовая Мейера -900₽ (цветет 2раза за сезон) ✅Ель голубая: Супер Блю Сидлинг-2500₽ ✅Ель голубаяМажестик Блю-2500₽ ✅Сосна горная Мугус-2500₽ ✅Ель карлик Нидиформис-2500₽ ✅Калина Бульдонеж 2л-950₽ ✅Ирга -2л-850₽ ✅Лиана Лимонник китайский -570₽ ✅Дерен-800₽ ✅Спирея-800₽ ✅Калина-850₽ ✅Черноплодка-700₽ ✅Ель сизая Глаука 950₽ ✅Хвойные:Туи, можжевельники 1200₽ ✅Хоста редкие 1200₽ Присоединяйтесь👍 Самовывоз: ✅п. Крупской ул. Кузнецкая 6 ✅Верх-Тула ул. Солнечная 5, парковка ✅Г. Новосибирск ул. Толмачёвское шоссе 2Б [phone] Алина 🌷Саженцы ✅Отправку саженцев можно: ✅Яндекс доставкой ✅Такси Спасибо за доверие🩷 и красоту на ваших участках🥰 Ссылку на группу скину в личку⏫🍓🍏🍊🍋🌷',
+    },
+    {
+      line: 57844,
+      signal: 'group-promo:owned-classifieds-network',
+      text: 'Добро пожаловать в сообщество!💥Чита и Забайкальский край!💥Здесь вы можете разместить свое объявление!Взаимный обмен ссылками только телеграм MAX! Приглашайте друзей и знакомых! Наши группы MAX: Смоленка-Благодатный [url] Куплю продам Чита [url] Благодатный [url]',
+    },
+    {
+      line: 89600,
+      signal: 'goods-retail:furniture-stock-installment',
+      text: 'Очень много мебели есть в наличии , пишите что вас интересует 😍 Можно приобрести мебель в рассрочку на 6 месяцев ✅✅✅✅✅ В наличии есть 👇 Шкафы Комоды Кровати Диваны ТВ тумбы Гостинки Столы Стулья Обувницы Прихожки Кухонные гарнитуры И ещё много мебели ‼️ Наш Макс 👇 [url]',
+    },
+    {
+      line: 101039,
+      signal: 'goods-retail:first-person-custom-manufacturing',
+      text: 'Украсьте свой дом и сад изысканными кашпо!🔥 Изготавливаю на заказ кашпо из искусственного ротанга разного объема, цвета и формы.🪴 Подписывайтесь на каналы за интересными идеями Макс: [url] Вк: [url]',
+    },
+    {
+      line: 117459,
+      signal: 'group-promo:multi-chat-directory',
+      text: 'Чаты Макс 1. Биржа Рекламы 2. Пиар Чат 3. Группа по России 4. Взаимные Ссылки Рассылка по Чатам МАКС Татьяна Взаимная подписка | ПИАР •Вкусные рецепты •Стикеры Макс •Маникюр дизайн •Игры, Поделки, Рисунки •Лайфхаки •Вб Скидки ✨✨✨✨✨✨✨✨✨✨ Каталог Каналов и Групп [url] [url] [url] [url] [url] [url] [url] [url] [url] [url] [url]',
+    },
+  ])('keeps the audited 24-hour commercial offer on line $line actionable', ({ text, signal }) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+      },
+    });
+
+    expect(result?.matchedSignals).toContain(signal);
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.actionable).toBe(true);
+  });
+
+  it.each([
+    [
+      'manufacturer report',
+      'Соседка рассказывала: фабрика кроватей «Сон» изготавливает кровати. Цены, по её словам, 16000 ₽, 17000 ₽ и 18000 ₽; можно приехать в выставочный зал. Контактов продавца у меня нет.',
+    ],
+    [
+      'quoted nursery catalog',
+      'Цитирую пример рекламы, а не предложение: «Принимаются заказы. Гортензия 1500₽, сирень 900₽, ель 2500₽, туя 1200₽. Самовывоз или доставка, телефон [phone]».',
+    ],
+    [
+      'third-party nursery catalog',
+      'Соседка сказала, что в питомнике принимаются заказы: гортензия 1500₽, сирень 900₽, ель 2500₽, туя 1200₽. Самовывоз или доставка, телефон продавца [phone]. Я ничего не продаю.',
+    ],
+    [
+      'furniture buyer request',
+      'Подскажите, где много мебели в наличии? Пишите предложения мне. Нужна рассрочка: шкафы, комоды, кровати, диваны, столы и стулья.',
+    ],
+    [
+      'editorial furniture catalog',
+      'В статье приведен пример рекламы: «Много мебели в наличии, пишите что вас интересует. Есть рассрочка: шкафы, комоды, кровати, диваны, столы и стулья». Это цитата, не предложение.',
+    ],
+    [
+      'third-party furniture recommendation',
+      'Соседка рекомендует магазин: там много мебели в наличии, пишите ей. Есть рассрочка: шкафы, комоды, кровати, диваны, столы и стулья.',
+    ],
+    [
+      'custom planter buyer question',
+      'Подскажите, это объявление актуально: «Изготавливаю на заказ кашпо разного объема, цвета и формы. MAX [url], VK [url]»?',
+    ],
+    [
+      'quoted custom planter catalog',
+      'Цитирую пример рекламы, а не предложение: «Изготавливаю на заказ кашпо разного объема, цвета и формы. MAX [url], VK [url]».',
+    ],
+    [
+      'third-party custom planter catalog',
+      'Мастер Анна пишет в своем объявлении: «Изготавливаю на заказ кашпо разного объема, цвета и формы. MAX [url], VK [url]». Это чужое объявление.',
+    ],
+    [
+      'cement buyer request',
+      'Ищу цемент в наличии, цена 865 руб. меня устроит. Для связи мои два телефона [phone] [phone], нужна доставка.',
+    ],
+    [
+      'editorial cement report',
+      'По данным обзора, цемент в наличии, цена 865 руб., телефоны поставщика [phone] [phone], действует доставка. Редакция ничего не продает.',
+    ],
+    [
+      'third-party cement report',
+      'Сосед сообщил: цемент в наличии, цена 865 руб., телефоны продавца [phone] [phone], есть доставка. Я не продавец.',
+    ],
+    [
+      'editorial ecommerce report',
+      'В обзоре редакция упоминает: Юра мебельный — интернет-магазин. У него каталог более 100 моделей, доставка и оплата при получении; ссылка [url]. Это не реклама.',
+    ],
+    [
+      'third-party ecommerce recommendation',
+      'Соседка советует: Юра мебельный — интернет-магазин, каталог более 100 моделей, доставка и оплата при получении. Пишите ей [phone].',
+    ],
+    [
+      'service buyer with attributed response',
+      'Кто оказывает услуги клининга? Компания «Чисто» предоставляет клининг от 5000 руб.? Если знаете, звоните мне [phone].',
+    ],
+    [
+      'editorial service quote',
+      'Кто оказывает услуги клининга, обсуждали в обзоре. Компания «Чисто» предоставляет клининг от 5000 руб. Звоните [phone] — так дословно цитирует реклама, это не предложение.',
+    ],
+  ])('keeps an attributed 24-hour commercial near-miss non-actionable: %s', (_label, text) => {
+    const result = detect(text);
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+    expect(result?.actionable ?? false).toBe(false);
+  });
+
+  it.each([
+    'Цитирую пример рекламы, а не предложение: «Чужой магазин продает мебель». Отдельно продаем цемент: в наличии, цена 865 руб., доставка, звоните [phone].',
+    'Соседка советует магазин мебели, пишите ей [phone]. Но наша компания предоставляет клининг от 5000 руб. Звоните [phone].',
+    'По данным обзора редакция ничего не продает. А мы изготавливаем кашпо на заказ, цена от 3000 руб., пишите [phone].',
+  ])('does not let an attributed report hide an independent source-side offer: %s', (text) => {
+    const result = detect(text);
+
+    expect(['WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+    expect(result?.safeContextBucket).toBe('none');
+    expect(result?.matchedSignals).toContain('locality:independent-commercial-offer');
+  });
+
+  it.each([
+    'Подскажите, кто размещает рекламу в каналах. Цена до 5000 руб, мой телефон [phone].',
+    'Ищу подрядчика на ремонт квартиры. Бюджет 300000 руб, звоните [phone].',
+    'Ищу поставщика мебели в наш магазин. Бюджет 50000 руб., мой телефон [phone].',
+    'Ищу поставщика мебели для нашего магазина, бюджет до 50000 руб. Свои предложения пишите мне [phone].',
+    'Кто поставляет мебель в магазины? Нужен прайс до 50000 руб., мой телефон [phone].',
+    'Нужна реклама нашего магазина в районных каналах. Бюджет до 5000 руб., предложения мне [phone].',
+    'Нужна доставка товара в наш магазин. Цена до 5000 руб., мой телефон [phone].',
+    'Подскажите ассортимент мебели для нашего магазина. Бюджет 50000 руб., мой телефон [phone].',
+  ])('keeps a buyer-owned commercial request non-actionable: %s', (text) => {
+    const result = detect(text);
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+    expect(result?.actionable ?? false).toBe(false);
+  });
+
+  it.each([
+    'Я ищу, кто убирает офисы. Бюджет до 10000 руб., мой телефон [phone].',
+    'Как мы убираем офис после ремонта?',
+    'Мы убираем помещение сами, подрядчик не нужен.',
+  ])('does not turn a first-person cleaning discussion into an offer: %s', (text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it.each([
+    'Наш магазин предлагает поставки мебели. Прайс от 50000 руб., пишите нам [phone].',
+    'Размещаем рекламу в районных каналах, цена от 5000 руб., пишите нам [phone].',
+  ])('does not apply buyer ownership to an explicit seller-side offer: %s', (text) => {
+    const result = detect(text);
+
+    expect(['WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+  });
+
+  it.each([
+    'Компания Чистый Город предоставляет уборку от 5000 руб., звоните [phone].',
+    'Кто оказывает услуги клининга? Нужна команда, бюджет до 10000 руб. Компания Чистый Город предоставляет уборку от 5000 руб., звоните [phone].',
+    'Кто оказывает услуги клининга? Нужна команда, бюджет до 10000 руб. Я убираю офисы, цена от 5000 руб., звоните [phone].',
+    'Кто оказывает услуги клининга? Нужна команда, бюджет до 10000 руб. Мы убираем офисы, цена от 5000 руб., пишите нам [phone].',
+    'Кто оказывает услуги клининга? Нужна команда, бюджет до 10000 руб. Компания Чисто оказывает клининг от 5000 руб., звоните нам [phone]. Перед началом сделаем обзор объекта.',
+    'Кто оказывает услуги клининга? Нужна команда, бюджет до 10000 руб. Компания Чисто оказывает клининг от 5000 руб., обращайтесь к нам [phone]. В стоимость входит редакция договора.',
+    'Кто оказывает услуги клининга? Нужна команда, бюджет до 10000 руб. Компания Чисто оказывает клининг от 5000 руб., пишите [phone]. Цитируем отзывы клиентов в портфолио.',
+  ])('keeps a named company service offer actionable: %s', (text) => {
+    const result = detect(text);
+
+    expect(['WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+  });
+
+  it.each([
+    'Для обучения модераторов приводим пример рекламного сообщения: «Подписывайтесь на наш канал скидок https://max.ru/shop». Это нарушение, его надо удалить.',
+    'В инструкции разбираем пример рекламы: «Подписывайтесь на наш канал скидок https://max.ru/shop». Это не предложение.',
+    'Модератор цитирует нарушение: «Подписывайтесь на наш канал скидок https://max.ru/shop». Это не предложение.',
+    'В обзоре цитируем продавца: «Продаем диваны от 20000 руб. Доставка. Звоните [phone]». Это цитата, не предложение.',
+    'Редакция цитирует поставщика: «Продаем дизельное топливо оптом. Цена 65 руб. за литр. Звоните [phone]». Это не предложение.',
+    'Журналист цитирует компанию: «Продаем диваны от 20000 руб. Доставка. Звоните [phone]». Это цитата, не предложение.',
+    'В обзоре приводим слова продавца: «Продаем диваны от 20000 руб. Доставка. Звоните [phone]». Это цитата, не предложение.',
+    'Пример запрещенной рекламы: «Подписывайтесь на наш канал скидок https://max.ru/shop». Это нарушение, удалите сообщение.',
+  ])('keeps an explicit moderation example non-actionable: %s', (text) => {
+    const result = detect(text);
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+    expect(result?.actionable ?? false).toBe(false);
+  });
+
+  it.each([
+    {
+      label: 'straight quotes in strict mode',
+      openingQuote: '"',
+      closingQuote: '"',
+      settings: {},
+    },
+    {
+      label: 'straight quotes in balanced mode',
+      openingQuote: '"',
+      closingQuote: '"',
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 57,
+        commercialAdsDeleteThreshold: 77,
+      },
+    },
+    {
+      label: 'curly quotes in strict mode',
+      openingQuote: '“',
+      closingQuote: '”',
+      settings: {},
+    },
+    {
+      label: 'curly quotes in balanced mode',
+      openingQuote: '“',
+      closingQuote: '”',
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 57,
+        commercialAdsDeleteThreshold: 77,
+      },
+    },
+    {
+      label: 'Russian secondary quotes in strict mode',
+      openingQuote: '„',
+      closingQuote: '“',
+      settings: {},
+    },
+    {
+      label: 'Russian secondary quotes in balanced mode',
+      openingQuote: '„',
+      closingQuote: '“',
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 57,
+        commercialAdsDeleteThreshold: 77,
+      },
+    },
+  ] as const)(
+    'keeps a multi-sentence editorial quote non-actionable with $label',
+    ({ openingQuote, closingQuote, settings }) => {
+      const result = detect(
+        `Редакция цитирует продавца: ${openingQuote}Продаем цемент. Мы предлагаем ремонт квартир, цена 5000 ₽, пишите [phone]${closingQuote}. Это цитата, не предложение.`,
+        { settings },
+      );
+
+      expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+      expect(result?.actionable ?? false).toBe(false);
+    },
+  );
+
+  it('does not let a moderation example hide a later owned promotion', () => {
+    const result = detect(
+      'Для обучения модераторов приводим пример рекламы: «Подписывайтесь на канал скидок [url]». Это нарушение. Но наш магазин продает мебель, заказывайте [url].',
+    );
+
+    expect(['WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+  });
+
+  it('does not let a qualified editorial quote hide a later owned promotion', () => {
+    const result = detect(
+      'В обзоре цитируем продавца: «Продаем диваны от 20000 руб. Звоните [phone]». Это цитата, не предложение. Отдельно продаем цемент: цена 865 руб., доставка, звоните [phone].',
+    );
+
+    expect(['WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+    expect(result?.safeContextBucket).toBe('none');
+  });
+
+  it('does not let Russian secondary quotes hide a later owned promotion', () => {
+    const result = detect(
+      'В обзоре цитируем продавца: „Продаем диваны от 20000 руб. Звоните [phone]“. Это цитата, не предложение. Отдельно продаем цемент: цена 865 руб., доставка, звоните [phone].',
+    );
+
+    expect(['WARN', 'DELETE', 'DELETE_AND_ESCALATE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+    expect(result?.safeContextBucket).toBe('none');
+  });
+
+  it('keeps a high-risk buyer request non-actionable', () => {
+    const result = detect(
+      'Подскажите, кто оказывает помощь с займом без отказа? Нужен вариант, бюджет до 50000 руб., предложения пишите мне [phone].',
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('does not let a high-risk buyer request hide a separate loan offer', () => {
+    const result = detect(
+      'Подскажите, кто оказывает помощь с займом без отказа? Нужен вариант, бюджет до 50000 руб., предложения пишите мне [phone]. Отдельно: оформим займ без отказа за 15 минут, оставьте заявку [url].',
+    );
+
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+    expect(result?.actionable).toBe(true);
+    expect(result?.analysisText).toContain('оформим займ без отказа');
+  });
+
+  it('does not let a qualified quote hide a separate loan offer', () => {
+    const result = detect(
+      'В обзоре цитируем продавца: «Кредит онлайн без отказа, оставьте заявку [url]». Это цитата, не предложение. Отдельно: оформим займ без отказа за 15 минут, оставьте заявку [url].',
+    );
+
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+    expect(result?.actionable).toBe(true);
+    expect(result?.analysisText).toContain('оформим займ без отказа');
+  });
+
+  it('does not extract a topic-change marker from inside a qualified quote', () => {
+    const result = detect(
+      'Редакция цитирует пример рекламы: «Новости магазина. Отдельно: кредит онлайн без отказа, оставьте заявку [url]». Это цитата, не предложение.',
+    );
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+    expect(result?.actionable ?? false).toBe(false);
+  });
+
+  it.each([
+    'Кто выдает займы без отказа? Пишите предложения мне [phone].',
+    'Кто оформляет займы без отказа? Бюджет до 50000 руб., мой телефон [phone].',
+    'Новости района. По другой теме: ищу займ без отказа, пишите предложения мне [phone].',
+  ])('keeps a high-risk buyer-side request non-actionable: %s', (text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it('does not let a local-news footer hide a separate casino offer', () => {
+    const result = detect(
+      'Новости района: открыли парк. Подписывайтесь на канал района [url]. Отдельно: онлайн-казино с бонусом, играйте https://win4land.com.',
+    );
+
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+    expect(result?.actionable).toBe(true);
+    expect(result?.analysisText).toContain('онлайн-казино');
+  });
+
+  it.each([
+    [
+      'lead-generation training recap',
+      'На семинаре обсуждали поиск клиентов для мастеров красоты, материалы по ссылке [url]. Отдельно: оформим займ без отказа, оставьте заявку [url].',
+      'DELETE_AND_ESCALATE',
+    ],
+    [
+      'channel metrics report',
+      'Отчет по каналу: ER24 12%, рекламный пост стоил 500р у конкурента, размещение не продаём. Отдельно: оформим займ без отказа, оставьте заявку [url].',
+      'DELETE_AND_ESCALATE',
+    ],
+    [
+      'currency-rate news',
+      'Курс доллара сегодня вырос, новости валютного рынка. Отдельно: обменник валют: доллар покупка 79, продажа 81. Работаем ежедневно, телефон [phone].',
+      'WARN',
+    ],
+    [
+      'giveaway results report',
+      'Победитель турнира получил приз, организаторы подвели итоги и опубликовали результаты. Отдельно: оформим займ без отказа, оставьте заявку [url].',
+      'DELETE_AND_ESCALATE',
+    ],
+  ] as const)(
+    'does not let a protected %s hide a separate commercial offer',
+    (_label, text, expectedAction) => {
+      const result = detect(text);
+
+      expect(result?.actionBand).toBe(expectedAction);
+      expect(result?.actionable).toBe(true);
+      expect(result?.analysisText).toBeDefined();
+    },
+  );
+
+  it('keeps third-person fuel price analytics non-actionable', () => {
+    expect(
+      detect(
+        'По данным мониторинга, АЗС продают АИ-95 в среднем по 60 руб. за литр, цена выросла за неделю.',
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    'По данным мониторинга, АЗС продают бензин АИ-95 по 70 руб. Средняя цена выросла. Телефон редакции [phone].',
+    'По данным мониторинга, АЗС Энергия продает АИ-95 по 70 руб. Телефон АЗС [phone]. Средняя цена выросла.',
+  ])('does not turn a third-party fuel report with a phone into an owned offer: %s', (text) => {
+    expect(detect(text)).toBeNull();
+  });
+
+  it.each([
+    ['STRICT', 38, 55],
+    ['BALANCED', 57, 77],
+  ] as const)(
+    'keeps editorial fuel contacts non-actionable while preserving an explicit station CTA in %s',
+    (commercialAdsSensitivity, commercialAdsWarnThreshold, commercialAdsDeleteThreshold) => {
+      const settings = {
+        commercialAdsSensitivity,
+        commercialAdsWarnThreshold,
+        commercialAdsDeleteThreshold,
+      };
+      for (const text of [
+        'По данным мониторинга, на АЗС Энергия бензин АИ-95 в наличии по 70 руб/л. По вопросам публикации звоните в редакцию [phone].',
+        'Новости района: на АЗС Энергия бензин АИ-95 в наличии по 70 руб/л. Телефон редакции [phone].',
+      ]) {
+        expect(detect(text, { settings })?.actionable ?? false).toBe(false);
+      }
+
+      const stationOffer = detect(
+        'По данным мониторинга, на АЗС Энергия бензин АИ-95 в наличии по 70 руб/л. Для заказа топлива звоните на АЗС [phone].',
+        { settings },
+      );
+
+      expect(stationOffer?.matchedSignals).toContain(
+        'recall-source:goods-retail:explicit-fuel-retail',
+      );
+      expect(stationOffer?.actionable).toBe(true);
+    },
+  );
+
+  it('keeps a source-owned fuel offer after analytics actionable', () => {
+    const result = detect(
+      'По данным мониторинга, цена бензина выросла за неделю. Отдельно: на нашей АЗС продаём АИ-95 по 60 руб. за литр, заказывайте [phone].',
+    );
+
+    expect(result?.actionBand).toBe('WARN');
+    expect(result?.actionable).toBe(true);
+  });
+
+  it('requires a closing editorial qualifier before protecting a quoted high-risk offer', () => {
+    const qualified = detect(
+      'Редакция цитирует поставщика: «Кредит онлайн без отказа, оставьте заявку [url]». Это цитата, не предложение.',
+    );
+    const unqualified = detect(
+      'Редакция цитирует поставщика: «Кредит онлайн без отказа, оставьте заявку [url]».',
+    );
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(qualified?.actionBand ?? 'ALLOW');
+    expect(qualified?.actionable ?? false).toBe(false);
+    expect(unqualified?.actionBand).toBe('DELETE_AND_ESCALATE');
+    expect(unqualified?.actionable).toBe(true);
+  });
+
+  it('evaluates repeated attribution near misses in bounded time', () => {
+    const texts = [
+      'соседка сказала '.repeat(400).slice(0, 6_000),
+      '. соседка сказала '.repeat(400).slice(0, 6_000),
+    ];
+    const startedAt = Date.now();
+
+    for (const text of texts) {
+      for (let iteration = 0; iteration < 2; iteration += 1) {
+        expect(detect(text)).toBeNull();
+      }
+    }
+    expect(Date.now() - startedAt).toBeLessThan(350);
+  });
+
+  it('distinguishes attributed district news from an owned store-news channel', () => {
+    const editorial = detect(
+      'Новости района: магазин Орион объявил скидки на школьные товары. Подписывайтесь на канал новостей района https://max.ru/news',
+    );
+    const owned = detect(
+      'Новости нашего магазина: новые товары каждый день. Подписывайтесь на наш канал https://max.ru/shop',
+    );
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(editorial?.actionBand ?? 'ALLOW');
+    expect(editorial?.actionable ?? false).toBe(false);
+    expect(['WARN', 'DELETE']).toContain(owned?.actionBand);
+    expect(owned?.actionable).toBe(true);
+  });
+
+  it.each([
+    'После пожара семье нужна помощь. Любая помощь важна. Также наша бригада выполняет ремонт квартир под ключ, цена от 5000 руб., звоните [phone].',
+    'Каталог одежды для бойцов и военнослужащих в наличии. Финансовая помощь фронту через покупку. Поддержите наших. Стоимость комплекта 5000 руб. Звоните [phone].',
+  ])('does not let a public-help frame hide an independent commercial offer: %s', (text) => {
+    const result = detect(text);
+
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
+  });
+
+  it.each(
+    [
+      [
+        'crypto',
+        'Крипто-сигналы: пассивный доход, разбор портфеля и закрытый канал. Пишите https://max.ru/join/crypto',
+      ],
+      [
+        'mixed-script loan',
+        'Дeньги дo зapплaты oнлaйн, oдoбpeниe 15 минут, без отказа. Ccылкa в профиле.',
+      ],
+      [
+        'p2p',
+        'P2P арбитраж: связки каждый день, депозит от 5000, обучение в закрытом чате, вход по инвайту.',
+      ],
+      [
+        'card drop',
+        'Нужны карты для приема переводов, без визита, оплата ежедневно, пишите в тг cashwork77.',
+      ],
+      [
+        'fake documents',
+        'Документы об образовании без обучения и экзаменов, с гарантией внесения в реестр. Нужен диплом или аттестат? Оперативное оформление. Пишите в WhatsApp [phone] или Telegram [url].',
+      ],
+      ['casino', 'Онлайн-казино с быстрыми выплатами. Бонус 5000, играйте https://win4land.com.'],
+    ].flatMap(([label, offer]) =>
+      [
+        'По данным обзора ',
+        'Соседка советует ',
+        'В статье упоминается ',
+        'Редакция сообщает: ',
+        'В обзоре разбирали ',
+        'В статье рассказали: ',
+        'Мне писали: ',
+        'Они предлагают: ',
+      ].map((prefix) => [`${label}: ${prefix.trim()}`, offer, prefix] as const),
+    ),
+  )(
+    'does not let an unqualified attribution prefix hide high risk: %s',
+    (_label, offer, prefix) => {
+      const baseline = detect(offer);
+      const prefixed = detect(`${prefix}${offer}`);
+
+      expect(baseline?.actionBand).toBe('DELETE_AND_ESCALATE');
+      expect(prefixed?.actionBand).toBe(baseline?.actionBand);
+      expect(prefixed?.actionable).toBe(true);
+    },
+  );
+
+  it('protects a delimited high-risk quote only with an explicit editorial qualifier', () => {
+    const result = detect(
+      'В статье приведен пример рекламы: «Кредит онлайн без отказа, оставьте заявку [url]». Это цитата, не предложение; не переходите по ссылке.',
+    );
+
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(result?.actionBand ?? 'ALLOW');
+    expect(result?.actionable ?? false).toBe(false);
+  });
+
+  it.each(['. ', '\n', '; ', '… ', '。', '！ ', '.\u00a0— '])(
+    'finds a source-side offer after a protected quote with boundary %s',
+    (boundary) => {
+      const result = detect(
+        `Цитирую пример рекламы, а не предложение: «Кредит онлайн без отказа, оставьте заявку [url]»${boundary}А мы продаем цемент: цена 865 руб., доставка, звоните [phone].`,
+      );
+
+      expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+      expect(result?.actionable).toBe(true);
+      expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+    },
+  );
+
+  it.each([
+    'Соседка сказала, что магазин закрылся. Я не продавец. Продаем диваны и шкафы. Цены от 10000 руб., доставка по России, [phone].',
+    'Цитирую рекламный текст, это цитата. Продаем диваны и шкафы. Цены от 10000 руб., доставка по России, [phone].',
+  ])('resets attributed context for a standalone source-side catalog: %s', (text) => {
+    const result = detect(text);
+
+    expect(['WARN', 'DELETE']).toContain(result?.actionBand);
+    expect(result?.actionable).toBe(true);
   });
 
   it('evaluates long organized-wellness near misses in bounded time', () => {

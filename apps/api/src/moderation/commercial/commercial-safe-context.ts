@@ -1,4 +1,18 @@
-import { resolveCommercialSignalEvidence } from './commercial-evidence';
+import {
+  isCommercialEscalationRiskSignal,
+  resolveCommercialSignalEvidence,
+} from './commercial-evidence';
+import {
+  hasQualifiedSourceSideServiceOffer,
+  hasUnattributedServiceResponse,
+  resolveStandaloneEditorialQuoteContext,
+  splitCommercialAssertions,
+} from './commercial-local-context';
+import {
+  ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN,
+  ADS_NAMED_ECOMMERCE_SOURCE_SIDE_FRAME_PATTERN,
+  ADS_STOCK_PRICE_CONTACT_DELIVERY_SOURCE_SIDE_FRAME_PATTERN,
+} from './commercial-patterns';
 
 export type CommercialSafeContextBucket =
   | 'rules_or_moderation_context'
@@ -54,6 +68,17 @@ const COMMERCIAL_SELF_PROMO_SIGNAL_PREFIXES = [
   'service-specialty:',
 ] as const;
 
+const EXPLICIT_SOURCE_SIDE_OFFER_SIGNAL_PREFIXES = [
+  'buyout:',
+  'channel-placement:',
+  'goods-retail:',
+  'info:',
+  'promo:',
+  'property-agent:',
+  'property-commercial:',
+  'recruitment:',
+] as const;
+
 const LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS = new Set([
   'goods-retail:wholesale-produce',
   'goods-retail:collectible-flower-retail',
@@ -66,6 +91,43 @@ const LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS = new Set([
   'goods-retail:home-dairy-retail',
 ]);
 
+const AMBIGUOUS_SERVICE_INTENT_SIGNALS = new Set([
+  'intent:услуга',
+  'intent:услуги',
+  'intent:выполняем-работы',
+]);
+const TRUSTED_SOURCE_SIDE_RETAIL_RECALL_SIGNALS = new Set([
+  'goods-retail:first-person-custom-manufacturing',
+  'goods-retail:furniture-stock-installment',
+  'goods-retail:named-manufacturer-price-catalog',
+  'goods-retail:passive-multi-sku-order-catalog',
+]);
+const POST_QUESTION_PAID_SERVICE_PRESENTATION_PATTERN =
+  /^(?:(?:юридическ[а-яё-]*\s+)?услуг[а-яё-]*|сервис[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const POST_QUESTION_PAID_SERVICE_PRICE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:(?:цен[аы]|стоимост[ьи])\s*(?:от\s*)?\d{2,}|\d[\d\s.,]{0,16}\s*(?:р(?:уб)?\.?|₽))(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_ASSERTION_END_PATTERN = /[?？]+["'»”’“]?\s*$/u;
+
+function hasPostQuestionPaidServiceOffer(text: string): boolean {
+  const assertions = splitCommercialAssertions(text.slice(0, 1_400).toLowerCase()).slice(0, 8);
+  const offerIndex = assertions.findIndex(
+    (assertion, index) =>
+      index > 0 &&
+      QUESTION_ASSERTION_END_PATTERN.test(assertions[index - 1]) &&
+      POST_QUESTION_PAID_SERVICE_PRESENTATION_PATTERN.test(assertion),
+  );
+  if (offerIndex < 0) {
+    return false;
+  }
+  const window = assertions
+    .slice(offerIndex, offerIndex + 3)
+    .join('. ')
+    .slice(0, 700);
+  return (
+    POST_QUESTION_PAID_SERVICE_PRICE_PATTERN.test(window) && hasUnattributedServiceResponse(window)
+  );
+}
+
 export function hasCommercialDirectDealSignal(signals: readonly string[]): boolean {
   return signals.some((signal) =>
     DIRECT_DEAL_SIGNAL_PREFIXES.some((prefix) => signal.startsWith(prefix)),
@@ -76,6 +138,29 @@ function hasCommercialSelfPromoSignal(signals: readonly string[]): boolean {
   return signals.some((signal) =>
     COMMERCIAL_SELF_PROMO_SIGNAL_PREFIXES.some((prefix) => signal.startsWith(prefix)),
   );
+}
+
+function hasExplicitSourceSideOfferSignal(signals: readonly string[], text: string): boolean {
+  const recallCompanionSignals = new Set(
+    signals
+      .filter((signal) => signal.startsWith('recall-source:'))
+      .map((signal) => signal.slice('recall-source:'.length)),
+  );
+
+  return signals.some((signal) => {
+    const requiresSourceSideRetailFrame =
+      signal.startsWith('promo:') || signal.startsWith('goods-retail:');
+    const hasTrustedSourceSideRecall = TRUSTED_SOURCE_SIDE_RETAIL_RECALL_SIGNALS.has(signal);
+    const hasSourceSideRetailFrame =
+      ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN.test(text) ||
+      ADS_NAMED_ECOMMERCE_SOURCE_SIDE_FRAME_PATTERN.test(text) ||
+      ADS_STOCK_PRICE_CONTACT_DELIVERY_SOURCE_SIDE_FRAME_PATTERN.test(text);
+    return (
+      EXPLICIT_SOURCE_SIDE_OFFER_SIGNAL_PREFIXES.some((prefix) => signal.startsWith(prefix)) &&
+      (!requiresSourceSideRetailFrame || hasSourceSideRetailFrame || hasTrustedSourceSideRecall) &&
+      (!recallCompanionSignals.has(signal) || hasTrustedSourceSideRecall)
+    );
+  });
 }
 
 export function deriveCommercialSafeContextBucket(params: {
@@ -92,6 +177,13 @@ export function deriveCommercialSafeContextBucket(params: {
   const hasSelfPromoSignal = hasCommercialSelfPromoSignal(matchedSignals);
   const signalEvidence = resolveCommercialSignalEvidence(matchedSignals);
   const hasEscalationRiskEvidence = signalEvidence.hasEscalationRiskEvidence;
+  const standaloneEditorialQuoteContext = resolveStandaloneEditorialQuoteContext({
+    rawLoweredText: text,
+    escalationRiskLabels: matchedSignals
+      .filter(isCommercialEscalationRiskSignal)
+      .map((signal) => signal.slice('risk:'.length)),
+    includeOrdinaryProtectedContext: true,
+  });
   const hasPriceSignal = matchedSignals.some(
     (signal) => signal === 'transaction:price' || signal === 'transaction:implied-price',
   );
@@ -116,12 +208,21 @@ export function deriveCommercialSafeContextBucket(params: {
         signal === 'service-specialty:divination-self-offer' ||
         signal === 'risk:divination-contact-offer',
     );
+  const hasExplicitPaidServiceIntent =
+    matchedSignals.some(
+      (signal) => signal.startsWith('intent:') && !AMBIGUOUS_SERVICE_INTENT_SIGNALS.has(signal),
+    ) ||
+    (matchedSignals.includes('intent:выполняем-работы') &&
+      /(?:^|[^\p{L}\p{N}_-])(?:выполня(?:ем|ю)|оказыва(?:ем|ю)|предлага(?:ем|ю))(?=$|[^\p{L}\p{N}_-])/iu.test(
+        text,
+      )) ||
+    (matchedSignals.some((signal) => signal === 'intent:услуга' || signal === 'intent:услуги') &&
+      hasPostQuestionPaidServiceOffer(text));
   const hasExplicitPaidServiceOffer =
     hasPriceSignal &&
     hasDirectDealSignal &&
-    matchedSignals.some(
-      (signal) => signal.startsWith('business:') || signal.startsWith('intent:'),
-    ) &&
+    (matchedSignals.some((signal) => signal.startsWith('business:')) ||
+      hasExplicitPaidServiceIntent) &&
     matchedSignals.some((signal) => signal.startsWith('service-specialty:'));
   const hasExplicitPrivateSaleSignal = negativeSignals.some(
     (signal) =>
@@ -166,11 +267,30 @@ export function deriveCommercialSafeContextBucket(params: {
   );
   const hasEscalationOffer =
     hasEscalationRiskEvidence && signalEvidence.hasLocalEscalationOfferEvidence;
+  const hasStructuredRecruitmentOffer = matchedSignals.some((signal) =>
+    signal.startsWith('recall-source:recruitment:'),
+  );
+  const hasExplicitSourceSideOffer =
+    (hasDirectDealSignal && hasExplicitSourceSideOfferSignal(matchedSignals, text)) ||
+    hasQualifiedSourceSideServiceOffer(text);
+  const hasEmbeddedCurrentServiceOffer =
+    matchedSignals.includes('intent:current-service-booking-offer') &&
+    matchedSignals.some((signal) => signal.startsWith('service-specialty:')) &&
+    /(?:^|[^\p{L}\p{N}_-])можно\s+заказать\s+у\s+админ[а-яё-]*(?:[\s\S]{0,100})(?:фото|видео)[\p{L}\p{N}_-]*\s+монтаж(?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    );
   const hasSignal = (signal: string): boolean => negativeSignals.includes(signal);
   const hasSignalPrefix = (prefix: string): boolean =>
     negativeSignals.some((signal) => signal.startsWith(prefix));
 
-  if (hasSignal('context:moderation-ad-discussion') || hasSignal('context:quoted-ad-example')) {
+  if (
+    (hasSignal('context:moderation-ad-discussion') && !hasEmbeddedCurrentServiceOffer) ||
+    hasSignal('context:quoted-ad-example') ||
+    hasSignal('context:attributed-commercial-report') ||
+    (standaloneEditorialQuoteContext !== null &&
+      !standaloneEditorialQuoteContext.hasIndependentCommercialOffer &&
+      !standaloneEditorialQuoteContext.hasIndependentEscalationOffer)
+  ) {
     return 'rules_or_moderation_context';
   }
 
@@ -197,6 +317,7 @@ export function deriveCommercialSafeContextBucket(params: {
     hasSignal('context:local-news-subscribe') ||
     hasSignal('context:channel-metrics-not-selling') ||
     hasSignal('context:giveaway-results-report') ||
+    hasSignal('context:fuel-price-analysis') ||
     (hasSignal('context:fuel-availability-report') &&
       !(hasPriceSignal && hasDirectDealSignal && hasSelfPromoSignal)) ||
     (NEWS_OR_ANALYTICS_PATTERN.test(text) && (!hasCommercialHit || !hasDirectDealSignal))
@@ -217,13 +338,20 @@ export function deriveCommercialSafeContextBucket(params: {
     return 'public_training_or_help';
   }
 
-  if (hasSignalPrefix('job-seeking:') && !hasEscalationOffer && !hasProfessionalServiceOffer) {
+  if (
+    hasSignalPrefix('job-seeking:') &&
+    !hasEscalationOffer &&
+    !hasProfessionalServiceOffer &&
+    !hasStructuredRecruitmentOffer
+  ) {
     return 'ordinary_recruitment';
   }
 
   if (
     !hasEscalationOffer &&
+    !hasProfessionalServiceOffer &&
     !hasExplicitPaidServiceOffer &&
+    !hasExplicitSourceSideOffer &&
     (hasSignalPrefix('search:') || hasSignalPrefix('search-pattern:'))
   ) {
     return 'request_or_recommendation';

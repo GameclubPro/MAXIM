@@ -432,6 +432,32 @@ describe('commercial action policy', () => {
     expect(decision.suppressionReasons).toContain('conservative-recall-warn-cap');
   });
 
+  it.each<CommercialSafeContextBucket>([
+    'rules_or_moderation_context',
+    'spam_complaint_or_fraud_warning',
+    'news_or_analytics',
+    'brand_mention_only',
+    'ordinary_recruitment',
+    'public_training_or_help',
+    'request_or_recommendation',
+  ])('keeps conservative recall non-actionable inside %s', (safeContextBucket) => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      safeContextBucket,
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      hasConservativeRecallEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.actionable).toBe(false);
+    expect(decision.recordable).toBe(false);
+    expect(decision.suppressionReasons).toEqual(
+      expect.arrayContaining(['conservative-recall-warn-cap', `safe-context:${safeContextBucket}`]),
+    );
+  });
+
   it('preserves independent delete and escalation evidence beside conservative recall', () => {
     expect(
       actionOf({

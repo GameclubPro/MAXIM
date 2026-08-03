@@ -2205,9 +2205,166 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'question-framed window installation from 24 hour replay',
+    text: `Пластиковые окна и двери — тепло и комфорт в вашем доме. Холодно, шумно, сквозит? Пора менять! Энергосберегающие стеклопакеты, бесплатный замер. Телефон [phone].`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:пластиковые-окна'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'plural group subscription from 24 hour replay',
+    text: `Многоуважаемые жители Краснодарского края, подписывайтесь на нашу группу, у нас много интересного [url].`,
+    expectedSubtype: 'GROUP_PROMOTION',
+    expectedSignals: ['group-promo:explicit-group-promotion'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'professional cleaning catalog from enabled 24 hour audit',
+    text: `Комплексная уборка квартир, домов, апартаментов, гостиниц и офисов. Опытная команда, цена по запросу [phone].`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:professional-cleaning-catalog'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 51,
+      commercialAdsDeleteThreshold: 71,
+    },
+  },
+  {
+    label: 'horseback riding club from enabled 24 hour audit',
+    text: `Конный клуб Арго приглашает покататься на лошадях. Красивые маршруты, стоимость прогулки 2000р. Записывайтесь заранее [phone].`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:horseback-riding-club-offer'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'paid vpn access from enabled 24 hour audit',
+    text: `Лёгкий VPN без отключений. Сайт [url], TG [url]. 179 р за 1 месяц, можно подключить 3 устройства.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:paid-vpn-access'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'priced yard mowing from enabled 24 hour audit',
+    text: `Покос травы бензо-триммером 500р сотка. [phone]`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:priced-yard-mowing-service'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'air conditioner installation sale from enabled 24 hour audit',
+    text: `Установка кондиционеров, продажа кондиционеров. Наличные, безнал, кредит и рассрочка. [phone] [url]`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:air-conditioner-installation-sale'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'named meat store orders from enabled 24 hour audit',
+    text: `В наличии на продажу свиная и говяжья продукция. Принимаю заявки до вторника, привоз по четвергам. [phone], магазин Мираж.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: ['goods-retail:named-meat-store-orders'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 59,
+      commercialAdsDeleteThreshold: 80,
+    },
+  },
+  {
+    label: 'short tour package from enabled 24 hour audit',
+    text: `Тур в Дагестан 6-10 августа, 3 дня / 2 ночи, 10500 руб. Маршрут: Дербент и Сулакский каньон. Проживание включено, бронируйте [phone].`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:short-tour-package'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'last mortgage lot from enabled 24 hour audit',
+    text: `Последний горящий лот! Есть 1к, 2к и 3к квартиры. Семейная ипотека от 3.5%. Ключи и подарок в день сделки. [phone]`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    expectedSignals: ['property-agent:last-lots-sales-offer'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'taxi group order service from enabled 24 hour audit',
+    text: `Такси TIK-TAK, круглосуточная работа. Добавляйте друзей в группу [url]. Заказать такси Алло [phone].`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:taxi-group-order-service'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
+  {
+    label: 'dentist recommendation question from 24 hour replay guard',
+    text: `Подскажите хорошего стоматолога для ребёнка, желательно недалеко от центра?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'public safety explanation about filming air defense',
+    text: `Почему нельзя снимать работу ПВО? Публикация видео помогает противнику определить позицию, поэтому не снимайте и не выкладывайте такие записи.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private farm equipment bundle from enabled 24 hour audit guard',
+    text: `Продам прицеп 2 ПТС 4, с документами на учёте. Самосвал, тормоза пневмо. Цена 120 тр., варианты. Плуг т-40, т-25, цена 25 тр. Т.[phone].`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'local incident channel invitation from enabled 24 hour audit guard',
+    text: `Остров под мостом. ЧП Чита, подпишись. Присылайте новости, фотографии или видео [url] [url].`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
   {
     label: 'owner rental listing with repair and phone from production logs',
     text: `Сдаётся уютная 2х комнатная квартира в районе МКК. В квартире хороший ремонт, застеклённый балкон, вся мебель и техника в наличии. Сдаётся на длительный срок ответственным арендаторам. +7 900 000 00 10.`,
@@ -3029,6 +3186,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
     },
   },
   {
+    label: 'fuel price news analysis from 24 hour audit',
+    text: `Жители столкнулись с резким ростом цен на топливо: литр бензина доходил до 170 рублей. УФАС сообщило, что картельного сговора не выявлено, а причина связана с высокой закупочной стоимостью топлива. Региональные власти договорились о временном контроле цены. Формально рынок работал без нарушений. Продолжение [url].`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'animal boarding donation appeal from 24 hour audit',
     text: `ПОМОГИТЕ ОПЛАТИТЬ ПЕРЕДЕРЖКУ для спасенной собаки Юны. Стоимость передержки 7500 руб. в месяц. Сбор на Сбербанк с пометкой "Юна пожертвование" по номеру [phone].`,
     overrides: {
@@ -3040,6 +3206,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'animal shelter debt appeal from 24 hour audit',
     text: `В приюте остаются 84 собаки и 27 кошек. У приюта накопился долг перед клиникой за лечение животных и корм. МЫ ОЧЕНЬ ПРОСИМ ПОМОЩИ. Нужно закрыть долг, реквизиты для пожертвований: Сбербанк, перевод по номеру [phone].`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'voluntary frontline fundraiser from 24 hour replay guard',
+    text: `Открыт добровольный сбор помощи бойцам на передовой. Нужны автомобили и квадрокоптеры, общая сумма большая. Каждый небольшой взнос помогает закрыть заявки и может спасти жизнь. Перевод по реквизитам [card], ссылка на группу [url].`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
