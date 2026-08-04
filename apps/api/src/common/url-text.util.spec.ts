@@ -11,6 +11,12 @@ describe('url-text util', () => {
     ]);
   });
 
+  it('keeps scheme matching independent from bare URL TLD candidates', () => {
+    expect(extractUrlsFromText('сайт https://例え.テスト/путь')).toEqual([
+      'https://例え.テスト/путь',
+    ]);
+  });
+
   it('trims punctuation that wraps pasted scheme urls', () => {
     expect(
       extractUrlsFromText('ссылки: [https://max.ru/channel/news] {https://docs.max.ru/start}:'),
@@ -76,6 +82,13 @@ describe('url-text util', () => {
 
   it('does not treat dotted russian text as a url', () => {
     expect(extractUrlsFromText('Продам кузов Нивы.Весь перевареный')).toEqual([]);
+  });
+
+  it('keeps long dotted near-misses out of bare URL matching', () => {
+    const text = `Продаем бензин ${Array.from({ length: 1_100 }, () => 'x').join('.')}. Архив.`;
+
+    expect(extractUrlsFromText(text)).toEqual([]);
+    expect(stripUrlsFromText(text)).toBe(text);
   });
 
   it('extracts urls split with zero-width format controls', () => {

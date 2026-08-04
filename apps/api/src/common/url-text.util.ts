@@ -4,6 +4,7 @@ const FORMAT_CONTROL_CHARS_PATTERN = /\p{Cf}+/gu;
 const SCHEME_URL_PATTERN = /https?:\/\/[^\s<>"'`()[\]{}]+/giu;
 const BARE_URL_PATTERN =
   /(?<![@\p{L}\p{N}\p{Cf}])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,24}|рф)(?:[/?#][^\s<>"'`()[\]{}]+)?/giu;
+const BARE_URL_TLD_PREFILTER = /\.(?:xn--[a-z0-9-]{2}|[a-z]{2}|рф)/iu;
 const TRAILING_URL_PUNCTUATION_PATTERN = /[)\]},.;!?:]+$/u;
 const ATTACHED_CYRILLIC_SENTENCE_PATTERN = /\.(?=[А-ЯЁ][а-яё])/u;
 const COMMON_FILE_EXTENSION_TLDS = new Set([
@@ -184,22 +185,25 @@ function isLikelyBareFileName(value: string): boolean {
 
 function collectUrlMatches(value: string): UrlMatch[] {
   const prepared = prepareTextForUrlMatching(value);
-  const fullSchemeMatches = collectMatches(
-    prepared.text,
-    createSchemeUrlRegex(),
-    prepared.originalIndexBySourceIndex,
-  );
-  const truncatedSchemeMatches = collectMatches(
-    prepared.text,
-    createSchemeUrlRegex(),
-    prepared.originalIndexBySourceIndex,
-    true,
-  );
-  const bareCandidates = collectMatches(
-    prepared.text,
-    createBareUrlRegex(),
-    prepared.originalIndexBySourceIndex,
-  );
+  const hasSchemeCandidate = prepared.text.includes('://');
+  const fullSchemeMatches = hasSchemeCandidate
+    ? collectMatches(
+        prepared.text,
+        createSchemeUrlRegex(),
+        prepared.originalIndexBySourceIndex,
+      )
+    : [];
+  const truncatedSchemeMatches = hasSchemeCandidate
+    ? collectMatches(
+        prepared.text,
+        createSchemeUrlRegex(),
+        prepared.originalIndexBySourceIndex,
+        true,
+      )
+    : [];
+  const bareCandidates = BARE_URL_TLD_PREFILTER.test(prepared.text)
+    ? collectMatches(prepared.text, createBareUrlRegex(), prepared.originalIndexBySourceIndex)
+    : [];
   const fullSchemeMatchByStart = new Map(
     fullSchemeMatches.map((match) => [match.sourceStart, match] as const),
   );

@@ -90,10 +90,12 @@ export function buildCommercialMarkerContext(
       : normalizeCommercialText(rawLoweredTextWithoutUrlsNormalized);
   const hasDistinctConfusableText = normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
   const normalizedTokensWithoutUrls = [
-    ...(normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? []),
-    ...(hasDistinctConfusableText
-      ? (normalizedTextWithRawConfusables.match(/[\p{L}\p{N}]+/gu) ?? [])
-      : []),
+    ...new Set([
+      ...(normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? []),
+      ...(hasDistinctConfusableText
+        ? (normalizedTextWithRawConfusables.match(/[\p{L}\p{N}]+/gu) ?? [])
+        : []),
+    ]),
   ];
 
   return {

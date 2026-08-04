@@ -727,7 +727,27 @@ function isPrivateObjectConditionServiceNoise(label: string, rawLoweredText: str
   return false;
 }
 
-function hasGenericDomainLikeText(value: string): boolean {
+const GENERIC_DOMAIN_SUFFIX_MARKERS = [
+  '.ru',
+  '.рф',
+  '.com',
+  '.net',
+  '.org',
+  '.su',
+  '.shop',
+  '.online',
+  '.site',
+  '.pro',
+  '.io',
+  '.app',
+  '.ai',
+] as const;
+
+function hasGenericDomainLikeLoweredText(value: string): boolean {
+  if (!GENERIC_DOMAIN_SUFFIX_MARKERS.some((suffix) => value.includes(suffix))) {
+    return false;
+  }
+
   return /\.(?:ru|рф|com|net|org|su|shop|online|site|pro|io|app|ai)(?:$|[^\p{L}\p{N}_-])/iu.test(
     value,
   );
@@ -1639,7 +1659,7 @@ export function collectCommercialSignals(params: {
   const hasGenericDomainLink =
     !hasDealChannel &&
     hasGenericDomainCommercialContext &&
-    hasGenericDomainLikeText(rawLoweredText) &&
+    hasGenericDomainLikeLoweredText(rawLoweredText) &&
     ADS_GENERIC_DOMAIN_LINK_PATTERN.test(rawLoweredText);
   if (hasGenericDomainLink) {
     addPositive('deal-channel:generic-domain', weights.link);
