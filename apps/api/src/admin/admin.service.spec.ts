@@ -15,7 +15,6 @@ import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildDeveloperForcedGlobalSpammerCacheKey } from '../moderation/developer-forced-global-spammer-cache';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
-import { buildModerationReleaseCallbackPayload } from '../moderation/moderation-release-callback.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminService } from './admin.service';
@@ -47,29 +46,10 @@ import {
   readButtonUrl,
   readDialogButtonToken,
 } from './admin-service-test-support';
+import { moderationReleaseMessageOptions } from './moderation-release-test.util';
 
 function broadcastRuntime(service: AdminService): any {
   return (service as any).managedBroadcastRuntime;
-}
-
-function moderationReleaseMessageOptions(
-  action: 'UNBAN' | 'UNMUTE',
-  chatId: string,
-  targetUserId: string,
-) {
-  return {
-    buttons: [
-      [
-        {
-          type: 'callback',
-          text: action === 'UNBAN' ? 'Разбанить' : 'Снять мут',
-          payload: buildModerationReleaseCallbackPayload(action, chatId, targetUserId),
-          intent: 'positive',
-        },
-      ],
-    ],
-    textFormat: 'markdown',
-  };
 }
 
 describe('AdminService dialog admin fallback reads', () => {
@@ -2834,7 +2814,7 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Пользователь](max://user/user-3) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-3'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
       { immediate: true },
     );
     expect(result).toEqual({
@@ -5872,14 +5852,19 @@ describe('AdminService.applyManualSystemBan', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
-      ok: true,
-      action: 'BAN',
-      userId: 'user-2',
-      muteDurationHours: null,
-      muteExpiresAt: null,
-      message: 'Бан включён.',
-    });
+    jest
+      .spyOn(service, 'applyManualSystemBan')
+      .mockImplementation(async (_chatId, _targetUserId, _actor, _source, options) => {
+        options?.onModerationEventRecorded?.('moderation-event-1');
+        return {
+          ok: true,
+          action: 'BAN',
+          userId: 'user-2',
+          muteDurationHours: null,
+          muteExpiresAt: null,
+          message: 'Бан включён.',
+        };
+      });
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_group_moderation_command',
@@ -5919,6 +5904,7 @@ describe('AdminService.applyManualSystemBan', () => {
         allowTargetDisplayNameRemoteLookup: false,
         fanoutAllChats: false,
         fanoutLedgerJobId: 'job-command-1',
+        onModerationEventRecorded: expect.any(Function),
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
@@ -5934,7 +5920,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Нарушитель](max://user/user-2) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-2'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
       {
         immediate: true,
         trafficClass: 'interactive',
@@ -6204,14 +6190,19 @@ describe('AdminService.applyManualSystemBan', () => {
       maxBotLinkService as never,
       maxBotRegistry as never,
     );
-    jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
-      ok: true,
-      action: 'BAN',
-      userId: 'user-2',
-      muteDurationHours: null,
-      muteExpiresAt: null,
-      message: 'Бан включён.',
-    });
+    jest
+      .spyOn(service, 'applyManualSystemBan')
+      .mockImplementation(async (_chatId, _targetUserId, _actor, _source, options) => {
+        options?.onModerationEventRecorded?.('moderation-event-1');
+        return {
+          ok: true,
+          action: 'BAN',
+          userId: 'user-2',
+          muteDurationHours: null,
+          muteExpiresAt: null,
+          message: 'Бан включён.',
+        };
+      });
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_group_moderation_command',
@@ -6252,7 +6243,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Нарушитель](max://user/user-2) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-2'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
       expect.objectContaining({
         immediate: true,
         botId: 'bot-5',
@@ -6273,14 +6264,19 @@ describe('AdminService.applyManualSystemBan', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
-      ok: true,
-      action: 'BAN',
-      userId: 'user-2',
-      muteDurationHours: null,
-      muteExpiresAt: null,
-      message: 'Участник удалён из чата.',
-    });
+    jest
+      .spyOn(service, 'applyManualSystemBan')
+      .mockImplementation(async (_chatId, _targetUserId, _actor, _source, options) => {
+        options?.onModerationEventRecorded?.('moderation-event-1');
+        return {
+          ok: true,
+          action: 'BAN',
+          userId: 'user-2',
+          muteDurationHours: null,
+          muteExpiresAt: null,
+          message: 'Участник удалён из чата.',
+        };
+      });
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_group_moderation_command',
@@ -6307,7 +6303,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Участник [Нарушитель](max://user/user-2) удалён из чата.',
-      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-2'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
       expect.objectContaining({
         immediate: true,
         trafficClass: 'interactive',
@@ -6533,14 +6529,19 @@ describe('AdminService.applyManualSystemBan', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service, 'applyManualModerationAction').mockResolvedValue({
-      ok: true,
-      action: 'MUTE',
-      userId: 'user-2',
-      muteDurationHours: null,
-      muteExpiresAt: null,
-      message: 'Мут включён без срока.',
-    });
+    jest
+      .spyOn(service, 'applyManualModerationAction')
+      .mockImplementation(async (_chatId, _targetUserId, _actor, _body, _source, options) => {
+        options?.onModerationEventRecorded?.('moderation-event-1');
+        return {
+          ok: true,
+          action: 'MUTE',
+          userId: 'user-2',
+          muteDurationHours: null,
+          muteExpiresAt: null,
+          message: 'Мут включён без срока.',
+        };
+      });
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_group_moderation_command',
@@ -6585,6 +6586,7 @@ describe('AdminService.applyManualSystemBan', () => {
         allowTargetDisplayNameRemoteLookup: false,
         fanoutAllChats: false,
         fanoutLedgerJobId: 'job-command-1',
+        onModerationEventRecorded: expect.any(Function),
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
@@ -6598,7 +6600,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Мут включён без срока.\nУчастник: [Нарушитель](max://user/user-2)',
-      moderationReleaseMessageOptions('UNMUTE', 'chat-1', 'user-2'),
+      moderationReleaseMessageOptions('UNMUTE', 'moderation-event-1'),
       {
         immediate: true,
         trafficClass: 'interactive',
@@ -7358,7 +7360,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Пользователь](max://user/user-3) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-3'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
       { immediate: true },
     );
   });

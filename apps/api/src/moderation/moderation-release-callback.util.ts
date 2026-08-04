@@ -4,36 +4,32 @@ import type {
   MaxSendMessageOptions,
 } from '../max/max-client.service';
 
-const MODERATION_RELEASE_CALLBACK_PREFIX = 'moderation-release:v1';
-const MAX_MODERATION_RELEASE_CHAT_ID_LENGTH = 128;
-const MAX_MODERATION_RELEASE_USER_ID_LENGTH = 128;
+const MODERATION_RELEASE_CALLBACK_PREFIX = 'moderation-release:v2';
+const MAX_MODERATION_RELEASE_EVENT_ID_LENGTH = 128;
 const MAX_MODERATION_RELEASE_CALLBACK_PAYLOAD_LENGTH = 512;
 
 export type ModerationReleaseAction = 'UNBAN' | 'UNMUTE';
 
 export type ModerationReleaseCallback = {
   action: ModerationReleaseAction;
-  chatId: string;
-  targetUserId: string;
+  sanctionEventId: string;
 };
 
 export function buildModerationReleaseCallbackPayload(
   action: ModerationReleaseAction,
-  chatId: string,
-  targetUserId: string,
+  sanctionEventId: string,
 ): string {
-  const normalizedChatId = normalizeModerationReleaseIdentifier(
-    chatId,
-    MAX_MODERATION_RELEASE_CHAT_ID_LENGTH,
+  const normalizedEventId = normalizeModerationReleaseIdentifier(
+    sanctionEventId,
+    MAX_MODERATION_RELEASE_EVENT_ID_LENGTH,
   );
-  const normalizedUserId = normalizeModerationReleaseUserId(targetUserId);
-  if (!normalizedChatId || !normalizedUserId) {
-    throw new Error('Moderation release chat or target user ID is invalid');
+  if (!normalizedEventId) {
+    throw new Error('Moderation release sanction event ID is invalid');
   }
 
   const payload = `${MODERATION_RELEASE_CALLBACK_PREFIX}:${action.toLowerCase()}:${encodeIdentifier(
-    normalizedChatId,
-  )}:${encodeIdentifier(normalizedUserId)}`;
+    normalizedEventId,
+  )}`;
   if (payload.length > MAX_MODERATION_RELEASE_CALLBACK_PAYLOAD_LENGTH) {
     throw new Error('Moderation release callback payload exceeds the MAX limit');
   }
@@ -52,35 +48,29 @@ export function parseModerationReleaseCallbackPayload(
     return null;
   }
 
-  const match = normalizedPayload.match(
-    /^moderation-release:v1:(unban|unmute):([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/u,
-  );
+  const match = normalizedPayload.match(/^moderation-release:v2:(unban|unmute):([A-Za-z0-9_-]+)$/u);
   if (!match) {
     return null;
   }
 
-  let decodedChatId: string;
-  let decodedUserId: string;
+  let decodedEventId: string;
   try {
-    decodedChatId = decodeIdentifier(match[2]);
-    decodedUserId = decodeIdentifier(match[3]);
+    decodedEventId = decodeIdentifier(match[2]);
   } catch {
     return null;
   }
 
-  const chatId = normalizeModerationReleaseIdentifier(
-    decodedChatId,
-    MAX_MODERATION_RELEASE_CHAT_ID_LENGTH,
+  const sanctionEventId = normalizeModerationReleaseIdentifier(
+    decodedEventId,
+    MAX_MODERATION_RELEASE_EVENT_ID_LENGTH,
   );
-  const targetUserId = normalizeModerationReleaseUserId(decodedUserId);
-  if (!chatId || !targetUserId) {
+  if (!sanctionEventId) {
     return null;
   }
 
   const canonicalPayload = buildModerationReleaseCallbackPayload(
     match[1] === 'unban' ? 'UNBAN' : 'UNMUTE',
-    chatId,
-    targetUserId,
+    sanctionEventId,
   );
   if (canonicalPayload !== normalizedPayload) {
     return null;
@@ -88,8 +78,7 @@ export function parseModerationReleaseCallbackPayload(
 
   return {
     action: match[1] === 'unban' ? 'UNBAN' : 'UNMUTE',
-    chatId,
-    targetUserId,
+    sanctionEventId,
   };
 }
 
@@ -100,11 +89,7 @@ export function withModerationReleaseButton(
   const button: MaxCallbackButton = {
     type: 'callback',
     text: release.action === 'UNBAN' ? 'Разбанить' : 'Снять мут',
-    payload: buildModerationReleaseCallbackPayload(
-      release.action,
-      release.chatId,
-      release.targetUserId,
-    ),
+    payload: buildModerationReleaseCallbackPayload(release.action, release.sanctionEventId),
     intent: 'positive',
   };
   const existingRows = readExistingButtonRows(options);
@@ -126,10 +111,6 @@ function readExistingButtonRows(
   }
 
   return options?.button ? [[options.button]] : [];
-}
-
-function normalizeModerationReleaseUserId(value: string): string | null {
-  return normalizeModerationReleaseIdentifier(value, MAX_MODERATION_RELEASE_USER_ID_LENGTH);
 }
 
 function normalizeModerationReleaseIdentifier(value: string, maxLength: number): string | null {

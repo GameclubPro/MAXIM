@@ -85,6 +85,7 @@ import {
   resolveAdminContactMentionTarget,
 } from '../common/admin-contact-link.util';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
   BOT_PRIVATE_MENU_APP_LINE,
   buildBotStartQuickActionText,
@@ -267,8 +268,6 @@ import {
   REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC,
   BOT_NOTICE_TOKEN_BUCKET_TTL_SEC,
   DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT,
-  ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS,
-  ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
   CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
   DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS,
   BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS,
@@ -405,7 +404,12 @@ import {
   WebhookCanonicalExecutionService,
   type WebhookCanonicalExecutionContext,
 } from './webhook-canonical-execution.service';
-import { buildLocalAdminContactDisplayNameQuery } from './local-admin-contact-display-name.query';
+import { ModerationDisplayNameResolver } from './moderation-display-name-resolver';
+import {
+  persistModerationDecisionWithoutAppliedSanction,
+  persistSanctionEventForNotice,
+  type PersistModerationEvent,
+} from './moderation-sanction-event.util';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -518,10 +522,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private webhookHotChatSkipLogAtMs = 0;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
-  private readonly adminContactDisplayNameCache = new Map<
-    string,
-    { value: string | null; expiresAtMs: number }
-  >();
+  private readonly moderationDisplayNameResolver: ModerationDisplayNameResolver;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
   private channelAutoPostStartupTimer: NodeJS.Timeout | null = null;
   private readonly channelAutoPostScanState = new Map<string, ChannelAutoPostScanState>();
@@ -611,6 +612,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly channelPostSignatureService?: ChannelPostSignatureService,
   ) {
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
+    this.moderationDisplayNameResolver = new ModerationDisplayNameResolver(
+      prisma,
+      maxClient,
+      this.logger,
+    );
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
     this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
@@ -1147,7 +1153,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const userLabel = this.formatUserLabel(senderName, senderId);
+      let userLabel = this.formatUserLabel(senderName, senderId);
       const mode = await this.resolveSystemModeSnapshot();
       this.markWebhookHotPathStage(hotPathProfile, 'system-mode');
       const degradeMode = mode.mode === 'degrade';
@@ -2090,6 +2096,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           });
         }
 
+        if (action === SanctionAction.MUTE || action === SanctionAction.BAN) {
+          userLabel = await this.resolveSanctionUserLabel(chatId, senderId, userLabel);
+        }
+
         const isFirstLinkViolation =
           topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
         const isFirstTextFilterViolation = isTextFilterHit && textFilterViolationCount24h === 1;
@@ -2366,8 +2376,58 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
+        const persistModerationEvent = (
+          metadataPatch: Record<string, unknown> = {},
+          actionOverride: SanctionAction = action,
+        ) =>
+          this.createBotModerationEvent({
+            data: {
+              chatId,
+              userId: senderId,
+              messageId,
+              eventType: EventType.MESSAGE,
+              ruleCode: topViolation.ruleCode,
+              action: actionOverride,
+              maskedExcerpt: maskText(text),
+              score: topViolation.score,
+              operator: Operator.BOT,
+              metadata: {
+                reason: topViolation.reason,
+                ...(topViolation.metadata && typeof topViolation.metadata === 'object'
+                  ? topViolation.metadata
+                  : {}),
+                action: actionOverride,
+                ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
+                  ? {
+                      linkViolationCount24h,
+                      linkEscalationWindowHours: settings.linkEscalationWindowHours,
+                    }
+                  : {}),
+                ...(isPhoneNumberHit && phoneNumbersViolationCount !== null
+                  ? {
+                      phoneNumbersViolationCount,
+                      phoneNumbersEscalationWindowHours: settings.phoneNumbersEscalationWindowHours,
+                    }
+                  : {}),
+                ...(isTextFilterHit && textFilterViolationCount24h !== null
+                  ? {
+                      textFilterViolationCount24h,
+                      textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
+                    }
+                  : {}),
+                ...(isMessageLimitsHit && messageLimitsViolationCount12h !== null
+                  ? {
+                      messageLimitsViolationCount12h,
+                      messageLimitsEscalationWindowHours: MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
+                    }
+                  : {}),
+                ...metadataPatch,
+              },
+            },
+          });
+        let sanctionEventPersisted = false;
         if (action !== SanctionAction.NONE) {
-          await this.applySanctionAction({
+          sanctionEventPersisted = await this.applySanctionAction({
             chatId,
             userId: senderId,
             action,
@@ -2405,6 +2465,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                     )
                   : undefined,
             botSpeechStyle: settings.botSpeechStyle,
+            persistModerationEvent,
           });
 
           if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.MUTE) {
@@ -2500,50 +2561,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId: senderId,
-            messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: topViolation.ruleCode,
-            action,
-            maskedExcerpt: maskText(text),
-            score: topViolation.score,
-            operator: Operator.BOT,
-            metadata: {
-              reason: topViolation.reason,
-              action,
-              ...(topViolation.metadata && typeof topViolation.metadata === 'object'
-                ? topViolation.metadata
-                : {}),
-              ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
-                ? {
-                    linkViolationCount24h,
-                    linkEscalationWindowHours: settings.linkEscalationWindowHours,
-                  }
-                : {}),
-              ...(isPhoneNumberHit && phoneNumbersViolationCount !== null
-                ? {
-                    phoneNumbersViolationCount,
-                    phoneNumbersEscalationWindowHours: settings.phoneNumbersEscalationWindowHours,
-                  }
-                : {}),
-              ...(isTextFilterHit && textFilterViolationCount24h !== null
-                ? {
-                    textFilterViolationCount24h,
-                    textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
-                  }
-                : {}),
-              ...(isMessageLimitsHit && messageLimitsViolationCount12h !== null
-                ? {
-                    messageLimitsViolationCount12h,
-                    messageLimitsEscalationWindowHours: MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
-                  }
-                : {}),
-            },
-          },
-        });
+        if (!sanctionEventPersisted) {
+          await persistModerationDecisionWithoutAppliedSanction(persistModerationEvent, action);
+        }
       };
       await this.runWebhookFollowUpWithBudget({
         stage: 'violation-follow-up',
@@ -2835,38 +2855,51 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
 
       const action = this.toSanctionAction(decision.action);
-      await this.applySanctionAction({
+      const sanctionUserLabel =
+        action === SanctionAction.MUTE || action === SanctionAction.BAN
+          ? await this.resolveSanctionUserLabel(chatId, userId, userLabel)
+          : userLabel;
+      const persistModerationEvent = (
+        metadataPatch: Record<string, unknown> = {},
+        actionOverride: SanctionAction = action,
+      ) =>
+        this.createBotModerationEvent({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: `DUPLICATE_${decision.action}`,
+            action: actionOverride,
+            maskedExcerpt: maskText(text),
+            score: 0.8,
+            operator: Operator.BOT,
+            metadata: {
+              windowSec: decision.windowSec,
+              count: decision.count,
+              threshold: decision.threshold,
+              nextStep: decision.nextAction,
+              ...metadataPatch,
+            },
+          },
+        });
+      const sanctionEventPersisted = await this.applySanctionAction({
         chatId,
         userId,
         action,
-        userLabel,
+        userLabel: sanctionUserLabel,
         messageId,
         muteDurationHours,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
         botMessageOptions: duplicateMessageOptions ?? undefined,
         botSpeechStyle,
+        persistModerationEvent,
       });
 
-      await this.createBotModerationEvent({
-        data: {
-          chatId,
-          userId,
-          messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: `DUPLICATE_${decision.action}`,
-          action,
-          maskedExcerpt: maskText(text),
-          score: 0.8,
-          operator: Operator.BOT,
-          metadata: {
-            windowSec: decision.windowSec,
-            count: decision.count,
-            threshold: decision.threshold,
-            nextStep: decision.nextAction,
-          },
-        },
-      });
+      if (!sanctionEventPersisted) {
+        await persistModerationDecisionWithoutAppliedSanction(persistModerationEvent, action);
+      }
 
       if (
         !suppressNonEssentialMessages &&
@@ -2875,7 +2908,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ) {
         try {
           const explanationText = this.buildDuplicateExplanation(
-            userLabel,
+            sanctionUserLabel,
             decision,
             muteDurationHours,
             messageDeleted,
@@ -3734,80 +3767,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    const cacheKey = `${chatId}:${target.userId}`;
-    const cached = this.adminContactDisplayNameCache.get(cacheKey);
-    if (cached && cached.expiresAtMs > Date.now()) {
-      return cached.value;
-    }
-
-    const resolved =
-      (await this.resolveLocalAdminContactDisplayName(chatId, target.userId)) ??
-      (await this.resolveRemoteAdminContactDisplayName(chatId, target.userId));
-    this.adminContactDisplayNameCache.set(cacheKey, {
-      value: resolved,
-      expiresAtMs: Date.now() + ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS,
-    });
-    return resolved;
-  }
-
-  private async resolveLocalAdminContactDisplayName(
-    chatId: string,
-    userId: string,
-  ): Promise<string | null> {
-    if (typeof this.prisma.$queryRaw !== 'function') {
-      return null;
-    }
-
-    try {
-      const rows = await this.prisma.$queryRaw<Array<{ sender_name: string | null }>>(
-        buildLocalAdminContactDisplayNameQuery(chatId, userId),
-      );
-      const senderName = Array.isArray(rows) ? rows[0]?.sender_name?.trim() : '';
-      return senderName || null;
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve local admin contact display name',
-      );
-      return null;
-    }
-  }
-
-  private async resolveRemoteAdminContactDisplayName(
-    chatId: string,
-    userId: string,
-  ): Promise<string | null> {
-    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
-    if (!loadProfiles) {
-      return null;
-    }
-
-    try {
-      const profiles = await raceWithTimeout({
-        operation: loadProfiles(chatId, [userId], {
-          trafficClass: 'interactive',
-          actionHealthLane: 'background',
-        }),
-        timeoutMs: ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
-        onTimeout: () => new Map(),
-      });
-      const displayName = profiles.get(userId)?.displayName?.trim() ?? '';
-      return displayName || null;
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve remote admin contact display name',
-      );
-      return null;
-    }
+    return this.moderationDisplayNameResolver.resolve(chatId, target.userId);
   }
 
   private getAdminContactValidationTokens(): readonly string[] {
@@ -3818,12 +3778,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private formatUserLabel(senderName?: string, userId?: string): string {
-    const normalized = typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
-    const safe = normalized.length > 0 ? this.escapeMaxMarkdownText(normalized) : 'Пользователь';
+    const normalized = normalizeMaxUserDisplayName(senderName, userId);
+    const safe = normalized ? this.escapeMaxMarkdownText(normalized) : 'Пользователь';
     if (typeof userId === 'string' && userId.trim().length > 0) {
       return `[${safe}](max://user/${encodeURIComponent(userId)})`;
     }
     return `**${safe}**`;
+  }
+
+  private async resolveSanctionUserLabel(
+    chatId: string,
+    userId: string,
+    currentLabel: string,
+  ): Promise<string> {
+    if (currentLabel !== this.formatUserLabel(undefined, userId)) {
+      return currentLabel;
+    }
+
+    const displayName = await this.moderationDisplayNameResolver.resolve(chatId, userId);
+    return this.formatUserLabel(displayName ?? undefined, userId);
   }
 
   private async applySanctionAction(params: {
@@ -3839,7 +3812,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     sanctionNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
     trackAsGlobalSpammer?: boolean;
-  }) {
+    persistModerationEvent: PersistModerationEvent;
+  }): Promise<boolean> {
     const {
       chatId,
       userId,
@@ -3853,6 +3827,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sanctionNoticeText,
       botSpeechStyle,
       trackAsGlobalSpammer = true,
+      persistModerationEvent,
     } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       this.logger.warn(
@@ -3864,37 +3839,59 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Skipped sanction for configured MAX bot user',
       );
-      return;
+      return false;
     }
 
     if (action === SanctionAction.MUTE) {
-      await this.rememberActiveMuteState(chatId, userId, {
-        eventId: `runtime:${chatId}:${userId}:${Date.now()}`,
-        issuedAt: new Date(),
-        expiresAt: new Date(Date.now() + muteDurationHours * 60 * 60 * 1000),
-        durationHours: muteDurationHours,
+      const effectiveMuteDurationHours = this.readMuteDurationHoursFromMetadata(
+        null,
+        muteDurationHours,
+      );
+      const issuedAt = new Date();
+      const expiresAt = new Date(issuedAt.getTime() + effectiveMuteDurationHours * 60 * 60 * 1000);
+      const eventPersistence = await persistSanctionEventForNotice({
+        persistModerationEvent,
+        metadata: {
+          muteDurationHours: effectiveMuteDurationHours,
+          muteExpiresAt: expiresAt.toISOString(),
+          mutePermanent: false,
+          sanctionApplied: true,
+        },
+        actionLabel: 'mute',
+        chatId,
+        userId,
+        messageId,
+        logger: this.logger,
+      });
+      const muteStateCached = await this.rememberActiveMuteState(chatId, userId, {
+        eventId: eventPersistence.eventId ?? `runtime:${chatId}:${userId}:${issuedAt.getTime()}`,
+        issuedAt,
+        expiresAt,
+        durationHours: effectiveMuteDurationHours,
         permanent: false,
       });
+      if (!eventPersistence.persisted && !muteStateCached) {
+        return false;
+      }
       await this.sendMuteNotice({
         chatId,
         userId,
         messageId,
         userLabel,
-        muteDurationHours,
+        muteDurationHours: effectiveMuteDurationHours,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
         botMessageOptions,
         sanctionNoticeText,
         botSpeechStyle,
+        sanctionEventId: eventPersistence.eventId,
       });
-      return;
+      return true;
     }
 
     if (action !== SanctionAction.BAN) {
-      return;
+      return false;
     }
-
-    await this.rememberInactiveActiveMuteState(chatId, userId);
 
     if (trackAsGlobalSpammer) {
       await this.upsertGlobalSpammerEntry({
@@ -3924,9 +3921,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!banResult.ok) {
-      return;
+      return false;
     }
 
+    await this.rememberInactiveActiveMuteState(chatId, userId);
+
+    const eventPersistence = await persistSanctionEventForNotice({
+      persistModerationEvent,
+      metadata: { sanctionApplied: true },
+      actionLabel: 'ban',
+      chatId,
+      userId,
+      messageId,
+      logger: this.logger,
+    });
     await this.sendBanNoticeMessage({
       chatId,
       userId,
@@ -3938,7 +3946,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sanctionNoticeText,
       botSpeechStyle,
       botId: banResult.botId ?? undefined,
+      sanctionEventId: eventPersistence.eventId,
     });
+    return true;
   }
 
   private async executeModerationDelete(
@@ -4157,6 +4167,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     sanctionNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
     botId?: string;
+    sanctionEventId?: string | null;
   }) {
     const {
       chatId,
@@ -4170,6 +4181,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sanctionNoticeText,
       botSpeechStyle,
       botId,
+      sanctionEventId,
     } = params;
     const noticeText =
       sanctionNoticeText ?? this.buildMuteNotice(userLabel, muteDurationHours, botSpeechStyle);
@@ -4178,11 +4190,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId,
         text: noticeText,
-        messageOptions: withModerationReleaseButton(botMessageOptions, {
-          action: 'UNMUTE',
-          chatId,
-          targetUserId: userId,
-        }),
+        messageOptions: sanctionEventId
+          ? withModerationReleaseButton(botMessageOptions, {
+              action: 'UNMUTE',
+              sanctionEventId,
+            })
+          : botMessageOptions,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
       });
@@ -4210,6 +4223,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     sanctionNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
     botId?: string;
+    sanctionEventId?: string | null;
   }) {
     const {
       chatId,
@@ -4222,6 +4236,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sanctionNoticeText,
       botSpeechStyle,
       botId,
+      sanctionEventId,
     } = params;
 
     const noticeText =
@@ -4231,11 +4246,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId,
         text: noticeText,
-        messageOptions: withModerationReleaseButton(botMessageOptions, {
-          action: 'UNBAN',
-          chatId,
-          targetUserId: userId,
-        }),
+        messageOptions: sanctionEventId
+          ? withModerationReleaseButton(botMessageOptions, {
+              action: 'UNBAN',
+              sanctionEventId,
+            })
+          : botMessageOptions,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
       });
@@ -9328,6 +9344,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      const sanctionUserLabel =
+        action === SanctionAction.MUTE || action === SanctionAction.BAN
+          ? await this.resolveSanctionUserLabel(params.chatId, params.userId, params.userLabel)
+          : params.userLabel;
+      const persistModerationEvent = (
+        metadataPatch: Record<string, unknown> = {},
+        actionOverride: SanctionAction = action,
+      ) =>
+        this.createBotModerationEvent({
+          data: {
+            chatId: params.chatId,
+            userId: params.userId,
+            messageId: params.messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+            action: actionOverride,
+            maskedExcerpt: maskText(params.text),
+            score: 1,
+            operator: Operator.BOT,
+            metadata: {
+              action: actionOverride,
+              ...requiredSubscriptionChannelMetadata,
+              missingChannelTitles: followUpMissingChannelTitles,
+              requiredSubscriptionViolationCount24h,
+              requiredSubscriptionEscalationWindowHours:
+                REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
+              ...metadataPatch,
+            },
+          },
+        });
+      let sanctionEventPersisted = false;
+
       if (action === SanctionAction.MUTE || action === SanctionAction.BAN) {
         await prepareRequiredSubscriptionNoticeContext();
       }
@@ -9336,17 +9384,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const requiredSubscriptionBanNoticeText =
           action === SanctionAction.BAN
             ? this.buildRequiredSubscriptionBanExplanation(
-                params.userLabel,
+                sanctionUserLabel,
                 followUpMissingChannelTitles,
                 params.settings.requiredSubscriptionMuteDurationHours,
                 params.settings.botSpeechStyle,
               )
             : null;
-        await this.applySanctionAction({
+        sanctionEventPersisted = await this.applySanctionAction({
           chatId: params.chatId,
           userId: params.userId,
           action,
-          userLabel: params.userLabel,
+          userLabel: sanctionUserLabel,
           messageId: params.messageId,
           muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
           deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
@@ -9361,13 +9409,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               : undefined,
           botSpeechStyle: params.settings.botSpeechStyle,
           trackAsGlobalSpammer: false,
+          persistModerationEvent,
         });
 
         if (action === SanctionAction.MUTE && canSendRequiredSubscriptionNotice) {
           try {
             await sendRequiredSubscriptionBotMessage(
               this.buildRequiredSubscriptionMuteExplanation(
-                params.userLabel,
+                sanctionUserLabel,
                 followUpMissingChannelTitles,
                 params.settings.botSpeechStyle,
               ),
@@ -9386,27 +9435,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      await this.createBotModerationEvent({
-        data: {
-          chatId: params.chatId,
-          userId: params.userId,
-          messageId: params.messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-          action,
-          maskedExcerpt: maskText(params.text),
-          score: 1,
-          operator: Operator.BOT,
-          metadata: {
-            action,
-            ...requiredSubscriptionChannelMetadata,
-            missingChannelTitles: followUpMissingChannelTitles,
-            requiredSubscriptionViolationCount24h,
-            requiredSubscriptionEscalationWindowHours:
-              REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
-          },
-        },
-      });
+      if (!sanctionEventPersisted) {
+        await persistModerationDecisionWithoutAppliedSanction(persistModerationEvent, action);
+      }
     };
 
     await this.runWebhookFollowUpWithBudget({
@@ -9725,12 +9756,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    const sanctionUserLabel =
+      action === SanctionAction.MUTE || action === SanctionAction.BAN
+        ? await this.resolveSanctionUserLabel(params.chatId, params.userId, params.userLabel)
+        : params.userLabel;
+    const persistModerationEvent = (
+      metadataPatch: Record<string, unknown> = {},
+      actionOverride: SanctionAction = action,
+    ) =>
+      this.createBotModerationEvent({
+        data: {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: INVITATION_ACCESS_RULE_CODE,
+          action: actionOverride,
+          maskedExcerpt: maskText(params.text),
+          score: 1,
+          operator: Operator.BOT,
+          metadata: {
+            action: actionOverride,
+            invitedCount: progress.invitedCount,
+            requiredCount,
+            remainingInvites: Math.max(0, requiredCount - progress.invitedCount),
+            invitationAccessViolationCount24h,
+            invitationAccessEscalationWindowHours: INVITATION_ACCESS_ESCALATION_WINDOW_HOURS,
+            ...metadataPatch,
+          },
+        },
+      });
+    let sanctionEventPersisted = false;
+
     if (action !== SanctionAction.NONE) {
-      await this.applySanctionAction({
+      sanctionEventPersisted = await this.applySanctionAction({
         chatId: params.chatId,
         userId: params.userId,
         action,
-        userLabel: params.userLabel,
+        userLabel: sanctionUserLabel,
         messageId: params.messageId,
         muteDurationHours: params.settings.invitationAccessMuteDurationHours,
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
@@ -9739,7 +9802,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         sanctionNoticeText:
           action === SanctionAction.BAN
             ? this.buildInvitationAccessBanExplanation(
-                params.userLabel,
+                sanctionUserLabel,
                 requiredCount,
                 progress.invitedCount,
                 params.settings.invitationAccessMuteDurationHours,
@@ -9748,13 +9811,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             : undefined,
         botSpeechStyle: params.settings.botSpeechStyle,
         trackAsGlobalSpammer: false,
+        persistModerationEvent,
       });
 
       if (action === SanctionAction.MUTE && canSendInvitationAccessNotice) {
         try {
           await sendInvitationAccessBotMessage(
             this.buildInvitationAccessMuteExplanation(
-              params.userLabel,
+              sanctionUserLabel,
               requiredCount,
               progress.invitedCount,
               params.settings.botSpeechStyle,
@@ -9774,27 +9838,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    await this.createBotModerationEvent({
-      data: {
-        chatId: params.chatId,
-        userId: params.userId,
-        messageId: params.messageId,
-        eventType: EventType.MESSAGE,
-        ruleCode: INVITATION_ACCESS_RULE_CODE,
-        action,
-        maskedExcerpt: maskText(params.text),
-        score: 1,
-        operator: Operator.BOT,
-        metadata: {
-          action,
-          invitedCount: progress.invitedCount,
-          requiredCount,
-          remainingInvites: Math.max(0, requiredCount - progress.invitedCount),
-          invitationAccessViolationCount24h,
-          invitationAccessEscalationWindowHours: INVITATION_ACCESS_ESCALATION_WINDOW_HOURS,
-        },
-      },
-    });
+    if (!sanctionEventPersisted) {
+      await persistModerationDecisionWithoutAppliedSanction(persistModerationEvent, action);
+    }
 
     return true;
   }
@@ -17604,11 +17650,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     mute: ActiveMute,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
       ?.setStringWithTtl;
     if (typeof setStringWithTtl !== 'function') {
-      return;
+      return false;
     }
 
     const ttlSec = mute.permanent
@@ -17617,7 +17663,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? Math.ceil((mute.expiresAt.getTime() - Date.now()) / 1_000) + ACTIVE_MUTE_CACHE_SLACK_SEC
         : 0;
     if (!Number.isFinite(ttlSec) || ttlSec <= 0) {
-      return;
+      return false;
     }
 
     try {
@@ -17633,6 +17679,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } satisfies CachedActiveMuteState),
         ttlSec,
       );
+      return true;
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -17642,6 +17689,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to cache active mute state',
       );
+      return false;
     }
   }
 

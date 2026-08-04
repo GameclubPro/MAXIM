@@ -1006,7 +1006,7 @@ export function createPrismaMock() {
       upsert: jest.fn().mockResolvedValue(undefined),
     },
     moderationEvent: {
-      create: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn().mockResolvedValue({ id: 'moderation-event-1' }),
       count: jest.fn(),
       groupBy: jest.fn(),
       findMany: jest.fn(),

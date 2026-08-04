@@ -25,6 +25,16 @@ const MODERATION_RELEASE_ACTION_LOCK_TTL_MS = 60_000;
 
 type ManualModerationReleaseBridge = Pick<ManualModerationService, 'applyManualModerationAction'>;
 
+type ModerationReleaseSanctionEvent = {
+  id: string;
+  chatId: string;
+  userId: string;
+  action: SanctionAction;
+  ruleCode: string;
+  metadata: unknown;
+  createdAt: Date;
+};
+
 export class ModerationReleaseCallbackService {
   private readonly logger = new Logger(ModerationReleaseCallbackService.name);
   private readonly memoryLocks = new Map<string, string>();
@@ -62,7 +72,6 @@ export class ModerationReleaseCallbackService {
       !actorUserId ||
       readLowerString(update.type) !== 'message_callback' ||
       !messageChatId ||
-      messageChatId !== release.chatId ||
       !this.manualModeration
     ) {
       await acknowledgeSilently();
@@ -71,7 +80,7 @@ export class ModerationReleaseCallbackService {
 
     let actorAccess: MaxChatMemberAccess | null;
     try {
-      actorAccess = await this.maxClient.getChatMemberAccess(release.chatId, actorUserId, {
+      actorAccess = await this.maxClient.getChatMemberAccess(messageChatId, actorUserId, {
         bypassCache: true,
         trafficClass: 'critical',
         actionHealthLane: 'critical',
@@ -81,7 +90,7 @@ export class ModerationReleaseCallbackService {
     } catch (error: unknown) {
       this.logger.debug(
         {
-          chatId: release.chatId,
+          chatId: messageChatId,
           actorUserId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
@@ -96,27 +105,37 @@ export class ModerationReleaseCallbackService {
       return;
     }
 
-    const lock = await this.acquireLock(release);
+    const sanctionEvent = await this.loadSanctionEvent(release, messageChatId);
+    if (!sanctionEvent) {
+      await this.answerCallbackSafe(callbackId, 'Санкция уже снята или изменилась', botId);
+      return;
+    }
+
+    const subject = {
+      chatId: sanctionEvent.chatId,
+      targetUserId: sanctionEvent.userId,
+    };
+    const lock = await this.acquireLock(subject);
     if (!lock) {
       await acknowledgeSilently();
       return;
     }
 
     try {
-      if (!(await this.hasMatchingActiveSanction(release))) {
+      if (!(await this.hasMatchingActiveSanction(release, sanctionEvent))) {
         await this.answerCallbackSafe(callbackId, 'Санкция уже снята или изменилась', botId);
         return;
       }
 
       const result = await this.manualModeration.applyManualModerationAction(
-        release.chatId,
-        release.targetUserId,
+        sanctionEvent.chatId,
+        sanctionEvent.userId,
         {
           userId: actorUserId,
           launchBotId: botId ?? null,
           username: null,
           displayName: null,
-          chatId: release.chatId,
+          chatId: sanctionEvent.chatId,
           chatTitle: update.message?.chatTitle ?? null,
           chatType: 'chat',
         },
@@ -125,14 +144,15 @@ export class ModerationReleaseCallbackService {
         {
           actorAlreadyVerified: true,
           allowTargetDisplayNameRemoteLookup: false,
+          expectedSanctionEventId: sanctionEvent.id,
         },
       );
       await this.answerCallbackSafe(callbackId, result.message, botId);
     } catch (error: unknown) {
       this.logger.warn(
         {
-          chatId: release.chatId,
-          targetUserId: release.targetUserId,
+          chatId: sanctionEvent.chatId,
+          targetUserId: sanctionEvent.userId,
           actorUserId,
           action: release.action,
           error: error instanceof Error ? error.message : 'Unknown error',
@@ -145,12 +165,43 @@ export class ModerationReleaseCallbackService {
     }
   }
 
-  private async hasMatchingActiveSanction(release: ModerationReleaseCallback): Promise<boolean> {
+  private async loadSanctionEvent(
+    release: ModerationReleaseCallback,
+    messageChatId: string,
+  ): Promise<ModerationReleaseSanctionEvent | null> {
     const expectedAction = release.action === 'UNBAN' ? SanctionAction.BAN : SanctionAction.MUTE;
+    const event = await this.prisma.moderationEvent.findUnique({
+      where: { id: release.sanctionEventId },
+      select: {
+        id: true,
+        chatId: true,
+        userId: true,
+        action: true,
+        ruleCode: true,
+        metadata: true,
+        createdAt: true,
+      },
+    });
+
+    if (!event || event.chatId !== messageChatId || event.action !== expectedAction) {
+      return null;
+    }
+
+    return event;
+  }
+
+  private async hasMatchingActiveSanction(
+    release: ModerationReleaseCallback,
+    sanctionEvent: ModerationReleaseSanctionEvent,
+  ): Promise<boolean> {
+    if (release.action === 'UNMUTE' && !this.isActiveMuteEvent(sanctionEvent)) {
+      return false;
+    }
+
     const latestEvent = await this.prisma.moderationEvent.findFirst({
       where: {
-        chatId: release.chatId,
-        userId: release.targetUserId,
+        chatId: sanctionEvent.chatId,
+        userId: sanctionEvent.userId,
         OR: [
           { action: { in: [SanctionAction.BAN, SanctionAction.MUTE] } },
           { ruleCode: { in: ['MANUAL_UNBAN', 'MANUAL_UNMUTE'] } },
@@ -158,18 +209,29 @@ export class ModerationReleaseCallbackService {
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: {
-        action: true,
-        ruleCode: true,
+        id: true,
       },
     });
 
-    return latestEvent?.action === expectedAction;
+    return latestEvent?.id === sanctionEvent.id;
   }
 
-  private async acquireLock(
-    release: ModerationReleaseCallback,
-  ): Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null> {
-    const key = this.buildLockKey(release);
+  private isActiveMuteEvent(event: ModerationReleaseSanctionEvent): boolean {
+    const metadata = asRecord(event.metadata);
+    if (metadata?.mutePermanent === true) {
+      return true;
+    }
+
+    const expiresAt = readString(metadata?.muteExpiresAt);
+    const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
+  }
+
+  private async acquireLock(subject: {
+    chatId: string;
+    targetUserId: string;
+  }): Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null> {
+    const key = this.buildLockKey(subject);
     const acquireLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
       ?.acquireLock;
     if (typeof acquireLock === 'function' && this.redisCounter) {
@@ -183,8 +245,8 @@ export class ModerationReleaseCallbackService {
       } catch (error: unknown) {
         this.logger.warn(
           {
-            chatId: release.chatId,
-            targetUserId: release.targetUserId,
+            chatId: subject.chatId,
+            targetUserId: subject.targetUserId,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
           'Failed to acquire moderation release callback lock',
@@ -226,11 +288,11 @@ export class ModerationReleaseCallbackService {
     }
   }
 
-  private buildLockKey(release: ModerationReleaseCallback): string {
+  private buildLockKey(subject: { chatId: string; targetUserId: string }): string {
     const digest = createHash('sha256')
-      .update(`${release.chatId}\u0000${release.targetUserId}`)
+      .update(`${subject.chatId}\u0000${subject.targetUserId}`)
       .digest('hex');
-    return `moderation-release-action:v1:${digest}`;
+    return `moderation-release-action:v2:${digest}`;
   }
 
   private async answerCallbackSafe(
@@ -265,4 +327,10 @@ function readString(value: unknown): string | null {
 
 function readLowerString(value: unknown): string | null {
   return readString(value)?.toLowerCase() ?? null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }

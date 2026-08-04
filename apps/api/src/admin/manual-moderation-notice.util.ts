@@ -23,6 +23,7 @@ export async function sendManualBanChatNotice(
   params: {
     chatId: string;
     targetUserId: string;
+    sanctionEventId: string;
     targetDisplayName?: string | null;
     source: AdminActionSource;
     removedOnly: boolean;
@@ -49,8 +50,7 @@ export async function sendManualBanChatNotice(
         { textFormat: 'markdown' },
         {
           action: 'UNBAN',
-          chatId: params.chatId,
-          targetUserId: params.targetUserId,
+          sanctionEventId: params.sanctionEventId,
         },
       ),
       {

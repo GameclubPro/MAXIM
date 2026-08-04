@@ -6,34 +6,43 @@ import {
 
 describe('moderation release callback', () => {
   it.each([
-    ['UNBAN', '613002203036_5'],
-    ['UNMUTE', 'user:with/slash'],
-  ] as const)('round-trips %s payloads', (action, targetUserId) => {
-    const payload = buildModerationReleaseCallbackPayload(action, 'chat-1', targetUserId);
+    ['UNBAN', 'sanction-event-ban-1'],
+    ['UNMUTE', 'sanction:event/with-slash'],
+  ] as const)('round-trips v2 %s payloads', (action, sanctionEventId) => {
+    const payload = buildModerationReleaseCallbackPayload(action, sanctionEventId);
 
     expect(parseModerationReleaseCallbackPayload(payload)).toEqual({
       action,
-      chatId: 'chat-1',
-      targetUserId,
+      sanctionEventId,
     });
+  });
+
+  it('rejects legacy v1 payloads', () => {
+    expect(
+      parseModerationReleaseCallbackPayload(
+        'moderation-release:v1:unban:Y2hhdC0x:dXNlci0x',
+      ),
+    ).toBeNull();
   });
 
   it('rejects malformed and non-canonical payloads', () => {
     expect(
-      parseModerationReleaseCallbackPayload('moderation-release:v1:ban:Y2hhdC0x:dXNlci0x'),
+      parseModerationReleaseCallbackPayload('moderation-release:v2:ban:c2FuY3Rpb24tZXZlbnQtMQ'),
     ).toBeNull();
     expect(
-      parseModerationReleaseCallbackPayload('moderation-release:v1:unban:***:dXNlci0x'),
+      parseModerationReleaseCallbackPayload('moderation-release:v2:unban:***'),
     ).toBeNull();
     expect(
-      parseModerationReleaseCallbackPayload('moderation-release:v1:unban:Y2hhdC0x:dXNlci0x='),
+      parseModerationReleaseCallbackPayload(
+        'moderation-release:v2:unban:c2FuY3Rpb24tZXZlbnQtMQ=',
+      ),
     ).toBeNull();
   });
 
-  it('rejects a callback whose encoded identifiers exceed the MAX payload limit', () => {
-    expect(() =>
-      buildModerationReleaseCallbackPayload('UNBAN', 'я'.repeat(128), 'ю'.repeat(128)),
-    ).toThrow('Moderation release callback payload exceeds the MAX limit');
+  it('rejects a callback whose encoded event ID exceeds the MAX payload limit', () => {
+    expect(() => buildModerationReleaseCallbackPayload('UNBAN', '界'.repeat(128))).toThrow(
+      'Moderation release callback payload exceeds the MAX limit',
+    );
   });
 
   it('appends the release action after existing notice buttons', () => {
@@ -46,7 +55,7 @@ describe('moderation release callback', () => {
           },
           textFormat: 'markdown',
         },
-        { action: 'UNMUTE', chatId: 'chat-1', targetUserId: 'user-1' },
+        { action: 'UNMUTE', sanctionEventId: 'sanction-event-mute-1' },
       ),
     ).toEqual({
       buttons: [
@@ -60,7 +69,7 @@ describe('moderation release callback', () => {
           {
             type: 'callback',
             text: 'Снять мут',
-            payload: buildModerationReleaseCallbackPayload('UNMUTE', 'chat-1', 'user-1'),
+            payload: buildModerationReleaseCallbackPayload('UNMUTE', 'sanction-event-mute-1'),
             intent: 'positive',
           },
         ],

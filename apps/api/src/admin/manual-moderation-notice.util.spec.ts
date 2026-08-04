@@ -16,6 +16,7 @@ describe('manual moderation notice', () => {
       {
         chatId: 'chat-1',
         targetUserId: 'user-3',
+        sanctionEventId: 'sanction-event-ban-1',
         targetDisplayName: displayName,
         source: 'miniapp',
         removedOnly: false,
@@ -31,7 +32,7 @@ describe('manual moderation notice', () => {
             {
               type: 'callback',
               text: 'Разбанить',
-              payload: buildModerationReleaseCallbackPayload('UNBAN', 'chat-1', 'user-3'),
+              payload: buildModerationReleaseCallbackPayload('UNBAN', 'sanction-event-ban-1'),
               intent: 'positive',
             },
           ],

@@ -22,14 +22,19 @@ describe('AdminService global mute group command', () => {
       undefined,
       adminManualFanoutQueue as never,
     );
-    const sourceMute = jest.spyOn(service, 'applyManualModerationAction').mockResolvedValue({
-      ok: true,
-      action: 'MUTE',
-      userId: 'user-2',
-      muteDurationHours: 24,
-      muteExpiresAt: '2026-07-21T12:00:00.000Z',
-      message: 'Мут включён на 24 ч.',
-    });
+    const sourceMute = jest
+      .spyOn(service, 'applyManualModerationAction')
+      .mockImplementation(async (_chatId, _targetUserId, _actor, _body, _source, options) => {
+        options?.onModerationEventRecorded?.('sanction-event-mute-1');
+        return {
+          ok: true,
+          action: 'MUTE',
+          userId: 'user-2',
+          muteDurationHours: 24,
+          muteExpiresAt: '2026-07-21T12:00:00.000Z',
+          message: 'Мут включён на 24 ч.',
+        };
+      });
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_group_moderation_command',
@@ -71,7 +76,7 @@ describe('AdminService global mute group command', () => {
             {
               type: 'callback',
               text: 'Снять мут',
-              payload: buildModerationReleaseCallbackPayload('UNMUTE', 'chat-1', 'user-2'),
+              payload: buildModerationReleaseCallbackPayload('UNMUTE', 'sanction-event-mute-1'),
               intent: 'positive',
             },
           ],

@@ -18,6 +18,7 @@ import {
 } from './webhook-canonical-execution.service';
 import { RuleEngineService } from './rule-engine.service.impl';
 import {
+  ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
   DEVELOPER_FORCED_GLOBAL_SPAMMER_HOT_PATH_TIMEOUT_MS,
   DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
   GLOBAL_SPAMMER_CONFIRMED_FANOUT_EPISODE_THRESHOLD,
@@ -135,8 +136,8 @@ function muteNotice(name: string, duration: string): string {
   return `${userMention(name)}, мут включён на ${duration}. До конца срока новые сообщения будут удаляться.`;
 }
 
-function permanentBanNotice(name: string): string {
-  return `${userMention(name)}, бан включён до ручного снятия.`;
+function permanentBanNotice(name: string, userId = 'user-1'): string {
+  return `${userMention(name, userId)}, бан включён до ручного снятия.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
@@ -485,6 +486,102 @@ function createUpdate(): MaxUpdate {
       createdAt: new Date().toISOString(),
     },
     raw: {},
+  };
+}
+
+function createNumericSenderNameUpdate(): MaxUpdate {
+  return new WebhookParser().parse({
+    update_type: 'message_created',
+    timestamp: '2026-08-04T12:00:00.000Z',
+    message: {
+      sender_name: '195714583',
+      sender: {
+        user_id: 195714583,
+      },
+      recipient: {
+        chat_id: 'chat-1',
+        chat_type: 'chat',
+      },
+      body: {
+        mid: 'msg-numeric-sender-1',
+        text: 'https://blocked.example',
+      },
+      timestamp: '2026-08-04T12:00:00.000Z',
+    },
+  });
+}
+
+function createNumericSenderLinkBanHarness(
+  options: {
+    localRows?: Array<{ sender_name: string | null }>;
+    getChatMemberProfiles?: jest.Mock;
+    banMember?: jest.Mock;
+  } = {},
+) {
+  const prisma = {
+    $queryRaw: jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        extractSqlText(query).includes('chat_user_display_names') ? (options.localRows ?? []) : [],
+      ),
+    chat: {
+      upsert: jest.fn().mockResolvedValue({
+        id: 'chat-1',
+        title: 'Chat 1',
+        settings: createSettings({
+          linkBotMessageEnabled: false,
+          linkBanEnabled: true,
+          muteDurationHours: 12,
+        }),
+        domains: [],
+      }),
+    },
+    violation: {
+      create: jest.fn(),
+      count: jest.fn().mockResolvedValue(3),
+    },
+    moderationEvent: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      create: jest
+        .fn()
+        .mockResolvedValueOnce({ id: 'delete-event-numeric-sender' })
+        .mockResolvedValueOnce({ id: 'sanction-event-numeric-sender' }),
+    },
+    webhookEvent: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+  };
+  const ruleEngine = {
+    detect: jest.fn().mockResolvedValue({
+      violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+    }),
+  };
+  const sanctionService = {
+    resolveAction: jest.fn(),
+  };
+  const maxClient = {
+    deleteMessage: jest.fn(),
+    sendMessage: jest.fn(),
+    kickMember: jest.fn(),
+    banMember: options.banMember ?? jest.fn().mockResolvedValue(undefined),
+    notifyModerators: jest.fn(),
+    getChatMemberProfiles: options.getChatMemberProfiles ?? jest.fn().mockResolvedValue(new Map()),
+  };
+  const service = new ModerationService(
+    prisma as never,
+    ruleEngine as never,
+    sanctionService as never,
+    maxClient as never,
+  );
+
+  return {
+    service,
+    prisma,
+    ruleEngine,
+    sanctionService,
+    maxClient,
+    update: createNumericSenderNameUpdate(),
   };
 }
 
@@ -1206,16 +1303,14 @@ function createGroupRulesCallbackUpdate(options: { botId?: string } = {}): MaxUp
 
 function createModerationReleaseCallbackUpdate(params: {
   action: 'UNBAN' | 'UNMUTE';
-  targetUserId?: string;
-  payloadChatId?: string;
+  sanctionEventId?: string;
   messageChatId?: string;
   actorUserId?: string | null;
   callbackId?: string;
   updateId?: string;
 }): MaxUpdate {
-  const payloadChatId = params.payloadChatId ?? 'chat-1';
-  const messageChatId = params.messageChatId ?? payloadChatId;
-  const targetUserId = params.targetUserId ?? 'Target-User-1';
+  const sanctionEventId = params.sanctionEventId ?? 'sanction-event-1';
+  const messageChatId = params.messageChatId ?? 'chat-1';
   const actorUserId = params.actorUserId === undefined ? 'admin-1' : params.actorUserId;
   const callbackId = params.callbackId ?? 'callback-release-1';
 
@@ -1235,7 +1330,7 @@ function createModerationReleaseCallbackUpdate(params: {
       update_type: 'message_callback',
       callback: {
         callback_id: callbackId,
-        payload: buildModerationReleaseCallbackPayload(params.action, payloadChatId, targetUserId),
+        payload: buildModerationReleaseCallbackPayload(params.action, sanctionEventId),
         ...(actorUserId
           ? {
               user: {
@@ -8119,11 +8214,20 @@ describe('ModerationService', () => {
   ] as const)(
     'allows a current chat admin to apply %s from a sanction notice',
     async (action, sanctionAction, notification) => {
+      const sanctionEventId = `sanction-event-${action.toLowerCase()}`;
       const prisma = {
         moderationEvent: {
-          findFirst: jest.fn().mockResolvedValue({
+          findUnique: jest.fn().mockResolvedValue({
+            id: sanctionEventId,
+            chatId: 'chat-1',
+            userId: 'Target-User-ABC',
             action: sanctionAction,
             ruleCode: action === 'UNBAN' ? 'AUTO_BAN' : 'AUTO_MUTE',
+            metadata: action === 'UNMUTE' ? { mutePermanent: true } : {},
+            createdAt: new Date('2026-08-04T12:00:00.000Z'),
+          }),
+          findFirst: jest.fn().mockResolvedValue({
+            id: sanctionEventId,
           }),
         },
       };
@@ -8157,7 +8261,7 @@ describe('ModerationService', () => {
       await service.handleUpdate(
         createModerationReleaseCallbackUpdate({
           action,
-          targetUserId: 'Target-User-ABC',
+          sanctionEventId,
         }),
       );
 
@@ -8167,6 +8271,18 @@ describe('ModerationService', () => {
         actionHealthLane: 'critical',
         sourceTag: 'moderation_sanction',
         botId: 'bot-1',
+      });
+      expect(prisma.moderationEvent.findUnique).toHaveBeenCalledWith({
+        where: { id: sanctionEventId },
+        select: {
+          id: true,
+          chatId: true,
+          userId: true,
+          action: true,
+          ruleCode: true,
+          metadata: true,
+          createdAt: true,
+        },
       });
       expect(prisma.moderationEvent.findFirst).toHaveBeenCalledWith({
         where: {
@@ -8179,8 +8295,7 @@ describe('ModerationService', () => {
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         select: {
-          action: true,
-          ruleCode: true,
+          id: true,
         },
       });
       expect(manualBridge.applyManualModerationAction).toHaveBeenCalledWith(
@@ -8196,6 +8311,7 @@ describe('ModerationService', () => {
         {
           actorAlreadyVerified: true,
           allowTargetDisplayNameRemoteLookup: false,
+          expectedSanctionEventId: sanctionEventId,
         },
       );
       expect(maxClient.answerCallback).toHaveBeenCalledWith(
@@ -8213,6 +8329,7 @@ describe('ModerationService', () => {
   it('silently ignores a moderation release click from a regular chat member', async () => {
     const prisma = {
       moderationEvent: {
+        findUnique: jest.fn(),
         findFirst: jest.fn(),
       },
     };
@@ -8240,6 +8357,7 @@ describe('ModerationService', () => {
       createModerationReleaseCallbackUpdate({ action: 'UNBAN', actorUserId: 'member-1' }),
     );
 
+    expect(prisma.moderationEvent.findUnique).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
     expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
@@ -8253,12 +8371,10 @@ describe('ModerationService', () => {
     );
   });
 
-  it.each([
-    ['a missing callback actor', { actorUserId: null }],
-    ['a payload bound to another chat', { payloadChatId: 'chat-2', messageChatId: 'chat-1' }],
-  ] as const)('fails closed for %s', async (_caseName, callbackOptions) => {
+  it('fails closed for a missing callback actor', async () => {
     const prisma = {
       moderationEvent: {
+        findUnique: jest.fn(),
         findFirst: jest.fn(),
       },
     };
@@ -8280,11 +8396,12 @@ describe('ModerationService', () => {
     await service.handleUpdate(
       createModerationReleaseCallbackUpdate({
         action: 'UNMUTE',
-        ...callbackOptions,
+        actorUserId: null,
       }),
     );
 
     expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findUnique).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
     expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
@@ -8298,12 +8415,81 @@ describe('ModerationService', () => {
     );
   });
 
+  it('fails closed when a sanction event belongs to another chat', async () => {
+    const prisma = {
+      moderationEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'sanction-event-other-chat',
+          chatId: 'chat-2',
+          userId: 'Target-User-1',
+          action: SanctionAction.MUTE,
+          ruleCode: 'AUTO_MUTE',
+          metadata: { mutePermanent: true },
+          createdAt: new Date('2026-08-04T12:00:00.000Z'),
+        }),
+        findFirst: jest.fn(),
+      },
+    };
+    const maxClient = {
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'admin-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+    };
+    const manualBridge = {
+      applyManualModerationAction: jest.fn(),
+    };
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      manualBridge,
+    });
+
+    await service.handleUpdate(
+      createModerationReleaseCallbackUpdate({
+        action: 'UNMUTE',
+        sanctionEventId: 'sanction-event-other-chat',
+        messageChatId: 'chat-1',
+      }),
+    );
+
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'admin-1',
+      expect.any(Object),
+    );
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+    expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      'Санкция уже снята или изменилась',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
   it('does not let an old ban button release a newer mute', async () => {
     const prisma = {
       moderationEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'old-ban-event',
+          chatId: 'chat-1',
+          userId: 'Target-User-1',
+          action: SanctionAction.BAN,
+          ruleCode: 'AUTO_BAN',
+          metadata: {},
+          createdAt: new Date('2026-08-04T12:00:00.000Z'),
+        }),
         findFirst: jest.fn().mockResolvedValue({
-          action: SanctionAction.MUTE,
-          ruleCode: 'AUTO_MUTE',
+          id: 'newer-mute-event',
         }),
       },
     };
@@ -8327,7 +8513,12 @@ describe('ModerationService', () => {
       manualBridge,
     });
 
-    await service.handleUpdate(createModerationReleaseCallbackUpdate({ action: 'UNBAN' }));
+    await service.handleUpdate(
+      createModerationReleaseCallbackUpdate({
+        action: 'UNBAN',
+        sanctionEventId: 'old-ban-event',
+      }),
+    );
 
     expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
@@ -8343,14 +8534,22 @@ describe('ModerationService', () => {
 
   it('does not apply the same release action twice', async () => {
     let active = true;
+    const sanctionEventId = 'sanction-event-ban-once';
     const prisma = {
       moderationEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: sanctionEventId,
+          chatId: 'chat-1',
+          userId: 'Target-User-1',
+          action: SanctionAction.BAN,
+          ruleCode: 'AUTO_BAN',
+          metadata: {},
+          createdAt: new Date('2026-08-04T12:00:00.000Z'),
+        }),
         findFirst: jest
           .fn()
           .mockImplementation(async () =>
-            active
-              ? { action: SanctionAction.BAN, ruleCode: 'AUTO_BAN' }
-              : { action: SanctionAction.NONE, ruleCode: 'MANUAL_UNBAN' },
+            active ? { id: sanctionEventId } : { id: 'manual-unban-event' },
           ),
       },
     };
@@ -8385,11 +8584,16 @@ describe('ModerationService', () => {
     });
 
     await service.handleUpdate(
-      createModerationReleaseCallbackUpdate({ action: 'UNBAN', callbackId: 'callback-release-1' }),
+      createModerationReleaseCallbackUpdate({
+        action: 'UNBAN',
+        sanctionEventId,
+        callbackId: 'callback-release-1',
+      }),
     );
     await service.handleUpdate(
       createModerationReleaseCallbackUpdate({
         action: 'UNBAN',
+        sanctionEventId,
         callbackId: 'callback-release-2',
         updateId: 'upd-release-2',
       }),
@@ -18533,6 +18737,188 @@ describe('ModerationService', () => {
     );
   });
 
+  describe('sanction display-name recovery', () => {
+    const numericUserId = '195714583';
+
+    it('uses a local full name for a numeric sender_name without calling MAX', async () => {
+      const harness = createNumericSenderLinkBanHarness({
+        localRows: [{ sender_name: 'Иван Петров' }],
+      });
+
+      expect(harness.update.message?.senderId).toBe(numericUserId);
+      expect(harness.update.message?.senderName).toBeUndefined();
+
+      await harness.service.handleUpdate(harness.update);
+
+      expect(harness.prisma.$queryRaw).toHaveBeenCalledTimes(2);
+      expect(harness.maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+      expectImmediateBanMember(harness.maxClient.banMember, 'chat-1', numericUserId);
+      (expect(harness.maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+        'chat-1',
+        permanentBanNotice('Иван Петров', numericUserId),
+      );
+    });
+
+    it('uses the full MAX profile name and completes lookup before banning the member', async () => {
+      const operationOrder: string[] = [];
+      const getChatMemberProfiles = jest.fn().mockImplementation(async () => {
+        operationOrder.push('profile');
+        return new Map([
+          [
+            numericUserId,
+            {
+              userId: numericUserId,
+              displayName: 'Иван Петров',
+              username: null,
+              avatarUrl: null,
+              profileUrl: null,
+            },
+          ],
+        ]);
+      });
+      const banMember = jest.fn().mockImplementation(async () => {
+        operationOrder.push('ban');
+      });
+      const harness = createNumericSenderLinkBanHarness({
+        getChatMemberProfiles,
+        banMember,
+      });
+
+      await harness.service.handleUpdate(harness.update);
+
+      expect(getChatMemberProfiles).toHaveBeenCalledWith('chat-1', [numericUserId], {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+        timeoutMs: ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: [403, 404],
+      });
+      expect(operationOrder).toEqual(['profile', 'ban']);
+      (expect(harness.maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+        'chat-1',
+        permanentBanNotice('Иван Петров', numericUserId),
+      );
+    });
+
+    it('keeps the ban and generic profile link when the MAX name lookup fails', async () => {
+      const harness = createNumericSenderLinkBanHarness({
+        getChatMemberProfiles: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+      });
+
+      await expect(harness.service.handleUpdate(harness.update)).resolves.toBeUndefined();
+
+      expectImmediateBanMember(harness.maxClient.banMember, 'chat-1', numericUserId);
+      (expect(harness.maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+        'chat-1',
+        permanentBanNotice('Пользователь', numericUserId),
+      );
+    });
+
+    it('keeps the ban and generic profile link when the MAX name lookup times out', async () => {
+      jest.useFakeTimers();
+      let markLookupStarted: (() => void) | null = null;
+      const lookupStarted = new Promise<void>((resolve) => {
+        markLookupStarted = resolve;
+      });
+      const getChatMemberProfiles = jest.fn(() => {
+        markLookupStarted?.();
+        return new Promise<Map<string, never>>(() => {
+          // Intentionally left pending to exercise the lookup timeout.
+        });
+      });
+      const harness = createNumericSenderLinkBanHarness({ getChatMemberProfiles });
+
+      try {
+        const updatePromise = harness.service.handleUpdate(harness.update);
+        await lookupStarted;
+        expect(getChatMemberProfiles).toHaveBeenCalledTimes(1);
+
+        await jest.advanceTimersByTimeAsync(ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS);
+        await expect(updatePromise).resolves.toBeUndefined();
+
+        expectImmediateBanMember(harness.maxClient.banMember, 'chat-1', numericUserId);
+        (expect(harness.maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+          'chat-1',
+          permanentBanNotice('Пользователь', numericUserId),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('records a failed ban attempt without creating an active sanction event', async () => {
+      const harness = createNumericSenderLinkBanHarness({
+        banMember: jest.fn().mockRejectedValue(new Error('MAX rejected ban')),
+      });
+
+      await expect(harness.service.handleUpdate(harness.update)).resolves.toBeUndefined();
+
+      expect(harness.prisma.moderationEvent.create).toHaveBeenLastCalledWith({
+        data: expect.objectContaining({
+          action: SanctionAction.NONE,
+          metadata: expect.objectContaining({
+            action: SanctionAction.NONE,
+            attemptedAction: SanctionAction.BAN,
+            sanctionApplied: false,
+          }),
+        }),
+      });
+      expect(harness.maxClient.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('still publishes a ban notice without a release button when event persistence fails', async () => {
+      const harness = createNumericSenderLinkBanHarness({
+        localRows: [],
+      });
+      harness.prisma.moderationEvent.create
+        .mockReset()
+        .mockResolvedValueOnce({ id: 'delete-event-before-persist-failure' })
+        .mockRejectedValueOnce(new Error('database unavailable'));
+
+      await expect(harness.service.handleUpdate(harness.update)).resolves.toBeUndefined();
+
+      expectImmediateBanMember(harness.maxClient.banMember, 'chat-1', numericUserId);
+      const noticeCall = harness.maxClient.sendMessage.mock.calls.find((call) =>
+        String(call[1]).includes('бан включён'),
+      );
+      expect(noticeCall).toBeDefined();
+      expect((noticeCall?.[2] as { buttons?: unknown } | undefined)?.buttons).toBeUndefined();
+    });
+
+    it('does not announce a mute when neither the event nor runtime state can be stored', async () => {
+      const maxClient = { sendMessage: jest.fn() };
+      const redisCounter = {
+        setStringWithTtl: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+      };
+      const service = new ModerationService(
+        {} as never,
+        {} as never,
+        {} as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await expect(
+        (service as any).applySanctionAction({
+          chatId: 'chat-1',
+          userId: numericUserId,
+          action: SanctionAction.MUTE,
+          userLabel: userMention('Пользователь', numericUserId),
+          messageId: 'message-mute-storage-failure',
+          muteDurationHours: 6,
+          deleteBotMessagesEnabled: false,
+          deleteBotMessagesDelayMinutes: 0,
+          botSpeechStyle: null,
+          persistModerationEvent: jest.fn().mockRejectedValue(new Error('database unavailable')),
+        }),
+      ).resolves.toBe(false);
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    });
+  });
+
   it('uses permanent ban flow for link BAN escalation', async () => {
     const prisma = {
       chat: {
@@ -18628,7 +19014,10 @@ describe('ModerationService', () => {
       },
       moderationEvent: {
         findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
+        create: jest
+          .fn()
+          .mockResolvedValueOnce({ id: 'delete-event-link-ban-button' })
+          .mockResolvedValueOnce({ id: 'sanction-event-link-ban-button' }),
       },
       webhookEvent: {
         findUnique: jest.fn(),
@@ -18676,7 +19065,10 @@ describe('ModerationService', () => {
             {
               type: 'callback',
               text: 'Разбанить',
-              payload: buildModerationReleaseCallbackPayload('UNBAN', 'chat-1', 'user-1'),
+              payload: buildModerationReleaseCallbackPayload(
+                'UNBAN',
+                'sanction-event-link-ban-button',
+              ),
               intent: 'positive',
             },
           ],
@@ -18784,7 +19176,10 @@ describe('ModerationService', () => {
       },
       moderationEvent: {
         findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
+        create: jest
+          .fn()
+          .mockResolvedValueOnce({ id: 'delete-event-link-mute-button' })
+          .mockResolvedValueOnce({ id: 'sanction-event-link-mute-button' }),
       },
       webhookEvent: {
         findUnique: jest.fn(),
@@ -18832,7 +19227,10 @@ describe('ModerationService', () => {
             {
               type: 'callback',
               text: 'Снять мут',
-              payload: buildModerationReleaseCallbackPayload('UNMUTE', 'chat-1', 'user-1'),
+              payload: buildModerationReleaseCallbackPayload(
+                'UNMUTE',
+                'sanction-event-link-mute-button',
+              ),
               intent: 'positive',
             },
           ],
@@ -21427,6 +21825,7 @@ describe('ModerationService', () => {
           deleteBotMessagesDelayMinutes: 3,
           botSpeechStyle: null,
           trackAsGlobalSpammer: false,
+          persistModerationEvent: jest.fn().mockResolvedValue({ id: 'sanction-event-fallback' }),
         });
 
         expect(maxClient.banMember).toHaveBeenCalledWith(

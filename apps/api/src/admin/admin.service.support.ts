@@ -236,6 +236,8 @@ export type ManualModerationExecutionOptions = {
   allowTargetDisplayNameRemoteLookup?: boolean;
   fanoutAllChats?: boolean;
   fanoutLedgerJobId?: string | null;
+  expectedSanctionEventId?: string | null;
+  onModerationEventRecorded?: (eventId: string) => void;
 };
 export type ResolveManualModerationActionBotAssignmentOptions = {
   preferredBotId?: string | null;

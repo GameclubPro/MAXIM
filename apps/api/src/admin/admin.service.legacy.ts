@@ -9224,9 +9224,14 @@ export class AdminService implements OnModuleDestroy {
       }));
     const sourceLedgerRootKey = this.readTrimmedString(options.fanoutLedgerJobId);
 
+    const expectedSanctionEventId = this.readTrimmedString(options.expectedSanctionEventId);
+    const releasedSanctionMetadata = expectedSanctionEventId
+      ? { releasedSanctionEventId: expectedSanctionEventId }
+      : {};
     const metadataBase = {
       source,
       initiatedByUserId: user.userId,
+      ...releasedSanctionMetadata,
     } as const;
     const requestedScope =
       parsed.data.scope ??
@@ -9289,6 +9294,9 @@ export class AdminService implements OnModuleDestroy {
           if (!this.isSucceededManualModerationFanoutLedgerClaim(claim)) {
             this.throwManualModerationFanoutLedgerClaimBlocked(claim, 'мут');
           }
+          if (claim.row?.moderationEventId) {
+            options.onModerationEventRecorded?.(claim.row.moderationEventId);
+          }
           return manualModerationActionResultSchema.parse({
             ok: true,
             action: 'MUTE',
@@ -9328,7 +9336,7 @@ export class AdminService implements OnModuleDestroy {
               }),
             };
 
-      await this.recordManualModerationAction({
+      const moderationEventId = await this.recordManualModerationAction({
         chatId,
         targetUserId,
         targetDisplayName,
@@ -9378,6 +9386,7 @@ export class AdminService implements OnModuleDestroy {
             }
           : {}),
       });
+      options.onModerationEventRecorded?.(moderationEventId);
 
       return manualModerationActionResultSchema.parse({
         ok: true,
@@ -9436,6 +9445,9 @@ export class AdminService implements OnModuleDestroy {
         if (!claim.claimed) {
           if (!this.isSucceededManualModerationFanoutLedgerClaim(claim)) {
             this.throwManualModerationFanoutLedgerClaimBlocked(claim, 'бан');
+          }
+          if (claim.row?.moderationEventId) {
+            options.onModerationEventRecorded?.(claim.row.moderationEventId);
           }
           return manualModerationActionResultSchema.parse({
             ok: true,
@@ -9569,7 +9581,7 @@ export class AdminService implements OnModuleDestroy {
               }),
             };
 
-      await this.recordManualModerationAction({
+      const moderationEventId = await this.recordManualModerationAction({
         chatId,
         targetUserId,
         targetDisplayName,
@@ -9614,9 +9626,11 @@ export class AdminService implements OnModuleDestroy {
             }
           : {}),
       });
+      options.onModerationEventRecorded?.(moderationEventId);
       await sendManualBanChatNotice(this.maxClient, this.logger, {
         chatId,
         targetUserId,
+        sanctionEventId: moderationEventId,
         targetDisplayName,
         source,
         removedOnly: executionMode === 'MAX_REMOVE_ONLY',
@@ -9651,6 +9665,7 @@ export class AdminService implements OnModuleDestroy {
         auditPayload: {
           userId: targetUserId,
           source,
+          ...releasedSanctionMetadata,
         },
       });
 
@@ -9725,6 +9740,7 @@ export class AdminService implements OnModuleDestroy {
         userId: targetUserId,
         source,
         mode: unbanMode,
+        ...releasedSanctionMetadata,
       },
     });
 
@@ -9838,6 +9854,9 @@ export class AdminService implements OnModuleDestroy {
       if (!claim.claimed) {
         if (!this.isSucceededManualModerationFanoutLedgerClaim(claim)) {
           this.throwManualModerationFanoutLedgerClaimBlocked(claim, 'бан');
+        }
+        if (claim.row?.moderationEventId) {
+          options.onModerationEventRecorded?.(claim.row.moderationEventId);
         }
         return manualModerationActionResultSchema.parse({
           ok: true,
@@ -9971,7 +9990,7 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    await this.recordManualModerationAction({
+    const moderationEventId = await this.recordManualModerationAction({
       chatId,
       targetUserId,
       targetDisplayName,
@@ -10009,9 +10028,11 @@ export class AdminService implements OnModuleDestroy {
           }
         : {}),
     });
+    options.onModerationEventRecorded?.(moderationEventId);
     await sendManualBanChatNotice(this.maxClient, this.logger, {
       chatId,
       targetUserId,
+      sanctionEventId: moderationEventId,
       targetDisplayName,
       source,
       removedOnly: executionMode === 'MAX_REMOVE_ONLY',
@@ -10781,6 +10802,10 @@ export class AdminService implements OnModuleDestroy {
       fanoutAllChats: job.action === 'BAN' && job.fanoutAllChats === true,
       fanoutLedgerJobId: job.jobId,
     };
+    let sanctionEventId: string | null = null;
+    commandOptions.onModerationEventRecorded = (eventId) => {
+      sanctionEventId = eventId;
+    };
     let result: ManualModerationActionResult;
     try {
       result =
@@ -10884,11 +10909,12 @@ export class AdminService implements OnModuleDestroy {
             ? `Участник ${targetLabel} удалён из чата.`
             : `Для участника ${targetLabel} включён бан.`
           : `${result.message}\nУчастник: ${targetLabel}`,
-      release: {
-        action: job.action === 'BAN' ? 'UNBAN' : 'UNMUTE',
-        chatId: job.sourceChatId,
-        targetUserId: job.targetUserId,
-      },
+      release: sanctionEventId
+        ? {
+            action: job.action === 'BAN' ? 'UNBAN' : 'UNMUTE',
+            sanctionEventId,
+          }
+        : undefined,
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
     });
@@ -11008,8 +11034,7 @@ export class AdminService implements OnModuleDestroy {
     text: string;
     release?: {
       action: ModerationReleaseAction;
-      chatId: string;
-      targetUserId: string;
+      sanctionEventId: string;
     };
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
@@ -13236,7 +13261,7 @@ export class AdminService implements OnModuleDestroy {
       executionMode?: string | null;
       metadata?: Prisma.InputJsonValue | null;
     };
-  }) {
+  }): Promise<string> {
     const {
       chatId,
       targetUserId,
@@ -13255,6 +13280,7 @@ export class AdminService implements OnModuleDestroy {
         ? { targetDisplayName: this.readTrimmedString(targetDisplayName) }
         : {}),
     };
+    let moderationEventId: string | null = null;
 
     if (fanoutLedger) {
       await this.prisma.$transaction(async (tx) => {
@@ -13269,6 +13295,7 @@ export class AdminService implements OnModuleDestroy {
             metadata: eventMetadata as Prisma.InputJsonValue,
           },
         });
+        moderationEventId = this.readTrimmedString(moderationEvent?.id);
         const auditLog = await tx.auditLog.create({
           data: {
             chatId,
@@ -13297,7 +13324,7 @@ export class AdminService implements OnModuleDestroy {
         });
       });
     } else {
-      await this.prisma.$transaction([
+      const [moderationEvent] = await this.prisma.$transaction([
         this.prisma.moderationEvent.create({
           data: {
             chatId,
@@ -13318,6 +13345,7 @@ export class AdminService implements OnModuleDestroy {
           },
         }),
       ]);
+      moderationEventId = this.readTrimmedString(moderationEvent?.id);
     }
     await this.syncManualActiveMuteRuntimeState({
       chatId,
@@ -13328,6 +13356,10 @@ export class AdminService implements OnModuleDestroy {
     this.invalidateLogsDashboardResponseCache(chatId);
     this.invalidateModerationFeedPageCache(chatId);
     this.invalidateChatParticipantsPageCache(chatId);
+    if (!moderationEventId) {
+      throw new Error('Manual moderation event was persisted without an ID');
+    }
+    return moderationEventId;
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {
