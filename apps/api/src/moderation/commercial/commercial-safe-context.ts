@@ -146,15 +146,15 @@ function hasExplicitSourceSideOfferSignal(signals: readonly string[], text: stri
       .filter((signal) => signal.startsWith('recall-source:'))
       .map((signal) => signal.slice('recall-source:'.length)),
   );
+  const hasSourceSideRetailFrame =
+    ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN.test(text) ||
+    ADS_NAMED_ECOMMERCE_SOURCE_SIDE_FRAME_PATTERN.test(text) ||
+    ADS_STOCK_PRICE_CONTACT_DELIVERY_SOURCE_SIDE_FRAME_PATTERN.test(text);
 
   return signals.some((signal) => {
     const requiresSourceSideRetailFrame =
       signal.startsWith('promo:') || signal.startsWith('goods-retail:');
     const hasTrustedSourceSideRecall = TRUSTED_SOURCE_SIDE_RETAIL_RECALL_SIGNALS.has(signal);
-    const hasSourceSideRetailFrame =
-      ADS_EXPLICIT_SOURCE_SIDE_PROMO_FRAME_PATTERN.test(text) ||
-      ADS_NAMED_ECOMMERCE_SOURCE_SIDE_FRAME_PATTERN.test(text) ||
-      ADS_STOCK_PRICE_CONTACT_DELIVERY_SOURCE_SIDE_FRAME_PATTERN.test(text);
     return (
       EXPLICIT_SOURCE_SIDE_OFFER_SIGNAL_PREFIXES.some((prefix) => signal.startsWith(prefix)) &&
       (!requiresSourceSideRetailFrame || hasSourceSideRetailFrame || hasTrustedSourceSideRecall) &&

@@ -19,6 +19,7 @@ import {
 } from './commercial-evidence';
 import {
   hasQualifiedSourceSideServiceOffer,
+  MAX_LOCAL_CONTEXT_LENGTH,
   resolveCommercialLocalContext,
   splitCommercialAssertions,
 } from './commercial-local-context';
@@ -95,6 +96,7 @@ const QUESTION_SEQUENCE_BUYER_TERMS_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:(?:я\s+)?предлагаю\s+(?:оплат[а-яё-]*|цен[ау]|бюджет|ставк[ау]|вознаграждени[а-яё-]*|услови[ея])|мо[ийя]\s+(?:бюджет|цен[аы]|ставк[аи]|услови[ея])|(?:бюджет|цен[аы]|оплат[а-яё-]*|ставк[аи]|вознаграждени[а-яё-]*|услови[ея])\s*(?:до|не\s+более)?\s*\d+)(?=$|[^\p{L}\p{N}_-])/iu;
 const QUESTION_SEQUENCE_NON_ORDER_RESPONSE_PURPOSE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:жалоб[а-яё-]*|отзыв[а-яё-]*|исследовани[а-яё-]*|опрос[а-яё-]*|протокол[а-яё-]*|архив[а-яё-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+const QUESTION_SEQUENCE_PREFILTER = /[?？]/u;
 
 function hasBareQuestionCurrentOfferCue(rawLoweredText: string): boolean {
   return (
@@ -105,7 +107,11 @@ function hasBareQuestionCurrentOfferCue(rawLoweredText: string): boolean {
 }
 
 function isThirdPartyServiceQuestionSequence(rawLoweredText: string): boolean {
-  const assertions = splitCommercialAssertions(rawLoweredText);
+  const boundedRawLoweredText = rawLoweredText.slice(0, MAX_LOCAL_CONTEXT_LENGTH);
+  if (!QUESTION_SEQUENCE_PREFILTER.test(boundedRawLoweredText)) {
+    return false;
+  }
+  const assertions = splitCommercialAssertions(boundedRawLoweredText);
   const questionIndex = findThirdPartyServiceQuestionIndex(assertions);
   return (
     assertions.length >= 2 &&
@@ -125,7 +131,11 @@ function findThirdPartyServiceQuestionIndex(assertions: readonly string[]): numb
 function extractIndependentSourceSideOfferAroundQuestionFromText(
   rawLoweredText: string,
 ): string | null {
-  const assertions = splitCommercialAssertions(rawLoweredText);
+  const boundedRawLoweredText = rawLoweredText.slice(0, MAX_LOCAL_CONTEXT_LENGTH);
+  if (!QUESTION_SEQUENCE_PREFILTER.test(boundedRawLoweredText)) {
+    return null;
+  }
+  const assertions = splitCommercialAssertions(boundedRawLoweredText);
   const questionIndex = findThirdPartyServiceQuestionIndex(assertions);
   if (assertions.length < 2 || questionIndex < 0) {
     return null;

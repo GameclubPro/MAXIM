@@ -228,6 +228,9 @@ const BETTING_GAMBLING_PREFILTER =
 const CASINO_SLOT_PROMO_PREFILTER =
   /(?:maxbetslots|слот|игров[а-яё-]*\s+процесс|больш[а-яё-]*\s+выигрыш|депозит)/iu;
 const PAID_GAMBLING_GROUP_PREFILTER = /[ᴛᥲᴦρᥰ᧐ᥴκ᧘ᥔᥙδʍʙɜᥱɯɸ]/u;
+const DISCUSSION_FUEL_CONTEXT_PREFILTER =
+  /(?:бензин|дизел|топлив|нефтепродукт|нефтеперерабатывающ|правительств|аи(?:[\s\p{Pd}-])?(?:80|92|95|98|100)|(?:^|[^\p{L}\p{N}_-])дт(?=$|[^\p{L}\p{N}_-]))/iu;
+const DISCUSSION_LOCAL_NEWS_PREFILTER = /(?:подпи[сш]|читайте|школ)/iu;
 
 export function hasCommercialSpamMarkers(text: string): boolean {
   const rawLoweredText = normalizeCommercialRawText(text.toLowerCase());
@@ -1942,6 +1945,14 @@ export function collectCommercialSignals(params: {
     );
 
   for (const { label, pattern } of ADS_COMMERCIAL_DISCUSSION_NEGATIVE_PATTERNS) {
+    if (
+      ((label === 'fuel-availability-report' || label === 'fuel-price-analysis') &&
+        !matchesQuickPattern(DISCUSSION_FUEL_CONTEXT_PREFILTER, rawLoweredText, normalizedText)) ||
+      (label === 'local-news-subscribe' &&
+        !matchesQuickPattern(DISCUSSION_LOCAL_NEWS_PREFILTER, rawLoweredText, normalizedText))
+    ) {
+      continue;
+    }
     const matchesDiscussionContext =
       label === 'attributed-commercial-report'
         ? commercialLocalContext.hasAttributedCommercialReport

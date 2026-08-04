@@ -1,7 +1,10 @@
 import type { ChatSettings } from '../../prisma/prisma-client';
 import type { CommercialCampaignContext } from '../commercial-campaign.util';
 import { createRuleDetectionContext } from '../rule-engine-detection-context';
+import { resolveCommercialThresholds } from '../rule-engine-commercial-thresholds';
 import { CommercialAdDetector } from './commercial-ad.detector';
+import { collectCommercialSignals } from './commercial-features';
+import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
 import {
   ADS_ADVANCE_AIRPORT_STATION_TRANSFER_PATTERN,
   ADS_PROFESSIONAL_PASSENGER_PARCEL_TRANSFER_PATTERN,
@@ -54,6 +57,15 @@ function detect(
     rawLoweredText: context.rawLoweredText,
     settings,
     commercialCampaignContext: options.commercialCampaignContext,
+  });
+}
+
+function collectSignals(text: string) {
+  const rawLoweredText = normalizeCommercialRawText(text);
+  return collectCommercialSignals({
+    normalizedText: normalizeCommercialText(rawLoweredText),
+    rawLoweredText,
+    profile: resolveCommercialThresholds(BASE_SETTINGS),
   });
 }
 
@@ -5533,6 +5545,18 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionable).toBe(true);
   });
 
+  it('keeps discussion prefilters aligned with commercial-normalized text', () => {
+    const fuelReport = collectSignals(
+      'Б е н з и н теперь закончился, очередь на заправке большая.',
+    );
+    const localNews = collectSignals(
+      'Новости района: магазин Орион объявил скидки на школьные товары. П о д п и ш и т е с ь на канал новостей района https://max.ru/news',
+    );
+
+    expect(fuelReport.negativeSignals).toContain('context:fuel-availability-report');
+    expect(localNews.negativeSignals).toContain('context:local-news-subscribe');
+  });
+
   it('requires a closing editorial qualifier before protecting a quoted high-risk offer', () => {
     const qualified = detect(
       'Редакция цитирует поставщика: «Кредит онлайн без отказа, оставьте заявку [url]». Это цитата, не предложение.',
@@ -5566,12 +5590,17 @@ describe('commercial pattern regressions', () => {
     const editorial = detect(
       'Новости района: магазин Орион объявил скидки на школьные товары. Подписывайтесь на канал новостей района https://max.ru/news',
     );
+    const normalizedEditorial = detect(
+      'Новости района: магазин Орион объявил скидки на школьные товары. П о д п и с ы в а й т е с ь на канал новостей района https://max.ru/news',
+    );
     const owned = detect(
       'Новости нашего магазина: новые товары каждый день. Подписывайтесь на наш канал https://max.ru/shop',
     );
 
     expect(['ALLOW', 'REVIEW_ONLY']).toContain(editorial?.actionBand ?? 'ALLOW');
     expect(editorial?.actionable ?? false).toBe(false);
+    expect(['ALLOW', 'REVIEW_ONLY']).toContain(normalizedEditorial?.actionBand ?? 'ALLOW');
+    expect(normalizedEditorial?.actionable ?? false).toBe(false);
     expect(['WARN', 'DELETE']).toContain(owned?.actionBand);
     expect(owned?.actionable).toBe(true);
   });

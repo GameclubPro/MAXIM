@@ -26,7 +26,7 @@ import {
   type CommercialLabeledPattern,
 } from './commercial-patterns';
 
-const MAX_LOCAL_CONTEXT_LENGTH = 8_000;
+export const MAX_LOCAL_CONTEXT_LENGTH = 8_000;
 const MAX_LOCAL_ASSERTIONS = 64;
 const MAX_LOCAL_WINDOW_LENGTH = 700;
 const MAX_LOCAL_WINDOW_ASSERTIONS = 6;
@@ -170,7 +170,14 @@ const PROTECTED_PRIVATE_LISTING_PATTERNS: readonly CommercialLabeledPattern[] = 
 ];
 
 export function hasQualifiedSourceSideServiceOffer(text: string): boolean {
-  const assertions = splitCommercialAssertions(text.toLowerCase());
+  const boundedText = text.toLowerCase().slice(0, MAX_LOCAL_CONTEXT_LENGTH);
+  if (
+    !SOURCE_SIDE_SERVICE_NUMERIC_PRICE_PATTERN.test(boundedText) ||
+    !SERVICE_RESPONSE_PATTERN.test(boundedText)
+  ) {
+    return false;
+  }
+  const assertions = splitCommercialAssertions(boundedText);
   for (let index = 0; index < assertions.length; index += 1) {
     const sourceAssertion = assertions[index];
     if (
