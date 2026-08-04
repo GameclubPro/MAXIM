@@ -4,6 +4,7 @@ import { MaxClientService, type MaxActionDispatchOptions } from '../max/max-clie
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
+import type { ModerationSanctionStateLeaseGuard } from '../moderation/moderation-sanction-state-lock.service';
 import { extractMaxApiErrorMessage, isMaxMessageMissingError } from './admin-chat-rules';
 import {
   MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT,
@@ -151,7 +152,11 @@ export class AdminManualMessageCleanupService {
   async deleteRecentTrackedMessages(
     chatId: string,
     targetUserId: string,
-    options: { spacingMs?: number; botId?: string } = {},
+    options: {
+      spacingMs?: number;
+      botId?: string;
+      leaseGuard?: ModerationSanctionStateLeaseGuard;
+    } = {},
   ): Promise<AdminManualMessageCleanupResult> {
     const candidateMessageIds = await this.findRecentTrackedMessageIds(chatId, targetUserId);
     const deletedMessageIds: string[] = [];
@@ -163,6 +168,7 @@ export class AdminManualMessageCleanupService {
         await sleepIfNeeded(options.spacingMs ?? 0);
       }
 
+      await options.leaseGuard?.assertOwned();
       try {
         const outcome = await this.deleteWithDurableIntent({
           chatId,

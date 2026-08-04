@@ -355,6 +355,8 @@ describe('MaxActionLedgerService', () => {
   it.each([
     ['BAN_MEMBER', 'max_api_internal_rate_limit'],
     ['KICK_MEMBER', 'max_api_circuit_open'],
+    ['BAN_MEMBER', 'moderation_sanction_state_lock_lease_lost'],
+    ['KICK_MEMBER', 'moderation_sanction_state_lock_unavailable'],
   ] as const)(
     'allows %s execution after a proven pre-dispatch %s failure',
     async (actionType, lastErrorCode) => {
@@ -758,7 +760,12 @@ describe('MaxActionLedgerService', () => {
               OR: expect.arrayContaining([
                 expect.objectContaining({
                   lastErrorCode: {
-                    in: ['max_api_circuit_open', 'max_api_internal_rate_limit'],
+                    in: [
+                      'max_api_circuit_open',
+                      'max_api_internal_rate_limit',
+                      'moderation_sanction_state_lock_lease_lost',
+                      'moderation_sanction_state_lock_unavailable',
+                    ],
                   },
                 }),
               ]),
@@ -1144,6 +1151,30 @@ describe('MaxActionLedgerService', () => {
           remoteMessageId: null,
           ambiguous: false,
           terminal: false,
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    'moderation_sanction_state_lock_lease_lost',
+    'moderation_sanction_state_lock_unavailable',
+  ])('persists the proven pre-dispatch member failure code %s', async (code) => {
+    const { service, prisma } = createService();
+    const error = Object.assign(new Error('sanction state guard rejected the dispatch'), { code });
+
+    await service.recordFailed(
+      createJob({ actionType: 'BAN_MEMBER', userId: 'user-1', text: undefined }),
+      error,
+    );
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+          ambiguous: false,
+          terminal: false,
+          lastErrorCode: code,
         }),
       }),
     );

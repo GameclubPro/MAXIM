@@ -75,4 +75,32 @@ describe('AdminManualMessageCleanupService', () => {
     expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
+
+  it('stops recent-message deletion when the sanction lease is lost between items', async () => {
+    const leaseLostError = new Error('sanction lease lost');
+    const prisma = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValue([
+          { message_id: 'message-1' },
+          { message_id: 'message-2' },
+          { message_id: 'message-3' },
+        ]),
+    };
+    const maxClient = { deleteMessage: jest.fn().mockResolvedValue(undefined) };
+    const leaseGuard = {
+      assertOwned: jest.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(leaseLostError),
+    };
+    const service = new AdminManualMessageCleanupService(prisma as never, maxClient as never);
+
+    await expect(
+      service.deleteRecentTrackedMessages('chat-1', 'user-1', { leaseGuard }),
+    ).rejects.toBe(leaseLostError);
+
+    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(2);
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'message-1', {
+      immediate: true,
+    });
+  });
 });

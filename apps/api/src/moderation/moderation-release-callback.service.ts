@@ -1,6 +1,5 @@
 import { Logger } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
-import { createHash, randomUUID } from 'node:crypto';
 import type { ManualModerationService } from '../admin/manual-moderation.service';
 import {
   MAX_API_SOURCE_TAGS,
@@ -18,12 +17,20 @@ import {
   parseModerationReleaseCallbackPayload,
   type ModerationReleaseCallback,
 } from './moderation-release-callback.util';
-import type { RedisCounterService } from './redis-counter.service';
+import {
+  ModerationSanctionStateChangedError,
+  ModerationSanctionStateLockBusyError,
+  ModerationSanctionStateLockLeaseLostError,
+  ModerationSanctionStateLockUnavailableError,
+} from './moderation-sanction-state-lock.service';
+import { ModerationSanctionStateFenceService } from './moderation-sanction-state-fence.service';
 import { CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 
-const MODERATION_RELEASE_ACTION_LOCK_TTL_MS = 60_000;
-
 type ManualModerationReleaseBridge = Pick<ManualModerationService, 'applyManualModerationAction'>;
+type ModerationSanctionStateFenceBridge = Pick<
+  ModerationSanctionStateFenceService,
+  'isSanctionEventInvalidated'
+>;
 
 type ModerationReleaseSanctionEvent = {
   id: string;
@@ -37,14 +44,16 @@ type ModerationReleaseSanctionEvent = {
 
 export class ModerationReleaseCallbackService {
   private readonly logger = new Logger(ModerationReleaseCallbackService.name);
-  private readonly memoryLocks = new Map<string, string>();
+  private readonly sanctionStateFence: ModerationSanctionStateFenceBridge;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
     private readonly manualModeration: ManualModerationReleaseBridge | null,
-    private readonly redisCounter?: RedisCounterService,
-  ) {}
+    sanctionStateFence?: ModerationSanctionStateFenceBridge,
+  ) {
+    this.sanctionStateFence = sanctionStateFence ?? new ModerationSanctionStateFenceService(prisma);
+  }
 
   async tryHandle(update: MaxUpdate): Promise<boolean> {
     const release = parseModerationReleaseCallbackPayload(extractMaxCallbackPayloadRaw(update));
@@ -111,16 +120,6 @@ export class ModerationReleaseCallbackService {
       return;
     }
 
-    const subject = {
-      chatId: sanctionEvent.chatId,
-      targetUserId: sanctionEvent.userId,
-    };
-    const lock = await this.acquireLock(subject);
-    if (!lock) {
-      await acknowledgeSilently();
-      return;
-    }
-
     try {
       if (!(await this.hasMatchingActiveSanction(release, sanctionEvent))) {
         await this.answerCallbackSafe(callbackId, 'Санкция уже снята или изменилась', botId);
@@ -149,6 +148,19 @@ export class ModerationReleaseCallbackService {
       );
       await this.answerCallbackSafe(callbackId, result.message, botId);
     } catch (error: unknown) {
+      if (error instanceof ModerationSanctionStateChangedError) {
+        await this.answerCallbackSafe(callbackId, 'Санкция уже снята или изменилась', botId);
+        return;
+      }
+      if (
+        error instanceof ModerationSanctionStateLockBusyError ||
+        error instanceof ModerationSanctionStateLockUnavailableError ||
+        error instanceof ModerationSanctionStateLockLeaseLostError
+      ) {
+        await acknowledgeSilently();
+        return;
+      }
+
       this.logger.warn(
         {
           chatId: sanctionEvent.chatId,
@@ -160,8 +172,6 @@ export class ModerationReleaseCallbackService {
         'Failed to apply moderation release callback action',
       );
       await this.answerCallbackSafe(callbackId, 'Не удалось выполнить действие', botId);
-    } finally {
-      await this.releaseLock(lock);
     }
   }
 
@@ -198,6 +208,17 @@ export class ModerationReleaseCallbackService {
       return false;
     }
 
+    if (
+      await this.sanctionStateFence.isSanctionEventInvalidated({
+        chatId: sanctionEvent.chatId,
+        userId: sanctionEvent.userId,
+        sanctionEventId: sanctionEvent.id,
+        eventCreatedAt: sanctionEvent.createdAt,
+      })
+    ) {
+      return false;
+    }
+
     const latestEvent = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId: sanctionEvent.chatId,
@@ -225,74 +246,6 @@ export class ModerationReleaseCallbackService {
     const expiresAt = readString(metadata?.muteExpiresAt);
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
-  }
-
-  private async acquireLock(subject: {
-    chatId: string;
-    targetUserId: string;
-  }): Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null> {
-    const key = this.buildLockKey(subject);
-    const acquireLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.acquireLock;
-    if (typeof acquireLock === 'function' && this.redisCounter) {
-      try {
-        const token = await acquireLock.call(
-          this.redisCounter,
-          key,
-          MODERATION_RELEASE_ACTION_LOCK_TTL_MS,
-        );
-        return token ? { key, token, mode: 'redis' } : null;
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId: subject.chatId,
-            targetUserId: subject.targetUserId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to acquire moderation release callback lock',
-        );
-        return null;
-      }
-    }
-
-    if (this.memoryLocks.has(key)) {
-      return null;
-    }
-    const token = randomUUID();
-    this.memoryLocks.set(key, token);
-    return { key, token, mode: 'memory' };
-  }
-
-  private async releaseLock(lock: {
-    key: string;
-    token: string;
-    mode: 'redis' | 'memory';
-  }): Promise<void> {
-    if (lock.mode === 'memory') {
-      if (this.memoryLocks.get(lock.key) === lock.token) {
-        this.memoryLocks.delete(lock.key);
-      }
-      return;
-    }
-
-    try {
-      await this.redisCounter?.releaseLock(lock.key, lock.token);
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          key: lock.key,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to release moderation release callback lock',
-      );
-    }
-  }
-
-  private buildLockKey(subject: { chatId: string; targetUserId: string }): string {
-    const digest = createHash('sha256')
-      .update(`${subject.chatId}\u0000${subject.targetUserId}`)
-      .digest('hex');
-    return `moderation-release-action:v2:${digest}`;
   }
 
   private async answerCallbackSafe(

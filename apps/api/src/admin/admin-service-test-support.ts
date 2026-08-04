@@ -1009,19 +1009,19 @@ export function createPrismaMock() {
       create: jest.fn().mockResolvedValue({ id: 'moderation-event-1' }),
       count: jest.fn(),
       groupBy: jest.fn(),
-      findMany: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue(null),
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
   };
-
   prisma.$transaction = jest.fn(
     (input: unknown[] | ((tx: typeof prisma) => Promise<unknown> | unknown)) => {
       if (typeof input === 'function') {
         return Promise.resolve(input(prisma));
       }
-
       return Promise.all(input as Promise<unknown>[]);
     },
   );

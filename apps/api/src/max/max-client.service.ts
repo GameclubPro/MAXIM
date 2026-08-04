@@ -161,6 +161,8 @@ const MAX_RESUMABLE_VIDEO_UPLOAD_SESSION_ATTEMPTS = 2;
 const MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION =
   'MAX API GET /chats is not supported in production; use webhook/subscription managed chat catalog instead. See https://dev.max.ru/docs-api/methods/GET/chats';
 const MAX_MESSAGE_SEND_ATTEMPTED = Symbol('max-message-send-attempted');
+const maxMemberMutationAttemptedErrors = new WeakSet<object>();
+const maxMemberMutationConfirmedErrors = new WeakSet<object>();
 
 export function wasMaxMessageSendAttempted(error: unknown): boolean {
   return Boolean(
@@ -183,6 +185,30 @@ function markMaxMessageSendAttempted(error: unknown): unknown {
   const wrapped = new Error(String(error));
   Object.defineProperty(wrapped, MAX_MESSAGE_SEND_ATTEMPTED, { value: true });
   return wrapped;
+}
+
+export function wasMaxMemberMutationAttempted(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && maxMemberMutationAttemptedErrors.has(error));
+}
+
+export function markMaxMemberMutationAttempted(error: unknown): unknown {
+  if (error && typeof error === 'object') {
+    maxMemberMutationAttemptedErrors.add(error);
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  maxMemberMutationAttemptedErrors.add(wrapped);
+  return wrapped;
+}
+
+export function wasMaxMemberMutationConfirmed(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && maxMemberMutationConfirmedErrors.has(error));
+}
+
+export function markMaxMemberMutationConfirmed(error: unknown): unknown {
+  const attemptedError = markMaxMemberMutationAttempted(error);
+  maxMemberMutationConfirmedErrors.add(attemptedError as object);
+  return attemptedError;
 }
 
 export class MaxApiRequestRejectedError extends Error {
@@ -404,6 +430,8 @@ export type MaxActionJob = QueueJobEnvelope<
 export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
+  /** Ephemeral guard evaluated after routing and ledger work, immediately before member HTTP. */
+  beforeImmediateMemberMutation?: () => Promise<void>;
   autoDeleteDelayMs?: number;
   /**
    * Caller-provided logical dedupe key. Routed actions are scoped by action only;
@@ -419,6 +447,10 @@ export type MaxActionDispatchOptions = {
   candidateBotIds?: readonly string[];
   routing?: MaxActionRoutingMetadata;
   ledgerContext?: MaxActionLedgerContext;
+};
+
+type MaxActionExecutionOptions = {
+  beforeMemberMutation?: () => Promise<void>;
 };
 
 type MaxApiRequestOptions = {
@@ -2277,7 +2309,10 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
-  async executeActionJob(job: MaxActionJob): Promise<MaxPublishedMessage | void> {
+  async executeActionJob(
+    job: MaxActionJob,
+    executionOptions: MaxActionExecutionOptions = {},
+  ): Promise<MaxPublishedMessage | void> {
     const action = {
       ...job,
       attempt: Number.isInteger(job.attempt) && job.attempt > 0 ? job.attempt : 1,
@@ -2376,6 +2411,7 @@ export class MaxClientService implements OnModuleDestroy {
           }
           await this.executeQueuedMemberModerationAction(action, mutationOptions, {
             block: false,
+            beforeMutation: executionOptions.beforeMemberMutation,
           });
           return;
 
@@ -2394,17 +2430,21 @@ export class MaxClientService implements OnModuleDestroy {
           }
           await this.executeQueuedMemberModerationAction(action, mutationOptions, {
             block: true,
+            beforeMutation: executionOptions.beforeMemberMutation,
           });
           return;
 
-        case 'UNBAN_MEMBER':
+        case 'UNBAN_MEMBER': {
           if (!action.userId) {
             throw new Error('userId is required for UNBAN_MEMBER');
           }
+          let memberMutationAttempted = false;
           try {
             await this.executeMutation(
               action.chatId,
               async () => {
+                await executionOptions.beforeMemberMutation?.();
+                memberMutationAttempted = true;
                 await this.request('post', `/chats/${action.chatId}/members`, {
                   data: {
                     user_ids: [action.userId],
@@ -2415,14 +2455,19 @@ export class MaxClientService implements OnModuleDestroy {
             );
           } catch (error: unknown) {
             if (!this.isAlreadyPresentChatMemberError(error)) {
-              throw error;
+              throw memberMutationAttempted ? markMaxMemberMutationAttempted(error) : error;
             }
           }
-          await this.actionLedgerService?.clearTerminalBanStateAfterUnban(
-            action.chatId,
-            action.userId,
-          );
+          try {
+            await this.actionLedgerService?.clearTerminalBanStateAfterUnban(
+              action.chatId,
+              action.userId,
+            );
+          } catch (error: unknown) {
+            throw memberMutationAttempted ? markMaxMemberMutationConfirmed(error) : error;
+          }
           return;
+        }
 
         case 'NOTIFY_MODERATORS':
           this.logger.warn({ chatId: action.chatId, text: action.text ?? '' }, 'Moderator alert');
@@ -4245,6 +4290,19 @@ export class MaxClientService implements OnModuleDestroy {
     payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
     options?: MaxActionDispatchOptions,
   ) {
+    const beforeImmediateMemberMutation = options?.beforeImmediateMemberMutation;
+    if (beforeImmediateMemberMutation && options?.immediate !== true) {
+      throw new Error('Member mutation guard requires immediate dispatch');
+    }
+    if (
+      beforeImmediateMemberMutation &&
+      payload.actionType !== 'KICK_MEMBER' &&
+      payload.actionType !== 'BAN_MEMBER' &&
+      payload.actionType !== 'UNBAN_MEMBER'
+    ) {
+      throw new Error('Member mutation guard requires a member moderation action');
+    }
+
     if (
       (payload.actionType === 'KICK_MEMBER' || payload.actionType === 'BAN_MEMBER') &&
       payload.userId
@@ -4344,7 +4402,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (immediate) {
-      await this.executeImmediateActionJob(job);
+      await this.executeImmediateActionJob(job, beforeImmediateMemberMutation);
       return;
     }
 
@@ -4595,16 +4653,19 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  private async executeImmediateActionJob(job: MaxActionJob): Promise<void> {
+  private async executeImmediateActionJob(
+    job: MaxActionJob,
+    beforeMemberMutation?: () => Promise<void>,
+  ): Promise<void> {
     if (!this.actionLedgerService?.isIrreversibleAction(job.actionType)) {
-      await this.executeActionJob(job);
+      await this.executeActionJob(job, { beforeMemberMutation });
       return;
     }
 
     await this.actionLedgerService.assertCanEnqueue(job);
     await this.actionLedgerService.recordStarted(job);
     try {
-      await this.executeActionJob(job);
+      await this.executeActionJob(job, { beforeMemberMutation });
     } catch (error: unknown) {
       await this.actionLedgerService.recordFailed(job, error).catch((ledgerError: unknown) => {
         this.logger.warn(
@@ -6011,12 +6072,15 @@ export class MaxClientService implements OnModuleDestroy {
   private async executeQueuedMemberModerationAction(
     action: MaxActionJob,
     mutationOptions: MaxApiRequestOptions,
-    options: { block: boolean },
+    options: { block: boolean; beforeMutation?: () => Promise<void> },
   ): Promise<void> {
+    let memberMutationAttempted = false;
     try {
       await this.executeMutation(
         action.chatId,
         async () => {
+          await options.beforeMutation?.();
+          memberMutationAttempted = true;
           await this.request('delete', `/chats/${action.chatId}/members`, {
             params: {
               user_id: action.userId,
@@ -6027,13 +6091,16 @@ export class MaxClientService implements OnModuleDestroy {
         mutationOptions,
       );
     } catch (error: unknown) {
-      if (this.isAmbiguousQueuedMutationTransportError(error)) {
+      const dispatchedError = memberMutationAttempted
+        ? markMaxMemberMutationAttempted(error)
+        : error;
+      if (this.isAmbiguousQueuedMutationTransportError(dispatchedError)) {
         throw this.createAmbiguousQueuedMutationError(
-          `Ambiguous MAX ${action.actionType} transport failure for chat ${action.chatId} user ${action.userId}: ${this.extractErrorMessage(error) || 'no HTTP status'}`,
-          error,
+          `Ambiguous MAX ${action.actionType} transport failure for chat ${action.chatId} user ${action.userId}: ${this.extractErrorMessage(dispatchedError) || 'no HTTP status'}`,
+          dispatchedError,
         );
       }
-      throw error;
+      throw dispatchedError;
     }
   }
 
@@ -6686,7 +6753,10 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private createAmbiguousQueuedMutationError(message: string, cause: unknown): UnrecoverableError {
-    return this.createUnrecoverableQueuedMutationError(message, cause);
+    const error = this.createUnrecoverableQueuedMutationError(message, cause);
+    return wasMaxMemberMutationAttempted(cause)
+      ? (markMaxMemberMutationAttempted(error) as UnrecoverableError)
+      : error;
   }
 
   private createUnrecoverableQueuedMutationError(

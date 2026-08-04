@@ -1,0 +1,1243 @@
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  markMaxMemberMutationAttempted,
+  markMaxMemberMutationConfirmed,
+  wasMaxMemberMutationAttempted,
+  wasMaxMemberMutationConfirmed,
+} from '../max/max-client.service';
+import {
+  ModerationSanctionStateChangedError,
+  ModerationSanctionStateLockLeaseLostError,
+} from '../moderation/moderation-sanction-state-lock.service';
+import { AdminService } from './admin.service';
+import {
+  createChatContextCacheMock,
+  createConfigMock,
+  createPrismaMock,
+} from './admin-service-test-support';
+
+const ADMIN_ACTOR = {
+  userId: 'admin-1',
+  username: null,
+  displayName: null,
+  chatTitle: null,
+};
+
+const VERIFIED_COMMAND_OPTIONS = {
+  actorAlreadyVerified: true,
+  targetDisplayNameHint: 'Нарушитель',
+  allowTargetDisplayNameRemoteLookup: false,
+} as const;
+
+function createService(
+  prisma: ReturnType<typeof createPrismaMock>,
+  maxClient: unknown,
+): AdminService {
+  return new AdminService(
+    prisma as never,
+    maxClient as never,
+    createChatContextCacheMock() as never,
+    createConfigMock() as never,
+  );
+}
+
+function createBanMaxClient(overrides: Record<string, unknown> = {}): Record<string, jest.Mock> {
+  return {
+    getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+      userId: 'bot-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['add_remove_members'],
+    }),
+    getChatMemberAccess: jest.fn().mockResolvedValue({
+      userId: 'user-3',
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    }),
+    cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+    banMember: jest.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as Record<string, jest.Mock>;
+}
+
+function installSanctionStateHarness(service: AdminService) {
+  const trace: string[] = [];
+  const leaseGuard = {
+    assertOwned: jest.fn().mockImplementation(async () => {
+      trace.push('guard');
+    }),
+  };
+  const preparedFence = {
+    version: 1,
+    transitionId: 'transition-1',
+    chatId: 'chat-1',
+    userId: 'user-1',
+    intendedAction: 'BAN',
+    operator: 'ADMIN',
+    source: 'test',
+    invalidatedSanctionEventIds: ['sanction-event-old'],
+  };
+  const sanctionStateLock = {
+    runExclusive: jest
+      .fn()
+      .mockImplementation(
+        async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
+          operation(leaseGuard),
+      ),
+  };
+  const sanctionStateFence = {
+    prepare: jest.fn().mockImplementation(async (params: Record<string, unknown>) => {
+      trace.push('prepare');
+      return {
+        ...preparedFence,
+        chatId: params.chatId,
+        userId: params.userId,
+        intendedAction: params.intendedAction,
+        operator: params.operator,
+        source: params.source,
+      };
+    }),
+    commit: jest.fn().mockImplementation(async () => {
+      trace.push('commit');
+    }),
+    markRemoteConfirmedEventMissing: jest.fn().mockImplementation(async () => {
+      trace.push('remote-confirmed-event-missing');
+    }),
+    abort: jest.fn().mockImplementation(async () => {
+      trace.push('abort');
+    }),
+    isSanctionEventInvalidated: jest.fn().mockResolvedValue(false),
+  };
+  (service as any).injectedModerationSanctionStateLock = sanctionStateLock;
+  (service as any).injectedModerationSanctionStateFence = sanctionStateFence;
+  return { leaseGuard, sanctionStateFence, sanctionStateLock, trace };
+}
+
+describe('AdminService sanction state ordering', () => {
+  it('rejects a sanction event invalidated by a newer fence before release side effects', async () => {
+    const prisma = createPrismaMock();
+    const expectedEventCreatedAt = new Date('2026-04-12T10:00:00.000Z');
+    prisma.moderationEvent.findUnique.mockResolvedValue({
+      id: 'ban-event-old',
+      chatId: 'chat-1',
+      userId: 'user-4',
+      action: 'BAN',
+      metadata: {},
+      createdAt: expectedEventCreatedAt,
+    });
+    prisma.moderationEvent.findMany.mockResolvedValue([
+      {
+        metadata: {
+          version: 1,
+          transitionId: 'transition-new-ban',
+          intendedAction: 'BAN',
+          invalidatedSanctionEventIds: ['ban-event-old'],
+          phase: 'COMMITTED',
+        },
+      },
+    ]);
+    prisma.moderationEvent.findFirst.mockResolvedValue({ id: 'ban-event-old' });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      cancelScheduledUnban: jest.fn(),
+      unbanMember: jest.fn(),
+    };
+    const service = createService(prisma, maxClient);
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        ADMIN_ACTOR,
+        { action: 'UNBAN' },
+        'group_command',
+        { expectedSanctionEventId: 'ban-event-old' },
+      ),
+    ).rejects.toBeInstanceOf(ModerationSanctionStateChangedError);
+
+    expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
+    expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-4',
+          ruleCode: 'SANCTION_STATE_FENCE',
+          createdAt: { gte: expectedEventCreatedAt },
+        }),
+      }),
+    );
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('aborts an unban fence when a mocked MAX error has no attempted-mutation marker', async () => {
+    const prisma = createPrismaMock();
+    const connectionReset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockRejectedValue(connectionReset),
+    };
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        ADMIN_ACTOR,
+        { action: 'UNBAN' },
+        'group_command',
+        VERIFIED_COMMAND_OPTIONS,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(maxClient.unbanMember).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ intendedAction: 'UNBAN' }),
+    );
+    expect(harness.sanctionStateFence.abort).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unban fence prepared when an attempted MAX mutation is ambiguous', async () => {
+    const prisma = createPrismaMock();
+    const attemptedConnectionReset = markMaxMemberMutationAttempted(
+      Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+    );
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockRejectedValue(attemptedConnectionReset),
+    };
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        ADMIN_ACTOR,
+        { action: 'UNBAN' },
+        'group_command',
+        VERIFIED_COMMAND_OPTIONS,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(maxClient.unbanMember).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ intendedAction: 'UNBAN' }),
+    );
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('marks an unban fence remote-confirmed when MAX confirms the mutation before failing', async () => {
+    const prisma = createPrismaMock();
+    const confirmedError = markMaxMemberMutationConfirmed(
+      new Error('terminal ban state cleanup failed'),
+    );
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockRejectedValue(confirmedError),
+    };
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        ADMIN_ACTOR,
+        { action: 'UNBAN' },
+        'group_command',
+        VERIFIED_COMMAND_OPTIONS,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(maxClient.unbanMember).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ intendedAction: 'UNBAN' }),
+    );
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('checks the sanction lease around MAX dispatch and event persistence', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient();
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    maxClient.cancelScheduledUnban.mockImplementation(async () => {
+      harness.trace.push('cancel');
+    });
+    maxClient.banMember.mockImplementation(async () => {
+      harness.trace.push('max');
+    });
+    prisma.adminGlobalSpammerExemption.deleteMany.mockImplementation(async () => {
+      harness.trace.push('exemption');
+      return { count: 1 };
+    });
+    jest
+      .spyOn(service as any, 'resolveManualBanSourceCleanupSummary')
+      .mockImplementation(async () => {
+        harness.trace.push('follow-up');
+        return {
+          candidateCount: 0,
+          deletedCount: 0,
+          pendingCount: 0,
+          failedCount: 0,
+        };
+      });
+    prisma.moderationEvent.create.mockImplementation(async ({ data }: { data: any }) => {
+      if (data.ruleCode === 'MANUAL_BAN') {
+        harness.trace.push('event');
+      }
+      return { id: 'moderation-event-guarded' };
+    });
+
+    await service.applyManualSystemBan('chat-1', 'user-3', ADMIN_ACTOR, 'group_command');
+
+    expect(harness.sanctionStateLock.runExclusive).toHaveBeenCalledWith(
+      { chatId: 'chat-1', userId: 'user-3' },
+      expect.any(Function),
+    );
+    expect(harness.sanctionStateFence.prepare).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-3',
+      intendedAction: 'BAN',
+      operator: 'ADMIN',
+      source: 'group_command',
+    });
+    expect(harness.leaseGuard.assertOwned).toHaveBeenCalledTimes(8);
+    expect(harness.trace).toEqual([
+      'guard',
+      'prepare',
+      'guard',
+      'cancel',
+      'guard',
+      'max',
+      'guard',
+      'exemption',
+      'guard',
+      'guard',
+      'follow-up',
+      'guard',
+      'event',
+      'commit',
+      'guard',
+    ]);
+    expect(harness.sanctionStateFence.commit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-3',
+        intendedAction: 'BAN',
+      }),
+      'moderation-event-guarded',
+    );
+  });
+
+  it('aborts a source BAN fence after a pre-dispatch ECONNRESET without an attempted marker', async () => {
+    const prisma = createPrismaMock();
+    prisma.moderationEvent.findFirst.mockResolvedValue({
+      id: 'sanction-event-old',
+      action: 'BAN',
+    });
+    const connectionReset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    const maxClient = createBanMaxClient({
+      banMember: jest.fn().mockRejectedValue(connectionReset),
+    });
+    const service = createService(prisma, maxClient);
+
+    await expect(
+      service.applyManualSystemBan('chat-1', 'user-3', ADMIN_ACTOR, 'group_command', {
+        ...VERIFIED_COMMAND_OPTIONS,
+        fanoutLedgerJobId: 'job-source-econnreset-1',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(
+      prisma.moderationEvent.create.mock.calls
+        .map(([input]) => input.data)
+        .filter((data) => data.ruleCode === 'SANCTION_STATE_FENCE')
+        .map((data) => data.metadata.phase),
+    ).toEqual(['PREPARED', 'ABORTED']);
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'COMMAND_SOURCE_BAN' },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'FAILED_RETRYABLE',
+        terminal: false,
+        lockToken: null,
+      }),
+    ]);
+  });
+
+  it('preserves an attempted BAN marker through the BadRequest wrapper', async () => {
+    const prisma = createPrismaMock();
+    const attemptedConnectionReset = markMaxMemberMutationAttempted(
+      Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+    );
+    const maxClient = createBanMaxClient({
+      banMember: jest.fn().mockRejectedValue(attemptedConnectionReset),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+
+    const actionError = await service
+      .applyManualModerationAction(
+        'chat-1',
+        'user-3',
+        ADMIN_ACTOR,
+        { action: 'BAN' },
+        'group_command',
+        VERIFIED_COMMAND_OPTIONS,
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(actionError).toBeInstanceOf(BadRequestException);
+    expect(wasMaxMemberMutationAttempted(actionError)).toBe(true);
+    expect((actionError as Error & { cause?: unknown }).cause).toBe(attemptedConnectionReset);
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+  });
+
+  it('preserves an attempted BAN marker through the transient wrapper', async () => {
+    const prisma = createPrismaMock();
+    const attemptedTimeout = markMaxMemberMutationAttempted(
+      Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }),
+    );
+    const maxClient = createBanMaxClient({
+      banMember: jest.fn().mockRejectedValue(attemptedTimeout),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+
+    const actionError = await service
+      .applyManualModerationAction(
+        'chat-1',
+        'user-3',
+        ADMIN_ACTOR,
+        { action: 'BAN' },
+        'group_command',
+        VERIFIED_COMMAND_OPTIONS,
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(actionError).toBeInstanceOf(ServiceUnavailableException);
+    expect(wasMaxMemberMutationAttempted(actionError)).toBe(true);
+    expect((actionError as Error & { cause?: unknown }).cause).toBe(attemptedTimeout);
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+  });
+
+  it('records a confirmed source BAN dispatch failure as remote-confirmed and ambiguous', async () => {
+    const prisma = createPrismaMock();
+    const confirmedError = markMaxMemberMutationConfirmed(
+      new Error('post-dispatch bookkeeping failed'),
+    );
+    const maxClient = createBanMaxClient({
+      banMember: jest.fn().mockRejectedValue(confirmedError),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+
+    const actionError = await service
+      .applyManualSystemBan('chat-1', 'user-3', ADMIN_ACTOR, 'group_command', {
+        ...VERIFIED_COMMAND_OPTIONS,
+        fanoutLedgerJobId: 'job-source-confirmed-1',
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(actionError).toBeInstanceOf(BadRequestException);
+    expect(wasMaxMemberMutationConfirmed(actionError)).toBe(true);
+    expect((actionError as Error & { cause?: unknown }).cause).toBe(confirmedError);
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'COMMAND_SOURCE_BAN' },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'AMBIGUOUS',
+        terminal: true,
+        lockToken: null,
+      }),
+    ]);
+  });
+
+  it('does not report success when a retried source ban command is already ambiguous', async () => {
+    const prisma = createPrismaMock();
+    const timeoutError = markMaxMemberMutationAttempted(
+      Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }),
+    );
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockRejectedValue(timeoutError),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = createService(prisma, maxClient);
+    const job = {
+      kind: 'manual_group_moderation_command' as const,
+      jobId: 'job-command-source-timeout-1',
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN' as const,
+      muteDurationHours: null,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    };
+
+    await expect(service.processManualModerationFanoutJob(job)).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+    await expect(service.processManualModerationFanoutJob(job)).resolves.toBeUndefined();
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('MAX не подтвердил результат предыдущей попытки'),
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        botId: 'bot-2',
+      }),
+    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('забанен'),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('COMMAND_SOURCE_BAN'),
+        }),
+        data: expect.objectContaining({
+          status: 'AMBIGUOUS',
+          terminal: true,
+        }),
+      }),
+    );
+  });
+
+  it('marks timed out queued manual ban fanout ambiguous and does not auto retry it', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    const timeoutError = markMaxMemberMutationAttempted(
+      Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }),
+    );
+    const maxClient = createBanMaxClient({
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      banMember: jest.fn().mockRejectedValueOnce(timeoutError).mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    });
+    const service = createService(prisma, maxClient);
+    const job = {
+      kind: 'manual_ban_fanout' as const,
+      jobId: 'job-ban-timeout-1',
+      rootIntentKey: 'command-root-timeout-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-3',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: null,
+        chatTitle: null,
+      },
+      source: 'group_command' as const,
+    };
+
+    await service.processManualModerationFanoutJob(job);
+    await service.processManualModerationFanoutJob(job);
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationKey: expect.stringContaining('FANOUT_BAN_MEMBER'),
+        }),
+        data: expect.objectContaining({
+          status: 'AMBIGUOUS',
+        }),
+      }),
+    );
+  });
+
+  it('rejects stale ledger completion and rolls back its event transaction after lease handoff', async () => {
+    const prisma = createPrismaMock();
+    const service = createService(prisma, {});
+    const operationKey = 'manual_moderation_fanout:v1:FANOUT_BAN_MEMBER:lease-handoff';
+    const claimParams = {
+      operationKey,
+      jobId: 'job-lease-handoff',
+      rootIntentKey: 'root-lease-handoff',
+      sourceKind: 'manual_ban_fanout',
+      operation: 'FANOUT_BAN_MEMBER',
+      sourceChatId: 'chat-1',
+      targetChatId: 'chat-2',
+      targetUserId: 'user-3',
+      actorUserId: 'admin-1',
+      logicalAction: 'BAN',
+      botId: 'bot-2',
+      executionMode: 'MAX_BLOCK',
+      metadata: { owner: 'first' },
+    };
+
+    const firstClaim = await (service as any).claimManualModerationFanoutLedgerEntry(claimParams);
+    await prisma.manualModerationFanoutLedgerEntry.updateMany({
+      where: { operationKey },
+      data: { lockedAt: new Date(Date.now() - 11 * 60 * 1_000) },
+    });
+    const secondClaim = await (service as any).claimManualModerationFanoutLedgerEntry({
+      ...claimParams,
+      metadata: { owner: 'second' },
+    });
+
+    expect(firstClaim).toEqual(
+      expect.objectContaining({ claimed: true, lockToken: expect.any(String) }),
+    );
+    expect(secondClaim).toEqual(
+      expect.objectContaining({ claimed: true, lockToken: expect.any(String) }),
+    );
+    expect(secondClaim.lockToken).not.toBe(firstClaim.lockToken);
+
+    await (service as any).completeManualModerationFanoutLedgerEntry({
+      operationKey,
+      lockToken: secondClaim.lockToken,
+      moderationEventId: 'event-from-current-owner',
+      auditLogId: 'audit-from-current-owner',
+      metadata: { owner: 'second' },
+    });
+    const currentOwnerResult = (
+      await prisma.manualModerationFanoutLedgerEntry.findMany({ where: { operationKey } })
+    )[0];
+
+    await expect(
+      (service as any).completeManualModerationFanoutLedgerEntry({
+        operationKey,
+        lockToken: firstClaim.lockToken,
+        status: 'FAILED_TERMINAL',
+        moderationEventId: 'event-from-stale-owner',
+        auditLogId: 'audit-from-stale-owner',
+        metadata: { owner: 'stale' },
+      }),
+    ).rejects.toBeInstanceOf(ModerationSanctionStateChangedError);
+
+    const stagedEvents: unknown[] = [];
+    const stagedAuditLogs: unknown[] = [];
+    const committedEvents: unknown[] = [];
+    const committedAuditLogs: unknown[] = [];
+    prisma.$transaction.mockImplementation(async (input: any) => {
+      if (typeof input !== 'function') {
+        return Promise.all(input);
+      }
+      const transactionClient = {
+        ...prisma,
+        moderationEvent: {
+          ...prisma.moderationEvent,
+          create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+            const event = { id: 'event-from-stale-transaction', ...data };
+            stagedEvents.push(event);
+            return event;
+          }),
+        },
+        auditLog: {
+          ...prisma.auditLog,
+          create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+            const auditLog = { id: 'audit-from-stale-transaction', ...data };
+            stagedAuditLogs.push(auditLog);
+            return auditLog;
+          }),
+        },
+      };
+      const result = await input(transactionClient);
+      committedEvents.push(...stagedEvents);
+      committedAuditLogs.push(...stagedAuditLogs);
+      return result;
+    });
+
+    await expect(
+      (service as any).recordManualModerationAction({
+        chatId: 'chat-2',
+        targetUserId: 'user-3',
+        targetDisplayName: 'Нарушитель',
+        actorUserId: 'admin-1',
+        ruleCode: 'MANUAL_BAN',
+        sanctionAction: 'BAN',
+        auditAction: 'MANUAL_BAN_MEMBER',
+        metadata: { source: 'stale-owner' },
+        auditPayload: { source: 'stale-owner' },
+        fanoutLedger: {
+          operationKey,
+          lockToken: firstClaim.lockToken,
+          botId: 'bot-2',
+          executionMode: 'MAX_BLOCK',
+          metadata: { owner: 'stale' },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ModerationSanctionStateChangedError);
+
+    expect(stagedEvents).toHaveLength(1);
+    expect(stagedAuditLogs).toHaveLength(1);
+    expect(committedEvents).toEqual([]);
+    expect(committedAuditLogs).toEqual([]);
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({ where: { operationKey } }),
+    ).toEqual([currentOwnerResult]);
+    expect(currentOwnerResult).toEqual(
+      expect.objectContaining({
+        status: 'SUCCEEDED',
+        terminal: true,
+        lockToken: null,
+        moderationEventId: 'event-from-current-owner',
+        auditLogId: 'audit-from-current-owner',
+        metadata: { owner: 'second' },
+      }),
+    );
+  });
+
+  it('aborts and terminalizes a source BAN when its lease is lost before cancellation', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient();
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const leaseLost = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-3',
+    });
+    let guardCall = 0;
+    harness.leaseGuard.assertOwned.mockImplementation(async () => {
+      harness.trace.push('guard');
+      guardCall += 1;
+      if (guardCall === 2) {
+        throw leaseLost;
+      }
+    });
+
+    const actionError = await service
+      .applyManualSystemBan('chat-1', 'user-3', ADMIN_ACTOR, 'group_command', {
+        ...VERIFIED_COMMAND_OPTIONS,
+        fanoutLedgerJobId: 'job-source-lease-lost-1',
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(actionError).toBeInstanceOf(BadRequestException);
+    expect(wasMaxMemberMutationConfirmed(actionError)).toBe(false);
+
+    expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(harness.trace).toEqual(['guard', 'prepare', 'guard', 'abort']);
+    expect(harness.sanctionStateFence.abort).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'COMMAND_SOURCE_BAN' },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'FAILED_TERMINAL',
+        terminal: true,
+      }),
+    ]);
+  });
+
+  it('stops post-BAN effects and records the missing event when the lease is lost after MAX', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient({
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const followUp = jest.spyOn(service as any, 'resolveManualBanFollowUpSummaries');
+    const leaseLost = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-3',
+    });
+    let guardCall = 0;
+    harness.leaseGuard.assertOwned.mockImplementation(async () => {
+      harness.trace.push('guard');
+      guardCall += 1;
+      if (guardCall === 4) {
+        throw leaseLost;
+      }
+    });
+
+    const actionError = await service
+      .applyManualSystemBan(
+        'chat-1',
+        'user-3',
+        ADMIN_ACTOR,
+        'private_command',
+        VERIFIED_COMMAND_OPTIONS,
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(actionError).toBeInstanceOf(ModerationSanctionStateLockLeaseLostError);
+    expect(wasMaxMemberMutationConfirmed(actionError)).toBe(true);
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledTimes(1);
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(prisma.adminGlobalSpammerExemption.deleteMany).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).toHaveBeenCalledTimes(1);
+    expect(harness.trace).toEqual([
+      'guard',
+      'prepare',
+      'guard',
+      'guard',
+      'guard',
+      'remote-confirmed-event-missing',
+    ]);
+  });
+
+  it('preserves confirmed BAN outcome when the outer lock reports lease loss after return', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient();
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const leaseLost = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-3',
+    });
+    harness.sanctionStateLock.runExclusive.mockImplementation(
+      async (
+        _subject: unknown,
+        operation: (guard: typeof harness.leaseGuard) => Promise<unknown>,
+      ) => {
+        await operation(harness.leaseGuard);
+        throw leaseLost;
+      },
+    );
+
+    const actionError = await service
+      .applyManualSystemBan(
+        'chat-1',
+        'user-3',
+        ADMIN_ACTOR,
+        'group_command',
+        VERIFIED_COMMAND_OPTIONS,
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(actionError).toBe(leaseLost);
+    expect(wasMaxMemberMutationConfirmed(actionError)).toBe(true);
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.commit).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the super-ban mute fallback after outer post-return lease loss', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient();
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const leaseLost = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-1',
+    });
+    harness.sanctionStateLock.runExclusive.mockImplementation(
+      async (
+        _subject: unknown,
+        operation: (guard: typeof harness.leaseGuard) => Promise<unknown>,
+      ) => {
+        await operation(harness.leaseGuard);
+        throw leaseLost;
+      },
+    );
+    const muteFallback = jest
+      .spyOn(service as any, 'applyDeveloperSuperBanPermanentMuteFallback')
+      .mockResolvedValue({ affected: true, mode: 'muted' });
+
+    const result = await (service as any).applyDeveloperSuperBanSourceChat({
+      job: {
+        jobId: 'developer-super-ban-post-return-lease-loss-1',
+        sourceChatId: 'chat-1',
+        commandBotId: 'bot-1',
+        targetUserId: 'user-1',
+      },
+      actor: ADMIN_ACTOR,
+      targetDisplayName: 'Нарушитель',
+    });
+
+    expect(result).toEqual({ affected: true, mode: 'removed' });
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(muteFallback).not.toHaveBeenCalled();
+    expect(wasMaxMemberMutationConfirmed(leaseLost)).toBe(true);
+    expect(harness.sanctionStateFence.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply the super-ban mute fallback after an ambiguous MAX removal attempt', async () => {
+    const prisma = createPrismaMock();
+    const attemptedTimeout = markMaxMemberMutationAttempted(
+      Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }),
+    );
+    const maxClient = createBanMaxClient({
+      banMember: jest.fn().mockRejectedValue(attemptedTimeout),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const muteFallback = jest
+      .spyOn(service as any, 'applyDeveloperSuperBanPermanentMuteFallback')
+      .mockResolvedValue({ affected: true, mode: 'muted' });
+
+    const result = await (service as any).applyDeveloperSuperBanSourceChat({
+      job: {
+        jobId: 'developer-super-ban-ambiguous-1',
+        sourceChatId: 'chat-1',
+        commandBotId: 'bot-1',
+        targetUserId: 'user-1',
+      },
+      actor: ADMIN_ACTOR,
+      targetDisplayName: 'Нарушитель',
+    });
+
+    expect(result).toEqual({ affected: false, mode: 'failed' });
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(muteFallback).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the super-ban mute fallback after an ambiguous BadRequest-wrapped attempt', async () => {
+    const prisma = createPrismaMock();
+    const attemptedConnectionReset = markMaxMemberMutationAttempted(
+      Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+    );
+    const maxClient = createBanMaxClient({
+      banMember: jest.fn().mockRejectedValue(attemptedConnectionReset),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const muteFallback = jest
+      .spyOn(service as any, 'applyDeveloperSuperBanPermanentMuteFallback')
+      .mockResolvedValue({ affected: true, mode: 'muted' });
+
+    const result = await (service as any).applyDeveloperSuperBanSourceChat({
+      job: {
+        jobId: 'developer-super-ban-bad-request-1',
+        sourceChatId: 'chat-1',
+        commandBotId: 'bot-1',
+        targetUserId: 'user-1',
+      },
+      actor: ADMIN_ACTOR,
+      targetDisplayName: 'Нарушитель',
+    });
+
+    expect(result).toEqual({ affected: false, mode: 'failed' });
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(muteFallback).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+  });
+
+  it('uses the super-ban mute fallback after an unmarked pre-dispatch failure', async () => {
+    const prisma = createPrismaMock();
+    const connectionReset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    const maxClient = createBanMaxClient({
+      banMember: jest.fn().mockRejectedValue(connectionReset),
+    });
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    const muteFallback = jest
+      .spyOn(service as any, 'applyDeveloperSuperBanPermanentMuteFallback')
+      .mockResolvedValue({ affected: true, mode: 'muted' });
+
+    const result = await (service as any).applyDeveloperSuperBanSourceChat({
+      job: {
+        jobId: 'developer-super-ban-pre-dispatch-1',
+        sourceChatId: 'chat-1',
+        commandBotId: 'bot-1',
+        targetUserId: 'user-1',
+      },
+      actor: ADMIN_ACTOR,
+      targetDisplayName: 'Нарушитель',
+    });
+
+    expect(result).toEqual({ affected: true, mode: 'muted' });
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(muteFallback).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.abort).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the super-ban mute fallback after MAX removal is confirmed', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient();
+    const service = createService(prisma, maxClient);
+    const harness = installSanctionStateHarness(service);
+    prisma.moderationEvent.create.mockImplementation(async ({ data }: { data: any }) => {
+      if (data.ruleCode === 'MANUAL_BAN') {
+        throw new Error('event persistence failed');
+      }
+      return { id: 'moderation-event-1' };
+    });
+    const muteFallback = jest
+      .spyOn(service as any, 'applyDeveloperSuperBanPermanentMuteFallback')
+      .mockResolvedValue({ affected: true, mode: 'muted' });
+
+    const result = await (service as any).applyDeveloperSuperBanSourceChat({
+      job: {
+        jobId: 'developer-super-ban-confirmed-1',
+        sourceChatId: 'chat-1',
+        commandBotId: 'bot-1',
+        targetUserId: 'user-1',
+      },
+      actor: ADMIN_ACTOR,
+      targetDisplayName: 'Нарушитель',
+    });
+
+    expect(result).toEqual({ affected: true, mode: 'removed' });
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(muteFallback).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(harness.sanctionStateFence.markRemoteConfirmedEventMissing).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a queued manual ban after MAX succeeds but event persistence fails', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.moderationEvent.findFirst.mockResolvedValue({
+      id: 'ban-event-before-fanout',
+      action: 'BAN',
+    });
+    prisma.moderationEvent.create.mockImplementation(async ({ data }: { data: any }) => {
+      if (data.ruleCode === 'MANUAL_BAN') {
+        throw new Error('event persistence failed');
+      }
+      return { id: `fence-event-${data.metadata?.phase ?? 'unknown'}` };
+    });
+    const maxClient = createBanMaxClient({
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    });
+    const service = createService(prisma, maxClient);
+    const params = {
+      jobId: 'job-ban-persist-failure-1',
+      rootIntentKey: 'command-root-persist-failure-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-3',
+      actor: {
+        ...ADMIN_ACTOR,
+        chatId: null,
+      },
+      source: 'group_command' as const,
+    };
+
+    const firstResult = await (service as any).applyManualSystemBanFanout(params);
+    const replayResult = await (service as any).applyManualSystemBanFanout(params);
+
+    expect(firstResult).toEqual(
+      expect.objectContaining({
+        removedChatIds: [],
+        failedChatIds: ['chat-2'],
+        retryableFailedChatIds: [],
+      }),
+    );
+    expect(replayResult).toEqual(
+      expect.objectContaining({
+        removedChatIds: [],
+        failedChatIds: ['chat-2'],
+        retryableFailedChatIds: [],
+      }),
+    );
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    const moderationEventCreateCalls = prisma.moderationEvent.create.mock.calls.map(
+      ([input]) => input.data,
+    );
+    expect(
+      moderationEventCreateCalls.filter((data) => data.ruleCode === 'MANUAL_BAN'),
+    ).toHaveLength(1);
+    expect(
+      moderationEventCreateCalls
+        .filter((data) => data.ruleCode === 'SANCTION_STATE_FENCE')
+        .map((data) => data.metadata.phase),
+    ).toEqual(['PREPARED', 'REMOTE_CONFIRMED_EVENT_MISSING']);
+    expect(
+      await prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'FANOUT_BAN_MEMBER' },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'AMBIGUOUS',
+        terminal: true,
+        lastError: 'event persistence failed',
+      }),
+    ]);
+  });
+
+  it('propagates lease loss from inline source BAN cleanup', async () => {
+    const service = createService(createPrismaMock(), {});
+    const leaseLost = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-3',
+    });
+    const leaseGuard = { assertOwned: jest.fn() };
+    const cleanup = jest
+      .spyOn(service as any, 'deleteRecentTrackedMessagesForManualAction')
+      .mockRejectedValue(leaseLost);
+
+    await expect(
+      (service as any).runManualBanSourceCleanup('chat-1', 'user-3', 'admin-1', {
+        leaseGuard,
+      }),
+    ).rejects.toBe(leaseLost);
+
+    expect(cleanup).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expect.objectContaining({ leaseGuard }),
+    );
+  });
+
+  it('does not swallow lease loss from inline source MUTE cleanup', async () => {
+    const service = createService(createPrismaMock(), {});
+    const leaseLost = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-3',
+    });
+    const leaseGuard = { assertOwned: jest.fn() };
+    jest.spyOn(service as any, 'enqueueManualModerationFanout').mockResolvedValue(false);
+    jest
+      .spyOn(service as any, 'resolveManualModerationActionBotAssignment')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'deleteRecentTrackedMessagesForManualAction')
+      .mockRejectedValue(leaseLost);
+
+    await expect(
+      (service as any).resolveManualMuteCommandFollowUpSummaries({
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-3',
+        actor: ADMIN_ACTOR,
+        muteDurationHours: 6,
+        muteExpiresAt: new Date('2026-08-05T00:00:00.000Z'),
+        mutePermanent: false,
+        source: 'group_command',
+        leaseGuard,
+      }),
+    ).rejects.toBe(leaseLost);
+  });
+});

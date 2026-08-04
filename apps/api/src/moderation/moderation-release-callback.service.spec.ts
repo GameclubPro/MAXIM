@@ -2,6 +2,12 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { SanctionAction } from '../prisma/prisma-client';
 import { ModerationReleaseCallbackService } from './moderation-release-callback.service';
 import { buildModerationReleaseCallbackPayload } from './moderation-release-callback.util';
+import {
+  ModerationSanctionStateChangedError,
+  ModerationSanctionStateLockBusyError,
+  ModerationSanctionStateLockLeaseLostError,
+  ModerationSanctionStateLockUnavailableError,
+} from './moderation-sanction-state-lock.service';
 
 const SANCTION_EVENT_ID = 'sanction-event-1';
 
@@ -67,6 +73,8 @@ function createHarness(
     sanctionEvent?: ReturnType<typeof createSanctionEvent>;
     latestEventId?: string;
     actorIsAdmin?: boolean;
+    manualModerationError?: Error;
+    fenceInvalidated?: boolean;
   } = {},
 ) {
   const sanctionEvent = params.sanctionEvent ?? createSanctionEvent();
@@ -87,23 +95,41 @@ function createHarness(
     }),
     answerCallback: jest.fn().mockResolvedValue(undefined),
   };
+  const releaseSideEffect = jest.fn();
   const manualModeration = {
-    applyManualModerationAction: jest.fn().mockResolvedValue({
-      ok: true,
-      action: sanctionEvent.action === SanctionAction.BAN ? 'UNBAN' : 'UNMUTE',
-      userId: sanctionEvent.userId,
-      muteDurationHours: null,
-      muteExpiresAt: null,
-      message: sanctionEvent.action === SanctionAction.BAN ? 'Блокировка снята' : 'Мут снят',
+    applyManualModerationAction: jest.fn().mockImplementation(async () => {
+      if (params.manualModerationError) {
+        throw params.manualModerationError;
+      }
+      releaseSideEffect();
+      return {
+        ok: true,
+        action: sanctionEvent.action === SanctionAction.BAN ? 'UNBAN' : 'UNMUTE',
+        userId: sanctionEvent.userId,
+        muteDurationHours: null,
+        muteExpiresAt: null,
+        message: sanctionEvent.action === SanctionAction.BAN ? 'Блокировка снята' : 'Мут снят',
+      };
     }),
+  };
+  const sanctionStateFence = {
+    isSanctionEventInvalidated: jest.fn().mockResolvedValue(params.fenceInvalidated === true),
   };
   const service = new ModerationReleaseCallbackService(
     prisma as never,
     maxClient as never,
     manualModeration as never,
+    sanctionStateFence as never,
   );
 
-  return { service, prisma, maxClient, manualModeration };
+  return {
+    service,
+    prisma,
+    maxClient,
+    manualModeration,
+    releaseSideEffect,
+    sanctionStateFence,
+  };
 }
 
 describe('ModerationReleaseCallbackService', () => {
@@ -178,6 +204,111 @@ describe('ModerationReleaseCallbackService', () => {
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-release-1',
       'Санкция уже снята или изменилась',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
+  it('rejects a sanction event invalidated by a durable transition fence', async () => {
+    const { service, prisma, maxClient, manualModeration, sanctionStateFence } = createHarness({
+      fenceInvalidated: true,
+    });
+
+    await service.tryHandle(createCallbackUpdate({ action: 'UNBAN' }));
+
+    expect(sanctionStateFence.isSanctionEventInvalidated).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'target-user-1',
+      sanctionEventId: SANCTION_EVENT_ID,
+      eventCreatedAt: new Date('2026-08-04T08:00:00.000Z'),
+    });
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+    expect(manualModeration.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      'Санкция уже снята или изменилась',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
+  it('reports a typed sanction state change without applying a release side effect', async () => {
+    const { service, maxClient, manualModeration, releaseSideEffect } = createHarness({
+      manualModerationError: new ModerationSanctionStateChangedError(),
+    });
+
+    await service.tryHandle(createCallbackUpdate({ action: 'UNBAN' }));
+
+    expect(manualModeration.applyManualModerationAction).toHaveBeenCalledTimes(1);
+    expect(releaseSideEffect).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      'Санкция уже снята или изменилась',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
+  it.each([
+    [
+      'busy',
+      new ModerationSanctionStateLockBusyError({ chatId: 'chat-1', userId: 'target-user-1' }),
+    ],
+    [
+      'unavailable',
+      new ModerationSanctionStateLockUnavailableError({
+        chatId: 'chat-1',
+        userId: 'target-user-1',
+      }),
+    ],
+    [
+      'lost',
+      new ModerationSanctionStateLockLeaseLostError({
+        chatId: 'chat-1',
+        userId: 'target-user-1',
+      }),
+    ],
+  ] as const)('silently acknowledges a %s sanction state lock error', async (_caseName, error) => {
+    const { service, maxClient, manualModeration, releaseSideEffect } = createHarness({
+      manualModerationError: error,
+    });
+
+    await service.tryHandle(createCallbackUpdate({ action: 'UNBAN' }));
+
+    expect(manualModeration.applyManualModerationAction).toHaveBeenCalledTimes(1);
+    expect(releaseSideEffect).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledTimes(1);
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      undefined,
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
+  it('reports the existing generic failure for an unexpected release error', async () => {
+    const { service, maxClient, releaseSideEffect } = createHarness({
+      manualModerationError: new Error('unexpected release failure'),
+    });
+
+    await service.tryHandle(createCallbackUpdate({ action: 'UNBAN' }));
+
+    expect(releaseSideEffect).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      'Не удалось выполнить действие',
       undefined,
       {
         ignoreFailureMetricStatuses: [400, 404],

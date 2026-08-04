@@ -3,7 +3,10 @@ import {
   MaxApiCircuitOpenError,
   MaxApiRequestRejectedError,
   MaxClientService,
+  markMaxMemberMutationAttempted,
   normalizeMaxActionIdempotencyKeyPart,
+  wasMaxMemberMutationAttempted,
+  wasMaxMemberMutationConfirmed,
   wasMaxMessageSendAttempted,
 } from './max-client.service';
 import { from, of, throwError } from 'rxjs';
@@ -335,6 +338,15 @@ describe('MAX action idempotency key normalization', () => {
 });
 
 describe('MaxClientService inline keyboard guardrails', () => {
+  it('brands a frozen member-mutation error without replacing it', () => {
+    const frozenError = Object.freeze(
+      Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+    );
+
+    expect(markMaxMemberMutationAttempted(frozenError)).toBe(frozenError);
+    expect(wasMaxMemberMutationAttempted(frozenError)).toBe(true);
+  });
+
   beforeEach(() => {
     (
       Redis as unknown as { __store: Map<string, { value: string; expiresAtMs: number | null }> }
@@ -529,6 +541,21 @@ describe('MaxClientService inline keyboard guardrails', () => {
         createdAt: new Date().toISOString(),
       }),
     ).rejects.toBeInstanceOf(UnrecoverableError);
+
+    const memberActionError = await service
+      .executeActionJob({
+        actionType: 'BAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        botId: 'draining-bot',
+        attempt: 1,
+        idempotencyKey: 'ban-draining',
+        createdAt: new Date().toISOString(),
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(memberActionError).toBeInstanceOf(UnrecoverableError);
+    expect(wasMaxMemberMutationAttempted(memberActionError)).toBe(false);
     expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
@@ -1258,16 +1285,19 @@ describe('MaxClientService inline keyboard guardrails', () => {
       };
       const service = createService(httpService);
 
-      await expect(
-        service.executeActionJob({
+      const error = await service
+        .executeActionJob({
           actionType,
           chatId: 'chat-1',
           userId: 'user-1',
           attempt: 1,
           idempotencyKey: `${actionType.toLowerCase()}-timeout`,
           createdAt: new Date().toISOString(),
-        }),
-      ).rejects.toBeInstanceOf(UnrecoverableError);
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      expect(wasMaxMemberMutationAttempted(error)).toBe(true);
       expect(httpService.request).toHaveBeenCalledWith(
         expect.objectContaining({
           method: 'delete',
@@ -1336,6 +1366,66 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request.mock.invocationCallOrder[0]).toBeLessThan(
       actionLedgerService.clearTerminalBanStateAfterUnban.mock.invocationCallOrder[0],
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('marks an UNBAN_MEMBER transport failure after its HTTP mutation callback begins', async () => {
+    const transportError = Object.assign(new Error('socket hang up'), {
+      code: 'ECONNRESET',
+    });
+    const httpService = {
+      request: jest.fn(() => throwError(() => transportError)),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    const error = await service
+      .executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-transport-failure',
+        createdAt: new Date().toISOString(),
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBe(transportError);
+    expect(wasMaxMemberMutationAttempted(error)).toBe(true);
+    expect(wasMaxMemberMutationConfirmed(error)).toBe(false);
+    expect(actionLedgerService.clearTerminalBanStateAfterUnban).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps the UNBAN_MEMBER attempt marker when post-mutation ledger cleanup fails', async () => {
+    const ledgerError = new Error('terminal ban state cleanup failed');
+    const httpService = {
+      request: jest.fn(() => of({ data: {} })),
+    };
+    const actionLedgerService = {
+      clearTerminalBanStateAfterUnban: jest.fn().mockRejectedValue(ledgerError),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    const error = await service
+      .executeActionJob({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'unban-member-ledger-failure',
+        createdAt: new Date().toISOString(),
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBe(ledgerError);
+    expect(wasMaxMemberMutationAttempted(error)).toBe(true);
+    expect(wasMaxMemberMutationConfirmed(error)).toBe(true);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
   });
@@ -1471,6 +1561,114 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request.mock.invocationCallOrder[0]).toBeLessThan(
       actionLedgerService.recordSucceeded.mock.invocationCallOrder[0],
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not mark a member mutation attempted when the immediate action ledger start fails', async () => {
+    const recordStartedError = new Error('action ledger unavailable');
+    const httpService = {
+      request: jest.fn(),
+    };
+    const actionLedgerService = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn().mockRejectedValue(recordStartedError),
+      recordSucceeded: jest.fn(),
+      recordFailed: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    const error = await service
+      .banMember('chat-1', 'user-1', { immediate: true })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBe(recordStartedError);
+    expect(wasMaxMemberMutationAttempted(error)).toBe(false);
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('checks the immediate member guard after routing and ledger work but before MAX HTTP', async () => {
+    const leaseLostError = Object.assign(new Error('sanction state lease lost'), {
+      code: 'moderation_sanction_state_lock_lease_lost',
+    });
+    const httpService = {
+      request: jest.fn(() => of({ data: {} })),
+    };
+    const actionLedgerService = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const resolveBotRoute = jest.fn().mockResolvedValue({
+      purpose: 'moderation_action',
+      chatId: 'chat-1',
+      primaryBotId: '777000_bot',
+      botId: '777000_bot',
+      candidateBotIds: ['777000_bot'],
+      reason: 'primary_confirmed',
+      action: 'moderate_member',
+    });
+    const beforeImmediateMemberMutation = jest.fn().mockRejectedValue(leaseLostError);
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+    (service as any).maxBotLinkService = { resolveBotRoute };
+
+    const error = await service
+      .banMember('chat-1', 'user-1', {
+        immediate: true,
+        beforeImmediateMemberMutation,
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBe(leaseLostError);
+    expect(wasMaxMemberMutationAttempted(error)).toBe(false);
+    expect(resolveBotRoute).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordStarted).toHaveBeenCalledTimes(1);
+    expect(beforeImmediateMemberMutation).toHaveBeenCalledTimes(1);
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(
+      expect.not.objectContaining({ beforeImmediateMemberMutation: expect.anything() }),
+      leaseLostError,
+    );
+    expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+    expect(resolveBotRoute.mock.invocationCallOrder[0]).toBeLessThan(
+      actionLedgerService.recordStarted.mock.invocationCallOrder[0],
+    );
+    expect(actionLedgerService.recordStarted.mock.invocationCallOrder[0]).toBeLessThan(
+      beforeImmediateMemberMutation.mock.invocationCallOrder[0],
+    );
+
+    await expect(
+      service.banMember('chat-1', 'user-1', { immediate: true }),
+    ).resolves.toBeUndefined();
+
+    expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledTimes(2);
+    expect(actionLedgerService.recordStarted).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordSucceeded).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects a queued member mutation guard before routing or enqueue', async () => {
+    const beforeImmediateMemberMutation = jest.fn();
+    const resolveBotRoute = jest.fn();
+    const service = createService({ request: jest.fn() });
+    (service as any).maxBotLinkService = { resolveBotRoute };
+
+    await expect(
+      service.banMember('chat-1', 'user-1', { beforeImmediateMemberMutation }),
+    ).rejects.toThrow('Member mutation guard requires immediate dispatch');
+
+    expect(beforeImmediateMemberMutation).not.toHaveBeenCalled();
+    expect(resolveBotRoute).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });
@@ -6155,13 +6353,25 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     await expect(firstService.getChatSnapshot('chat-1')).rejects.toBe(upstreamFailure);
-    await expect(secondService.getChatSnapshot('chat-1')).rejects.toMatchObject({
+    const circuitError = await secondService
+      .executeActionJob({
+        actionType: 'BAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        attempt: 1,
+        idempotencyKey: 'ban-open-circuit',
+        createdAt: new Date().toISOString(),
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(circuitError).toMatchObject({
       name: 'MaxApiCircuitOpenError',
       code: 'MAX_API_CIRCUIT_OPEN',
       preDispatch: true,
       botId: '777000_bot',
       retryAfterMs: 2_000,
     });
+    expect(wasMaxMemberMutationAttempted(circuitError)).toBe(false);
     expect(secondHttpService.request).not.toHaveBeenCalled();
 
     await firstService.onModuleDestroy();

@@ -1,10 +1,12 @@
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS, type MaxUpdate } from '@maxim/contracts';
 import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
+import { markMaxMemberMutationAttempted } from '../max/max-client.service';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { ChatRulesPublishFenceRetryError } from './chat-rules-own-bot-message-classifier';
 import { buildActiveMuteStateKey } from './moderation-state.util';
 import { buildModerationReleaseCallbackPayload } from './moderation-release-callback.util';
+import { ModerationSanctionStateLockLeaseLostError } from './moderation-sanction-state-lock.service';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
   buildDeveloperForcedGlobalSpammerCacheKey,
@@ -281,6 +283,7 @@ function createModerationServiceWithManualBridge(params: {
   maxClient: unknown;
   manualBridge: unknown;
   maxBotLinkService?: unknown;
+  sanctionStateFence?: unknown;
 }) {
   return new ModerationService(
     params.prisma as never,
@@ -305,6 +308,66 @@ function createModerationServiceWithManualBridge(params: {
     undefined, // injectedModerationAccessService
     undefined, // injectedNightModeTransitionRuntime
     params.manualBridge as never,
+    undefined, // injectedNightModeTransitionDelivery
+    undefined, // injectedBotSpeechMediaService
+    undefined, // injectedNightModeTransitionEventService
+    undefined, // karavanStorefrontRelayService
+    undefined, // managedPollService
+    undefined, // injectedWebhookCanonicalExecutionService
+    undefined, // moderationDeleteIntentService
+    undefined, // maxActionLedgerService
+    undefined, // channelPostSignatureService
+    undefined, // injectedModerationSanctionStateLock
+    (params.sanctionStateFence ?? {
+      isSanctionEventInvalidated: jest.fn().mockResolvedValue(false),
+    }) as never,
+  );
+}
+
+function createModerationServiceWithSanctionStateLock(params: {
+  prisma: unknown;
+  ruleEngine: unknown;
+  sanctionService: unknown;
+  maxClient: unknown;
+  redisCounter: unknown;
+  sanctionStateLock: unknown;
+  sanctionStateFence?: unknown;
+  maxBotLinkService?: unknown;
+}) {
+  return new ModerationService(
+    params.prisma as never,
+    params.ruleEngine as never,
+    params.sanctionService as never,
+    params.maxClient as never,
+    undefined, // chatContextCache
+    undefined, // systemModeService
+    undefined, // configService
+    params.redisCounter as never,
+    undefined, // privateControlService
+    undefined, // adminDialogLinkService
+    undefined, // membershipLookupService
+    params.maxBotLinkService as never,
+    undefined, // maxBotContextService
+    undefined, // queueMetricsService
+    undefined, // backgroundRuntimeGovernorService
+    undefined, // runtimeDiagnosticsService
+    undefined, // maxChatAdminRosterSyncService
+    undefined, // globalSpammerIntelligence
+    undefined, // managedEntityAccessLossService
+    undefined, // injectedModerationAccessService
+    undefined, // injectedNightModeTransitionRuntime
+    undefined, // injectedManualModerationService
+    undefined, // injectedNightModeTransitionDelivery
+    undefined, // injectedBotSpeechMediaService
+    undefined, // injectedNightModeTransitionEventService
+    undefined, // karavanStorefrontRelayService
+    undefined, // managedPollService
+    undefined, // injectedWebhookCanonicalExecutionService
+    undefined, // moderationDeleteIntentService
+    undefined, // maxActionLedgerService
+    undefined, // channelPostSignatureService
+    params.sanctionStateLock as never,
+    params.sanctionStateFence as never,
   );
 }
 
@@ -16103,6 +16166,688 @@ describe('ModerationService', () => {
     });
   });
 
+  it.each([
+    {
+      actionLabel: 'BAN',
+      action: SanctionAction.BAN,
+      violationCount: 3,
+      settings: { profanityBanEnabled: true },
+      expectedEffects: [
+        'fence-prepare',
+        'remote-ban',
+        'cache',
+        'event',
+        'fence-commit',
+        'remote-notice',
+      ],
+      expectedNotice: permanentBanNotice('Алексей'),
+      expectedGuardChecks: 8,
+    },
+    {
+      actionLabel: 'MUTE',
+      action: SanctionAction.MUTE,
+      violationCount: 4,
+      settings: { profanityMuteEnabled: true },
+      expectedEffects: ['fence-prepare', 'event', 'cache', 'fence-commit', 'remote-notice'],
+      expectedNotice: muteNotice('Алексей', '6ч'),
+      expectedGuardChecks: 5,
+    },
+  ])(
+    'keeps the automatic $actionLabel transition inside the injected sanction-state lock',
+    async ({
+      action,
+      violationCount,
+      settings,
+      expectedEffects,
+      expectedNotice,
+      expectedGuardChecks,
+    }) => {
+      let lockActive = false;
+      const transitionEffects: Array<{ name: string; lockActive: boolean }> = [];
+      const cacheLockStates: boolean[] = [];
+      const recordTransitionEffect = (name: string) => {
+        transitionEffects.push({ name, lockActive });
+      };
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({
+              profanityBotMessageEnabled: false,
+              ...settings,
+            }),
+            domains: [],
+          }),
+        },
+        violation: {
+          create: jest.fn(),
+          count: jest.fn().mockResolvedValue(violationCount),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(
+            async ({ data }: { data: { action?: SanctionAction; metadata?: unknown } }) => {
+              const metadata =
+                data.metadata && typeof data.metadata === 'object'
+                  ? (data.metadata as Record<string, unknown>)
+                  : {};
+              if (data.action === action && metadata.sanctionApplied === true) {
+                recordTransitionEffect('event');
+                return { id: `sanction-event-${action.toLowerCase()}` };
+              }
+              return { id: 'delete-event' };
+            },
+          ),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({
+          violations: [{ ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' }],
+        }),
+      };
+      const sanctionService = { resolveAction: jest.fn() };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(async (_chatId: string, text: string) => {
+          if (text === expectedNotice) {
+            recordTransitionEffect('remote-notice');
+          }
+        }),
+        kickMember: jest.fn(),
+        banMember: jest.fn(
+          async (
+            _chatId: string,
+            _userId: string,
+            options?: { beforeImmediateMemberMutation?: () => Promise<void> },
+          ) => {
+            const beforeMemberMutation = options?.beforeImmediateMemberMutation;
+            expect(beforeMemberMutation).toEqual(expect.any(Function));
+            await beforeMemberMutation?.();
+            recordTransitionEffect('remote-ban');
+          },
+        ),
+        notifyModerators: jest.fn(),
+      };
+      const redisCounter = {
+        setStringWithTtl: jest.fn(async () => {
+          cacheLockStates.push(lockActive);
+          if (lockActive) {
+            recordTransitionEffect('cache');
+          }
+        }),
+      };
+      const leaseGuard = {
+        assertOwned: jest.fn(async () => {
+          expect(lockActive).toBe(true);
+        }),
+      };
+      const sanctionStateLock = {
+        runExclusive: jest.fn(
+          async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) => {
+            lockActive = true;
+            try {
+              return await operation(leaseGuard);
+            } finally {
+              lockActive = false;
+            }
+          },
+        ),
+      };
+      const automaticFence = {
+        version: 1,
+        transitionId: `transition-${action.toLowerCase()}`,
+        chatId: 'chat-1',
+        userId: 'user-1',
+        intendedAction: action,
+        operator: Operator.BOT,
+        source: 'automatic_moderation',
+        invalidatedSanctionEventIds: [],
+      };
+      const sanctionStateFence = {
+        prepare: jest.fn(async () => {
+          recordTransitionEffect('fence-prepare');
+          return automaticFence;
+        }),
+        commit: jest.fn(async () => {
+          recordTransitionEffect('fence-commit');
+        }),
+        markRemoteConfirmedEventMissing: jest.fn(),
+        abort: jest.fn(),
+      };
+      const service = createModerationServiceWithSanctionStateLock({
+        prisma,
+        ruleEngine,
+        sanctionService,
+        maxClient,
+        redisCounter,
+        sanctionStateLock,
+        sanctionStateFence,
+      });
+
+      await service.handleUpdate(createUpdate());
+
+      expect(sanctionStateLock.runExclusive).toHaveBeenCalledTimes(1);
+      expect(sanctionStateLock.runExclusive).toHaveBeenCalledWith(
+        { chatId: 'chat-1', userId: 'user-1' },
+        expect.any(Function),
+      );
+      expect(transitionEffects).toEqual(
+        expectedEffects.map((name) => ({ name, lockActive: true })),
+      );
+      expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(expectedGuardChecks);
+      expect(sanctionStateFence.prepare).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        intendedAction: action,
+        operator: Operator.BOT,
+        source: 'automatic_moderation',
+      });
+      expect(sanctionStateFence.commit).toHaveBeenCalledWith(
+        automaticFence,
+        `sanction-event-${action.toLowerCase()}`,
+      );
+      expect(sanctionStateFence.abort).not.toHaveBeenCalled();
+      expect(cacheLockStates).toContain(true);
+    },
+  );
+
+  it.each([
+    { stateStored: true, expectedOutcome: true },
+    { stateStored: false, expectedOutcome: false },
+  ])(
+    'keeps a resolved automatic MUTE outcome after post-return lease loss ($expectedOutcome)',
+    async ({ stateStored, expectedOutcome }) => {
+      const leaseLostError = new ModerationSanctionStateLockLeaseLostError({
+        chatId: 'chat-1',
+        userId: 'user-1',
+      });
+      const leaseGuard = { assertOwned: jest.fn().mockResolvedValue(undefined) };
+      const sanctionStateLock = {
+        runExclusive: jest.fn(
+          async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) => {
+            await operation(leaseGuard);
+            throw leaseLostError;
+          },
+        ),
+      };
+      const automaticFence = {
+        version: 1,
+        transitionId: `transition-mute-post-return-${stateStored}`,
+        chatId: 'chat-1',
+        userId: 'user-1',
+        intendedAction: 'MUTE',
+        operator: Operator.BOT,
+        source: 'automatic_moderation',
+        invalidatedSanctionEventIds: [],
+      };
+      const sanctionStateFence = {
+        prepare: jest.fn().mockResolvedValue(automaticFence),
+        commit: jest.fn().mockResolvedValue(undefined),
+        markRemoteConfirmedEventMissing: jest.fn(),
+        abort: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        sendMessage: jest.fn().mockResolvedValue({ messageId: 'mute-notice-1' }),
+      };
+      const persistModerationEvent = stateStored
+        ? jest.fn().mockResolvedValue({ id: 'mute-event-1' })
+        : jest.fn().mockRejectedValue(new Error('database unavailable'));
+      const service = createModerationServiceWithSanctionStateLock({
+        prisma: {},
+        ruleEngine: {},
+        sanctionService: {},
+        maxClient,
+        redisCounter: {
+          setStringWithTtl: stateStored
+            ? jest.fn().mockResolvedValue(undefined)
+            : jest.fn().mockRejectedValue(new Error('redis unavailable')),
+        },
+        sanctionStateLock,
+        sanctionStateFence,
+      });
+
+      await expect(
+        (service as any).applySanctionAction({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          action: SanctionAction.MUTE,
+          userLabel: userMention('Нарушитель'),
+          messageId: `message-mute-post-return-${stateStored}`,
+          muteDurationHours: 6,
+          deleteBotMessagesEnabled: false,
+          deleteBotMessagesDelayMinutes: 0,
+          botSpeechStyle: null,
+          persistModerationEvent,
+        }),
+      ).resolves.toBe(expectedOutcome);
+
+      expect(sanctionStateLock.runExclusive).toHaveBeenCalledTimes(1);
+      if (stateStored) {
+        expect(sanctionStateFence.commit).toHaveBeenCalledWith(automaticFence, 'mute-event-1');
+        expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      } else {
+        expect(sanctionStateFence.abort).toHaveBeenCalledWith(automaticFence);
+        expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('aborts the automatic MUTE fence when neither durable nor runtime state is stored', async () => {
+    const leaseGuard = { assertOwned: jest.fn().mockResolvedValue(undefined) };
+    const sanctionStateLock = {
+      runExclusive: jest.fn(
+        async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
+          operation(leaseGuard),
+      ),
+    };
+    const automaticFence = {
+      version: 1,
+      transitionId: 'transition-mute-storage-failed',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      intendedAction: 'MUTE',
+      operator: Operator.BOT,
+      source: 'automatic_moderation',
+      invalidatedSanctionEventIds: ['previous-ban-event'],
+    };
+    const sanctionStateFence = {
+      prepare: jest.fn().mockResolvedValue(automaticFence),
+      commit: jest.fn(),
+      markRemoteConfirmedEventMissing: jest.fn(),
+      abort: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxClient = { sendMessage: jest.fn() };
+    const service = createModerationServiceWithSanctionStateLock({
+      prisma: {},
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      redisCounter: {
+        setStringWithTtl: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+      },
+      sanctionStateLock,
+      sanctionStateFence,
+    });
+
+    await expect(
+      (service as any).applySanctionAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        action: SanctionAction.MUTE,
+        userLabel: userMention('Нарушитель'),
+        messageId: 'message-mute-storage-failed',
+        muteDurationHours: 6,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        botSpeechStyle: null,
+        persistModerationEvent: jest.fn().mockRejectedValue(new Error('database unavailable')),
+      }),
+    ).resolves.toBe(false);
+
+    expect(sanctionStateFence.abort).toHaveBeenCalledWith(automaticFence);
+    expect(sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps the automatic BAN fence invalidating after MAX succeeds without an event', async () => {
+    const leaseGuard = { assertOwned: jest.fn().mockResolvedValue(undefined) };
+    const sanctionStateLock = {
+      runExclusive: jest.fn(
+        async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
+          operation(leaseGuard),
+      ),
+    };
+    const automaticFence = {
+      version: 1,
+      transitionId: 'transition-ban-event-missing',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      intendedAction: 'BAN',
+      operator: Operator.BOT,
+      source: 'automatic_moderation',
+      invalidatedSanctionEventIds: ['previous-mute-event'],
+    };
+    const sanctionStateFence = {
+      prepare: jest.fn().mockResolvedValue(automaticFence),
+      commit: jest.fn(),
+      markRemoteConfirmedEventMissing: jest.fn().mockResolvedValue(undefined),
+      abort: jest.fn(),
+    };
+    const maxClient = {
+      banMember: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 'ban-notice-1' }),
+    };
+    const service = createModerationServiceWithSanctionStateLock({
+      prisma: {},
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      redisCounter: { setStringWithTtl: jest.fn().mockResolvedValue(undefined) },
+      sanctionStateLock,
+      sanctionStateFence,
+    });
+
+    await expect(
+      (service as any).applySanctionAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        action: SanctionAction.BAN,
+        userLabel: userMention('Нарушитель'),
+        messageId: 'message-ban-event-missing',
+        muteDurationHours: 6,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        botSpeechStyle: null,
+        trackAsGlobalSpammer: false,
+        persistModerationEvent: jest.fn().mockRejectedValue(new Error('database unavailable')),
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(sanctionStateFence.markRemoteConfirmedEventMissing).toHaveBeenCalledWith(automaticFence);
+    expect(sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(6);
+  });
+
+  it.each([
+    {
+      failureLabel: 'times out',
+      error: markMaxMemberMutationAttempted(new Error('MAX request timeout')),
+      mutationAttempted: true,
+    },
+    {
+      failureLabel: 'loses the connection after dispatch',
+      error: markMaxMemberMutationAttempted(
+        Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+      ),
+      mutationAttempted: true,
+    },
+    {
+      failureLabel: 'fails before dispatch with a timeout-shaped error',
+      error: new Error('MAX route timeout'),
+      mutationAttempted: false,
+    },
+  ])(
+    'settles the automatic BAN fence safely when MAX $failureLabel',
+    async ({ error, mutationAttempted }) => {
+      const leaseGuard = { assertOwned: jest.fn().mockResolvedValue(undefined) };
+      const sanctionStateLock = {
+        runExclusive: jest.fn(
+          async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
+            operation(leaseGuard),
+        ),
+      };
+      const automaticFence = {
+        version: 1,
+        transitionId: 'transition-ban-timeout',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        intendedAction: 'BAN',
+        operator: Operator.BOT,
+        source: 'automatic_moderation',
+        invalidatedSanctionEventIds: ['previous-mute-event'],
+      };
+      const sanctionStateFence = {
+        prepare: jest.fn().mockResolvedValue(automaticFence),
+        commit: jest.fn(),
+        markRemoteConfirmedEventMissing: jest.fn(),
+        abort: jest.fn(),
+      };
+      const maxClient = {
+        banMember: jest.fn().mockRejectedValue(error),
+        sendMessage: jest.fn(),
+      };
+      const persistModerationEvent = jest.fn();
+      const service = createModerationServiceWithSanctionStateLock({
+        prisma: {},
+        ruleEngine: {},
+        sanctionService: {},
+        maxClient,
+        redisCounter: { setStringWithTtl: jest.fn() },
+        sanctionStateLock,
+        sanctionStateFence,
+      });
+
+      await expect(
+        (service as any).applySanctionAction({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          action: SanctionAction.BAN,
+          userLabel: userMention('Нарушитель'),
+          messageId: 'message-ban-timeout',
+          muteDurationHours: 6,
+          deleteBotMessagesEnabled: false,
+          deleteBotMessagesDelayMinutes: 0,
+          botSpeechStyle: null,
+          trackAsGlobalSpammer: false,
+          persistModerationEvent,
+        }),
+      ).resolves.toBe(false);
+
+      expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+      expect(persistModerationEvent).not.toHaveBeenCalled();
+      expect(sanctionStateFence.commit).not.toHaveBeenCalled();
+      expect(sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+      if (mutationAttempted) {
+        expect(sanctionStateFence.abort).not.toHaveBeenCalled();
+      } else {
+        expect(sanctionStateFence.abort).toHaveBeenCalledWith(automaticFence);
+      }
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('aborts the automatic BAN fence when the lease is lost before MAX dispatch', async () => {
+    const leaseLostError = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-1',
+    });
+    const leaseGuard = {
+      assertOwned: jest.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(leaseLostError),
+    };
+    const sanctionStateLock = {
+      runExclusive: jest.fn(
+        async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
+          operation(leaseGuard),
+      ),
+    };
+    const automaticFence = {
+      version: 1,
+      transitionId: 'transition-ban-lease-lost-before-dispatch',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      intendedAction: 'BAN',
+      operator: Operator.BOT,
+      source: 'automatic_moderation',
+      invalidatedSanctionEventIds: ['previous-mute-event'],
+    };
+    const sanctionStateFence = {
+      prepare: jest.fn().mockResolvedValue(automaticFence),
+      commit: jest.fn(),
+      markRemoteConfirmedEventMissing: jest.fn(),
+      abort: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxClient = {
+      banMember: jest.fn(),
+      sendMessage: jest.fn(),
+    };
+    const persistModerationEvent = jest.fn();
+    const service = createModerationServiceWithSanctionStateLock({
+      prisma: {},
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      redisCounter: { setStringWithTtl: jest.fn() },
+      sanctionStateLock,
+      sanctionStateFence,
+    });
+
+    await expect(
+      (service as any).applySanctionAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        action: SanctionAction.BAN,
+        userLabel: userMention('Нарушитель'),
+        messageId: 'message-ban-lease-lost-before-dispatch',
+        muteDurationHours: 6,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        botSpeechStyle: null,
+        trackAsGlobalSpammer: false,
+        persistModerationEvent,
+      }),
+    ).rejects.toBe(leaseLostError);
+
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(persistModerationEvent).not.toHaveBeenCalled();
+    expect(sanctionStateFence.abort).toHaveBeenCalledWith(automaticFence);
+    expect(sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the automatic BAN fence active when the lease is lost after MAX succeeds', async () => {
+    const leaseLostError = new ModerationSanctionStateLockLeaseLostError({
+      chatId: 'chat-1',
+      userId: 'user-1',
+    });
+    const leaseGuard = {
+      assertOwned: jest
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(leaseLostError),
+    };
+    const sanctionStateLock = {
+      runExclusive: jest.fn(
+        async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
+          operation(leaseGuard),
+      ),
+    };
+    const automaticFence = {
+      version: 1,
+      transitionId: 'transition-ban-lease-lost-after-dispatch',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      intendedAction: 'BAN',
+      operator: Operator.BOT,
+      source: 'automatic_moderation',
+      invalidatedSanctionEventIds: ['previous-mute-event'],
+    };
+    const sanctionStateFence = {
+      prepare: jest.fn().mockResolvedValue(automaticFence),
+      commit: jest.fn(),
+      markRemoteConfirmedEventMissing: jest.fn().mockResolvedValue(undefined),
+      abort: jest.fn(),
+    };
+    const maxClient = {
+      banMember: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+    };
+    const persistModerationEvent = jest.fn();
+    const redisCounter = { setStringWithTtl: jest.fn() };
+    const service = createModerationServiceWithSanctionStateLock({
+      prisma: {},
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      redisCounter,
+      sanctionStateLock,
+      sanctionStateFence,
+    });
+
+    await expect(
+      (service as any).applySanctionAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        action: SanctionAction.BAN,
+        userLabel: userMention('Нарушитель'),
+        messageId: 'message-ban-lease-lost-after-dispatch',
+        muteDurationHours: 6,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        botSpeechStyle: null,
+        trackAsGlobalSpammer: false,
+        persistModerationEvent,
+      }),
+    ).rejects.toBe(leaseLostError);
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+    expect(persistModerationEvent).not.toHaveBeenCalled();
+    expect(sanctionStateFence.markRemoteConfirmedEventMissing).toHaveBeenCalledWith(automaticFence);
+    expect(sanctionStateFence.commit).not.toHaveBeenCalled();
+    expect(sanctionStateFence.abort).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not prepare an automatic sanction fence for a configured runtime bot', async () => {
+    const leaseGuard = { assertOwned: jest.fn() };
+    const sanctionStateLock = {
+      runExclusive: jest.fn(
+        async (_subject: unknown, operation: (guard: typeof leaseGuard) => Promise<unknown>) =>
+          operation(leaseGuard),
+      ),
+    };
+    const sanctionStateFence = {
+      prepare: jest.fn(),
+      commit: jest.fn(),
+      markRemoteConfirmedEventMissing: jest.fn(),
+      abort: jest.fn(),
+    };
+    const maxClient = {
+      banMember: jest.fn(),
+      sendMessage: jest.fn(),
+    };
+    const persistModerationEvent = jest.fn();
+    const maxBotLinkService = {
+      isKnownBotUserId: jest.fn().mockReturnValue(true),
+    };
+    const service = createModerationServiceWithSanctionStateLock({
+      prisma: {},
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      redisCounter: { setStringWithTtl: jest.fn() },
+      sanctionStateLock,
+      sanctionStateFence,
+      maxBotLinkService,
+    });
+
+    await expect(
+      (service as any).applySanctionAction({
+        chatId: 'chat-1',
+        userId: 'runtime-bot-user-1',
+        action: SanctionAction.BAN,
+        userLabel: userMention('Служебный бот', 'runtime-bot-user-1'),
+        messageId: 'message-from-runtime-bot',
+        muteDurationHours: 6,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        botSpeechStyle: null,
+        trackAsGlobalSpammer: false,
+        persistModerationEvent,
+      }),
+    ).resolves.toBe(false);
+
+    expect(sanctionStateLock.runExclusive).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.isKnownBotUserId).toHaveBeenCalledWith('runtime-bot-user-1');
+    expect(leaseGuard.assertOwned).not.toHaveBeenCalled();
+    expect(sanctionStateFence.prepare).not.toHaveBeenCalled();
+    expect(persistModerationEvent).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('does not send link explanation when link bot toggle is disabled', async () => {
     const prisma = {
       chat: {
@@ -18891,7 +19636,11 @@ describe('ModerationService', () => {
         setStringWithTtl: jest.fn().mockRejectedValue(new Error('redis unavailable')),
       };
       const service = new ModerationService(
-        {} as never,
+        {
+          moderationEvent: {
+            findFirst: jest.fn().mockResolvedValue(null),
+          },
+        } as never,
         {} as never,
         {} as never,
         maxClient as never,
@@ -21743,6 +22492,9 @@ describe('ModerationService', () => {
           },
           chatBotMembership: {
             updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+          moderationEvent: {
+            findFirst: jest.fn().mockResolvedValue(null),
           },
         };
         const terminalError = createMaxApiError(

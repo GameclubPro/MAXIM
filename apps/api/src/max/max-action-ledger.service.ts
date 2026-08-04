@@ -23,6 +23,8 @@ const CRASH_FENCED_MEMBER_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
 export const MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES = [
   'max_api_circuit_open',
   'max_api_internal_rate_limit',
+  'moderation_sanction_state_lock_lease_lost',
+  'moderation_sanction_state_lock_unavailable',
 ] as const;
 const MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES: ReadonlySet<string> = new Set(
   MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES,

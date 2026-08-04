@@ -48,6 +48,7 @@ import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
+  wasMaxMemberMutationAttempted,
   wasMaxMessageSendAttempted,
   type MaxActionDispatchOptions,
   type MaxChatMemberAccess,
@@ -56,6 +57,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import {
+  isAmbiguousMaxMutationError,
   isAmbiguousMaxSendError,
   MAX_SEND_AMBIGUOUS_ERROR_PREFIX,
 } from '../max/max-send-ambiguity.util';
@@ -136,6 +138,16 @@ import {
 } from './moderation-state.util';
 import { withModerationReleaseButton } from './moderation-release-callback.util';
 import { ModerationReleaseCallbackService } from './moderation-release-callback.service';
+import {
+  ModerationSanctionStateFenceService,
+  type ModerationSanctionStateFence,
+} from './moderation-sanction-state-fence.service';
+import {
+  ModerationSanctionStateLockError,
+  ModerationSanctionStateLockLeaseLostError,
+  ModerationSanctionStateLockService,
+  type ModerationSanctionStateLeaseGuard,
+} from './moderation-sanction-state-lock.service';
 import {
   extractMaxCallbackId,
   extractMaxCallbackPayload,
@@ -422,6 +434,27 @@ type ManualModerationCommandBridge = Pick<
   | 'isSuperBanDeveloperUserId'
 >;
 
+type ApplySanctionActionParams = {
+  chatId: string;
+  userId: string;
+  action: SanctionAction;
+  userLabel: string;
+  messageId: string;
+  muteDurationHours: number;
+  deleteBotMessagesEnabled: boolean;
+  deleteBotMessagesDelayMinutes: number;
+  botMessageOptions?: MaxSendMessageOptions;
+  sanctionNoticeText?: string;
+  botSpeechStyle: BotSpeechStyle | null;
+  trackAsGlobalSpammer?: boolean;
+  persistModerationEvent: PersistModerationEvent;
+};
+
+type AutomaticSanctionStateFenceOutcome =
+  | 'ABORTED'
+  | 'COMMITTED'
+  | 'REMOTE_CONFIRMED_EVENT_MISSING';
+
 type RequiredSubscriptionMembershipResolution = {
   membership: boolean | null;
   fresh: boolean;
@@ -554,6 +587,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly backgroundWorkSoftPauseWorkerPressure: number;
   private readonly sharedChatExecutionMemoryLocks = new Map<string, string>();
   private moderationReleaseCallbackServiceInstance: ModerationReleaseCallbackService | null = null;
+  private moderationSanctionStateLockServiceInstance: ModerationSanctionStateLockService | null =
+    null;
+  private moderationSanctionStateFenceServiceInstance: ModerationSanctionStateFenceService | null =
+    null;
   private moderationAccessServiceInstance: ModerationAccessService | null = null;
   private nightModeTransitionRuntimeInstance: NightModeTransitionRuntimeService | null = null;
   private nightModeTransitionDeliveryInstance: NightModeTransitionDeliveryService | null = null;
@@ -610,6 +647,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly maxActionLedgerService?: MaxActionLedgerService,
     @Optional()
     private readonly channelPostSignatureService?: ChannelPostSignatureService,
+    @Optional()
+    private readonly injectedModerationSanctionStateLock?: ModerationSanctionStateLockService,
+    @Optional()
+    private readonly injectedModerationSanctionStateFence?: ModerationSanctionStateFenceService,
   ) {
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.moderationDisplayNameResolver = new ModerationDisplayNameResolver(
@@ -800,10 +841,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.prisma,
         this.maxClient,
         this.manualModerationCommandBridge,
-        this.redisCounter,
+        this.moderationSanctionStateFenceService,
       );
     }
     return this.moderationReleaseCallbackServiceInstance;
+  }
+
+  private get moderationSanctionStateLockService(): ModerationSanctionStateLockService {
+    if (this.injectedModerationSanctionStateLock) {
+      return this.injectedModerationSanctionStateLock;
+    }
+    if (!this.moderationSanctionStateLockServiceInstance) {
+      this.moderationSanctionStateLockServiceInstance = new ModerationSanctionStateLockService(
+        this.redisCounter,
+      );
+    }
+    return this.moderationSanctionStateLockServiceInstance;
+  }
+
+  private get moderationSanctionStateFenceService(): ModerationSanctionStateFenceService {
+    if (this.injectedModerationSanctionStateFence) {
+      return this.injectedModerationSanctionStateFence;
+    }
+    if (!this.moderationSanctionStateFenceServiceInstance) {
+      this.moderationSanctionStateFenceServiceInstance = new ModerationSanctionStateFenceService(
+        this.prisma,
+      );
+    }
+    return this.moderationSanctionStateFenceServiceInstance;
   }
 
   private get webhookCanonicalExecutionService(): WebhookCanonicalExecutionService {
@@ -3799,21 +3864,50 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.formatUserLabel(displayName ?? undefined, userId);
   }
 
-  private async applySanctionAction(params: {
-    chatId: string;
-    userId: string;
-    action: SanctionAction;
-    userLabel: string;
-    messageId: string;
-    muteDurationHours: number;
-    deleteBotMessagesEnabled: boolean;
-    deleteBotMessagesDelayMinutes: number;
-    botMessageOptions?: MaxSendMessageOptions;
-    sanctionNoticeText?: string;
-    botSpeechStyle: BotSpeechStyle | null;
-    trackAsGlobalSpammer?: boolean;
-    persistModerationEvent: PersistModerationEvent;
-  }): Promise<boolean> {
+  private async applySanctionAction(params: ApplySanctionActionParams): Promise<boolean> {
+    if (params.action !== SanctionAction.BAN && params.action !== SanctionAction.MUTE) {
+      return this.applySanctionActionUnderLock(params);
+    }
+
+    let resolvedOutcome: boolean | undefined;
+    try {
+      return await this.moderationSanctionStateLockService.runExclusive(
+        { chatId: params.chatId, userId: params.userId },
+        async (leaseGuard) => {
+          let outcome: boolean;
+          if (this.isKnownRuntimeBotUserId(params.userId)) {
+            outcome = await this.applySanctionActionUnderLock(params, leaseGuard);
+          } else {
+            await leaseGuard.assertOwned();
+            const fence = await this.moderationSanctionStateFenceService.prepare({
+              chatId: params.chatId,
+              userId: params.userId,
+              intendedAction: params.action === SanctionAction.BAN ? 'BAN' : 'MUTE',
+              operator: Operator.BOT,
+              source: 'automatic_moderation',
+            });
+            outcome = await this.applySanctionActionUnderLock(params, leaseGuard, fence);
+          }
+          resolvedOutcome = outcome;
+          return outcome;
+        },
+      );
+    } catch (error: unknown) {
+      if (
+        error instanceof ModerationSanctionStateLockLeaseLostError &&
+        resolvedOutcome !== undefined
+      ) {
+        return resolvedOutcome;
+      }
+      throw error;
+    }
+  }
+
+  private async applySanctionActionUnderLock(
+    params: ApplySanctionActionParams,
+    leaseGuard?: ModerationSanctionStateLeaseGuard,
+    fence?: ModerationSanctionStateFence,
+  ): Promise<boolean> {
     const {
       chatId,
       userId,
@@ -3849,106 +3943,212 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       const issuedAt = new Date();
       const expiresAt = new Date(issuedAt.getTime() + effectiveMuteDurationHours * 60 * 60 * 1000);
-      const eventPersistence = await persistSanctionEventForNotice({
-        persistModerationEvent,
-        metadata: {
+      let eventPersistence: { eventId: string | null; persisted: boolean } = {
+        eventId: null,
+        persisted: false,
+      };
+      let muteStateCached = false;
+      let fenceSettled = false;
+      try {
+        await leaseGuard?.assertOwned();
+        eventPersistence = await persistSanctionEventForNotice({
+          persistModerationEvent,
+          metadata: {
+            muteDurationHours: effectiveMuteDurationHours,
+            muteExpiresAt: expiresAt.toISOString(),
+            mutePermanent: false,
+            sanctionApplied: true,
+          },
+          actionLabel: 'mute',
+          chatId,
+          userId,
+          messageId,
+          logger: this.logger,
+        });
+        await leaseGuard?.assertOwned();
+        muteStateCached = await this.rememberActiveMuteState(chatId, userId, {
+          eventId: eventPersistence.eventId ?? `runtime:${chatId}:${userId}:${issuedAt.getTime()}`,
+          issuedAt,
+          expiresAt,
+          durationHours: effectiveMuteDurationHours,
+          permanent: false,
+        });
+        if (!eventPersistence.persisted && !muteStateCached) {
+          await leaseGuard?.assertOwned();
+          await this.settleAutomaticSanctionStateFence(fence, 'ABORTED');
+          fenceSettled = true;
+          return false;
+        }
+
+        await leaseGuard?.assertOwned();
+        await this.settleAutomaticSanctionStateFence(fence, 'COMMITTED', eventPersistence.eventId);
+        fenceSettled = true;
+        await leaseGuard?.assertOwned();
+        await this.sendMuteNotice({
+          chatId,
+          userId,
+          messageId,
+          userLabel,
           muteDurationHours: effectiveMuteDurationHours,
-          muteExpiresAt: expiresAt.toISOString(),
-          mutePermanent: false,
-          sanctionApplied: true,
-        },
-        actionLabel: 'mute',
-        chatId,
-        userId,
-        messageId,
-        logger: this.logger,
-      });
-      const muteStateCached = await this.rememberActiveMuteState(chatId, userId, {
-        eventId: eventPersistence.eventId ?? `runtime:${chatId}:${userId}:${issuedAt.getTime()}`,
-        issuedAt,
-        expiresAt,
-        durationHours: effectiveMuteDurationHours,
-        permanent: false,
-      });
-      if (!eventPersistence.persisted && !muteStateCached) {
-        return false;
+          deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes,
+          botMessageOptions,
+          sanctionNoticeText,
+          botSpeechStyle,
+          sanctionEventId: eventPersistence.eventId,
+        });
+        return true;
+      } catch (error: unknown) {
+        if (!fenceSettled) {
+          await this.settleAutomaticSanctionStateFence(
+            fence,
+            eventPersistence.persisted || muteStateCached ? 'COMMITTED' : 'ABORTED',
+            eventPersistence.eventId,
+          );
+        }
+        throw error;
       }
-      await this.sendMuteNotice({
-        chatId,
-        userId,
-        messageId,
-        userLabel,
-        muteDurationHours: effectiveMuteDurationHours,
-        deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes,
-        botMessageOptions,
-        sanctionNoticeText,
-        botSpeechStyle,
-        sanctionEventId: eventPersistence.eventId,
-      });
-      return true;
     }
 
     if (action !== SanctionAction.BAN) {
       return false;
     }
 
-    if (trackAsGlobalSpammer) {
-      await this.upsertGlobalSpammerEntry({
-        userId,
-        sourceChatId: chatId,
-        reason: 'SANCTION_BAN',
-        evidence: {
-          action: 'BAN',
-          source: 'sanction',
-        },
-      });
-    }
-
+    let remoteActionConfirmed = false;
+    let remoteActionAmbiguous = false;
+    let fenceSettled = false;
+    let eventPersistence: { eventId: string | null; persisted: boolean } = {
+      eventId: null,
+      persisted: false,
+    };
     let banResult: ModerationActionExecutionResult = { ok: false, botId: null };
     try {
-      banResult = await this.banMemberImmediatelyWithResult(chatId, userId);
+      if (trackAsGlobalSpammer) {
+        await leaseGuard?.assertOwned();
+        await this.upsertGlobalSpammerEntry({
+          userId,
+          sourceChatId: chatId,
+          reason: 'SANCTION_BAN',
+          evidence: {
+            action: 'BAN',
+            source: 'sanction',
+          },
+        });
+      }
+
+      try {
+        banResult = await this.banMemberImmediatelyWithResult(
+          chatId,
+          userId,
+          undefined,
+          leaseGuard,
+        );
+      } catch (error: unknown) {
+        if (error instanceof ModerationSanctionStateLockError) {
+          throw error;
+        }
+        remoteActionAmbiguous =
+          wasMaxMemberMutationAttempted(error) && isAmbiguousMaxMutationError(error);
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to ban member',
+        );
+      }
+
+      if (!banResult.ok) {
+        if (!remoteActionAmbiguous) {
+          await leaseGuard?.assertOwned();
+          await this.settleAutomaticSanctionStateFence(fence, 'ABORTED');
+          fenceSettled = true;
+        }
+        return false;
+      }
+      remoteActionConfirmed = true;
+
+      await leaseGuard?.assertOwned();
+      await this.rememberInactiveActiveMuteState(chatId, userId);
+
+      await leaseGuard?.assertOwned();
+      eventPersistence = await persistSanctionEventForNotice({
+        persistModerationEvent,
+        metadata: { sanctionApplied: true },
+        actionLabel: 'ban',
+        chatId,
+        userId,
+        messageId,
+        logger: this.logger,
+      });
+      await leaseGuard?.assertOwned();
+      await this.settleAutomaticSanctionStateFence(
+        fence,
+        eventPersistence.persisted ? 'COMMITTED' : 'REMOTE_CONFIRMED_EVENT_MISSING',
+        eventPersistence.eventId,
+      );
+      fenceSettled = true;
+      await leaseGuard?.assertOwned();
+      await this.sendBanNoticeMessage({
+        chatId,
+        userId,
+        messageId,
+        userLabel,
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+        botMessageOptions,
+        sanctionNoticeText,
+        botSpeechStyle,
+        botId: banResult.botId ?? undefined,
+        sanctionEventId: eventPersistence.eventId,
+      });
+      return true;
+    } catch (error: unknown) {
+      if (!fenceSettled) {
+        await this.settleAutomaticSanctionStateFence(
+          fence,
+          remoteActionConfirmed
+            ? eventPersistence.persisted
+              ? 'COMMITTED'
+              : 'REMOTE_CONFIRMED_EVENT_MISSING'
+            : 'ABORTED',
+          eventPersistence.eventId,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async settleAutomaticSanctionStateFence(
+    fence: ModerationSanctionStateFence | undefined,
+    outcome: AutomaticSanctionStateFenceOutcome,
+    eventId: string | null = null,
+  ): Promise<void> {
+    if (!fence) {
+      return;
+    }
+
+    try {
+      if (outcome === 'COMMITTED') {
+        await this.moderationSanctionStateFenceService.commit(fence, eventId ?? undefined);
+      } else if (outcome === 'REMOTE_CONFIRMED_EVENT_MISSING') {
+        await this.moderationSanctionStateFenceService.markRemoteConfirmedEventMissing(fence);
+      } else {
+        await this.moderationSanctionStateFenceService.abort(fence);
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
-          chatId,
-          userId,
-          messageId,
+          chatId: fence.chatId,
+          userId: fence.userId,
+          transitionId: fence.transitionId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to ban member',
+        'Failed to append automatic moderation sanction fence outcome',
       );
     }
-
-    if (!banResult.ok) {
-      return false;
-    }
-
-    await this.rememberInactiveActiveMuteState(chatId, userId);
-
-    const eventPersistence = await persistSanctionEventForNotice({
-      persistModerationEvent,
-      metadata: { sanctionApplied: true },
-      actionLabel: 'ban',
-      chatId,
-      userId,
-      messageId,
-      logger: this.logger,
-    });
-    await this.sendBanNoticeMessage({
-      chatId,
-      userId,
-      messageId,
-      userLabel,
-      deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes,
-      botMessageOptions,
-      sanctionNoticeText,
-      botSpeechStyle,
-      botId: banResult.botId ?? undefined,
-      sanctionEventId: eventPersistence.eventId,
-    });
-    return true;
   }
 
   private async executeModerationDelete(
@@ -4124,6 +4324,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+    leaseGuard?: ModerationSanctionStateLeaseGuard,
   ): Promise<ModerationActionExecutionResult> {
     if (this.isKnownRuntimeBotUserId(userId)) {
       this.logger.warn(
@@ -4142,6 +4343,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       explicitBotId: options?.botId,
       operation: async (botId) => {
+        await leaseGuard?.assertOwned();
         await this.maxClient.banMember(chatId, userId, {
           trafficClass: 'critical',
           actionHealthLane: 'critical',
@@ -4150,6 +4352,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ...(options ?? {}),
           ...(botId ? { botId } : {}),
           immediate: true,
+          ...(leaseGuard ? { beforeImmediateMemberMutation: () => leaseGuard.assertOwned() } : {}),
         });
       },
     });

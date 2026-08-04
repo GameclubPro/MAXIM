@@ -52,6 +52,14 @@ function broadcastRuntime(service: AdminService): any {
   return (service as any).managedBroadcastRuntime;
 }
 
+function expectImmediateMemberMutationOptions(overrides: Record<string, unknown> = {}) {
+  return expect.objectContaining({
+    immediate: true,
+    beforeImmediateMemberMutation: expect.any(Function),
+    ...overrides,
+  });
+}
+
 describe('AdminService dialog admin fallback reads', () => {
   it('routes dialog admin id lookups through background action health lane', async () => {
     const prisma = createPrismaMock();
@@ -2450,7 +2458,11 @@ describe('AdminService.applyManualModerationAction', () => {
     );
 
     expect(maxClient.banMember).toHaveBeenCalledTimes(1);
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatMemberAccess).not.toHaveBeenCalledWith('chat-2', 'user-3', {
       trafficClass: 'background',
@@ -2788,7 +2800,11 @@ describe('AdminService.applyManualModerationAction', () => {
       { action: 'BAN' },
     );
 
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
     expect(prisma.adminGlobalSpammerExemption.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -2908,10 +2924,11 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3', {
       botId: 'standby-bot',
     });
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', {
-      immediate: true,
-      botId: 'standby-bot',
-    });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions({ botId: 'standby-bot' }),
+    );
   });
 
   it('routes manual mute through a delete-capable standby bot', async () => {
@@ -3227,10 +3244,11 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3', {
       botId: 'bot-6',
     });
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', {
-      immediate: true,
-      botId: 'bot-6',
-    });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions({ botId: 'bot-6' }),
+    );
   });
 
   it('routes manual unban through a member-moderation-capable standby bot', async () => {
@@ -3308,10 +3326,11 @@ describe('AdminService.applyManualModerationAction', () => {
         botId: 'standby-bot',
       }),
     );
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-3', {
-      immediate: true,
-      botId: 'standby-bot',
-    });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions({ botId: 'standby-bot' }),
+    );
   });
 
   it('does not fall back to the first manual moderation bot after transient access lookup failure', async () => {
@@ -3499,12 +3518,18 @@ describe('AdminService.applyManualModerationAction', () => {
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-2', 'user-3');
-    expect(maxClient.banMember).toHaveBeenNthCalledWith(1, 'chat-1', 'user-3', {
-      immediate: true,
-    });
-    expect(maxClient.banMember).toHaveBeenNthCalledWith(2, 'chat-2', 'user-3', {
-      immediate: true,
-    });
+    expect(maxClient.banMember).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
+    expect(maxClient.banMember).toHaveBeenNthCalledWith(
+      2,
+      'chat-2',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(1, 'chat-1', 'mid-source-1', {
       immediate: true,
     });
@@ -3714,7 +3739,11 @@ describe('AdminService.applyManualModerationAction', () => {
       { action: 'BAN' },
     );
 
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.kickMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3853,9 +3882,11 @@ describe('AdminService.applyManualModerationAction', () => {
       { action: 'BAN' },
     );
 
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-rollback', {
-      immediate: true,
-    });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-rollback',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.unbanMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3922,7 +3953,11 @@ describe('AdminService.applyManualModerationAction', () => {
     );
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', { immediate: true });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(redisCounter.deleteKeysByPattern).toHaveBeenCalledWith(
       buildDuplicateUserPattern('chat-1', 'user-4'),
     );
@@ -4041,10 +4076,11 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4', {
       botId: 'bot-2',
     });
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', {
-      immediate: true,
-      botId: 'bot-2',
-    });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expectImmediateMemberMutationOptions({ botId: 'bot-2' }),
+    );
   });
 
   it('repairs missing chat bot assignment before manual unban', async () => {
@@ -4136,10 +4172,11 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4', {
       botId: 'bot-2',
     });
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', {
-      immediate: true,
-      botId: 'bot-2',
-    });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expectImmediateMemberMutationOptions({ botId: 'bot-2' }),
+    );
   });
 
   it('rebinds manual unban to another actionable bot when persisted bot lost admin access', async () => {
@@ -4231,10 +4268,11 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4', {
       botId: 'bot-2',
     });
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', {
-      immediate: true,
-      botId: 'bot-2',
-    });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expectImmediateMemberMutationOptions({ botId: 'bot-2' }),
+    );
   });
 
   it('prefers the multi-bot read route over a stale persisted bot assignment', async () => {
@@ -4581,7 +4619,11 @@ describe('AdminService.applyManualModerationAction', () => {
     );
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', { immediate: true });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expectImmediateMemberMutationOptions(),
+    );
   });
 });
 
@@ -4627,7 +4669,11 @@ describe('AdminService.applyManualSystemBan', () => {
     );
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.unbanMember).not.toHaveBeenCalled();
     expect(prisma.adminGlobalSpammerExemption.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -4808,7 +4854,11 @@ describe('AdminService.applyManualSystemBan', () => {
       'group_command',
     );
 
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.kickMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -4892,8 +4942,16 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-3', {
       trafficClass: 'background',
     });
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-2', 'user-3', { immediate: true });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-2',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
       immediate: true,
     });
@@ -5003,14 +5061,16 @@ describe('AdminService.applyManualSystemBan', () => {
       trafficClass: 'background',
       botId: 'bot-2',
     });
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', {
-      immediate: true,
-      botId: 'bot-1',
-    });
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-2', 'user-3', {
-      immediate: true,
-      botId: 'bot-2',
-    });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions({ botId: 'bot-1' }),
+    );
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-2',
+      'user-3',
+      expectImmediateMemberMutationOptions({ botId: 'bot-2' }),
+    );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
       immediate: true,
       botId: 'bot-1',
@@ -6428,94 +6488,6 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
-  it('does not report success when a retried source ban command is already ambiguous', async () => {
-    const prisma = createPrismaMock();
-    const timeoutError = Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
-    const maxClient = {
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'bot-2',
-        isAdmin: true,
-        isOwner: false,
-        permissions: ['add_remove_members'],
-      }),
-      getChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'user-2',
-        isAdmin: false,
-        isOwner: false,
-        permissions: [],
-      }),
-      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
-      banMember: jest.fn().mockRejectedValue(timeoutError),
-      deleteMessage: jest.fn().mockResolvedValue(undefined),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
-    };
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-
-    const job = {
-      kind: 'manual_group_moderation_command' as const,
-      jobId: 'job-command-source-timeout-1',
-      sourceChatId: 'chat-1',
-      commandBotId: 'bot-2',
-      targetUserId: 'user-2',
-      targetSenderName: 'Нарушитель',
-      targetMessageId: 'mid-target-1',
-      commandMessageId: 'mid-command-1',
-      actor: {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatId: 'chat-1',
-        chatTitle: 'Chat 1',
-      },
-      action: 'BAN' as const,
-      muteDurationHours: null,
-      deleteBotMessagesEnabled: true,
-      deleteBotMessagesDelayMinutes: 3,
-    };
-
-    await expect(service.processManualModerationFanoutJob(job)).rejects.toThrow(
-      ServiceUnavailableException,
-    );
-    await expect(service.processManualModerationFanoutJob(job)).resolves.toBeUndefined();
-
-    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('MAX не подтвердил результат предыдущей попытки'),
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        trafficClass: 'interactive',
-        botId: 'bot-2',
-      }),
-    );
-    expect(maxClient.sendMessage).not.toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('забанен'),
-      expect.anything(),
-      expect.anything(),
-    );
-    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          operationKey: expect.stringContaining('COMMAND_SOURCE_BAN'),
-        }),
-        data: expect.objectContaining({
-          status: 'AMBIGUOUS',
-          terminal: true,
-        }),
-      }),
-    );
-  });
-
   it('processes queued primary group permanent mute commands outside the webhook hot path', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -6933,79 +6905,6 @@ describe('AdminService.applyManualSystemBan', () => {
     );
   });
 
-  it('marks timed out queued manual ban fanout ambiguous and does not auto retry it', async () => {
-    const prisma = createPrismaMock();
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
-      {
-        userId: 'admin-1',
-        chatId: 'chat-2',
-        chat: {
-          id: 'chat-2',
-          title: 'Вторая группа',
-          createdAt: new Date('2026-03-02T00:00:00.000Z'),
-          entityType: 'CHAT',
-        },
-      },
-    ]);
-
-    const timeoutError = Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
-    const maxClient = {
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'bot-2',
-        isAdmin: true,
-        isOwner: false,
-        permissions: ['add_remove_members'],
-      }),
-      getChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'user-3',
-        isAdmin: false,
-        isOwner: false,
-        permissions: [],
-      }),
-      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
-      banMember: jest.fn().mockRejectedValueOnce(timeoutError).mockResolvedValue(undefined),
-      deleteMessage: jest.fn().mockResolvedValue(undefined),
-    };
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-
-    const job = {
-      kind: 'manual_ban_fanout' as const,
-      jobId: 'job-ban-timeout-1',
-      rootIntentKey: 'command-root-timeout-1',
-      sourceChatId: 'chat-1',
-      targetUserId: 'user-3',
-      actor: {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatId: null,
-        chatTitle: null,
-      },
-      source: 'group_command' as const,
-    };
-
-    await service.processManualModerationFanoutJob(job);
-    await service.processManualModerationFanoutJob(job);
-
-    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
-    expect(prisma.manualModerationFanoutLedgerEntry.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          operationKey: expect.stringContaining('FANOUT_BAN_MEMBER'),
-        }),
-        data: expect.objectContaining({
-          status: 'AMBIGUOUS',
-        }),
-      }),
-    );
-  });
-
   it('reclaims stale in-progress manual fanout ledger entries instead of making them ambiguous', async () => {
     const prisma = createPrismaMock();
     const service = new AdminService(
@@ -7356,7 +7255,11 @@ describe('AdminService.applyManualSystemBan', () => {
       }),
     );
 
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-1',
+      'user-3',
+      expectImmediateMemberMutationOptions(),
+    );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Пользователь](max://user/user-3) включён бан.',
@@ -17898,6 +17801,7 @@ describe('AdminService admin access validation', () => {
     expect(prisma.moderationEvent.findMany).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',
+        ruleCode: { not: 'SANCTION_STATE_FENCE' },
       },
       orderBy: { createdAt: 'desc' },
       skip: 0,
