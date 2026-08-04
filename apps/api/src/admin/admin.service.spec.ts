@@ -15,6 +15,7 @@ import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildDeveloperForcedGlobalSpammerCacheKey } from '../moderation/developer-forced-global-spammer-cache';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
+import { buildModerationReleaseCallbackPayload } from '../moderation/moderation-release-callback.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminService } from './admin.service';
@@ -49,6 +50,26 @@ import {
 
 function broadcastRuntime(service: AdminService): any {
   return (service as any).managedBroadcastRuntime;
+}
+
+function moderationReleaseMessageOptions(
+  action: 'UNBAN' | 'UNMUTE',
+  chatId: string,
+  targetUserId: string,
+) {
+  return {
+    buttons: [
+      [
+        {
+          type: 'callback',
+          text: action === 'UNBAN' ? 'Разбанить' : 'Снять мут',
+          payload: buildModerationReleaseCallbackPayload(action, chatId, targetUserId),
+          intent: 'positive',
+        },
+      ],
+    ],
+    textFormat: 'markdown',
+  };
 }
 
 describe('AdminService dialog admin fallback reads', () => {
@@ -2812,8 +2833,8 @@ describe('AdminService.applyManualModerationAction', () => {
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Для участника [user-3](max://user/user-3) включён бан.',
-      { textFormat: 'markdown' },
+      'Для участника [Пользователь](max://user/user-3) включён бан.',
+      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-3'),
       { immediate: true },
     );
     expect(result).toEqual({
@@ -5913,7 +5934,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Нарушитель](max://user/user-2) включён бан.',
-      { textFormat: 'markdown' },
+      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-2'),
       {
         immediate: true,
         trafficClass: 'interactive',
@@ -6231,7 +6252,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Нарушитель](max://user/user-2) включён бан.',
-      { textFormat: 'markdown' },
+      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-2'),
       expect.objectContaining({
         immediate: true,
         botId: 'bot-5',
@@ -6286,7 +6307,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Участник [Нарушитель](max://user/user-2) удалён из чата.',
-      { textFormat: 'markdown' },
+      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-2'),
       expect.objectContaining({
         immediate: true,
         trafficClass: 'interactive',
@@ -6577,7 +6598,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Мут включён без срока.\nУчастник: [Нарушитель](max://user/user-2)',
-      { textFormat: 'markdown' },
+      moderationReleaseMessageOptions('UNMUTE', 'chat-1', 'user-2'),
       {
         immediate: true,
         trafficClass: 'interactive',
@@ -7336,8 +7357,8 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Для участника [user-3](max://user/user-3) включён бан.',
-      { textFormat: 'markdown' },
+      'Для участника [Пользователь](max://user/user-3) включён бан.',
+      moderationReleaseMessageOptions('UNBAN', 'chat-1', 'user-3'),
       { immediate: true },
     );
   });

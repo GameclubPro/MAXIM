@@ -4,6 +4,7 @@ import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/p
 import { WebhookParser } from '../webhook/webhook.parser';
 import { ChatRulesPublishFenceRetryError } from './chat-rules-own-bot-message-classifier';
 import { buildActiveMuteStateKey } from './moderation-state.util';
+import { buildModerationReleaseCallbackPayload } from './moderation-release-callback.util';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
   buildDeveloperForcedGlobalSpammerCacheKey,
@@ -1197,6 +1198,55 @@ function createGroupRulesCallbackUpdate(options: { botId?: string } = {}): MaxUp
       message: {
         recipient: {
           chat_id: 'chat-1',
+        },
+      },
+    },
+  };
+}
+
+function createModerationReleaseCallbackUpdate(params: {
+  action: 'UNBAN' | 'UNMUTE';
+  targetUserId?: string;
+  payloadChatId?: string;
+  messageChatId?: string;
+  actorUserId?: string | null;
+  callbackId?: string;
+  updateId?: string;
+}): MaxUpdate {
+  const payloadChatId = params.payloadChatId ?? 'chat-1';
+  const messageChatId = params.messageChatId ?? payloadChatId;
+  const targetUserId = params.targetUserId ?? 'Target-User-1';
+  const actorUserId = params.actorUserId === undefined ? 'admin-1' : params.actorUserId;
+  const callbackId = params.callbackId ?? 'callback-release-1';
+
+  return {
+    updateId: params.updateId ?? 'upd-release-1',
+    botId: 'bot-1',
+    type: 'message_callback',
+    message: {
+      messageId: 'msg-release-1',
+      chatId: messageChatId,
+      senderId: 'bot-1',
+      senderName: 'Майор Максимов',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_callback',
+      callback: {
+        callback_id: callbackId,
+        payload: buildModerationReleaseCallbackPayload(params.action, payloadChatId, targetUserId),
+        ...(actorUserId
+          ? {
+              user: {
+                user_id: actorUserId,
+              },
+            }
+          : {}),
+      },
+      message: {
+        recipient: {
+          chat_id: messageChatId,
         },
       },
     },
@@ -8061,6 +8111,300 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['UNBAN', SanctionAction.BAN, 'Блокировка снята'],
+    ['UNMUTE', SanctionAction.MUTE, 'Мут снят'],
+  ] as const)(
+    'allows a current chat admin to apply %s from a sanction notice',
+    async (action, sanctionAction, notification) => {
+      const prisma = {
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue({
+            action: sanctionAction,
+            ruleCode: action === 'UNBAN' ? 'AUTO_BAN' : 'AUTO_MUTE',
+          }),
+        },
+      };
+      const maxClient = {
+        getChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'admin-1',
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+        }),
+        answerCallback: jest.fn().mockResolvedValue(undefined),
+      };
+      const manualBridge = {
+        applyManualModerationAction: jest.fn().mockResolvedValue({
+          ok: true,
+          action,
+          userId: 'Target-User-ABC',
+          muteDurationHours: null,
+          muteExpiresAt: null,
+          message: notification,
+        }),
+      };
+      const service = createModerationServiceWithManualBridge({
+        prisma,
+        ruleEngine: {},
+        sanctionService: {},
+        maxClient,
+        manualBridge,
+      });
+
+      await service.handleUpdate(
+        createModerationReleaseCallbackUpdate({
+          action,
+          targetUserId: 'Target-User-ABC',
+        }),
+      );
+
+      expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-1', 'admin-1', {
+        bypassCache: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_sanction',
+        botId: 'bot-1',
+      });
+      expect(prisma.moderationEvent.findFirst).toHaveBeenCalledWith({
+        where: {
+          chatId: 'chat-1',
+          userId: 'Target-User-ABC',
+          OR: [
+            { action: { in: [SanctionAction.BAN, SanctionAction.MUTE] } },
+            { ruleCode: { in: ['MANUAL_UNBAN', 'MANUAL_UNMUTE'] } },
+          ],
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: {
+          action: true,
+          ruleCode: true,
+        },
+      });
+      expect(manualBridge.applyManualModerationAction).toHaveBeenCalledWith(
+        'chat-1',
+        'Target-User-ABC',
+        expect.objectContaining({
+          userId: 'admin-1',
+          launchBotId: 'bot-1',
+          chatId: 'chat-1',
+        }),
+        { action },
+        'group_command',
+        {
+          actorAlreadyVerified: true,
+          allowTargetDisplayNameRemoteLookup: false,
+        },
+      );
+      expect(maxClient.answerCallback).toHaveBeenCalledWith(
+        'callback-release-1',
+        notification,
+        undefined,
+        {
+          ignoreFailureMetricStatuses: [400, 404],
+          botId: 'bot-1',
+        },
+      );
+    },
+  );
+
+  it('silently ignores a moderation release click from a regular chat member', async () => {
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest.fn(),
+      },
+    };
+    const maxClient = {
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'member-1',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+    };
+    const manualBridge = {
+      applyManualModerationAction: jest.fn(),
+    };
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      manualBridge,
+    });
+
+    await service.handleUpdate(
+      createModerationReleaseCallbackUpdate({ action: 'UNBAN', actorUserId: 'member-1' }),
+    );
+
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+    expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      undefined,
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
+  it.each([
+    ['a missing callback actor', { actorUserId: null }],
+    ['a payload bound to another chat', { payloadChatId: 'chat-2', messageChatId: 'chat-1' }],
+  ] as const)('fails closed for %s', async (_caseName, callbackOptions) => {
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest.fn(),
+      },
+    };
+    const maxClient = {
+      getChatMemberAccess: jest.fn(),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+    };
+    const manualBridge = {
+      applyManualModerationAction: jest.fn(),
+    };
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      manualBridge,
+    });
+
+    await service.handleUpdate(
+      createModerationReleaseCallbackUpdate({
+        action: 'UNMUTE',
+        ...callbackOptions,
+      }),
+    );
+
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+    expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      undefined,
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
+  it('does not let an old ban button release a newer mute', async () => {
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          action: SanctionAction.MUTE,
+          ruleCode: 'AUTO_MUTE',
+        }),
+      },
+    };
+    const maxClient = {
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'admin-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+    };
+    const manualBridge = {
+      applyManualModerationAction: jest.fn(),
+    };
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      manualBridge,
+    });
+
+    await service.handleUpdate(createModerationReleaseCallbackUpdate({ action: 'UNBAN' }));
+
+    expect(manualBridge.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-release-1',
+      'Санкция уже снята или изменилась',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
+  });
+
+  it('does not apply the same release action twice', async () => {
+    let active = true;
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest
+          .fn()
+          .mockImplementation(async () =>
+            active
+              ? { action: SanctionAction.BAN, ruleCode: 'AUTO_BAN' }
+              : { action: SanctionAction.NONE, ruleCode: 'MANUAL_UNBAN' },
+          ),
+      },
+    };
+    const maxClient = {
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'admin-1',
+        isAdmin: false,
+        isOwner: true,
+        permissions: [],
+      }),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+    };
+    const manualBridge = {
+      applyManualModerationAction: jest.fn().mockImplementation(async () => {
+        active = false;
+        return {
+          ok: true,
+          action: 'UNBAN',
+          userId: 'Target-User-1',
+          muteDurationHours: null,
+          muteExpiresAt: null,
+          message: 'Блокировка снята',
+        };
+      }),
+    };
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine: {},
+      sanctionService: {},
+      maxClient,
+      manualBridge,
+    });
+
+    await service.handleUpdate(
+      createModerationReleaseCallbackUpdate({ action: 'UNBAN', callbackId: 'callback-release-1' }),
+    );
+    await service.handleUpdate(
+      createModerationReleaseCallbackUpdate({
+        action: 'UNBAN',
+        callbackId: 'callback-release-2',
+        updateId: 'upd-release-2',
+      }),
+    );
+
+    expect(manualBridge.applyManualModerationAction).toHaveBeenCalledTimes(1);
+    expect(maxClient.answerCallback).toHaveBeenLastCalledWith(
+      'callback-release-2',
+      'Санкция уже снята или изменилась',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+        botId: 'bot-1',
+      },
+    );
   });
 
   it('does not send greeting message when greeting toggle is disabled', async () => {
@@ -18321,10 +18665,22 @@ describe('ModerationService', () => {
       'chat-1',
       permanentBanNotice('Алексей'),
       {
-        button: {
-          text: 'Правила',
-          url: 'https://max.ru/channel/rules',
-        },
+        buttons: [
+          [
+            {
+              text: 'Правила',
+              url: 'https://max.ru/channel/rules',
+            },
+          ],
+          [
+            {
+              type: 'callback',
+              text: 'Разбанить',
+              payload: buildModerationReleaseCallbackPayload('UNBAN', 'chat-1', 'user-1'),
+              intent: 'positive',
+            },
+          ],
+        ],
         textFormat: 'markdown',
       },
     );
@@ -18465,10 +18821,22 @@ describe('ModerationService', () => {
       'chat-1',
       muteNotice('Алексей', '6ч'),
       {
-        button: {
-          text: 'Правила',
-          url: 'https://max.ru/channel/rules',
-        },
+        buttons: [
+          [
+            {
+              text: 'Правила',
+              url: 'https://max.ru/channel/rules',
+            },
+          ],
+          [
+            {
+              type: 'callback',
+              text: 'Снять мут',
+              payload: buildModerationReleaseCallbackPayload('UNMUTE', 'chat-1', 'user-1'),
+              intent: 'positive',
+            },
+          ],
+        ],
         textFormat: 'markdown',
       },
     );

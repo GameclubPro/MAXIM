@@ -5,7 +5,10 @@ import {
   extractUrlsFromText as extractTextUrls,
   stripUrlsFromText as stripTextUrls,
 } from '../common/url-text.util';
-import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
+import {
+  normalizeMaxUserDisplayName,
+  resolveMaxUserDisplayName,
+} from '../common/max-user-display-name.util';
 
 @Injectable()
 export class WebhookParser {
@@ -709,18 +712,21 @@ export class WebhookParser {
     const payloadSender = this.asRecord(payload.sender);
 
     return (
-      resolveMaxUserDisplayName(
-        {
-          display_name: message.display_name,
-          displayName: message.displayName,
-          name: message.sender_name,
-          nickname: message.senderName,
-        },
-        sender,
-        from,
-        user,
-        actor,
-        payloadSender,
+      normalizeMaxUserDisplayName(
+        resolveMaxUserDisplayName(
+          {
+            display_name: message.display_name,
+            displayName: message.displayName,
+            name: message.sender_name,
+            nickname: message.senderName,
+          },
+          sender,
+          from,
+          user,
+          actor,
+          payloadSender,
+        ),
+        this.extractSenderId(message, payload),
       ) ?? undefined
     );
   }

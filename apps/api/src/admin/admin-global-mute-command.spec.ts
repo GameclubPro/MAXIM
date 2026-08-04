@@ -1,3 +1,4 @@
+import { buildModerationReleaseCallbackPayload } from '../moderation/moderation-release-callback.util';
 import { AdminService } from './admin.service';
 import {
   createChatContextCacheMock,
@@ -64,7 +65,19 @@ describe('AdminService global mute group command', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Мут включён на 24 ч.\nУчастник: [Нарушитель](max://user/user-2)',
-      { textFormat: 'markdown' },
+      {
+        buttons: [
+          [
+            {
+              type: 'callback',
+              text: 'Снять мут',
+              payload: buildModerationReleaseCallbackPayload('UNMUTE', 'chat-1', 'user-2'),
+              intent: 'positive',
+            },
+          ],
+        ],
+        textFormat: 'markdown',
+      },
       expect.objectContaining({ immediate: true, trafficClass: 'interactive' }),
     );
     expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(

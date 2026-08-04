@@ -794,6 +794,7 @@ describe('WebhookParser', () => {
       update_type: 'message_created',
       timestamp: 1772249118580,
       message: {
+        sender_name: '195714583',
         body: {
           mid: 'mid.ffffbef220e477f9019ca24777741421',
           seq: 116146118235264030,
@@ -819,6 +820,7 @@ describe('WebhookParser', () => {
     expect(parsed.message?.messageId).toBe('mid.ffffbef220e477f9019ca24777741421');
     expect(parsed.message?.chatId).toBe('-71527833503751');
     expect(parsed.message?.senderId).toBe('195714583');
+    expect(parsed.message?.senderName).toBeUndefined();
     expect(parsed.message?.text).toContain('https://web.telegram.org/');
   });
 

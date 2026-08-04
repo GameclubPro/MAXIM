@@ -114,6 +114,7 @@ import {
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -151,6 +152,14 @@ import {
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from '../moderation/moderation-state.util';
+import {
+  withModerationReleaseButton,
+  type ModerationReleaseAction,
+} from '../moderation/moderation-release-callback.util';
+import {
+  formatManualModerationUserLabel,
+  sendManualBanChatNotice,
+} from './manual-moderation-notice.util';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC,
   buildDeveloperForcedGlobalSpammerCacheKey,
@@ -9207,7 +9216,7 @@ export class AdminService implements OnModuleDestroy {
       },
     );
     const targetDisplayName =
-      this.readTrimmedString(options.targetDisplayNameHint) ??
+      normalizeMaxUserDisplayName(options.targetDisplayNameHint, targetUserId) ??
       (await this.resolveManualModerationTargetDisplayName(chatId, targetUserId, {
         botId: resolvedBotId,
         allowRemoteLookup:
@@ -9605,9 +9614,10 @@ export class AdminService implements OnModuleDestroy {
             }
           : {}),
       });
-      await this.sendManualBanChatNotice({
+      await sendManualBanChatNotice(this.maxClient, this.logger, {
         chatId,
         targetUserId,
+        targetDisplayName,
         source,
         removedOnly: executionMode === 'MAX_REMOVE_ONLY',
         botId: resolvedBotId,
@@ -9778,7 +9788,7 @@ export class AdminService implements OnModuleDestroy {
       },
     );
     const targetDisplayName =
-      this.readTrimmedString(options.targetDisplayNameHint) ??
+      normalizeMaxUserDisplayName(options.targetDisplayNameHint, targetUserId) ??
       (await this.resolveManualModerationTargetDisplayName(chatId, targetUserId, {
         botId: resolvedBotId,
         allowRemoteLookup: options.allowTargetDisplayNameRemoteLookup,
@@ -9999,9 +10009,10 @@ export class AdminService implements OnModuleDestroy {
           }
         : {}),
     });
-    await this.sendManualBanChatNotice({
+    await sendManualBanChatNotice(this.maxClient, this.logger, {
       chatId,
       targetUserId,
+      targetDisplayName,
       source,
       removedOnly: executionMode === 'MAX_REMOVE_ONLY',
       botId: resolvedBotId,
@@ -10219,52 +10230,6 @@ export class AdminService implements OnModuleDestroy {
     return this.manualModerationRuntime.enqueueDeveloperSuperBanCommand(params);
   }
 
-  private async sendManualBanChatNotice(params: {
-    chatId: string;
-    targetUserId: string;
-    source: AdminActionSource;
-    removedOnly: boolean;
-    botId?: string;
-  }): Promise<void> {
-    if (params.source === 'group_command') {
-      return;
-    }
-
-    const maxClientWithSendMessage = this.maxClient as MaxClientService & {
-      sendMessage?: MaxClientService['sendMessage'];
-    };
-    if (typeof maxClientWithSendMessage.sendMessage !== 'function') {
-      return;
-    }
-
-    const userMention = this.buildManualModerationUserMention(params.targetUserId);
-    const text = params.removedOnly
-      ? `Участник ${userMention} удалён из чата.`
-      : `Для участника ${userMention} включён бан.`;
-
-    try {
-      await maxClientWithSendMessage.sendMessage(
-        params.chatId,
-        text,
-        { textFormat: 'markdown' },
-        {
-          immediate: true,
-          ...(params.botId ? { botId: params.botId } : {}),
-        },
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.targetUserId,
-          source: params.source,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to send manual ban notice message',
-      );
-    }
-  }
-
   async processDeveloperSuperBanJob(job: AdminSuperBanJob): Promise<void> {
     if (job.kind !== 'developer_super_ban') {
       return;
@@ -10300,7 +10265,7 @@ export class AdminService implements OnModuleDestroy {
 
     const actor = this.buildManualFanoutActor(job.actor);
     const targetDisplayName =
-      this.readTrimmedString(job.targetSenderName) ??
+      normalizeMaxUserDisplayName(job.targetSenderName, job.targetUserId) ??
       (await this.resolveManualModerationTargetDisplayName(job.sourceChatId, job.targetUserId, {
         botId: job.commandBotId ?? undefined,
         allowRemoteLookup: false,
@@ -10337,10 +10302,7 @@ export class AdminService implements OnModuleDestroy {
       sourceChatId: job.sourceChatId,
       actorUserId: actor.userId,
     });
-    const targetLabel = this.formatManualGroupCommandUserLabel(
-      job.targetSenderName,
-      job.targetUserId,
-    );
+    const targetLabel = formatManualModerationUserLabel(targetDisplayName, job.targetUserId);
     const estimatedChatCount = Math.max(1, estimatedManagedChatCount ?? 1);
     const estimatedChatCountText =
       estimatedChatCount === 1 ? `${estimatedChatCount} чате` : `${estimatedChatCount} чатах`;
@@ -10804,10 +10766,17 @@ export class AdminService implements OnModuleDestroy {
     job: AdminManualGroupModerationCommandJob,
   ): Promise<void> {
     const actor = this.buildManualFanoutActor(job.actor);
+    const queuedDisplayName = normalizeMaxUserDisplayName(job.targetSenderName, job.targetUserId);
+    const targetDisplayName =
+      queuedDisplayName ??
+      (await this.resolveManualModerationTargetDisplayName(job.sourceChatId, job.targetUserId, {
+        botId: job.commandBotId ?? undefined,
+        allowRemoteLookup: true,
+      }));
     const commandOptions: ManualModerationExecutionOptions = {
       actorAlreadyVerified: true,
       preferredBotId: job.commandBotId ?? null,
-      targetDisplayNameHint: job.targetSenderName ?? null,
+      targetDisplayNameHint: targetDisplayName,
       allowTargetDisplayNameRemoteLookup: false,
       fanoutAllChats: job.action === 'BAN' && job.fanoutAllChats === true,
       fanoutLedgerJobId: job.jobId,
@@ -10893,10 +10862,7 @@ export class AdminService implements OnModuleDestroy {
       actorUserId: job.actor.userId,
     });
 
-    const targetLabel = this.formatManualGroupCommandUserLabel(
-      job.targetSenderName,
-      job.targetUserId,
-    );
+    const targetLabel = formatManualModerationUserLabel(targetDisplayName, job.targetUserId);
     const noticeBotId = await this.resolveManualGroupCommandNoticeBotId(
       job.sourceChatId,
       job.commandBotId,
@@ -10918,6 +10884,11 @@ export class AdminService implements OnModuleDestroy {
             ? `Участник ${targetLabel} удалён из чата.`
             : `Для участника ${targetLabel} включён бан.`
           : `${result.message}\nУчастник: ${targetLabel}`,
+      release: {
+        action: job.action === 'BAN' ? 'UNBAN' : 'UNMUTE',
+        chatId: job.sourceChatId,
+        targetUserId: job.targetUserId,
+      },
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
     });
@@ -11035,6 +11006,11 @@ export class AdminService implements OnModuleDestroy {
       action: 'BAN' | 'MUTE';
     };
     text: string;
+    release?: {
+      action: ModerationReleaseAction;
+      chatId: string;
+      targetUserId: string;
+    };
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
   }): Promise<void> {
@@ -11092,7 +11068,9 @@ export class AdminService implements OnModuleDestroy {
       await this.maxClient.sendMessage(
         params.chatId,
         params.text,
-        { textFormat: 'markdown' },
+        params.release
+          ? withModerationReleaseButton({ textFormat: 'markdown' }, params.release)
+          : { textFormat: 'markdown' },
         dispatchOptions,
       );
       if (operationKey) {
@@ -11141,20 +11119,6 @@ export class AdminService implements OnModuleDestroy {
         normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) * 60 * 1_000;
     }
     return options;
-  }
-
-  private formatManualGroupCommandUserLabel(
-    senderName: string | null | undefined,
-    userId: string,
-  ): string {
-    const normalizedName =
-      typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
-    const safeName = normalizedName ? this.escapeMarkdownPlainText(normalizedName) : 'Пользователь';
-    const normalizedUserId = userId.trim();
-    if (normalizedUserId) {
-      return `[${safeName}](max://user/${encodeURIComponent(normalizedUserId)})`;
-    }
-    return `**${safeName}**`;
   }
 
   private extractManualGroupCommandErrorMessage(error: unknown): string {
@@ -11567,12 +11531,6 @@ export class AdminService implements OnModuleDestroy {
       deletedMessageCount: 0,
       failedMessageDeleteCount: 0,
     };
-  }
-
-  private buildManualModerationUserMention(userId: string): string {
-    const normalizedUserId = userId.trim();
-    const label = this.escapeMarkdown(normalizedUserId || 'Пользователь');
-    return `[${label}](max://user/${encodeURIComponent(normalizedUserId)})`;
   }
 
   private buildManualModerationFanoutOperationKey(params: {
@@ -14426,7 +14384,10 @@ export class AdminService implements OnModuleDestroy {
       const localDisplayNames = await this.resolveUserDisplayNames(normalizedChatId, [
         normalizedTargetUserId,
       ]);
-      const localDisplayName = localDisplayNames.get(normalizedTargetUserId)?.trim() ?? '';
+      const localDisplayName = normalizeMaxUserDisplayName(
+        localDisplayNames.get(normalizedTargetUserId),
+        normalizedTargetUserId,
+      );
       if (localDisplayName) {
         return localDisplayName;
       }
@@ -14458,7 +14419,7 @@ export class AdminService implements OnModuleDestroy {
         ...(options.botId ? { botId: options.botId } : {}),
       });
       const profile = profiles.get(normalizedTargetUserId);
-      const displayName = this.readTrimmedString(profile?.displayName);
+      const displayName = normalizeMaxUserDisplayName(profile?.displayName, normalizedTargetUserId);
       if (displayName) {
         return displayName;
       }

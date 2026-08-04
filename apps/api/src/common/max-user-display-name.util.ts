@@ -52,3 +52,25 @@ export function resolveMaxUserDisplayName(...sources: readonly unknown[]): strin
 
   return readFirstString(profiles, LEGACY_DISPLAY_NAME_KEYS);
 }
+
+/** Rejects MAX identifiers that occasionally arrive in fields used as display names. */
+export function normalizeMaxUserDisplayName(value: unknown, userId?: string | null): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.replace(/\s+/gu, ' ').trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+  if (
+    (normalizedUserId && normalized === normalizedUserId) ||
+    (/^\d+$/u.test(normalized) && normalized.length >= 5)
+  ) {
+    return null;
+  }
+
+  return normalized;
+}

@@ -1,4 +1,7 @@
-import { resolveMaxUserDisplayName } from './max-user-display-name.util';
+import {
+  normalizeMaxUserDisplayName,
+  resolveMaxUserDisplayName,
+} from './max-user-display-name.util';
 
 describe('resolveMaxUserDisplayName', () => {
   it('prefers explicit full display names over split and legacy names', () => {
@@ -41,5 +44,12 @@ describe('resolveMaxUserDisplayName', () => {
 
   it('uses a trimmed legacy name when no full name is available', () => {
     expect(resolveMaxUserDisplayName(null, { nickname: ' Пользователь ' })).toBe('Пользователь');
+  });
+
+  it('rejects user ids passed as display names', () => {
+    expect(normalizeMaxUserDisplayName('  Иван   Петров  ', '195714583')).toBe('Иван Петров');
+    expect(normalizeMaxUserDisplayName('195714583', '195714583')).toBeNull();
+    expect(normalizeMaxUserDisplayName('613002203036')).toBeNull();
+    expect(normalizeMaxUserDisplayName('user-1', 'user-1')).toBeNull();
   });
 });

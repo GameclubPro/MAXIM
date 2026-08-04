@@ -133,6 +133,14 @@ import {
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from './moderation-state.util';
+import { withModerationReleaseButton } from './moderation-release-callback.util';
+import { ModerationReleaseCallbackService } from './moderation-release-callback.service';
+import {
+  extractMaxCallbackId,
+  extractMaxCallbackPayload,
+  extractMaxCallbackPayloadRaw,
+  extractMaxCallbackUserId,
+} from './max-callback-update.util';
 import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC,
   DEVELOPER_FORCED_GLOBAL_SPAMMER_MEMORY_CACHE_TTL_MS,
@@ -402,6 +410,7 @@ import { buildLocalAdminContactDisplayNameQuery } from './local-admin-contact-di
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
   | 'adoptChatRulesFromMessage'
+  | 'applyManualModerationAction'
   | 'applyManualChatSilenceCommand'
   | 'applyManualOpenChatCommand'
   | 'enqueueDeveloperSuperBanCommand'
@@ -543,6 +552,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly backgroundWorkSoftPauseWorkerShare: number;
   private readonly backgroundWorkSoftPauseWorkerPressure: number;
   private readonly sharedChatExecutionMemoryLocks = new Map<string, string>();
+  private moderationReleaseCallbackServiceInstance: ModerationReleaseCallbackService | null = null;
   private moderationAccessServiceInstance: ModerationAccessService | null = null;
   private nightModeTransitionRuntimeInstance: NightModeTransitionRuntimeService | null = null;
   private nightModeTransitionDeliveryInstance: NightModeTransitionDeliveryService | null = null;
@@ -778,6 +788,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.injectedManualModerationService ?? null;
   }
 
+  private get moderationReleaseCallbackService(): ModerationReleaseCallbackService {
+    if (!this.moderationReleaseCallbackServiceInstance) {
+      this.moderationReleaseCallbackServiceInstance = new ModerationReleaseCallbackService(
+        this.prisma,
+        this.maxClient,
+        this.manualModerationCommandBridge,
+        this.redisCounter,
+      );
+    }
+    return this.moderationReleaseCallbackServiceInstance;
+  }
+
   private get webhookCanonicalExecutionService(): WebhookCanonicalExecutionService {
     if (this.injectedWebhookCanonicalExecutionService) {
       return this.injectedWebhookCanonicalExecutionService;
@@ -969,7 +991,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   async handleUpdate(update: MaxUpdate, hotPathProfile?: WebhookHotPathProfile) {
     if (!update.message) {
-      const callbackId = this.extractCallbackId(update);
+      const callbackId = extractMaxCallbackId(update);
       if (callbackId) {
         await this.answerCallbackSafe(callbackId, 'Команда принята');
       }
@@ -1049,14 +1071,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const callbackId = this.extractCallbackId(update);
-      const callbackPayload = this.extractCallbackPayload(update);
+      const callbackId = extractMaxCallbackId(update);
+      if (await this.moderationReleaseCallbackService.tryHandle(update)) {
+        return;
+      }
+      const rawCallbackPayload = extractMaxCallbackPayloadRaw(update);
+      const callbackPayload = rawCallbackPayload?.toLowerCase() ?? null;
       const suggestionPayload =
         callbackPayload && this.adminDialogLinkService
           ? this.adminDialogLinkService.parseChannelSuggestionStartPayload(callbackPayload)
           : null;
       if (callbackId && suggestionPayload && this.privateControlService) {
-        const callbackUserId = this.extractCallbackUserId(update) ?? senderId;
+        const callbackUserId = extractMaxCallbackUserId(update) ?? senderId;
         const delivered = await this.privateControlService.openChannelSuggestionFromCallback({
           userId: callbackUserId,
           chatId: suggestionPayload.chatId,
@@ -4152,7 +4178,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId,
         text: noticeText,
-        messageOptions: botMessageOptions,
+        messageOptions: withModerationReleaseButton(botMessageOptions, {
+          action: 'UNMUTE',
+          chatId,
+          targetUserId: userId,
+        }),
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
       });
@@ -4201,7 +4231,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         botId,
         text: noticeText,
-        messageOptions: botMessageOptions,
+        messageOptions: withModerationReleaseButton(botMessageOptions, {
+          action: 'UNBAN',
+          chatId,
+          targetUserId: userId,
+        }),
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
       });
@@ -11377,7 +11411,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? update.updateId.trim()
         : String(update.updateId ?? '').trim();
     const messageId = update.message?.messageId?.trim() ?? '';
-    const callbackId = this.extractCallbackId(update)?.trim() ?? '';
+    const callbackId = extractMaxCallbackId(update)?.trim() ?? '';
     const updateType = this.readLowerString(update.type);
     const semanticKey = buildWebhookSemanticEventKey(update);
     const discriminator =
@@ -11625,8 +11659,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const callbackId = this.extractCallbackId(update);
-    const callbackCommand = this.resolvePrivateCallbackCommand(this.extractCallbackPayload(update));
+    const callbackId = extractMaxCallbackId(update);
+    const callbackCommand = this.resolvePrivateCallbackCommand(extractMaxCallbackPayload(update));
     if (callbackId) {
       await this.answerCallbackSafe(
         callbackId,
@@ -11744,91 +11778,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (callbackId) {
       await this.answerCallbackSafe(callbackId, 'Кнопка обновлена. Нажмите ещё раз');
     }
-  }
-
-  private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {
-    const raw = this.asRecord(update.raw);
-    if (!raw) {
-      return null;
-    }
-
-    const data = this.asRecord(raw.data);
-    const event = this.asRecord(raw.event);
-    const candidates = [
-      this.asRecord(raw.callback),
-      this.asRecord(raw.message_callback),
-      data ? this.asRecord(data.callback) : null,
-      data ? this.asRecord(data.message_callback) : null,
-      event ? this.asRecord(event.callback) : null,
-      event ? this.asRecord(event.message_callback) : null,
-    ];
-
-    for (const candidate of candidates) {
-      if (!candidate) {
-        continue;
-      }
-
-      const nested = this.asRecord(candidate.callback);
-      if (nested) {
-        return nested;
-      }
-
-      if (
-        candidate.callback_id !== undefined ||
-        candidate.callbackId !== undefined ||
-        candidate.payload !== undefined
-      ) {
-        return candidate;
-      }
-    }
-
-    return null;
-  }
-
-  private extractCallbackId(update: MaxUpdate): string | null {
-    const callback = this.extractCallbackNode(update);
-    if (!callback) {
-      return null;
-    }
-
-    const value = callback.callback_id ?? callback.callbackId ?? callback.id;
-    if (typeof value !== 'string' && typeof value !== 'number') {
-      return null;
-    }
-
-    const normalized = String(value).trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private extractCallbackPayload(update: MaxUpdate): string | null {
-    const callback = this.extractCallbackNode(update);
-    if (!callback) {
-      return null;
-    }
-
-    const value = callback.payload ?? callback.data;
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const normalized = value.trim().toLowerCase();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private extractCallbackUserId(update: MaxUpdate): string | null {
-    const callback = this.extractCallbackNode(update);
-    if (!callback) {
-      return null;
-    }
-
-    const user = this.asRecord(callback.user);
-    const value = user?.user_id ?? user?.userId ?? user?.id;
-    if (typeof value === 'string' || typeof value === 'number') {
-      const normalized = String(value).trim();
-      return normalized.length > 0 ? normalized : null;
-    }
-
-    return null;
   }
 
   private resolvePrivateCallbackCommand(payload: string | null): PrivateControlCommand | null {

@@ -9,6 +9,10 @@ import {
   ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
   type MaxUpdate,
 } from '@maxim/contracts';
+import {
+  normalizeMaxUserDisplayName,
+  resolveMaxUserDisplayName,
+} from '../common/max-user-display-name.util';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { extractRawMessageNode } from './moderation-update-extractors';
 import {
@@ -648,7 +652,7 @@ function parseForwardedModerationTarget(
     chatId,
     chatTitle: readChatTitleFromEntity(row),
     userId,
-    senderName: readSenderNameFromForwardedNode(row),
+    senderName: normalizeMaxUserDisplayName(readSenderNameFromForwardedNode(row), userId),
     messageId: readMessageIdFromForwardedNode(row),
   };
 }
@@ -760,10 +764,15 @@ function readSenderNameFromForwardedNode(node: Record<string, unknown>): string 
     (item): item is Record<string, unknown> => item !== null,
   );
 
+  const displayName = resolveMaxUserDisplayName(...candidates);
+  if (displayName) {
+    return displayName;
+  }
+
   for (const candidate of candidates) {
-    const displayName = readDisplayNameFromEntity(candidate);
-    if (displayName) {
-      return displayName;
+    const username = readString(candidate.username);
+    if (username) {
+      return username;
     }
   }
 
@@ -929,41 +938,6 @@ function readForwardedMessageText(
     if (normalized) {
       return normalized;
     }
-  }
-
-  return null;
-}
-
-function readDisplayNameFromEntity(node: Record<string, unknown>): string | null {
-  const directCandidates = [
-    node.display_name,
-    node.displayName,
-    node.full_name,
-    node.fullName,
-    node.name,
-    node.nickname,
-  ];
-
-  for (const candidate of directCandidates) {
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate.trim();
-    }
-  }
-
-  const firstName = readString(
-    node.first_name ?? node.firstName ?? node.given_name ?? node.givenName,
-  );
-  const lastName = readString(
-    node.last_name ?? node.lastName ?? node.family_name ?? node.familyName,
-  );
-  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-  if (fullName.length > 0) {
-    return fullName;
-  }
-
-  const username = readString(node.username);
-  if (username) {
-    return username;
   }
 
   return null;

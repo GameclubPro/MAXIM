@@ -313,6 +313,23 @@ describe('admin forwarded command util', () => {
     ]);
   });
 
+  it('prefers split first and last names over legacy reply sender names', () => {
+    const update = createReplyUpdate();
+    const raw = update.raw as {
+      message?: { link?: { sender?: Record<string, unknown> } };
+    };
+    const replySender = raw.message?.link?.sender;
+    if (!replySender) {
+      throw new Error('Reply sender fixture is missing');
+    }
+    Object.assign(replySender, {
+      name: 'Иван',
+      nickname: 'Ваня',
+    });
+
+    expect(extractForwardedModerationTargets(update, 'chat-1')[0]?.senderName).toBe('Иван Петров');
+  });
+
   it('keeps private forwarded extraction narrower than admin extraction', () => {
     expect(extractPrivateForwardedModerationTargets(createReplyUpdate())).toEqual([]);
     expect(
