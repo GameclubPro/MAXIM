@@ -30,6 +30,7 @@ import {
   type BroadcastScheduleMode,
 } from './broadcast-common.js';
 import { booleanQueryFlagSchema, logsDashboardRangeSchema } from './dashboard-common.js';
+import * as dupe from './duplicate-settings.js';
 import {
   addBroadcastAudienceIssues,
   addBroadcastScheduleIssues,
@@ -68,7 +69,6 @@ export const sanctionActionSchema = z.enum([
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
-export const duplicateDetectionPresetSchema = z.enum(['STANDARD', 'STRICT', 'CUSTOM']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const applySettingsSectionSchema = z.enum([
   'links',
@@ -659,7 +659,10 @@ export const chatSettingsSchema = z
       duplicateMuteEnabled: z.boolean().default(false),
       duplicateBanEnabled: z.boolean().default(false),
       antiDuplicateEnabled: z.boolean().default(false),
-      duplicateDetectionPreset: duplicateDetectionPresetSchema.default('STRICT'),
+      duplicatePhotoEnabled: z.boolean().default(false),
+      duplicatePhotoMatchPreset: dupe.duplicatePhotoMatchPresetSchema.default('SAME_IMAGE'),
+      duplicatePhotoScope: dupe.duplicatePhotoScopeSchema.default('SAME_AUTHOR'),
+      duplicateDetectionPreset: dupe.duplicateDetectionPresetSchema.default('STRICT'),
       duplicateIgnoreLinksEnabled: z.boolean().default(false),
       duplicateIgnorePhonesEnabled: z.boolean().default(false),
       duplicateNearMatchEnabled: z.boolean().default(false),
@@ -2669,6 +2672,7 @@ export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRul
 
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,
+  duplicatePhotoModerationMode: dupe.duplicatePhotoModerationModeSchema.default('OBSERVE'),
   rules: chatRulesSchema,
   header: managedEntityHeaderSchema,
   botSpeechPreviewProfile: botSpeechPreviewProfileSchema.nullable().default(null),

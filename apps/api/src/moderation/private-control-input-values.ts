@@ -266,5 +266,17 @@ export function formatPrivateControlEnumValue(value: string): string {
   if (value === 'STRICT') {
     return 'Строгий';
   }
+  if (value === 'SAME_IMAGE') {
+    return 'Та же картинка';
+  }
+  if (value === 'MINOR_EDITS') {
+    return 'С небольшими изменениями';
+  }
+  if (value === 'SAME_AUTHOR') {
+    return 'У одного автора';
+  }
+  if (value === 'CHAT') {
+    return 'Во всём чате';
+  }
   return value;
 }

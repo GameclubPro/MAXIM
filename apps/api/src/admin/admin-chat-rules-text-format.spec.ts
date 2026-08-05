@@ -85,6 +85,41 @@ describe('admin chat rules text format helpers', () => {
     );
   });
 
+  it('mentions repeated photos only when photo duplicate enforcement is active', () => {
+    const baseSettings = chatSettingsSchema.parse({
+      linkPolicy: 'ALERT_ONLY',
+      antiDuplicateEnabled: true,
+      duplicateWarnEnabled: true,
+    });
+    const input = {
+      domains: [],
+      requiredSubscriptionChannels: [],
+    };
+
+    expect(
+      buildRulesTextItemsFromSettings({
+        ...input,
+        settings: { ...baseSettings, duplicatePhotoEnabled: false },
+      }),
+    ).toContain('Не повторяйте одно и то же сообщение: бот среагирует после 1 дубля.');
+    expect(
+      buildRulesTextItemsFromSettings({
+        ...input,
+        settings: { ...baseSettings, duplicatePhotoEnabled: true },
+        duplicatePhotoModerationMode: 'FULL',
+      }),
+    ).toContain(
+      'Не отправляйте повторно одинаковые сообщения и фото: бот среагирует после 1 дубля.',
+    );
+    expect(
+      buildRulesTextItemsFromSettings({
+        ...input,
+        settings: { ...baseSettings, duplicatePhotoEnabled: true },
+        duplicatePhotoModerationMode: 'OBSERVE',
+      }),
+    ).toContain('Не повторяйте одно и то же сообщение: бот среагирует после 1 дубля.');
+  });
+
   it('uses a fallback allowlist rule when allowed domains are empty', () => {
     const parsedSettings = chatSettingsSchema.parse({
       linkPolicy: 'ALLOWLIST_ONLY',

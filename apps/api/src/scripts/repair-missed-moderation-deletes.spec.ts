@@ -180,6 +180,12 @@ describe('repair missed moderation deletes', () => {
     const supported = [
       ['DUPLICATE', 'message_action', 'duplicate', 'DUPLICATE_DELETE'],
       ['DUPLICATE_HIT', 'message_action', 'duplicate_hit', 'DUPLICATE_DELETE'],
+      [
+        'DUPLICATE_MESSAGE_ACTION',
+        'message_action',
+        'duplicate_message_action',
+        'DUPLICATE_DELETE',
+      ],
       ['MUTE_ACTIVE_DELETE', 'message_action', 'active_mute', 'MUTE_ACTIVE_DELETE'],
       ['NIGHT_MODE_DELETE', 'message_action', 'night_mode', 'NIGHT_MODE_DELETE'],
       [

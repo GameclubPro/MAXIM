@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { MaxActionLedgerStatus, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildMaxActionNoExecutableRouteMessage } from './max-action-dispatch-error';
+import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
 import type { MaxActionJob, MaxActionType } from './max-client.service';
 
 const IRREVERSIBLE_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
@@ -25,6 +26,7 @@ export const MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES = [
   'max_api_internal_rate_limit',
   'moderation_sanction_state_lock_lease_lost',
   'moderation_sanction_state_lock_unavailable',
+  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
 ] as const;
 const MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES: ReadonlySet<string> = new Set(
   MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES,

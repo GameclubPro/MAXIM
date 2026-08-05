@@ -213,6 +213,36 @@ describe('validateEnv boolean parsing', () => {
     ).toThrow(/MODERATION_DELETE_INTENT_RETRY_MAX_MS/u);
   });
 
+  it('defaults photo duplicate analysis to bounded shadow mode', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.PHOTO_DUPLICATE_ROLLOUT_MODE).toBe('shadow');
+    expect(defaults.PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS).toBe('');
+    expect(defaults.PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS).toBe('');
+    expect(defaults.PHOTO_DUPLICATE_ALLOWED_HOSTS).toBe('i.oneme.ru');
+    expect(defaults.PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS).toBe(5_000);
+    expect(defaults.PHOTO_DUPLICATE_MAX_BYTES).toBe(16_777_216);
+    expect(defaults.PHOTO_DUPLICATE_MAX_PIXELS).toBe(40_000_000);
+    expect(defaults.PHOTO_DUPLICATE_HISTORY_MAX_ITEMS).toBe(250);
+
+    const configured = validateEnv(
+      createValidEnv({
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'delete_only',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+        PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: 'chat-2',
+        PHOTO_DUPLICATE_ALLOWED_HOSTS: 'i.oneme.ru,cdn.example.test',
+        PHOTO_DUPLICATE_MAX_BYTES: '8388608',
+      }),
+    );
+    expect(configured.PHOTO_DUPLICATE_ROLLOUT_MODE).toBe('delete_only');
+    expect(configured.PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS).toBe('chat-1');
+    expect(configured.PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS).toBe('chat-2');
+    expect(configured.PHOTO_DUPLICATE_MAX_BYTES).toBe(8_388_608);
+
+    expect(() =>
+      validateEnv(createValidEnv({ PHOTO_DUPLICATE_ROLLOUT_MODE: 'unsafe' })),
+    ).toThrow(/PHOTO_DUPLICATE_ROLLOUT_MODE/u);
+  });
+
   it('defaults the action ledger watchdog to shadow rollout', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.MAX_ACTION_LEDGER_WATCHDOG_MODE).toBe('shadow');

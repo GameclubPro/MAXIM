@@ -1,4 +1,9 @@
-import type { ChatSettings, DomainAllowlistEntry, ManagedEntityHeader } from '@maxim/contracts';
+import type {
+  ChatSettings,
+  DomainAllowlistEntry,
+  DuplicatePhotoModerationMode,
+  ManagedEntityHeader,
+} from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 
 import { isRequiredSubscriptionCurrentlyActive } from './admin-chat-settings';
@@ -7,6 +12,7 @@ export function buildRulesTextFromSettings(input: {
   settings: ChatSettings;
   domains: DomainAllowlistEntry[];
   requiredSubscriptionChannels: ManagedEntityHeader[];
+  duplicatePhotoModerationMode?: DuplicatePhotoModerationMode;
 }): string {
   const items = buildRulesTextItemsFromSettings(input);
   if (items.length === 0) {
@@ -36,6 +42,7 @@ export function buildRulesTextItemsFromSettings(input: {
   settings: ChatSettings;
   domains: DomainAllowlistEntry[];
   requiredSubscriptionChannels: ManagedEntityHeader[];
+  duplicatePhotoModerationMode?: DuplicatePhotoModerationMode;
 }): string[] {
   const { settings, requiredSubscriptionChannels, domains } = input;
   const items: string[] = [];
@@ -73,11 +80,22 @@ export function buildRulesTextItemsFromSettings(input: {
 
   if (settings.antiDuplicateEnabled) {
     const allowedCount = resolveRulesDuplicateAllowedCount(settings);
-    items.push(
-      allowedCount === 0
-        ? 'Не повторяйте одно и то же сообщение несколько раз.'
-        : `Не повторяйте одно и то же сообщение: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
-    );
+    const photoModerationEnforced =
+      input.duplicatePhotoModerationMode === 'DELETE_ONLY' ||
+      input.duplicatePhotoModerationMode === 'FULL';
+    if (settings.duplicatePhotoEnabled && photoModerationEnforced) {
+      items.push(
+        allowedCount === 0
+          ? 'Не отправляйте повторно одинаковые сообщения и фото.'
+          : `Не отправляйте повторно одинаковые сообщения и фото: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
+      );
+    } else {
+      items.push(
+        allowedCount === 0
+          ? 'Не повторяйте одно и то же сообщение несколько раз.'
+          : `Не повторяйте одно и то же сообщение: бот среагирует ${formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
+      );
+    }
   }
 
   if (settings.antiSpamEnabled) {

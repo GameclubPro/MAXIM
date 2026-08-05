@@ -8,6 +8,16 @@ describe('admin settings section apply', () => {
     expect(SETTINGS_SECTION_KEYS).not.toHaveProperty('thematicFilters');
   });
 
+  it('applies every photo duplicate setting with the duplicates section', () => {
+    expect(SETTINGS_SECTION_KEYS.duplicates).toEqual(
+      expect.arrayContaining([
+        'duplicatePhotoEnabled',
+        'duplicatePhotoMatchPreset',
+        'duplicatePhotoScope',
+      ]),
+    );
+  });
+
   it('rejects a crafted request for the retired thematic section before applying settings', async () => {
     const getSourceSettings = jest.fn();
     const applySettings = jest.fn();

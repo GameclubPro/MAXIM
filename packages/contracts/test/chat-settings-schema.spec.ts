@@ -4,6 +4,8 @@ import {
   applySettingsSectionSchema,
   broadcastHandoffRequestSchema,
   channelSettingsSchema,
+  chatRulesSchema,
+  chatSettingsScreenResponseSchema,
   chatSettingsSchema,
   normalizeHttpButtonUrl,
   sendBroadcastRequestSchema,
@@ -53,6 +55,62 @@ describe('chatSettingsSchema duplicate flow validation', () => {
       'voiceMessagesEnabled',
     ]);
     expect(settings.duplicateDetectionPreset).toBe('STRICT');
+    expect(settings.duplicatePhotoEnabled).toBe(false);
+    expect(settings.duplicatePhotoMatchPreset).toBe('SAME_IMAGE');
+    expect(settings.duplicatePhotoScope).toBe('SAME_AUTHOR');
+  });
+
+  it('accepts supported photo duplicate settings and rejects unknown enum values', () => {
+    expect(
+      chatSettingsSchema.parse({
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'MINOR_EDITS',
+        duplicatePhotoScope: 'CHAT',
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'MINOR_EDITS',
+        duplicatePhotoScope: 'CHAT',
+      }),
+    );
+    expect(
+      chatSettingsSchema.safeParse({ duplicatePhotoMatchPreset: 'CONTENT_SIMILARITY' }).success,
+    ).toBe(false);
+    expect(chatSettingsSchema.safeParse({ duplicatePhotoScope: 'GLOBAL' }).success).toBe(false);
+  });
+
+  it('defaults the public photo moderation mode safely and validates every mode', () => {
+    const screen = {
+      settings: chatSettingsSchema.parse({}),
+      rules: chatRulesSchema.parse({}),
+      header: {
+        id: 'chat-1',
+        title: 'Chat 1',
+        entityType: 'chat',
+        link: null,
+        participantsCount: null,
+      },
+      domains: [],
+    };
+
+    expect(chatSettingsScreenResponseSchema.parse(screen).duplicatePhotoModerationMode).toBe(
+      'OBSERVE',
+    );
+    for (const mode of ['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL'] as const) {
+      expect(
+        chatSettingsScreenResponseSchema.parse({
+          ...screen,
+          duplicatePhotoModerationMode: mode,
+        }).duplicatePhotoModerationMode,
+      ).toBe(mode);
+    }
+    expect(
+      chatSettingsScreenResponseSchema.safeParse({
+        ...screen,
+        duplicatePhotoModerationMode: 'ENFORCE',
+      }).success,
+    ).toBe(false);
   });
 
   it('keeps every channel automation toggle disabled by default', () => {

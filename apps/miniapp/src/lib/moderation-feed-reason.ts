@@ -82,14 +82,21 @@ function resolveStructuredReason(
   }
 
   if (ruleCode.startsWith('DUPLICATE_')) {
+    const fingerprintType = readString(metadata?.fingerprintType);
+    const duplicateLabel =
+      fingerprintType === 'image'
+        ? 'Повтор фото'
+        : fingerprintType === 'image_set'
+          ? 'Повтор альбома'
+          : 'Повтор сообщения';
     const count = readFiniteNumber(metadata?.count);
     const threshold = readFiniteNumber(metadata?.threshold);
     const windowSec = readFiniteNumber(metadata?.windowSec);
     const windowLabel = windowSec !== null ? ` за ${formatDurationSeconds(windowSec)}` : '';
     if (count !== null && threshold !== null) {
-      return `Повтор сообщения: ${Math.max(0, count)}/${Math.max(0, threshold)}${windowLabel}.`;
+      return `${duplicateLabel}: ${Math.max(0, count)}/${Math.max(0, threshold)}${windowLabel}.`;
     }
-    return `Повтор сообщения${windowLabel}.`;
+    return `${duplicateLabel}${windowLabel}.`;
   }
 
   if (ruleCode === 'MESSAGE_RATE_LIMIT') {

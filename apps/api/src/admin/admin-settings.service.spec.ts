@@ -173,6 +173,7 @@ function createService(
       updateSettings: jest.Mock;
     };
     domainAllowlistDetails?: Array<Record<string, unknown>>;
+    photoDuplicateConfig?: Record<string, string>;
     managedBroadcasts?: Array<Record<string, unknown>>;
     managedEntityHeader?: Record<string, unknown>;
     persistedChannelSettings?: ReturnType<typeof createPersistedChannelSettings>;
@@ -379,6 +380,9 @@ function createService(
       text: 'Читать канал',
     }),
   };
+  const configService = {
+    get: jest.fn((key: string) => options.photoDuplicateConfig?.[key]),
+  };
   const service = new AdminSettingsService(
     legacyAdminService as never,
     prisma as never,
@@ -390,11 +394,13 @@ function createService(
     nightModeTransitionScheduler as never,
     undefined,
     channelPostSignatureService as never,
+    configService as never,
   );
 
   return {
     chatContextCache,
     channelPostSignatureService,
+    configService,
     legacyAdminService,
     managedBroadcastService,
     managedEntitiesService,
@@ -487,6 +493,7 @@ describe('AdminSettingsService chat rules', () => {
       persona: 'female',
       characterName: 'Майор Максимова',
     });
+    expect(result.duplicatePhotoModerationMode).toBe('OBSERVE');
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
       'chat-1',
       'admin-1',
@@ -516,6 +523,64 @@ describe('AdminSettingsService chat rules', () => {
       legacyAdminService.resolveRequiredSubscriptionChannelHeadersForSettings,
     ).toHaveBeenCalledWith(['channel-1']);
   });
+
+  it.each<{
+    expected: string;
+    config: Record<string, string>;
+    settings: Record<string, unknown>;
+  }>([
+    {
+      expected: 'OFF',
+      config: { PHOTO_DUPLICATE_ROLLOUT_MODE: 'off' },
+      settings: {},
+    },
+    {
+      expected: 'DELETE_ONLY',
+      config: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'delete_only',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+      },
+      settings: {},
+    },
+    {
+      expected: 'FULL',
+      config: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+      },
+      settings: {},
+    },
+    {
+      expected: 'OBSERVE',
+      config: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-2',
+      },
+      settings: {},
+    },
+    {
+      expected: 'OBSERVE',
+      config: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+      },
+      settings: { duplicatePhotoMatchPreset: 'MINOR_EDITS' },
+    },
+  ])(
+    'reports the effective photo duplicate mode as $expected',
+    async ({ config, expected, settings }) => {
+      const { service } = createService({
+        persistedSettings: createPersistedChatSettings(settings),
+        photoDuplicateConfig: config,
+      });
+
+      const result = await service.getChatSettingsScreen('chat-1', user as never, {
+        liveAdminCheck: false,
+      });
+
+      expect(result.duplicatePhotoModerationMode).toBe(expected);
+    },
+  );
 
   it('recovers chat settings screen when chat rules lazy creation races', async () => {
     const recoveredRules = createPersistedChatRules({
@@ -700,6 +765,61 @@ describe('AdminSettingsService chat rules', () => {
     expect(Buffer.byteLength(serializedPayload)).toBeLessThanOrEqual(
       UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES,
     );
+  });
+
+  it('records only requested photo duplicate settings in UPDATE_SETTINGS audit metadata', async () => {
+    const { prisma, service } = createService();
+
+    await service.updateSettings('chat-1', user as never, {
+      duplicatePhotoEnabled: true,
+      duplicatePhotoMatchPreset: 'MINOR_EDITS',
+      duplicatePhotoScope: 'CHAT',
+    });
+
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'UPDATE_SETTINGS',
+        payload: {
+          source: 'miniapp',
+          settingKeys: [
+            'duplicatePhotoEnabled',
+            'duplicatePhotoMatchPreset',
+            'duplicatePhotoScope',
+          ],
+        },
+      }),
+    });
+  });
+
+  it('preserves photo duplicate settings when a stale client omits the new fields', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'MINOR_EDITS',
+        duplicatePhotoScope: 'CHAT',
+      }),
+    });
+
+    await service.updateSettings('chat-1', user as never, {
+      antiSpamEnabled: false,
+    });
+
+    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
+    expect(upsert.update.settings.upsert.update).toEqual(
+      expect.objectContaining({
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'MINOR_EDITS',
+        duplicatePhotoScope: 'CHAT',
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: {
+          source: 'miniapp',
+          settingKeys: ['antiSpamEnabled'],
+        },
+      }),
+    });
   });
 
   it('normalizes required subscription settings to indefinite auto-enabled state', async () => {
@@ -1678,6 +1798,32 @@ describe('AdminSettingsService chat rules', () => {
       user,
       'https://max.ru/chats/chat-1/message/2',
     );
+  });
+
+  it('does not promise photo enforcement in autofilled rules while rollout is observe-only', async () => {
+    const { legacyAdminService, service } = createService({
+      persistedRules: createPersistedChatRules({
+        autoTextEnabled: true,
+        text: '',
+      }),
+      persistedSettings: createPersistedChatSettings({
+        antiDuplicateEnabled: true,
+        duplicatePhotoEnabled: true,
+      }),
+      photoDuplicateConfig: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'shadow',
+      },
+    });
+
+    await service.publishRules('chat-1', user as never);
+
+    const generatedText =
+      legacyAdminService.buildFormattedChatRulesPublicationText.mock.calls[0]?.[1];
+    expect(generatedText).toContain('Не повторяйте одно и то же сообщение');
+    expect(generatedText).not.toContain('сообщения и фото');
+    expect(
+      legacyAdminService.buildAutofilledChatRulesTextFromCurrentSettings,
+    ).not.toHaveBeenCalled();
   });
 
   it('hydrates a published rules URL through the action bot when MAX send omits the URL', async () => {

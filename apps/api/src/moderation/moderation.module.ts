@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { AdminModule } from '../admin/admin.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
@@ -50,6 +51,16 @@ import { BotSpeechMediaService } from './bot-speech-media.service';
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 import { WebhookCanonicalExecutionService } from './webhook-canonical-execution.service';
 import { ModerationDeleteIntentModule } from './moderation-delete-intent.module';
+import { PHOTO_DUPLICATE_QUEUE } from './photo-duplicate/photo-duplicate.queue';
+import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
+import { PhotoDuplicateProcessor } from './photo-duplicate/photo-duplicate.processor';
+import { PhotoDuplicateAnalysisService } from './photo-duplicate/photo-duplicate-analysis.service';
+import { PhotoDuplicateHistoryStore } from './photo-duplicate/photo-duplicate-history.store';
+import { PhotoFingerprintService } from './photo-duplicate/photo-fingerprint';
+import { SecurePhotoDownloader } from './photo-duplicate/secure-photo-downloader';
+import { PhotoDuplicateOrderingStore } from './photo-duplicate/photo-duplicate-ordering.store';
+import { PHOTO_DUPLICATE_MODERATION_ACTIONS } from './photo-duplicate/photo-duplicate-moderation.actions';
+import { PhotoDuplicateModerationService } from './photo-duplicate/photo-duplicate-moderation.service';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
@@ -57,6 +68,10 @@ const moderationProviders = [
   ModerationService,
   {
     provide: MODERATION_EXECUTION_LEGACY,
+    useExisting: ModerationService,
+  },
+  {
+    provide: PHOTO_DUPLICATE_MODERATION_ACTIONS,
     useExisting: ModerationService,
   },
   ModerationExecutionService,
@@ -71,6 +86,8 @@ const moderationProviders = [
   RuleEngineService,
   SanctionService,
   WebhookCanonicalExecutionService,
+  PhotoDuplicateEnqueueService,
+  ...(roleRunsModeration(getAppRole()) ? [PhotoDuplicateOrderingStore] : []),
   ...(dynamicDefaultWorkerGroup ? [DefaultWebhookLeaseManagerService] : []),
   ...(roleRunsModeration(getAppRole())
     ? [
@@ -94,6 +111,26 @@ const moderationProviders = [
           ? [NightModeTransitionProcessor]
           : []),
         ...(spammerDenormProcessorEnabled() ? [GlobalSpammerDenormProcessor] : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND)
+          ? [
+              SecurePhotoDownloader,
+              PhotoDuplicateHistoryStore,
+              {
+                provide: PhotoFingerprintService,
+                inject: [ConfigService],
+                useFactory: (configService: ConfigService) =>
+                  new PhotoFingerprintService({
+                    maxInputBytes:
+                      configService.get<number>('PHOTO_DUPLICATE_MAX_BYTES') ?? 16_777_216,
+                    maxInputPixels:
+                      configService.get<number>('PHOTO_DUPLICATE_MAX_PIXELS') ?? 40_000_000,
+                  }),
+              },
+              PhotoDuplicateAnalysisService,
+              PhotoDuplicateModerationService,
+              PhotoDuplicateProcessor,
+            ]
+          : []),
       ]
     : []),
 ];
@@ -102,6 +139,7 @@ const moderationProviders = [
   imports: [
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
+    BullModule.registerQueue({ name: PHOTO_DUPLICATE_QUEUE }),
     MaxModule,
     SystemModule,
     ChatContextModule,

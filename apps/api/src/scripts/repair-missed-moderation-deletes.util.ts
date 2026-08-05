@@ -57,6 +57,10 @@ export const REPAIR_ORDINARY_DELETE_RULE_CODES = [
 export const REPAIR_MESSAGE_ACTION_DELETE_POLICIES = {
   DUPLICATE: { intentRuleCode: 'DUPLICATE_DELETE', family: 'duplicate' },
   DUPLICATE_HIT: { intentRuleCode: 'DUPLICATE_DELETE', family: 'duplicate_hit' },
+  DUPLICATE_MESSAGE_ACTION: {
+    intentRuleCode: 'DUPLICATE_DELETE',
+    family: 'duplicate_message_action',
+  },
   MUTE_ACTIVE_DELETE: { intentRuleCode: 'MUTE_ACTIVE_DELETE', family: 'active_mute' },
   BOT_ACCOUNT_KICK: {
     intentRuleCode: 'BOT_ACCOUNT_MESSAGE_DELETE',

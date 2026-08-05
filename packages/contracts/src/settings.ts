@@ -34,7 +34,6 @@ export {
   chatRulesSchema,
   chatSettingsScreenResponseSchema,
   chatSettingsSchema,
-  duplicateDetectionPresetSchema,
   domainAllowlistEntrySchema,
   linkPolicySchema,
   normalizeMessageLimitsBlockedWordCandidate,
@@ -64,6 +63,15 @@ export {
   type SanctionAction,
   sanctionActionSchema,
 } from './core.js';
+export {
+  duplicateDetectionPresetSchema,
+  duplicatePhotoMatchPresetSchema,
+  duplicatePhotoModerationModeSchema,
+  duplicatePhotoScopeSchema,
+  type DuplicatePhotoMatchPreset,
+  type DuplicatePhotoModerationMode,
+  type DuplicatePhotoScope,
+} from './duplicate-settings.js';
 export {
   ALLOWLIST_DOMAIN_RULE_PREFIX,
   DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,

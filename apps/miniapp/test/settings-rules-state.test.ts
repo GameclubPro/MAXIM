@@ -145,6 +145,28 @@ test('buildRulesTextFromSettingsScreen assembles a publishable draft from active
   assert.match(text, /Ночью чат работает тише: ограничения действуют с 23:00 до 07:00\./);
 });
 
+test('buildRulesTextFromSettingsScreen mentions photos only for enforcing rollout modes', () => {
+  const settings = chatSettingsSchema.parse({
+    antiDuplicateEnabled: true,
+    duplicatePhotoEnabled: true,
+  });
+
+  for (const mode of ['OFF', 'OBSERVE'] as const) {
+    const text = buildRulesTextFromSettingsScreen(
+      createScreen({ settings, duplicatePhotoModerationMode: mode }),
+    );
+    assert.match(text, /Не повторяйте одно и то же сообщение/);
+    assert.doesNotMatch(text, /сообщения и фото/);
+  }
+
+  for (const mode of ['DELETE_ONLY', 'FULL'] as const) {
+    const text = buildRulesTextFromSettingsScreen(
+      createScreen({ settings, duplicatePhotoModerationMode: mode }),
+    );
+    assert.match(text, /сообщения и фото/);
+  }
+});
+
 test('buildRulesTextFromSettingsScreen treats legacy required subscription expiry as indefinite', () => {
   const screen = createScreen({
     settings: chatSettingsSchema.parse({

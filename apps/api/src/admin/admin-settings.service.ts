@@ -13,6 +13,7 @@ import {
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
+  type DuplicatePhotoModerationMode,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
   type ResolveRequiredSubscriptionChannelResponse,
@@ -24,11 +25,13 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
+import { resolvePhotoDuplicateRuntimePolicy } from '../moderation/photo-duplicate/photo-duplicate.runtime';
 import {
   publishChatRules,
   readChatRules,
@@ -37,7 +40,12 @@ import {
 } from './admin-chat-rules';
 import { publishChannelEngagementMessage as publishChannelEngagementMessageValue } from './admin-channel-engagement';
 import { readChannelSettings, saveChannelSettings } from './admin-channel-settings';
-import { readChatSettings, saveChatSettings } from './admin-chat-settings';
+import {
+  isRequiredSubscriptionCurrentlyActive,
+  readChatSettings,
+  saveChatSettings,
+} from './admin-chat-settings';
+import { buildRulesTextFromSettings } from './admin-chat-rules-text-format';
 import {
   applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
   applySettingsToAllChats as applySettingsToAllChatsValue,
@@ -81,6 +89,8 @@ export class AdminSettingsService {
     private readonly manualMessageCleanupService?: AdminManualMessageCleanupService,
     @Optional()
     private readonly channelPostSignatureService?: ChannelPostSignatureService,
+    @Optional()
+    private readonly configService?: ConfigService,
   ) {}
 
   async getSettings(
@@ -141,6 +151,7 @@ export class AdminSettingsService {
 
     return chatSettingsScreenResponseSchema.parse({
       settings,
+      duplicatePhotoModerationMode: this.resolveDuplicatePhotoModerationMode(chatId, settings),
       rules,
       header: headerBundle.header,
       botSpeechPreviewProfile: headerBundle.botSpeechPreviewProfile,
@@ -254,8 +265,7 @@ export class AdminSettingsService {
       actorUserId: user.userId,
       source,
       resolveBotId: () => this.legacyAdminService.resolveChatRulesActionBotId(chatId),
-      buildAutofilledText: () =>
-        this.legacyAdminService.buildAutofilledChatRulesTextFromCurrentSettings(chatId, user),
+      buildAutofilledText: () => this.buildAutofilledRulesText(chatId, user),
       buildFormattedText: (sourceText, options) =>
         this.legacyAdminService.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
       sendPrivateConfirmation: (publishedUrl) =>
@@ -283,6 +293,51 @@ export class AdminSettingsService {
               }),
           }
         : {}),
+    });
+  }
+
+  private resolveDuplicatePhotoModerationMode(
+    chatId: string,
+    settings: Pick<ChatSettings, 'duplicatePhotoMatchPreset' | 'duplicatePhotoScope'>,
+  ): DuplicatePhotoModerationMode {
+    const policy = resolvePhotoDuplicateRuntimePolicy({
+      chatId,
+      preset: settings.duplicatePhotoMatchPreset,
+      scope: settings.duplicatePhotoScope,
+      configService: this.configService,
+    });
+    if (policy.mode === 'off') {
+      return 'OFF';
+    }
+    if (!policy.enforce) {
+      return 'OBSERVE';
+    }
+    return policy.mode === 'delete_only' ? 'DELETE_ONLY' : 'FULL';
+  }
+
+  private async buildAutofilledRulesText(chatId: string, user: AuthUser): Promise<string> {
+    const settings = await this.getSettings(chatId, user, {
+      skipAdminCheck: true,
+      skipEntityCheck: true,
+    });
+    const [domains, requiredSubscriptionChannels] = await Promise.all([
+      settings.linkPolicy === 'ALLOWLIST_ONLY'
+        ? this.manualModerationService.getDomainAllowlistDetails(chatId, user, {
+            skipAdminCheck: true,
+          })
+        : Promise.resolve([]),
+      isRequiredSubscriptionCurrentlyActive(settings)
+        ? this.legacyAdminService.resolveRequiredSubscriptionChannelHeadersForSettings(
+            settings.requiredSubscriptionChannelIds,
+          )
+        : Promise.resolve([]),
+    ]);
+
+    return buildRulesTextFromSettings({
+      settings,
+      domains,
+      requiredSubscriptionChannels,
+      duplicatePhotoModerationMode: this.resolveDuplicatePhotoModerationMode(chatId, settings),
     });
   }
 

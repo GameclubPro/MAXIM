@@ -1,4 +1,5 @@
 export * from './core.js';
+export * from './duplicate-settings.js';
 export * from './button-url.js';
 export * from './chat-participants.js';
 export * from './manual-moderation.js';

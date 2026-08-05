@@ -137,6 +137,7 @@ export function buildChatSettingsScreen(
   );
   return chatSettingsScreenResponseSchema.parse({
     settings: state.chatSettings,
+    duplicatePhotoModerationMode: 'OBSERVE',
     rules: state.chatRules,
     header: {
       id: chatId,

@@ -46,6 +46,7 @@ import '../styles/broadcast-studio.css';
 import './settings-page.css';
 import './settings/settings-word-banlist.css';
 import './settings/settings-duplicate-stage.css';
+import './settings/settings-duplicate-photo.css';
 import '../styles/broadcast-autopost-polish.css';
 import '../styles/settings-tile-grid.css';
 import '../styles/settings-native-polish.css';
@@ -209,6 +210,10 @@ import {
 } from '../features/publications/legacy-autoposts';
 import { SettingsCommentsSection } from './settings/settings-comments-section';
 import { SettingsCommercialFilterSection } from './settings/settings-commercial-filter-section';
+import {
+  formatDuplicatePhotoCardStatus,
+  formatDuplicatePhotoCoverageLabel,
+} from './settings/settings-duplicate-photo-status';
 import { SettingsDuplicatesSection } from './settings/settings-duplicates-section';
 import { SettingsExtraSection } from './settings/settings-extra-section';
 import { SettingsLimitsSection } from './settings/settings-limits-section';
@@ -994,6 +999,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     requiredSubscriptionChannelCollections.unavailableManagedChannels;
   const availableRequiredSubscriptionChannelChoices =
     requiredSubscriptionChannelCollections.availableChoices;
+  const duplicatePhotoModerationMode =
+    settingsScreenQuery.data?.duplicatePhotoModerationMode ?? 'OBSERVE';
   const currentRulesTextSource = useMemo(() => {
     const currentSettings = draft ?? settingsScreenQuery.data?.settings;
     if (!currentSettings) {
@@ -1022,6 +1029,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     return {
       settings: currentSettings,
+      duplicatePhotoModerationMode,
       domains: domainsQuery.data ?? settingsScreenQuery.data?.domains ?? [],
       requiredSubscriptionChannels: currentSettings.requiredSubscriptionChannelIds
         .map((channelId) => channelById.get(channelId))
@@ -1030,6 +1038,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [
     domainsQuery.data,
     draft,
+    duplicatePhotoModerationMode,
     selectedRequiredSubscriptionChannelHeaders,
     selectedUnavailableRequiredSubscriptionChannels,
     settingsScreenQuery.data?.domains,
@@ -4315,12 +4324,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicateDetectionLabel = draft
     ? DUPLICATE_DETECTION_LABELS[draft.duplicateDetectionPreset]
     : DUPLICATE_DETECTION_LABELS.STANDARD;
+  const duplicateCoverageLabel = draft?.duplicatePhotoEnabled
+    ? formatDuplicatePhotoCoverageLabel(duplicateDetectionLabel, duplicatePhotoModerationMode)
+    : duplicateDetectionLabel;
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
-    ? `${duplicateDetectionLabel} • ${formatDuplicateAllowanceLabel(
+    ? `${duplicateCoverageLabel} • ${formatDuplicateAllowanceLabel(
         duplicateAllowedCount,
       )} • ${duplicateSharedWindowHours}ч • ${duplicateStagesEnabledCount}/4 этапа`
     : 'Выключено';
-  const duplicatesCardStatus = draft?.antiDuplicateEnabled ? duplicateDetectionLabel : 'Выкл';
+  const duplicatesCardStatus = draft?.antiDuplicateEnabled
+    ? draft.duplicatePhotoEnabled
+      ? formatDuplicatePhotoCardStatus(duplicatePhotoModerationMode)
+      : duplicateDetectionLabel
+    : 'Выкл';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -6784,6 +6800,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               draft={draft}
               duplicateAllowedCount={duplicateAllowedCount}
               duplicateBotButtonErrors={duplicateBotButtonErrors}
+              duplicatePhotoModerationMode={duplicatePhotoModerationMode}
               duplicateSharedWindowHours={duplicateSharedWindowHours}
               duplicateWindowInputValue={duplicateWindowInputValue}
               duplicatesCardStatus={duplicatesCardStatus}

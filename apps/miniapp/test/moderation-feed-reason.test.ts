@@ -70,6 +70,23 @@ test('explains duplicate moderation window', () => {
   );
 });
 
+test('distinguishes repeated photos and albums from text', () => {
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'DUPLICATE_DELETE',
+      metadata: { fingerprintType: 'image', count: 1, windowSec: 3600 },
+    }),
+    'Повтор фото за 1ч.',
+  );
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'DUPLICATE_BAN',
+      metadata: { fingerprintType: 'image_set', count: 3, threshold: 2 },
+    }),
+    'Повтор альбома: 3/2.',
+  );
+});
+
 test('keeps retired topic-filter violations readable in historical events', () => {
   assert.equal(
     resolveModerationFeedReason({

@@ -13,6 +13,7 @@ import {
 } from '../max/max-action.queue';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
+import { PHOTO_DUPLICATE_QUEUE } from '../moderation/photo-duplicate/photo-duplicate.queue';
 
 function createQueueMock(counts: {
   waiting: number;
@@ -343,6 +344,7 @@ describe('QueueMetricsService', () => {
       failed: 3,
       completed: 44,
     });
+    expect(snapshot.auxiliaryQueues).toHaveProperty(PHOTO_DUPLICATE_QUEUE);
     expect(Object.keys(snapshot.auxiliaryQueues).sort()).toEqual([...AUXILIARY_QUEUE_NAMES].sort());
     expect(snapshot.webhookDefaultShards['moderation-default-0']).toEqual({
       waiting: 1,

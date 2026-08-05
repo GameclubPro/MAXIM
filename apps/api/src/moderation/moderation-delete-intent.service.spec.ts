@@ -80,12 +80,24 @@ function createService(
     ...prismaOverrides,
   };
   const queue = { add: jest.fn().mockResolvedValue(undefined) };
+  const deleteMessageOverride = maxClientOverrides.deleteMessage;
   const maxClient = {
-    deleteMessage: jest.fn(),
     getCurrentChatMemberAccess: jest.fn(),
     getMessageSnapshot: jest.fn(),
     getExactMessagePresence: jest.fn(),
     ...maxClientOverrides,
+    deleteMessage: jest.fn(
+      async (
+        chatId: string,
+        messageId: string,
+        options?: { beforeImmediateDeleteMutation?: () => Promise<void> },
+      ) => {
+        await options?.beforeImmediateDeleteMutation?.();
+        if (typeof deleteMessageOverride === 'function') {
+          return deleteMessageOverride(chatId, messageId, options);
+        }
+      },
+    ),
   };
   const maxBotLink = {
     resolveDeleteMessageBotRoute: jest.fn(),
@@ -1445,6 +1457,113 @@ describe('ModerationDeleteIntentService', () => {
     expect(events.indexOf('dispatch-fence')).toBeLessThan(events.indexOf('max-delete'));
   });
 
+  it('rechecks its database lease inside MaxClient before persisting the dispatch fence', async () => {
+    let leaseRenewals = 0;
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      const sql = query.strings?.join('?') ?? '';
+      if (sql.includes('SET "lease_expires_at" =')) {
+        leaseRenewals += 1;
+        return leaseRenewals < 3 ? 1 : 0;
+      }
+      return 1;
+    });
+    const events: string[] = [];
+    const deleteMessage = jest.fn(async () => {
+      events.push('max-http');
+    });
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ ...baseIntent }])
+      .mockResolvedValueOnce([{ ...baseIntent }]);
+    const { service, prisma } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      confirmed: false,
+    });
+
+    expect(leaseRenewals).toBe(3);
+    expect(events).toEqual([]);
+    const executedSql = prisma.$executeRaw.mock.calls
+      .map((call: unknown[]) => {
+        const query = call[0] as { strings?: readonly string[] };
+        return query.strings?.join('?') ?? '';
+      })
+      .join('\n');
+    expect(executedSql).not.toContain('"delete_dispatch_started_at" = CURRENT_TIMESTAMP');
+  });
+
+  it('clears the dispatch fence and stays retryable when the final delete guard rejects', async () => {
+    const orderingLeaseLost = new Error('photo ordering lease lost');
+    const retryable = {
+      ...baseIntent,
+      status: 'RETRYABLE',
+      nextAttemptAt: new Date(Date.now() + 1_000),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      deleteDispatchStartedAt: null,
+      deleteDispatchStartedBotId: null,
+      lastErrorCode: 'delete_pre_dispatch_guard_rejected',
+      lastError: orderingLeaseLost.message,
+    };
+    const events: string[] = [];
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      const sql = query.strings?.join('?') ?? '';
+      if (sql.includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) {
+        events.push('dispatch-fence');
+      } else if (
+        sql.includes('"delete_dispatch_started_at" = NULL') &&
+        sql.includes('AND "delete_dispatch_started_at" IS NOT NULL')
+      ) {
+        events.push('clear-fence');
+      } else if (sql.includes('"status" = CAST(? AS "ModerationDeleteIntentStatus")')) {
+        events.push('retryable-status');
+      }
+      return 1;
+    });
+    const beforeDeleteMutation = jest
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(orderingLeaseLost);
+    const deleteMessage = jest.fn(async () => {
+      events.push('max-http');
+    });
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ ...baseIntent }])
+      .mockResolvedValueOnce([retryable]);
+    const { service, prisma } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(
+      service.executeLeasedIntent('intent-1', 'lease-1', { beforeDeleteMutation }),
+    ).rejects.toBe(orderingLeaseLost);
+
+    expect(beforeDeleteMutation).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(['dispatch-fence', 'clear-fence', 'retryable-status']);
+    const statusUpdate = prisma.$executeRaw.mock.calls
+      .map(
+        (call: unknown[]) =>
+          call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+      )
+      .find((query) =>
+        (query.strings?.join('?') ?? '').includes(
+          '"status" = CAST(? AS "ModerationDeleteIntentStatus")',
+        ),
+      );
+    expect(statusUpdate?.values).toContain('RETRYABLE');
+    expect(statusUpdate?.values).not.toContain('AMBIGUOUS');
+  });
+
   it('clears a definitively rejected dispatch before trying another bot', async () => {
     const completed = {
       ...baseIntent,
@@ -1774,14 +1893,16 @@ describe('ModerationDeleteIntentService', () => {
       .fn()
       .mockResolvedValueOnce([{ ...baseIntent }])
       .mockResolvedValueOnce([fallbackState]);
-    const executeRaw = jest
-      .fn()
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockRejectedValueOnce(new Error('marker write failed'))
-      .mockResolvedValueOnce(1);
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      const sql = query.strings?.join('?') ?? '';
+      if (
+        sql.includes('"remote_delete_succeeded_at" = COALESCE') &&
+        !sql.includes("CAST('AMBIGUOUS' AS")
+      ) {
+        throw new Error('marker write failed');
+      }
+      return 1;
+    });
     const deleteMessage = jest.fn().mockResolvedValue(undefined);
     const { service } = createService(
       {},
@@ -1886,16 +2007,13 @@ describe('ModerationDeleteIntentService', () => {
       .fn()
       .mockResolvedValueOnce([{ ...baseIntent }])
       .mockResolvedValueOnce([ambiguous]);
-    const executeRaw = jest
-      .fn()
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1)
-      .mockRejectedValueOnce(new Error('candidate failure write failed'))
-      .mockResolvedValueOnce(1);
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      const sql = query.strings?.join('?') ?? '';
+      if (sql.includes('"candidate_failures" =')) {
+        throw new Error('candidate failure write failed');
+      }
+      return 1;
+    });
     const deleteMessage = jest.fn().mockRejectedValue({
       response: { status: 403, data: { code: 'access.denied' } },
     });

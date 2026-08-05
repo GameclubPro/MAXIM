@@ -136,6 +136,10 @@ describe('private control input values', () => {
       ['ALERT_ONLY', 'Только предупреждать'],
       ['BALANCED', 'Сбалансированный'],
       ['STRICT', 'Строгий'],
+      ['SAME_IMAGE', 'Та же картинка'],
+      ['MINOR_EDITS', 'С небольшими изменениями'],
+      ['SAME_AUTHOR', 'У одного автора'],
+      ['CHAT', 'Во всём чате'],
       ['UNKNOWN', 'UNKNOWN'],
     ] as const)('formats enum value %s', (value, expected) => {
       expect(formatPrivateControlEnumValue(value)).toBe(expected);

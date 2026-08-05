@@ -666,6 +666,9 @@ export const SETTINGS_SECTION_KEYS = {
   ],
   duplicates: [
     'antiDuplicateEnabled',
+    'duplicatePhotoEnabled',
+    'duplicatePhotoMatchPreset',
+    'duplicatePhotoScope',
     'duplicateDetectionPreset',
     'duplicateIgnoreLinksEnabled',
     'duplicateIgnorePhonesEnabled',

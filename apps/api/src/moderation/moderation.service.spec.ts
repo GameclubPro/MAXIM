@@ -334,11 +334,36 @@ function createModerationServiceWithSanctionStateLock(params: {
   sanctionStateFence?: unknown;
   maxBotLinkService?: unknown;
 }) {
+  const maxClient = params.maxClient as {
+    banMember?: (
+      chatId: string,
+      userId: string,
+      options?: { beforeImmediateMemberMutation?: () => Promise<void> },
+    ) => unknown;
+  };
+  const banMemberOverride = maxClient.banMember;
+  const guardedMaxClient = {
+    ...maxClient,
+    ...(typeof banMemberOverride === 'function'
+      ? {
+          banMember: jest.fn(
+            async (
+              chatId: string,
+              userId: string,
+              options?: { beforeImmediateMemberMutation?: () => Promise<void> },
+            ) => {
+              await options?.beforeImmediateMemberMutation?.();
+              return banMemberOverride(chatId, userId, options);
+            },
+          ),
+        }
+      : {}),
+  };
   return new ModerationService(
     params.prisma as never,
     params.ruleEngine as never,
     params.sanctionService as never,
-    params.maxClient as never,
+    guardedMaxClient as never,
     undefined, // chatContextCache
     undefined, // systemModeService
     undefined, // configService
@@ -3875,6 +3900,7 @@ describe('ModerationService', () => {
         messageAuthorKind: 'user',
         routingPolicy: 'origin_first',
       }),
+      undefined,
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(result).toEqual({
@@ -4047,6 +4073,220 @@ describe('ModerationService', () => {
       claim.mock.invocationCallOrder[0],
     );
     expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();
+  });
+
+  it('stops duplicate action recovery when its ordering lease is lost after intent persistence', async () => {
+    const leaseLost = new Error('photo ordering lease lost');
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-duplicate',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+    };
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    const claim = jest.fn().mockResolvedValue(true);
+    (service as any).claimMessageScopedModerationAction = claim;
+    const assertActiveLease = jest
+      .fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementation(() => {
+        throw leaseLost;
+      });
+
+    await expect(
+      (service as any).handleDuplicateHit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        text: '',
+        createdAt: new Date().toISOString(),
+        hit: {
+          windowSec: 60,
+          count: 1,
+          hash: 'duplicate-hash',
+          fingerprintType: 'image',
+          metadata: { duplicateSource: 'photo' },
+        },
+        userLabel: 'User',
+        botSpeechStyle: null,
+        botSpeechMedia: null,
+        duplicateBotMessageEnabled: false,
+        duplicateBotMessageText: '',
+        duplicateBotButtons: [],
+        duplicateBotButtonEnabled: false,
+        duplicateBotButtonUrl: '',
+        duplicateBotButtonText: '',
+        duplicateAdminContactButtonEnabled: false,
+        duplicateAdminContactButtonUrl: '',
+        rulesAttachViolationsEnabled: false,
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        suppressNonEssentialMessages: true,
+        backgroundExecution: true,
+        assertActiveLease,
+      }),
+    ).rejects.toBe(leaseLost);
+
+    expect(deleteIntents.ensureIntent).toHaveBeenCalledTimes(1);
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it('passes the ordering lease guard through the durable delete boundary', async () => {
+    const leaseLost = new Error('photo ordering lease lost before DELETE');
+    let insideDeleteGuard = false;
+    let lost = false;
+    const assertActiveLease = jest.fn(() => {
+      if (insideDeleteGuard || lost) {
+        lost = true;
+        throw leaseLost;
+      }
+    });
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-duplicate',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn(
+        async (_input: unknown, options?: { beforeDeleteMutation?: () => Promise<void> }) => {
+          insideDeleteGuard = true;
+          await options?.beforeDeleteMutation?.();
+          return {
+            kind: 'confirmed',
+            confirmed: true,
+            intentId: 'intent-duplicate',
+            status: 'SUCCEEDED',
+            botId: 'bot-1',
+          };
+        },
+      ),
+    };
+    const maxClient = { sendMessage: jest.fn() };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    (service as any).claimMessageScopedModerationAction = jest.fn();
+
+    await expect(
+      (service as any).handleDuplicateHit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+        text: '',
+        createdAt: new Date().toISOString(),
+        hit: {
+          windowSec: 60,
+          count: 1,
+          hash: 'duplicate-hash',
+          fingerprintType: 'image',
+          metadata: { duplicateSource: 'photo' },
+        },
+        userLabel: 'User',
+        botSpeechStyle: null,
+        botSpeechMedia: null,
+        duplicateBotMessageEnabled: true,
+        duplicateBotMessageText: '',
+        duplicateBotButtons: [],
+        duplicateBotButtonEnabled: false,
+        duplicateBotButtonUrl: '',
+        duplicateBotButtonText: '',
+        duplicateAdminContactButtonEnabled: false,
+        duplicateAdminContactButtonUrl: '',
+        rulesAttachViolationsEnabled: false,
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        suppressNonEssentialMessages: false,
+        backgroundExecution: true,
+        actionClaimed: true,
+        assertActiveLease,
+      }),
+    ).rejects.toBe(leaseLost);
+
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'message-1' }),
+      { beforeDeleteMutation: expect.any(Function) },
+    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('scopes photo duplicate explanation idempotency to the chat and message', () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const metadata = { duplicateSource: 'photo' };
+
+    expect(
+      (service as any).buildPhotoDuplicateExplanationIdempotencyKey(
+        metadata,
+        'chat-1',
+        'message-1',
+      ),
+    ).toBe('photo-duplicate:chat-1:message-1:explanation');
+    expect(
+      (service as any).buildPhotoDuplicateExplanationIdempotencyKey(
+        metadata,
+        'chat-2',
+        'message-1',
+      ),
+    ).toBe('photo-duplicate:chat-2:message-1:explanation');
+  });
+
+  it('checks the photo lease after notice preparation and before durable send handoff', async () => {
+    const leaseLost = new Error('photo ordering lease lost before notice handoff');
+    const events: string[] = [];
+    const maxClient = {
+      sendMessage: jest.fn(async () => {
+        events.push('send-handoff');
+      }),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).shouldSendBotNotice = jest.fn(async () => {
+      events.push('notice-bucket');
+      return true;
+    });
+    (service as any).withBotSpeechMediaOptions = jest.fn(async () => {
+      events.push('media-preparation');
+      return undefined;
+    });
+    const beforeSend = jest.fn(async () => {
+      events.push('lease-guard');
+      throw leaseLost;
+    });
+
+    await expect(
+      (service as any).sendBotMessageWithOptionalAutoDelete({
+        chatId: 'chat-1',
+        text: 'Повтор фотографии удалён',
+        messageOptions: undefined,
+        media: null,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        idempotencyKey: 'photo-duplicate:chat-1:message-1:explanation',
+        beforeSend,
+      }),
+    ).rejects.toBe(leaseLost);
+
+    expect(events).toEqual(['notice-bucket', 'media-preparation', 'lease-guard']);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('does not record delayed bot auto-delete before the durable intent succeeds', async () => {
@@ -15032,6 +15272,62 @@ describe('ModerationService', () => {
     });
   });
 
+  it('applies participant moderation immunity to text duplicates', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+        }),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([{ expires_at: null }]),
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'MUTE',
+          count: 3,
+          threshold: 3,
+          windowSec: 24 * 60 * 60,
+          hash: 'duplicate-immunity',
+          fingerprintType: 'exact',
+          nextAction: 'BAN',
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('sends duplicate explanation when duplicate bot toggle is enabled', async () => {
     const prisma = {
       chat: {
@@ -16181,7 +16477,7 @@ describe('ModerationService', () => {
         'remote-notice',
       ],
       expectedNotice: permanentBanNotice('Алексей'),
-      expectedGuardChecks: 8,
+      expectedGuardChecks: 10,
     },
     {
       actionLabel: 'MUTE',
@@ -16190,7 +16486,7 @@ describe('ModerationService', () => {
       settings: { profanityMuteEnabled: true },
       expectedEffects: ['fence-prepare', 'event', 'cache', 'fence-commit', 'remote-notice'],
       expectedNotice: muteNotice('Алексей', '6ч'),
-      expectedGuardChecks: 5,
+      expectedGuardChecks: 7,
     },
   ])(
     'keeps the automatic $actionLabel transition inside the injected sanction-state lock',
@@ -16259,18 +16555,9 @@ describe('ModerationService', () => {
           }
         }),
         kickMember: jest.fn(),
-        banMember: jest.fn(
-          async (
-            _chatId: string,
-            _userId: string,
-            options?: { beforeImmediateMemberMutation?: () => Promise<void> },
-          ) => {
-            const beforeMemberMutation = options?.beforeImmediateMemberMutation;
-            expect(beforeMemberMutation).toEqual(expect.any(Function));
-            await beforeMemberMutation?.();
-            recordTransitionEffect('remote-ban');
-          },
-        ),
+        banMember: jest.fn(async () => {
+          recordTransitionEffect('remote-ban');
+        }),
         notifyModerators: jest.fn(),
       };
       const redisCounter = {
@@ -16493,7 +16780,7 @@ describe('ModerationService', () => {
     expect(sanctionStateFence.commit).not.toHaveBeenCalled();
     expect(sanctionStateFence.markRemoteConfirmedEventMissing).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(4);
+    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(5);
   });
 
   it('keeps the automatic BAN fence invalidating after MAX succeeds without an event', async () => {
@@ -16555,7 +16842,7 @@ describe('ModerationService', () => {
     expect(sanctionStateFence.commit).not.toHaveBeenCalled();
     expect(sanctionStateFence.abort).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(6);
+    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(9);
   });
 
   it.each([
@@ -16652,7 +16939,12 @@ describe('ModerationService', () => {
       userId: 'user-1',
     });
     const leaseGuard = {
-      assertOwned: jest.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(leaseLostError),
+      assertOwned: jest
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(leaseLostError),
     };
     const sanctionStateLock = {
       runExclusive: jest.fn(
@@ -16723,6 +17015,8 @@ describe('ModerationService', () => {
     const leaseGuard = {
       assertOwned: jest
         .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(leaseLostError),
@@ -16841,7 +17135,7 @@ describe('ModerationService', () => {
 
     expect(sanctionStateLock.runExclusive).toHaveBeenCalledTimes(1);
     expect(maxBotLinkService.isKnownBotUserId).toHaveBeenCalledWith('runtime-bot-user-1');
-    expect(leaseGuard.assertOwned).not.toHaveBeenCalled();
+    expect(leaseGuard.assertOwned).toHaveBeenCalledTimes(1);
     expect(sanctionStateFence.prepare).not.toHaveBeenCalled();
     expect(persistModerationEvent).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -18427,6 +18721,98 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('atomically fences persisted message actions across rules and users', async () => {
+    const claimedDedupeKeys = new Set<string>();
+    const claimedMessageActionKeys = new Set<string>();
+    const createMany = jest.fn(
+      async (args: {
+        data: Array<{
+          dedupeKey: string;
+          messageActionKey: string | null;
+          chatId: string;
+          userId: string;
+          messageId: string;
+          ruleCode: string;
+          updateType: string;
+        }>;
+      }) => {
+        const claim = args.data[0];
+        if (
+          !claim ||
+          claimedDedupeKeys.has(claim.dedupeKey) ||
+          (claim.messageActionKey !== null && claimedMessageActionKeys.has(claim.messageActionKey))
+        ) {
+          return { count: 0 };
+        }
+
+        claimedDedupeKeys.add(claim.dedupeKey);
+        if (claim.messageActionKey !== null) {
+          claimedMessageActionKeys.add(claim.messageActionKey);
+        }
+        return { count: 1 };
+      },
+    );
+    const service = new ModerationService(
+      { moderationViolationMessageClaim: { createMany } } as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    const claims = service as unknown as {
+      claimMessageScopedModerationAction: (params: {
+        chatId: string;
+        userId: string;
+        messageId: string;
+        ruleCode: string;
+      }) => Promise<boolean>;
+      claimMessageViolationProcessing: (params: {
+        chatId: string;
+        userId: string;
+        messageId: string;
+        ruleCode: string;
+        updateType: string;
+      }) => Promise<boolean>;
+    };
+
+    const concurrentResults = await Promise.all([
+      claims.claimMessageScopedModerationAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'NIGHT_MODE_DELETE',
+      }),
+      claims.claimMessageScopedModerationAction({
+        chatId: 'chat-1',
+        userId: 'user-2',
+        messageId: 'msg-1',
+        ruleCode: 'DUPLICATE',
+      }),
+    ]);
+    const otherChatResult = await claims.claimMessageScopedModerationAction({
+      chatId: 'chat-2',
+      userId: 'user-2',
+      messageId: 'msg-1',
+      ruleCode: 'DUPLICATE',
+    });
+    const ordinaryViolationResult = await claims.claimMessageViolationProcessing({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'msg-1',
+      ruleCode: 'LINK_BLOCKED',
+      updateType: 'message_created',
+    });
+
+    expect(concurrentResults).toEqual([true, false]);
+    expect(otherChatResult).toBe(true);
+    expect(ordinaryViolationResult).toBe(true);
+    const persistedClaims = createMany.mock.calls.map(([args]) => args.data[0]!);
+    expect(persistedClaims[0]?.messageActionKey).toMatch(/^v1:[a-f0-9]{64}$/u);
+    expect(persistedClaims[1]?.messageActionKey).toBe(persistedClaims[0]?.messageActionKey);
+    expect(persistedClaims[1]?.dedupeKey).not.toBe(persistedClaims[0]?.dedupeKey);
+    expect(persistedClaims[2]?.messageActionKey).not.toBe(persistedClaims[0]?.messageActionKey);
+    expect(persistedClaims[3]?.messageActionKey).toBeNull();
   });
 
   it('treats persisted message claim unique conflicts as duplicate multi-bot deliveries', async () => {
@@ -26021,6 +26407,7 @@ describe('ModerationService', () => {
         routingPolicy: 'origin_only',
         ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
       }),
+      undefined,
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -26097,6 +26484,7 @@ describe('ModerationService', () => {
         routingPolicy: 'origin_first',
         ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
       }),
+      undefined,
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({

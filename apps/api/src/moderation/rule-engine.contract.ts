@@ -15,7 +15,14 @@ export type CommercialSubtype =
 
 export type DuplicateAction = 'WARN' | 'MUTE' | 'BAN';
 
-export type DuplicateFingerprintType = 'exact' | 'content' | 'near' | 'link' | 'phone';
+export type DuplicateFingerprintType =
+  | 'exact'
+  | 'content'
+  | 'near'
+  | 'link'
+  | 'phone'
+  | 'image'
+  | 'image_set';
 
 export type DuplicateDecision = {
   action: DuplicateAction;
@@ -25,6 +32,7 @@ export type DuplicateDecision = {
   hash: string;
   fingerprintType: DuplicateFingerprintType;
   nextAction: DuplicateAction | null;
+  metadata?: Record<string, unknown>;
 };
 
 export type DuplicateHit = {
@@ -32,6 +40,7 @@ export type DuplicateHit = {
   windowSec: number;
   hash: string;
   fingerprintType: DuplicateFingerprintType;
+  metadata?: Record<string, unknown>;
 };
 
 export type RuleViolation = {

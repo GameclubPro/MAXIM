@@ -32,7 +32,7 @@ type RulesDraftSerializable = Pick<
 
 type RulesTextScreenState = Pick<
   ChatSettingsScreenResponse,
-  'settings' | 'domains' | 'requiredSubscriptionChannels'
+  'settings' | 'duplicatePhotoModerationMode' | 'domains' | 'requiredSubscriptionChannels'
 >;
 
 function isRequiredSubscriptionCurrentlyActive(
@@ -136,11 +136,23 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
 
   if (settings.antiDuplicateEnabled) {
     const allowedCount = resolveDuplicateAllowedCount(settings);
-    items.push(
-      allowedCount === 0
-        ? 'Не повторяйте одно и то же сообщение несколько раз.'
-        : `Не повторяйте одно и то же сообщение: бот среагирует ${formatDuplicateAllowanceLabel(allowedCount)}.`,
-    );
+    const photoModerationEnforced =
+      settings.duplicatePhotoEnabled &&
+      (screen.duplicatePhotoModerationMode === 'DELETE_ONLY' ||
+        screen.duplicatePhotoModerationMode === 'FULL');
+    if (photoModerationEnforced) {
+      items.push(
+        allowedCount === 0
+          ? 'Не отправляйте повторно одинаковые сообщения и фото.'
+          : `Не отправляйте повторно одинаковые сообщения и фото: бот среагирует ${formatDuplicateAllowanceLabel(allowedCount)}.`,
+      );
+    } else {
+      items.push(
+        allowedCount === 0
+          ? 'Не повторяйте одно и то же сообщение несколько раз.'
+          : `Не повторяйте одно и то же сообщение: бот среагирует ${formatDuplicateAllowanceLabel(allowedCount)}.`,
+      );
+    }
   }
 
   if (settings.antiSpamEnabled) {

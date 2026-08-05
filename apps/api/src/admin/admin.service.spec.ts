@@ -17164,6 +17164,7 @@ describe('AdminService settings screen endpoints', () => {
 
     expect(result).toEqual({
       settings,
+      duplicatePhotoModerationMode: 'OBSERVE',
       rules,
       header: createManagedEntityHeaderFixture({
         id: 'chat-1',

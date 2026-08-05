@@ -19,6 +19,10 @@ import {
 } from './max-action.queue';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
 import { MAX_VIDEO_UPLOAD_MAX_BYTES } from './max-video-upload.constants';
+import {
+  MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+} from './max-action-pre-dispatch-guard';
 
 jest.mock('ioredis', () => {
   const store = new Map<string, { value: string; expiresAtMs: number | null }>();
@@ -652,6 +656,57 @@ describe('MaxClientService inline keyboard guardrails', () => {
         Authorization: 'test-token',
       },
     });
+
+    await service.onModuleDestroy();
+  });
+
+  it('checks the immediate delete guard at the final boundary before MAX HTTP', async () => {
+    const guardError = new Error('photo ordering lease lost');
+    const events: string[] = [];
+    const httpService = {
+      request: jest.fn(() => {
+        events.push('max-http');
+        return of({ status: 200, data: { success: true } });
+      }),
+    };
+    const beforeImmediateDeleteMutation = jest.fn(async () => {
+      events.push('delete-guard');
+      throw guardError;
+    });
+    const service = createService(httpService);
+
+    await expect(
+      service.deleteMessage('chat-1', 'mid-delete-guard-1', {
+        immediate: true,
+        botId: '777000_bot',
+        beforeImmediateDeleteMutation,
+      }),
+    ).rejects.toBe(guardError);
+
+    expect(events).toEqual(['delete-guard']);
+    expect(beforeImmediateDeleteMutation).toHaveBeenCalledTimes(1);
+    expect((guardError as Error & { code?: string }).code).toBe(
+      MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect((service as any).actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects an ephemeral delete guard on queued dispatch', async () => {
+    const beforeImmediateDeleteMutation = jest.fn();
+    const actionQueue = { add: jest.fn(), getJob: jest.fn() };
+    const service = createService({ request: jest.fn() }, {}, actionQueue);
+
+    await expect(
+      service.deleteMessage('chat-1', 'mid-delete-guard-queued-1', {
+        beforeImmediateDeleteMutation,
+      }),
+    ).rejects.toThrow('Delete mutation guard requires immediate dispatch');
+
+    expect(beforeImmediateDeleteMutation).not.toHaveBeenCalled();
+    expect(actionQueue.add).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });
@@ -1593,9 +1648,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('checks the immediate member guard after routing and ledger work but before MAX HTTP', async () => {
-    const leaseLostError = Object.assign(new Error('sanction state lease lost'), {
-      code: 'moderation_sanction_state_lock_lease_lost',
-    });
+    const leaseLostError = new Error('photo ordering lease lost');
     const httpService = {
       request: jest.fn(() => of({ data: {} })),
     };
@@ -1627,6 +1680,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
       .catch((caught: unknown) => caught);
 
     expect(error).toBe(leaseLostError);
+    expect((error as Error & { code?: string }).code).toBe(
+      MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+    );
     expect(wasMaxMemberMutationAttempted(error)).toBe(false);
     expect(resolveBotRoute).toHaveBeenCalledTimes(1);
     expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledTimes(1);
@@ -1638,6 +1694,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       leaseLostError,
     );
     expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+    expect((service as any).actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
     expect(resolveBotRoute.mock.invocationCallOrder[0]).toBeLessThan(
       actionLedgerService.recordStarted.mock.invocationCallOrder[0],
     );

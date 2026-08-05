@@ -743,6 +743,9 @@ export async function saveChatSettings(params: {
   const currentSettings = await params.prisma.chatSettings.findUnique({
     where: { chatId: params.chatId },
     select: {
+      duplicatePhotoEnabled: true,
+      duplicatePhotoMatchPreset: true,
+      duplicatePhotoScope: true,
       nightModeForceCloseEnabled: true,
       nightModeForceCloseForever: true,
       nightModeForceCloseHours: true,
@@ -750,8 +753,20 @@ export async function saveChatSettings(params: {
       nightModeForceCloseUntil: true,
     },
   });
+  const settingsInput = {
+    ...parsed.data,
+    duplicatePhotoEnabled: hasOwnSetting(params.body, 'duplicatePhotoEnabled')
+      ? parsed.data.duplicatePhotoEnabled
+      : (currentSettings?.duplicatePhotoEnabled ?? parsed.data.duplicatePhotoEnabled),
+    duplicatePhotoMatchPreset: hasOwnSetting(params.body, 'duplicatePhotoMatchPreset')
+      ? parsed.data.duplicatePhotoMatchPreset
+      : (currentSettings?.duplicatePhotoMatchPreset ?? parsed.data.duplicatePhotoMatchPreset),
+    duplicatePhotoScope: hasOwnSetting(params.body, 'duplicatePhotoScope')
+      ? parsed.data.duplicatePhotoScope
+      : (currentSettings?.duplicatePhotoScope ?? parsed.data.duplicatePhotoScope),
+  };
   let normalizedSettings = normalizeChatSettings(
-    parsed.data,
+    settingsInput,
     {
       nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
       nightModeForceCloseForever: currentSettings?.nightModeForceCloseForever ?? false,
@@ -812,4 +827,13 @@ export async function saveChatSettings(params: {
   await params.refreshExecutionReadiness(normalizedSettings);
 
   return normalizedSettings;
+}
+
+function hasOwnSetting(body: unknown, key: string): boolean {
+  return (
+    body !== null &&
+    typeof body === 'object' &&
+    !Array.isArray(body) &&
+    Object.prototype.hasOwnProperty.call(body, key)
+  );
 }

@@ -1,4 +1,5 @@
-import type { ChatSettings } from '@maxim/contracts/settings';
+import type { ChatSettings, DuplicatePhotoModerationMode } from '@maxim/contracts/settings';
+import { lazy, Suspense } from 'react';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SegmentedControl } from '../../components/ui/segmented-control';
@@ -65,6 +66,7 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     }) => void;
     duplicateAllowedCount: number;
     duplicateBotButtonErrors: BroadcastLinkButtonFieldErrors[];
+    duplicatePhotoModerationMode: DuplicatePhotoModerationMode;
     duplicateSharedWindowHours: number;
     duplicateWindowInputValue: string;
     duplicatesCardStatus: string;
@@ -74,6 +76,10 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     handleDuplicateWindowHoursChange: (rawValue: string) => void;
     hasDuplicateBotButtonError: boolean;
   };
+
+const LazySettingsDuplicatePhotoControls = lazy(
+  () => import('./settings-duplicate-photo-controls'),
+);
 
 export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps) {
   const {
@@ -88,6 +94,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
     draft,
     duplicateAllowedCount,
     duplicateBotButtonErrors,
+    duplicatePhotoModerationMode,
     duplicateSharedWindowHours,
     duplicateWindowInputValue,
     duplicatesCardStatus,
@@ -192,14 +199,14 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
               {draft.antiDuplicateEnabled ? (
                 <div className="settings-policy">
                   <div className="settings-policy__label-row">
-                    <span className="field__label">Какие сообщения считать повторами</span>
+                    <span className="field__label">Как сравнивать текст</span>
                   </div>
                   <SegmentedControl
                     value={draft.duplicateDetectionPreset}
                     options={DUPLICATE_DETECTION_OPTIONS}
                     onChange={applyDuplicateDetectionPreset}
                     className="settings-mode-segments"
-                    ariaLabel="Какие сообщения считать повторами"
+                    ariaLabel="Как сравнивать текст"
                   />
                 </div>
               ) : null}
@@ -302,6 +309,22 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                     </div>
                   </div>
                 </>
+              ) : null}
+
+              {draft.antiDuplicateEnabled ? (
+                <Suspense fallback={null}>
+                  <LazySettingsDuplicatePhotoControls
+                    enabled={draft.duplicatePhotoEnabled}
+                    matchPreset={draft.duplicatePhotoMatchPreset}
+                    moderationMode={duplicatePhotoModerationMode}
+                    scope={draft.duplicatePhotoScope}
+                    onEnabledChange={(value) => setFieldValue('duplicatePhotoEnabled', value)}
+                    onMatchPresetChange={(value) =>
+                      setFieldValue('duplicatePhotoMatchPreset', value)
+                    }
+                    onScopeChange={(value) => setFieldValue('duplicatePhotoScope', value)}
+                  />
+                </Suspense>
               ) : null}
 
               {draft.antiDuplicateEnabled ? (

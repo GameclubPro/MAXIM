@@ -29,6 +29,12 @@ import {
   MaxActionLedgerService,
 } from './max-action-ledger.service';
 import {
+  markMaxPreDispatchGuardRejected,
+  MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  wasMaxPreDispatchGuardRejected,
+} from './max-action-pre-dispatch-guard';
+import {
   MAX_ACTION_BACKGROUND_QUEUE,
   MAX_ACTION_CRITICAL_QUEUE,
   MAX_ACTION_INTERACTIVE_QUEUE,
@@ -430,6 +436,8 @@ export type MaxActionJob = QueueJobEnvelope<
 export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
+  /** Ephemeral guard evaluated after routing and ledger work, immediately before delete HTTP. */
+  beforeImmediateDeleteMutation?: () => Promise<void>;
   /** Ephemeral guard evaluated after routing and ledger work, immediately before member HTTP. */
   beforeImmediateMemberMutation?: () => Promise<void>;
   autoDeleteDelayMs?: number;
@@ -450,6 +458,7 @@ export type MaxActionDispatchOptions = {
 };
 
 type MaxActionExecutionOptions = {
+  beforeDeleteMutation?: () => Promise<void>;
   beforeMemberMutation?: () => Promise<void>;
 };
 
@@ -489,6 +498,7 @@ export const MAX_API_SOURCE_TAGS = {
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
   REQUIRED_SUBSCRIPTION_MEMBERSHIP: 'required_subscription_membership',
   REQUIRED_SUBSCRIPTION_METADATA: 'required_subscription_metadata',
+  PHOTO_DUPLICATE_ADMIN_CHECK: 'photo_duplicate_admin_check',
 } as const;
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -2339,6 +2349,10 @@ export class MaxClientService implements OnModuleDestroy {
           await this.executeMutation(
             action.chatId,
             async () => {
+              await this.runPreDispatchMutationGuard(
+                executionOptions.beforeDeleteMutation,
+                MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+              );
               const response = await this.request<Record<string, unknown>>('delete', '/messages', {
                 params: {
                   message_id: action.messageId,
@@ -2443,7 +2457,10 @@ export class MaxClientService implements OnModuleDestroy {
             await this.executeMutation(
               action.chatId,
               async () => {
-                await executionOptions.beforeMemberMutation?.();
+                await this.runPreDispatchMutationGuard(
+                  executionOptions.beforeMemberMutation,
+                  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+                );
                 memberMutationAttempted = true;
                 await this.request('post', `/chats/${action.chatId}/members`, {
                   data: {
@@ -4290,7 +4307,14 @@ export class MaxClientService implements OnModuleDestroy {
     payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
     options?: MaxActionDispatchOptions,
   ) {
+    const beforeImmediateDeleteMutation = options?.beforeImmediateDeleteMutation;
     const beforeImmediateMemberMutation = options?.beforeImmediateMemberMutation;
+    if (beforeImmediateDeleteMutation && options?.immediate !== true) {
+      throw new Error('Delete mutation guard requires immediate dispatch');
+    }
+    if (beforeImmediateDeleteMutation && payload.actionType !== 'DELETE_MESSAGE') {
+      throw new Error('Delete mutation guard requires a message delete action');
+    }
     if (beforeImmediateMemberMutation && options?.immediate !== true) {
       throw new Error('Member mutation guard requires immediate dispatch');
     }
@@ -4402,7 +4426,11 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (immediate) {
-      await this.executeImmediateActionJob(job, beforeImmediateMemberMutation);
+      await this.executeImmediateActionJob(
+        job,
+        beforeImmediateDeleteMutation,
+        beforeImmediateMemberMutation,
+      );
       return;
     }
 
@@ -4655,17 +4683,18 @@ export class MaxClientService implements OnModuleDestroy {
 
   private async executeImmediateActionJob(
     job: MaxActionJob,
+    beforeDeleteMutation?: () => Promise<void>,
     beforeMemberMutation?: () => Promise<void>,
   ): Promise<void> {
     if (!this.actionLedgerService?.isIrreversibleAction(job.actionType)) {
-      await this.executeActionJob(job, { beforeMemberMutation });
+      await this.executeActionJob(job, { beforeDeleteMutation, beforeMemberMutation });
       return;
     }
 
     await this.actionLedgerService.assertCanEnqueue(job);
     await this.actionLedgerService.recordStarted(job);
     try {
-      await this.executeActionJob(job, { beforeMemberMutation });
+      await this.executeActionJob(job, { beforeDeleteMutation, beforeMemberMutation });
     } catch (error: unknown) {
       await this.actionLedgerService.recordFailed(job, error).catch((ledgerError: unknown) => {
         this.logger.warn(
@@ -5854,6 +5883,9 @@ export class MaxClientService implements OnModuleDestroy {
       ignoreFailureMetricStatuses?: readonly number[];
     },
   ): boolean {
+    if (wasMaxPreDispatchGuardRejected(error)) {
+      return true;
+    }
     const status = this.extractStatusCode(error);
     if (
       typeof status === 'number' &&
@@ -6079,7 +6111,10 @@ export class MaxClientService implements OnModuleDestroy {
       await this.executeMutation(
         action.chatId,
         async () => {
-          await options.beforeMutation?.();
+          await this.runPreDispatchMutationGuard(
+            options.beforeMutation,
+            MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+          );
           memberMutationAttempted = true;
           await this.request('delete', `/chats/${action.chatId}/members`, {
             params: {
@@ -6101,6 +6136,20 @@ export class MaxClientService implements OnModuleDestroy {
         );
       }
       throw dispatchedError;
+    }
+  }
+
+  private async runPreDispatchMutationGuard(
+    guard: (() => Promise<void>) | undefined,
+    fallbackCode: string,
+  ): Promise<void> {
+    if (!guard) {
+      return;
+    }
+    try {
+      await guard();
+    } catch (error: unknown) {
+      throw markMaxPreDispatchGuardRejected(error, fallbackCode);
     }
   }
 

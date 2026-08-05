@@ -178,6 +178,14 @@ describe('bot speech styles', () => {
     );
 
     expect(
+      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT', 'image'),
+    ).toBe('**Алексей**, фото распознано как повтор. Повтор удалён, дополнительной санкции нет.');
+
+    expect(
+      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY', 'image_set'),
+    ).toBe('**Алексей**, альбом повторился. Повтор удалён, дополнительной санкции нет.');
+
+    expect(
       (service as any).buildDuplicateExplanation(
         userLabel,
         {

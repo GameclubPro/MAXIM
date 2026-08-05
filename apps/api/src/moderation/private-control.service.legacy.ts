@@ -5547,11 +5547,19 @@ export class PrivateControlService {
 
     if (settings.antiDuplicateEnabled) {
       const allowedCount = resolvePrivateDuplicateAllowedCount(settings);
-      items.push(
-        allowedCount === 0
-          ? 'Не повторяйте одно и то же сообщение несколько раз.'
-          : `Не повторяйте одно и то же сообщение: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
-      );
+      if (settings.duplicatePhotoEnabled) {
+        items.push(
+          allowedCount === 0
+            ? 'Не отправляйте повторно одинаковые сообщения и фото.'
+            : `Не отправляйте повторно одинаковые сообщения и фото: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
+        );
+      } else {
+        items.push(
+          allowedCount === 0
+            ? 'Не повторяйте одно и то же сообщение несколько раз.'
+            : `Не повторяйте одно и то же сообщение: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
+        );
+      }
     }
 
     if (settings.antiSpamEnabled) {
@@ -6775,6 +6783,7 @@ export class PrivateControlService {
         const duplicateAllowedCount = resolvePrivateDuplicateAllowedCount(settings);
         return [
           `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • ${duplicateAllowedCount === 0 ? 'с первого дубля' : `после ${duplicateAllowedCount} дубл.`} • окно ${duplicateWindowSec}с`,
+          `Фото: ${this.describeBooleanCompact(settings.duplicatePhotoEnabled)} • совпадение ${formatPrivateControlEnumValue(settings.duplicatePhotoMatchPreset)} • область ${formatPrivateControlEnumValue(settings.duplicatePhotoScope)}`,
           `Этапы: объяснение ${this.describeBooleanCompact(settings.duplicateBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.duplicateWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} (${settings.duplicateMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.duplicateBanEnabled)}`,
           `Кнопка: ${this.describeBooleanCompact(settings.duplicateBotButtonEnabled)}`,
         ];

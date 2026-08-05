@@ -66,12 +66,25 @@ describe('private control settings schema', () => {
     );
     expect(SECTION_CARD_FIELDS.duplicates.basic).toEqual([
       'antiDuplicateEnabled',
+      'duplicatePhotoEnabled',
       'duplicateBotMessageEnabled',
       'duplicateWarnEnabled',
       'duplicateMuteEnabled',
       'duplicateMuteDurationHours',
       'duplicateBanEnabled',
     ]);
+    expect(duplicateFields.find((field) => field.key === 'duplicatePhotoMatchPreset')).toEqual(
+      expect.objectContaining({
+        type: 'enum',
+        enumValues: ['SAME_IMAGE', 'MINOR_EDITS'],
+      }),
+    );
+    expect(duplicateFields.find((field) => field.key === 'duplicatePhotoScope')).toEqual(
+      expect.objectContaining({
+        type: 'enum',
+        enumValues: ['SAME_AUTHOR', 'CHAT'],
+      }),
+    );
   });
 
   it('keeps channel section fields aligned with labels', () => {

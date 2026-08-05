@@ -111,6 +111,12 @@ import * as rulesFence from './chat-rules-own-bot-message-classifier';
 import { ModerationExecutionService } from './moderation-execution.service';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
+import type {
+  PhotoDuplicateModerationActionRequest,
+  PhotoDuplicateModerationActions,
+} from './photo-duplicate/photo-duplicate-moderation.actions';
+import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
 import {
   CHANNEL_AUTO_POST_ATTACH_STATUS,
   CHAT_AUTO_COMMENT_ATTACH_STATUS,
@@ -448,6 +454,7 @@ type ApplySanctionActionParams = {
   botSpeechStyle: BotSpeechStyle | null;
   trackAsGlobalSpammer?: boolean;
   persistModerationEvent: PersistModerationEvent;
+  assertActiveLease?: () => void;
 };
 
 type AutomaticSanctionStateFenceOutcome =
@@ -488,6 +495,7 @@ const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
 const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
+const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
 
 type ModerationDeleteExecutionResult = {
   accepted: boolean;
@@ -498,7 +506,9 @@ type ModerationDeleteExecutionResult = {
 };
 
 @Injectable()
-export class ModerationService implements OnModuleInit, OnModuleDestroy {
+export class ModerationService
+  implements OnModuleInit, OnModuleDestroy, PhotoDuplicateModerationActions
+{
   private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
   private readonly logger = new Logger(ModerationService.name);
   private readonly replacementAttachMarkerStore: ReplacementAttachMarkerStore;
@@ -651,6 +661,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly injectedModerationSanctionStateLock?: ModerationSanctionStateLockService,
     @Optional()
     private readonly injectedModerationSanctionStateFence?: ModerationSanctionStateFenceService,
+    @Optional()
+    private readonly photoDuplicateEnqueueService?: PhotoDuplicateEnqueueService,
   ) {
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.moderationDisplayNameResolver = new ModerationDisplayNameResolver(
@@ -1007,10 +1019,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           hotPathProfile = this.createWebhookHotPathProfile();
           if (activeBotId && this.maxBotContextService) {
             await this.maxBotContextService.runWithBot(activeBotId, () =>
-              this.handleUpdate(update, hotPathProfile!),
+              this.handleUpdate(update, hotPathProfile!, webhookEvent.id),
             );
           } else {
-            await this.handleUpdate(update, hotPathProfile);
+            await this.handleUpdate(update, hotPathProfile, webhookEvent.id);
           }
         },
         () => this.readWebhookHotPathProfileSnapshot(hotPathProfile),
@@ -1060,7 +1072,76 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async handleUpdate(update: MaxUpdate, hotPathProfile?: WebhookHotPathProfile) {
+  isPhotoDuplicateMessageAuthorImmune(params: {
+    update: MaxUpdate;
+    album: LogicalPhotoAlbum;
+  }): boolean {
+    return (
+      !params.update.message ||
+      this.isPrivateDirectChat(params.album.chatId) ||
+      this.isServiceAuthoredMessage(params.update) ||
+      this.isBotAuthoredMessage(params.update) ||
+      this.isKnownRuntimeBotUserId(params.album.senderId)
+    );
+  }
+
+  async consumePhotoDuplicateParticipantImmunity(params: {
+    chatId: string;
+    userId: string;
+    nightModeTimezone: string | null;
+  }): Promise<boolean> {
+    return this.consumeChatParticipantModerationImmunity(params);
+  }
+
+  async executePhotoDuplicateAction(params: PhotoDuplicateModerationActionRequest): Promise<void> {
+    const message = params.update.message;
+    if (!message) {
+      return;
+    }
+    const commonParams = {
+      chatId: params.chatId,
+      userId: params.userId,
+      messageId: params.messageId,
+      text: message.text ?? '',
+      createdAt: message.createdAt,
+      userLabel: this.formatUserLabel(message.senderName, params.userId),
+      botSpeechStyle: params.settings.botSpeechStyle,
+      botSpeechMedia: params.settings.botSpeechMedia,
+      duplicateBotMessageEnabled: params.settings.duplicateBotMessageEnabled,
+      duplicateBotMessageText: params.settings.duplicateBotMessageText,
+      duplicateBotButtons: params.settings.duplicateBotButtons,
+      duplicateBotButtonEnabled: params.settings.duplicateBotButtonEnabled,
+      duplicateBotButtonUrl: params.settings.duplicateBotButtonUrl,
+      duplicateBotButtonText: params.settings.duplicateBotButtonText,
+      duplicateAdminContactButtonEnabled: params.settings.duplicateAdminContactButtonEnabled,
+      duplicateAdminContactButtonUrl: params.settings.duplicateAdminContactButtonUrl,
+      rulesAttachViolationsEnabled: params.settings.rulesAttachViolationsEnabled,
+      rulesPublishedUrl: params.rulesPublishedUrl,
+      rulesPublishedMessageId: params.rulesPublishedMessageId,
+      deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+      suppressNonEssentialMessages: false,
+      backgroundExecution: true,
+      actionClaimed: params.actionClaimed,
+      assertActiveLease: params.lease.assertOwned,
+    } as const;
+
+    if (params.outcome.kind === 'decision') {
+      await this.handleDuplicateDecision({
+        ...commonParams,
+        decision: params.outcome.decision,
+        muteDurationHours: params.settings.duplicateMuteDurationHours,
+      });
+      return;
+    }
+    await this.handleDuplicateHit({ ...commonParams, hit: params.outcome.hit });
+  }
+
+  async handleUpdate(
+    update: MaxUpdate,
+    hotPathProfile?: WebhookHotPathProfile,
+    webhookEventId?: string,
+  ) {
     if (!update.message) {
       const callbackId = extractMaxCallbackId(update);
       if (callbackId) {
@@ -1693,6 +1774,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               detection.duplicateDecision.windowSec,
             )
           : false;
+      const duplicateHitSuppressed =
+        detection.duplicateHit && latestManualReleaseAt
+          ? this.isWithinWindowFromDate(latestManualReleaseAt, detection.duplicateHit.windowSec)
+          : false;
+      const hasUnsuppressedDuplicateOutcome =
+        !hasCompetingViolation &&
+        ((detection.duplicateDecision && !duplicateDecisionSuppressed) ||
+          (detection.duplicateHit && !duplicateHitSuppressed));
+      if (
+        hasUnsuppressedDuplicateOutcome &&
+        (await this.consumeChatParticipantModerationImmunity({
+          chatId,
+          userId: senderId,
+          nightModeTimezone: settings.nightModeTimezone,
+        }))
+      ) {
+        this.logger.debug(
+          { chatId, userId: senderId },
+          'Duplicate moderation bypassed for participant immunity',
+        );
+        if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
+          await this.tryAutoAttachChatMessageComments({
+            chatId,
+            messageId,
+            text: typeof text === 'string' && text.trim() ? text : null,
+            senderId,
+            senderIsAdmin: false,
+            update,
+          });
+        }
+        return;
+      }
       if (!hasCompetingViolation && detection.duplicateDecision && !duplicateDecisionSuppressed) {
         await this.handleDuplicateDecision({
           chatId,
@@ -1724,10 +1837,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const duplicateHitSuppressed =
-        detection.duplicateHit && latestManualReleaseAt
-          ? this.isWithinWindowFromDate(latestManualReleaseAt, detection.duplicateHit.windowSec)
-          : false;
       if (!hasCompetingViolation && detection.duplicateHit && !duplicateHitSuppressed) {
         await this.handleDuplicateHit({
           chatId,
@@ -1771,6 +1880,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           })
         ) {
           return;
+        }
+
+        if (
+          webhookEventId &&
+          messageId &&
+          updateType === 'message_created' &&
+          settings.antiDuplicateEnabled &&
+          settings.duplicatePhotoEnabled &&
+          mediaFlags.hasPhotoAttachment
+        ) {
+          await this.photoDuplicateEnqueueService?.enqueue({
+            webhookEventId,
+            chatId,
+            messageId,
+            sourceCreatedAt: createdAt,
+          });
         }
 
         if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
@@ -2803,6 +2928,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesDelayMinutes: number;
     suppressNonEssentialMessages: boolean;
     hotPathProfile?: WebhookHotPathProfile | null;
+    actionClaimed?: boolean;
+    backgroundExecution?: boolean;
+    assertActiveLease?: () => void;
   }) {
     const {
       chatId,
@@ -2830,6 +2958,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesDelayMinutes,
       suppressNonEssentialMessages,
       hotPathProfile,
+      actionClaimed = false,
+      backgroundExecution = false,
+      assertActiveLease,
     } = params;
     let messageDeleted = false;
     const deleteIntent: EnsureModerationDeleteIntentInput = {
@@ -2847,30 +2978,46 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         maskedExcerpt: maskText(text),
         score: 0.8,
         metadata: {
+          ...decision.metadata,
           windowSec: decision.windowSec,
           count: decision.count,
           threshold: decision.threshold,
-          reason: 'Duplicate message removed',
+          fingerprintType: decision.fingerprintType,
+          reason: this.resolveDuplicateRemovalReason(decision.fingerprintType),
         },
       },
     };
+    assertActiveLease?.();
     await this.ensureModerationDeleteIntent(deleteIntent);
+    assertActiveLease?.();
 
-    const claimed = await this.claimMessageScopedModerationAction({
-      chatId,
-      userId,
-      messageId,
-      ruleCode: 'DUPLICATE',
-    });
-    if (!claimed) {
-      return;
+    if (!actionClaimed) {
+      assertActiveLease?.();
+      const claimed = await this.claimMessageScopedModerationAction({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE,
+      });
+      if (!claimed) {
+        return;
+      }
+      assertActiveLease?.();
     }
 
+    assertActiveLease?.();
     try {
       this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
-      const deleteResult = await this.executeModerationDelete(deleteIntent);
+      const deleteResult = await this.executeModerationDelete(
+        deleteIntent,
+        assertActiveLease
+          ? { beforeImmediateDeleteMutation: async () => assertActiveLease() }
+          : undefined,
+      );
+      assertActiveLease?.();
       messageDeleted = deleteResult.gone;
       if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+        assertActiveLease?.();
         await this.createBotModerationEvent({
           data: {
             chatId,
@@ -2883,18 +3030,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             score: 0.8,
             operator: Operator.BOT,
             metadata: {
+              ...decision.metadata,
               windowSec: decision.windowSec,
               count: decision.count,
               threshold: decision.threshold,
-              reason: 'Duplicate message removed',
+              fingerprintType: decision.fingerprintType,
+              reason: this.resolveDuplicateRemovalReason(decision.fingerprintType),
             },
           },
         });
+        assertActiveLease?.();
       }
       if (messageDeleted) {
         this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
       }
     } catch (error: unknown) {
+      assertActiveLease?.();
       this.logger.warn(
         {
           chatId,
@@ -2906,8 +3057,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    assertActiveLease?.();
     this.markWebhookHotPathStage(hotPathProfile, 'duplicate-follow-up');
     const runDuplicateFollowUp = async () => {
+      assertActiveLease?.();
       const duplicateMessageOptions = this.buildBotMessageOptions(
         chatId,
         duplicateBotButtons,
@@ -2927,8 +3080,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const persistModerationEvent = (
         metadataPatch: Record<string, unknown> = {},
         actionOverride: SanctionAction = action,
-      ) =>
-        this.createBotModerationEvent({
+      ) => {
+        assertActiveLease?.();
+        return this.createBotModerationEvent({
           data: {
             chatId,
             userId,
@@ -2940,14 +3094,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             score: 0.8,
             operator: Operator.BOT,
             metadata: {
+              ...decision.metadata,
               windowSec: decision.windowSec,
               count: decision.count,
               threshold: decision.threshold,
               nextStep: decision.nextAction,
+              fingerprintType: decision.fingerprintType,
               ...metadataPatch,
             },
           },
         });
+      };
+      assertActiveLease?.();
       const sanctionEventPersisted = await this.applySanctionAction({
         chatId,
         userId,
@@ -2960,10 +3118,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botMessageOptions: duplicateMessageOptions ?? undefined,
         botSpeechStyle,
         persistModerationEvent,
+        assertActiveLease,
       });
+      assertActiveLease?.();
 
       if (!sanctionEventPersisted) {
+        assertActiveLease?.();
         await persistModerationDecisionWithoutAppliedSanction(persistModerationEvent, action);
+        assertActiveLease?.();
       }
 
       if (
@@ -2972,6 +3134,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         decision.action !== 'BAN'
       ) {
         try {
+          assertActiveLease?.();
           const explanationText = this.buildDuplicateExplanation(
             sanctionUserLabel,
             decision,
@@ -2979,24 +3142,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageDeleted,
             duplicateBotMessageText,
             botSpeechStyle,
+            decision.fingerprintType,
           );
+          const explanationWithContact =
+            decision.action === 'WARN'
+              ? await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  explanationText,
+                  duplicateAdminContactButtonEnabled,
+                  duplicateAdminContactButtonUrl,
+                )
+              : explanationText;
+          assertActiveLease?.();
           await this.sendBotMessageWithOptionalAutoDelete({
             chatId,
-            text:
-              decision.action === 'WARN'
-                ? await this.appendAdminContactMarkdownLink(
-                    chatId,
-                    explanationText,
-                    duplicateAdminContactButtonEnabled,
-                    duplicateAdminContactButtonUrl,
-                  )
-                : explanationText,
+            text: explanationWithContact,
             messageOptions: duplicateMessageOptions ?? undefined,
             media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
             deleteBotMessagesEnabled,
             deleteBotMessagesDelayMinutes,
+            idempotencyKey: this.buildPhotoDuplicateExplanationIdempotencyKey(
+              decision.metadata,
+              chatId,
+              messageId,
+            ),
+            beforeSend: assertActiveLease ? async () => assertActiveLease() : undefined,
           });
+          assertActiveLease?.();
         } catch (error: unknown) {
+          assertActiveLease?.();
           this.logger.warn(
             {
               chatId,
@@ -3008,18 +3182,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
+      assertActiveLease?.();
     };
 
-    await this.runWebhookFollowUpWithBudget({
-      stage: 'duplicate-follow-up',
-      hotPathProfile,
-      chatId,
-      userId,
-      messageId,
-      maxWaitMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
-      minRemainingMs: DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
-      task: runDuplicateFollowUp,
-    });
+    if (backgroundExecution) {
+      assertActiveLease?.();
+      await runDuplicateFollowUp();
+      assertActiveLease?.();
+    } else {
+      await this.runWebhookFollowUpWithBudget({
+        stage: 'duplicate-follow-up',
+        hotPathProfile,
+        chatId,
+        userId,
+        messageId,
+        maxWaitMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+        minRemainingMs: DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+        task: runDuplicateFollowUp,
+      });
+    }
   }
 
   private async handleDuplicateHit(params: {
@@ -3047,6 +3228,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesDelayMinutes: number;
     suppressNonEssentialMessages: boolean;
     hotPathProfile?: WebhookHotPathProfile | null;
+    actionClaimed?: boolean;
+    backgroundExecution?: boolean;
+    assertActiveLease?: () => void;
   }) {
     const {
       chatId,
@@ -3073,6 +3257,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesDelayMinutes,
       suppressNonEssentialMessages,
       hotPathProfile,
+      actionClaimed = false,
+      backgroundExecution = false,
+      assertActiveLease,
     } = params;
     let messageDeleted = false;
     const deleteIntent: EnsureModerationDeleteIntentInput = {
@@ -3090,29 +3277,45 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         maskedExcerpt: maskText(text),
         score: 0.8,
         metadata: {
+          ...hit.metadata,
           windowSec: hit.windowSec,
           count: hit.count,
-          reason: 'Duplicate message removed',
+          fingerprintType: hit.fingerprintType,
+          reason: this.resolveDuplicateRemovalReason(hit.fingerprintType),
         },
       },
     };
+    assertActiveLease?.();
     await this.ensureModerationDeleteIntent(deleteIntent);
+    assertActiveLease?.();
 
-    const claimed = await this.claimMessageScopedModerationAction({
-      chatId,
-      userId,
-      messageId,
-      ruleCode: 'DUPLICATE_HIT',
-    });
-    if (!claimed) {
-      return;
+    if (!actionClaimed) {
+      assertActiveLease?.();
+      const claimed = await this.claimMessageScopedModerationAction({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE,
+      });
+      if (!claimed) {
+        return;
+      }
+      assertActiveLease?.();
     }
 
+    assertActiveLease?.();
     try {
       this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
-      const deleteResult = await this.executeModerationDelete(deleteIntent);
+      const deleteResult = await this.executeModerationDelete(
+        deleteIntent,
+        assertActiveLease
+          ? { beforeImmediateDeleteMutation: async () => assertActiveLease() }
+          : undefined,
+      );
+      assertActiveLease?.();
       messageDeleted = deleteResult.gone;
       if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
+        assertActiveLease?.();
         await this.createBotModerationEvent({
           data: {
             chatId,
@@ -3125,17 +3328,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             score: 0.8,
             operator: Operator.BOT,
             metadata: {
+              ...hit.metadata,
               windowSec: hit.windowSec,
               count: hit.count,
-              reason: 'Duplicate message removed',
+              fingerprintType: hit.fingerprintType,
+              reason: this.resolveDuplicateRemovalReason(hit.fingerprintType),
             },
           },
         });
+        assertActiveLease?.();
       }
       if (messageDeleted) {
         this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
       }
     } catch (error: unknown) {
+      assertActiveLease?.();
       this.logger.warn(
         {
           chatId,
@@ -3147,8 +3354,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    assertActiveLease?.();
     this.markWebhookHotPathStage(hotPathProfile, 'duplicate-follow-up');
     const runDuplicateFollowUp = async () => {
+      assertActiveLease?.();
       const duplicateMessageOptions = this.buildBotMessageOptions(
         chatId,
         duplicateBotButtons,
@@ -3162,25 +3371,37 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (!suppressNonEssentialMessages && duplicateBotMessageEnabled) {
         try {
+          assertActiveLease?.();
+          const explanationText = await this.appendAdminContactMarkdownLink(
+            chatId,
+            this.buildDuplicateHitExplanation(
+              userLabel,
+              messageDeleted,
+              duplicateBotMessageText,
+              botSpeechStyle,
+              hit.fingerprintType,
+            ),
+            duplicateAdminContactButtonEnabled,
+            duplicateAdminContactButtonUrl,
+          );
+          assertActiveLease?.();
           await this.sendBotMessageWithOptionalAutoDelete({
             chatId,
-            text: await this.appendAdminContactMarkdownLink(
-              chatId,
-              this.buildDuplicateHitExplanation(
-                userLabel,
-                messageDeleted,
-                duplicateBotMessageText,
-                botSpeechStyle,
-              ),
-              duplicateAdminContactButtonEnabled,
-              duplicateAdminContactButtonUrl,
-            ),
+            text: explanationText,
             messageOptions: duplicateMessageOptions ?? undefined,
             media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
             deleteBotMessagesEnabled,
             deleteBotMessagesDelayMinutes,
+            idempotencyKey: this.buildPhotoDuplicateExplanationIdempotencyKey(
+              hit.metadata,
+              chatId,
+              messageId,
+            ),
+            beforeSend: assertActiveLease ? async () => assertActiveLease() : undefined,
           });
+          assertActiveLease?.();
         } catch (error: unknown) {
+          assertActiveLease?.();
           this.logger.warn(
             {
               chatId,
@@ -3192,18 +3413,45 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
+      assertActiveLease?.();
     };
 
-    await this.runWebhookFollowUpWithBudget({
-      stage: 'duplicate-follow-up',
-      hotPathProfile,
-      chatId,
-      userId,
-      messageId,
-      maxWaitMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
-      minRemainingMs: DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
-      task: runDuplicateFollowUp,
-    });
+    if (backgroundExecution) {
+      assertActiveLease?.();
+      await runDuplicateFollowUp();
+      assertActiveLease?.();
+    } else {
+      await this.runWebhookFollowUpWithBudget({
+        stage: 'duplicate-follow-up',
+        hotPathProfile,
+        chatId,
+        userId,
+        messageId,
+        maxWaitMs: DUPLICATE_FOLLOW_UP_HOT_PATH_TIMEOUT_MS,
+        minRemainingMs: DUPLICATE_FOLLOW_UP_DETACH_MIN_REMAINING_MS,
+        task: runDuplicateFollowUp,
+      });
+    }
+  }
+
+  private resolveDuplicateRemovalReason(fingerprintType: DuplicateHit['fingerprintType']): string {
+    if (fingerprintType === 'image') {
+      return 'Duplicate photo removed';
+    }
+    if (fingerprintType === 'image_set') {
+      return 'Duplicate photo album removed';
+    }
+    return 'Duplicate message removed';
+  }
+
+  private buildPhotoDuplicateExplanationIdempotencyKey(
+    metadata: Record<string, unknown> | undefined,
+    chatId: string,
+    messageId: string,
+  ): string | undefined {
+    return this.readString(metadata?.duplicateSource) === 'photo'
+      ? `photo-duplicate:${chatId}:${messageId}:explanation`
+      : undefined;
   }
 
   private toSanctionAction(action: DuplicateAction): SanctionAction {
@@ -3621,6 +3869,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageDeleted: boolean,
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
+    fingerprintType: DuplicateHit['fingerprintType'] = 'exact',
   ): string {
     const hasTemplateOverride = hasCustomBotSpeechTemplate(templateText);
     const banDurationLabel = this.formatMuteDurationLabel(muteDurationHours);
@@ -3633,6 +3882,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           muteDurationLabel: banDurationLabel,
         })
       : this.buildDuplicateSanctionLabel(botSpeechStyle, decision.action, banDurationLabel);
+    if (!hasTemplateOverride && this.isPhotoDuplicateFingerprintType(fingerprintType)) {
+      return `${userLabel}, ${this.buildPhotoDuplicateSubjectText(
+        fingerprintType,
+        botSpeechStyle,
+      )}. ${sanction}`;
+    }
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -3641,9 +3896,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         message_status: resolveBotSpeechMessageStatus(templateText, messageDeleted),
-        reason: hasTemplateOverride
-          ? 'в этом чате серийные повторы не проходят'
-          : 'повторные сообщения ограничены настройками чата',
+        reason: this.resolveDuplicateExplanationReason(fingerprintType, hasTemplateOverride),
         duplicate_context: baseContext,
         sanction,
         mute_duration: banDurationLabel,
@@ -3657,10 +3910,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageDeleted: boolean,
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
+    fingerprintType: DuplicateHit['fingerprintType'] = 'exact',
   ): string {
     const hasTemplateOverride = hasCustomBotSpeechTemplate(templateText);
     const duplicateContext = resolveBotSpeechDuplicateContext(templateText, messageDeleted);
     const messageStatus = resolveBotSpeechMessageStatus(templateText, messageDeleted);
+    const sanction = hasTemplateOverride
+      ? buildLegacyDuplicatePassiveSanctionLabel({
+          style: botSpeechStyle,
+          persona: this.resolveActiveBotSpeechProfile().persona,
+          messageDeleted,
+        })
+      : this.buildDuplicatePassiveSanctionLabel(botSpeechStyle, messageDeleted);
+    if (!hasTemplateOverride && this.isPhotoDuplicateFingerprintType(fingerprintType)) {
+      return `${userLabel}, ${this.buildPhotoDuplicateSubjectText(
+        fingerprintType,
+        botSpeechStyle,
+      )}. ${sanction}`;
+    }
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -3669,19 +3936,53 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         message_status: messageStatus,
-        reason: hasTemplateOverride
-          ? 'в этом чате серийные повторы не проходят'
-          : 'повторные сообщения ограничены настройками чата',
+        reason: this.resolveDuplicateExplanationReason(fingerprintType, hasTemplateOverride),
         duplicate_context: duplicateContext,
-        sanction: hasTemplateOverride
-          ? buildLegacyDuplicatePassiveSanctionLabel({
-              style: botSpeechStyle,
-              persona: this.resolveActiveBotSpeechProfile().persona,
-              messageDeleted,
-            })
-          : this.buildDuplicatePassiveSanctionLabel(botSpeechStyle, messageDeleted),
+        sanction,
       },
     });
+  }
+
+  private isPhotoDuplicateFingerprintType(
+    fingerprintType: DuplicateHit['fingerprintType'],
+  ): fingerprintType is 'image' | 'image_set' {
+    return fingerprintType === 'image' || fingerprintType === 'image_set';
+  }
+
+  private buildPhotoDuplicateSubjectText(
+    fingerprintType: 'image' | 'image_set',
+    style: BotSpeechStyle | null,
+  ): string {
+    const album = fingerprintType === 'image_set';
+    if (style === 'FRIENDLY') {
+      return album ? 'альбом повторился' : 'фото повторилось';
+    }
+    if (style === 'POLICE') {
+      return album ? 'повтор альбома зафиксирован' : 'повтор фото зафиксирован';
+    }
+    if (style === 'IRONIC') {
+      return album ? 'альбом вышел на бис' : 'фото вышло на бис';
+    }
+    return album ? 'альбом распознан как повтор' : 'фото распознано как повтор';
+  }
+
+  private resolveDuplicateExplanationReason(
+    fingerprintType: DuplicateHit['fingerprintType'],
+    legacyWording: boolean,
+  ): string {
+    if (fingerprintType === 'image') {
+      return legacyWording
+        ? 'в этом чате повторы фото не проходят'
+        : 'повторные фото ограничены настройками чата';
+    }
+    if (fingerprintType === 'image_set') {
+      return legacyWording
+        ? 'в этом чате повторы альбомов не проходят'
+        : 'повторные альбомы ограничены настройками чата';
+    }
+    return legacyWording
+      ? 'в этом чате серийные повторы не проходят'
+      : 'повторные сообщения ограничены настройками чата';
   }
 
   private resolveEditableBotSpeechText(
@@ -3865,8 +4166,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async applySanctionAction(params: ApplySanctionActionParams): Promise<boolean> {
+    params.assertActiveLease?.();
     if (params.action !== SanctionAction.BAN && params.action !== SanctionAction.MUTE) {
-      return this.applySanctionActionUnderLock(params);
+      return this.applySanctionActionUnderLock(
+        params,
+        this.combineModerationLeaseGuards(undefined, params.assertActiveLease),
+      );
     }
 
     let resolvedOutcome: boolean | undefined;
@@ -3874,11 +4179,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return await this.moderationSanctionStateLockService.runExclusive(
         { chatId: params.chatId, userId: params.userId },
         async (leaseGuard) => {
+          const activeLeaseGuard = this.combineModerationLeaseGuards(
+            leaseGuard,
+            params.assertActiveLease,
+          );
+          await activeLeaseGuard?.assertOwned();
           let outcome: boolean;
           if (this.isKnownRuntimeBotUserId(params.userId)) {
-            outcome = await this.applySanctionActionUnderLock(params, leaseGuard);
+            outcome = await this.applySanctionActionUnderLock(params, activeLeaseGuard);
           } else {
-            await leaseGuard.assertOwned();
+            await activeLeaseGuard?.assertOwned();
             const fence = await this.moderationSanctionStateFenceService.prepare({
               chatId: params.chatId,
               userId: params.userId,
@@ -3886,7 +4196,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               operator: Operator.BOT,
               source: 'automatic_moderation',
             });
-            outcome = await this.applySanctionActionUnderLock(params, leaseGuard, fence);
+            outcome = await this.applySanctionActionUnderLock(params, activeLeaseGuard, fence);
           }
           resolvedOutcome = outcome;
           return outcome;
@@ -3901,6 +4211,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       throw error;
     }
+  }
+
+  private combineModerationLeaseGuards(
+    leaseGuard: ModerationSanctionStateLeaseGuard | undefined,
+    assertActiveLease: (() => void) | undefined,
+  ): ModerationSanctionStateLeaseGuard | undefined {
+    if (!assertActiveLease) {
+      return leaseGuard;
+    }
+    return {
+      assertOwned: async () => {
+        assertActiveLease();
+        await leaseGuard?.assertOwned();
+        assertActiveLease();
+      },
+    };
   }
 
   private async applySanctionActionUnderLock(
@@ -3996,6 +4322,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           sanctionNoticeText,
           botSpeechStyle,
           sanctionEventId: eventPersistence.eventId,
+          beforeSend: leaseGuard?.assertOwned.bind(leaseGuard),
         });
         return true;
       } catch (error: unknown) {
@@ -4103,6 +4430,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botSpeechStyle,
         botId: banResult.botId ?? undefined,
         sanctionEventId: eventPersistence.eventId,
+        beforeSend: leaseGuard?.assertOwned.bind(leaseGuard),
       });
       return true;
     } catch (error: unknown) {
@@ -4158,7 +4486,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const preparedInput = this.prepareModerationDeleteIntentInput(input, options);
     if (this.moderationDeleteIntentService) {
       try {
-        const result = await this.moderationDeleteIntentService.ensureAndAttempt(preparedInput);
+        const result = await this.moderationDeleteIntentService.ensureAndAttempt(
+          preparedInput,
+          options?.beforeImmediateDeleteMutation
+            ? { beforeDeleteMutation: options.beforeImmediateDeleteMutation }
+            : undefined,
+        );
         const rollout = this.moderationDeleteIntentService.getRolloutForInput(preparedInput);
         const executeExclusively = rollout === 'execute';
         if (result.kind !== 'off' && result.kind !== 'observed') {
@@ -4371,6 +4704,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null;
     botId?: string;
     sanctionEventId?: string | null;
+    beforeSend?: () => Promise<void>;
   }) {
     const {
       chatId,
@@ -4385,6 +4719,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
       botId,
       sanctionEventId,
+      beforeSend,
     } = params;
     const noticeText =
       sanctionNoticeText ?? this.buildMuteNotice(userLabel, muteDurationHours, botSpeechStyle);
@@ -4401,6 +4736,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : botMessageOptions,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
+        beforeSend,
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -4427,6 +4763,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null;
     botId?: string;
     sanctionEventId?: string | null;
+    beforeSend?: () => Promise<void>;
   }) {
     const {
       chatId,
@@ -4440,6 +4777,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
       botId,
       sanctionEventId,
+      beforeSend,
     } = params;
 
     const noticeText =
@@ -4457,6 +4795,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : botMessageOptions,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
+        beforeSend,
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -5358,6 +5697,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           create?: (args: {
             data: {
               dedupeKey: string;
+              messageActionKey: string | null;
               chatId: string;
               userId: string;
               messageId: string;
@@ -5368,6 +5708,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           createMany?: (args: {
             data: Array<{
               dedupeKey: string;
+              messageActionKey: string | null;
               chatId: string;
               userId: string;
               messageId: string;
@@ -5385,6 +5726,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const data = {
       dedupeKey: params.dedupeKey,
+      messageActionKey:
+        params.updateType === 'message_action'
+          ? this.buildMessageScopedModerationActionClaimKey(params.chatId, params.messageId)
+          : null,
       chatId: params.chatId,
       userId: params.userId,
       messageId: params.messageId,
@@ -5421,6 +5766,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       return 'unavailable';
     }
+  }
+
+  private buildMessageScopedModerationActionClaimKey(chatId: string, messageId: string): string {
+    const semanticHash = createHash('sha256')
+      .update(JSON.stringify([chatId, messageId]))
+      .digest('hex');
+    return `v1:${semanticHash}`;
   }
 
   private async markRedisMessageViolationProcessing(
@@ -17342,6 +17694,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
     botId?: string;
+    idempotencyKey?: string;
   }): MaxActionDispatchOptions | undefined {
     const dispatchOptions: MaxActionDispatchOptions = {
       trafficClass: params.immediate === true ? 'interactive' : 'background',
@@ -17353,6 +17706,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
     if (params.immediate === true) {
       dispatchOptions.immediate = true;
+    }
+    if (params.idempotencyKey) {
+      dispatchOptions.idempotencyKey = params.idempotencyKey;
     }
 
     if (params.deleteBotMessagesEnabled) {
@@ -17373,6 +17729,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
     bypassNoticeBucket?: boolean;
+    idempotencyKey?: string;
+    /** Final guard before the durable send handoff; queued delivery may outlive the caller lease. */
+    beforeSend?: () => Promise<void>;
   }): Promise<boolean> {
     const {
       chatId,
@@ -17384,6 +17743,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesDelayMinutes,
       immediate,
       bypassNoticeBucket,
+      idempotencyKey,
+      beforeSend,
     } = params;
 
     if (
@@ -17400,6 +17761,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
       ...(botId ? { botId } : {}),
     });
+    await beforeSend?.();
     await this.maxClient.sendMessage(
       chatId,
       text,
@@ -17412,6 +17774,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesDelayMinutes,
         immediate,
         botId,
+        idempotencyKey,
       }),
     );
     return true;

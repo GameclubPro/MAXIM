@@ -6,6 +6,7 @@ import {
 } from './max-action-ledger.service';
 import { MaxActionLedgerStatus } from '../prisma/prisma-client';
 import type { MaxActionJob } from './max-client.service';
+import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
 
 function createJob(overrides: Partial<MaxActionJob> = {}): MaxActionJob {
   return {
@@ -357,6 +358,7 @@ describe('MaxActionLedgerService', () => {
     ['KICK_MEMBER', 'max_api_circuit_open'],
     ['BAN_MEMBER', 'moderation_sanction_state_lock_lease_lost'],
     ['KICK_MEMBER', 'moderation_sanction_state_lock_unavailable'],
+    ['BAN_MEMBER', MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE],
   ] as const)(
     'allows %s execution after a proven pre-dispatch %s failure',
     async (actionType, lastErrorCode) => {
@@ -765,6 +767,7 @@ describe('MaxActionLedgerService', () => {
                       'max_api_internal_rate_limit',
                       'moderation_sanction_state_lock_lease_lost',
                       'moderation_sanction_state_lock_unavailable',
+                      'max_member_pre_dispatch_guard_rejected',
                     ],
                   },
                 }),
@@ -1159,6 +1162,7 @@ describe('MaxActionLedgerService', () => {
   it.each([
     'moderation_sanction_state_lock_lease_lost',
     'moderation_sanction_state_lock_unavailable',
+    MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
   ])('persists the proven pre-dispatch member failure code %s', async (code) => {
     const { service, prisma } = createService();
     const error = Object.assign(new Error('sanction state guard rejected the dispatch'), { code });

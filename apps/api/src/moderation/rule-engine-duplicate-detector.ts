@@ -8,6 +8,10 @@ import { extractUrlsFromText } from './rule-engine-link-detector';
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 import { normalizeForDetection } from './rule-engine-normalization';
 import { RedisCounterService } from './redis-counter.service';
+import {
+  resolveDuplicateFlowConfig,
+  type DuplicateReactionStage,
+} from './duplicate-flow-policy';
 import type {
   DuplicateAction,
   DuplicateDecision,
@@ -21,10 +25,6 @@ export type {
   DuplicateFingerprintType,
   DuplicateHit,
 } from './rule-engine.contract';
-
-type DuplicateReactionStage = {
-  action: DuplicateAction | null;
-};
 
 type DuplicateFingerprint = {
   type: DuplicateFingerprintType;
@@ -278,52 +278,7 @@ export class RuleEngineDuplicateDetector {
     windowSec: number;
     reactions: DuplicateReactionStage[];
   } {
-    const firstThreshold = settings.duplicateWarnEnabled
-      ? settings.duplicateWarnMaxCount
-      : settings.duplicateMuteEnabled
-        ? settings.duplicateMuteMaxCount
-        : settings.duplicateBanEnabled
-          ? settings.duplicateBanMaxCount
-          : settings.duplicateWarnMaxCount;
-    const windowSec = settings.duplicateWarnEnabled
-      ? settings.duplicateWarnWindowSec
-      : settings.duplicateMuteEnabled
-        ? settings.duplicateMuteWindowSec
-        : settings.duplicateBanEnabled
-          ? settings.duplicateBanWindowSec
-          : settings.duplicateWarnWindowSec;
-    const allowedCount = Math.max(
-      0,
-      firstThreshold - (settings.duplicateBotMessageEnabled ? 2 : 1),
-    );
-
-    return {
-      allowedCount,
-      windowSec,
-      reactions: this.getEnabledReactions(settings),
-    };
-  }
-
-  private getEnabledReactions(settings: ChatSettings): DuplicateReactionStage[] {
-    const reactions: DuplicateReactionStage[] = [];
-
-    if (settings.duplicateBotMessageEnabled) {
-      reactions.push({ action: null });
-    }
-
-    if (settings.duplicateWarnEnabled) {
-      reactions.push({ action: 'WARN' });
-    }
-
-    if (settings.duplicateMuteEnabled) {
-      reactions.push({ action: 'MUTE' });
-    }
-
-    if (settings.duplicateBanEnabled) {
-      reactions.push({ action: 'BAN' });
-    }
-
-    return reactions;
+    return resolveDuplicateFlowConfig(settings);
   }
 
   private buildFingerprints(

@@ -222,6 +222,9 @@ test('SECTION_SETTING_KEYS includes advanced tuning for links and duplicates plu
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkMuteMaxCount'));
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkBanMaxCount'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateDetectionPreset'));
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoMatchPreset'));
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicatePhotoScope'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnoreLinksEnabled'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnorePhonesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateNearMatchEnabled'));
@@ -347,6 +350,9 @@ test('mergeSectionSettings does not copy legacy required subscription expiry fie
 test('mergeSectionSettings preserves advanced duplicate and link tuning plus phone allow toggle', () => {
   const current = createSettings({
     duplicateDetectionPreset: 'STANDARD',
+    duplicatePhotoEnabled: false,
+    duplicatePhotoMatchPreset: 'SAME_IMAGE',
+    duplicatePhotoScope: 'SAME_AUTHOR',
     duplicateIgnoreLinksEnabled: false,
     duplicateIgnorePhonesEnabled: false,
     duplicateNearMatchEnabled: false,
@@ -359,6 +365,9 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning plus pho
   });
   const saved = createSettings({
     duplicateDetectionPreset: 'CUSTOM',
+    duplicatePhotoEnabled: true,
+    duplicatePhotoMatchPreset: 'MINOR_EDITS',
+    duplicatePhotoScope: 'CHAT',
     duplicateIgnoreLinksEnabled: true,
     duplicateIgnorePhonesEnabled: true,
     duplicateNearMatchEnabled: true,
@@ -372,6 +381,9 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning plus pho
 
   const duplicateMerged = mergeSectionSettings(current, saved, 'duplicates');
   assert.equal(duplicateMerged.duplicateDetectionPreset, 'CUSTOM');
+  assert.equal(duplicateMerged.duplicatePhotoEnabled, true);
+  assert.equal(duplicateMerged.duplicatePhotoMatchPreset, 'MINOR_EDITS');
+  assert.equal(duplicateMerged.duplicatePhotoScope, 'CHAT');
   assert.equal(duplicateMerged.duplicateIgnoreLinksEnabled, true);
   assert.equal(duplicateMerged.duplicateIgnorePhonesEnabled, true);
   assert.equal(duplicateMerged.duplicateNearMatchEnabled, true);

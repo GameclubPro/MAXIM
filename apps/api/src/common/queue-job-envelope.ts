@@ -7,6 +7,7 @@ export type QueueRetryPolicyName =
   | 'suggestion-delivery'
   | 'chat-admin-roster-sync'
   | 'night-mode-transition'
+  | 'photo-duplicate'
   | 'vk-parsing-sync'
   | 'vk-parsing-publish';
 

@@ -129,10 +129,22 @@ type IntentLeaseHeartbeat = {
   stop: () => void;
 };
 
+export type ModerationDeleteIntentAttemptOptions = {
+  /** Fences this inline attempt only; the persisted intent remains the durable recovery owner. */
+  beforeDeleteMutation?: () => Promise<void>;
+};
+
 class ModerationDeleteIntentLeaseLostError extends Error {
   constructor() {
     super('Moderation delete intent lease ownership was lost');
     this.name = 'ModerationDeleteIntentLeaseLostError';
+  }
+}
+
+class ModerationDeletePreDispatchGuardError extends Error {
+  constructor(readonly guardError: unknown) {
+    super('Moderation delete pre-dispatch guard rejected the mutation', { cause: guardError });
+    this.name = 'ModerationDeletePreDispatchGuardError';
   }
 }
 
@@ -305,6 +317,7 @@ export class ModerationDeleteIntentService {
 
   async ensureAndAttempt(
     input: EnsureModerationDeleteIntentInput,
+    options?: ModerationDeleteIntentAttemptOptions,
   ): Promise<ModerationDeleteAttemptResult> {
     const ensured = await this.persistIntent(input, false);
     if (ensured.rollout === 'off' || !ensured.intentId) {
@@ -319,14 +332,17 @@ export class ModerationDeleteIntentService {
       };
     }
 
-    const result = await this.attemptIntent(ensured.intentId);
+    const result = await this.attemptIntent(ensured.intentId, options);
     if (!result.confirmed) {
       await this.enqueueCurrentWakeup(ensured.intentId);
     }
     return result;
   }
 
-  async attemptIntent(intentId: string): Promise<ModerationDeleteAttemptResult> {
+  async attemptIntent(
+    intentId: string,
+    options?: ModerationDeleteIntentAttemptOptions,
+  ): Promise<ModerationDeleteAttemptResult> {
     const existing = await this.loadIntent(intentId);
     if (!existing) {
       throw new Error(`Moderation delete intent ${intentId} does not exist`);
@@ -341,7 +357,7 @@ export class ModerationDeleteIntentService {
       const current = await this.loadRequiredIntent(intentId);
       return this.toAttemptResult(current);
     }
-    return this.executeLeasedIntent(claimed.id, claimed.leaseToken!);
+    return this.executeLeasedIntent(claimed.id, claimed.leaseToken!, options);
   }
 
   async retryTerminalIntent(
@@ -419,6 +435,7 @@ export class ModerationDeleteIntentService {
   async executeLeasedIntent(
     intentId: string,
     leaseToken: string,
+    options?: ModerationDeleteIntentAttemptOptions,
   ): Promise<ModerationDeleteAttemptResult> {
     const intent = await this.loadIntent(intentId);
     if (!intent) {
@@ -542,6 +559,7 @@ export class ModerationDeleteIntentService {
           }
         }
 
+        let dispatchMarkerPersisted = false;
         try {
           await this.assertLeaseForExternalCall(heartbeat);
           const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
@@ -551,14 +569,33 @@ export class ModerationDeleteIntentService {
           if (protectedIntent) {
             return this.toAttemptResult(protectedIntent);
           }
-          if (!(await this.markDeleteDispatchStarted(intent.id, leaseToken, botId))) {
-            return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
-          }
-          intent.deleteDispatchStartedAt = new Date();
-          intent.deleteDispatchStartedBotId = botId;
-          unresolvedDeleteDispatch = true;
+          const beforeImmediateDeleteMutation = async () => {
+            await this.assertLeaseForExternalCall(heartbeat);
+            if (options?.beforeDeleteMutation) {
+              try {
+                await options.beforeDeleteMutation();
+              } catch (error: unknown) {
+                throw new ModerationDeletePreDispatchGuardError(error);
+              }
+            }
+            if (!(await this.markDeleteDispatchStarted(intent.id, leaseToken, botId))) {
+              throw new ModerationDeleteIntentLeaseLostError();
+            }
+            dispatchMarkerPersisted = true;
+            intent.deleteDispatchStartedAt = new Date();
+            intent.deleteDispatchStartedBotId = botId;
+            unresolvedDeleteDispatch = true;
+            if (options?.beforeDeleteMutation) {
+              try {
+                await options.beforeDeleteMutation();
+              } catch (error: unknown) {
+                throw new ModerationDeletePreDispatchGuardError(error);
+              }
+            }
+          };
           await this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
             immediate: true,
+            beforeImmediateDeleteMutation,
             botId,
             timeoutMs: this.deleteTimeoutMs,
             trafficClass: 'critical',
@@ -567,6 +604,27 @@ export class ModerationDeleteIntentService {
             idempotencyKey: `moderation-delete-intent-${intent.id}-attempt-${intent.attemptCount}`,
           });
         } catch (error: unknown) {
+          if (error instanceof ModerationDeletePreDispatchGuardError) {
+            if (dispatchMarkerPersisted) {
+              if (!(await this.clearDeleteDispatchStarted(intent.id, leaseToken, botId))) {
+                throw new ModerationDeleteIntentLeaseLostError();
+              }
+              intent.deleteDispatchStartedAt = null;
+              intent.deleteDispatchStartedBotId = null;
+              unresolvedDeleteDispatch = false;
+            }
+            const details = this.describeError(
+              error.guardError,
+              'delete_pre_dispatch_guard_rejected',
+            );
+            await this.finishRetryableAttempt(intent, leaseToken, {
+              ...details,
+              status: 'RETRYABLE',
+              errorCode: 'delete_pre_dispatch_guard_rejected',
+              retryDelayMs: this.retryDelayMs(intent.attemptCount),
+            });
+            throw error;
+          }
           if (error instanceof ModerationDeleteIntentLeaseLostError) {
             throw error;
           }
@@ -665,6 +723,9 @@ export class ModerationDeleteIntentService {
         },
       );
     } catch (error: unknown) {
+      if (error instanceof ModerationDeletePreDispatchGuardError) {
+        throw error.guardError;
+      }
       if (error instanceof ModerationDeleteIntentLeaseLostError) {
         return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
       }

@@ -26,6 +26,16 @@ enum DuplicateDetectionPreset {
   CUSTOM
 }
 
+enum DuplicatePhotoMatchPreset {
+  SAME_IMAGE
+  MINOR_EDITS
+}
+
+enum DuplicatePhotoScope {
+  SAME_AUTHOR
+  CHAT
+}
+
 enum CommercialAdsSensitivity {
   BALANCED
   STRICT
@@ -480,6 +490,9 @@ model ChatSettings {
   duplicateMuteEnabled                          Boolean                  @default(false) @map("duplicate_mute_enabled")
   duplicateBanEnabled                           Boolean                  @default(false) @map("duplicate_ban_enabled")
   antiDuplicateEnabled                          Boolean                  @default(false) @map("anti_duplicate_enabled")
+  duplicatePhotoEnabled                         Boolean                  @default(false) @map("duplicate_photo_enabled")
+  duplicatePhotoMatchPreset                     DuplicatePhotoMatchPreset @default(SAME_IMAGE) @map("duplicate_photo_match_preset")
+  duplicatePhotoScope                           DuplicatePhotoScope      @default(SAME_AUTHOR) @map("duplicate_photo_scope")
   duplicateDetectionPreset                      DuplicateDetectionPreset @default(STRICT) @map("duplicate_detection_preset")
   duplicateIgnoreLinksEnabled                   Boolean                  @default(false) @map("duplicate_ignore_links_enabled")
   duplicateIgnorePhonesEnabled                  Boolean                  @default(false) @map("duplicate_ignore_phones_enabled")
@@ -1385,6 +1398,7 @@ model ModerationEvent {
   @@index([chatId, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_created_id_idx")
   @@index([chatId, action, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_action_created_id_idx")
   @@index([chatId, ruleCode, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_rule_created_id_idx")
+  @@index([chatId, messageId], map: "moderation_events_chat_message_idx")
   @@index([botId, createdAt(sort: Desc)], map: "moderation_events_bot_id_created_at_idx")
   @@index([createdAt], map: "moderation_events_created_at_idx")
   @@index([chatId, userId, createdAt])
@@ -1393,18 +1407,20 @@ model ModerationEvent {
 }
 
 model ModerationViolationMessageClaim {
-  id         String   @id @default(cuid())
-  dedupeKey  String   @unique @map("dedupe_key")
-  chatId     String   @map("chat_id")
-  userId     String   @map("user_id")
-  messageId  String   @map("message_id")
-  ruleCode   String   @map("rule_code")
-  updateType String   @map("update_type")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id               String   @id @default(cuid())
+  dedupeKey        String   @unique @map("dedupe_key")
+  messageActionKey String?  @unique(map: "moderation_violation_message_claims_message_action_key_key") @map("message_action_key")
+  chatId           String   @map("chat_id")
+  userId           String   @map("user_id")
+  messageId        String   @map("message_id")
+  ruleCode         String   @map("rule_code")
+  updateType       String   @map("update_type")
+  createdAt        DateTime @default(now()) @map("created_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@index([chatId, userId, createdAt], map: "moderation_violation_message_claims_chat_user_created_idx")
+  @@index([chatId, messageId, updateType], map: "moderation_violation_claims_chat_message_type_idx")
   @@index([createdAt], map: "moderation_violation_message_claims_created_at_idx")
   @@map("moderation_violation_message_claims")
 }

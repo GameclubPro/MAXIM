@@ -12,6 +12,7 @@ import {
   RUNTIME_SERVICE_NAMES,
   WEBHOOK_DYNAMIC_LEASES_MODES,
 } from '../runtime/runtime-topology';
+import { PHOTO_DUPLICATE_ROLLOUT_MODES } from '../moderation/photo-duplicate/photo-duplicate.runtime';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -254,6 +255,24 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(3_600_000),
+  PHOTO_DUPLICATE_ROLLOUT_MODE: z.enum(PHOTO_DUPLICATE_ROLLOUT_MODES).default('shadow'),
+  PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: z.string().default(''),
+  PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: z.string().default(''),
+  PHOTO_DUPLICATE_ALLOWED_HOSTS: z.string().default('i.oneme.ru'),
+  PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(5_000),
+  PHOTO_DUPLICATE_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_048_576)
+    .max(33_554_432)
+    .default(16_777_216),
+  PHOTO_DUPLICATE_MAX_PIXELS: z.coerce
+    .number()
+    .int()
+    .min(1_000_000)
+    .max(100_000_000)
+    .default(40_000_000),
+  PHOTO_DUPLICATE_HISTORY_MAX_ITEMS: z.coerce.number().int().min(10).max(2_000).default(250),
   BACKGROUND_GOVERNOR_SOURCE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   BACKGROUND_GOVERNOR_CACHE_TTL_MS: z.coerce.number().int().positive().default(2_000),
   BACKGROUND_GOVERNOR_SOFT_QUEUE_LAG_SEC: z.coerce.number().positive().default(3),

@@ -42,10 +42,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/moderation/moderation.service.legacy.ts',
-    maxLines: 18071,
+    maxLines: 18434,
     targetLines: 17000,
     reason:
-      'ModerationService remains a legacy hotspot; this ceiling includes automatic sanction lock/fence integration, while unrelated helpers should keep moving to focused modules.',
+      'ModerationService remains a legacy hotspot; this ceiling includes photo-duplicate enqueue/action bridging and lease/message-action fences at existing delete, sanction, and notice boundaries, while unrelated helpers should keep moving to focused modules.',
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',
@@ -56,9 +56,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.legacy.tsx',
-    maxLines: 8178,
+    maxLines: 8184,
     targetLines: 8000,
-    reason: 'SettingsPage should shrink into route shell, hooks, and workspaces.',
+    reason:
+      'SettingsPage remains a legacy shell; this ceiling includes the photo-duplicate mode plumbing into focused settings modules, while route state and workspaces should continue moving out.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-native-controls.css',
@@ -304,9 +305,10 @@ const guardedFiles = [
   },
   {
     path: 'packages/contracts/src/core.ts',
-    maxLines: 2720,
+    maxLines: 2721,
     targetLines: 2500,
-    reason: 'Contracts should continue moving to existing subpath exports.',
+    reason:
+      'Core retains chat settings composition; this ceiling includes the focused photo-duplicate subpath integration, while new reusable schemas should continue moving to subpath exports.',
   },
   {
     path: 'apps/api/src/admin/publication.service.ts',

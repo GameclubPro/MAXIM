@@ -149,6 +149,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     duplicateMuteEnabled: true,
     duplicateBanEnabled: true,
     antiDuplicateEnabled: true,
+    duplicatePhotoEnabled: false,
     nightModeEnabled: true,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: 'Ночью чат закрыт. Напишите утром.',

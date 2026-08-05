@@ -104,6 +104,16 @@ test('visual metadata covers every runtime route with a cold scenario', () => {
   }
 });
 
+test('photo duplicate controls have a dedicated visual scenario', () => {
+  const scenario = MINIAPP_VISUAL_SCENARIOS.find(
+    (candidate) => candidate.name === 'chat-settings-duplicates-photos',
+  );
+
+  assert.equal(scenario?.routeId, 'chat-settings');
+  assert.ok(scenario?.features.includes('settings'));
+  assert.ok(scenario?.features.includes('duplicates'));
+});
+
 test('smoke preset is short, local-device focused, and includes navigation order', () => {
   const smoke = MINIAPP_VISUAL_PRESETS.smoke;
   assert.ok(smoke.scenarioNames.length >= 8 && smoke.scenarioNames.length <= 12);

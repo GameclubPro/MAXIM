@@ -487,6 +487,20 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-duplicates-photos',
+    beforeShot: async (page) => {
+      const panel = page.locator('.settings-drilldown__panel--duplicates');
+      await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
+      await panel.getByLabel('Включить проверку повторных фото').check();
+      await panel.getByRole('radiogroup', { name: 'Где искать повторное фото' }).waitFor({
+        state: 'visible',
+      });
+      await panel.getByRole('radio', { name: 'С изменениями' }).click();
+      await panel.getByRole('radio', { name: 'Во всём чате' }).click();
+      await page.waitForTimeout(250);
+    },
+  },
+  {
     name: 'chat-settings-duplicates-duration',
     beforeShot: async (page) => {
       const panel = page.locator('.settings-drilldown__panel--duplicates');

@@ -31,4 +31,33 @@ describe('ModerationExecutionService', () => {
 
     expect(legacyModerationService.processNightModeTransitionJob).toHaveBeenCalledWith(job);
   });
+
+  it('executes photo duplicate jobs through the focused moderation boundary', async () => {
+    const legacyModerationService = {
+      processWebhookEvent: jest.fn().mockResolvedValue(undefined),
+      processNightModeTransitionJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const photoDuplicateModerationService = {
+      processPhotoDuplicateJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationExecutionService(
+      legacyModerationService,
+      photoDuplicateModerationService as never,
+    );
+    const job = {
+      webhookEventId: 'webhook-event-1',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      sourceCreatedAt: '2026-08-05T12:00:00.000Z',
+      algorithmVersion: 1 as const,
+    };
+
+    const lease = { assertOwned: jest.fn() };
+    await service.processPhotoDuplicateJob(job, lease);
+
+    expect(photoDuplicateModerationService.processPhotoDuplicateJob).toHaveBeenCalledWith(
+      job,
+      lease,
+    );
+  });
 });

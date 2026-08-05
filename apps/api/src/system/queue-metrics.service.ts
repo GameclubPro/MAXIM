@@ -19,6 +19,7 @@ import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
 import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
 import { NIGHT_MODE_TRANSITION_QUEUE } from '../moderation/night-mode-transition.queue';
+import { PHOTO_DUPLICATE_QUEUE } from '../moderation/photo-duplicate/photo-duplicate.queue';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   getDefaultWebhookHomeOwnerByQueue,
@@ -58,6 +59,7 @@ export const AUXILIARY_QUEUE_NAMES = [
   ADMIN_SUPER_BAN_QUEUE,
   ADMIN_SUGGESTION_DELIVERY_QUEUE,
   MODERATION_DELETE_INTENT_QUEUE,
+  PHOTO_DUPLICATE_QUEUE,
 ] as const;
 export type AuxiliaryQueueName = (typeof AUXILIARY_QUEUE_NAMES)[number];
 
