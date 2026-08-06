@@ -31,7 +31,7 @@ export class WebhookParser {
     const eventTimestamp = this.extractEventTimestamp(type, message, payload);
     const membershipPayload = this.extractMembershipPayload(payload, type);
     const membershipChatId = this.extractMembershipChatId(membershipPayload);
-    const membershipSenderId = this.extractMembershipSenderId(membershipPayload);
+    const membershipSenderId = this.extractMembershipSenderId(membershipPayload, type);
     const membershipSenderName = this.extractMembershipSenderName(membershipPayload);
     const membershipInviterId = this.extractMembershipInviterId(membershipPayload, payload);
     const chatEntityType = this.extractChatEntityType(message, payload, membershipPayload);
@@ -182,7 +182,10 @@ export class WebhookParser {
         continue;
       }
 
-      if (this.extractMembershipChatId(candidate) || this.extractMembershipSenderId(candidate)) {
+      if (
+        this.extractMembershipChatId(candidate) ||
+        this.extractMembershipSenderId(candidate, type)
+      ) {
         return candidate;
       }
     }
@@ -271,27 +274,26 @@ export class WebhookParser {
     return '';
   }
 
-  private extractMembershipSenderId(node: Record<string, unknown> | null): string {
+  private extractMembershipSenderId(node: Record<string, unknown> | null, type?: string): string {
     if (!node) {
       return '';
     }
 
     const user = this.asRecord(node.user);
     const member = this.asRecord(node.member);
-    const candidates = [
-      node.user_id,
-      node.userId,
-      node.member_id,
-      node.memberId,
-      user?.id,
-      user?.user_id,
-      user?.userId,
+    const directCandidates = [node.user_id, node.userId, node.member_id, node.memberId];
+    const userCandidates = [user?.id, user?.user_id, user?.userId];
+    const memberCandidates = [
       member?.id,
       member?.user_id,
       member?.userId,
       member?.member_id,
       member?.memberId,
     ];
+    const candidates =
+      type?.trim().toLowerCase() === 'user_added'
+        ? [user?.user_id, user?.userId, user?.id, ...directCandidates, ...memberCandidates]
+        : [...directCandidates, ...userCandidates, ...memberCandidates];
 
     for (const value of candidates) {
       if (typeof value === 'string' || typeof value === 'number') {

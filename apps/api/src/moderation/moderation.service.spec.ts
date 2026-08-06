@@ -7384,7 +7384,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('sends greeting message for user_added update', async () => {
+  it('greets the invited user from user_added instead of the inviter', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -7432,7 +7432,19 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await service.handleUpdate(createUserAddedUpdate());
+    const update = createUserAddedUpdate();
+    update.membership = {
+      action: 'added',
+      memberUserIds: ['user-added-1'],
+      inviterId: 'admin-inviter-1',
+    };
+    update.raw = {
+      ...(update.raw as Record<string, unknown>),
+      user_id: 'admin-inviter-1',
+      inviter_id: 'admin-inviter-1',
+    };
+
+    await service.handleUpdate(update);
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
@@ -7448,6 +7460,7 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
       }),
     });
+    expect(maxClient.sendMessage.mock.calls[0]?.[1]).not.toContain('admin-inviter-1');
   });
 
   it('dedupes greeting messages for the same joined user across multiple bot deliveries', async () => {
@@ -8969,16 +8982,7 @@ describe('ModerationService', () => {
   });
 
   it('keeps sending greeting messages during join bursts', async () => {
-    const redisCounter = {
-      getString: jest.fn().mockResolvedValue(null),
-      incrementByWithTtl: jest
-        .fn()
-        .mockResolvedValueOnce(1)
-        .mockResolvedValueOnce(2)
-        .mockResolvedValueOnce(3)
-        .mockResolvedValueOnce(4),
-      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
-    };
+    const redisCounter = createRedisCounterMock();
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -9030,15 +9034,12 @@ describe('ModerationService', () => {
       redisCounter as never,
     );
 
-    await service.handleUpdate(createUserAddedUpdateWithSuffix(1));
-    await service.handleUpdate(createUserAddedUpdateWithSuffix(2));
-    await service.handleUpdate(createUserAddedUpdateWithSuffix(3));
-    await service.handleUpdate(createUserAddedUpdateWithSuffix(4));
+    for (let index = 1; index <= 8; index += 1) {
+      await service.handleUpdate(createUserAddedUpdateWithSuffix(index));
+    }
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(4);
-    expect(redisCounter.getString).not.toHaveBeenCalled();
-    expect(redisCounter.incrementByWithTtl).not.toHaveBeenCalled();
-    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(8);
+    expect(redisCounter.incrementWithTtl).not.toHaveBeenCalled();
   });
 
   it('ignores stale hidden greeting auto-disable state', async () => {

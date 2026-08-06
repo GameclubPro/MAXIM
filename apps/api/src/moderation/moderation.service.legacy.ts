@@ -7538,8 +7538,8 @@ export class ModerationService
           media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'greetingBotMessageText'),
           deleteBotMessagesEnabled: shouldDeleteGreetingMessage,
           deleteBotMessagesDelayMinutes: greetingDeleteDelayMinutes,
+          bypassNoticeBucket: true,
         });
-
         await this.createBotModerationEvent({
           data: {
             chatId,

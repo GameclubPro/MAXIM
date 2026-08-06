@@ -1003,6 +1003,30 @@ describe('WebhookParser', () => {
     });
   });
 
+  it('prefers the nested added user over top-level user_id for user_added updates', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-user-added-distinct-ids-1',
+      update_type: 'user_added',
+      chat_id: -123456789,
+      user_id: 999,
+      inviter_id: 777,
+      user: {
+        user_id: 888,
+        first_name: 'Иван',
+        last_name: 'Смирнов',
+      },
+      timestamp: 1772249118580,
+    });
+
+    expect(parsed.message?.senderId).toBe('888');
+    expect(parsed.message?.senderName).toBe('Иван Смирнов');
+    expect(parsed.membership).toEqual({
+      action: 'added',
+      memberUserIds: ['888'],
+      inviterId: '777',
+    });
+  });
+
   it('builds normalized user_added message from member payloads', () => {
     const parsed = parser.parse({
       update_id: 'upd-user-added-member-1',
