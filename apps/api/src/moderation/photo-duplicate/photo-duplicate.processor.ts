@@ -9,6 +9,7 @@ import {
   PHOTO_DUPLICATE_SOURCE_READY_DEFER_MS,
   PHOTO_DUPLICATE_SOURCE_READY_MAX_WAIT_MS,
   PhotoDuplicateSourceNotReadyError,
+  normalizePhotoDuplicateActionEligibility,
   type PhotoDuplicateJob,
 } from './photo-duplicate.queue';
 import {
@@ -37,15 +38,29 @@ export class PhotoDuplicateProcessor extends WorkerHost {
     if (!jobId) {
       throw new Error('Photo duplicate job is missing its idempotency key');
     }
+    const jobData = Object.freeze({
+      ...job.data,
+      actionEligible: normalizePhotoDuplicateActionEligibility(job.data.actionEligible),
+    }) satisfies PhotoDuplicateJob;
     const identity = {
       jobId,
-      chatId: job.data.chatId,
-      sourceCreatedAt: job.data.sourceCreatedAt,
+      chatId: jobData.chatId,
+      sourceCreatedAt: jobData.sourceCreatedAt,
     };
     let result: Awaited<ReturnType<PhotoDuplicateOrderingStore['runInOrder']>>;
     try {
-      result = await this.orderingStore.runInOrder(identity, (lease) =>
-        this.moderationExecutionService.processPhotoDuplicateJob(job.data, lease),
+      result = await this.orderingStore.runInOrder(
+        identity,
+        jobData.actionEligible,
+        (lease, orderingActionEligible) => {
+          const effectiveJobData = Object.freeze({
+            ...jobData,
+            actionEligible:
+              jobData.actionEligible &&
+              normalizePhotoDuplicateActionEligibility(orderingActionEligible),
+          }) satisfies PhotoDuplicateJob;
+          return this.moderationExecutionService.processPhotoDuplicateJob(effectiveJobData, lease);
+        },
       );
     } catch (error: unknown) {
       if (error instanceof PhotoDuplicateSourceNotReadyError) {

@@ -76,6 +76,7 @@ describe('PhotoDuplicateAnalysisService', () => {
     const first = fingerprint('a');
     const second = fingerprint('b');
     const { service, downloader, historyStore } = createService([first, second]);
+    const resolveActionEligibility = jest.fn().mockResolvedValue(true);
 
     const result = await service.analyzeAlbum({
       album: album([
@@ -86,10 +87,12 @@ describe('PhotoDuplicateAnalysisService', () => {
       scope: 'SAME_AUTHOR',
       preset: 'SAME_IMAGE',
       commitViolation: true,
+      resolveActionEligibility,
     });
 
-    expect(result).toMatchObject({ kind: 'observed', imageCount: 2 });
+    expect(result).toMatchObject({ kind: 'observed', imageCount: 2, actionEligible: true });
     expect(downloader.download).not.toHaveBeenCalled();
+    expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
     expect(historyStore.observeAlbum).toHaveBeenCalledWith(
       expect.objectContaining({
         fingerprintVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
@@ -103,6 +106,7 @@ describe('PhotoDuplicateAnalysisService', () => {
   it('downloads only cache misses and stores no URL or token in the cache', async () => {
     const cached = fingerprint('a');
     const { service, downloader, historyStore, generated } = createService([cached, null]);
+    const resolveActionEligibility = jest.fn().mockResolvedValue(true);
 
     await service.analyzeAlbum({
       album: album([
@@ -113,6 +117,7 @@ describe('PhotoDuplicateAnalysisService', () => {
       scope: 'CHAT',
       preset: 'MINOR_EDITS',
       commitViolation: false,
+      resolveActionEligibility,
     });
 
     expect(downloader.download).toHaveBeenCalledTimes(1);
@@ -122,6 +127,13 @@ describe('PhotoDuplicateAnalysisService', () => {
     );
     expect(JSON.stringify(historyStore.cachePhotoFingerprints.mock.calls[0]?.[0])).not.toContain(
       'secret',
+    );
+    expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
+    expect(historyStore.cachePhotoFingerprints.mock.invocationCallOrder[0]!).toBeLessThan(
+      resolveActionEligibility.mock.invocationCallOrder[0]!,
+    );
+    expect(resolveActionEligibility.mock.invocationCallOrder[0]!).toBeLessThan(
+      historyStore.observeAlbum.mock.invocationCallOrder[0]!,
     );
   });
 
@@ -137,6 +149,7 @@ describe('PhotoDuplicateAnalysisService', () => {
       scope: 'CHAT',
       preset: 'MINOR_EDITS',
       commitViolation: false,
+      resolveActionEligibility: jest.fn().mockResolvedValue(true),
     });
 
     expect(fingerprintService.createAlbumDecodeBudget).toHaveBeenCalledTimes(1);
@@ -166,6 +179,7 @@ describe('PhotoDuplicateAnalysisService', () => {
         scope: 'SAME_AUTHOR',
         preset: 'SAME_IMAGE',
         commitViolation: true,
+        resolveActionEligibility: jest.fn().mockResolvedValue(true),
       }),
     ).resolves.toEqual({ kind: 'incomplete', reason: 'unsupported_multi_frame' });
     expect(historyStore.cachePhotoFingerprints).not.toHaveBeenCalled();
@@ -182,8 +196,53 @@ describe('PhotoDuplicateAnalysisService', () => {
         scope: 'SAME_AUTHOR',
         preset: 'SAME_IMAGE',
         commitViolation: true,
+        resolveActionEligibility: jest.fn().mockResolvedValue(true),
       }),
     ).resolves.toEqual({ kind: 'incomplete', reason: 'missing_download_url' });
+    expect(historyStore.observeAlbum).not.toHaveBeenCalled();
+  });
+
+  it('downgrades a late action latch before observing the violation counter', async () => {
+    const cached = fingerprint('a');
+    const { service, historyStore } = createService([cached]);
+    const resolveActionEligibility = jest.fn().mockResolvedValue(false);
+
+    const result = await service.analyzeAlbum({
+      album: album([
+        { source: 'direct', photoId: 'photo-1', downloadUrl: 'https://i.oneme.ru/1' },
+      ]),
+      ttlSeconds: 3_601,
+      scope: 'SAME_AUTHOR',
+      preset: 'SAME_IMAGE',
+      commitViolation: true,
+      resolveActionEligibility,
+    });
+
+    expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ kind: 'observed', actionEligible: false });
+    expect(historyStore.observeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commitViolation: false }),
+    );
+  });
+
+  it('does not observe when action eligibility resolution rejects', async () => {
+    const cached = fingerprint('a');
+    const { service, historyStore } = createService([cached]);
+    const resolveActionEligibility = jest.fn().mockRejectedValue(new Error('redis unavailable'));
+
+    await expect(
+      service.analyzeAlbum({
+        album: album([
+          { source: 'direct', photoId: 'photo-1', downloadUrl: 'https://i.oneme.ru/1' },
+        ]),
+        ttlSeconds: 3_601,
+        scope: 'SAME_AUTHOR',
+        preset: 'SAME_IMAGE',
+        commitViolation: true,
+        resolveActionEligibility,
+      }),
+    ).rejects.toThrow('redis unavailable');
+
     expect(historyStore.observeAlbum).not.toHaveBeenCalled();
   });
 });

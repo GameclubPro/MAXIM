@@ -10,6 +10,7 @@ import {
   PHOTO_DUPLICATE_JOB_NAME,
   PHOTO_DUPLICATE_ORDERING_GRACE_MS,
   PHOTO_DUPLICATE_QUEUE,
+  normalizePhotoDuplicateActionEligibility,
   type PhotoDuplicateJob,
 } from './photo-duplicate.queue';
 import { resolvePhotoDuplicateRolloutMode } from './photo-duplicate.runtime';
@@ -34,26 +35,38 @@ export class PhotoDuplicateEnqueueService {
     chatId: string;
     messageId: string;
     sourceCreatedAt: string;
+    actionEligible: boolean;
   }): Promise<PhotoDuplicateEnqueueResult> {
     if (!this.queue || resolvePhotoDuplicateRolloutMode(this.configService) === 'off') {
       return 'skipped';
     }
 
     const jobId = buildPhotoDuplicateJobId(params);
+    const requestedActionEligible = normalizePhotoDuplicateActionEligibility(params.actionEligible);
+    const orderingIdentity = {
+      jobId,
+      chatId: params.chatId,
+      sourceCreatedAt: params.sourceCreatedAt,
+    };
     try {
-      const ordering = await this.orderingStore?.announce({
-        jobId,
-        chatId: params.chatId,
-        sourceCreatedAt: params.sourceCreatedAt,
-      });
-      if (ordering === 'completed') {
+      const ordering = await this.orderingStore?.announce(
+        orderingIdentity,
+        requestedActionEligible,
+      );
+      if (ordering?.kind === 'completed') {
         return 'queued';
       }
+      const effectiveActionEligible =
+        ordering?.kind === 'registered' ? ordering.actionEligible : false;
       await this.queue.add(
         PHOTO_DUPLICATE_JOB_NAME,
         {
-          ...params,
+          webhookEventId: params.webhookEventId,
+          chatId: params.chatId,
+          messageId: params.messageId,
+          sourceCreatedAt: params.sourceCreatedAt,
           algorithmVersion: PHOTO_DUPLICATE_ALGORITHM_VERSION,
+          actionEligible: effectiveActionEligible,
           createdAt: new Date().toISOString(),
           idempotencyKey: jobId,
           retryPolicyName: 'photo-duplicate',
@@ -79,12 +92,10 @@ export class PhotoDuplicateEnqueueService {
       );
       return 'queued';
     } catch (error: unknown) {
+      // A timed-out add can still have created the Bull job. Preserve the shared identity and force
+      // it observation-only; expiry cleanup removes a genuinely orphaned ordering record.
       await this.orderingStore
-        ?.abandon({
-          jobId,
-          chatId: params.chatId,
-          sourceCreatedAt: params.sourceCreatedAt,
-        })
+        ?.announce(orderingIdentity, false)
         .catch(() => undefined);
       this.logger.warn(
         {

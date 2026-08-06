@@ -1394,6 +1394,24 @@ export class ModerationService
         return;
       }
 
+      const mediaFlags = detectMediaFlags(update);
+      const photoDuplicateEnqueueBase =
+        webhookEventId &&
+        messageId &&
+        updateType === 'message_created' &&
+        settings.antiDuplicateEnabled &&
+        settings.duplicatePhotoEnabled &&
+        mediaFlags.hasPhotoAttachment
+          ? { webhookEventId, chatId, messageId, sourceCreatedAt: createdAt }
+          : null;
+      const enqueuePhotoDuplicate = async (actionEligible: boolean): Promise<void> => {
+        if (!photoDuplicateEnqueueBase) return;
+        await this.photoDuplicateEnqueueService?.enqueue({
+          ...photoDuplicateEnqueueBase,
+          actionEligible,
+        });
+      };
+
       if (
         messageId &&
         this.isSuperBanDeveloperUserId(senderId) &&
@@ -1419,6 +1437,17 @@ export class ModerationService
           messageId,
         }))
       ) {
+        if (photoDuplicateEnqueueBase) {
+          const photoSenderAdminCheck = await this.resolveSenderChatAdminCheck(
+            chatId,
+            chat.adminUserIds,
+            senderId,
+            { allowRemoteLookup: true, skipRemoteLookupWhenLocalAdminsKnown: false },
+          );
+          if (!photoSenderAdminCheck.isAdmin && photoSenderAdminCheck.source !== 'local_fallback') {
+            await enqueuePhotoDuplicate(false);
+          }
+        }
         await this.deleteAndKickDetectedGlobalSpammer({
           chatId,
           userId: senderId,
@@ -1537,6 +1566,7 @@ export class ModerationService
         if (!(await ensureDestructiveModerationAllowed('active-mute'))) {
           return;
         }
+        await enqueuePhotoDuplicate(false);
         await this.handleActiveMuteMessage({
           chatId,
           userId: senderId,
@@ -1552,6 +1582,7 @@ export class ModerationService
         if (!(await ensureDestructiveModerationAllowed('manual-group-close'))) {
           return;
         }
+        await enqueuePhotoDuplicate(false);
         await this.handleNightModeForceCloseMessage({
           chatId,
           userId: senderId,
@@ -1568,6 +1599,7 @@ export class ModerationService
         if (!(await ensureDestructiveModerationAllowed('night-mode'))) {
           return;
         }
+        await enqueuePhotoDuplicate(false);
         await this.handleNightModeMessage({
           chatId,
           userId: senderId,
@@ -1589,7 +1621,6 @@ export class ModerationService
         this.logOptionalHotChatStageSkip(chatId, senderId, mode);
       }
 
-      const mediaFlags = detectMediaFlags(update);
       const skipAntiSpamBurstLimit = shouldSkipAntiSpamBurstForForward(update);
       this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
       const globalSpammerAdminDecisions = settings.deleteSpammersEnabled
@@ -1612,6 +1643,7 @@ export class ModerationService
           text,
         });
         if (handled) {
+          await enqueuePhotoDuplicate(false);
           return;
         }
       }
@@ -1628,6 +1660,7 @@ export class ModerationService
           exemptFromEnforcement: isGlobalSpammerExempt,
         });
         if (globalSpammerTracking.handled) {
+          await enqueuePhotoDuplicate(false);
           return;
         }
         skipKnownSpammerCheck = globalSpammerTracking.skipKnownSpammerCheck;
@@ -1642,6 +1675,7 @@ export class ModerationService
         });
         this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
         if (handled) {
+          await enqueuePhotoDuplicate(false);
           return;
         }
       }
@@ -1663,6 +1697,7 @@ export class ModerationService
         hotPathProfile,
       });
       if (requiredSubscriptionHandled) {
+        await enqueuePhotoDuplicate(false);
         return;
       }
 
@@ -1682,6 +1717,7 @@ export class ModerationService
         hotPathProfile,
       });
       if (invitationAccessHandled) {
+        await enqueuePhotoDuplicate(false);
         return;
       }
 
@@ -1783,6 +1819,24 @@ export class ModerationService
         ((detection.duplicateDecision && !duplicateDecisionSuppressed) ||
           (detection.duplicateHit && !duplicateHitSuppressed));
       if (
+        !hasCompetingViolation &&
+        !hasUnsuppressedDuplicateOutcome &&
+        (await this.tryHandleKaravanStorefrontRelay({
+          update,
+          updateType,
+          chatId,
+          messageId,
+          senderId,
+          senderName,
+          text,
+        }))
+      ) {
+        return;
+      }
+      await enqueuePhotoDuplicate(
+        !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
+      );
+      if (
         hasUnsuppressedDuplicateOutcome &&
         (await this.consumeChatParticipantModerationImmunity({
           chatId,
@@ -1836,7 +1890,6 @@ export class ModerationService
         });
         return;
       }
-
       if (!hasCompetingViolation && detection.duplicateHit && !duplicateHitSuppressed) {
         await this.handleDuplicateHit({
           chatId,
@@ -1866,38 +1919,7 @@ export class ModerationService
         });
         return;
       }
-
       if (violations.length === 0) {
-        if (
-          await this.tryHandleKaravanStorefrontRelay({
-            update,
-            updateType,
-            chatId,
-            messageId,
-            senderId,
-            senderName,
-            text,
-          })
-        ) {
-          return;
-        }
-
-        if (
-          webhookEventId &&
-          messageId &&
-          updateType === 'message_created' &&
-          settings.antiDuplicateEnabled &&
-          settings.duplicatePhotoEnabled &&
-          mediaFlags.hasPhotoAttachment
-        ) {
-          await this.photoDuplicateEnqueueService?.enqueue({
-            webhookEventId,
-            chatId,
-            messageId,
-            sourceCreatedAt: createdAt,
-          });
-        }
-
         if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
           await this.tryAutoAttachChatMessageComments({
             chatId,

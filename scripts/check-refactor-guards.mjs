@@ -42,10 +42,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/moderation/moderation.service.legacy.ts',
-    maxLines: 18434,
+    maxLines: 18456,
     targetLines: 17000,
     reason:
-      'ModerationService remains a legacy hotspot; this ceiling includes photo-duplicate enqueue/action bridging and lease/message-action fences at existing delete, sanction, and notice boundaries, while unrelated helpers should keep moving to focused modules.',
+      'ModerationService remains a legacy hotspot; this ceiling includes photo-duplicate enqueue/action bridging across early competing-action returns and lease/message-action fences at existing delete, sanction, and notice boundaries, while unrelated helpers should keep moving to focused modules.',
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',

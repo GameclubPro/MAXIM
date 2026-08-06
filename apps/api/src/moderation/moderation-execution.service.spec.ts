@@ -1,4 +1,5 @@
 import { ModerationExecutionService } from './moderation-execution.service';
+import { PHOTO_DUPLICATE_ALGORITHM_VERSION } from './photo-duplicate/photo-duplicate.queue';
 
 describe('ModerationExecutionService', () => {
   it('executes webhook events through the legacy moderation boundary', async () => {
@@ -49,10 +50,14 @@ describe('ModerationExecutionService', () => {
       chatId: 'chat-1',
       messageId: 'message-1',
       sourceCreatedAt: '2026-08-05T12:00:00.000Z',
-      algorithmVersion: 1 as const,
+      algorithmVersion: PHOTO_DUPLICATE_ALGORITHM_VERSION,
+      actionEligible: true,
     };
 
-    const lease = { assertOwned: jest.fn() };
+    const lease = {
+      assertOwned: jest.fn(),
+      resolveActionEligibility: jest.fn().mockResolvedValue(true),
+    };
     await service.processPhotoDuplicateJob(job, lease);
 
     expect(photoDuplicateModerationService.processPhotoDuplicateJob).toHaveBeenCalledWith(

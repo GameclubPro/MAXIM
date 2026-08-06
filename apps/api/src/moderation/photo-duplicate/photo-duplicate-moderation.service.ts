@@ -144,7 +144,7 @@ export class PhotoDuplicateModerationService {
       null;
     const execute = async () => {
       lease.assertOwned();
-      await this.processPhotoDuplicateAlbum(update, album, lease);
+      await this.processPhotoDuplicateAlbum(update, album, job.actionEligible === true, lease);
     };
     if (activeBotId) {
       await this.maxBotContextService.runWithBot(activeBotId, execute);
@@ -156,6 +156,7 @@ export class PhotoDuplicateModerationService {
   private async processPhotoDuplicateAlbum(
     update: MaxUpdate,
     album: LogicalPhotoAlbum,
+    jobActionEligible: boolean,
     lease: PhotoDuplicateOrderingLease,
   ): Promise<void> {
     if (this.actions.isPhotoDuplicateMessageAuthorImmune({ update, album })) {
@@ -181,9 +182,6 @@ export class PhotoDuplicateModerationService {
       userId: album.senderId,
       messageId: album.messageId,
     });
-    if (initialActionFence.blocked) {
-      return;
-    }
 
     const initialAdminCheck = await this.resolveAdminCheck({
       chatId: album.chatId,
@@ -210,8 +208,10 @@ export class PhotoDuplicateModerationService {
     const releaseSuppressesEnforcement = Boolean(
       latestManualReleaseAt && isWithinWindow(latestManualReleaseAt, flow.windowSec),
     );
-    const commitViolation =
+    const actionEligible: boolean =
+      jobActionEligible &&
       initialPolicy.enforce &&
+      !initialActionFence.blocked &&
       initialAdminCheck !== null &&
       initialAdminCheck.source !== 'local_fallback' &&
       !releaseSuppressesEnforcement;
@@ -222,7 +222,8 @@ export class PhotoDuplicateModerationService {
       ttlSeconds: flow.windowSec + 1,
       scope: initialContext.settings.duplicatePhotoScope,
       preset: initialContext.settings.duplicatePhotoMatchPreset,
-      commitViolation,
+      commitViolation: actionEligible,
+      resolveActionEligibility: lease.resolveActionEligibility,
     });
     lease.assertOwned();
     if (analysis.kind !== 'observed' || analysis.observation.kind !== 'available') {
@@ -238,7 +239,7 @@ export class PhotoDuplicateModerationService {
       imageCount: analysis.imageCount,
       repeatCount: observation.repeatCount,
       rolloutMode: initialPolicy.mode,
-      enforce: commitViolation,
+      enforce: analysis.actionEligible,
     };
     if (observation.classification === 'duplicate') {
       this.logger.log(observationLog, 'Photo duplicate match observed');
@@ -246,6 +247,9 @@ export class PhotoDuplicateModerationService {
       this.logger.debug(observationLog, 'Photo duplicate analysis completed');
     }
     if (observation.classification !== 'duplicate' || observation.repeatCount <= 0) {
+      return;
+    }
+    if (!analysis.actionEligible) {
       return;
     }
 
@@ -349,6 +353,9 @@ export class PhotoDuplicateModerationService {
       return;
     }
 
+    if (!(await lease.resolveActionEligibility())) {
+      return;
+    }
     lease.assertOwned();
     if (
       await this.actions.consumePhotoDuplicateParticipantImmunity({
@@ -369,6 +376,9 @@ export class PhotoDuplicateModerationService {
       return;
     }
 
+    if (!(await lease.resolveActionEligibility())) {
+      return;
+    }
     lease.assertOwned();
     await this.actions.executePhotoDuplicateAction({
       update,

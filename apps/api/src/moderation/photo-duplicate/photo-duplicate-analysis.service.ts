@@ -25,6 +25,7 @@ export type PhotoDuplicateAnalysisResult =
       kind: 'observed';
       albumHash: string;
       imageCount: number;
+      actionEligible: boolean;
       observation: PhotoHistoryObservationResult;
     };
 
@@ -42,6 +43,7 @@ export class PhotoDuplicateAnalysisService {
     scope: PhotoDuplicateScope;
     preset: PhotoMatchPreset;
     commitViolation: boolean;
+    resolveActionEligibility: () => Promise<boolean>;
   }): Promise<PhotoDuplicateAnalysisResult> {
     const cachedFingerprints = await this.readCachedFingerprints(params.album);
     const missingDownloadUrl = params.album.images.some(
@@ -85,6 +87,8 @@ export class PhotoDuplicateAnalysisService {
     );
 
     const albumFingerprint = createPhotoAlbumFingerprint(completeFingerprints);
+    const currentActionEligibility = await params.resolveActionEligibility();
+    const actionEligible = params.commitViolation && currentActionEligibility;
     const observation = await this.historyStore.observeAlbum({
       chatId: params.album.chatId,
       senderId: params.album.senderId,
@@ -98,13 +102,14 @@ export class PhotoDuplicateAnalysisService {
       perceptualAlbum: albumFingerprint,
       allowPerceptualMatch: true,
       perceptualPreset: params.preset,
-      commitViolation: params.commitViolation,
+      commitViolation: actionEligible,
     });
 
     return {
       kind: 'observed',
       albumHash: albumFingerprint.albumHash,
       imageCount: albumFingerprint.images.length,
+      actionEligible,
       observation,
     };
   }

@@ -1,13 +1,26 @@
 import {
   buildPhotoDuplicateJobId,
+  normalizePhotoDuplicateActionEligibility,
   PHOTO_DUPLICATE_ALGORITHM_VERSION,
   PhotoDuplicateSourceNotReadyError,
 } from './photo-duplicate.queue';
 
 describe('photo duplicate queue identity', () => {
   it('is stable per logical MAX message and algorithm version', () => {
-    const first = buildPhotoDuplicateJobId({ chatId: 'chat-1', messageId: 'message-1' });
+    expect(PHOTO_DUPLICATE_ALGORITHM_VERSION).toBe(2);
+    const first = buildPhotoDuplicateJobId({
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      actionEligible: false,
+    });
     expect(first).toBe(buildPhotoDuplicateJobId({ chatId: 'chat-1', messageId: 'message-1' }));
+    expect(first).toBe(
+      buildPhotoDuplicateJobId({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        actionEligible: true,
+      }),
+    );
     expect(first).not.toBe(
       buildPhotoDuplicateJobId({
         chatId: 'chat-1',
@@ -17,6 +30,13 @@ describe('photo duplicate queue identity', () => {
     );
     expect(first).not.toContain('chat-1');
     expect(first).not.toContain('message-1');
+  });
+
+  it('keeps absent, malformed, and false action latches observation-only', () => {
+    expect(normalizePhotoDuplicateActionEligibility(false)).toBe(false);
+    expect(normalizePhotoDuplicateActionEligibility(undefined)).toBe(false);
+    expect(normalizePhotoDuplicateActionEligibility('true')).toBe(false);
+    expect(normalizePhotoDuplicateActionEligibility(true)).toBe(true);
   });
 
   it('exposes a typed retry signal while the source webhook is unfinished', () => {

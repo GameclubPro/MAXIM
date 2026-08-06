@@ -2,6 +2,7 @@ import { DelayedError, type Job } from 'bullmq';
 import { PhotoDuplicateProcessor } from './photo-duplicate.processor';
 import {
   PHOTO_DUPLICATE_ORDERING_DEFER_MS,
+  PHOTO_DUPLICATE_ALGORITHM_VERSION,
   PHOTO_DUPLICATE_SOURCE_READY_DEFER_MS,
   PHOTO_DUPLICATE_SOURCE_READY_MAX_WAIT_MS,
   PhotoDuplicateSourceNotReadyError,
@@ -13,24 +14,41 @@ const idempotencyKey = `photo-duplicate__${'a'.repeat(64)}`;
 const queuedAtMs = new Date('2026-08-05T12:29:00.000Z').getTime();
 
 function buildJob(
-  overrides: { attemptsMade?: number; attempts?: number; timestamp?: number } = {},
+  overrides: {
+    attemptsMade?: number;
+    attempts?: number;
+    timestamp?: number;
+    actionEligible?: unknown;
+  } = {},
 ) {
+  const data: Record<string, unknown> = {
+    webhookEventId: 'webhook-event-1',
+    chatId: 'chat-1',
+    messageId: 'message-1',
+    sourceCreatedAt,
+    algorithmVersion: PHOTO_DUPLICATE_ALGORITHM_VERSION,
+    actionEligible: overrides.actionEligible ?? true,
+    idempotencyKey,
+    retryPolicyName: 'photo-duplicate',
+  };
+  if (Object.prototype.hasOwnProperty.call(overrides, 'actionEligible')) {
+    data.actionEligible = overrides.actionEligible;
+  }
   return {
     id: 'bullmq-job-id',
-    data: {
-      webhookEventId: 'webhook-event-1',
-      chatId: 'chat-1',
-      messageId: 'message-1',
-      sourceCreatedAt,
-      algorithmVersion: 1,
-      idempotencyKey,
-      retryPolicyName: 'photo-duplicate',
-    },
+    data,
     opts: { attempts: overrides.attempts ?? 5 },
     attemptsMade: overrides.attemptsMade ?? 0,
     timestamp: overrides.timestamp ?? queuedAtMs,
     moveToDelayed: jest.fn().mockResolvedValue(undefined),
   } as unknown as Job<PhotoDuplicateJob>;
+}
+
+function buildLease(actionEligible = true) {
+  return {
+    assertOwned: jest.fn(),
+    resolveActionEligibility: jest.fn().mockResolvedValue(actionEligible),
+  };
 }
 
 describe('PhotoDuplicateProcessor', () => {
@@ -68,6 +86,7 @@ describe('PhotoDuplicateProcessor', () => {
 
     expect(orderingStore.runInOrder).toHaveBeenCalledWith(
       { jobId: idempotencyKey, chatId: 'chat-1', sourceCreatedAt },
+      true,
       expect.any(Function),
     );
     expect(moderationExecutionService.processPhotoDuplicateJob).not.toHaveBeenCalled();
@@ -87,8 +106,8 @@ describe('PhotoDuplicateProcessor', () => {
         .mockRejectedValue(new PhotoDuplicateSourceNotReadyError('webhook-event-1')),
     };
     const orderingStore = {
-      runInOrder: jest.fn().mockImplementation(async (_identity, operation) => {
-        await operation({ assertOwned: jest.fn() });
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => {
+        await operation(buildLease(), true);
         return { kind: 'completed', value: undefined };
       }),
       abandon: jest.fn(),
@@ -119,8 +138,8 @@ describe('PhotoDuplicateProcessor', () => {
         .mockRejectedValue(new PhotoDuplicateSourceNotReadyError('webhook-event-1')),
     };
     const orderingStore = {
-      runInOrder: jest.fn().mockImplementation(async (_identity, operation) => {
-        await operation({ assertOwned: jest.fn() });
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => {
+        await operation(buildLease(), true);
         return { kind: 'completed', value: undefined };
       }),
       abandon: jest.fn().mockResolvedValue(undefined),
@@ -146,9 +165,9 @@ describe('PhotoDuplicateProcessor', () => {
       processPhotoDuplicateJob: jest.fn().mockResolvedValue(undefined),
     };
     const orderingStore = {
-      runInOrder: jest.fn().mockImplementation(async (_identity, operation) => ({
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => ({
         kind: 'completed',
-        value: await operation({ assertOwned: jest.fn() }),
+        value: await operation(buildLease(), true),
       })),
       abandon: jest.fn(),
     };
@@ -160,11 +179,97 @@ describe('PhotoDuplicateProcessor', () => {
     await expect(processor.process(job)).resolves.toBeUndefined();
 
     expect(moderationExecutionService.processPhotoDuplicateJob).toHaveBeenCalledWith(
-      job.data,
+      expect.objectContaining({ actionEligible: true }),
       expect.objectContaining({ assertOwned: expect.any(Function) }),
     );
+    expect(
+      Object.isFrozen(moderationExecutionService.processPhotoDuplicateJob.mock.calls[0]![0]),
+    ).toBe(true);
     expect(job.moveToDelayed).not.toHaveBeenCalled();
     expect(orderingStore.abandon).not.toHaveBeenCalled();
+  });
+
+  it('preserves an observation-only latch across processor retries', async () => {
+    const job = buildJob({ actionEligible: false });
+    const moderationExecutionService = {
+      processPhotoDuplicateJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const orderingStore = {
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => ({
+        kind: 'completed',
+        value: await operation(buildLease(), true),
+      })),
+      abandon: jest.fn(),
+    };
+    const processor = new PhotoDuplicateProcessor(
+      moderationExecutionService as never,
+      orderingStore as never,
+    );
+
+    await expect(processor.process(job)).resolves.toBeUndefined();
+    await expect(processor.process(job)).resolves.toBeUndefined();
+
+    expect(moderationExecutionService.processPhotoDuplicateJob).toHaveBeenCalledTimes(2);
+    for (const [data] of moderationExecutionService.processPhotoDuplicateJob.mock.calls) {
+      expect(data).toEqual(expect.objectContaining({ actionEligible: false }));
+      expect(Object.isFrozen(data)).toBe(true);
+    }
+    expect(job.data.actionEligible).toBe(false);
+  });
+
+  it('downgrades a missing runtime latch instead of inferring action eligibility', async () => {
+    const job = buildJob({ actionEligible: undefined });
+    const moderationExecutionService = {
+      processPhotoDuplicateJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const orderingStore = {
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => ({
+        kind: 'completed',
+        value: await operation(buildLease(), true),
+      })),
+      abandon: jest.fn(),
+    };
+    const processor = new PhotoDuplicateProcessor(
+      moderationExecutionService as never,
+      orderingStore as never,
+    );
+
+    await expect(processor.process(job)).resolves.toBeUndefined();
+
+    expect(moderationExecutionService.processPhotoDuplicateJob).toHaveBeenCalledWith(
+      expect.objectContaining({ actionEligible: false }),
+      expect.objectContaining({ assertOwned: expect.any(Function) }),
+    );
+    expect(orderingStore.runInOrder).toHaveBeenCalledWith(
+      { jobId: idempotencyKey, chatId: 'chat-1', sourceCreatedAt },
+      false,
+      expect.any(Function),
+    );
+  });
+
+  it('keeps a permissive job observation-only when the ordering latch was downgraded', async () => {
+    const job = buildJob({ actionEligible: true });
+    const moderationExecutionService = {
+      processPhotoDuplicateJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const orderingStore = {
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => ({
+        kind: 'completed',
+        value: await operation(buildLease(false), false),
+      })),
+      abandon: jest.fn(),
+    };
+    const processor = new PhotoDuplicateProcessor(
+      moderationExecutionService as never,
+      orderingStore as never,
+    );
+
+    await expect(processor.process(job)).resolves.toBeUndefined();
+
+    expect(moderationExecutionService.processPhotoDuplicateJob).toHaveBeenCalledWith(
+      expect.objectContaining({ actionEligible: false }),
+      expect.objectContaining({ assertOwned: expect.any(Function) }),
+    );
   });
 
   it('abandons ordering state when the claimed operation exhausts its attempts', async () => {
@@ -174,8 +279,8 @@ describe('PhotoDuplicateProcessor', () => {
       processPhotoDuplicateJob: jest.fn().mockRejectedValue(processingError),
     };
     const orderingStore = {
-      runInOrder: jest.fn().mockImplementation(async (_identity, operation) => {
-        await operation({ assertOwned: jest.fn() });
+      runInOrder: jest.fn().mockImplementation(async (_identity, _actionEligible, operation) => {
+        await operation(buildLease(), true);
         return { kind: 'completed', value: undefined };
       }),
       abandon: jest.fn().mockResolvedValue(undefined),

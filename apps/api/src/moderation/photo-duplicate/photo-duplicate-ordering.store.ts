@@ -3,8 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { raceWithTimeout } from '../../common/promise-timeout.util';
+import { normalizePhotoDuplicateActionEligibility } from './photo-duplicate.queue';
 
-const ORDERING_NAMESPACE = 'photo-duplicate:ordering:v1';
+const ORDERING_NAMESPACE = 'photo-duplicate:ordering:v2';
 const PENDING_TTL_MS = 5 * 60_000;
 const COMPLETED_TTL_MS = 7 * 24 * 60 * 60_000;
 const LOCK_TTL_MS = 120_000;
@@ -23,38 +24,57 @@ for _, job_id in ipairs(expired) do
     redis.call('HDEL', KEYS[3], job_id)
   end
   redis.call('ZREM', KEYS[2], job_id)
+  redis.call('HDEL', KEYS[6], job_id)
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', now_ms)
 
 if redis.call('ZSCORE', KEYS[5], ARGV[1]) then
-  return {2, ''}
+  redis.call('HDEL', KEYS[6], ARGV[1])
+  return {2, '', '0'}
 end
 
+local incoming_action_eligible = ARGV[5] == '1' and '1' or '0'
 local existing = redis.call('HGET', KEYS[3], ARGV[1])
+local stored_action_eligible = redis.call('HGET', KEYS[6], ARGV[1])
+local effective_action_eligible = '0'
 if existing then
+  if stored_action_eligible == '1' and incoming_action_eligible == '1' then
+    effective_action_eligible = '1'
+  end
+  redis.call('HSET', KEYS[6], ARGV[1], effective_action_eligible)
   redis.call('ZADD', KEYS[2], now_ms + tonumber(ARGV[3]), ARGV[1])
-  return {1, existing}
+  redis.call('PEXPIRE', KEYS[6], tonumber(ARGV[3]) * 2)
+  return {1, existing, effective_action_eligible}
+end
+
+if not stored_action_eligible then
+  effective_action_eligible = incoming_action_eligible
+elseif stored_action_eligible == '1' and incoming_action_eligible == '1' then
+  effective_action_eligible = '1'
 end
 
 local sequence = redis.call('INCR', KEYS[4])
 local member = string.format('%020d', sequence) .. ':' .. ARGV[1]
 redis.call('HSET', KEYS[3], ARGV[1], member)
+redis.call('HSET', KEYS[6], ARGV[1], effective_action_eligible)
 redis.call('ZADD', KEYS[1], ARGV[2], member)
 redis.call('ZADD', KEYS[2], now_ms + tonumber(ARGV[3]), ARGV[1])
 redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]) * 2)
 redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[3]) * 2)
 redis.call('PEXPIRE', KEYS[3], tonumber(ARGV[3]) * 2)
 redis.call('PEXPIRE', KEYS[4], tonumber(ARGV[3]) * 2)
-return {1, member}
+redis.call('PEXPIRE', KEYS[6], tonumber(ARGV[3]) * 2)
+return {1, member, effective_action_eligible}
 `;
 
 // FLAG: Redis TIME is checked before SET so a command arriving after the caller deadline cannot
-// create an orphan lease. Pending-head verification and lease acquisition must remain atomic.
+// create an orphan lease. Pending-head verification, latch read, and lease acquisition must remain
+// atomic.
 const CLAIM_TURN_SCRIPT = `
 local redis_time = redis.call('TIME')
 local now_ms = (tonumber(redis_time[1]) * 1000) + math.floor(tonumber(redis_time[2]) / 1000)
 if now_ms >= tonumber(ARGV[4]) then
-  return 4
+  return {4, '0'}
 end
 
 local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now_ms, 'LIMIT', 0, ARGV[5])
@@ -65,21 +85,33 @@ for _, job_id in ipairs(expired) do
     redis.call('HDEL', KEYS[3], job_id)
   end
   redis.call('ZREM', KEYS[2], job_id)
+  redis.call('HDEL', KEYS[5], job_id)
 end
 
 local member = redis.call('HGET', KEYS[3], ARGV[1])
 if not member then
-  return 3
+  return {3, '0'}
 end
 local head = redis.call('ZRANGE', KEYS[1], 0, 0)[1]
 if head ~= member then
-  return 0
+  return {0, '0'}
 end
+local action_eligible = redis.call('HGET', KEYS[5], ARGV[1]) == '1' and '1' or '0'
 local acquired = redis.call('SET', KEYS[4], ARGV[2], 'PX', ARGV[3], 'NX')
 if acquired then
-  return 1
+  return {1, action_eligible}
 end
-return 2
+return {2, '0'}
+`;
+
+// FLAG: The token fence and absorbing latch must be read in one Redis script. A lost token is a
+// retryable lease error; a valid token with a false latch blocks counters and moderation actions.
+const RESOLVE_ACTION_ELIGIBILITY_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return {0, '0'}
+end
+local action_eligible = redis.call('HGET', KEYS[2], ARGV[2]) == '1' and '1' or '0'
+return {1, action_eligible}
 `;
 
 const RENEW_TURN_SCRIPT = `
@@ -103,6 +135,7 @@ local redis_time = redis.call('TIME')
 local now_ms = (tonumber(redis_time[1]) * 1000) + math.floor(tonumber(redis_time[2]) / 1000)
 redis.call('ZADD', KEYS[5], now_ms + tonumber(ARGV[3]), ARGV[1])
 redis.call('PEXPIRE', KEYS[5], tonumber(ARGV[3]) + 60000)
+redis.call('HDEL', KEYS[7], ARGV[1])
 redis.call('DEL', KEYS[6])
 return 1
 `;
@@ -121,6 +154,7 @@ if member then
   redis.call('HDEL', KEYS[3], ARGV[1])
 end
 redis.call('ZREM', KEYS[2], ARGV[1])
+redis.call('HDEL', KEYS[4], ARGV[1])
 return 1
 `;
 
@@ -132,11 +166,17 @@ export type PhotoDuplicateOrderingIdentity = {
 
 export type PhotoDuplicateOrderingLease = Readonly<{
   assertOwned: () => void;
+  resolveActionEligibility: () => Promise<boolean>;
 }>;
 
 export type PhotoDuplicateOrderingRunResult<T> =
   | { kind: 'completed'; value: T }
   | { kind: 'defer'; reason: 'not_head' | 'busy' | 'deadline' };
+
+export type PhotoDuplicateOrderingAnnouncement =
+  | { kind: 'registered'; actionEligible: boolean }
+  | { kind: 'completed' }
+  | { kind: 'unavailable' };
 
 export class PhotoDuplicateOrderingUnavailableError extends Error {
   constructor(message = 'Photo duplicate ordering storage is unavailable', options?: ErrorOptions) {
@@ -169,43 +209,56 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
 
   async announce(
     input: PhotoDuplicateOrderingIdentity,
-  ): Promise<'registered' | 'completed' | 'unavailable'> {
+    actionEligible: unknown,
+  ): Promise<PhotoDuplicateOrderingAnnouncement> {
     const normalized = validateIdentity(input);
+    const normalizedActionEligible = normalizePhotoDuplicateActionEligibility(actionEligible);
     const keys = buildOrderingKeys(normalized.chatId);
     try {
       const response = (await this.runRedisOperation(
         this.redis.eval(
           ANNOUNCE_SCRIPT,
-          5,
+          6,
           keys.pending,
           keys.expiry,
           keys.members,
           keys.sequence,
           keys.completed,
+          keys.actionEligibility,
           normalized.jobId,
           String(normalized.sourceCreatedAtMs),
           String(PENDING_TTL_MS),
           String(CLEANUP_BATCH_SIZE),
+          normalizedActionEligible ? '1' : '0',
         ),
       )) as Array<number | string | Buffer>;
       const status = Number(readRedisValue(response[0]));
-      return status === 2 ? 'completed' : status === 1 ? 'registered' : 'unavailable';
+      if (status === 2) return { kind: 'completed' };
+      if (status === 1) {
+        return {
+          kind: 'registered',
+          actionEligible: readRedisValue(response[2]) === '1',
+        };
+      }
+      return { kind: 'unavailable' };
     } catch {
       this.logger.warn('Photo duplicate pending registration unavailable');
-      return 'unavailable';
+      return { kind: 'unavailable' };
     }
   }
 
   async runInOrder<T>(
     input: PhotoDuplicateOrderingIdentity,
-    operation: (lease: PhotoDuplicateOrderingLease) => Promise<T>,
+    actionEligible: unknown,
+    operation: (lease: PhotoDuplicateOrderingLease, actionEligible: boolean) => Promise<T>,
   ): Promise<PhotoDuplicateOrderingRunResult<T>> {
     const normalized = validateIdentity(input);
-    const announced = await this.announce(input);
-    if (announced === 'completed') {
+    const normalizedActionEligible = normalizePhotoDuplicateActionEligibility(actionEligible);
+    const announced = await this.announce(input, normalizedActionEligible);
+    if (announced.kind === 'completed') {
       return { kind: 'completed', value: undefined as T };
     }
-    if (announced === 'unavailable') {
+    if (announced.kind === 'unavailable') {
       throw new PhotoDuplicateOrderingUnavailableError();
     }
 
@@ -213,10 +266,10 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
     const token = randomUUID();
     const deadlineAtMs = Date.now() + REDIS_OPERATION_TIMEOUT_MS;
     const claim = await this.claimTurn(keys, normalized.jobId, token, deadlineAtMs);
-    if (claim !== 'acquired') {
-      if (claim === 'missing') {
-        const replay = await this.announce(input);
-        if (replay === 'completed') {
+    if (claim.kind !== 'acquired') {
+      if (claim.kind === 'missing') {
+        const replay = await this.announce(input, normalizedActionEligible);
+        if (replay.kind === 'completed') {
           return { kind: 'completed', value: undefined as T };
         }
         throw new PhotoDuplicateOrderingUnavailableError(
@@ -225,14 +278,29 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
       }
       return {
         kind: 'defer',
-        reason: claim === 'not_head' ? 'not_head' : claim === 'busy' ? 'busy' : 'deadline',
+        reason:
+          claim.kind === 'not_head' ? 'not_head' : claim.kind === 'busy' ? 'busy' : 'deadline',
       };
     }
 
     const heartbeat = this.startHeartbeat(keys.lock, token);
+    const lease = Object.freeze({
+      assertOwned: heartbeat.assertOwned,
+      resolveActionEligibility: async () => {
+        heartbeat.assertOwned();
+        const actionEligible = await this.resolveActionEligibility(
+          keys.lock,
+          keys.actionEligibility,
+          normalized.jobId,
+          token,
+        );
+        heartbeat.assertOwned();
+        return actionEligible;
+      },
+    }) satisfies PhotoDuplicateOrderingLease;
     let completed = false;
     try {
-      const value = await operation({ assertOwned: heartbeat.assertOwned });
+      const value = await operation(lease, claim.actionEligible);
       heartbeat.assertOwned();
       const committed = await this.completeTurn(keys, normalized.jobId, token);
       if (!committed) {
@@ -255,10 +323,11 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
       await this.runRedisOperation(
         this.redis.eval(
           ABANDON_SCRIPT,
-          3,
+          4,
           keys.pending,
           keys.expiry,
           keys.members,
+          keys.actionEligibility,
           normalized.jobId,
         ),
       );
@@ -272,30 +341,35 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
     jobId: string,
     token: string,
     deadlineAtMs: number,
-  ): Promise<'acquired' | 'not_head' | 'busy' | 'missing' | 'deadline'> {
+  ): Promise<
+    | { kind: 'acquired'; actionEligible: boolean }
+    | { kind: 'not_head' | 'busy' | 'missing' | 'deadline' }
+  > {
     try {
-      const status = Number(
-        await this.runRedisOperation(
-          this.redis.eval(
-            CLAIM_TURN_SCRIPT,
-            4,
-            keys.pending,
-            keys.expiry,
-            keys.members,
-            keys.lock,
-            jobId,
-            token,
-            String(LOCK_TTL_MS),
-            String(deadlineAtMs),
-            String(CLEANUP_BATCH_SIZE),
-          ),
+      const response = (await this.runRedisOperation(
+        this.redis.eval(
+          CLAIM_TURN_SCRIPT,
+          5,
+          keys.pending,
+          keys.expiry,
+          keys.members,
+          keys.lock,
+          keys.actionEligibility,
+          jobId,
+          token,
+          String(LOCK_TTL_MS),
+          String(deadlineAtMs),
+          String(CLEANUP_BATCH_SIZE),
         ),
-      );
-      if (status === 1) return 'acquired';
-      if (status === 0) return 'not_head';
-      if (status === 2) return 'busy';
-      if (status === 3) return 'missing';
-      return 'deadline';
+      )) as Array<number | string | Buffer>;
+      const status = Number(readRedisValue(response[0]));
+      if (status === 1) {
+        return { kind: 'acquired', actionEligible: readRedisValue(response[1]) === '1' };
+      }
+      if (status === 0) return { kind: 'not_head' };
+      if (status === 2) return { kind: 'busy' };
+      if (status === 3) return { kind: 'missing' };
+      return { kind: 'deadline' };
     } catch (error: unknown) {
       throw new PhotoDuplicateOrderingUnavailableError(undefined, { cause: error });
     }
@@ -308,13 +382,14 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
           await this.runRedisOperation(
             this.redis.eval(
               COMPLETE_TURN_SCRIPT,
-              6,
+              7,
               keys.pending,
               keys.expiry,
               keys.members,
               keys.sequence,
               keys.completed,
               keys.lock,
+              keys.actionEligibility,
               jobId,
               token,
               String(COMPLETED_TTL_MS),
@@ -325,6 +400,43 @@ export class PhotoDuplicateOrderingStore implements OnModuleDestroy {
     } catch (error: unknown) {
       throw new PhotoDuplicateOrderingUnavailableError(
         'Photo duplicate ordering completion is unavailable',
+        { cause: error },
+      );
+    }
+  }
+
+  private async resolveActionEligibility(
+    lockKey: string,
+    actionEligibilityKey: string,
+    jobId: string,
+    token: string,
+  ): Promise<boolean> {
+    try {
+      const response = (await this.runRedisOperation(
+        this.redis.eval(
+          RESOLVE_ACTION_ELIGIBILITY_SCRIPT,
+          2,
+          lockKey,
+          actionEligibilityKey,
+          token,
+          jobId,
+        ),
+      )) as Array<number | string | Buffer>;
+      const status = readRedisValue(response[0]);
+      const actionEligible = readRedisValue(response[1]);
+      if (status === '0') {
+        throw new PhotoDuplicateOrderingLeaseLostError();
+      }
+      if (status !== '1' || (actionEligible !== '0' && actionEligible !== '1')) {
+        throw new Error('Photo duplicate action eligibility response is invalid');
+      }
+      return actionEligible === '1';
+    } catch (error: unknown) {
+      if (error instanceof PhotoDuplicateOrderingLeaseLostError) {
+        throw error;
+      }
+      throw new PhotoDuplicateOrderingUnavailableError(
+        'Photo duplicate action eligibility confirmation is unavailable',
         { cause: error },
       );
     }
@@ -432,6 +544,7 @@ function buildOrderingKeys(chatId: string) {
     sequence: `${prefix}:sequence`,
     completed: `${prefix}:completed`,
     lock: `${prefix}:lock`,
+    actionEligibility: `${prefix}:action-eligibility`,
   };
 }
 

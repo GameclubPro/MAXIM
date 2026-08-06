@@ -5,7 +5,10 @@ import {
   buildPhotoDuplicateActionBinding,
   PhotoDuplicateModerationService,
 } from './photo-duplicate-moderation.service';
-import type { PhotoDuplicateJob } from './photo-duplicate.queue';
+import {
+  PHOTO_DUPLICATE_ALGORITHM_VERSION,
+  type PhotoDuplicateJob,
+} from './photo-duplicate.queue';
 
 function settings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
@@ -102,6 +105,15 @@ function ownPhotoIntent(bindingSettings: ChatSettings) {
   };
 }
 
+type MessageActionIntent = {
+  subjectUserId: string | null;
+  reasons: Array<{
+    userId: string | null;
+    ruleCode: string;
+    metadata: Record<string, unknown> | null;
+  }>;
+};
+
 function buildHarness(
   params: {
     status?: WebhookStatus;
@@ -111,15 +123,12 @@ function buildHarness(
     rolloutMode?: 'off' | 'shadow' | 'delete_only' | 'full';
     observationInserted?: boolean;
     repeatCount?: number;
+    actionEligible?: boolean;
+    initialAdmin?: boolean;
     finalAccess?: { isAdmin: boolean; isOwner: boolean } | null;
-    existingIntent?: {
-      subjectUserId: string | null;
-      reasons: Array<{
-        userId: string | null;
-        ruleCode: string;
-        metadata: Record<string, unknown> | null;
-      }>;
-    } | null;
+    manualReleaseAt?: Date | null;
+    existingIntent?: MessageActionIntent | null;
+    lateIntent?: MessageActionIntent | null;
     existingModerationEvents?: Array<{
       userId: string;
       ruleCode: string;
@@ -127,11 +136,13 @@ function buildHarness(
     }>;
     existingActionClaims?: Array<{ userId: string; ruleCode: string }>;
     assertOwned?: jest.Mock;
+    resolveActionEligibility?: jest.Mock;
   } = {},
 ) {
   const createdAt = new Date().toISOString();
   const normalizedUpdate = update(createdAt);
   const currentSettings = params.chatSettings ?? settings();
+  const manualRelease = params.manualReleaseAt ? { createdAt: params.manualReleaseAt } : null;
   const prisma = {
     webhookEvent: {
       findUnique: jest.fn().mockResolvedValue({
@@ -159,10 +170,16 @@ function buildHarness(
         }),
     },
     moderationDeleteIntent: {
-      findUnique: jest.fn().mockResolvedValue(params.existingIntent ?? null),
+      findUnique:
+        params.lateIntent === undefined
+          ? jest.fn().mockResolvedValue(params.existingIntent ?? null)
+          : jest
+              .fn()
+              .mockResolvedValueOnce(params.existingIntent ?? null)
+              .mockResolvedValue(params.lateIntent),
     },
     moderationEvent: {
-      findFirst: jest.fn().mockResolvedValue(null),
+      findFirst: jest.fn().mockResolvedValue(manualRelease),
       findMany: jest.fn().mockResolvedValue(params.existingModerationEvents ?? []),
     },
     moderationViolationMessageClaim: {
@@ -183,7 +200,7 @@ function buildHarness(
   };
   const moderationAccessService = {
     resolveSenderChatAdminCheck: jest.fn().mockResolvedValue({
-      isAdmin: false,
+      isAdmin: params.initialAdmin ?? false,
       source: 'remote',
     }),
   };
@@ -200,23 +217,35 @@ function buildHarness(
   const maxBotContextService = {
     runWithBot: jest.fn(async (_botId: string, operation: () => Promise<void>) => operation()),
   };
+  const committedViolations: boolean[] = [];
   const analysisService = {
-    analyzeAlbum: jest.fn().mockResolvedValue({
-      kind: 'observed',
-      albumHash: 'a'.repeat(64),
-      imageCount: 1,
-      observation: {
-        kind: 'available',
-        inserted: params.observationInserted ?? true,
-        replayed: !(params.observationInserted ?? true),
-        classification: 'duplicate',
-        clusterId: 'c'.repeat(64),
-        matchKind: 'pdq',
-        matchedDistance: 4,
-        repeatCount: params.repeatCount ?? 1,
-        duplicateOfMessageId: 'message-0',
+    analyzeAlbum: jest.fn().mockImplementation(
+      async (analysisParams: {
+        commitViolation: boolean;
+        resolveActionEligibility: () => Promise<boolean>;
+      }) => {
+        const currentActionEligibility = await analysisParams.resolveActionEligibility();
+        const actionEligible = analysisParams.commitViolation && currentActionEligibility;
+        committedViolations.push(actionEligible);
+        return {
+          kind: 'observed',
+          albumHash: 'a'.repeat(64),
+          imageCount: 1,
+          actionEligible,
+          observation: {
+            kind: 'available',
+            inserted: params.observationInserted ?? true,
+            replayed: !(params.observationInserted ?? true),
+            classification: 'duplicate',
+            clusterId: 'c'.repeat(64),
+            matchKind: 'pdq',
+            matchedDistance: 4,
+            repeatCount: params.repeatCount ?? 1,
+            duplicateOfMessageId: 'message-0',
+          },
+        };
       },
-    }),
+    ),
   };
   const actions = {
     isPhotoDuplicateMessageAuthorImmune: jest.fn().mockReturnValue(false),
@@ -234,13 +263,16 @@ function buildHarness(
     actions,
   );
   const assertOwned = params.assertOwned ?? jest.fn();
-  const lease = { assertOwned };
+  const resolveActionEligibility =
+    params.resolveActionEligibility ?? jest.fn().mockResolvedValue(true);
+  const lease = { assertOwned, resolveActionEligibility };
   const job: PhotoDuplicateJob = {
     webhookEventId: 'event-1',
     chatId: 'chat-1',
     messageId: 'message-1',
     sourceCreatedAt: createdAt,
-    algorithmVersion: 1,
+    algorithmVersion: PHOTO_DUPLICATE_ALGORITHM_VERSION,
+    actionEligible: params.actionEligible ?? true,
   };
   return {
     service,
@@ -250,6 +282,7 @@ function buildHarness(
     maxClient,
     maxBotContextService,
     analysisService,
+    committedViolations,
     actions,
   };
 }
@@ -270,6 +303,16 @@ describe('PhotoDuplicateModerationService', () => {
     await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
 
     expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+  });
+
+  it('does no image work when a stale enqueue is later resolved to an admin', async () => {
+    const harness = buildHarness({ initialAdmin: true });
+
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
   });
 
   it('runs a replayed match through the focused actions port in the execution bot context', async () => {
@@ -300,8 +343,8 @@ describe('PhotoDuplicateModerationService', () => {
     );
   });
 
-  it('logs a positive shadow match at normal level without enforcing it', async () => {
-    const harness = buildHarness({ rolloutMode: 'shadow', repeatCount: 0 });
+  it('logs a positive shadow match without committing a counter or consuming immunity', async () => {
+    const harness = buildHarness({ rolloutMode: 'shadow', repeatCount: 2 });
     const log = jest.fn();
     (harness.service as any).logger = { log, debug: jest.fn(), warn: jest.fn() };
 
@@ -311,6 +354,105 @@ describe('PhotoDuplicateModerationService', () => {
       expect.objectContaining({ classification: 'duplicate', rolloutMode: 'shadow' }),
       'Photo duplicate match observed',
     );
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commitViolation: false }),
+    );
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps an observation-only job non-actionable under an enforcing runtime policy', async () => {
+    const harness = buildHarness({ actionEligible: false, repeatCount: 2 });
+
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commitViolation: false }),
+    );
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pre-commit downgrade absorbing even if a later confirmation could pass', async () => {
+    const resolveActionEligibility = jest
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const harness = buildHarness({
+      actionEligible: true,
+      repeatCount: 2,
+      resolveActionEligibility,
+    });
+
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commitViolation: true,
+        resolveActionEligibility,
+      }),
+    );
+    expect(harness.committedViolations).toEqual([false]);
+    expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('stops before participant immunity when the latch is downgraded after observation', async () => {
+    const resolveActionEligibility = jest
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const harness = buildHarness({ repeatCount: 2, resolveActionEligibility });
+
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+
+    expect(harness.committedViolations).toEqual([true]);
+    expect(resolveActionEligibility).toHaveBeenCalledTimes(2);
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('stops before dispatch when the latch is downgraded after immunity', async () => {
+    const resolveActionEligibility = jest
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const harness = buildHarness({ repeatCount: 2, resolveActionEligibility });
+
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+
+    expect(harness.committedViolations).toEqual([true]);
+    expect(resolveActionEligibility).toHaveBeenCalledTimes(3);
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).toHaveBeenCalledTimes(1);
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('propagates an eligibility resolver failure before history and performs no action', async () => {
+    const resolverError = new Error('ordering unavailable');
+    const resolveActionEligibility = jest.fn().mockRejectedValue(resolverError);
+    const harness = buildHarness({ repeatCount: 2, resolveActionEligibility });
+
+    await expect(
+      harness.service.processPhotoDuplicateJob(harness.job, harness.lease),
+    ).rejects.toBe(resolverError);
+
+    expect(harness.committedViolations).toEqual([]);
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps a recent manual release observation-only without consuming immunity', async () => {
+    const harness = buildHarness({ manualReleaseAt: new Date(), repeatCount: 2 });
+
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commitViolation: false }),
+    );
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
     expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
   });
 
@@ -328,7 +470,7 @@ describe('PhotoDuplicateModerationService', () => {
     expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
   });
 
-  it('does not mutate image history when another moderation action owns the message', async () => {
+  it('observes a baseline without committing a counter when another action owns the message', async () => {
     const harness = buildHarness({
       existingIntent: {
         subjectUserId: 'user-1',
@@ -345,7 +487,34 @@ describe('PhotoDuplicateModerationService', () => {
 
     await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
 
-    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commitViolation: false }),
+    );
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
+    expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('allows a late foreign action fence only to suppress the photo action', async () => {
+    const harness = buildHarness({
+      lateIntent: {
+        subjectUserId: 'user-2',
+        reasons: [
+          {
+            userId: 'user-2',
+            ruleCode: 'LINK_DELETE',
+            metadata: null,
+          },
+        ],
+      },
+    });
+
+    await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
+
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commitViolation: true }),
+    );
+    expect(harness.prisma.moderationDeleteIntent.findUnique).toHaveBeenCalledTimes(2);
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
     expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
   });
 
@@ -415,7 +584,10 @@ describe('PhotoDuplicateModerationService', () => {
 
     await harness.service.processPhotoDuplicateJob(harness.job, harness.lease);
 
-    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commitViolation: false }),
+    );
+    expect(harness.actions.consumePhotoDuplicateParticipantImmunity).not.toHaveBeenCalled();
     expect(harness.actions.executePhotoDuplicateAction).not.toHaveBeenCalled();
   });
 

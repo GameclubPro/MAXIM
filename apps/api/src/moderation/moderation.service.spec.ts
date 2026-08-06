@@ -20905,6 +20905,398 @@ describe('ModerationService', () => {
     });
   });
 
+  describe('photo duplicate enqueue', () => {
+    function createHarness(options: {
+      adminUserIds?: string[];
+      duplicateOutcome?: 'decision' | 'hit';
+      karavanResult?: 'handled' | 'duplicate';
+      settingsOverrides?: Record<string, unknown>;
+      violations?: Array<{
+        ruleCode: string;
+        score: number;
+        reason: string;
+        metadata?: Record<string, unknown> | null;
+      }>;
+    } = {}) {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({
+              antiDuplicateEnabled: true,
+              duplicatePhotoEnabled: true,
+              ...options.settingsOverrides,
+            }),
+            domains: [],
+            admins: (options.adminUserIds ?? []).map((userId) => ({ userId })),
+            rules: {
+              publishedUrl: null,
+              publishedMessageId: null,
+            },
+          }),
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({
+          violations: options.violations ?? [],
+          ...(options.duplicateOutcome === 'decision'
+            ? {
+                duplicateDecision: {
+                  action: 'WARN',
+                  count: 2,
+                  threshold: 2,
+                  windowSec: 12 * 60 * 60,
+                  hash: 'text-duplicate-decision',
+                  fingerprintType: 'exact',
+                  nextAction: 'MUTE',
+                },
+              }
+            : {}),
+          ...(options.duplicateOutcome === 'hit'
+            ? {
+                duplicateHit: {
+                  count: 1,
+                  windowSec: 12 * 60 * 60,
+                  hash: 'text-duplicate-hit',
+                  fingerprintType: 'exact',
+                },
+              }
+            : {}),
+        }),
+      };
+      const sanctionService = {
+        resolveAction: jest.fn(),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const photoDuplicateEnqueueService = {
+        enqueue: jest.fn().mockResolvedValue('queued'),
+      };
+      const karavanStorefrontRelayService = {
+        handleMessageCreated: jest.fn().mockResolvedValue(options.karavanResult ?? 'noop'),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        sanctionService as never,
+        maxClient as never,
+        undefined, // chatContextCache
+        undefined, // systemModeService
+        undefined, // configService
+        undefined, // redisCounter
+        undefined, // privateControlService
+        undefined, // adminDialogLinkService
+        undefined, // membershipLookupService
+        undefined, // maxBotLinkService
+        undefined, // maxBotContextService
+        undefined, // queueMetricsService
+        undefined, // backgroundRuntimeGovernorService
+        undefined, // runtimeDiagnosticsService
+        undefined, // maxChatAdminRosterSyncService
+        undefined, // globalSpammerIntelligence
+        undefined, // managedEntityAccessLossService
+        undefined, // injectedModerationAccessService
+        undefined, // injectedNightModeTransitionRuntime
+        undefined, // injectedManualModerationService
+        undefined, // injectedNightModeTransitionDelivery
+        undefined, // injectedBotSpeechMediaService
+        undefined, // injectedNightModeTransitionEventService
+        karavanStorefrontRelayService as never,
+        undefined, // managedPollService
+        undefined, // injectedWebhookCanonicalExecutionService
+        undefined, // moderationDeleteIntentService
+        undefined, // maxActionLedgerService
+        undefined, // channelPostSignatureService
+        undefined, // injectedModerationSanctionStateLock
+        undefined, // injectedModerationSanctionStateFence
+        photoDuplicateEnqueueService as never,
+      );
+
+      return {
+        service,
+        ruleEngine,
+        photoDuplicateEnqueueService,
+        karavanStorefrontRelayService,
+      };
+    }
+
+    it('enqueues an eligible photo message before the no-violation return', async () => {
+      const harness = createHarness();
+      const update = createPhotoAttachmentUpdate(91);
+
+      await harness.service.handleUpdate(update, undefined, 'webhook-photo-91');
+
+      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
+        webhookEventId: 'webhook-photo-91',
+        chatId: 'chat-1',
+        messageId: 'msg-photo-91',
+        sourceCreatedAt: update.message!.createdAt,
+        actionEligible: true,
+      });
+    });
+
+    it('latches a photo job observation-only when rule detection found a competing violation', async () => {
+      const harness = createHarness({
+        violations: [
+          {
+            ruleCode: 'PROFANITY',
+            score: 0.91,
+            reason: 'Profanity detected',
+          },
+        ],
+      });
+      jest
+        .spyOn(harness.service as never, 'consumeChatParticipantModerationImmunity' as never)
+        .mockResolvedValue(true as never);
+      const update = createPhotoAttachmentUpdate(92);
+
+      await harness.service.handleUpdate(update, undefined, 'webhook-photo-92');
+
+      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
+        webhookEventId: 'webhook-photo-92',
+        chatId: 'chat-1',
+        messageId: 'msg-photo-92',
+        sourceCreatedAt: update.message!.createdAt,
+        actionEligible: false,
+      });
+    });
+
+    it.each(['decision', 'hit'] as const)(
+      'latches a photo job observation-only when text duplicate detection returned a %s',
+      async (duplicateOutcome) => {
+        const harness = createHarness({ duplicateOutcome });
+        jest
+          .spyOn(harness.service as never, 'consumeChatParticipantModerationImmunity' as never)
+          .mockResolvedValue(true as never);
+        const suffix = duplicateOutcome === 'decision' ? 95 : 96;
+        const update = createPhotoAttachmentUpdate(suffix);
+
+        await harness.service.handleUpdate(update, undefined, `webhook-photo-${suffix}`);
+
+        expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
+          webhookEventId: `webhook-photo-${suffix}`,
+          chatId: 'chat-1',
+          messageId: `msg-photo-${suffix}`,
+          sourceCreatedAt: update.message!.createdAt,
+          actionEligible: false,
+        });
+      },
+    );
+
+    it('keeps a handled Karavan photo relay out of the duplicate queue', async () => {
+      const harness = createHarness({ karavanResult: 'handled' });
+      const update = createPhotoAttachmentUpdate(97);
+      update.message!.text = '$ storefront item';
+      update.raw = {
+        message: {
+          ...(update.raw as { message?: Record<string, unknown> }).message,
+          body: {
+            text: '$ storefront item',
+            attachments: (
+              update.raw as { message?: { attachments?: unknown[] } }
+            ).message?.attachments,
+          },
+        },
+      };
+
+      await harness.service.handleUpdate(update, undefined, 'webhook-photo-97');
+
+      expect(harness.karavanStorefrontRelayService.handleMessageCreated).toHaveBeenCalled();
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: 'active mute',
+        configure: (service: ModerationService) => {
+          jest.spyOn(service as any, 'getActiveMute').mockResolvedValue({});
+          jest.spyOn(service as any, 'handleActiveMuteMessage').mockResolvedValue(undefined);
+        },
+      },
+      {
+        name: 'developer-forced global spammer',
+        configure: (service: ModerationService) => {
+          jest
+            .spyOn(service as any, 'isDeveloperForcedGlobalSpammerCachedWithHotPathBudget')
+            .mockResolvedValue(true);
+          jest.spyOn(service as any, 'resolveSenderChatAdminCheck').mockResolvedValue({
+            isAdmin: false,
+            source: 'remote',
+          });
+          jest
+            .spyOn(service as any, 'deleteAndKickDetectedGlobalSpammer')
+            .mockResolvedValue(undefined);
+        },
+      },
+      {
+        name: 'manual group close',
+        configure: (service: ModerationService) => {
+          jest.spyOn(service as any, 'isNightModeForceCloseActiveNow').mockReturnValue(true);
+          jest
+            .spyOn(service as any, 'handleNightModeForceCloseMessage')
+            .mockResolvedValue(undefined);
+        },
+      },
+      {
+        name: 'night mode',
+        configure: (service: ModerationService) => {
+          jest.spyOn(service as any, 'isNightModeActiveNow').mockReturnValue(true);
+          jest.spyOn(service as any, 'handleNightModeMessage').mockResolvedValue(undefined);
+        },
+      },
+      {
+        name: 'local blocklist',
+        configure: (service: ModerationService) => {
+          jest
+            .spyOn(service as any, 'isDeveloperForcedGlobalSpammerCachedWithHotPathBudget')
+            .mockResolvedValue(false);
+          jest
+            .spyOn(service as any, 'resolveGlobalSpammerAdminDecisionsWithHotPathBudget')
+            .mockResolvedValue(new Map([['user-1', 'BLOCK']]));
+          jest
+            .spyOn(service as any, 'handleLocalAdminBlockedSenderMessage')
+            .mockResolvedValue(true);
+        },
+      },
+      {
+        name: 'global spammer tracking',
+        configure: (service: ModerationService) => {
+          jest
+            .spyOn(service as any, 'trackAndRegisterGlobalSpammerWithHotPathBudget')
+            .mockResolvedValue({ handled: true, skipKnownSpammerCheck: false });
+        },
+      },
+      {
+        name: 'known global spammer',
+        configure: (service: ModerationService) => {
+          jest
+            .spyOn(service as any, 'isDeveloperForcedGlobalSpammerCachedWithHotPathBudget')
+            .mockResolvedValue(false);
+          jest
+            .spyOn(service as any, 'trackAndRegisterGlobalSpammerWithHotPathBudget')
+            .mockResolvedValue({ handled: false, skipKnownSpammerCheck: false });
+          jest.spyOn(service as any, 'handleKnownSpammerSenderMessage').mockResolvedValue(true);
+        },
+      },
+      {
+        name: 'required subscription',
+        configure: (service: ModerationService) => {
+          jest
+            .spyOn(service as any, 'handleRequiredSubscriptionMessage')
+            .mockResolvedValue(true);
+        },
+      },
+      {
+        name: 'invitation access',
+        configure: (service: ModerationService) => {
+          jest
+            .spyOn(service as any, 'handleRequiredSubscriptionMessage')
+            .mockResolvedValue(false);
+          jest.spyOn(service as any, 'handleInvitationAccessMessage').mockResolvedValue(true);
+        },
+      },
+    ])('queues an observation-only photo before the $name early return', async ({
+      name,
+      configure,
+    }) => {
+      const harness = createHarness({
+        settingsOverrides: [
+          'developer-forced global spammer',
+          'local blocklist',
+          'known global spammer',
+        ].includes(name)
+          ? { deleteSpammersEnabled: true }
+          : {},
+      });
+      configure(harness.service);
+      const update = createPhotoAttachmentUpdate(98);
+
+      await harness.service.handleUpdate(update, undefined, 'webhook-photo-98');
+
+      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
+        webhookEventId: 'webhook-photo-98',
+        chatId: 'chat-1',
+        messageId: 'msg-photo-98',
+        sourceCreatedAt: update.message!.createdAt,
+        actionEligible: false,
+      });
+      expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
+    it('keeps a developer-forced admin photo out of the duplicate queue', async () => {
+      const harness = createHarness({ settingsOverrides: { deleteSpammersEnabled: true } });
+      jest
+        .spyOn(harness.service as any, 'isDeveloperForcedGlobalSpammerCachedWithHotPathBudget')
+        .mockResolvedValue(true);
+      jest.spyOn(harness.service as any, 'resolveSenderChatAdminCheck').mockResolvedValue({
+        isAdmin: true,
+        source: 'remote',
+      });
+      const deleteSpammer = jest
+        .spyOn(harness.service as any, 'deleteAndKickDetectedGlobalSpammer')
+        .mockResolvedValue(undefined);
+
+      await harness.service.handleUpdate(
+        createPhotoAttachmentUpdate(99),
+        undefined,
+        'webhook-photo-99',
+      );
+
+      expect(deleteSpammer).toHaveBeenCalled();
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not enqueue photo messages from chat admins', async () => {
+      const harness = createHarness({ adminUserIds: ['user-1'] });
+
+      await harness.service.handleUpdate(
+        createPhotoAttachmentUpdate(93),
+        undefined,
+        'webhook-photo-93',
+      );
+
+      expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not enqueue bot-authored photo messages', async () => {
+      const harness = createHarness();
+      const update = createPhotoAttachmentUpdate(94);
+      update.message!.senderId = 'bot-1';
+      update.raw = {
+        message: {
+          ...(update.raw as { message?: Record<string, unknown> }).message,
+          sender: {
+            user_id: 'bot-1',
+            is_bot: true,
+          },
+        },
+      };
+
+      await harness.service.handleUpdate(update, undefined, 'webhook-photo-94');
+
+      expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
+      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([
     ['photo', createPhotoAttachmentUpdate],
     ['video', createVideoAttachmentUpdate],
