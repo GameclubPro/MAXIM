@@ -12,6 +12,51 @@ test('shows allowlist link reason instead of only message excerpt', () => {
   );
 });
 
+test('keeps action-suffixed delete rules normalized to their base rule', () => {
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'LINK_BLOCKED_DELETE',
+      metadata: {},
+    }),
+    'Ссылка запрещена настройками чата.',
+  );
+});
+
+test('shows the configured delay for a bot-message auto-cleanup event', () => {
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+      metadata: {
+        reason: 'Bot-authored message deleted after configured delay',
+        delayMinutes: 2,
+      },
+    }),
+    'Сообщение бота удалено по настройкам автоочистки через 2 мин.',
+  );
+});
+
+test('preserves standalone moderation delete rule codes', () => {
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'NIGHT_MODE_DELETE',
+      metadata: {
+        nightModeStartTime: '20:00',
+        nightModeEndTime: '06:00',
+        nightModeTimezone: 'Europe/Moscow',
+      },
+    }),
+    'Чат закрыт по ночному режиму 20:00-06:00 (Europe/Moscow).',
+  );
+  assert.equal(
+    resolveModerationFeedReason({ ruleCode: 'MUTE_ACTIVE_DELETE', metadata: {} }),
+    'Сообщение отправлено во время активного мута участника.',
+  );
+  assert.equal(
+    resolveModerationFeedReason({ ruleCode: 'MANUAL_GROUP_CLOSE_DELETE', metadata: {} }),
+    'Группа закрыта вручную, новые сообщения временно удаляются.',
+  );
+});
+
 test('shows blocked word from moderation metadata', () => {
   assert.equal(
     resolveModerationFeedReason({

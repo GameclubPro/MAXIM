@@ -16,6 +16,13 @@ const commercialSubtypeLabels: Record<string, string> = {
   GENERIC: 'рекламный оффер',
 };
 
+const standaloneDeleteRuleCodes = new Set([
+  'BOT_MESSAGE_AUTO_DELETE',
+  'MANUAL_GROUP_CLOSE_DELETE',
+  'MUTE_ACTIVE_DELETE',
+  'NIGHT_MODE_DELETE',
+]);
+
 export function resolveModerationFeedReason(violation: ModerationReasonSource): string {
   const metadata = readRecord(violation.metadata);
   const ruleCode = normalizeModerationRuleCode(violation.ruleCode);
@@ -128,6 +135,15 @@ function resolveStructuredReason(
 
   if (ruleCode === 'MANUAL_GROUP_CLOSE_DELETE') {
     return 'Группа закрыта вручную, новые сообщения временно удаляются.';
+  }
+
+  if (ruleCode === 'BOT_MESSAGE_AUTO_DELETE') {
+    const delayMinutes = readFiniteNumber(metadata?.delayMinutes);
+    return delayMinutes !== null && delayMinutes > 0
+      ? `Сообщение бота удалено по настройкам автоочистки через ${formatDelayMinutes(
+          delayMinutes,
+        )}.`
+      : 'Сообщение бота удалено по настройкам автоочистки.';
   }
 
   return null;
@@ -279,7 +295,7 @@ function resolveFallbackReason(ruleCode: string): string {
 
 function normalizeModerationRuleCode(ruleCode: string): string {
   const normalized = ruleCode.trim().toUpperCase();
-  if (normalized.startsWith('DUPLICATE_')) {
+  if (normalized.startsWith('DUPLICATE_') || standaloneDeleteRuleCodes.has(normalized)) {
     return normalized;
   }
   if (normalized.endsWith('_DELETE')) {
@@ -328,6 +344,17 @@ function formatDurationSeconds(seconds: number): string {
     return `${normalized / 60}мин`;
   }
   return `${normalized}с`;
+}
+
+function formatDelayMinutes(minutes: number): string {
+  const seconds = Math.max(1, Math.round(minutes * 60));
+  if (seconds < 60) {
+    return `${seconds} сек`;
+  }
+  if (seconds % 60 === 0) {
+    return `${seconds / 60} мин`;
+  }
+  return `${Math.floor(seconds / 60)} мин ${seconds % 60} сек`;
 }
 
 function ensureSentence(value: string): string {

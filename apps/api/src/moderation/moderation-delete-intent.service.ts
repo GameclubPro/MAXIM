@@ -34,6 +34,7 @@ import type {
   ModerationDeleteIntentSnapshot,
   ModerationDeleteIntentStatus,
 } from './moderation-delete-intent.types';
+import { NIGHT_MODE_TRANSITION_NOTICE_RULE_CODES } from './night-mode-transition-notice-persistence-error';
 
 const DEFAULT_RETRY_HORIZON_MS = 24 * 60 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 5_000;
@@ -106,7 +107,8 @@ type ManagedBotMessageOwner = {
     | 'vk_parsing_post'
     | 'published_chat_rules'
     | 'chat_auto_comment_replacement'
-    | 'chat_auto_comment_reply';
+    | 'chat_auto_comment_reply'
+    | 'night_mode_transition_notice';
 };
 
 export type ModerationDeleteIntentRoutingContext = {
@@ -145,6 +147,13 @@ class ModerationDeletePreDispatchGuardError extends Error {
   constructor(readonly guardError: unknown) {
     super('Moderation delete pre-dispatch guard rejected the mutation', { cause: guardError });
     this.name = 'ModerationDeletePreDispatchGuardError';
+  }
+}
+
+class ModerationDeleteProtectedMessageError extends Error {
+  constructor(readonly protectedIntent: IntentRow) {
+    super('Managed bot message became protected before delete dispatch');
+    this.name = 'ModerationDeleteProtectedMessageError';
   }
 }
 
@@ -562,15 +571,15 @@ export class ModerationDeleteIntentService {
         let dispatchMarkerPersisted = false;
         try {
           await this.assertLeaseForExternalCall(heartbeat);
-          const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
-            intent,
-            leaseToken,
-          );
-          if (protectedIntent) {
-            return this.toAttemptResult(protectedIntent);
-          }
           const beforeImmediateDeleteMutation = async () => {
             await this.assertLeaseForExternalCall(heartbeat);
+            const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
+              intent,
+              leaseToken,
+            );
+            if (protectedIntent) {
+              throw new ModerationDeleteProtectedMessageError(protectedIntent);
+            }
             if (options?.beforeDeleteMutation) {
               try {
                 await options.beforeDeleteMutation();
@@ -604,6 +613,9 @@ export class ModerationDeleteIntentService {
             idempotencyKey: `moderation-delete-intent-${intent.id}-attempt-${intent.attemptCount}`,
           });
         } catch (error: unknown) {
+          if (error instanceof ModerationDeleteProtectedMessageError) {
+            return this.toAttemptResult(error.protectedIntent);
+          }
           if (error instanceof ModerationDeletePreDispatchGuardError) {
             if (dispatchMarkerPersisted) {
               if (!(await this.clearDeleteDispatchStarted(intent.id, leaseToken, botId))) {
@@ -2288,16 +2300,27 @@ export class ModerationDeleteIntentService {
       },
       select: { id: true, replacementMessageId: true, replyMessageId: true },
     });
-    if (!chatAutoCommentReplacement) {
-      return null;
+    if (chatAutoCommentReplacement) {
+      return {
+        id: chatAutoCommentReplacement.id,
+        kind:
+          chatAutoCommentReplacement.replacementMessageId === messageId
+            ? 'chat_auto_comment_replacement'
+            : 'chat_auto_comment_reply',
+      };
     }
-    return {
-      id: chatAutoCommentReplacement.id,
-      kind:
-        chatAutoCommentReplacement.replacementMessageId === messageId
-          ? 'chat_auto_comment_replacement'
-          : 'chat_auto_comment_reply',
-    };
+
+    const transitionEvent = await this.prisma.moderationEvent.findFirst({
+      where: {
+        chatId,
+        messageId,
+        ruleCode: { in: [...NIGHT_MODE_TRANSITION_NOTICE_RULE_CODES] },
+      },
+      select: { id: true },
+    });
+    return transitionEvent
+      ? { id: transitionEvent.id, kind: 'night_mode_transition_notice' }
+      : null;
   }
 
   private async resolveDeleteRouteWithRefresh(

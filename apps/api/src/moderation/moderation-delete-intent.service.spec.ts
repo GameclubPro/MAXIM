@@ -77,6 +77,9 @@ function createService(
     chatAutoCommentAttachMarker: {
       findFirst: jest.fn().mockResolvedValue(null),
     },
+    moderationEvent: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     ...prismaOverrides,
   };
   const queue = { add: jest.fn().mockResolvedValue(undefined) };
@@ -675,6 +678,15 @@ describe('ModerationDeleteIntentService', () => {
         },
       },
     },
+    {
+      label: 'persisted night-mode transition notice',
+      ownerKind: 'night_mode_transition_notice',
+      prismaOwner: {
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'night-close-event-1' }),
+        },
+      },
+    },
   ])(
     'blocks BOT_MESSAGE_AUTO_DELETE at dispatch time for a late $label owner',
     async ({ ownerKind, prismaOwner }) => {
@@ -698,7 +710,7 @@ describe('ModerationDeleteIntentService', () => {
         .mockResolvedValueOnce([blockedIntent]);
       const executeRaw = jest.fn().mockResolvedValue(1);
       const deleteMessage = jest.fn();
-      const { service, maxBotLink } = createService(
+      const { service, prisma, maxBotLink } = createService(
         {},
         {
           $queryRaw: queryRaw,
@@ -736,8 +748,73 @@ describe('ModerationDeleteIntentService', () => {
           ),
         ),
       ).toBe(true);
+      if (ownerKind === 'night_mode_transition_notice') {
+        expect(prisma.moderationEvent.findFirst).toHaveBeenCalledWith({
+          where: {
+            chatId: 'chat-1',
+            messageId: 'message-1',
+            ruleCode: {
+              in: ['NIGHT_MODE_CLOSE_NOTICE', 'NIGHT_MODE_OPEN_NOTICE'],
+            },
+          },
+          select: { id: true },
+        });
+      }
     },
   );
+
+  it('blocks a transition notice that becomes protected inside the final MAX delete guard', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+    };
+    const blockedIntent = {
+      ...autoDeleteIntent,
+      status: 'FAILED_TERMINAL',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      lastErrorCode: 'managed_output_auto_delete_blocked',
+      lastError: 'Night mode transition notice is protected',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([autoDeleteIntent])
+      .mockResolvedValueOnce([blockedIntent]);
+    const transitionEventLookup = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'night-close-event-1' });
+    const deleteMessageOverride = jest.fn();
+    const { service, prisma, maxBotLink } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationEvent: { findFirst: transitionEventLookup },
+      },
+      { deleteMessage: deleteMessageOverride },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(transitionEventLookup).toHaveBeenCalledTimes(2);
+    expect(maxBotLink.resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
+    expect(deleteMessageOverride).not.toHaveBeenCalled();
+    const executedSql = prisma.$executeRaw.mock.calls
+      .map((call: unknown[]) => {
+        const query = call[0] as { strings?: readonly string[] };
+        return query.strings?.join('?') ?? '';
+      })
+      .join('\n');
+    expect(executedSql).not.toContain('"delete_dispatch_started_at" = CURRENT_TIMESTAMP');
+  });
 
   it('allows BOT_MESSAGE_AUTO_DELETE when no managed output owns the message', async () => {
     const autoDeleteIntent = {
@@ -777,6 +854,7 @@ describe('ModerationDeleteIntentService', () => {
     expect(prisma.vkParsingPost.findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.chatRules.findUnique).toHaveBeenCalledTimes(2);
     expect(prisma.chatAutoCommentAttachMarker.findFirst).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.findFirst).toHaveBeenCalledTimes(2);
     expect(deleteMessage).toHaveBeenCalledWith(
       'chat-1',
       'message-1',
@@ -862,6 +940,47 @@ describe('ModerationDeleteIntentService', () => {
       status: 'SUCCEEDED',
     });
     expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows NIGHT_MODE_CLOSE_NOTICE_CLEANUP for a persisted close notice', async () => {
+    const cleanupIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: false,
+    };
+    const completedIntent = {
+      ...cleanupIntent,
+      status: 'SUCCEEDED',
+      lastBotId: 'bot-1',
+      succeededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([cleanupIntent])
+      .mockResolvedValueOnce([completedIntent]);
+    const deleteMessage = jest.fn().mockResolvedValue(undefined);
+    const transitionEventLookup = jest.fn().mockResolvedValue({ id: 'night-close-event-1' });
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationEvent: { findFirst: transitionEventLookup },
+      },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      confirmed: true,
+      status: 'SUCCEEDED',
+    });
+    expect(transitionEventLookup).not.toHaveBeenCalled();
     expect(deleteMessage).toHaveBeenCalledTimes(1);
   });
 

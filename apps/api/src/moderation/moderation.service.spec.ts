@@ -5004,7 +5004,9 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'greeting-event-1' }),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'greeting-event-1', ruleCode: 'GREETING_MESSAGE' }),
         create: jest.fn(),
       },
       managedBroadcastDelivery: {
@@ -5049,14 +5051,25 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.findFirst).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',
-        ruleCode: 'GREETING_MESSAGE',
-        metadata: {
-          path: ['sentMessageId'],
-          equals: 'msg-greeting-own-1',
-        },
+        OR: [
+          {
+            messageId: 'msg-greeting-own-1',
+            ruleCode: {
+              in: ['NIGHT_MODE_CLOSE_NOTICE', 'NIGHT_MODE_OPEN_NOTICE'],
+            },
+          },
+          {
+            ruleCode: 'GREETING_MESSAGE',
+            metadata: {
+              path: ['sentMessageId'],
+              equals: 'msg-greeting-own-1',
+            },
+          },
+        ],
       },
       select: {
         id: true,
+        ruleCode: true,
       },
     });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -5458,6 +5471,115 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('protects a persisted night notice when MAX returns plain webhook text for escaped Markdown', async () => {
+    const storedMarkdown =
+      'Сейчас тихий режим 🌙 20:00-06:00 \\(Москва\\). Новые сообщения временно не принимаются.';
+    const webhookText =
+      'Сейчас тихий режим 🌙 20:00-06:00 (Москва). Новые сообщения временно не принимаются.';
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 20 * 60,
+            nightModeEndTimeMinutes: 6 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: storedMarkdown,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'night-close-event-1',
+          ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        }),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      { get: jest.fn().mockReturnValue('bot-1') } as never,
+    );
+
+    await service.handleUpdate({
+      updateId: 'upd-night-markdown-own-bot-1',
+      type: 'message_created',
+      message: {
+        messageId: 'msg-night-markdown-own-bot-1',
+        chatId: 'chat-1',
+        senderId: 'bot-1',
+        text: webhookText,
+        createdAt: new Date().toISOString(),
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'bot-1',
+            type: 'bot',
+            is_bot: true,
+          },
+        },
+      },
+    });
+
+    expect(prisma.moderationEvent.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        OR: [
+          {
+            messageId: 'msg-night-markdown-own-bot-1',
+            ruleCode: {
+              in: ['NIGHT_MODE_CLOSE_NOTICE', 'NIGHT_MODE_OPEN_NOTICE'],
+            },
+          },
+          {
+            ruleCode: 'GREETING_MESSAGE',
+            metadata: {
+              path: ['sentMessageId'],
+              equals: 'msg-night-markdown-own-bot-1',
+            },
+          },
+        ],
+      },
+      select: {
+        id: true,
+        ruleCode: true,
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
@@ -5545,6 +5667,7 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 

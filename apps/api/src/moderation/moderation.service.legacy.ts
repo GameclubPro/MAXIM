@@ -108,6 +108,7 @@ import {
 } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import * as rulesFence from './chat-rules-own-bot-message-classifier';
+import * as protectedEventFence from './own-bot-protected-event-classifier';
 import { ModerationExecutionService } from './moderation-execution.service';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
@@ -7116,22 +7117,11 @@ export class ModerationService
       return 'night_mode_notice';
     }
 
-    const greetingEvent = await this.prisma.moderationEvent?.findFirst?.({
-      where: {
-        chatId: params.chatId,
-        ruleCode: 'GREETING_MESSAGE',
-        metadata: {
-          path: ['sentMessageId'],
-          equals: params.messageId,
-        },
-      },
-      select: {
-        id: true,
-      },
-    });
-    if (greetingEvent) {
-      return 'greeting_message';
-    }
+    const protectedEventSkipReason = await protectedEventFence.classify(
+      this.prisma.moderationEvent,
+      params,
+    );
+    if (protectedEventSkipReason) return protectedEventSkipReason;
 
     if (isKaravanStorefrontRelayCompanionText(params.text)) {
       if (

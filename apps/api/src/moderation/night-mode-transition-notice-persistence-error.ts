@@ -1,6 +1,10 @@
+export const NIGHT_MODE_TRANSITION_NOTICE_RULE_CODES = [
+  'NIGHT_MODE_CLOSE_NOTICE',
+  'NIGHT_MODE_OPEN_NOTICE',
+] as const;
+
 export type NightModeTransitionNoticeRuleCode =
-  | 'NIGHT_MODE_CLOSE_NOTICE'
-  | 'NIGHT_MODE_OPEN_NOTICE';
+  (typeof NIGHT_MODE_TRANSITION_NOTICE_RULE_CODES)[number];
 
 export type NightModeTransitionAcceptedNoticeDetails = {
   chatId: string;
