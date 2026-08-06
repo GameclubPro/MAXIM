@@ -21,6 +21,23 @@ export function isImmutableMaximReleaseRef(value) {
   return typeof value === 'string' && immutableReleaseRefPattern.test(value);
 }
 
+export function isCanonicalLocalMaximRepoDigest(value, imageId, releaseRefs) {
+  if (
+    typeof value !== 'string' ||
+    !dockerImageIdPattern.test(imageId) ||
+    !Array.isArray(releaseRefs)
+  ) {
+    return false;
+  }
+  const canonicalDigests = new Set(
+    releaseRefs.filter(isImmutableMaximReleaseRef).map((ref) => {
+      const repository = ref.slice(0, ref.indexOf(':'));
+      return `${repository}@${imageId}`;
+    }),
+  );
+  return canonicalDigests.has(value);
+}
+
 export function parseReclaimCutoff(value, now = Date.now()) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('Reclaim cutoff must be a non-empty Docker duration, Unix timestamp, or date.');
@@ -122,8 +139,13 @@ export function buildReleaseImageReclaimPlan({
       continue;
     }
 
-    // A shared non-release alias or registry digest makes the image outside this tool's ownership.
-    if (releaseRefs.length !== image.repoTags.length || image.repoDigests.length > 0) {
+    // Shared aliases and non-local digests make the image outside this tool's ownership.
+    if (
+      releaseRefs.length !== image.repoTags.length ||
+      !image.repoDigests.every((digest) =>
+        isCanonicalLocalMaximRepoDigest(digest, image.id, releaseRefs),
+      )
+    ) {
       continue;
     }
 
@@ -182,6 +204,30 @@ export function removeReleaseImageCandidates(
     }
     execute(dockerCommand, ['image', 'rm', ...image.repoTags]);
   }
+}
+
+export function assertReclaimCandidatesRemainEligible(candidates, revalidatedCandidates) {
+  const revalidatedKeys = new Set(revalidatedCandidates.map(reclaimCandidateKey));
+  for (const candidate of candidates) {
+    if (!revalidatedKeys.has(reclaimCandidateKey(candidate))) {
+      throw new Error(
+        `Reclaim candidate changed or became protected before removal: ${candidate.id}`,
+      );
+    }
+  }
+}
+
+function reclaimCandidateKey(candidate) {
+  const image = normalizeDockerImage({
+    id: candidate.id,
+    createdAt: candidate.createdAt,
+    repoTags: candidate.refs,
+    repoDigests: [],
+  });
+  if (image.repoTags.length === 0 || !image.repoTags.every(isImmutableMaximReleaseRef)) {
+    throw new Error(`Refusing unsafe release image removal candidate: ${candidate.id}`);
+  }
+  return JSON.stringify([image.id, image.createdAt, image.repoTags]);
 }
 
 function readValidatedManifest(path) {
@@ -375,14 +421,28 @@ function runCli(argv) {
     process.stdout.write('No unused immutable MAXIM release images are eligible for removal.\n');
     return;
   }
+  if (options.dryRun) {
+    for (const candidate of candidates) {
+      process.stdout.write(`Would remove ${candidate.id}: ${candidate.refs.join(', ')}\n`);
+    }
+    return;
+  }
+
+  const revalidatedRetained = readRetainedReleaseImages(options.stateDir);
+  const revalidatedInventory = readDockerReclaimInventory();
+  const revalidatedCandidates = buildReleaseImageReclaimPlan({
+    images: revalidatedInventory.images,
+    retainedImageIds: revalidatedRetained.imageIds,
+    retainedImageRefs: revalidatedRetained.imageRefs,
+    containerImageIds: revalidatedInventory.containerImageIds,
+    cutoffMs,
+  });
+  assertReclaimCandidatesRemainEligible(candidates, revalidatedCandidates);
+
   for (const candidate of candidates) {
-    process.stdout.write(
-      `${options.dryRun ? 'Would remove' : 'Removing'} ${candidate.id}: ${candidate.refs.join(', ')}\n`,
-    );
+    process.stdout.write(`Removing ${candidate.id}: ${candidate.refs.join(', ')}\n`);
   }
-  if (!options.dryRun) {
-    removeReleaseImageCandidates(candidates);
-  }
+  removeReleaseImageCandidates(candidates);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

@@ -16,6 +16,7 @@ import { buildReleaseManifest } from './release-manifest.mjs';
 import {
   buildReleaseImageReclaimPlan,
   isImmutableMaximReleaseRef,
+  isCanonicalLocalMaximRepoDigest,
   parseReclaimCutoff,
   readRetainedReleaseImages,
 } from './release-image-reclaim.mjs';
@@ -32,11 +33,24 @@ test('selects only old unused immutable release images outside retained inventor
   const images = [
     image('a', old, [`maxim-api:${gitSha('a')}`]),
     image('b', old, [`maxim-admin:${gitSha('b')}`]),
-    image('c', old, [`maxim-miniapp-major:${gitSha('c')}`]),
+    image(
+      'c',
+      old,
+      [`maxim-miniapp-major:${gitSha('c')}`],
+      [`maxim-miniapp-major@${imageId('c')}`],
+    ),
     image('d', old, ['postgres:16']),
     image('e', old, [`maxim-api:${gitSha('e')}`, 'local-api:debug']),
     image('f', recent, [`maxim-admin:${gitSha('f')}`]),
-    image('1', old, [`maxim-api:${gitSha('1')}`], ['registry/maxim-api@sha256:abc']),
+    image('1', old, [`maxim-api:${gitSha('1')}`], [`registry/maxim-api@${imageId('1')}`]),
+    image('2', old, [`maxim-api:${gitSha('2')}`], [`maxim-api@${imageId('3')}`]),
+    image('3', old, [`maxim-api:${gitSha('3')}`], [`maxim-admin@${imageId('3')}`]),
+    image(
+      '4',
+      old,
+      [`maxim-admin:${gitSha('4')}`],
+      [`maxim-admin@${imageId('4')}`, `registry.example/maxim-admin@${imageId('4')}`],
+    ),
   ];
 
   const plan = buildReleaseImageReclaimPlan({
@@ -67,6 +81,29 @@ test('accepts only full-SHA release refs and parses Docker cutoff forms', () => 
   );
   assert.equal(parseReclaimCutoff('2026-07-01T00:00:00Z'), Date.parse('2026-07-01T00:00:00Z'));
   assert.throws(() => parseReclaimCutoff('7d'), /Invalid reclaim cutoff/u);
+});
+
+test('accepts only a canonical local repo digest for the image release repository and id', () => {
+  const ref = `maxim-api:${gitSha('a')}`;
+
+  assert.equal(
+    isCanonicalLocalMaximRepoDigest(`maxim-api@${imageId('a')}`, imageId('a'), [ref]),
+    true,
+  );
+  assert.equal(
+    isCanonicalLocalMaximRepoDigest(`maxim-api@${imageId('b')}`, imageId('a'), [ref]),
+    false,
+  );
+  assert.equal(
+    isCanonicalLocalMaximRepoDigest(`registry.example/maxim-api@${imageId('a')}`, imageId('a'), [
+      ref,
+    ]),
+    false,
+  );
+  assert.equal(
+    isCanonicalLocalMaximRepoDigest(`maxim-admin@${imageId('a')}`, imageId('a'), [ref]),
+    false,
+  );
 });
 
 test('validates every retained manifest before returning its image allowlist', () => {
@@ -115,6 +152,35 @@ test('CLI preserves retained unlabeled and container images while removing stale
   assert.deepEqual(calls, [['image', 'rm', `maxim-miniapp-major:${gitSha('b')}`]]);
 });
 
+test('CLI dry-run reports a canonical local digest without revalidation or mutation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-dry-run-'));
+  const stateDir = createReleaseState('a', root);
+  const logPath = join(root, 'docker-log.jsonl');
+  const candidateRef = `maxim-miniapp-major:${gitSha('b')}`;
+  const fakeDocker = createFakeDocker(root, {
+    images: [dockerImage('b', candidateRef, {}, [`maxim-miniapp-major@${imageId('b')}`])],
+    containers: [],
+  });
+
+  const output = execFileSync(
+    process.execPath,
+    [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '1h', '--dry-run'],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${fakeDocker.binDir}:${process.env.PATH}`,
+        FAKE_DOCKER_FIXTURE: fakeDocker.fixturePath,
+        FAKE_DOCKER_LOG: logPath,
+      },
+    },
+  );
+
+  assert.match(output, new RegExp(`Would remove ${imageId('b')}: ${candidateRef}`, 'u'));
+  assert.equal(readFileSync(`${fakeDocker.fixturePath}.state`, 'utf8'), '0');
+  assert.equal(existsSync(logPath), false);
+});
+
 test('CLI fails closed before Docker mutation when any retained manifest is malformed', () => {
   const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-invalid-'));
   const stateDir = createReleaseState('a', root);
@@ -146,16 +212,106 @@ test('CLI fails closed before Docker mutation when any retained manifest is malf
   assert.equal(existsSync(logPath), false);
 });
 
+test('CLI replans before mutation and fails closed when Docker ownership changes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-race-'));
+  const stateDir = createReleaseState('a', root);
+  const logPath = join(root, 'docker-log.jsonl');
+  const candidateRef = `maxim-miniapp-major:${gitSha('b')}`;
+  const candidate = dockerImage('b', candidateRef, {}, [`maxim-miniapp-major@${imageId('b')}`]);
+  const fakeDocker = createFakeDocker(root, {
+    inventorySequence: [
+      { images: [candidate], containers: [] },
+      {
+        images: [
+          dockerImage('b', candidateRef, {}, [
+            `registry.example/maxim-miniapp-major@${imageId('b')}`,
+          ]),
+        ],
+        containers: [],
+      },
+    ],
+  });
+
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '1h'],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${fakeDocker.binDir}:${process.env.PATH}`,
+            FAKE_DOCKER_FIXTURE: fakeDocker.fixturePath,
+            FAKE_DOCKER_LOG: logPath,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    /Reclaim candidate changed or became protected before removal/u,
+  );
+  assert.equal(existsSync(logPath), false);
+});
+
+test('CLI rereads retained manifests before mutation and preserves a newly protected image', () => {
+  const root = mkdtempSync(join(tmpdir(), 'maxim-release-reclaim-manifest-race-'));
+  const stateDir = createReleaseState('a', root);
+  const logPath = join(root, 'docker-log.jsonl');
+  const replacementPath = join(root, 'replacement-current.json');
+  const candidateRef = `maxim-miniapp-major:${gitSha('b')}`;
+  const candidate = dockerImage('b', candidateRef, {}, [`maxim-miniapp-major@${imageId('b')}`]);
+  const replacementManifest = buildReleaseManifest({
+    releaseId: 'release-newly-protected',
+    targetSha: gitSha('b'),
+    components: [
+      {
+        id: 'miniapp-major-static',
+        sourceSha: gitSha('b'),
+        imageRef: candidateRef,
+        imageId: imageId('b'),
+      },
+    ],
+    createdAt: '2026-07-02T00:00:00.000Z',
+  });
+  writeFileSync(replacementPath, `${JSON.stringify(replacementManifest, null, 2)}\n`);
+  const fakeDocker = createFakeDocker(root, {
+    images: [candidate],
+    containers: [],
+  });
+
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        [helperPath, 'reclaim', '--state-dir', stateDir, '--until', '1h'],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${fakeDocker.binDir}:${process.env.PATH}`,
+            FAKE_DOCKER_FIXTURE: fakeDocker.fixturePath,
+            FAKE_DOCKER_LOG: logPath,
+            FAKE_DOCKER_MANIFEST_PATH: join(stateDir, 'current.json'),
+            FAKE_DOCKER_MANIFEST_REPLACEMENT: replacementPath,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    /Reclaim candidate changed or became protected before removal/u,
+  );
+  assert.equal(existsSync(logPath), false);
+});
+
 function image(digit, createdAt, repoTags, repoDigests = []) {
   return { id: imageId(digit), createdAt, repoTags, repoDigests };
 }
 
-function dockerImage(digit, ref, labels = {}) {
+function dockerImage(digit, ref, labels = {}, repoDigests = []) {
   return {
     Id: imageId(digit),
     Created: '2020-01-01T00:00:00.000Z',
     RepoTags: [ref],
-    RepoDigests: [],
+    RepoDigests: repoDigests,
     Config: { Labels: labels },
   };
 }
@@ -192,14 +348,32 @@ function createFakeDocker(root, fixture) {
   writeFileSync(
     dockerPath,
     `#!/usr/bin/env node
-const { appendFileSync, readFileSync } = require('node:fs');
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 const fixture = JSON.parse(readFileSync(process.env.FAKE_DOCKER_FIXTURE, 'utf8'));
+const snapshots = fixture.inventorySequence || [fixture];
+const statePath = process.env.FAKE_DOCKER_FIXTURE + '.state';
+let snapshotIndex = existsSync(statePath) ? Number(readFileSync(statePath, 'utf8')) : -1;
+if (args[0] === 'image' && args[1] === 'ls') {
+  snapshotIndex = Math.min(snapshotIndex + 1, snapshots.length - 1);
+  writeFileSync(statePath, String(snapshotIndex));
+  if (
+    snapshotIndex === 0 &&
+    process.env.FAKE_DOCKER_MANIFEST_PATH &&
+    process.env.FAKE_DOCKER_MANIFEST_REPLACEMENT
+  ) {
+    writeFileSync(
+      process.env.FAKE_DOCKER_MANIFEST_PATH,
+      readFileSync(process.env.FAKE_DOCKER_MANIFEST_REPLACEMENT, 'utf8'),
+    );
+  }
+}
+const snapshot = snapshots[Math.max(snapshotIndex, 0)];
 const ids = (items) => items.map((item) => JSON.stringify(item.Id)).join('\\n') + (items.length ? '\\n' : '');
-if (args[0] === 'image' && args[1] === 'ls') process.stdout.write(ids(fixture.images));
-else if (args[0] === 'container' && args[1] === 'ls') process.stdout.write(ids(fixture.containers));
-else if (args[0] === 'image' && args[1] === 'inspect') process.stdout.write(JSON.stringify(fixture.images.filter((item) => args.includes(item.Id))));
-else if (args[0] === 'container' && args[1] === 'inspect') process.stdout.write(JSON.stringify(fixture.containers.filter((item) => args.includes(item.Id))));
+if (args[0] === 'image' && args[1] === 'ls') process.stdout.write(ids(snapshot.images));
+else if (args[0] === 'container' && args[1] === 'ls') process.stdout.write(ids(snapshot.containers));
+else if (args[0] === 'image' && args[1] === 'inspect') process.stdout.write(JSON.stringify(snapshot.images.filter((item) => args.includes(item.Id))));
+else if (args[0] === 'container' && args[1] === 'inspect') process.stdout.write(JSON.stringify(snapshot.containers.filter((item) => args.includes(item.Id))));
 else if (args[0] === 'image' && args[1] === 'rm') appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(args) + '\\n');
 else { process.stderr.write('unexpected fake docker call: ' + args.join(' ') + '\\n'); process.exitCode = 2; }
 `,
