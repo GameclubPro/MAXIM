@@ -135,6 +135,69 @@ async function openPreviewGiveawayEditor(page) {
   await page.locator('.managed-giveaway--step-basics').waitFor({ state: 'visible' });
 }
 
+async function openPreviewPollEditor(page, { openSection = false } = {}) {
+  if (openSection) {
+    await openSettingsSection(page, 'Опросы', '.managed-poll-workspace');
+  } else {
+    await page.locator('.managed-poll-workspace').waitFor({ state: 'visible' });
+  }
+
+  const workspace = page.locator('.managed-poll-workspace');
+  await workspace.getByRole('button', { name: 'Завершить', exact: true }).click();
+  const confirm = page.getByRole('dialog', { name: 'Завершить опрос?' });
+  await confirm.waitFor({ state: 'visible' });
+  await confirm.getByRole('button', { name: 'Завершить', exact: true }).click();
+  await page.waitForFunction(() => {
+    const createButton = document.querySelector('.managed-poll-workspace__create');
+    return createButton instanceof HTMLButtonElement && !createButton.disabled;
+  });
+
+  const pollClosedToast = page.locator('.toast').filter({ hasText: 'Опрос завершён' });
+  await pollClosedToast.waitFor({ state: 'visible' });
+  await pollClosedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
+  await pollClosedToast.waitFor({ state: 'detached' });
+  await page.locator('.managed-poll-workspace__create').click();
+  await page.locator('.managed-poll-editor').waitFor({ state: 'visible' });
+}
+
+async function publishPreviewPoll(page) {
+  const editor = page.locator('.managed-poll-editor');
+  const question = 'Когда проведём следующую встречу?';
+  await editor.getByRole('textbox', { name: 'Вопрос опроса' }).fill(question);
+  await editor.getByRole('textbox', { name: 'Вариант ответа 1' }).fill('В пятницу');
+  await editor.getByRole('textbox', { name: 'Вариант ответа 2' }).fill('В субботу');
+  await editor.getByRole('button', { name: 'Опубликовать', exact: true }).click();
+
+  const confirm = page.getByRole('dialog', { name: 'Опубликовать опрос?' });
+  await confirm.waitFor({ state: 'visible' });
+  await confirm.getByRole('button', { name: 'Опубликовать', exact: true }).click();
+
+  const publishedToast = page.locator('.toast').filter({ hasText: 'Опрос опубликован' });
+  await publishedToast.waitFor({ state: 'visible' });
+  await page
+    .locator('.managed-poll-item')
+    .filter({ hasText: question })
+    .waitFor({ state: 'visible' });
+}
+
+async function savePreviewPollDraft(page) {
+  const editor = page.locator('.managed-poll-editor');
+  const question = 'Когда проведём следующую встречу?';
+  await editor.getByRole('textbox', { name: 'Вопрос опроса' }).fill(question);
+  await editor.getByRole('textbox', { name: 'Вариант ответа 1' }).fill('В пятницу');
+  await editor.getByRole('textbox', { name: 'Вариант ответа 2' }).fill('В субботу');
+  await editor.getByRole('button', { name: 'Сохранить', exact: true }).click();
+
+  const savedToast = page.locator('.toast').filter({ hasText: 'Черновик сохранён' });
+  await savedToast.waitFor({ state: 'visible' });
+  await editor.getByRole('button', { name: 'Назад к списку', exact: true }).click();
+
+  const draft = page.locator('.managed-poll-item').filter({ hasText: question });
+  await draft.locator('.managed-poll-item__status.is-draft').waitFor({ state: 'visible' });
+  await savedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
+  await savedToast.waitFor({ state: 'detached' });
+}
+
 async function assertBotMessagePlaceholderRoundTrip(page) {
   const expectedKeys = ['user', 'message_status', 'reason'];
   const editor = page.locator('.max-rich-text-editor__surface');
@@ -648,6 +711,29 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-poll-editor',
+    beforeShot: async (page) => {
+      await openPreviewPollEditor(page);
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'chat-settings-poll-published',
+    beforeShot: async (page) => {
+      await openPreviewPollEditor(page);
+      await publishPreviewPoll(page);
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'chat-settings-poll-draft',
+    beforeShot: async (page) => {
+      await openPreviewPollEditor(page);
+      await savePreviewPollDraft(page);
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'chat-settings-giveaway',
     beforeShot: async (page) => {
       await page.locator('.managed-giveaway--dashboard').waitFor({ state: 'visible' });
@@ -895,24 +981,7 @@ const scenarioBehaviors = [
   {
     name: 'channel-settings-poll-editor',
     beforeShot: async (page) => {
-      await openSettingsSection(page, 'Опросы', '.managed-poll-workspace');
-      await page
-        .locator('.managed-poll-workspace')
-        .getByRole('button', { name: 'Завершить', exact: true })
-        .click();
-      const confirm = page.getByRole('dialog', { name: 'Завершить опрос?' });
-      await confirm.waitFor({ state: 'visible' });
-      await confirm.getByRole('button', { name: 'Завершить', exact: true }).click();
-      await page.waitForFunction(() => {
-        const createButton = document.querySelector('.managed-poll-workspace__create');
-        return createButton instanceof HTMLButtonElement && !createButton.disabled;
-      });
-      const pollClosedToast = page.locator('.toast').filter({ hasText: 'Опрос завершён' });
-      await pollClosedToast.waitFor({ state: 'visible' });
-      await pollClosedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
-      await pollClosedToast.waitFor({ state: 'detached' });
-      await page.locator('.managed-poll-workspace__create').click();
-      await page.locator('.managed-poll-editor').waitFor({ state: 'visible' });
+      await openPreviewPollEditor(page, { openSection: true });
       await page.waitForTimeout(350);
     },
   },

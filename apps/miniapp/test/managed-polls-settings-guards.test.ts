@@ -30,3 +30,16 @@ test('shared poll workspace uses entity-neutral publication copy', () => {
   assert.doesNotMatch(pollWorkspaceSource, /Обновить пост|Пост не обновился|Пост обновлён/u);
   assert.match(pollWorkspaceSource, /entityType === 'channel' \? 'в канале' : 'в чате'/u);
 });
+
+test('failed publication keeps the persisted draft open for retry', () => {
+  const publishMutationSource = pollWorkspaceSource.match(
+    /const publishMutation = useMutation\([\s\S]*?\n {2}const closeMutation = useMutation/u,
+  )?.[0];
+
+  assert.ok(publishMutationSource);
+  assert.match(
+    publishMutationSource,
+    /onError:[\s\S]*?const persistedDraft = publishSavedPollRef\.current;[\s\S]*?const nextDraft = toEditorDraft\(persistedDraft\);[\s\S]*?setDraft\(nextDraft\);[\s\S]*?setSavedDraft\(nextDraft\);/u,
+  );
+  assert.doesNotMatch(publishMutationSource, /onError:[\s\S]*?setDraft\(null\)/u);
+});

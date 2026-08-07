@@ -987,9 +987,13 @@ export const ManagedPollWorkspace = forwardRef<
     },
     onError: (error) => {
       if (publishSavedPollRef.current) {
-        applyPoll(publishSavedPollRef.current);
-        setDraft(null);
-        setSavedDraft(null);
+        const persistedDraft = publishSavedPollRef.current;
+        const nextDraft = toEditorDraft(persistedDraft);
+        applyPoll(persistedDraft);
+        setDraft(nextDraft);
+        setSavedDraft(nextDraft);
+        setValidationErrors({ question: '', options: {} });
+        setImagesPreparing(false);
         void queryClient.invalidateQueries({ queryKey: listQueryKey });
       }
       publishSavedPollRef.current = null;
@@ -1275,6 +1279,8 @@ export const ManagedPollWorkspace = forwardRef<
     ) : (
       confirmQuestion
     );
+  const showCreateButton =
+    !pollsQuery.isLoading && !pollsInitialError && currentPolls.length === 0;
 
   if (draft) {
     return (
@@ -1356,7 +1362,9 @@ export const ManagedPollWorkspace = forwardRef<
 
   return (
     <section className="managed-poll-workspace">
-      <div className="managed-poll-workspace__toolbar">
+      <div
+        className={`managed-poll-workspace__toolbar${showCreateButton ? ' has-create' : ''}`}
+      >
         <SegmentedControl
           value={tab}
           options={[
@@ -1366,7 +1374,7 @@ export const ManagedPollWorkspace = forwardRef<
           onChange={setTab}
           ariaLabel="Опросы"
         />
-        {!pollsQuery.isLoading && !pollsInitialError && currentPolls.length === 0 ? (
+        {showCreateButton ? (
           <button
             type="button"
             className="managed-poll-workspace__create"

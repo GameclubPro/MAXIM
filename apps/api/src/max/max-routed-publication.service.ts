@@ -4,6 +4,7 @@ import {
   MaxActionDispatchService,
   type MaxActionDispatchExecutionOptions,
 } from './max-action-dispatch.service';
+import { MaxActionNoExecutableRouteError } from './max-action-dispatch-error';
 import { MaxBotLinkService, type MaxBotRoute } from './max-bot-link.service';
 import type {
   MaxActionLedgerContext,
@@ -47,6 +48,8 @@ export type MaxRoutedPublicationResult = MaxPublishedMessage & {
   routingVersion: number | null;
 };
 
+const MANAGED_POLL_ROUTE_ACCESS_MAX_AGE_MS = 30 * 60_000;
+
 @Injectable()
 export class MaxRoutedPublicationService {
   private readonly logger = new Logger(MaxRoutedPublicationService.name);
@@ -68,12 +71,11 @@ export class MaxRoutedPublicationService {
     }
 
     const routePurpose = request.routePurpose ?? 'send_message';
-    const route = await this.resolveFreshRoute(
-      entityId,
-      routePurpose,
-      request.sendRouteHalfOpenProbe,
-    );
+    const route = await this.resolveFreshRoute(entityId, routePurpose, request);
     const candidateBotIds = this.normalizeBotIds(route.candidateBotIds);
+    if (routePurpose === 'channel_poll' && candidateBotIds.length === 0) {
+      throw new MaxActionNoExecutableRouteError('SEND_MESSAGE', entityId);
+    }
     const job: MaxActionJob = {
       actionType: 'SEND_MESSAGE',
       chatId: entityId,
@@ -178,17 +180,82 @@ export class MaxRoutedPublicationService {
   private async resolveFreshRoute(
     chatId: string,
     purpose: MaxRoutedPublicationRoutePurpose,
-    sendRouteHalfOpenProbe?: MaxRoutedPublicationRequest['sendRouteHalfOpenProbe'],
+    request: MaxRoutedPublicationRequest,
   ): Promise<MaxBotRoute> {
     if (purpose === 'channel_poll') {
-      return this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
+      const route = await this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
+      if (this.normalizeBotIds(route.candidateBotIds).length > 0) {
+        return route;
+      }
+      return this.hydrateManagedPollRoute(chatId, route, request);
     }
     return this.maxBotLinkService.resolveBotRoute({
       purpose: 'send_message',
       chatId,
       fallbackToPrimary: true,
-      allowHalfOpenProbe: sendRouteHalfOpenProbe === 'publication_exact_verification',
+      allowHalfOpenProbe: request.sendRouteHalfOpenProbe === 'publication_exact_verification',
     });
+  }
+
+  private async hydrateManagedPollRoute(
+    chatId: string,
+    emptyRoute: MaxBotRoute,
+    request: MaxRoutedPublicationRequest,
+  ): Promise<MaxBotRoute> {
+    const probeRoute = await this.maxBotLinkService.resolveBotRoute({
+      purpose: 'send_message',
+      chatId,
+      fallbackToPrimary: true,
+    });
+    const probeCandidateBotIds = this.normalizeBotIds(probeRoute.candidateBotIds);
+    if (probeCandidateBotIds.length === 0) {
+      return emptyRoute;
+    }
+
+    let refreshedRoute = emptyRoute;
+    for (const botId of probeCandidateBotIds) {
+      const stale = await this.maxBotLinkService.isBotAccessSnapshotStale({
+        chatId,
+        botId,
+        maxAgeMs: MANAGED_POLL_ROUTE_ACCESS_MAX_AGE_MS,
+      });
+      if (!stale) {
+        continue;
+      }
+
+      try {
+        const access = await this.maxClientService.getCurrentChatMemberAccess(chatId, {
+          botId,
+          bypassCache: true,
+          trafficClass: request.trafficClass,
+          ...(request.actionHealthLane ? { actionHealthLane: request.actionHealthLane } : {}),
+          sourceTag: request.sourceTag,
+          ...(request.timeoutMs ? { timeoutMs: request.timeoutMs } : {}),
+        });
+        await this.maxBotLinkService.recordBotAccessProbe({
+          chatId,
+          botId,
+          access,
+          source: 'managed_poll_route_hydration',
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            botId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to hydrate a managed poll route candidate',
+        );
+        continue;
+      }
+
+      refreshedRoute = await this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
+      if (this.normalizeBotIds(refreshedRoute.candidateBotIds).length > 0) {
+        return refreshedRoute;
+      }
+    }
+    return refreshedRoute;
   }
 
   private normalizeBotIds(values: readonly unknown[]): string[] {

@@ -13,9 +13,13 @@
 
   .managed-poll-workspace__toolbar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     align-items: center;
+  }
+
+  .managed-poll-workspace__toolbar.has-create {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .managed-poll-workspace__toolbar .segmented-control {
@@ -861,7 +865,7 @@
   }
 
   @media (max-width: 430px) {
-    .managed-poll-workspace__toolbar {
+    .managed-poll-workspace__toolbar.has-create {
       grid-template-columns: minmax(0, 1fr) 88px;
     }
 

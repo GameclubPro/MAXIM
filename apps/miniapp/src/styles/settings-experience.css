@@ -1391,6 +1391,9 @@
   body.settings-drilldown-open
     .settings-drilldown.settings-drilldown--screen
     > .settings-drilldown__panel {
+    min-height: 0;
+    height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
+    max-height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
     border: 0;
     border-radius: 0;
     box-shadow: none;
@@ -2009,27 +2012,6 @@
 
     .settings-drilldown__header-action {
       max-width: 88px;
-    }
-
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--polls
-      .managed-poll-item__actions {
-      display: grid;
-      grid-template-columns: 44px minmax(0, 1fr) minmax(0, 1fr);
-      gap: 6px;
-      width: 100%;
-    }
-
-    body.settings-drilldown-open
-      .settings-drilldown
-      .settings-drilldown__panel--polls
-      .managed-poll-item__actions
-      :is(.managed-poll-action-button, .managed-poll-icon-button) {
-      min-width: 0;
-      width: 100%;
-      padding-inline: 4px;
-      font-size: 0.72rem;
     }
 
   }

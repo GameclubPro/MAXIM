@@ -114,6 +114,23 @@ test('photo duplicate controls have a dedicated visual scenario', () => {
   assert.ok(scenario?.features.includes('duplicates'));
 });
 
+test('chat poll creation, saved draft, and publication have dedicated visual scenarios', () => {
+  const scenarios = new Map(
+    MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]),
+  );
+
+  for (const name of [
+    'chat-settings-poll-editor',
+    'chat-settings-poll-draft',
+    'chat-settings-poll-published',
+  ]) {
+    const scenario = scenarios.get(name);
+    assert.equal(scenario?.routeId, 'chat-settings');
+    assert.ok(scenario?.features.includes('settings'));
+    assert.ok(scenario?.features.includes('polls'));
+  }
+});
+
 test('smoke preset is short, local-device focused, and includes navigation order', () => {
   const smoke = MINIAPP_VISUAL_PRESETS.smoke;
   assert.ok(smoke.scenarioNames.length >= 8 && smoke.scenarioNames.length <= 12);
