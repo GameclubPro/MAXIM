@@ -5,6 +5,7 @@ import {
   PublicationScheduleMode,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
 import { buildManagedBroadcastAutoRetryableFailureWhere } from './admin-managed-broadcast-reconciliation';
 import {
   buildPublicationDeliveryAutomatedVerificationWhere,
@@ -18,9 +19,114 @@ import {
   MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS,
   MANAGED_BROADCAST_RECOVERY_BATCH_SIZE,
   MANAGED_BROADCAST_RECOVERY_SLOW_BATCH_SIZE,
+  PUBLICATION_HALF_OPEN_VERIFICATION_BATCH_SIZE,
+  PUBLICATION_POST_SEND_VERIFY_DELAY_MS,
 } from './admin.service.support';
 
 type DueManagedBroadcastRow = { id: string };
+type PriorityHalfOpenPublicationVerificationRow = DueManagedBroadcastRow & {
+  deliveryId: string;
+};
+
+export async function selectPriorityHalfOpenPublicationVerificationBatch(
+  prisma: Pick<PrismaService, '$queryRaw'>,
+  limit = PUBLICATION_HALF_OPEN_VERIFICATION_BATCH_SIZE,
+): Promise<{
+  dueRows: PriorityHalfOpenPublicationVerificationRow[];
+  staleLockBefore: Date;
+}> {
+  const now = new Date();
+  const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
+  const verifyReadyBefore = new Date(now.getTime() - PUBLICATION_POST_SEND_VERIFY_DELAY_MS);
+  const boundedLimit = Math.min(
+    PUBLICATION_HALF_OPEN_VERIFICATION_BATCH_SIZE,
+    Math.max(0, Math.floor(limit)),
+  );
+  if (boundedLimit === 0) {
+    return { dueRows: [], staleLockBefore };
+  }
+
+  // FLAG: This priority lane may select an envelope that also has PENDING deliveries. Its runtime
+  // consumer must stay verification-only so a governor pause can never turn this query into sends.
+  const dueRows = await prisma.$queryRaw<PriorityHalfOpenPublicationVerificationRow[]>(Prisma.sql`
+    SELECT
+      mb."id",
+      (ARRAY_AGG(
+        delivery."id"
+        ORDER BY COALESCE(
+          delivery."remote_message_verification_next_at",
+          delivery."sent_at"
+        ) ASC, delivery."id" ASC
+      ))[1] AS "deliveryId"
+    FROM "managed_broadcasts" AS mb
+    INNER JOIN "managed_broadcast_deliveries" AS delivery
+      ON delivery."broadcast_id" = mb."id"
+      AND delivery."occurrence_index" = LEAST(
+        GREATEST(1, mb."sent_count" + 1),
+        GREATEST(1, mb."cycle_count")
+      )
+    INNER JOIN "chat_bot_memberships" AS membership
+      ON membership."chat_id" = delivery."target_chat_id"
+      AND membership."bot_id" = delivery."bot_id"
+    INNER JOIN "publication_occurrences" AS occurrence
+      ON occurrence."id" = mb."publication_occurrence_id"
+    INNER JOIN "publication_schedules" AS schedule
+      ON schedule."id" = occurrence."schedule_id"
+    INNER JOIN "publications" AS publication
+      ON publication."id" = occurrence."publication_id"
+    WHERE mb."publication_occurrence_id" IS NOT NULL
+      AND mb."status" IN (
+        'ACTIVE'::"ManagedBroadcastStatus",
+        'PARTIAL'::"ManagedBroadcastStatus",
+        'FAILED'::"ManagedBroadcastStatus"
+      )
+      AND (mb."locked_at" IS NULL OR mb."locked_at" < ${staleLockBefore})
+      AND occurrence."status" IN (
+        'SCHEDULED'::"PublicationOccurrenceStatus",
+        'IN_PROGRESS'::"PublicationOccurrenceStatus"
+      )
+      AND occurrence."content_revision_id" IS NOT DISTINCT FROM mb."publication_content_revision_id"
+      AND occurrence."schedule_revision" = schedule."revision"
+      AND schedule."status" = 'ACTIVE'::"PublicationScheduleStatus"
+      AND publication."lifecycle" = 'ACTIVE'::"PublicationLifecycle"
+      AND delivery."status" = 'SENT'::"ManagedBroadcastDeliveryStatus"
+      AND delivery."sent_at" IS NOT NULL
+      AND delivery."sent_at" <= ${verifyReadyBefore}
+      AND delivery."remote_message_id" IS NOT NULL
+      AND delivery."remote_message_verified_at" IS NULL
+      AND (
+        delivery."remote_message_verification_next_at" IS NULL
+        OR delivery."remote_message_verification_next_at" <= ${now}
+      )
+      AND (
+        delivery."remote_message_verification_next_at" IS NOT NULL
+        OR delivery."remote_message_verification_attempted_at" IS NOT NULL
+        OR delivery."remote_message_verification_source" IS NOT NULL
+        OR delivery."remote_message_verification_attempt_count" > 0
+        OR delivery."remote_message_verification_absent_count" > 0
+        OR delivery."remote_message_verification_present_count" > 0
+      )
+      AND membership."status" = 'ACTIVE'::"ChatBotMembershipStatus"
+      AND membership."send_route_failure_count" = 1
+      AND membership."send_route_last_failure_code" = ${MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE}
+      AND membership."send_route_quarantined_until" > ${now}
+      AND membership."send_route_last_failure_at" IS NOT NULL
+      AND delivery."sent_at" >= membership."send_route_last_failure_at"
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "managed_broadcast_deliveries" AS in_flight
+        WHERE in_flight."broadcast_id" = mb."id"
+          AND in_flight."status" = 'SENDING'::"ManagedBroadcastDeliveryStatus"
+      )
+    GROUP BY mb."id"
+    ORDER BY MIN(
+      COALESCE(delivery."remote_message_verification_next_at", delivery."sent_at")
+    ) ASC, mb."id" ASC
+    LIMIT ${boundedLimit}
+  `);
+
+  return { dueRows, staleLockBefore };
+}
 
 export async function selectPublicationManagedBroadcastDueBatch(
   prisma: Pick<PrismaService, 'managedBroadcast'>,

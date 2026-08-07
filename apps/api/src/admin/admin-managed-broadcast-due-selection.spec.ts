@@ -3,13 +3,61 @@ import {
   ManagedBroadcastStatus,
   PublicationScheduleMode,
 } from '../prisma/prisma-client';
-import { selectPublicationManagedBroadcastDueBatch } from './admin-managed-broadcast-due-selection';
+import {
+  selectPriorityHalfOpenPublicationVerificationBatch,
+  selectPublicationManagedBroadcastDueBatch,
+} from './admin-managed-broadcast-due-selection';
 import {
   buildPublicationDeliveryVerificationScheduledData,
   hasPublicationDeliveryAutomatedVerificationState,
 } from './publication-delivery-verification-state';
 
 describe('publication managed broadcast due selection', () => {
+  it('selects only bounded due half-open canaries without excluding pending siblings', async () => {
+    const now = new Date('2026-08-07T15:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ id: 'half-open-broadcast', deliveryId: 'half-open-delivery' }]);
+
+      const result = await selectPriorityHalfOpenPublicationVerificationBatch(
+        { $queryRaw: queryRaw } as never,
+        99,
+      );
+
+      expect(result.dueRows).toEqual([
+        { id: 'half-open-broadcast', deliveryId: 'half-open-delivery' },
+      ]);
+      expect(result.staleLockBefore).toEqual(new Date('2026-08-07T14:55:00.000Z'));
+      const query = queryRaw.mock.calls[0]?.[0] as {
+        strings?: readonly string[];
+        values?: readonly unknown[];
+      };
+      const sql = (query.strings ?? []).join('?').replace(/\s+/gu, ' ').trim();
+      expect(query.values).toEqual([
+        new Date('2026-08-07T14:55:00.000Z'),
+        new Date('2026-08-07T14:59:45.000Z'),
+        now,
+        'PUBLICATION_MESSAGE_DISAPPEARED',
+        now,
+        2,
+      ]);
+      expect(sql).toContain('membership."status" = \'ACTIVE\'::"ChatBotMembershipStatus"');
+      expect(sql).toContain('membership."send_route_failure_count" = 1');
+      expect(sql).toContain('membership."send_route_last_failure_at" IS NOT NULL');
+      expect(sql).toContain('AS "deliveryId"');
+      expect(sql).toContain('delivery."sent_at" >= membership."send_route_last_failure_at"');
+      expect(sql).toContain('in_flight."status" = \'SENDING\'::"ManagedBroadcastDeliveryStatus"');
+      expect(sql).not.toContain(
+        'in_flight."status" = \'PENDING\'::"ManagedBroadcastDeliveryStatus"',
+      );
+      expect(sql).toContain('LIMIT ?');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('reserves recovery capacity without letting old verification rows starve new sends', async () => {
     const executionRows = Array.from({ length: 10 }, (_, index) => ({ id: `send-${index + 1}` }));
     const verificationRows = Array.from({ length: 5 }, (_, index) => ({

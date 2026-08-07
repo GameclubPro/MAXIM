@@ -408,6 +408,7 @@ import {
   selectLegacyManagedBroadcastDueBatch,
   selectPublicationManagedBroadcastDueBatch,
 } from './admin-managed-broadcast-due-selection';
+import { processPriorityHalfOpenPublicationVerifications } from './admin-managed-broadcast-priority-verification';
 import {
   PUBLICATION_MAX_VIDEO_BYTES,
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
@@ -994,6 +995,13 @@ export class AdminManagedBroadcastRuntime {
     const verificationBudget = sharedVerificationBudget ?? {
       remaining: PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE,
     };
+    await processPriorityHalfOpenPublicationVerifications({
+      prisma: this.prisma,
+      logger: this.logger,
+      verification: this.publicationVerification,
+      maxApiOptions: this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions('deadline'),
+      budget: verificationBudget,
+    });
     const { dueRows, staleLockBefore } = await selectPublicationManagedBroadcastDueBatch(
       this.prisma,
       [PrismaPublicationScheduleMode.NOW],

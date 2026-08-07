@@ -215,6 +215,61 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(updateMany).not.toHaveBeenCalled();
   });
 
+  it('skips a stale priority delivery after its half-open route has already closed', async () => {
+    const budget = { remaining: 2 };
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'selected-delivery',
+        broadcastId: 'broadcast-priority',
+        occurrenceIndex: 1,
+        targetChatId: 'chat-priority',
+        botId: 'bot-priority',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        sentAt: new Date('2026-07-25T08:00:00.000Z'),
+        remoteMessageId: 'mid-priority',
+        remoteMessageVerifiedAt: null,
+        remoteMessageVerificationAttemptCount: 1,
+        remoteMessageVerificationAbsentCount: 1,
+        remoteMessageVerificationPresentCount: 0,
+        remoteMessageVerificationAttemptedAt: new Date('2026-07-25T08:00:15.000Z'),
+        remoteMessageVerificationNextAt: new Date('2026-07-25T08:00:30.000Z'),
+        remoteMessageVerificationLastError: null,
+        remoteMessageVerificationSource: null,
+      },
+    ]);
+    const getExactMessagePresences = jest.fn();
+    const verification = new AdminManagedBroadcastPublicationVerification({
+      prisma: {
+        managedBroadcastDelivery: { findMany, updateMany: jest.fn() },
+        chatBotMembership: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      maxClient: { getExactMessagePresences },
+      logger: { warn: jest.fn() },
+    } as never);
+
+    await expect(
+      verification.verifyAfterSend(
+        {
+          id: 'broadcast-priority',
+          publicationOccurrenceId: 'occurrence-priority',
+        } as never,
+        1,
+        { trafficClass: 'background', sourceTag: 'managed_broadcast' },
+        jest.fn().mockResolvedValue(undefined),
+        budget,
+        ['selected-delivery'],
+      ),
+    ).resolves.toEqual(new Set());
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ['selected-delivery'] } }),
+      }),
+    );
+    expect(budget.remaining).toBe(2);
+    expect(getExactMessagePresences).not.toHaveBeenCalled();
+  });
+
   it('confirms a second present observation after the stability window', async () => {
     const sentAt = new Date('2026-07-25T08:00:00.000Z');
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
@@ -1152,6 +1207,305 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       ],
       skipDuplicates: true,
     });
+  });
+
+  it('runs priority half-open verification without sending a pending sibling', async () => {
+    const now = new Date('2026-08-07T15:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const sentAt = new Date('2026-08-07T14:49:00.000Z');
+      const row = {
+        id: 'half-open-broadcast',
+        sourceChatId: 'source-chat',
+        entityType: 'CHANNEL',
+        actorUserId: 'admin-1',
+        text: 'Publication',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: ['half-open-chat', 'pending-chat'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Open',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        mediaType: null,
+        mediaPayload: null,
+        mediaMimeType: '',
+        mediaFileName: '',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-08-07T20:47:00.000Z'),
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: ManagedBroadcastStatus.ACTIVE,
+        lastError: null,
+        lockedAt: null,
+        lockToken: null,
+        publicationOccurrenceId: 'occurrence-1',
+        publicationContentRevisionId: 'content-1',
+      };
+      const sentDelivery = {
+        id: 'sent-delivery',
+        broadcastId: row.id,
+        occurrenceIndex: 1,
+        targetChatId: 'half-open-chat',
+        botId: 'bot-1',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        attemptCount: 1,
+        remoteMessageId: 'message-1',
+        remoteMessageVerifiedAt: null,
+        remoteMessageVerificationAttemptCount: 0,
+        remoteMessageVerificationAbsentCount: 0,
+        remoteMessageVerificationPresentCount: 0,
+        remoteMessageVerificationAttemptedAt: null,
+        remoteMessageVerificationNextAt: new Date('2026-08-07T14:49:15.000Z'),
+        remoteMessageVerificationLastError: null,
+        remoteMessageVerificationSource: null,
+        legacySentWithoutRemoteId: false,
+        lastErrorCode: null,
+        lastError: null,
+        sentAt,
+        lockedAt: null,
+        lockToken: null,
+      };
+      const pendingDelivery = {
+        ...sentDelivery,
+        id: 'pending-delivery',
+        targetChatId: 'pending-chat',
+        botId: null,
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        attemptCount: 0,
+        remoteMessageId: null,
+        remoteMessageVerificationNextAt: null,
+        sentAt: null,
+      };
+      const olderSentSibling = {
+        ...sentDelivery,
+        id: 'older-sent-delivery',
+        targetChatId: 'older-chat',
+        remoteMessageId: 'older-message',
+        sentAt: new Date('2026-08-07T14:40:00.000Z'),
+      };
+      const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const deliveryFindMany = jest
+        .fn()
+        .mockImplementation(async ({ where }: any) =>
+          where.status === ManagedBroadcastDeliveryStatus.SENT
+            ? [olderSentSibling, sentDelivery]
+            : [sentDelivery, pendingDelivery],
+        );
+      const publish = jest.fn();
+      const getExactMessagePresences = jest.fn().mockResolvedValue([
+        {
+          chatId: sentDelivery.targetChatId,
+          messageId: sentDelivery.remoteMessageId,
+          presence: 'present',
+        },
+      ]);
+      const verificationBudget = { remaining: 4 };
+      const runtime = new AdminManagedBroadcastRuntime({
+        prisma: {
+          $queryRaw: jest.fn().mockResolvedValue([{ id: row.id, deliveryId: sentDelivery.id }]),
+          managedBroadcast: {
+            updateMany: broadcastUpdateMany,
+            findUnique: jest.fn().mockResolvedValue(row),
+            findMany: jest.fn().mockResolvedValue([]),
+          },
+          managedBroadcastDelivery: {
+            findMany: deliveryFindMany,
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+          chatBotMembership: {
+            findMany: jest.fn().mockResolvedValue([
+              {
+                chatId: sentDelivery.targetChatId,
+                botId: sentDelivery.botId,
+                sendRouteLastFailureAt: new Date('2026-08-07T14:48:00.000Z'),
+              },
+            ]),
+          },
+          managedBroadcastOccurrence: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        },
+        maxClient: { getExactMessagePresences },
+        maxRoutedPublicationService: { publish },
+        logger: { log: jest.fn(), warn: jest.fn() },
+      } as never);
+      const targetResolutionSpy = jest.spyOn(
+        runtime as any,
+        'resolveManagedBroadcastTargetsFromRow',
+      );
+      const mediaSpy = jest.spyOn(
+        (runtime as any).mediaRuntime,
+        'loadManagedBroadcastRequestMedia',
+      );
+      const sendSpy = jest.spyOn(runtime as any, 'sendManagedBroadcastMessageImmediateWithId');
+
+      const result = await runtime.processDueImmediatePublicationBroadcasts(verificationBudget);
+
+      expect(result).toBe(verificationBudget);
+      expect(verificationBudget.remaining).toBe(3);
+      expect(getExactMessagePresences).toHaveBeenCalledWith(
+        [{ chatId: 'half-open-chat', messageId: 'message-1' }],
+        expect.objectContaining({
+          botId: 'bot-1',
+          trafficClass: 'background',
+          sourceTag: 'managed_broadcast',
+        }),
+      );
+      expect(deliveryFindMany.mock.calls[0]?.[0]?.where.id).toEqual({
+        in: [sentDelivery.id],
+      });
+      expect(broadcastUpdateMany.mock.calls[0]?.[0]?.where).not.toHaveProperty('nextSendAt');
+      expect(targetResolutionSpy).not.toHaveBeenCalled();
+      expect(mediaSpy).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(deliveryFindMany).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('defers priority verification infrastructure errors without failing the envelope', async () => {
+    const row = {
+      id: 'half-open-broadcast',
+      sourceChatId: 'source-chat',
+      nextSendAt: new Date('2026-08-07T20:47:00.000Z'),
+      cycleCount: 1,
+      sentCount: 0,
+      status: ManagedBroadcastStatus.ACTIVE,
+      publicationOccurrenceId: 'occurrence-1',
+      publicationContentRevisionId: 'content-1',
+    };
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const publish = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: row.id, deliveryId: 'selected-delivery' }]),
+        managedBroadcast: {
+          updateMany: broadcastUpdateMany,
+          findUnique: jest.fn().mockResolvedValue(row),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        managedBroadcastDelivery: {
+          findMany: jest.fn().mockRejectedValue(new Error('database unavailable')),
+        },
+      },
+      maxRoutedPublicationService: { publish },
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
+    await expect(
+      runtime.processDueImmediatePublicationBroadcasts({ remaining: 2 }),
+    ).resolves.toEqual({ remaining: 2 });
+
+    expect(broadcastUpdateMany).toHaveBeenCalledTimes(2);
+    expect(broadcastUpdateMany.mock.calls[1]?.[0]?.data).toEqual({
+      lockedAt: null,
+      lockToken: null,
+    });
+    expect(
+      broadcastUpdateMany.mock.calls.some(
+        ([request]) => request.data?.status === ManagedBroadcastStatus.FAILED,
+      ),
+    ).toBe(false);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('does not select priority verifications after the shared exact-read budget is exhausted', async () => {
+    const queryRaw = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        $queryRaw: queryRaw,
+        managedBroadcast: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
+
+    await expect(
+      runtime.processDueImmediatePublicationBroadcasts({ remaining: 0 }),
+    ).resolves.toEqual({ remaining: 0 });
+
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('continues the immediate pass when priority verification selection fails', async () => {
+    const immediateFindMany = jest.fn().mockResolvedValue([]);
+    const warn = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        $queryRaw: jest.fn().mockRejectedValue(new Error('priority selector unavailable')),
+        managedBroadcast: { findMany: immediateFindMany },
+      },
+      logger: { log: jest.fn(), warn },
+    } as never);
+
+    await expect(runtime.processDueImmediatePublicationBroadcasts()).resolves.toEqual({
+      remaining: PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE,
+    });
+
+    expect(immediateFindMany).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledWith(
+      { err: 'priority selector unavailable' },
+      'Priority half-open publication verification was deferred',
+    );
+  });
+
+  it('only unlocks when a selected delivery belongs to an occurrence that already advanced', async () => {
+    const futureNextSendAt = new Date('2026-08-08T12:00:00.000Z');
+    const row = {
+      id: 'advanced-broadcast',
+      sourceChatId: 'source-chat',
+      nextSendAt: futureNextSendAt,
+      cycleCount: 2,
+      sentCount: 1,
+      status: ManagedBroadcastStatus.ACTIVE,
+      publicationOccurrenceId: 'occurrence-2',
+      publicationContentRevisionId: 'content-2',
+    };
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const deliveryFindMany = jest.fn().mockResolvedValue([]);
+    const publish = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValue([{ id: row.id, deliveryId: 'occurrence-1-delivery' }]),
+        managedBroadcast: {
+          updateMany: broadcastUpdateMany,
+          findUnique: jest.fn().mockResolvedValue(row),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        managedBroadcastDelivery: { findMany: deliveryFindMany },
+      },
+      maxRoutedPublicationService: { publish },
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
+    await runtime.processDueImmediatePublicationBroadcasts({ remaining: 2 });
+
+    expect(deliveryFindMany).toHaveBeenCalledTimes(1);
+    expect(deliveryFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          occurrenceIndex: 2,
+          id: { in: ['occurrence-1-delivery'] },
+        }),
+      }),
+    );
+    expect(broadcastUpdateMany.mock.calls[1]?.[0]?.data).toEqual({
+      lockedAt: null,
+      lockToken: null,
+    });
+    expect(
+      broadcastUpdateMany.mock.calls.some(([request]) => request.data?.nextSendAt !== undefined),
+    ).toBe(false);
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it('delivers exact due NOW envelopes through the explicit immediate entry point', async () => {

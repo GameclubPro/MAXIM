@@ -1,4 +1,5 @@
 import {
+  ChatBotMembershipStatus,
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   Prisma,
@@ -9,8 +10,9 @@ import {
   type ManagedBroadcast,
   type ManagedBroadcastDelivery,
 } from '../prisma/prisma-client';
-import type { MaxPublishedMessage } from '../max/max-client.service';
+import type { MaxExactMessagePresenceResult, MaxPublishedMessage } from '../max/max-client.service';
 import {
+  MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
   recordMaxSendRouteDisappearance,
   recordMaxSendRouteStableSuccess,
 } from '../max/max-send-route-health';
@@ -47,6 +49,9 @@ class ManagedBroadcastVerificationProgressError extends Error {
 
 const buildVerificationResultKey = (chatId: string, messageId: string): string =>
   JSON.stringify([chatId, messageId]);
+
+const buildVerificationRouteKey = (chatId: string, botId: string): string =>
+  JSON.stringify([chatId, botId]);
 
 const MAX_VERIFICATION_ERROR_LENGTH = 1_000;
 const VERIFIED_PRESENT_OBSERVATIONS = 2;
@@ -181,6 +186,7 @@ export class AdminManagedBroadcastPublicationVerification {
     maxApiOptions: ManagedBroadcastMaxApiOptions,
     onProgress: ManagedBroadcastVerificationProgress,
     budget?: ManagedBroadcastPublicationVerificationBudget,
+    priorityHalfOpenDeliveryIds?: readonly string[],
   ): Promise<Set<string>> {
     const guardedProgress = async () => {
       try {
@@ -197,6 +203,7 @@ export class AdminManagedBroadcastPublicationVerification {
         maxApiOptions,
         guardedProgress,
         budget,
+        priorityHalfOpenDeliveryIds,
       );
     } catch (error: unknown) {
       if (error instanceof ManagedBroadcastVerificationProgressError) {
@@ -220,6 +227,7 @@ export class AdminManagedBroadcastPublicationVerification {
     maxApiOptions: ManagedBroadcastMaxApiOptions,
     onProgress: ManagedBroadcastVerificationProgress,
     budget?: ManagedBroadcastPublicationVerificationBudget,
+    priorityHalfOpenDeliveryIds?: readonly string[],
   ): Promise<Set<string>> {
     const unconfirmedChatIds = new Set<string>();
     if (!row.publicationOccurrenceId) {
@@ -237,6 +245,14 @@ export class AdminManagedBroadcastPublicationVerification {
       return unconfirmedChatIds;
     }
 
+    const scopedDeliveryIds = priorityHalfOpenDeliveryIds
+      ? [...new Set(priorityHalfOpenDeliveryIds.filter((id) => id.trim().length > 0))]
+      : null;
+    if (scopedDeliveryIds?.length === 0) {
+      return unconfirmedChatIds;
+    }
+    const scopedDeliveryIdSet = scopedDeliveryIds ? new Set(scopedDeliveryIds) : null;
+
     const now = new Date();
     const verifyReadyBefore = new Date(now.getTime() - PUBLICATION_POST_SEND_VERIFY_DELAY_MS);
     const deliveries = (
@@ -244,6 +260,7 @@ export class AdminManagedBroadcastPublicationVerification {
         where: {
           broadcastId: row.id,
           occurrenceIndex,
+          ...(scopedDeliveryIds ? { id: { in: scopedDeliveryIds } } : {}),
           status: ManagedBroadcastDeliveryStatus.SENT,
           sentAt: { lte: verifyReadyBefore },
           remoteMessageId: { not: null },
@@ -268,20 +285,24 @@ export class AdminManagedBroadcastPublicationVerification {
         delivery.sentAt <= verifyReadyBefore &&
         delivery.remoteMessageId !== null &&
         delivery.remoteMessageVerifiedAt === null &&
+        (scopedDeliveryIdSet === null || scopedDeliveryIdSet.has(delivery.id)) &&
         hasPublicationDeliveryAutomatedVerificationState(delivery) &&
         (delivery.remoteMessageVerificationNextAt === null ||
           delivery.remoteMessageVerificationNextAt === undefined ||
           delivery.remoteMessageVerificationNextAt <= now),
     );
+    const eligibleDeliveries = scopedDeliveryIds
+      ? await this.filterPriorityHalfOpenDeliveries(deliveries, now)
+      : deliveries;
     if (budget) {
-      budget.remaining = Math.max(0, budget.remaining - deliveries.length);
+      budget.remaining = Math.max(0, budget.remaining - eligibleDeliveries.length);
     }
-    if (deliveries.length === 0) {
+    if (eligibleDeliveries.length === 0) {
       return unconfirmedChatIds;
     }
 
-    const deliveriesByBotId = new Map<string | null, typeof deliveries>();
-    for (const delivery of deliveries) {
+    const deliveriesByBotId = new Map<string | null, typeof eligibleDeliveries>();
+    for (const delivery of eligibleDeliveries) {
       const botId = delivery.botId ?? null;
       const grouped = deliveriesByBotId.get(botId) ?? [];
       grouped.push(delivery);
@@ -290,7 +311,7 @@ export class AdminManagedBroadcastPublicationVerification {
 
     for (const [botId, groupedDeliveries] of deliveriesByBotId) {
       await onProgress();
-      let results: Awaited<ReturnType<typeof this.context.maxClient.getExactMessagePresences>>;
+      let results: MaxExactMessagePresenceResult[];
       if (!botId) {
         results = groupedDeliveries.map((delivery) => ({
           chatId: delivery.targetChatId,
@@ -494,6 +515,54 @@ export class AdminManagedBroadcastPublicationVerification {
     }
 
     return unconfirmedChatIds;
+  }
+
+  private async filterPriorityHalfOpenDeliveries(
+    deliveries: ManagedBroadcastDelivery[],
+    now: Date,
+  ): Promise<ManagedBroadcastDelivery[]> {
+    const routes = deliveries.flatMap((delivery) =>
+      delivery.botId ? [{ chatId: delivery.targetChatId, botId: delivery.botId }] : [],
+    );
+    if (routes.length === 0) {
+      return [];
+    }
+
+    // FLAG: Priority verification bypasses the background governor, so recheck the selected
+    // route after claiming the envelope and never let a stale selector result consume this lane.
+    const memberships = await this.context.prisma.chatBotMembership.findMany({
+      where: {
+        OR: routes,
+        status: ChatBotMembershipStatus.ACTIVE,
+        sendRouteFailureCount: 1,
+        sendRouteLastFailureCode: MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
+        sendRouteQuarantinedUntil: { gt: now },
+        sendRouteLastFailureAt: { not: null },
+      },
+      select: {
+        chatId: true,
+        botId: true,
+        sendRouteLastFailureAt: true,
+      },
+    });
+    const membershipByRoute = new Map(
+      memberships.map(
+        (membership) =>
+          [buildVerificationRouteKey(membership.chatId, membership.botId), membership] as const,
+      ),
+    );
+
+    return deliveries.filter((delivery) => {
+      if (!delivery.botId || !delivery.sentAt) {
+        return false;
+      }
+      const membership = membershipByRoute.get(
+        buildVerificationRouteKey(delivery.targetChatId, delivery.botId),
+      );
+      return Boolean(
+        membership?.sendRouteLastFailureAt && delivery.sentAt >= membership.sendRouteLastFailureAt,
+      );
+    });
   }
 
   private async persistVerificationRouteOutcome(params: {
