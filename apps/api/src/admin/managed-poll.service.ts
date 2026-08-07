@@ -845,30 +845,35 @@ export class ManagedPollService {
 
       const notification =
         outcome.replayed || outcome.changed ? 'Голос учтён' : 'Вы уже выбрали этот вариант';
-      if (!outcome.needsRender) {
-        await this.answerCallback(callbackId, notification, update.botId);
-        return;
-      }
       const poll = await this.loadPollAggregate(chatId, outcome.pollId);
       if (!callbackId) {
-        await this.renderPollPublication(chatId, poll.id, 'vote-without-callback');
+        if (outcome.needsRender) {
+          await this.renderPollPublication(chatId, poll.id, 'vote-without-callback');
+        }
         return;
       }
       if (poll.imageCount > 0) {
         await this.answerCallback(callbackId, notification, poll.publicationBotId ?? update.botId);
-        await this.renderPollPublication(chatId, poll.id, 'vote-media');
+        if (outcome.needsRender) {
+          await this.renderPollPublication(chatId, poll.id, 'vote-media');
+        }
         return;
       }
+      // Current MAX clients can ignore notification-only callback answers. Re-send the exact
+      // authored publication so the documented message response acknowledges the button press.
       const messageEdit = await this.buildCallbackMessageEdit(poll);
       try {
-        await this.maxClient.answerCallback(callbackId, notification, messageEdit, {
+        await this.maxClient.answerCallback(callbackId, undefined, messageEdit, {
           ...this.buildMaxOptions(
             poll.publicationBotId ?? update.botId,
             MANAGED_POLL_EDIT_TIMEOUT_MS,
           ),
           trafficClass: 'critical',
         });
-        if (!(await this.markPollRendered(poll.id, poll.renderRevision))) {
+        if (
+          outcome.needsRender &&
+          !(await this.markPollRendered(poll.id, poll.renderRevision))
+        ) {
           this.schedulePollRenderRepair(chatId, poll.id);
         }
       } catch (error: unknown) {

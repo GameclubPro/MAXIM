@@ -366,7 +366,70 @@ describe('ManagedPollService vote persistence', () => {
   });
 });
 
-describe('ManagedPollService image callback rendering', () => {
+describe('ManagedPollService callback rendering', () => {
+  it('acknowledges an up-to-date text poll through the supported message response', async () => {
+    const maxClient = { answerCallback: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      {} as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'recordVote').mockResolvedValue({
+      kind: 'recorded',
+      changed: true,
+      pollId: 'poll-1',
+      needsRender: false,
+    });
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'chat-1',
+      chat: { entityType: ChatEntityType.CHAT },
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      publicationBotId: 'bot-1',
+      renderRevision: 2,
+      imageCount: 0,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 1, percent: 100 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 0, percent: 0 },
+      ],
+    });
+    const markRendered = jest.spyOn(service as any, 'markPollRendered');
+
+    await expect(
+      service.tryHandleCallback({
+        updateId: 'update-1',
+        botId: 'bot-1',
+        message: { chatId: 'chat-1', messageId: 'message-1' },
+        raw: {
+          callback: {
+            callback_id: 'callback-1',
+            payload: 'poll|v2|poll-1|option-1',
+            user: { user_id: 'user-1' },
+          },
+        },
+      } as never),
+    ).resolves.toBe(true);
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      undefined,
+      expect.objectContaining({
+        text: 'Текст администратора',
+        options: expect.objectContaining({
+          buttons: [
+            [{ type: 'callback', text: 'Да', payload: 'poll|v2|poll-1|option-1' }],
+            [{ type: 'callback', text: 'Нет', payload: 'poll|v2|poll-1|option-2' }],
+          ],
+        }),
+      }),
+      expect.objectContaining({ botId: 'bot-1', trafficClass: 'critical' }),
+    );
+    expect(markRendered).not.toHaveBeenCalled();
+  });
+
   it('acknowledges an image poll callback without rewriting stable poll content', async () => {
     const maxClient = { answerCallback: jest.fn().mockResolvedValue(undefined) };
     const service = new ManagedPollService(

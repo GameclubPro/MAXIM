@@ -2259,6 +2259,50 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('answers callback with a message update without adding an undocumented notification', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: { success: true },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.answerCallback('callback-message-only', undefined, {
+      text: 'Текст администратора',
+      options: {
+        buttons: [[{ type: 'callback', text: 'Да', payload: 'poll|v2|poll-1|option-1' }]],
+      },
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/answers',
+        params: { callback_id: 'callback-message-only' },
+        data: {
+          message: {
+            text: 'Текст администратора',
+            attachments: [
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [
+                    [{ type: 'callback', text: 'Да', payload: 'poll|v2|poll-1|option-1' }],
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('preserves explicit source tags and action health lanes for callback answers', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:45.000Z'));
 
@@ -2281,6 +2325,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
     });
 
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/answers',
+        params: { callback_id: 'callback-2' },
+        data: { notification: 'Открываю' },
+      }),
+    );
     await expect(
       limiterRedis.get(`maxapi:rps:source:v1:777000_bot:critical:moderation_notice:${nowSec}`),
     ).resolves.toBe('1');
