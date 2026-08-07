@@ -574,7 +574,11 @@ describe('ModerationDeleteIntentService', () => {
     expect(route).toEqual(restoredRoute);
     expect(getCurrentChatMemberAccess).toHaveBeenCalledWith(
       'chat-1',
-      expect.objectContaining({ botId: 'bot-1', bypassCache: true }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
     expect(maxBotLink.recordBotAccessProbe).toHaveBeenCalledWith(
       expect.objectContaining({ botId: 'bot-1', source: 'moderation_delete_intent_probe' }),

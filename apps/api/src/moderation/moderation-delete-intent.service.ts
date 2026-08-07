@@ -2394,6 +2394,7 @@ export class ModerationDeleteIntentService {
         actionHealthLane: 'critical',
         sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
         timeoutMs: this.deleteTimeoutMs,
+        ignoreFailureMetricStatuses: [403, 404],
       });
       await this.maxBotLinkService.recordBotAccessProbe({
         chatId: intent.chatId,
