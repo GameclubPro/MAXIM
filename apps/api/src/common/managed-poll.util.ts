@@ -1,9 +1,16 @@
 import { type ManagedPollQuestionFormat } from '@maxim/contracts/poll';
 import type { MaxMessageButton } from '../max/max-client.service';
+import { measureMaxInlineKeyboardTextWeight } from '../max/max-inline-keyboard-layout';
 import { renderSupportedMarkdownAsHtml } from './max-markdown.util';
 
 export const MANAGED_POLL_CALLBACK_PREFIX = 'poll';
 const MANAGED_POLL_CALLBACK_VERSION = 'v2';
+const MANAGED_POLL_PROGRESS_CELLS = 10;
+const MANAGED_POLL_BUTTON_MAX_VISUAL_WEIGHT = 36;
+const MANAGED_POLL_BUTTON_ELLIPSIS = '…';
+const MANAGED_POLL_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, {
+  granularity: 'grapheme',
+});
 
 export type ManagedPollOptionResult = {
   id: string;
@@ -56,10 +63,44 @@ export function buildManagedPollButtons(
   return options.map((option) => [
     {
       type: 'callback',
-      text: option.text.trim(),
+      text: buildManagedPollButtonText(option),
       payload: buildManagedPollCallbackPayload(pollId, option.id),
     },
   ]);
+}
+
+function buildManagedPollButtonText(option: ManagedPollOptionResult): string {
+  const percent = Math.max(0, Math.min(100, Math.trunc(option.percent)));
+  const votes = Math.max(0, Math.trunc(option.votes));
+  const filledCells = Math.round((percent / 100) * MANAGED_POLL_PROGRESS_CELLS);
+  const progress = `${'█'.repeat(filledCells)}${'░'.repeat(
+    MANAGED_POLL_PROGRESS_CELLS - filledCells,
+  )}`;
+  const resultSuffix = `  ${progress} ${percent}% · ${votes}`;
+  const optionText = compactManagedPollOptionText(
+    option.text.trim().replace(/\s+/gu, ' '),
+    MANAGED_POLL_BUTTON_MAX_VISUAL_WEIGHT - measureMaxInlineKeyboardTextWeight(resultSuffix),
+  );
+  return `${optionText}${resultSuffix}`;
+}
+
+function compactManagedPollOptionText(value: string, maxWeight: number): string {
+  if (measureMaxInlineKeyboardTextWeight(value) <= maxWeight) {
+    return value;
+  }
+
+  const ellipsisWeight = measureMaxInlineKeyboardTextWeight(MANAGED_POLL_BUTTON_ELLIPSIS);
+  let compacted = '';
+  let compactedWeight = 0;
+  for (const { segment } of MANAGED_POLL_GRAPHEME_SEGMENTER.segment(value)) {
+    const segmentWeight = measureMaxInlineKeyboardTextWeight(segment);
+    if (compactedWeight + segmentWeight + ellipsisWeight > maxWeight) {
+      break;
+    }
+    compacted += segment;
+    compactedWeight += segmentWeight;
+  }
+  return `${compacted.trimEnd()}${MANAGED_POLL_BUTTON_ELLIPSIS}`;
 }
 
 export function buildManagedPollCallbackPayload(pollId: string, optionId: string): string {

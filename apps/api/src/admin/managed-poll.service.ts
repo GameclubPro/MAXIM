@@ -86,7 +86,7 @@ const MANAGED_POLL_BACKGROUND_REPAIR_BATCH_SIZE = 10;
 const MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS = 5 * 60_000;
 const MANAGED_POLL_RECENT_EVENT_HASH_LIMIT = 16;
 const MANAGED_POLL_AMBIGUOUS_PUBLICATION_ERROR = 'Публикация требует ручной проверки.';
-const MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION = 2;
+const MANAGED_POLL_RENDER_FORMAT_VERSION = 3;
 
 const MANAGED_POLL_LIST_SELECT = {
   id: true,
@@ -167,7 +167,7 @@ export class ManagedPollService {
       WHERE "publication_message_id" IS NOT NULL
         AND (
           "rendered_revision" < "render_revision"
-          OR "render_format_version" < ${MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION}
+          OR "render_format_version" < ${MANAGED_POLL_RENDER_FORMAT_VERSION}
           OR "last_render_error" IS NOT NULL
         )
         AND ("last_render_error" IS NULL OR "updated_at" <= ${retryBefore})
@@ -551,7 +551,7 @@ export class ManagedPollService {
             publicationUrl: published.url,
             publishedAt,
             renderedRevision: publicationPoll.renderRevision,
-            renderFormatVersion: MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION,
+            renderFormatVersion: MANAGED_POLL_RENDER_FORMAT_VERSION,
             images: [],
             lockedAt: null,
             lockToken: null,
@@ -1075,12 +1075,16 @@ export class ManagedPollService {
           },
           update: { optionId: params.optionId },
         });
+        await tx.managedPoll.update({
+          where: { id: poll.id },
+          data: { renderRevision: { increment: 1 } },
+        });
       }
       return {
         kind: 'recorded',
         changed,
         pollId: poll.id,
-        needsRender,
+        needsRender: changed || needsRender,
       };
     });
   }
@@ -1420,7 +1424,7 @@ export class ManagedPollService {
         if (this.maxRoutedPublicationService) {
           return await this.maxRoutedPublicationService.publish({
             entityId: chatId,
-            logicalIdempotencyKey: `managed-poll:publish:${pollId}:revision:${renderRevision}:format:${MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION}`,
+            logicalIdempotencyKey: `managed-poll:publish:${pollId}:revision:${renderRevision}:format:${MANAGED_POLL_RENDER_FORMAT_VERSION}`,
             routePurpose: 'channel_poll',
             text,
             options,
@@ -1671,7 +1675,7 @@ export class ManagedPollService {
       where: { id: pollId, renderRevision },
       data: {
         renderedRevision: renderRevision,
-        renderFormatVersion: MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION,
+        renderFormatVersion: MANAGED_POLL_RENDER_FORMAT_VERSION,
         lastRenderError: null,
       },
     });
@@ -1692,7 +1696,7 @@ export class ManagedPollService {
       Boolean(poll.publicationMessageId) &&
       (Boolean(poll.lastRenderError) ||
         poll.renderedRevision < poll.renderRevision ||
-        poll.renderFormatVersion < MANAGED_POLL_AUTHORED_CONTENT_FORMAT_VERSION)
+        poll.renderFormatVersion < MANAGED_POLL_RENDER_FORMAT_VERSION)
     );
   }
 

@@ -273,7 +273,11 @@ function measureInlineKeyboardButtonTextWeight(button: Record<string, unknown>):
     return 0;
   }
 
-  return Array.from(text).reduce((weight, char) => {
+  return measureMaxInlineKeyboardTextWeight(text);
+}
+
+export function measureMaxInlineKeyboardTextWeight(value: string): number {
+  return Array.from(value).reduce((weight, char) => {
     if (/\p{Emoji_Presentation}|\p{Extended_Pictographic}/u.test(char)) {
       return weight + 2;
     }
