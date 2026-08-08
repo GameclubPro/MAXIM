@@ -7,10 +7,6 @@ export const MANAGED_POLL_CALLBACK_PREFIX = 'poll';
 const MANAGED_POLL_CALLBACK_VERSION = 'v2';
 const MANAGED_POLL_PROGRESS_CELLS = 10;
 const MANAGED_POLL_BUTTON_MAX_VISUAL_WEIGHT = 36;
-const MANAGED_POLL_BUTTON_ELLIPSIS = '…';
-const MANAGED_POLL_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, {
-  granularity: 'grapheme',
-});
 
 export type ManagedPollOptionResult = {
   id: string;
@@ -72,35 +68,21 @@ export function buildManagedPollButtons(
 function buildManagedPollButtonText(option: ManagedPollOptionResult): string {
   const percent = Math.max(0, Math.min(100, Math.trunc(option.percent)));
   const votes = Math.max(0, Math.trunc(option.votes));
+  const result = `${percent}%(${votes})`;
   const filledCells = Math.round((percent / 100) * MANAGED_POLL_PROGRESS_CELLS);
   const progress = `${'█'.repeat(filledCells)}${'░'.repeat(
     MANAGED_POLL_PROGRESS_CELLS - filledCells,
   )}`;
-  const resultSuffix = `  ${progress} ${percent}% · ${votes}`;
-  const optionText = compactManagedPollOptionText(
-    option.text.trim().replace(/\s+/gu, ' '),
-    MANAGED_POLL_BUTTON_MAX_VISUAL_WEIGHT - measureMaxInlineKeyboardTextWeight(resultSuffix),
+  const normalizedOptionText = option.text.trim().replace(/\s+/gu, ' ');
+  const progressSuffix = `  ${progress} ${result}`;
+  const progressLabelWeight = Math.round(
+    measureMaxInlineKeyboardTextWeight(`${normalizedOptionText}${progressSuffix}`) * 10,
   );
-  return `${optionText}${resultSuffix}`;
-}
-
-function compactManagedPollOptionText(value: string, maxWeight: number): string {
-  if (measureMaxInlineKeyboardTextWeight(value) <= maxWeight) {
-    return value;
+  if (progressLabelWeight <= MANAGED_POLL_BUTTON_MAX_VISUAL_WEIGHT * 10) {
+    return `${normalizedOptionText}${progressSuffix}`;
   }
 
-  const ellipsisWeight = measureMaxInlineKeyboardTextWeight(MANAGED_POLL_BUTTON_ELLIPSIS);
-  let compacted = '';
-  let compactedWeight = 0;
-  for (const { segment } of MANAGED_POLL_GRAPHEME_SEGMENTER.segment(value)) {
-    const segmentWeight = measureMaxInlineKeyboardTextWeight(segment);
-    if (compactedWeight + segmentWeight + ellipsisWeight > maxWeight) {
-      break;
-    }
-    compacted += segment;
-    compactedWeight += segmentWeight;
-  }
-  return `${compacted.trimEnd()}${MANAGED_POLL_BUTTON_ELLIPSIS}`;
+  return `${normalizedOptionText}  ${result}`;
 }
 
 export function buildManagedPollCallbackPayload(pollId: string, optionId: string): string {

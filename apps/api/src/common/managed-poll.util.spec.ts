@@ -4,7 +4,6 @@ import {
   buildManagedPollOptionResults,
   parseManagedPollCallbackPayload,
 } from './managed-poll.util';
-import { measureMaxInlineKeyboardTextWeight } from '../max/max-inline-keyboard-layout';
 
 describe('managed poll util', () => {
   const options = [
@@ -43,9 +42,17 @@ describe('managed poll util', () => {
     );
 
     expect(buttons.map((row) => row[0]?.text)).toEqual([
-      'Да  ███████░░░ 70% · 7',
-      'Нет  ███░░░░░░░ 30% · 3',
+      'Да  ███████░░░ 70%(7)',
+      'Нет  ███░░░░░░░ 30%(3)',
     ]);
+  });
+
+  it('renders the requested compact percentage and count format', () => {
+    const buttons = buildManagedPollButtons('poll-1', [
+      { id: 'option-a', position: 0, text: '1', votes: 1, percent: 50 },
+    ]);
+
+    expect(buttons[0]?.[0]?.text).toBe('1  █████░░░░░ 50%(1)');
   });
 
   it('rounds progress cells while keeping the exact percentages and counts', () => {
@@ -61,12 +68,22 @@ describe('managed poll util', () => {
     );
 
     expect(buttons.map((row) => row[0]?.text)).toEqual([
-      'Первый  ███████░░░ 67% · 2',
-      'Второй  ███░░░░░░░ 33% · 1',
+      'Первый  ███████░░░ 67%(2)',
+      'Второй  ███░░░░░░░ 33%(1)',
     ]);
   });
 
-  it('compacts long option text without hiding results', () => {
+  it('drops the progress bar at the visual boundary without truncating the option', () => {
+    const buttons = buildManagedPollButtons('poll-1', [
+      { id: 'option-a', position: 0, text: 'Д'.repeat(19), votes: 1, percent: 50 },
+      { id: 'option-b', position: 1, text: 'Д'.repeat(20), votes: 1, percent: 50 },
+    ]);
+
+    expect(buttons[0]?.[0]?.text).toBe(`${'Д'.repeat(19)}  █████░░░░░ 50%(1)`);
+    expect(buttons[1]?.[0]?.text).toBe(`${'Д'.repeat(20)}  50%(1)`);
+  });
+
+  it('keeps exceptionally long option text intact after dropping the progress bar', () => {
     const [longButton] = buildManagedPollButtons(
       'poll-1',
       buildManagedPollOptionResults(
@@ -81,12 +98,14 @@ describe('managed poll util', () => {
       ).options,
     );
 
-    expect(longButton?.[0]?.text).toBe('Очень длинный вар…  ██████████ 100% · 1');
+    expect(longButton?.[0]?.text).toBe(
+      'Очень длинный вариант ответа для мобильного клиента  100%(1)',
+    );
+    expect(longButton?.[0]?.text).not.toMatch(/[█░…]/u);
     expect(longButton?.[0]).toMatchObject({ payload: 'poll|v2|poll-1|option-a' });
-    expect(measureMaxInlineKeyboardTextWeight(longButton?.[0]?.text ?? '')).toBeLessThanOrEqual(36);
   });
 
-  it('measures compound emoji by code point while truncating only at grapheme boundaries', () => {
+  it('keeps compound emoji intact after dropping the progress bar', () => {
     const [button] = buildManagedPollButtons(
       'poll-1',
       buildManagedPollOptionResults(
@@ -102,9 +121,16 @@ describe('managed poll util', () => {
     );
     const label = button?.[0]?.text ?? '';
 
-    expect(label).toBe('👨‍👩‍👧‍👦…  ░░░░░░░░░░ 0% · 0');
-    expect(label).not.toMatch(/\u200d…/u);
-    expect(measureMaxInlineKeyboardTextWeight(label)).toBeLessThanOrEqual(36);
+    expect(label).toBe('👨‍👩‍👧‍👦👨‍👩‍👧‍👦 Семейный вариант  0%(0)');
+  });
+
+  it('keeps an eighty-character option intact without a progress bar', () => {
+    const optionText = 'Д'.repeat(80);
+    const [button] = buildManagedPollButtons('poll-1', [
+      { id: 'option-a', position: 0, text: optionText, votes: 12, percent: 100 },
+    ]);
+
+    expect(button?.[0]?.text).toBe(`${optionText}  100%(12)`);
   });
 
   it('keeps result labels on one line when authored options contain whitespace runs', () => {
@@ -119,7 +145,7 @@ describe('managed poll util', () => {
       ).options,
     );
 
-    expect(button?.[0]?.text).toBe('Да точно  ░░░░░░░░░░ 0% · 0');
+    expect(button?.[0]?.text).toBe('Да точно  ░░░░░░░░░░ 0%(0)');
   });
 
   it('calculates aggregate counts and rounded percentages', () => {

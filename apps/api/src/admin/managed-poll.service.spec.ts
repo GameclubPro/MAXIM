@@ -3,7 +3,7 @@ import { ChatEntityType, ManagedPollStatus, ManagedPollVisibility } from '../pri
 import { ManagedPollService } from './managed-poll.service';
 
 const POLL_IDENTITY_SALT = '12345678901234567890123456789012';
-const POLL_RENDER_FORMAT_VERSION = 3;
+const POLL_RENDER_FORMAT_VERSION = 4;
 const VOTE_EVENT_HASH = createHmac('sha256', POLL_IDENTITY_SALT)
   .update('event:bot-1:update-1')
   .digest('hex');
@@ -431,14 +431,14 @@ describe('ManagedPollService callback rendering', () => {
             [
               {
                 type: 'callback',
-                text: 'Да  ██████████ 100% · 1',
+                text: 'Да  ██████████ 100%(1)',
                 payload: 'poll|v2|poll-1|option-1',
               },
             ],
             [
               {
                 type: 'callback',
-                text: 'Нет  ░░░░░░░░░░ 0% · 0',
+                text: 'Нет  ░░░░░░░░░░ 0%(0)',
                 payload: 'poll|v2|poll-1|option-2',
               },
             ],
@@ -606,8 +606,8 @@ describe('ManagedPollService callback rendering', () => {
 
     expect(edit.text).toBe('Текст администратора');
     expect(edit.options.buttons.map((row: Array<{ text: string }>) => row[0]?.text)).toEqual([
-      'Да  █████████░ 90% · 9',
-      'Нет  █░░░░░░░░░ 10% · 1',
+      'Да  █████████░ 90%(9)',
+      'Нет  █░░░░░░░░░ 10%(1)',
     ]);
     expect(edit.text).not.toMatch(/Опрос|голос|90|10| · /u);
   });
@@ -649,8 +649,8 @@ describe('ManagedPollService callback rendering', () => {
       'Кто кого',
       expect.objectContaining({
         buttons: [
-          [expect.objectContaining({ text: 'Да  ███████░░░ 70% · 7' })],
-          [expect.objectContaining({ text: 'Нет  ███░░░░░░░ 30% · 3' })],
+          [expect.objectContaining({ text: 'Да  ███████░░░ 70%(7)' })],
+          [expect.objectContaining({ text: 'Нет  ███░░░░░░░ 30%(3)' })],
         ],
       }),
       expect.objectContaining({ botId: 'bot-1', trafficClass: 'background' }),
@@ -1087,11 +1087,11 @@ describe('ManagedPollService publication', () => {
         buttons: [
           [
             expect.objectContaining({
-              text: 'Новый 1  ░░░░░░░░░░ 0% · 0',
+              text: 'Новый 1  ░░░░░░░░░░ 0%(0)',
               payload: 'poll|v2|poll-1|new-1',
             }),
           ],
-          [expect.objectContaining({ text: 'Новый 2  ░░░░░░░░░░ 0% · 0' })],
+          [expect.objectContaining({ text: 'Новый 2  ░░░░░░░░░░ 0%(0)' })],
         ],
       }),
       expect.objectContaining({ botId: 'bot-1' }),
@@ -1220,13 +1220,13 @@ describe('ManagedPollService publication', () => {
     expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
       expect.objectContaining({
         entityId: 'channel-1',
-        logicalIdempotencyKey: 'managed-poll:publish:poll-1:revision:0:format:3',
+        logicalIdempotencyKey: 'managed-poll:publish:poll-1:revision:0:format:4',
         routePurpose: 'channel_poll',
         text: '<strong>Новый вопрос</strong>',
         options: expect.objectContaining({
           buttons: [
-            [expect.objectContaining({ text: 'Первый  ░░░░░░░░░░ 0% · 0' })],
-            [expect.objectContaining({ text: 'Второй  ░░░░░░░░░░ 0% · 0' })],
+            [expect.objectContaining({ text: 'Первый  ░░░░░░░░░░ 0%(0)' })],
+            [expect.objectContaining({ text: 'Второй  ░░░░░░░░░░ 0%(0)' })],
           ],
         }),
       }),
