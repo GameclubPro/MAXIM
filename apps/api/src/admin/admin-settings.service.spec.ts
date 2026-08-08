@@ -369,6 +369,7 @@ function createService(
     getSettings: jest.fn().mockResolvedValue({
       enabled: false,
       text: 'Подписаться на канал',
+      url: '',
     }),
     preparePostText: jest
       .fn()
@@ -378,6 +379,7 @@ function createService(
     updateSettings: jest.fn().mockResolvedValue({
       enabled: true,
       text: 'Читать канал',
+      url: 'https://max.ru/contact',
     }),
   };
   const configService = {
@@ -948,6 +950,7 @@ describe('AdminSettingsService chat rules', () => {
     expect(result.postSignature).toEqual({
       enabled: false,
       text: 'Подписаться на канал',
+      url: '',
     });
     expect(result.header).toEqual(channelHeader);
     expect(result.managedBroadcasts).toHaveLength(1);
@@ -985,13 +988,19 @@ describe('AdminSettingsService chat rules', () => {
     await expect(service.getChannelPostSignature('channel-1', user as never)).resolves.toEqual({
       enabled: false,
       text: 'Подписаться на канал',
+      url: '',
     });
     await expect(
       service.updateChannelPostSignature('channel-1', user as never, {
         enabled: true,
         text: 'Читать канал',
+        url: 'https://max.ru/contact',
       }),
-    ).resolves.toEqual({ enabled: true, text: 'Читать канал' });
+    ).resolves.toEqual({
+      enabled: true,
+      text: 'Читать канал',
+      url: 'https://max.ru/contact',
+    });
 
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
       'channel-1',
@@ -1007,7 +1016,7 @@ describe('AdminSettingsService chat rules', () => {
     expect(channelPostSignatureService.updateSettings).toHaveBeenCalledWith(
       'channel-1',
       'admin-1',
-      { enabled: true, text: 'Читать канал' },
+      { enabled: true, text: 'Читать канал', url: 'https://max.ru/contact' },
     );
   });
 

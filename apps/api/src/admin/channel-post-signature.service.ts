@@ -43,11 +43,16 @@ export class ChannelPostSignatureService {
   async getSettings(chatId: string): Promise<ChannelPostSignatureSettings> {
     const settings = await this.prisma.channelSettings.findUnique({
       where: { chatId },
-      select: { postSignatureEnabled: true, postSignatureText: true },
+      select: {
+        postSignatureEnabled: true,
+        postSignatureText: true,
+        postSignatureUrl: true,
+      },
     });
     return channelPostSignatureSettingsSchema.parse({
       enabled: settings?.postSignatureEnabled ?? false,
       text: settings?.postSignatureText ?? CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+      url: settings?.postSignatureUrl ?? '',
     });
   }
 
@@ -63,8 +68,8 @@ export class ChannelPostSignatureService {
     await this.assertChannel(chatId);
     const current = await this.getSettings(chatId);
     const next = channelPostSignatureSettingsSchema.parse({ ...current, ...parsed.data });
-    if (next.enabled) {
-      await this.assertChannelLinkAvailable(chatId, 'interactive');
+    if (next.enabled && !next.url) {
+      await this.resolveChannelLink(chatId, 'interactive');
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -74,10 +79,12 @@ export class ChannelPostSignatureService {
           chatId,
           postSignatureEnabled: next.enabled,
           postSignatureText: next.text,
+          postSignatureUrl: next.url,
         },
         update: {
           postSignatureEnabled: next.enabled,
           postSignatureText: next.text,
+          postSignatureUrl: next.url,
         },
       });
       await tx.vkParsingSettings.updateMany({
@@ -107,8 +114,8 @@ export class ChannelPostSignatureService {
     await this.assertChannel(chatId);
     const current = await this.getSettings(chatId);
     const next = channelPostSignatureSettingsSchema.parse({ ...current, ...settings });
-    if (next.enabled) {
-      await this.assertChannelLinkAvailable(chatId, 'interactive');
+    if (next.enabled && !next.url) {
+      await this.resolveChannelLink(chatId, 'interactive');
     }
     await this.prisma.channelSettings.upsert({
       where: { chatId },
@@ -116,10 +123,12 @@ export class ChannelPostSignatureService {
         chatId,
         postSignatureEnabled: next.enabled,
         postSignatureText: next.text,
+        postSignatureUrl: next.url,
       },
       update: {
         postSignatureEnabled: next.enabled,
         postSignatureText: next.text,
+        postSignatureUrl: next.url,
       },
     });
   }
@@ -142,18 +151,20 @@ export class ChannelPostSignatureService {
       return { ...input, signatureApplied: false };
     }
     await this.assertChannel(chatId);
-    const channelLink = await this.resolveChannelLink(
-      chatId,
-      options.trafficClass ?? 'background',
-      options.sourceTag,
-    );
+    const signatureUrl =
+      settings.url ||
+      (await this.resolveChannelLink(
+        chatId,
+        options.trafficClass ?? 'background',
+        options.sourceTag,
+      ));
     const baseHtml =
       input.textFormat === 'html'
         ? input.text
         : input.textFormat === 'markdown'
           ? renderSupportedMarkdownAsHtml(input.text, { blockMode: 'raw' })
           : escapeMaxHtmlText(input.text);
-    const signatureHtml = `<a href="${escapeMaxHtmlAttribute(channelLink)}">${escapeMaxHtmlText(
+    const signatureHtml = `<a href="${escapeMaxHtmlAttribute(signatureUrl)}">${escapeMaxHtmlText(
       settings.text,
     )}</a>`;
     const normalizedBaseHtml = baseHtml.trim();
@@ -177,7 +188,7 @@ export class ChannelPostSignatureService {
     }
     const engagementText = [
       (input.engagementText ?? input.text).trim(),
-      `[${escapeMarkdownLinkLabel(settings.text)}](${channelLink})`,
+      `[${escapeMarkdownLinkLabel(settings.text)}](${escapeMarkdownLinkDestination(signatureUrl)})`,
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -189,6 +200,10 @@ export class ChannelPostSignatureService {
     trafficClass: MaxApiTrafficClass = 'interactive',
   ): Promise<void> {
     await this.assertChannel(chatId);
+    const settings = await this.getSettings(chatId);
+    if (settings.url) {
+      return;
+    }
     await this.resolveChannelLink(chatId, trafficClass);
   }
 
@@ -302,4 +317,12 @@ function escapeMaxHtmlAttribute(value: string): string {
 
 function escapeMarkdownLinkLabel(value: string): string {
   return value.replace(/\\/gu, '\\\\').replace(/\[/gu, '\\[').replace(/\]/gu, '\\]');
+}
+
+function escapeMarkdownLinkDestination(value: string): string {
+  return value
+    .replaceAll('(', '%28')
+    .replaceAll(')', '%29')
+    .replaceAll('[', '%5B')
+    .replaceAll(']', '%5D');
 }

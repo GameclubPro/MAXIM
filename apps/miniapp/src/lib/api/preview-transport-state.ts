@@ -330,6 +330,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   const channelPostSignature: ChannelPostSignatureSettings = {
     enabled: false,
     text: 'Подписаться на канал',
+    url: '',
   };
   const channelPolls = [
     managedPollDetailsSchema.parse({

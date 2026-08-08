@@ -164,7 +164,7 @@ export function VkParsingCard({
   active,
   entityType = 'channel',
   channelLinkUrl,
-  postSignature = { enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT },
+  postSignature = { enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT, url: '' },
 }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;

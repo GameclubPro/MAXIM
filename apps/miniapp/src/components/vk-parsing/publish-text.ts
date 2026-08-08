@@ -1,4 +1,8 @@
-import { VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH, type VkParsingPost } from '@maxim/contracts';
+import {
+  VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH,
+  channelPostSignatureUrlSchema,
+  type VkParsingPost,
+} from '@maxim/contracts';
 import {
   containsSupportedMarkdownUrl,
   renderSupportedMarkdownAsHtml,
@@ -12,6 +16,7 @@ export function measureVkParsingPublishTextLength(params: {
   appendChannelLinkEnabled: boolean;
   channelLinkText: string;
   channelLinkUrl?: string;
+  customChannelLinkUrl?: string;
   preserveLinkUrls?: string[];
 }): number {
   const usesRichText = params.textFormat === 'markdown';
@@ -42,7 +47,9 @@ export function measureVkParsingPublishTextLength(params: {
   }
 
   const baseHtml = usesRichText ? contentHtml : escapeHtmlText(formattedText);
-  const normalizedChannelLink = normalizeMaxChannelLink(params.channelLinkUrl);
+  const normalizedChannelLink = params.customChannelLinkUrl?.trim()
+    ? normalizePostSignatureLink(params.customChannelLinkUrl)
+    : normalizeMaxChannelLink(params.channelLinkUrl);
   const signatureHref = normalizedChannelLink
     ? escapeHtmlAttribute(normalizedChannelLink)
     : 'x'.repeat(VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH);
@@ -82,6 +89,15 @@ function escapeHtmlText(value: string): string {
 
 function escapeHtmlAttribute(value: string): string {
   return escapeHtmlText(value).replace(/"/gu, '&quot;');
+}
+
+function normalizePostSignatureLink(value: string | undefined): string | null {
+  const parsed = channelPostSignatureUrlSchema.safeParse(value ?? '');
+  if (!parsed.success || !parsed.data) {
+    return null;
+  }
+
+  return parsed.data;
 }
 
 function normalizeMaxChannelLink(value: string | undefined): string | null {

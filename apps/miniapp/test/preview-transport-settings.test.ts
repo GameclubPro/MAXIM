@@ -32,7 +32,7 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     }>;
   };
   const channelSettings = (await api.request('/channels/preview-channel/settings-screen')) as {
-    postSignature: { enabled: boolean; text: string };
+    postSignature: { enabled: boolean; text: string; url: string };
     managedBroadcasts: Array<{
       id: string;
       targetMode: string;
@@ -66,6 +66,7 @@ test('preview settings include schema-complete managed broadcast summaries', asy
   assert.deepEqual(channelSettings.postSignature, {
     enabled: false,
     text: 'Подписаться на канал',
+    url: '',
   });
   assert.equal(channelSettings.managedBroadcasts[0]?.blockedChats, 0);
   assert.deepEqual(channelSettings.managedBroadcasts[0]?.failureBreakdown, {
@@ -81,17 +82,26 @@ test('preview channel signature update is isolated from channel settings', async
 
   await api.request('/channels/preview-channel/post-signature', {
     method: 'PATCH',
-    body: JSON.stringify({ enabled: true, text: 'Читать дальше' }),
+    body: JSON.stringify({
+      enabled: true,
+      text: 'Заказать рекламу',
+      url: 'https://max.ru/advertising-manager',
+    }),
   });
   const signature = (await api.request('/channels/preview-channel/post-signature')) as {
     enabled: boolean;
     text: string;
+    url: string;
   };
   const screen = (await api.request('/channels/preview-channel/settings-screen')) as {
-    postSignature: { enabled: boolean; text: string };
+    postSignature: { enabled: boolean; text: string; url: string };
   };
 
-  assert.deepEqual(signature, { enabled: true, text: 'Читать дальше' });
+  assert.deepEqual(signature, {
+    enabled: true,
+    text: 'Заказать рекламу',
+    url: 'https://max.ru/advertising-manager',
+  });
   assert.deepEqual(screen.postSignature, signature);
 });
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   isLegacyAndroidSettingsDrilldownUserAgent,
+  openLink,
   openMaxBotLink,
   openMaxBotLinkAndClose,
   readyMaxMiniApp,
@@ -464,7 +465,7 @@ test('openMaxBotLinkAndClose closes miniapp after bot start handoff bridge open'
   assert.equal(closeCount, 1);
 });
 
-test('openMaxBotLink opens external links through bridge browser API', () => {
+test('openLink opens external links through bridge browser API', () => {
   const assignedUrls: string[] = [];
   const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
   setMockWindow(
@@ -475,7 +476,7 @@ test('openMaxBotLink opens external links through bridge browser API', () => {
     assignedUrls,
   );
 
-  openMaxBotLink('https://example.com/path');
+  openLink('https://example.com/path');
   assert.deepEqual(opened, [{ kind: 'external', url: 'https://example.com/path' }]);
   assert.deepEqual(assignedUrls, []);
 });

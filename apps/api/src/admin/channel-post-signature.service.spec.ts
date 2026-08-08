@@ -11,6 +11,7 @@ function createFixture() {
       findUnique: jest.fn().mockResolvedValue({
         postSignatureEnabled: true,
         postSignatureText: 'Читать канал',
+        postSignatureUrl: '',
       }),
       upsert: jest.fn().mockResolvedValue({}),
     },
@@ -110,6 +111,32 @@ describe('ChannelPostSignatureService', () => {
     expect(result.textFormat).toBe('html');
   });
 
+  it('uses an explicit signature URL without resolving the channel link', async () => {
+    const { maxClient, prisma, service } = createFixture();
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSignatureEnabled: true,
+      postSignatureText: 'Заказать рекламу',
+      postSignatureUrl: 'https://ads.example/contact?source=(channel)',
+    });
+
+    await expect(
+      service.preparePostText(
+        'channel-1',
+        { text: 'Новость', engagementText: 'Новость' },
+        { entityType: 'channel' },
+      ),
+    ).resolves.toEqual({
+      text: 'Новость\n\n<a href="https://ads.example/contact?source=(channel)">Заказать рекламу</a>',
+      textFormat: 'html',
+      engagementText:
+        'Новость\n\n[Заказать рекламу](https://ads.example/contact?source=%28channel%29)',
+      signatureApplied: true,
+    });
+    expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
+    expect(prisma.managedBotChatCatalog.findFirst).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
   it('does not append the same trailing channel signature twice', async () => {
     const { service } = createFixture();
     const signedText = 'Новость\n\n<a href="https://max.ru/channel/news">Читать канал</a>';
@@ -179,27 +206,34 @@ describe('ChannelPostSignatureService', () => {
 
     await expect(
       service.updateSettings('channel-1', 'admin-1', {
-        enabled: false,
+        enabled: true,
         text: '  Новый текст  ',
+        url: ' https://max.ru/advertising ',
       }),
-    ).resolves.toEqual({ enabled: false, text: 'Новый текст' });
+    ).resolves.toEqual({
+      enabled: true,
+      text: 'Новый текст',
+      url: 'https://max.ru/advertising',
+    });
 
     expect(prisma.channelSettings.upsert).toHaveBeenCalledWith({
       where: { chatId: 'channel-1' },
       create: {
         chatId: 'channel-1',
-        postSignatureEnabled: false,
+        postSignatureEnabled: true,
         postSignatureText: 'Новый текст',
+        postSignatureUrl: 'https://max.ru/advertising',
       },
       update: {
-        postSignatureEnabled: false,
+        postSignatureEnabled: true,
         postSignatureText: 'Новый текст',
+        postSignatureUrl: 'https://max.ru/advertising',
       },
     });
     expect(prisma.vkParsingSettings.updateMany).toHaveBeenCalledWith({
       where: { chatId: 'channel-1' },
       data: {
-        appendChannelLinkEnabled: false,
+        appendChannelLinkEnabled: true,
         channelLinkText: 'Новый текст',
       },
     });
@@ -208,8 +242,42 @@ describe('ChannelPostSignatureService', () => {
         chatId: 'channel-1',
         actorUserId: 'admin-1',
         action: 'UPDATE_CHANNEL_POST_SIGNATURE',
-        payload: { changed: { enabled: false, text: 'Новый текст' } },
+        payload: {
+          changed: {
+            enabled: true,
+            text: 'Новый текст',
+            url: 'https://max.ru/advertising',
+          },
+        },
       },
     });
+    expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('preserves an explicit URL when legacy VK settings update only the label', async () => {
+    const { prisma, service } = createFixture();
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSignatureEnabled: true,
+      postSignatureText: 'Заказать рекламу',
+      postSignatureUrl: 'https://max.ru/advertising',
+    });
+
+    await service.updateFromLegacyVkSettings('channel-1', { text: 'Связаться' });
+
+    expect(prisma.channelSettings.upsert).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1' },
+      create: {
+        chatId: 'channel-1',
+        postSignatureEnabled: true,
+        postSignatureText: 'Связаться',
+        postSignatureUrl: 'https://max.ru/advertising',
+      },
+      update: {
+        postSignatureEnabled: true,
+        postSignatureText: 'Связаться',
+        postSignatureUrl: 'https://max.ru/advertising',
+      },
+    });
+    expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
   });
 });

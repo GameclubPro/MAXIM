@@ -1,6 +1,7 @@
 import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH,
+  CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH,
   type BroadcastImage,
   type BroadcastLinkButton,
   type ChannelAutoPostButtonsMode,
@@ -141,7 +142,11 @@ import {
 import { saveUntilLatestDraftIsPersisted } from '../lib/latest-draft-save';
 import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
-import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import { maxNotify, openLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import {
+  parseChannelPostSignatureUrl,
+  resolveChannelPostSignaturePreviewUrl,
+} from '../lib/channel-post-signature';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -172,9 +177,11 @@ type PendingBroadcastPublishReview = {
 function normalizePostSignatureSettings(
   value: ChannelPostSignatureSettings,
 ): ChannelPostSignatureSettings {
+  const parsedUrl = parseChannelPostSignatureUrl(value.url);
   return {
     enabled: value.enabled,
     text: value.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+    url: parsedUrl.error ? value.url.trim() : parsedUrl.url,
   };
 }
 
@@ -1605,8 +1612,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const isPostSignatureDirty = Boolean(
     postSignatureDraft &&
     savedPostSignature &&
-    (postSignatureDraft.enabled !== savedPostSignature.enabled ||
-      postSignatureDraft.text.trim() !== savedPostSignature.text),
+    postSignatureSettingsKey(postSignatureDraft) !== postSignatureSettingsKey(savedPostSignature),
   );
 
   useEffect(() => {
@@ -1621,7 +1627,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     };
   }, [autosaveState, isDirty, isPostSignatureDirty, postSignatureSaveState]);
 
-  function updatePostSignatureDraft(next: ChannelPostSignatureSettings): ChannelPostSignatureSettings {
+  function updatePostSignatureDraft(
+    next: ChannelPostSignatureSettings,
+  ): ChannelPostSignatureSettings {
     const normalized = normalizePostSignatureSettings(next);
     latestPostSignatureRef.current = normalized;
     latestPostSignatureKeyRef.current = postSignatureSettingsKey(normalized);
@@ -2267,7 +2275,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSignature = postSignatureDraft ?? {
     enabled: false,
     text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+    url: '',
   };
+  const resolvedPostSignaturePreviewUrl = resolveChannelPostSignaturePreviewUrl(
+    postSignature.url,
+    resolvedChannelLink,
+  );
+  const fallbackPostSignatureUrl = parseChannelPostSignatureUrl(resolvedChannelLink).url;
+  const postSignatureUrlError = resolvedPostSignaturePreviewUrl.error;
+  const effectivePostSignatureUrl = resolvedPostSignaturePreviewUrl.url;
   const showHeaderSaveRetry = autosaveState === 'error';
   const normalizedBroadcastButtons = trimBroadcastLinkButtons(broadcastButtons);
   const broadcastSystemButtons = buildChannelBroadcastSystemButtons({
@@ -3249,38 +3265,81 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
         {postSignature.enabled ? (
           <div className="channel-post-signature__body">
-            <label className="field channel-post-signature__field">
-              <span>Текст ссылки</span>
-              <input
-                type="text"
-                value={postSignature.text}
-                maxLength={CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH}
-                onChange={(event) => {
-                  const next = { ...postSignature, text: event.target.value };
-                  latestPostSignatureRef.current = next;
-                  latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
-                  setPostSignatureDraft(next);
-                  if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
-                    setPostSignatureSaveState('idle');
-                  }
-                }}
-                onBlur={() => savePostSignature(postSignature)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.currentTarget.blur();
-                  }
-                }}
-              />
-            </label>
+            <div className="channel-post-signature__fields">
+              <label className="field channel-post-signature__field">
+                <span>Текст ссылки</span>
+                <input
+                  type="text"
+                  value={postSignature.text}
+                  maxLength={CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH}
+                  onChange={(event) => {
+                    const next = { ...postSignature, text: event.target.value };
+                    latestPostSignatureRef.current = next;
+                    latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
+                    setPostSignatureDraft(next);
+                    if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
+                      setPostSignatureSaveState('idle');
+                    }
+                  }}
+                  onBlur={() => savePostSignature(postSignature)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+              </label>
+
+              <label
+                className={cn(
+                  'field channel-post-signature__field',
+                  postSignatureUrlError && 'field--error',
+                )}
+              >
+                <span>Адрес ссылки</span>
+                <input
+                  type="url"
+                  inputMode="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  enterKeyHint="done"
+                  value={postSignature.url}
+                  maxLength={CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH}
+                  placeholder={fallbackPostSignatureUrl || 'https://max.ru/...'}
+                  aria-invalid={Boolean(postSignatureUrlError)}
+                  onChange={(event) => {
+                    const next = { ...postSignature, url: event.target.value };
+                    latestPostSignatureRef.current = next;
+                    latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
+                    setPostSignatureDraft(next);
+                    if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
+                      setPostSignatureSaveState('idle');
+                    }
+                  }}
+                  onBlur={() => savePostSignature(postSignature)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+                {postSignatureUrlError ? (
+                  <small className="field__hint" role="alert">
+                    {postSignatureUrlError}
+                  </small>
+                ) : null}
+              </label>
+            </div>
 
             <div className="channel-post-signature__preview">
               <span>Предпросмотр</span>
-              {resolvedChannelLink ? (
+              {effectivePostSignatureUrl ? (
                 <a
-                  href={resolvedChannelLink}
+                  href={effectivePostSignatureUrl}
                   onClick={(event) => {
                     event.preventDefault();
-                    openMaxBotLink(resolvedChannelLink);
+                    openLink(effectivePostSignatureUrl);
                   }}
                 >
                   {postSignature.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT}
@@ -3288,7 +3347,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               ) : (
                 <strong>{postSignature.text.trim() || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT}</strong>
               )}
-              <small>{resolvedChannelLink || 'Ссылка канала недоступна'}</small>
+              <small>
+                {postSignatureUrlError || effectivePostSignatureUrl || 'Ссылка канала недоступна'}
+              </small>
             </div>
           </div>
         ) : null}
@@ -3457,7 +3518,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         api={api}
                         chatId={chatId}
                         active={expandedSections.vkParsing}
-                        channelLinkUrl={resolvedChannelLink}
+                        channelLinkUrl={fallbackPostSignatureUrl}
                         postSignature={postSignature}
                       />
                     </Suspense>

@@ -419,7 +419,7 @@ export class AdminSettingsService {
     const [settings, postSignature, header, managedBroadcasts] = await Promise.all([
       this.getChannelSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.channelPostSignatureService?.getSettings(chatId) ??
-        Promise.resolve({ enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT }),
+        Promise.resolve({ enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT, url: '' }),
       this.managedEntitiesService.getChannelHeader(chatId, user, {
         skipAdminCheck: true,
         skipEntityCheck: true,

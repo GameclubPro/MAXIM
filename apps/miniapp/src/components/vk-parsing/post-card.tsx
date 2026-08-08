@@ -196,6 +196,7 @@ export function PostCard({
             appendChannelLinkEnabled={postSignature.enabled}
             channelLinkText={postSignature.text}
             channelLinkUrl={channelLinkUrl}
+            customChannelLinkUrl={postSignature.url}
             preserveLinkUrls={
               unsupportedVideoFallbackUrl ? [unsupportedVideoFallbackUrl] : undefined
             }

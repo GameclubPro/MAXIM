@@ -20,7 +20,10 @@ import {
   type SafetyDeskQueueResponse,
   type SafetyDeskRiskLevel,
 } from '@maxim/contracts/safety-desk';
-import { CHANNEL_POST_SIGNATURE_DEFAULT_TEXT } from '@maxim/contracts';
+import {
+  CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+  channelPostSignatureUrlSchema,
+} from '@maxim/contracts';
 import {
   BadRequestException,
   ConflictException,
@@ -67,7 +70,13 @@ type ReviewPostRow = Prisma.VkParsingPostGetPayload<{
         title: true;
         entityType: true;
         vkParsingSettings: true;
-        channelSettings: { select: { postSignatureEnabled: true; postSignatureText: true } };
+        channelSettings: {
+          select: {
+            postSignatureEnabled: true;
+            postSignatureText: true;
+            postSignatureUrl: true;
+          };
+        };
       };
     };
     source: true;
@@ -948,7 +957,11 @@ export class SafetyDeskService {
             entityType: true,
             vkParsingSettings: true,
             channelSettings: {
-              select: { postSignatureEnabled: true, postSignatureText: true },
+              select: {
+                postSignatureEnabled: true,
+                postSignatureText: true,
+                postSignatureUrl: true,
+              },
             },
           },
         },
@@ -974,7 +987,11 @@ export class SafetyDeskService {
             entityType: true,
             vkParsingSettings: true,
             channelSettings: {
-              select: { postSignatureEnabled: true, postSignatureText: true },
+              select: {
+                postSignatureEnabled: true,
+                postSignatureText: true,
+                postSignatureUrl: true,
+              },
             },
           },
         },
@@ -1033,7 +1050,10 @@ export class SafetyDeskService {
       ...(reviewTextFormat === 'markdown' ? extractSupportedMarkdownLinks(reviewText) : []),
       ...extractUrlsFromText(visibleText).map((url) => this.normalizeReviewUrl(url)),
     ];
-    const reviewLinkUrls = [...new Set([...preparedLinkUrls, ...inlineLinkUrls])];
+    const signatureUrl = this.resolveReviewPostSignatureUrl(post);
+    const reviewLinkUrls = [
+      ...new Set([...preparedLinkUrls, ...inlineLinkUrls, ...(signatureUrl ? [signatureUrl] : [])]),
+    ];
     const domains = this.extractDomains([post.url, ...reviewLinkUrls]);
     const risk = this.resolveRisk(post, prepared, domains, photoUrls, videoUrls);
     const reasons = this.buildReasons(post, prepared, domains, photoUrls, videoUrls);
@@ -1262,6 +1282,20 @@ export class SafetyDeskService {
   private buildEntityTitle(post: ReviewPostRow): string {
     const prefix = post.chat.entityType === ChatEntityType.CHANNEL ? 'Канал' : 'Чат';
     return `${prefix}: ${post.chat.title || post.chatId}`;
+  }
+
+  private resolveReviewPostSignatureUrl(post: ReviewPostRow): string | null {
+    const settings = post.chat.channelSettings;
+    if (
+      post.chat.entityType !== ChatEntityType.CHANNEL ||
+      !settings?.postSignatureEnabled ||
+      !settings.postSignatureUrl.trim()
+    ) {
+      return null;
+    }
+
+    const parsed = channelPostSignatureUrlSchema.safeParse(settings.postSignatureUrl);
+    return parsed.success && parsed.data ? parsed.data : null;
   }
 
   private extractDomains(urls: string[]): string[] {

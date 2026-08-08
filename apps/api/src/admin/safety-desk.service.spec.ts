@@ -847,6 +847,7 @@ describe('SafetyDeskService', () => {
           channelSettings: {
             postSignatureEnabled: true,
             postSignatureText: 'Наш канал',
+            postSignatureUrl: 'https://ads.partner.example/contact',
           },
         },
       }),
@@ -856,8 +857,13 @@ describe('SafetyDeskService', () => {
 
     expect(queue.items[0]).toMatchObject({
       textFormat: 'markdown',
-      domains: ['fallback.example', 'shop.example'],
-      linkUrls: ['https://fallback.example/a_b', 'https://shop.example/catalog', 'max://user/42'],
+      domains: ['ads.partner.example', 'fallback.example', 'shop.example'],
+      linkUrls: [
+        'https://fallback.example/a_b',
+        'https://shop.example/catalog',
+        'max://user/42',
+        'https://ads.partner.example/contact',
+      ],
       risk: 'MEDIUM',
     });
     expect(queue.items[0]?.previewHtml).toBe(

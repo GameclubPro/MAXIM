@@ -475,7 +475,7 @@ export function closeMaxMiniApp(fallback?: () => void): void {
 
 type LinkOpenMethod = 'bridge-external' | 'bridge-max' | 'location' | 'popup' | 'noop';
 
-export function openMaxBotLink(url: string): LinkOpenMethod {
+export function openLink(url: string): LinkOpenMethod {
   const normalizedUrl = url.trim();
   if (!normalizedUrl) {
     return 'noop';
@@ -515,6 +515,10 @@ export function openMaxBotLink(url: string): LinkOpenMethod {
 
   window.location.assign(normalizedUrl);
   return 'location';
+}
+
+export function openMaxBotLink(url: string): LinkOpenMethod {
+  return openLink(url);
 }
 
 export function openMaxBotLinkAndClose(url: string): boolean {

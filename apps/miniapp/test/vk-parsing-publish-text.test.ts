@@ -120,7 +120,7 @@ test('VK link stripping removes one Markdown-escaped bare URL atomically', () =>
   );
 });
 
-test('VK publish length uses the resolved normalized channel URL when available', () => {
+test('VK publish length canonicalizes the fallback channel URL like the API', () => {
   const text = 'Пост';
   const channelLink = 'http://www.max.ru/our-channel?from=preview#latest';
   const signature = '<a href="https://max.ru/our-channel">Наш канал</a>';
@@ -136,6 +136,70 @@ test('VK publish length uses the resolved normalized channel URL when available'
       channelLinkUrl: channelLink,
     }),
     `${text}\n\n${signature}`.length,
+  );
+});
+
+test('VK publish length uses an external custom signature URL instead of the reserved maximum', () => {
+  const text = 'Пост';
+  const customUrl = 'https://example.com/advertising/contact?source=max';
+  const signature = `<a href="${customUrl}">Заказать рекламу</a>`;
+
+  assert.equal(
+    measureVkParsingPublishTextLength({
+      text,
+      textFormat: 'plain',
+      linkUrls: [],
+      stripLinksEnabled: false,
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Заказать рекламу',
+      channelLinkUrl: 'https://max.ru/our-channel',
+      customChannelLinkUrl: customUrl,
+    }),
+    `${text}\n\n${signature}`.length,
+  );
+});
+
+test('VK publish length preserves query and hash in an explicit MAX signature URL', () => {
+  const customUrl = 'https://max.ru/advertising-manager?source=channel#contact';
+  const signature = `<a href="${customUrl}">Связаться</a>`;
+
+  assert.equal(
+    measureVkParsingPublishTextLength({
+      text: 'Пост',
+      textFormat: 'plain',
+      linkUrls: [],
+      stripLinksEnabled: false,
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Связаться',
+      channelLinkUrl: 'https://max.ru/our-channel',
+      customChannelLinkUrl: customUrl,
+    }),
+    `Пост\n\n${signature}`.length,
+  );
+});
+
+test('VK publish length counts HTML expansion in a valid custom signature URL', () => {
+  const customUrl = `https://example.com/contact?${Array.from(
+    { length: 25 },
+    (_, index) => `p${index}=x`,
+  ).join('&')}`;
+  const escapedCustomUrl = customUrl.replace(/&/gu, '&amp;');
+  const signature = `<a href="${escapedCustomUrl}">Связаться</a>`;
+
+  assert.ok(customUrl.length <= VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH);
+  assert.ok(escapedCustomUrl.length > VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH);
+  assert.equal(
+    measureVkParsingPublishTextLength({
+      text: 'Пост',
+      textFormat: 'plain',
+      linkUrls: [],
+      stripLinksEnabled: false,
+      appendChannelLinkEnabled: true,
+      channelLinkText: 'Связаться',
+      channelLinkUrl: 'https://max.ru/our-channel',
+      customChannelLinkUrl: customUrl,
+    }),
+    `Пост\n\n${signature}`.length,
   );
 });
 

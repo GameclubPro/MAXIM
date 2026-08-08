@@ -18,6 +18,7 @@ type PostEditorProps = {
   appendChannelLinkEnabled: boolean;
   channelLinkText: string;
   channelLinkUrl?: string;
+  customChannelLinkUrl?: string;
   preserveLinkUrls?: string[];
   isPublishing: boolean;
   submitLabel?: string;
@@ -41,6 +42,7 @@ export function PostEditor({
   appendChannelLinkEnabled,
   channelLinkText,
   channelLinkUrl,
+  customChannelLinkUrl,
   preserveLinkUrls,
   isPublishing,
   submitLabel = 'Опубликовать',
@@ -62,6 +64,7 @@ export function PostEditor({
     appendChannelLinkEnabled,
     channelLinkText,
     channelLinkUrl,
+    customChannelLinkUrl,
     preserveLinkUrls,
   });
   const remainingLength = VK_PARSING_MAX_PUBLISH_TEXT_LENGTH - measuredTextLength;

@@ -60,6 +60,7 @@ function createChannelSettingsScreenResponse(): ChannelSettingsScreenResponse {
     postSignature: {
       enabled: false,
       text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+      url: '',
     },
     header: {
       id: 'channel-1',
@@ -92,17 +93,19 @@ test('chat settings screen client only adds prefetch query when requested', asyn
   assert.equal(calls[1]?.init?.signal, controller.signal);
 });
 
-test('channel post signature client uses its independent GET and PATCH endpoints', async () => {
+test('channel post signature client preserves a custom URL across GET and PATCH', async () => {
   const calls: ApiCall[] = [];
-  const api = createApiMock({ enabled: true, text: 'Читать канал' }, calls);
+  const signature = {
+    enabled: true,
+    text: 'Заказать рекламу',
+    url: 'https://max.ru/advertising-manager',
+  };
+  const api = createApiMock(signature, calls);
 
   const current = await getChannelPostSignature(api, 'channel-1');
-  const updated = await updateChannelPostSignature(api, 'channel-1', {
-    enabled: true,
-    text: 'Читать канал',
-  });
+  const updated = await updateChannelPostSignature(api, 'channel-1', signature);
 
-  assert.deepEqual(current, { enabled: true, text: 'Читать канал' });
+  assert.deepEqual(current, signature);
   assert.deepEqual(updated, current);
   assert.equal(calls[0]?.path, '/channels/channel-1/post-signature');
   assert.equal(calls[1]?.path, '/channels/channel-1/post-signature');

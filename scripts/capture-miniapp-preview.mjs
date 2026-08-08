@@ -898,7 +898,16 @@ const scenarioBehaviors = [
       const signatureText = page.getByRole('textbox', { name: 'Текст ссылки' });
       await signatureText.fill('Читать канал');
       await signatureText.blur();
+      const signatureUrl = page.getByRole('textbox', { name: 'Адрес ссылки' });
+      await signatureUrl.fill('https://max.ru/advertising-manager');
+      await signatureUrl.blur();
       await page.getByText('Сохранено', { exact: true }).waitFor({ state: 'visible' });
+      const previewHref = await page
+        .locator('.channel-post-signature__preview a')
+        .getAttribute('href');
+      if (previewHref !== 'https://max.ru/advertising-manager') {
+        throw new Error(`Channel post signature preview kept an outdated URL: ${previewHref}.`);
+      }
       await page.waitForTimeout(250);
     },
   },
@@ -950,12 +959,11 @@ const scenarioBehaviors = [
       const signatureText = page.getByRole('textbox', { name: 'Текст ссылки' });
       await signatureText.fill('Наш канал');
       await signatureText.blur();
+      const signatureUrl = page.getByRole('textbox', { name: 'Адрес ссылки' });
+      await signatureUrl.fill('https://max.ru/channel-editor');
+      await signatureUrl.blur();
       await page.getByText('Сохранено', { exact: true }).waitFor({ state: 'visible' });
-      await openSettingsSection(
-        page,
-        'Посты из VK',
-        '.settings-drilldown__panel--vk-parsing',
-      );
+      await openSettingsSection(page, 'Посты из VK', '.settings-drilldown__panel--vk-parsing');
       const card = page.locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card');
       await card.waitFor({ state: 'visible' });
       await card.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
