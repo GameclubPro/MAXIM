@@ -1300,42 +1300,6 @@
     line-height: 1.36;
   }
 
-  .broadcast-message-card__buttons {
-    display: grid;
-    gap: 5px;
-    margin-top: 1px;
-  }
-
-  .broadcast-message-card__button-row {
-    display: flex;
-    gap: 5px;
-  }
-
-  .broadcast-message-card__button {
-    min-width: 0;
-    flex: 1 1 0;
-    min-height: 32px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 11px;
-    background: rgba(255, 255, 255, 0.82);
-    color: #0a6fa5;
-    font-size: 0.7rem;
-    font-weight: 850;
-    line-height: 1.12;
-    overflow: hidden;
-    padding: 0 8px;
-    text-align: center;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .broadcast-message-card__button.is-system {
-    background: rgba(11, 126, 170, 0.1);
-    color: #075f82;
-  }
-
   .broadcast-audience-card__mode {
     min-height: 50px;
   }

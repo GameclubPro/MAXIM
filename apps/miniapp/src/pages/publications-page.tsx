@@ -40,6 +40,7 @@ import { PublicationRecurrenceIntervalField } from '../features/publications/pub
 import {
   buildCreatePublicationRequest,
   buildPublicationSaveFeedback,
+  buildPublicationSystemButtons,
   buildTestPublicationRequest,
   buildUpdatePublicationRequest,
   createEmptyPublicationDraft,
@@ -52,6 +53,7 @@ import {
   getPublicationListPollingInterval,
   getPublicationTargetKey,
   getPublicationTargetTitle,
+  hasSamePublicationTargetMetadata,
   hasPublicationDraftChanges,
   hasFuturePublicationSlot,
   inferPublicationVideoMimeType,
@@ -1000,7 +1002,9 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
     view === 'history' ? historyItems : view === 'schedules' ? scheduleItems : currentItems;
   const currentListQuery =
     view === 'history' ? historyQuery : view === 'schedules' ? schedulesQuery : currentQuery;
-  const visibleButtons = draft.buttonEnabled ? trimBroadcastLinkButtons(draft.buttons) : [];
+  const visibleCustomButtons = draft.buttonEnabled ? trimBroadcastLinkButtons(draft.buttons) : [];
+  const systemButtons = buildPublicationSystemButtons(draft.targets);
+  const visibleButtonCount = visibleCustomButtons.length + systemButtons.length;
   const videoNeedsReselection = publicationDraftNeedsVideoReselection(draft);
   const hasSelectedVideo =
     draft.mediaType === 'video' && Boolean(draft.mediaBase64 || draft.mediaPayload);
@@ -1159,10 +1163,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         const currentTarget = targets.find(
           (candidate) => getPublicationTargetKey(candidate) === getPublicationTargetKey(target),
         );
-        if (
-          !currentTarget ||
-          (currentTarget.title === target.title && currentTarget.avatarUrl === target.avatarUrl)
-        ) {
+        if (!currentTarget || hasSamePublicationTargetMetadata(currentTarget, target)) {
           return target;
         }
         changed = true;
@@ -2647,10 +2648,11 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               text={draft.text}
               maxLength={PUBLICATION_TEXT_MAX_LENGTH}
               images={draft.images}
-              buttons={visibleButtons}
+              buttons={visibleCustomButtons}
+              systemButtons={systemButtons}
               buttonsPerRow={1}
               buttonsStatusLabel="Кнопки"
-              buttonsActive={visibleButtons.length > 0}
+              buttonsActive={visibleButtonCount > 0}
               buttonsError={hasButtonErrors}
               videoLabel={
                 draft.mediaType === 'video'
@@ -2779,7 +2781,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             editScope === 'retry'
               ? 'Отправка · после ручного повтора'
               : `Когда · ${formatDraftTiming(draft)}`,
-            visibleButtons.length > 0 ? `Кнопки · ${visibleButtons.length}` : 'Кнопки · нет',
+            visibleButtonCount > 0 ? `Кнопки · ${visibleButtonCount}` : 'Кнопки · нет',
             hasMedia
               ? draft.retainedAssets.some((asset) => asset.type === 'video')
                 ? 'Видео'

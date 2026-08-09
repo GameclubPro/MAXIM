@@ -246,6 +246,39 @@ jest.mock('ioredis', () => {
                 return 0;
               }
 
+              if (script.includes('MAX_MESSAGE_EDIT_LOCK_ACQUIRE_V1')) {
+                const activeLock = readEntry(keys[0]);
+                const ttlMs = Number(argValues[1]);
+                if (!activeLock) {
+                  store.set(keys[0], {
+                    value: String(argValues[0]),
+                    expiresAtMs: Date.now() + ttlMs,
+                  });
+                  return [1, ttlMs];
+                }
+                return [
+                  0,
+                  Math.max(1, (activeLock.expiresAtMs ?? Date.now() + ttlMs) - Date.now()),
+                ];
+              }
+
+              if (script.includes('MAX_MESSAGE_EDIT_LOCK_RENEW_V1')) {
+                const activeLock = readEntry(keys[0]);
+                if (activeLock?.value === String(argValues[0])) {
+                  activeLock.expiresAtMs = Date.now() + Number(argValues[1]);
+                  return 1;
+                }
+                return 0;
+              }
+
+              if (script.includes('MAX_MESSAGE_EDIT_LOCK_RELEASE_V1')) {
+                if (readEntry(keys[0])?.value === String(argValues[0])) {
+                  store.delete(keys[0]);
+                  return 1;
+                }
+                return 0;
+              }
+
               throw new Error('Unexpected Redis eval script');
             },
           ),
@@ -2301,6 +2334,341 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('answers callback against the exact message while replacing only matching callback rows', async () => {
+    const existingImage = { type: 'image', payload: { token: 'poll-image-token' } };
+    const existingComments = {
+      type: 'link',
+      text: 'Комментарии',
+      url: 'https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=comments-1',
+    };
+    const unrelatedCallback = {
+      type: 'callback',
+      text: 'Другое действие',
+      payload: 'custom|poll-1|action',
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-poll-answer-1',
+                    text: 'Текст опроса',
+                    attachments: [
+                      existingImage,
+                      {
+                        type: 'inline_keyboard',
+                        payload: {
+                          buttons: [
+                            [existingComments],
+                            [
+                              {
+                                type: 'callback',
+                                text: 'Старый ответ',
+                                payload: 'poll|v2|poll-1|option-old',
+                              },
+                            ],
+                            [unrelatedCallback],
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.answerCallback('callback-poll-answer-1', undefined, {
+      messageId: 'mid-poll-answer-1',
+      text: 'Текст опроса',
+      options: {
+        buttons: [
+          [
+            {
+              type: 'callback',
+              text: 'Новый ответ',
+              payload: 'poll|v2|poll-1|option-new',
+            },
+          ],
+        ],
+        replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+      },
+    });
+
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages',
+        params: { message_ids: 'mid-poll-answer-1' },
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/answers',
+        params: { callback_id: 'callback-poll-answer-1' },
+        data: {
+          message: {
+            text: 'Текст опроса',
+            attachments: [
+              existingImage,
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [
+                    [existingComments],
+                    [
+                      {
+                        type: 'callback',
+                        text: 'Новый ответ',
+                        payload: 'poll|v2|poll-1|option-new',
+                      },
+                    ],
+                    [unrelatedCallback],
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not edit a message after losing the keyboard lock before the mutation', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-lost-edit-lock-1',
+                  text: 'Текст опроса',
+                  attachments: [],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const evalMock = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis
+      .eval;
+    const originalEval = evalMock.getMockImplementation()!;
+    let renewalCount = 0;
+    evalMock.mockImplementation(async (script: string, ...args: unknown[]) => {
+      if (script.includes('MAX_MESSAGE_EDIT_LOCK_RENEW_V1')) {
+        renewalCount += 1;
+        return renewalCount === 1 ? 1 : 0;
+      }
+      return originalEval(script, ...args);
+    });
+
+    await expect(
+      service.editMessageInlineKeyboard('channel-1', 'mid-lost-edit-lock-1', 'Текст опроса', {
+        buttons: [
+          [
+            {
+              type: 'callback',
+              text: 'Да',
+              payload: 'poll|v2|poll-1|option-1',
+            },
+          ],
+        ],
+      }),
+    ).rejects.toThrow('Lost ownership of the MAX message keyboard edit lock');
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(httpService.request).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'put' }),
+    );
+    expect(renewalCount).toBe(2);
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not answer a callback after losing the exact-message keyboard lock', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-lost-callback-lock-1',
+                  text: 'Текст опроса',
+                  attachments: [],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const evalMock = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis
+      .eval;
+    const originalEval = evalMock.getMockImplementation()!;
+    let renewalCount = 0;
+    evalMock.mockImplementation(async (script: string, ...args: unknown[]) => {
+      if (script.includes('MAX_MESSAGE_EDIT_LOCK_RENEW_V1')) {
+        renewalCount += 1;
+        return renewalCount === 1 ? 1 : 0;
+      }
+      return originalEval(script, ...args);
+    });
+
+    await expect(
+      service.answerCallback('callback-lost-lock-1', undefined, {
+        messageId: 'mid-lost-callback-lock-1',
+        text: 'Текст опроса',
+        options: {
+          buttons: [
+            [
+              {
+                type: 'callback',
+                text: 'Да',
+                payload: 'poll|v2|poll-1|option-1',
+              },
+            ],
+          ],
+        },
+      }),
+    ).rejects.toThrow('Lost ownership of the MAX message keyboard edit lock');
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(httpService.request).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'post' }),
+    );
+    expect(renewalCount).toBe(2);
+
+    await service.onModuleDestroy();
+  });
+
+  it('serializes callback and comment-counter keyboard edits for the same message', async () => {
+    const commentsButton = {
+      type: 'link' as const,
+      text: 'Комментарии · 1',
+      url: 'https://major-maksimov.ru/app/',
+    };
+    let currentAttachments: unknown[] = [];
+    let releaseAnswer!: () => void;
+    let markAnswerStarted!: () => void;
+    const answerGate = new Promise<void>((resolve) => {
+      releaseAnswer = resolve;
+    });
+    const answerStarted = new Promise<void>((resolve) => {
+      markAnswerStarted = resolve;
+    });
+    const httpService = {
+      request: jest.fn().mockImplementation((config: any) => {
+        if (config.method === 'get') {
+          return of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-serialized-keyboard-1',
+                    text: 'Текст опроса',
+                    attachments: currentAttachments,
+                  },
+                },
+              ],
+            },
+          });
+        }
+        if (config.method === 'post' && config.url.endsWith('/answers')) {
+          markAnswerStarted();
+          return from(
+            answerGate.then(() => {
+              currentAttachments = config.data.message.attachments;
+              return { status: 200, data: { success: true } };
+            }),
+          );
+        }
+        if (config.method === 'put') {
+          currentAttachments = config.data.attachments;
+          return of({ status: 200, data: { success: true } });
+        }
+        throw new Error(`Unexpected request ${config.method} ${config.url}`);
+      }),
+    };
+    const service = createService(httpService);
+
+    const callbackEdit = service.answerCallback('callback-serialized-1', undefined, {
+      messageId: 'mid-serialized-keyboard-1',
+      text: 'Текст опроса',
+      options: {
+        buttons: [
+          [
+            {
+              type: 'callback',
+              text: 'Да',
+              payload: 'poll|v2|poll-1|option-1',
+            },
+          ],
+        ],
+        replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+      },
+    });
+    await answerStarted;
+
+    const counterEdit = service.editMessageInlineKeyboard(
+      'channel-1',
+      'mid-serialized-keyboard-1',
+      null,
+      {
+        buttons: [[commentsButton]],
+        appendNewInlineKeyboardRows: true,
+        mergeExistingInlineKeyboard: true,
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      httpService.request.mock.calls.filter(([config]: [any]) => config.method === 'get'),
+    ).toHaveLength(1);
+
+    releaseAnswer();
+    await Promise.all([callbackEdit, counterEdit]);
+
+    expect(currentAttachments).toEqual([
+      {
+        type: 'inline_keyboard',
+        payload: {
+          buttons: [
+            [
+              {
+                type: 'callback',
+                text: 'Да',
+                payload: 'poll|v2|poll-1|option-1',
+              },
+            ],
+            [commentsButton],
+          ],
+        },
+      },
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
   it('preserves explicit source tags and action health lanes for callback answers', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:45.000Z'));
 
@@ -3321,6 +3689,419 @@ describe('MaxClientService inline keyboard guardrails', () => {
         data: expect.objectContaining({
           format: 'html',
           attachments: [{ type: 'image', payload: { token: 'image-token-1' } }, existingKeyboard],
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('replaces only matching callback payload prefixes during an active poll edit', async () => {
+    const existingImage = { type: 'image', payload: { token: 'poll-image-token' } };
+    const commentsButton = {
+      type: 'link',
+      text: 'Комментарии',
+      url: 'https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=comments-1',
+    };
+    const unrelatedPollCallback = {
+      type: 'callback',
+      text: 'Другой опрос',
+      payload: 'poll|v2|poll-10|option-1',
+    };
+    const customCallback = {
+      type: 'callback',
+      text: 'Настроить',
+      payload: 'custom|settings',
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-active-poll-edit-1',
+                    text: 'Текст опроса',
+                    attachments: [
+                      existingImage,
+                      {
+                        type: 'inline_keyboard',
+                        payload: {
+                          buttons: [
+                            [commentsButton],
+                            [
+                              {
+                                type: 'callback',
+                                text: 'Старый 1',
+                                payload: 'poll|v2|poll-1|option-old-1',
+                              },
+                            ],
+                            [
+                              {
+                                type: 'callback',
+                                text: 'Старый 2',
+                                payload: 'poll|v2|poll-1|option-old-2',
+                              },
+                              customCallback,
+                            ],
+                            [unrelatedPollCallback],
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard('channel-1', 'mid-active-poll-edit-1', 'Текст опроса', {
+      buttons: [
+        [
+          {
+            type: 'callback',
+            text: 'Новый 1',
+            payload: 'poll|v2|poll-1|option-new-1',
+          },
+        ],
+        [
+          {
+            type: 'callback',
+            text: 'Новый 2',
+            payload: 'poll|v2|poll-1|option-new-2',
+          },
+        ],
+      ],
+      replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+    });
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        data: expect.objectContaining({
+          attachments: [
+            existingImage,
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [commentsButton],
+                  [
+                    {
+                      type: 'callback',
+                      text: 'Новый 1',
+                      payload: 'poll|v2|poll-1|option-new-1',
+                    },
+                  ],
+                  [
+                    {
+                      type: 'callback',
+                      text: 'Новый 2',
+                      payload: 'poll|v2|poll-1|option-new-2',
+                    },
+                  ],
+                  [customCallback],
+                  [unrelatedPollCallback],
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('unwraps the exact direct-message fallback before preserving poll media and engagement', async () => {
+    const existingImage = { type: 'image', payload: { token: 'poll-image-token' } };
+    const commentsButton = {
+      type: 'link',
+      text: 'Комментарии',
+      url: 'https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=comments-1',
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [{ body: { mid: 'some-other-message', attachments: [] } }],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              message: {
+                body: {
+                  mid: 'mid-direct-wrapper-poll-1',
+                  text: 'Текст опроса',
+                  attachments: [
+                    existingImage,
+                    {
+                      type: 'inline_keyboard',
+                      payload: {
+                        buttons: [
+                          [
+                            {
+                              type: 'callback',
+                              text: 'Старый ответ',
+                              payload: 'poll|v2|poll-1|option-old',
+                            },
+                          ],
+                          [commentsButton],
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard(
+      'channel-1',
+      'mid-direct-wrapper-poll-1',
+      'Текст опроса',
+      {
+        buttons: [
+          [
+            {
+              type: 'callback',
+              text: 'Новый ответ',
+              payload: 'poll|v2|poll-1|option-new',
+            },
+          ],
+        ],
+        replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+      },
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        method: 'put',
+        data: expect.objectContaining({
+          attachments: [
+            existingImage,
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'callback',
+                      text: 'Новый ответ',
+                      payload: 'poll|v2|poll-1|option-new',
+                    },
+                  ],
+                  [commentsButton],
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('adds missing poll engagement without duplicating an existing dialog button', async () => {
+    const threadId = '12345678-1234-4123-8123-123456789abc';
+    const token = `cdt-${Buffer.from(
+      JSON.stringify({ v: 1, d: threadId, s: 'a'.repeat(64) }),
+      'utf8',
+    ).toString('base64url')}`;
+    const commentsButton = {
+      type: 'link' as const,
+      text: 'Комментарии',
+      url: `https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=${token}`,
+    };
+    const existingSuggestButton = {
+      type: 'link' as const,
+      text: 'Предложить пост',
+      url: `https://major-maksimov.ru/app/channel/channel-1/dialog/suggest?token=${token}`,
+    };
+    const rebuiltSuggestButton = {
+      ...existingSuggestButton,
+      text: 'Предложить',
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-missing-engagement-1',
+                    text: 'Текст опроса',
+                    attachments: [
+                      {
+                        type: 'inline_keyboard',
+                        payload: {
+                          buttons: [
+                            [
+                              {
+                                type: 'callback',
+                                text: 'Старый ответ',
+                                payload: 'poll|v2|poll-1|option-old',
+                              },
+                            ],
+                            [existingSuggestButton],
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard(
+      'channel-1',
+      'mid-missing-engagement-1',
+      'Текст опроса',
+      {
+        buttons: [
+          [
+            {
+              type: 'callback',
+              text: 'Новый ответ',
+              payload: 'poll|v2|poll-1|option-new',
+            },
+          ],
+          [commentsButton],
+          [rebuiltSuggestButton],
+        ],
+        replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+      },
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        data: expect.objectContaining({
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'callback',
+                      text: 'Новый ответ',
+                      payload: 'poll|v2|poll-1|option-new',
+                    },
+                  ],
+                  [commentsButton],
+                  [existingSuggestButton],
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('removes only matching callback payload prefixes when a poll closes', async () => {
+    const existingImage = { type: 'image', payload: { token: 'poll-image-token' } };
+    const commentsButton = {
+      type: 'link',
+      text: 'Комментарии',
+      url: 'https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=comments-1',
+    };
+    const unrelatedCallback = {
+      type: 'callback',
+      text: 'Другое действие',
+      payload: 'custom|action',
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-closed-poll-edit-1',
+                    text: 'Текст опроса',
+                    attachments: [
+                      existingImage,
+                      {
+                        type: 'inline_keyboard',
+                        payload: {
+                          buttons: [
+                            [
+                              {
+                                type: 'callback',
+                                text: 'Ответ',
+                                payload: 'poll|v2|poll-1|option-1',
+                              },
+                            ],
+                            [commentsButton],
+                            [unrelatedCallback],
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard('channel-1', 'mid-closed-poll-edit-1', 'Текст опроса', {
+      replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+    });
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        data: expect.objectContaining({
+          attachments: [
+            existingImage,
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [[commentsButton], [unrelatedCallback]],
+              },
+            },
+          ],
         }),
       }),
     );

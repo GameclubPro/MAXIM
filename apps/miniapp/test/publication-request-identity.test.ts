@@ -22,12 +22,14 @@ const chatTarget = {
   entityType: 'chat' as const,
   title: 'Чат',
   avatarUrl: null,
+  channelOverview: null,
 };
 const channelTarget = {
   id: 'channel-1',
   entityType: 'channel' as const,
   title: 'Канал',
   avatarUrl: null,
+  channelOverview: null,
 };
 
 function createIdentityResolver() {

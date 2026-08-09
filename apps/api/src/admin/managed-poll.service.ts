@@ -26,9 +26,12 @@ import {
 } from '@nestjs/common';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import type { InternalChannelDialogButtonIdentity } from '../common/channel-dialog-button-identity.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import {
   buildManagedPollButtons,
+  buildManagedPollCallbackPayloadPrefix,
   buildManagedPollMessageText,
   buildManagedPollOptionResults,
   parseManagedPollCallbackPayload,
@@ -64,11 +67,21 @@ import {
   resolveManagedBroadcastSendRetryDelayMs,
   resolveManagedBroadcastUploadRetryDelayMs,
 } from './admin-managed-broadcast-media';
+import {
+  buildManagedPollLedgerContext,
+  readManagedPollChannelEngagementReference,
+  readManagedPollLedgerChannelEngagement,
+  type ManagedPollChannelEngagementReference,
+} from './admin-managed-poll-ledger';
+import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminService } from './admin.service';
+import type { ChannelPublicationEngagementContext } from './admin.service.support';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import {
   BROADCAST_IMAGE_MAX_BYTES,
   BROADCAST_IMAGES_TOTAL_MAX_BYTES,
+  CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
+  CHANNEL_DIALOG_ACTION_COMMENT,
 } from './admin.service.support';
 
 const MANAGED_POLL_SEND_TIMEOUT_MS = 12_000;
@@ -86,7 +99,9 @@ const MANAGED_POLL_BACKGROUND_REPAIR_BATCH_SIZE = 10;
 const MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS = 5 * 60_000;
 const MANAGED_POLL_RECENT_EVENT_HASH_LIMIT = 16;
 const MANAGED_POLL_AMBIGUOUS_PUBLICATION_ERROR = 'Публикация требует ручной проверки.';
-const MANAGED_POLL_RENDER_FORMAT_VERSION = 4;
+const MANAGED_POLL_RENDER_FORMAT_VERSION = 5;
+// A dispatched send key must remain stable across render-only format upgrades.
+const MANAGED_POLL_SEND_IDEMPOTENCY_VERSION = 4;
 
 const MANAGED_POLL_LIST_SELECT = {
   id: true,
@@ -126,6 +141,21 @@ type PollHotPathItem = Prisma.ManagedPollGetPayload<{
   select: typeof MANAGED_POLL_HOT_PATH_SELECT;
 }>;
 type PollPublicationMedia = Pick<MaxSendMessageOptions, 'imagePayload' | 'attachments'>;
+type PollPublicationAttemptOptions = {
+  options: MaxSendMessageOptions;
+  engagementContext: ChannelPublicationEngagementContext | null;
+};
+type PollChannelEngagementResolution =
+  | {
+      state: 'resolved';
+      context: ChannelPublicationEngagementContext;
+      shouldRecord: boolean;
+    }
+  | { state: 'none' | 'inconclusive' };
+type PollChannelEngagementExactLookup =
+  | { state: 'resolved'; identities: InternalChannelDialogButtonIdentity[] }
+  | { state: 'absent' }
+  | { state: 'inconclusive' };
 type PollCallbackUser = {
   userId: string;
   displayName: string | null;
@@ -157,6 +187,7 @@ export class ManagedPollService {
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
     @Optional() private readonly channelPostSignatureService?: ChannelPostSignatureService,
+    @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
   ) {}
 
   async processPendingPollRenderRepairs(): Promise<number> {
@@ -493,10 +524,34 @@ export class ManagedPollService {
         : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
       const text = preparedText.text;
       const textFormat = preparedText.textFormat;
+      const pollButtons = buildManagedPollButtons(publicationPoll.id, result.options);
       const messageOptions: MaxSendMessageOptions = {
         ...(textFormat ? { textFormat } : {}),
-        buttons: buildManagedPollButtons(publicationPoll.id, result.options),
+        buttons: pollButtons,
         debugContext: { screen: 'managed-poll', action: 'publish' },
+      };
+      const engagementContextByBotId = new Map<string, ChannelPublicationEngagementContext>();
+      const prepareAttemptOptions = async (
+        botId: string,
+      ): Promise<PollPublicationAttemptOptions> => {
+        if (
+          entityType !== 'channel' ||
+          typeof this.adminService.buildChannelPublicationEngagementContext !== 'function'
+        ) {
+          return { options: messageOptions, engagementContext: null };
+        }
+        const context = await this.adminService.buildChannelPublicationEngagementContext(
+          chatId,
+          botId,
+        );
+        engagementContextByBotId.set(botId, context);
+        return {
+          options: {
+            ...messageOptions,
+            buttons: [...pollButtons, ...context.buttons],
+          },
+          engagementContext: context,
+        };
       };
       if (!(await claimHeartbeat.renew())) {
         throw new ConflictException(
@@ -528,6 +583,7 @@ export class ManagedPollService {
           attempted = true;
           attemptedPublicationBotId = botId;
         },
+        prepareAttemptOptions,
       );
       accepted = true;
       if (!(await claimHeartbeat.stop())) {
@@ -535,6 +591,34 @@ export class ManagedPollService {
           `Публикация опроса была сброшена. Проверьте ${this.pollEntityName(entityType)}.`,
         );
       }
+      let engagementContextResolved = engagementContextByBotId.has(published.botId);
+      let engagementContext = engagementContextByBotId.get(published.botId) ?? null;
+      if (!engagementContextResolved && entityType === 'channel') {
+        try {
+          const recovered = await this.loadManagedPollLedgerChannelEngagement(
+            this.buildPollPublicationActionKey(publicationPoll.id, publicationPoll.renderRevision),
+            chatId,
+            published.botId,
+          );
+          engagementContextResolved = recovered.found;
+          engagementContext = recovered.found ? recovered.context : null;
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              pollId: poll.id,
+              chatId,
+              messageId: published.messageId,
+              botId: published.botId,
+              err: this.formatError(error),
+            },
+            'Failed to recover managed poll engagement from the completed publication ledger',
+          );
+        }
+      }
+      const publicationRenderFormatVersion =
+        entityType === 'channel' && !engagementContextResolved
+          ? MANAGED_POLL_SEND_IDEMPOTENCY_VERSION
+          : MANAGED_POLL_RENDER_FORMAT_VERSION;
       const publishedAt = new Date();
       await this.prisma.$transaction(async (tx) => {
         const promoted = await tx.managedPoll.updateMany({
@@ -551,7 +635,7 @@ export class ManagedPollService {
             publicationUrl: published.url,
             publishedAt,
             renderedRevision: publicationPoll.renderRevision,
-            renderFormatVersion: MANAGED_POLL_RENDER_FORMAT_VERSION,
+            renderFormatVersion: publicationRenderFormatVersion,
             images: [],
             lockedAt: null,
             lockToken: null,
@@ -580,6 +664,23 @@ export class ManagedPollService {
           },
         });
       });
+      if (engagementContext) {
+        await this.recordPollChannelEngagementSafely({
+          chatId,
+          actorUserId: user.userId,
+          messageId: published.messageId,
+          text: publicationPoll.question,
+          publishedUrl: published.url,
+          context: engagementContext,
+          botId: published.botId,
+        });
+      } else if (entityType === 'channel' && !engagementContextResolved) {
+        this.logger.warn(
+          { pollId: poll.id, chatId, messageId: published.messageId, botId: published.botId },
+          'Scheduled managed poll format repair because the exact sent context is unavailable',
+        );
+        this.schedulePollRenderRepair(chatId, poll.id);
+      }
       await this.chatContextCache.invalidate(chatId);
       return this.readPollDetails(chatId, poll.id);
     } catch (error: unknown) {
@@ -861,7 +962,14 @@ export class ManagedPollService {
       }
       // Current MAX clients can ignore notification-only callback answers. Re-send the exact
       // authored publication so the documented message response acknowledges the button press.
-      const messageEdit = await this.buildCallbackMessageEdit(poll);
+      const engagement = await this.resolvePollChannelEngagement(
+        poll,
+        poll.publicationBotId ?? update.botId?.trim() ?? null,
+      );
+      const messageEdit = await this.buildCallbackMessageEdit(
+        poll,
+        engagement.state === 'resolved' ? engagement.context.buttons : [],
+      );
       try {
         await this.maxClient.answerCallback(callbackId, undefined, messageEdit, {
           ...this.buildMaxOptions(
@@ -871,10 +979,27 @@ export class ManagedPollService {
           trafficClass: 'critical',
         });
         if (
-          outcome.needsRender &&
-          !(await this.markPollRendered(poll.id, poll.renderRevision))
+          engagement.state === 'resolved' &&
+          engagement.shouldRecord &&
+          poll.publicationMessageId
         ) {
-          this.schedulePollRenderRepair(chatId, poll.id);
+          await this.recordPollChannelEngagementSafely({
+            chatId: poll.chatId,
+            actorUserId: poll.actorUserId,
+            messageId: poll.publicationMessageId,
+            text: poll.question,
+            publishedUrl: poll.publicationUrl,
+            context: engagement.context,
+            botId: poll.publicationBotId ?? update.botId?.trim() ?? null,
+            verifyApplied: true,
+          });
+        }
+        if (outcome.needsRender) {
+          if (engagement.state === 'inconclusive') {
+            this.schedulePollRenderRepair(chatId, poll.id);
+          } else if (!(await this.markPollRendered(poll.id, poll.renderRevision))) {
+            this.schedulePollRenderRepair(chatId, poll.id);
+          }
         }
       } catch (error: unknown) {
         if (!this.isTerminalCallbackError(error)) {
@@ -1118,18 +1243,27 @@ export class ManagedPollService {
         : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
       const text = preparedText.text;
       const textFormat = preparedText.textFormat;
+      const callbackPayloadPrefix = buildManagedPollCallbackPayloadPrefix(poll.id);
+      const botId =
+        poll.publicationBotId ?? (await this.resolveFallbackPollBotId(chatId, entityType));
+      const engagement = await this.resolvePollChannelEngagement(poll, botId ?? null);
+      const engagementButtons = engagement.state === 'resolved' ? engagement.context.buttons : [];
       const options =
         poll.status === ManagedPollStatus.ACTIVE
           ? {
               ...(textFormat ? { textFormat } : {}),
-              buttons: buildManagedPollButtons(poll.id, poll.resultOptions),
+              buttons: [
+                ...buildManagedPollButtons(poll.id, poll.resultOptions),
+                ...engagementButtons,
+              ],
+              replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
               debugContext: { screen: 'managed-poll', action },
             }
-          : textFormat
-            ? { textFormat }
-            : undefined;
-      const botId =
-        poll.publicationBotId ?? (await this.resolveFallbackPollBotId(chatId, entityType));
+          : {
+              ...(textFormat ? { textFormat } : {}),
+              ...(engagementButtons.length > 0 ? { buttons: engagementButtons } : {}),
+              replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
+            };
       try {
         await this.maxClient.editMessageInlineKeyboard(
           chatId,
@@ -1142,10 +1276,31 @@ export class ManagedPollService {
             action === 'background-repair' ? 'background' : 'interactive',
           ),
         );
+        if (engagement.state === 'resolved' && engagement.shouldRecord) {
+          await this.recordPollChannelEngagementSafely({
+            chatId: poll.chatId,
+            actorUserId: poll.actorUserId,
+            messageId: poll.publicationMessageId,
+            text: poll.question,
+            publishedUrl: poll.publicationUrl,
+            context: engagement.context,
+            botId: botId ?? null,
+            verifyApplied: true,
+          });
+        }
+        if (engagement.state === 'inconclusive') {
+          if (this.shouldSchedulePollRenderRepair(action)) {
+            this.schedulePollRenderRepair(chatId, poll.id);
+          }
+          return false;
+        }
         if (await this.markPollRendered(poll.id, poll.renderRevision)) {
           return true;
         }
       } catch (error: unknown) {
+        if (await this.reconcileMissingPollPublication(poll, botId, entityType, error)) {
+          return true;
+        }
         const message = extractMaxApiErrorMessage(error) || this.formatError(error);
         await this.prisma.managedPoll.updateMany({
           where: { id: poll.id },
@@ -1168,8 +1323,107 @@ export class ManagedPollService {
     return false;
   }
 
+  private async reconcileMissingPollPublication(
+    poll: Awaited<ReturnType<ManagedPollService['loadPollAggregate']>>,
+    botId: string | null | undefined,
+    entityType: ManagedEntityType,
+    error: unknown,
+  ): Promise<boolean> {
+    const status = (error as { response?: { status?: unknown } } | null)?.response?.status;
+    if (
+      status !== 404 ||
+      !poll.publicationMessageId ||
+      typeof this.maxClient.getExactMessagePresence !== 'function'
+    ) {
+      return false;
+    }
+
+    let presence: 'present' | 'absent';
+    try {
+      presence = await this.maxClient.getExactMessagePresence(
+        poll.chatId,
+        poll.publicationMessageId,
+        {
+          ...this.buildMaxOptions(botId, MANAGED_POLL_EDIT_TIMEOUT_MS, 'background'),
+          bypassCache: true,
+          ignoreFailureMetricStatuses: [404],
+        },
+      );
+    } catch (lookupError: unknown) {
+      this.logger.warn(
+        {
+          pollId: poll.id,
+          chatId: poll.chatId,
+          messageId: poll.publicationMessageId,
+          err: this.formatError(lookupError),
+        },
+        'Failed to verify missing managed poll publication',
+      );
+      return false;
+    }
+    if (presence !== 'absent') {
+      return false;
+    }
+
+    const reconciledAt = new Date();
+    let reconciled = false;
+    await this.prisma.$transaction(async (tx) => {
+      const update = await tx.managedPoll.updateMany({
+        where: {
+          id: poll.id,
+          chatId: poll.chatId,
+          status: poll.status,
+          publicationMessageId: poll.publicationMessageId,
+          renderRevision: poll.renderRevision,
+        },
+        data: {
+          ...(poll.status === ManagedPollStatus.ACTIVE
+            ? { status: ManagedPollStatus.CLOSED, closedAt: reconciledAt }
+            : {}),
+          publicationMessageId: null,
+          publicationUrl: null,
+          renderedRevision: poll.renderRevision,
+          renderFormatVersion: MANAGED_POLL_RENDER_FORMAT_VERSION,
+          lastRenderError: null,
+        },
+      });
+      if (update.count === 0) {
+        return;
+      }
+      reconciled = true;
+      await tx.auditLog.create({
+        data: {
+          chatId: poll.chatId,
+          actorUserId: poll.actorUserId,
+          action: `RECONCILE_MISSING_${this.pollEntityAuditLabel(entityType)}_POLL_PUBLICATION`,
+          payload: {
+            pollId: poll.id,
+            publicationMessageId: poll.publicationMessageId,
+            publicationBotId: botId ?? null,
+            previousStatus: poll.status,
+            reconciledAt: reconciledAt.toISOString(),
+          },
+        },
+      });
+    });
+    if (reconciled) {
+      await this.chatContextCache.invalidate(poll.chatId);
+      this.logger.warn(
+        {
+          pollId: poll.id,
+          chatId: poll.chatId,
+          messageId: poll.publicationMessageId,
+          previousStatus: poll.status,
+        },
+        'Reconciled a managed poll whose MAX publication is absent',
+      );
+    }
+    return reconciled;
+  }
+
   private async buildCallbackMessageEdit(
     poll: Awaited<ReturnType<ManagedPollService['loadPollAggregate']>>,
+    engagementButtons: MaxSendMessageOptions['buttons'] = [],
   ) {
     const baseText = buildManagedPollMessageText({
       question: poll.question,
@@ -1191,16 +1445,23 @@ export class ManagedPollService {
     const textFormat = preparedText.textFormat;
     return {
       text,
-      ...(poll.status === ManagedPollStatus.ACTIVE || textFormat
+      ...(poll.publicationMessageId ? { messageId: poll.publicationMessageId } : {}),
+      ...(poll.status === ManagedPollStatus.ACTIVE || textFormat || engagementButtons?.length
         ? {
             options: {
               ...(textFormat ? { textFormat } : {}),
+              replaceCallbackPayloadPrefixes: [buildManagedPollCallbackPayloadPrefix(poll.id)],
               ...(poll.status === ManagedPollStatus.ACTIVE
                 ? {
-                    buttons: buildManagedPollButtons(poll.id, poll.resultOptions),
+                    buttons: [
+                      ...buildManagedPollButtons(poll.id, poll.resultOptions),
+                      ...(engagementButtons ?? []),
+                    ],
                     debugContext: { screen: 'managed-poll', action: 'vote' },
                   }
-                : {}),
+                : engagementButtons?.length
+                  ? { buttons: engagementButtons }
+                  : {}),
             },
           }
         : {}),
@@ -1410,6 +1671,7 @@ export class ManagedPollService {
     images: readonly ManagedPollImage[],
     botId: string | null | undefined,
     onAttemptBotId?: (botId: string) => void | Promise<void>,
+    prepareAttemptOptions?: (botId: string) => Promise<PollPublicationAttemptOptions>,
   ): Promise<MaxRoutedPublicationResult> {
     if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
       throw new ServiceUnavailableException(
@@ -1424,19 +1686,28 @@ export class ManagedPollService {
         if (this.maxRoutedPublicationService) {
           return await this.maxRoutedPublicationService.publish({
             entityId: chatId,
-            logicalIdempotencyKey: `managed-poll:publish:${pollId}:revision:${renderRevision}:format:${MANAGED_POLL_RENDER_FORMAT_VERSION}`,
+            logicalIdempotencyKey: this.buildPollPublicationActionKey(pollId, renderRevision),
             routePurpose: 'channel_poll',
             text,
             options,
             trafficClass: 'interactive',
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
             timeoutMs: MANAGED_POLL_SEND_TIMEOUT_MS,
-            prepareAttempt: async ({ botId: routedBotId }) => ({
-              options: {
-                ...options,
-                ...(await this.resolvePollPublicationMedia(images, routedBotId)),
-              },
-            }),
+            prepareAttempt: async ({ botId: routedBotId }) => {
+              const prepared = prepareAttemptOptions
+                ? await prepareAttemptOptions(routedBotId)
+                : { options, engagementContext: null };
+              return {
+                options: {
+                  ...prepared.options,
+                  ...(await this.resolvePollPublicationMedia(images, routedBotId)),
+                },
+                ledgerContext: buildManagedPollLedgerContext(
+                  prepared.engagementContext,
+                  routedBotId,
+                ),
+              };
+            },
             onDispatchAttempt: async ({ botId: routedBotId }) => {
               await onAttemptBotId?.(routedBotId);
             },
@@ -1448,11 +1719,14 @@ export class ManagedPollService {
           throw new Error('No bot with send/edit access is available for managed poll publish');
         }
         await onAttemptBotId?.(resolvedBotId);
+        const prepared = prepareAttemptOptions
+          ? await prepareAttemptOptions(resolvedBotId)
+          : { options, engagementContext: null };
         const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
           chatId,
           text,
           {
-            ...options,
+            ...prepared.options,
             ...(fallbackMedia ?? {}),
           },
           this.buildMaxOptions(resolvedBotId, MANAGED_POLL_SEND_TIMEOUT_MS),
@@ -1474,6 +1748,391 @@ export class ManagedPollService {
         await this.delay(retryDelayMs);
       }
     }
+  }
+
+  private buildPollPublicationActionKey(pollId: string, renderRevision: number): string {
+    return `managed-poll:publish:${pollId}:revision:${renderRevision}:format:${MANAGED_POLL_SEND_IDEMPOTENCY_VERSION}`;
+  }
+
+  private async loadManagedPollLedgerChannelEngagement(
+    jobId: string,
+    chatId: string,
+    fallbackBotId: string | null,
+  ): Promise<{
+    found: boolean;
+    context: ChannelPublicationEngagementContext | null;
+  }> {
+    if (typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function') {
+      return { found: false, context: null };
+    }
+    const ledger = await this.prisma.maxActionLedgerEntry.findUnique({
+      where: { jobId },
+      select: { metadata: true },
+    });
+    const recovered = readManagedPollLedgerChannelEngagement(ledger?.metadata ?? null);
+    if (!recovered.found || !recovered.reference) {
+      return { found: recovered.found, context: null };
+    }
+    return {
+      found: true,
+      context: await this.restorePollChannelEngagementContext(
+        chatId,
+        recovered.reference,
+        recovered.reference.botId ?? fallbackBotId,
+      ),
+    };
+  }
+
+  private async resolvePollChannelEngagement(
+    poll: Awaited<ReturnType<ManagedPollService['loadPollAggregate']>>,
+    botId: string | null,
+  ): Promise<PollChannelEngagementResolution> {
+    if (
+      this.managedEntityTypeFromPrisma(poll.chat.entityType) !== 'channel' ||
+      !poll.publicationMessageId
+    ) {
+      return { state: 'none' };
+    }
+
+    if (typeof this.prisma.auditLog?.findFirst === 'function') {
+      const binding = await this.prisma.auditLog.findFirst({
+        where: {
+          chatId: poll.chatId,
+          action: CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
+          payload: {
+            path: ['messageId'],
+            equals: poll.publicationMessageId,
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { payload: true },
+      });
+      if (binding) {
+        const payload = this.asRecord(binding.payload);
+        const reference = readManagedPollChannelEngagementReference(payload);
+        if (reference && payload?.source === 'managed_poll') {
+          return {
+            state: 'resolved',
+            context: await this.restorePollChannelEngagementContext(
+              poll.chatId,
+              reference,
+              reference.botId ?? botId,
+            ),
+            shouldRecord: false,
+          };
+        }
+
+        const exactLookup = await this.lookupExactPollChannelEngagement({
+          pollId: poll.id,
+          chatId: poll.chatId,
+          messageId: poll.publicationMessageId,
+          botId: reference?.botId ?? botId,
+        });
+        if (exactLookup.state === 'inconclusive') {
+          return { state: 'inconclusive' };
+        }
+        if (exactLookup.state === 'absent') {
+          return { state: 'none' };
+        }
+        const exactEngagement = await this.resolveExactPollChannelEngagement(
+          poll,
+          botId,
+          exactLookup.identities,
+          reference,
+        );
+        if (exactEngagement) {
+          return exactEngagement;
+        }
+        return this.resolveConfiguredPollChannelEngagement(poll.chatId, botId);
+      }
+    }
+
+    const publicationRevisions = Array.from(
+      new Set(
+        [poll.renderRevision, poll.renderedRevision, poll.renderRevision - 1].filter(
+          (revision) => Number.isInteger(revision) && revision >= 0,
+        ),
+      ),
+    );
+    for (const publicationRevision of publicationRevisions) {
+      const recovered = await this.loadManagedPollLedgerChannelEngagement(
+        this.buildPollPublicationActionKey(poll.id, publicationRevision),
+        poll.chatId,
+        botId,
+      );
+      if (recovered.found) {
+        return recovered.context
+          ? { state: 'resolved', context: recovered.context, shouldRecord: true }
+          : { state: 'none' };
+      }
+    }
+
+    const exactLookup = await this.lookupExactPollChannelEngagement({
+      pollId: poll.id,
+      chatId: poll.chatId,
+      messageId: poll.publicationMessageId,
+      botId,
+    });
+    if (exactLookup.state === 'inconclusive') {
+      return { state: 'inconclusive' };
+    }
+    if (exactLookup.state === 'absent') {
+      return { state: 'none' };
+    }
+    const exactEngagement = await this.resolveExactPollChannelEngagement(
+      poll,
+      botId,
+      exactLookup.identities,
+      null,
+    );
+    if (exactEngagement) {
+      return exactEngagement;
+    }
+    return this.resolveConfiguredPollChannelEngagement(poll.chatId, botId);
+  }
+
+  private async resolveConfiguredPollChannelEngagement(
+    chatId: string,
+    botId: string | null,
+  ): Promise<PollChannelEngagementResolution> {
+    if (typeof this.adminService.buildChannelPublicationEngagementContext !== 'function') {
+      return { state: 'none' };
+    }
+    const context = await this.adminService.buildChannelPublicationEngagementContext(chatId, botId);
+    return {
+      state: 'resolved',
+      context,
+      shouldRecord: Boolean(
+        context.threadId && (context.includeCommentsButton || context.includeSuggestButton),
+      ),
+    };
+  }
+
+  private async resolveExactPollChannelEngagement(
+    poll: Awaited<ReturnType<ManagedPollService['loadPollAggregate']>>,
+    botId: string | null,
+    identities: readonly InternalChannelDialogButtonIdentity[],
+    legacyReference: ManagedPollChannelEngagementReference | null,
+  ): Promise<PollChannelEngagementResolution | null> {
+    if (
+      legacyReference &&
+      this.hasExactPollChannelEngagement(
+        identities,
+        poll.chatId,
+        legacyReference.threadId,
+        legacyReference.includeCommentsButton,
+        legacyReference.includeSuggestButton,
+      )
+    ) {
+      return {
+        state: 'resolved',
+        context: await this.restorePollChannelEngagementContext(
+          poll.chatId,
+          legacyReference,
+          legacyReference.botId ?? botId,
+        ),
+        shouldRecord: true,
+      };
+    }
+
+    const threadId =
+      identities.find((identity) => identity.chatId === poll.chatId && identity.threadId)
+        ?.threadId ?? null;
+    if (!threadId) {
+      return null;
+    }
+    const matching = identities.filter(
+      (identity) => identity.chatId === poll.chatId && identity.threadId === threadId,
+    );
+    const configured =
+      typeof this.adminService.buildChannelPublicationEngagementContext === 'function'
+        ? await this.adminService.buildChannelPublicationEngagementContext(poll.chatId, botId)
+        : null;
+    const reference: ManagedPollChannelEngagementReference = {
+      threadId,
+      includeCommentsButton:
+        matching.some((identity) => identity.kind === 'comments') ||
+        configured?.includeCommentsButton === true,
+      includeSuggestButton:
+        matching.some((identity) => identity.kind === 'suggest') ||
+        configured?.includeSuggestButton === true,
+      suggestButtonText: configured?.suggestButtonText ?? null,
+      suggestionEntryMode: configured?.suggestionEntryMode ?? 'BOT',
+      botId,
+    };
+    return {
+      state: 'resolved',
+      context: await this.restorePollChannelEngagementContext(poll.chatId, reference, botId),
+      shouldRecord: true,
+    };
+  }
+
+  private async restorePollChannelEngagementContext(
+    chatId: string,
+    reference: ManagedPollChannelEngagementReference,
+    botId: string | null,
+  ): Promise<ChannelPublicationEngagementContext> {
+    if (!this.adminDialogLinkService) {
+      throw new ServiceUnavailableException('Channel dialog link service is unavailable');
+    }
+    const commentsCount =
+      reference.includeCommentsButton && typeof this.prisma.auditLog?.count === 'function'
+        ? await this.prisma.auditLog.count({
+            where: {
+              chatId,
+              action: CHANNEL_DIALOG_ACTION_COMMENT,
+              payload: {
+                path: ['threadId'],
+                equals: reference.threadId,
+              },
+            },
+          })
+        : 0;
+    const buttons: NonNullable<MaxSendMessageOptions['buttons']> = [];
+    if (reference.includeCommentsButton) {
+      buttons.push([
+        this.adminDialogLinkService.buildChannelDialogButton(
+          chatId,
+          'comments',
+          reference.threadId,
+          formatCommentsButtonText('💬 Комментарии', commentsCount),
+          botId,
+        ),
+      ]);
+    }
+    if (reference.includeSuggestButton) {
+      buttons.push([
+        this.adminDialogLinkService.buildChannelDialogButton(
+          chatId,
+          'suggest',
+          reference.threadId,
+          reference.suggestButtonText?.trim() || '📰 Предложить пост',
+          botId,
+          reference.suggestionEntryMode,
+        ),
+      ]);
+    }
+    return {
+      buttons,
+      threadId: reference.threadId,
+      includeCommentsButton: reference.includeCommentsButton,
+      includeSuggestButton: reference.includeSuggestButton,
+      suggestButtonText: reference.suggestButtonText,
+      suggestionEntryMode: reference.suggestionEntryMode,
+    };
+  }
+
+  private async recordPollChannelEngagementSafely(params: {
+    chatId: string;
+    actorUserId: string;
+    messageId: string;
+    text: string;
+    publishedUrl: string | null;
+    context: ChannelPublicationEngagementContext;
+    botId: string | null;
+    verifyApplied?: boolean;
+  }): Promise<void> {
+    if (typeof this.adminService.recordChannelPublicationEngagement !== 'function') {
+      return;
+    }
+    try {
+      if (params.verifyApplied && !(await this.isPollChannelEngagementApplied(params))) {
+        return;
+      }
+      await this.adminService.recordChannelPublicationEngagement({
+        chatId: params.chatId,
+        actorUserId: params.actorUserId,
+        messageId: params.messageId,
+        text: params.text,
+        publishedUrl: params.publishedUrl,
+        context: params.context,
+        source: 'managed_poll',
+        botId: params.botId,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          messageId: params.messageId,
+          botId: params.botId,
+          err: this.formatError(error),
+        },
+        'Failed to record managed poll channel engagement binding',
+      );
+    }
+  }
+
+  private async isPollChannelEngagementApplied(params: {
+    chatId: string;
+    messageId: string;
+    context: ChannelPublicationEngagementContext;
+    botId: string | null;
+  }): Promise<boolean> {
+    const exactLookup = await this.lookupExactPollChannelEngagement(params);
+    return (
+      exactLookup.state === 'resolved' &&
+      Boolean(params.context.threadId) &&
+      this.hasExactPollChannelEngagement(
+        exactLookup.identities,
+        params.chatId,
+        params.context.threadId ?? '',
+        params.context.includeCommentsButton,
+        params.context.includeSuggestButton,
+      )
+    );
+  }
+
+  private async lookupExactPollChannelEngagement(params: {
+    pollId?: string;
+    chatId: string;
+    messageId: string;
+    botId: string | null;
+  }): Promise<PollChannelEngagementExactLookup> {
+    if (typeof this.maxClient.getExactChannelDialogButtonIdentities !== 'function') {
+      return { state: 'inconclusive' };
+    }
+    try {
+      const identities = await this.maxClient.getExactChannelDialogButtonIdentities(
+        params.chatId,
+        params.messageId,
+        this.buildMaxOptions(params.botId, MANAGED_POLL_EDIT_TIMEOUT_MS, 'background'),
+      );
+      return identities === null ? { state: 'absent' } : { state: 'resolved', identities };
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          ...(params.pollId ? { pollId: params.pollId } : {}),
+          chatId: params.chatId,
+          messageId: params.messageId,
+          err: this.formatError(error),
+        },
+        'Managed poll engagement lookup was inconclusive',
+      );
+      return { state: 'inconclusive' };
+    }
+  }
+
+  private hasExactPollChannelEngagement(
+    identities: readonly InternalChannelDialogButtonIdentity[],
+    chatId: string,
+    threadId: string,
+    includeCommentsButton: boolean,
+    includeSuggestButton: boolean,
+  ): boolean {
+    const expectedKinds = [
+      ...(includeCommentsButton ? (['comments'] as const) : []),
+      ...(includeSuggestButton ? (['suggest'] as const) : []),
+    ];
+    return (
+      Boolean(threadId.trim()) &&
+      expectedKinds.length > 0 &&
+      expectedKinds.every((kind) =>
+        identities.some(
+          (identity) =>
+            identity.chatId === chatId && identity.kind === kind && identity.threadId === threadId,
+        ),
+      )
+    );
   }
 
   private startPublicationClaimHeartbeat(

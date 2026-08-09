@@ -1,4 +1,24 @@
 @layer pages {
+  .app-shell:has(.publications-page) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell:has(.publications-page) .shell-content {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .publications-page {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .publications-editor,
+  .publication-editor-section {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   /* The list is a workbench, not a gallery: state leads, content supports the decision. */
   .publications-page:not(.is-editor) .publications-header {
     min-height: 46px;

@@ -1,5 +1,6 @@
 import {
   buildManagedPollButtons,
+  buildManagedPollCallbackPayloadPrefix,
   buildManagedPollMessageText,
   buildManagedPollOptionResults,
   parseManagedPollCallbackPayload,
@@ -24,6 +25,7 @@ describe('managed poll util', () => {
       optionId: 'option-a',
     });
     expect(parseManagedPollCallbackPayload('poll|v1|poll-1|option-a')).toBeNull();
+    expect(buildManagedPollCallbackPayloadPrefix('poll-1')).toBe('poll|v2|poll-1|');
   });
 
   it('adds a ten-cell result bar, percentage, and vote count to callback labels', () => {

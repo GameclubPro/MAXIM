@@ -110,6 +110,73 @@ describe('AdminDialogLinkService', () => {
     );
   });
 
+  it('builds BOT suggestions with the routed bot while comments use the entry mini app', () => {
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn((botId?: string | null) =>
+        botId?.trim() === 'bot-2' ? 'token-bot-2' : 'token-default',
+      ),
+      getValidationTokens: jest.fn().mockReturnValue(['token-default', 'token-bot-2']),
+      buildBotStartUrlSync: jest.fn(
+        (startPayload: string, botId?: string | null) =>
+          `https://max.ru/${botId}?start=${encodeURIComponent(startPayload)}`,
+      ),
+      buildEntryMiniappStartUrlSync: jest.fn(
+        (startParam: string) =>
+          `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
+      ),
+    };
+    const service = new AdminDialogLinkService(
+      createConfigMock({ token: 'token-default' }) as never,
+      maxBotLinkService as never,
+    );
+
+    const commentsButton = service.buildChannelDialogButton(
+      'channel-1',
+      'comments',
+      THREAD_ID,
+      'Комментарии',
+      'bot-2',
+    );
+    const botSuggestionButton = service.buildChannelDialogButton(
+      'channel-1',
+      'suggest',
+      THREAD_ID,
+      'Предложить пост',
+      'bot-2',
+      'BOT',
+    );
+    const miniappSuggestionButton = service.buildChannelDialogButton(
+      'channel-1',
+      'suggest',
+      THREAD_ID,
+      'Предложить пост',
+      'bot-2',
+      'MINIAPP',
+    );
+
+    expect(commentsButton).toEqual({
+      type: 'link',
+      text: 'Комментарии',
+      url: expect.stringMatching(/^https:\/\/max\.ru\/entry-bot\?startapp=cd-/u),
+    });
+    expect(botSuggestionButton).toEqual({
+      type: 'link',
+      text: 'Предложить пост',
+      url: expect.stringMatching(/^https:\/\/max\.ru\/bot-2\?start=cds-channel-1\./u),
+    });
+    expect(miniappSuggestionButton).toEqual({
+      type: 'link',
+      text: 'Предложить пост',
+      url: expect.stringMatching(/^https:\/\/max\.ru\/entry-bot\?startapp=cd-/u),
+    });
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^cds-channel-1\./u),
+      'bot-2',
+    );
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledTimes(2);
+  });
+
   it('uses the explicit bot id for bot start URL fallback without the link service', () => {
     const service = new AdminDialogLinkService(createConfigMock() as never);
 

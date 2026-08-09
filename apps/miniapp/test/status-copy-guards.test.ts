@@ -14,6 +14,10 @@ const channelSettingsSource = readFileSync(
   new URL('../src/pages/channel-settings-page.tsx', import.meta.url),
   'utf8',
 );
+const publicationsSource = readFileSync(
+  new URL('../src/pages/publications-page.tsx', import.meta.url),
+  'utf8',
+);
 const shellSource = readFileSync(new URL('../src/components/shell.tsx', import.meta.url), 'utf8');
 const chatsPageCss = readFileSync(new URL('../src/pages/chats-page.css', import.meta.url), 'utf8');
 const chatsPageNativeCss = readFileSync(
@@ -35,10 +39,7 @@ test('settings headers do not expose abbreviated draft or saving statuses', () =
 });
 
 test('channel comments use in-app terminology without a separate button mode', () => {
-  assert.equal(
-    channelSettingsSource.match(/title="Комментарии в приложении"/gu)?.length,
-    2,
-  );
+  assert.equal(channelSettingsSource.match(/title="Комментарии в приложении"/gu)?.length, 2);
   assert.match(channelSettingsSource, /placeholder="Например: поделитесь мнением о публикации"/u);
   assert.doesNotMatch(
     channelSettingsSource,
@@ -46,6 +47,22 @@ test('channel comments use in-app terminology without a separate button mode', (
   );
   assert.doesNotMatch(channelSettingsSource, /title="Обсуждение"|О чём обсуждение/u);
   assert.doesNotMatch(shellSource, /Обсуждение|Диалог обсуждения/u);
+});
+
+test('publication previews include saved channel system buttons', () => {
+  assert.match(
+    publicationsSource,
+    /const systemButtons = buildPublicationSystemButtons\(draft\.targets\)/u,
+  );
+  assert.match(publicationsSource, /systemButtons=\{systemButtons\}/u);
+  assert.match(
+    publicationsSource,
+    /const visibleButtonCount = visibleCustomButtons\.length \+ systemButtons\.length/u,
+  );
+  assert.match(
+    channelSettingsSource,
+    /async function handleSendChannelBroadcast\(\)[\s\S]*?await saveChannelSettingsForBroadcast\(\)[\s\S]*?navigate\(`\/publications\?compose=1/u,
+  );
 });
 
 test('home folds sync state into one refresh control without technical status copy', () => {

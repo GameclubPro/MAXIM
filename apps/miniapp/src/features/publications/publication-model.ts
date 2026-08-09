@@ -1,6 +1,7 @@
 import type {
   BroadcastImage,
   BroadcastLinkButton,
+  ChannelOverview,
   ChatSummary,
   ManagedEntityType,
 } from '@maxim/contracts';
@@ -24,6 +25,10 @@ import {
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
 } from '../../lib/broadcast-schedule';
+import {
+  buildChannelBroadcastSystemButtons,
+  type BroadcastSystemButtonPreview,
+} from '../../lib/broadcast-system-buttons';
 
 export type PublicationView = 'current' | 'schedules' | 'history';
 export type PublicationEditorKind = 'create' | 'edit' | 'duplicate';
@@ -89,6 +94,7 @@ export type PublicationTarget = {
   entityType: ManagedEntityType;
   title: string;
   avatarUrl: string | null;
+  channelOverview: Pick<ChannelOverview, 'commentsEnabled' | 'postSuggestionsEnabled'> | null;
 };
 
 export function getPublicationTargetTitle(
@@ -489,18 +495,50 @@ export function publicationDraftNeedsVideoReselection(
 }
 
 export function toPublicationTarget(source: ChatSummary): PublicationTarget {
+  const channelOverview = source.entityType === 'channel' ? source.channelOverview : null;
   return {
     id: source.id,
     entityType: source.entityType,
     title: getPublicationTargetTitle(source),
     avatarUrl: source.avatarUrl ?? null,
+    channelOverview: channelOverview
+      ? {
+          commentsEnabled: channelOverview.commentsEnabled,
+          postSuggestionsEnabled: channelOverview.postSuggestionsEnabled,
+        }
+      : null,
   };
+}
+
+export function buildPublicationSystemButtons(
+  targets: readonly Pick<PublicationTarget, 'channelOverview' | 'entityType'>[],
+): BroadcastSystemButtonPreview[] {
+  return buildChannelBroadcastSystemButtons({
+    commentsEnabled: targets.some(
+      (target) => target.entityType === 'channel' && target.channelOverview?.commentsEnabled,
+    ),
+    postSuggestionsEnabled: targets.some(
+      (target) => target.entityType === 'channel' && target.channelOverview?.postSuggestionsEnabled,
+    ),
+  });
 }
 
 export function getPublicationTargetKey(
   target: Pick<PublicationTarget, 'id' | 'entityType'>,
 ): string {
   return `${target.entityType}:${target.id}`;
+}
+
+export function hasSamePublicationTargetMetadata(
+  left: PublicationTarget,
+  right: PublicationTarget,
+): boolean {
+  return (
+    left.title === right.title &&
+    left.avatarUrl === right.avatarUrl &&
+    left.channelOverview?.commentsEnabled === right.channelOverview?.commentsEnabled &&
+    left.channelOverview?.postSuggestionsEnabled === right.channelOverview?.postSuggestionsEnabled
+  );
 }
 
 export function createEmptyPublicationDraft(targets: PublicationTarget[] = []): PublicationDraft {
@@ -908,6 +946,7 @@ export function createPublicationDraftFromDetails(
       entityType: target.entityType,
       title: getPublicationTargetTitle(target),
       avatarUrl: target.avatarUrl,
+      channelOverview: null,
     })),
     timingMode,
     scheduleKind: schedule?.mode === 'recurrence' ? 'recurrence' : 'slots',

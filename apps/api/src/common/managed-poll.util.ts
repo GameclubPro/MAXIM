@@ -94,6 +94,10 @@ export function buildManagedPollCallbackPayload(pollId: string, optionId: string
   ].join('|');
 }
 
+export function buildManagedPollCallbackPayloadPrefix(pollId: string): string {
+  return [MANAGED_POLL_CALLBACK_PREFIX, MANAGED_POLL_CALLBACK_VERSION, pollId.trim(), ''].join('|');
+}
+
 export function parseManagedPollCallbackPayload(
   payload: string | null | undefined,
 ): { pollId: string; optionId: string } | null {

@@ -364,6 +364,7 @@ type MaxEditableMessageOptions = Pick<
   appendNewInlineKeyboardRows?: boolean;
   mergeExistingInlineKeyboard?: boolean;
   preserveExistingInlineKeyboard?: boolean;
+  replaceCallbackPayloadPrefixes?: readonly string[];
 };
 
 type MaxImmediateSendMessageOptions = MaxSendMessageOptions & {
@@ -378,8 +379,9 @@ export type MaxCustomMessagePayload = {
 };
 
 export type MaxCallbackMessageEdit = {
+  messageId?: string;
   text: string;
-  options?: MaxSendMessageOptions;
+  options?: MaxSendMessageOptions & MaxEditableMessageOptions;
 };
 
 export type MaxActionType =
@@ -715,6 +717,33 @@ return 0
 
 const MAX_API_CIRCUIT_RELEASE_PROBE_SCRIPT = `
 -- MAX_API_CIRCUIT_RELEASE_PROBE_V1
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+const MAX_MESSAGE_EDIT_LOCK_TTL_MS = 60_000;
+const MAX_MESSAGE_EDIT_LOCK_WAIT_MS = 30_000;
+const MAX_MESSAGE_EDIT_LOCK_RETRY_MS = 25;
+const MAX_MESSAGE_EDIT_LOCK_RENEW_MS = 20_000;
+const MAX_MESSAGE_EDIT_LOCK_ACQUIRE_SCRIPT = `
+-- MAX_MESSAGE_EDIT_LOCK_ACQUIRE_V1
+local acquired = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2])
+if acquired then
+  return {1, tonumber(ARGV[2])}
+end
+return {0, math.max(1, redis.call('PTTL', KEYS[1]))}
+`;
+const MAX_MESSAGE_EDIT_LOCK_RENEW_SCRIPT = `
+-- MAX_MESSAGE_EDIT_LOCK_RENEW_V1
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`;
+const MAX_MESSAGE_EDIT_LOCK_RELEASE_SCRIPT = `
+-- MAX_MESSAGE_EDIT_LOCK_RELEASE_V1
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   return redis.call('DEL', KEYS[1])
 end
@@ -1288,46 +1317,51 @@ export class MaxClientService implements OnModuleDestroy {
     options?: MaxEditableMessageOptions,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ) {
-    const message = await this.getMessageById(messageId, requestOptions);
-    const attachments = this.buildEditableMessageAttachments(message, options);
-    const sourceBody = this.asRecord(message?.body);
-    const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
-    const shouldForceReplacementText =
-      typeof text === 'string' &&
-      text !== sourceText &&
-      !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
-    const messageTextPayload =
-      typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
-        ? shouldForceReplacementText
-          ? {
-              text,
-              textFormat: options?.textFormat ?? null,
-            }
-          : this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
-        : null;
+    return this.runWithMessageKeyboardEditLock(messageId, async (assertOwnership) => {
+      const message = await this.getMessageById(messageId, requestOptions);
+      const attachments = this.buildEditableMessageAttachments(message, options);
+      const sourceBody = this.asRecord(message?.body);
+      const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
+      const shouldForceReplacementText =
+        typeof text === 'string' &&
+        text !== sourceText &&
+        !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
+      const messageTextPayload =
+        typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
+          ? shouldForceReplacementText
+            ? {
+                text,
+                textFormat: options?.textFormat ?? null,
+              }
+            : this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
+          : null;
 
-    await this.executeMutation(
-      chatId,
-      async () => {
-        await this.request('put', '/messages', {
-          params: {
-            message_id: messageId,
-          },
-          data: {
-            ...(messageTextPayload && typeof messageTextPayload.text === 'string'
-              ? {
-                  text: messageTextPayload.text,
-                  ...(messageTextPayload.textFormat
-                    ? { format: messageTextPayload.textFormat }
-                    : {}),
-                }
-              : {}),
-            attachments,
-          },
-        });
-      },
-      requestOptions,
-    );
+      await assertOwnership();
+
+      await this.executeMutation(
+        chatId,
+        async () => {
+          await assertOwnership();
+          await this.request('put', '/messages', {
+            params: {
+              message_id: messageId,
+            },
+            data: {
+              ...(messageTextPayload && typeof messageTextPayload.text === 'string'
+                ? {
+                    text: messageTextPayload.text,
+                    ...(messageTextPayload.textFormat
+                      ? { format: messageTextPayload.textFormat }
+                      : {}),
+                  }
+                : {}),
+              attachments,
+            },
+          });
+        },
+        requestOptions,
+      );
+    });
   }
 
   async sendMessageReplyWithInlineKeyboard(
@@ -3445,7 +3479,15 @@ export class MaxClientService implements OnModuleDestroy {
         ),
       requestOptions,
     );
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+    const nestedMessage = this.asRecord(data?.message);
+    const exactMessage = [nestedMessage, data].find(
+      (candidate) =>
+        candidate && this.extractMessageIdFromSendResponse(candidate) === normalizedMessageId,
+    );
+    if (!exactMessage) {
+      throw new Error('MAX direct message lookup returned a response without the requested id');
+    }
+    return exactMessage;
   }
 
   private parseChatEntityType(row: Record<string, unknown>): 'chat' | 'channel' {
@@ -4317,39 +4359,56 @@ export class MaxClientService implements OnModuleDestroy {
       Boolean(messageEdit) &&
       typeof messageEdit?.text === 'string' &&
       messageEdit.text.trim().length > 0;
-    const callbackData: Record<string, unknown> = {};
-    if (normalizedNotification) {
-      callbackData.notification = normalizedNotification;
-    }
-    if (hasMessageEdit) {
-      const attachments = this.buildMessageAttachments(messageEdit?.options);
-      callbackData.message = {
-        text: messageEdit!.text.trim(),
-        ...(messageEdit?.options?.textFormat ? { format: messageEdit.options.textFormat } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
-      };
-    }
+    const messageId = hasMessageEdit ? this.readTrimmedString(messageEdit?.messageId) : null;
+    const executeAnswer = async (assertOwnership?: () => Promise<void>) => {
+      const callbackData: Record<string, unknown> = {};
+      if (normalizedNotification) {
+        callbackData.notification = normalizedNotification;
+      }
+      if (hasMessageEdit) {
+        const attachments = messageId
+          ? this.buildEditableMessageAttachments(
+              await this.getMessageById(messageId, requestOptions),
+              messageEdit?.options,
+            )
+          : this.buildMessageAttachments(messageEdit?.options);
+        callbackData.message = {
+          text: messageEdit!.text.trim(),
+          ...(messageEdit?.options?.textFormat ? { format: messageEdit.options.textFormat } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        };
+        await assertOwnership?.();
+      }
 
-    await this.executeMutation(
-      null,
-      () =>
-        this.request('post', '/answers', {
-          params: {
-            callback_id: normalizedCallbackId,
-          },
-          data: callbackData,
-        }),
-      {
-        trafficClass: 'critical',
-        actionHealthLane: requestOptions.actionHealthLane,
-        sourceTag:
-          this.normalizeMetricSourceTag(requestOptions.sourceTag) ??
-          MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
-        ignoreFailureMetricStatuses: requestOptions.ignoreFailureMetricStatuses,
-        timeoutMs: requestOptions.timeoutMs,
-        botId: requestOptions.botId,
-      },
-    );
+      await this.executeMutation(
+        null,
+        async () => {
+          await assertOwnership?.();
+          await this.request('post', '/answers', {
+            params: {
+              callback_id: normalizedCallbackId,
+            },
+            data: callbackData,
+          });
+        },
+        {
+          trafficClass: 'critical',
+          actionHealthLane: requestOptions.actionHealthLane,
+          sourceTag:
+            this.normalizeMetricSourceTag(requestOptions.sourceTag) ??
+            MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
+          ignoreFailureMetricStatuses: requestOptions.ignoreFailureMetricStatuses,
+          timeoutMs: requestOptions.timeoutMs,
+          botId: requestOptions.botId,
+        },
+      );
+    };
+
+    if (messageId) {
+      await this.runWithMessageKeyboardEditLock(messageId, executeAnswer);
+      return;
+    }
+    await executeAnswer();
   }
 
   private async dispatchAction(
@@ -5038,6 +5097,20 @@ export class MaxClientService implements OnModuleDestroy {
       (attachment) => this.readLowerString(attachment.type) !== 'inline_keyboard',
     );
     const keyboardAttachment = this.buildInlineKeyboardAttachment(options);
+    const replaceCallbackPayloadPrefixes = this.normalizeCallbackPayloadPrefixes(
+      options?.replaceCallbackPayloadPrefixes,
+    );
+    if (replaceCallbackPayloadPrefixes.length > 0) {
+      const replacedKeyboard = this.replaceEditableInlineKeyboardCallbacks(
+        keyboardAttachment,
+        editableAttachments,
+        replaceCallbackPayloadPrefixes,
+        options?.appendNewInlineKeyboardRows === true,
+      );
+      return replacedKeyboard
+        ? [...existingAttachmentsWithoutKeyboard, replacedKeyboard]
+        : existingAttachmentsWithoutKeyboard;
+    }
     if (keyboardAttachment) {
       if (options?.mergeExistingInlineKeyboard) {
         return [
@@ -5054,6 +5127,106 @@ export class MaxClientService implements OnModuleDestroy {
     return options?.preserveExistingInlineKeyboard
       ? editableAttachments
       : existingAttachmentsWithoutKeyboard;
+  }
+
+  private replaceEditableInlineKeyboardCallbacks(
+    primaryKeyboard: Record<string, unknown> | null,
+    editableAttachments: readonly Record<string, unknown>[],
+    callbackPayloadPrefixes: readonly string[],
+    appendNewRows: boolean,
+  ): Record<string, unknown> | null {
+    const existingKeyboard = editableAttachments.find(
+      (attachment) => this.readLowerString(attachment.type) === 'inline_keyboard',
+    );
+    const existingPayload = this.asRecord(existingKeyboard?.payload);
+    const primaryPayload = this.asRecord(primaryKeyboard?.payload);
+    const existingRows = Array.isArray(existingPayload?.buttons) ? existingPayload.buttons : [];
+    const primaryRows = Array.isArray(primaryPayload?.buttons)
+      ? primaryPayload.buttons.filter((row): row is unknown[] => Array.isArray(row))
+      : [];
+    const preservedRows: unknown[][] = [];
+    let insertionIndex: number | null = null;
+
+    for (const row of existingRows) {
+      if (!Array.isArray(row)) {
+        continue;
+      }
+      const preservedButtons = row.filter(
+        (button) => !this.hasCallbackPayloadPrefix(button, callbackPayloadPrefixes),
+      );
+      if (preservedButtons.length !== row.length && insertionIndex === null) {
+        insertionIndex = preservedRows.length;
+      }
+      if (preservedButtons.length > 0) {
+        preservedRows.push(preservedButtons);
+      }
+    }
+
+    const existingDialogButtonKeys = new Set(
+      preservedRows.flatMap((row) =>
+        row.flatMap((button) => {
+          const identity = readInternalChannelDialogButtonIdentity(button);
+          return identity ? [internalChannelDialogButtonIdentityKey(identity)] : [];
+        }),
+      ),
+    );
+    const insertedDialogButtonKeys = new Set<string>();
+    const resolvedPrimaryRows = primaryRows
+      .map((row) =>
+        row.filter((button) => {
+          const identity = readInternalChannelDialogButtonIdentity(button);
+          if (!identity) {
+            return true;
+          }
+          const key = internalChannelDialogButtonIdentityKey(identity);
+          if (existingDialogButtonKeys.has(key) || insertedDialogButtonKeys.has(key)) {
+            return false;
+          }
+          insertedDialogButtonKeys.add(key);
+          return true;
+        }),
+      )
+      .filter((row) => row.length > 0);
+    const resolvedInsertionIndex = insertionIndex ?? (appendNewRows ? preservedRows.length : 0);
+    const buttons = normalizeMaxInlineKeyboardButtons([
+      ...preservedRows.slice(0, resolvedInsertionIndex),
+      ...resolvedPrimaryRows,
+      ...preservedRows.slice(resolvedInsertionIndex),
+    ]);
+    if (!buttons) {
+      return null;
+    }
+
+    return {
+      type: 'inline_keyboard',
+      payload: {
+        ...existingPayload,
+        ...primaryPayload,
+        buttons,
+      },
+    };
+  }
+
+  private normalizeCallbackPayloadPrefixes(value: readonly string[] | undefined): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return Array.from(
+      new Set(
+        value
+          .map((prefix) => (typeof prefix === 'string' ? prefix.trim() : ''))
+          .filter((prefix) => prefix.length > 0),
+      ),
+    );
+  }
+
+  private hasCallbackPayloadPrefix(value: unknown, prefixes: readonly string[]): boolean {
+    const button = this.asRecord(value);
+    if (this.readLowerString(button?.type) !== 'callback') {
+      return false;
+    }
+    const payload = this.readTrimmedString(button?.payload);
+    return Boolean(payload && prefixes.some((prefix) => payload.startsWith(prefix)));
   }
 
   private mergeEditableInlineKeyboardAttachment(
@@ -6785,6 +6958,125 @@ export class MaxClientService implements OnModuleDestroy {
       .replace(/^_+|_+$/gu, '')
       .slice(0, 64);
     return normalized || 'api';
+  }
+
+  private async runWithMessageKeyboardEditLock<T>(
+    messageId: string,
+    operation: (assertOwnership: () => Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      throw new Error('messageId is required for a keyboard edit lock');
+    }
+    const lockKey = `max:message-keyboard-edit:v1:${createHash('sha256')
+      .update(normalizedMessageId)
+      .digest('hex')}`;
+    const lockToken = randomUUID();
+    const deadlineMs = Date.now() + MAX_MESSAGE_EDIT_LOCK_WAIT_MS;
+    let acquired = false;
+
+    while (!acquired) {
+      const result = await this.limiterRedis.eval(
+        MAX_MESSAGE_EDIT_LOCK_ACQUIRE_SCRIPT,
+        1,
+        lockKey,
+        lockToken,
+        String(MAX_MESSAGE_EDIT_LOCK_TTL_MS),
+      );
+      acquired = Array.isArray(result) && Number(result[0]) === 1;
+      if (acquired) {
+        break;
+      }
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) {
+        throw new Error('Timed out waiting for the MAX message keyboard edit lock');
+      }
+      await this.sleep(Math.min(MAX_MESSAGE_EDIT_LOCK_RETRY_MS, remainingMs));
+    }
+
+    let lockActive = true;
+    let ownershipLost = false;
+    let renewalChain = Promise.resolve();
+    const lostOwnershipError = () =>
+      new Error('Lost ownership of the MAX message keyboard edit lock');
+    const renewOwnership = (): Promise<void> => {
+      const attempt = renewalChain.then(async () => {
+        if (!lockActive || ownershipLost) {
+          throw lostOwnershipError();
+        }
+        try {
+          const result = await this.limiterRedis.eval(
+            MAX_MESSAGE_EDIT_LOCK_RENEW_SCRIPT,
+            1,
+            lockKey,
+            lockToken,
+            String(MAX_MESSAGE_EDIT_LOCK_TTL_MS),
+          );
+          if (Number(result) !== 1) {
+            ownershipLost = true;
+            throw lostOwnershipError();
+          }
+        } catch (error: unknown) {
+          ownershipLost = true;
+          throw error;
+        }
+      });
+      renewalChain = attempt.catch(() => undefined);
+      return attempt;
+    };
+    const assertOwnership = async () => {
+      if (!lockActive || ownershipLost) {
+        throw lostOwnershipError();
+      }
+      try {
+        await renewOwnership();
+      } catch (error: unknown) {
+        if (error instanceof Error && error.message === lostOwnershipError().message) {
+          throw error;
+        }
+        throw new Error('Failed to confirm the MAX message keyboard edit lock', {
+          cause: error,
+        });
+      }
+    };
+    const renewal = setInterval(() => {
+      if (!lockActive || ownershipLost) {
+        return;
+      }
+      void renewOwnership().catch((error: unknown) => {
+        if (lockActive) {
+          this.logger.warn(
+            {
+              messageId: normalizedMessageId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Lost the MAX message keyboard edit lock during renewal',
+          );
+        }
+      });
+    }, MAX_MESSAGE_EDIT_LOCK_RENEW_MS);
+    renewal.unref?.();
+    this.pendingTimeouts.add(renewal);
+
+    try {
+      return await operation(assertOwnership);
+    } finally {
+      lockActive = false;
+      clearInterval(renewal);
+      this.pendingTimeouts.delete(renewal);
+      await renewalChain.catch(() => undefined);
+      try {
+        await this.limiterRedis.eval(MAX_MESSAGE_EDIT_LOCK_RELEASE_SCRIPT, 1, lockKey, lockToken);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            messageId: normalizedMessageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to release the MAX message keyboard edit lock',
+        );
+      }
+    }
   }
 
   private sleep(ms: number): Promise<void> {

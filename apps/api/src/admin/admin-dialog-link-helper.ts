@@ -1,4 +1,4 @@
-import type { ChannelDialogType, ManagedEntityType } from '@maxim/contracts';
+import type { ChannelDialogType, ChannelSettings, ManagedEntityType } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
@@ -59,6 +59,38 @@ export class AdminDialogLinkHelper {
     threadId: string,
   ): string | null {
     return this.buildEntityDialogDirectWebAppUrl('channel', chatId, type, threadId);
+  }
+
+  buildChannelDialogButton(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+    text: string,
+    botId?: string | null,
+    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] = 'BOT',
+  ): MaxMessageButton {
+    if (type === 'suggest' && suggestionEntryMode !== 'MINIAPP') {
+      const startPayload = this.buildChannelSuggestionStartPayload(chatId, threadId, botId);
+      const botStartUrl = this.buildBotStartUrl(startPayload, botId);
+      if (botStartUrl) {
+        return { type: 'link', text, url: botStartUrl };
+      }
+    }
+
+    const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId, botId);
+    const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
+    const botContactId = this.resolveBotContactId(botId);
+    if (launchUrl) {
+      return { type: 'link', text, url: launchUrl };
+    }
+    if (webAppUrl && botContactId) {
+      return { type: 'open_app', text, webApp: webAppUrl, contactId: botContactId };
+    }
+    return {
+      type: 'link',
+      text,
+      url: webAppUrl ?? `${this.options.appBaseUrl ?? 'https://major-maksimov.ru'}/app/`,
+    };
   }
 
   buildChatDialogButton(

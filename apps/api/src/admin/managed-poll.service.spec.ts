@@ -3,7 +3,7 @@ import { ChatEntityType, ManagedPollStatus, ManagedPollVisibility } from '../pri
 import { ManagedPollService } from './managed-poll.service';
 
 const POLL_IDENTITY_SALT = '12345678901234567890123456789012';
-const POLL_RENDER_FORMAT_VERSION = 4;
+const POLL_RENDER_FORMAT_VERSION = 5;
 const VOTE_EVENT_HASH = createHmac('sha256', POLL_IDENTITY_SALT)
   .update('event:bot-1:update-1')
   .digest('hex');
@@ -396,6 +396,7 @@ describe('ManagedPollService callback rendering', () => {
       question: 'Текст администратора',
       questionFormat: 'plain',
       status: ManagedPollStatus.ACTIVE,
+      publicationMessageId: 'message-1',
       publicationBotId: 'bot-1',
       renderRevision: 2,
       imageCount: 0,
@@ -426,7 +427,9 @@ describe('ManagedPollService callback rendering', () => {
       undefined,
       expect.objectContaining({
         text: 'Текст администратора',
+        messageId: 'message-1',
         options: expect.objectContaining({
+          replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
           buttons: [
             [
               {
@@ -451,6 +454,79 @@ describe('ManagedPollService callback rendering', () => {
     expect(recordVote.mock.invocationCallOrder[0]).toBeLessThan(
       loadPollAggregate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
+  });
+
+  it('keeps callback results repairable when channel engagement lookup is inconclusive', async () => {
+    const maxClient = { answerCallback: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      {} as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'recordVote').mockResolvedValue({
+      kind: 'recorded',
+      changed: true,
+      pollId: 'poll-1',
+      needsRender: true,
+    });
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      publicationMessageId: 'message-1',
+      publicationBotId: 'bot-1',
+      publicationUrl: 'https://max.ru/channel/message-1',
+      renderRevision: 2,
+      imageCount: 0,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 1, percent: 100 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 0, percent: 0 },
+      ],
+    });
+    jest
+      .spyOn(service as any, 'resolvePollChannelEngagement')
+      .mockResolvedValue({ state: 'inconclusive' });
+    const markRendered = jest.spyOn(service as any, 'markPollRendered').mockResolvedValue(true);
+    const scheduleRepair = jest
+      .spyOn(service as any, 'schedulePollRenderRepair')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      service.tryHandleCallback({
+        updateId: 'update-1',
+        botId: 'bot-1',
+        message: { chatId: 'channel-1', messageId: 'message-1' },
+        raw: {
+          callback: {
+            callback_id: 'callback-1',
+            payload: 'poll|v2|poll-1|option-1',
+            user: { user_id: 'user-1' },
+          },
+        },
+      } as never),
+    ).resolves.toBe(true);
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      undefined,
+      expect.objectContaining({
+        messageId: 'message-1',
+        options: expect.objectContaining({
+          buttons: [
+            [expect.objectContaining({ payload: 'poll|v2|poll-1|option-1' })],
+            [expect.objectContaining({ payload: 'poll|v2|poll-1|option-2' })],
+          ],
+        }),
+      }),
+      expect.objectContaining({ botId: 'bot-1', trafficClass: 'critical' }),
+    );
+    expect(markRendered).not.toHaveBeenCalled();
+    expect(scheduleRepair).toHaveBeenCalledWith('channel-1', 'poll-1');
   });
 
   it('acknowledges an image poll callback without rewriting stable poll content', async () => {
@@ -598,6 +674,7 @@ describe('ManagedPollService callback rendering', () => {
       question: 'Текст администратора',
       questionFormat: 'plain',
       status: ManagedPollStatus.ACTIVE,
+      publicationMessageId: 'message-1',
       resultOptions: [
         { id: 'option-1', position: 0, text: 'Да', votes: 9, percent: 90 },
         { id: 'option-2', position: 1, text: 'Нет', votes: 1, percent: 10 },
@@ -605,6 +682,8 @@ describe('ManagedPollService callback rendering', () => {
     });
 
     expect(edit.text).toBe('Текст администратора');
+    expect(edit.messageId).toBe('message-1');
+    expect(edit.options.replaceCallbackPayloadPrefixes).toEqual(['poll|v2|poll-1|']);
     expect(edit.options.buttons.map((row: Array<{ text: string }>) => row[0]?.text)).toEqual([
       'Да  █████████░ 90%(9)',
       'Нет  █░░░░░░░░░ 10%(1)',
@@ -648,6 +727,7 @@ describe('ManagedPollService callback rendering', () => {
       'message-1',
       'Кто кого',
       expect.objectContaining({
+        replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
         buttons: [
           [expect.objectContaining({ text: 'Да  ███████░░░ 70%(7)' })],
           [expect.objectContaining({ text: 'Нет  ███░░░░░░░ 30%(3)' })],
@@ -665,11 +745,567 @@ describe('ManagedPollService callback rendering', () => {
     });
   });
 
-  it('closes a poll by removing its keyboard without changing authored text', async () => {
+  it('does not commit a channel render after an inconclusive engagement lookup', async () => {
     const prisma = {
       managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     };
     const maxClient = { editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Кто кого',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 7, percent: 70 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 3, percent: 30 },
+      ],
+      publicationMessageId: 'message-1',
+      publicationBotId: 'bot-1',
+      publicationUrl: 'https://max.ru/channel/message-1',
+      renderRevision: 4,
+    });
+    jest
+      .spyOn(service as any, 'resolvePollChannelEngagement')
+      .mockResolvedValue({ state: 'inconclusive' });
+    const scheduleRepair = jest
+      .spyOn(service as any, 'schedulePollRenderRepair')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      (service as any).renderPollPublication('channel-1', 'poll-1', 'vote-fallback'),
+    ).resolves.toBe(false);
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'message-1',
+      'Кто кого',
+      expect.objectContaining({
+        replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+        buttons: [
+          [expect.objectContaining({ payload: 'poll|v2|poll-1|option-1' })],
+          [expect.objectContaining({ payload: 'poll|v2|poll-1|option-2' })],
+        ],
+      }),
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(prisma.managedPoll.updateMany).not.toHaveBeenCalled();
+    expect(scheduleRepair).toHaveBeenCalledWith('channel-1', 'poll-1');
+  });
+
+  it('restores persisted channel engagement buttons during a format repair', async () => {
+    const commentsButton = {
+      type: 'link',
+      text: '💬 Комментарии · 3',
+      url: 'https://max.ru/bot-1?startapp=comments-thread-1',
+    };
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue({
+          payload: {
+            messageId: 'message-1',
+            threadId: 'thread-1',
+            includeCommentsButton: true,
+            includeSuggestButton: false,
+            suggestionEntryMode: 'BOT',
+            botId: 'bot-1',
+          },
+        }),
+        count: jest.fn().mockResolvedValue(3),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getExactChannelDialogButtonIdentities: jest
+        .fn()
+        .mockResolvedValue([{ chatId: 'channel-1', kind: 'comments', threadId: 'thread-1' }]),
+    };
+    const adminDialogLinkService = {
+      buildChannelDialogButton: jest.fn().mockReturnValue(commentsButton),
+    };
+    const recordChannelPublicationEngagement = jest.fn().mockResolvedValue(undefined);
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      { recordChannelPublicationEngagement } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminDialogLinkService as never,
+    );
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Кто кого',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 7, percent: 70 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 3, percent: 30 },
+      ],
+      publicationMessageId: 'message-1',
+      publicationBotId: 'bot-1',
+      publicationUrl: 'https://max.ru/channel/message-1',
+      renderRevision: 4,
+      renderedRevision: 4,
+    });
+
+    await expect(
+      (service as any).renderPollPublication('channel-1', 'poll-1', 'background-repair'),
+    ).resolves.toBe(true);
+
+    expect(adminDialogLinkService.buildChannelDialogButton).toHaveBeenCalledWith(
+      'channel-1',
+      'comments',
+      'thread-1',
+      '💬 Комментарии · 3',
+      'bot-1',
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'message-1',
+      'Кто кого',
+      expect.objectContaining({
+        replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'],
+        buttons: [
+          [expect.objectContaining({ payload: 'poll|v2|poll-1|option-1' })],
+          [expect.objectContaining({ payload: 'poll|v2|poll-1|option-2' })],
+          [commentsButton],
+        ],
+      }),
+      expect.objectContaining({ botId: 'bot-1', trafficClass: 'background' }),
+    );
+    expect(recordChannelPublicationEngagement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-1',
+        messageId: 'message-1',
+        source: 'managed_poll',
+      }),
+    );
+    expect(maxClient.getExactChannelDialogButtonIdentities).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers callback-crash engagement from the pre-vote publication ledger revision', async () => {
+    const ledgerReference = {
+      threadId: 'thread-ledger-callback',
+      includeCommentsButton: true,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      suggestionEntryMode: 'BOT',
+      botId: 'bot-1',
+    };
+    const findUnique = jest.fn().mockImplementation(({ where }: any) =>
+      Promise.resolve(
+        where.jobId === 'managed-poll:publish:poll-1:revision:3:format:4'
+          ? {
+              metadata: {
+                ledgerContext: {
+                  managedPoll: { channelEngagement: ledgerReference },
+                },
+              },
+            }
+          : null,
+      ),
+    );
+    const commentsButton = {
+      type: 'link',
+      text: '💬 Комментарии · 0',
+      url: 'https://max.ru/bot-1',
+    };
+    const restoredContext = {
+      buttons: [[commentsButton]],
+      threadId: ledgerReference.threadId,
+      includeCommentsButton: ledgerReference.includeCommentsButton,
+      includeSuggestButton: ledgerReference.includeSuggestButton,
+      suggestButtonText: ledgerReference.suggestButtonText,
+      suggestionEntryMode: ledgerReference.suggestionEntryMode,
+    };
+    const adminDialogLinkService = {
+      buildChannelDialogButton: jest.fn().mockReturnValue(commentsButton),
+    };
+    const service = new ManagedPollService(
+      {
+        auditLog: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          count: jest.fn().mockResolvedValue(0),
+        },
+        maxActionLedgerEntry: { findUnique },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminDialogLinkService as never,
+    );
+
+    await expect(
+      (service as any).resolvePollChannelEngagement(
+        {
+          id: 'poll-1',
+          chatId: 'channel-1',
+          chat: { entityType: ChatEntityType.CHANNEL },
+          publicationMessageId: 'message-1',
+          renderRevision: 4,
+          renderedRevision: 0,
+        },
+        'bot-1',
+      ),
+    ).resolves.toEqual({ state: 'resolved', context: restoredContext, shouldRecord: true });
+
+    expect(findUnique.mock.calls.map(([request]) => request.where.jobId)).toEqual([
+      'managed-poll:publish:poll-1:revision:4:format:4',
+      'managed-poll:publish:poll-1:revision:0:format:4',
+      'managed-poll:publish:poll-1:revision:3:format:4',
+    ]);
+    expect(adminDialogLinkService.buildChannelDialogButton).toHaveBeenCalledWith(
+      'channel-1',
+      'comments',
+      'thread-ledger-callback',
+      '💬 Комментарии · 0',
+      'bot-1',
+    );
+  });
+
+  it('keeps an explicit no-engagement publication ledger result authoritative', async () => {
+    const buildChannelPublicationEngagementContext = jest.fn().mockResolvedValue({
+      buttons: [[{ type: 'link', text: 'Комментарии', url: 'https://max.ru/entry-bot' }]],
+      threadId: 'new-thread',
+      includeCommentsButton: true,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      suggestionEntryMode: 'BOT',
+    });
+    const maxClient = {
+      getExactChannelDialogButtonIdentities: jest.fn(),
+    };
+    const service = new ManagedPollService(
+      {
+        auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+        maxActionLedgerEntry: {
+          findUnique: jest.fn().mockResolvedValue({
+            metadata: {
+              ledgerContext: {
+                managedPoll: { channelEngagement: null },
+              },
+            },
+          }),
+        },
+      } as never,
+      maxClient as never,
+      { buildChannelPublicationEngagementContext } as never,
+      {} as never,
+    );
+
+    await expect(
+      (service as any).resolvePollChannelEngagement(
+        {
+          id: 'poll-1',
+          chatId: 'channel-1',
+          chat: { entityType: ChatEntityType.CHANNEL },
+          publicationMessageId: 'message-1',
+          renderRevision: 4,
+          renderedRevision: 4,
+        },
+        'bot-1',
+      ),
+    ).resolves.toEqual({ state: 'none' });
+
+    expect(maxClient.getExactChannelDialogButtonIdentities).not.toHaveBeenCalled();
+    expect(buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
+  });
+
+  it('trusts a managed-poll engagement binding without repeating legacy exact verification', async () => {
+    const commentsButton = {
+      type: 'link',
+      text: '💬 Комментарии · 4',
+      url: 'https://max.ru/bot-1?startapp=trusted-thread',
+    };
+    const getExactChannelDialogButtonIdentities = jest.fn();
+    const findUnique = jest.fn();
+    const service = new ManagedPollService(
+      {
+        auditLog: {
+          findFirst: jest.fn().mockResolvedValue({
+            payload: {
+              messageId: 'message-1',
+              threadId: 'trusted-thread',
+              includeCommentsButton: true,
+              includeSuggestButton: false,
+              suggestionEntryMode: 'BOT',
+              source: 'managed_poll',
+              botId: 'bot-1',
+            },
+          }),
+          count: jest.fn().mockResolvedValue(4),
+        },
+        maxActionLedgerEntry: { findUnique },
+      } as never,
+      { getExactChannelDialogButtonIdentities } as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { buildChannelDialogButton: jest.fn().mockReturnValue(commentsButton) } as never,
+    );
+
+    await expect(
+      (service as any).resolvePollChannelEngagement(
+        {
+          id: 'poll-1',
+          chatId: 'channel-1',
+          chat: { entityType: ChatEntityType.CHANNEL },
+          publicationMessageId: 'message-1',
+          renderRevision: 4,
+          renderedRevision: 4,
+        },
+        'bot-1',
+      ),
+    ).resolves.toEqual({
+      state: 'resolved',
+      context: {
+        buttons: [[commentsButton]],
+        threadId: 'trusted-thread',
+        includeCommentsButton: true,
+        includeSuggestButton: false,
+        suggestButtonText: null,
+        suggestionEntryMode: 'BOT',
+      },
+      shouldRecord: false,
+    });
+
+    expect(getExactChannelDialogButtonIdentities).not.toHaveBeenCalled();
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('does not trust or rotate a persisted engagement after an inconclusive exact lookup', async () => {
+    const buildChannelPublicationEngagementContext = jest.fn();
+    const findUnique = jest.fn().mockResolvedValue({
+      metadata: {
+        ledgerContext: {
+          managedPoll: {
+            channelEngagement: {
+              threadId: 'ledger-thread',
+              includeCommentsButton: true,
+              includeSuggestButton: false,
+              suggestionEntryMode: 'BOT',
+              botId: 'bot-1',
+            },
+          },
+        },
+      },
+    });
+    const service = new ManagedPollService(
+      {
+        auditLog: {
+          findFirst: jest.fn().mockResolvedValue({
+            payload: {
+              messageId: 'message-1',
+              threadId: 'stale-thread',
+              includeCommentsButton: true,
+              includeSuggestButton: false,
+              suggestionEntryMode: 'BOT',
+              botId: 'bot-1',
+            },
+          }),
+        },
+        maxActionLedgerEntry: { findUnique },
+      } as never,
+      {
+        getExactChannelDialogButtonIdentities: jest
+          .fn()
+          .mockRejectedValue(new Error('temporary MAX read failure')),
+      } as never,
+      { buildChannelPublicationEngagementContext } as never,
+      {} as never,
+    );
+
+    await expect(
+      (service as any).resolvePollChannelEngagement(
+        {
+          id: 'poll-1',
+          chatId: 'channel-1',
+          chat: { entityType: ChatEntityType.CHANNEL },
+          publicationMessageId: 'message-1',
+          renderRevision: 4,
+          renderedRevision: 4,
+        },
+        'bot-1',
+      ),
+    ).resolves.toEqual({ state: 'inconclusive' });
+
+    expect(buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('replaces a stale persisted binding with the thread exposed by the exact MAX message', async () => {
+    const commentsButton = {
+      type: 'link',
+      text: '💬 Комментарии · 2',
+      url: 'https://max.ru/bot-1?startapp=actual-thread',
+    };
+    const buildChannelPublicationEngagementContext = jest.fn().mockResolvedValue({
+      buttons: [],
+      threadId: 'unused-configured-thread',
+      includeCommentsButton: true,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      suggestionEntryMode: 'BOT',
+    });
+    const getExactChannelDialogButtonIdentities = jest
+      .fn()
+      .mockResolvedValue([{ chatId: 'channel-1', kind: 'comments', threadId: 'actual-thread' }]);
+    const findUnique = jest.fn().mockResolvedValue({
+      metadata: {
+        ledgerContext: {
+          managedPoll: {
+            channelEngagement: {
+              threadId: 'ledger-thread',
+              includeCommentsButton: true,
+              includeSuggestButton: false,
+              suggestionEntryMode: 'BOT',
+              botId: 'bot-1',
+            },
+          },
+        },
+      },
+    });
+    const service = new ManagedPollService(
+      {
+        auditLog: {
+          findFirst: jest.fn().mockResolvedValue({
+            payload: {
+              messageId: 'message-1',
+              threadId: 'stale-thread',
+              includeCommentsButton: true,
+              includeSuggestButton: false,
+              suggestionEntryMode: 'BOT',
+              botId: 'bot-1',
+            },
+          }),
+          count: jest.fn().mockResolvedValue(2),
+        },
+        maxActionLedgerEntry: { findUnique },
+      } as never,
+      { getExactChannelDialogButtonIdentities } as never,
+      { buildChannelPublicationEngagementContext } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { buildChannelDialogButton: jest.fn().mockReturnValue(commentsButton) } as never,
+    );
+
+    await expect(
+      (service as any).resolvePollChannelEngagement(
+        {
+          id: 'poll-1',
+          chatId: 'channel-1',
+          chat: { entityType: ChatEntityType.CHANNEL },
+          publicationMessageId: 'message-1',
+          renderRevision: 4,
+          renderedRevision: 4,
+        },
+        'bot-1',
+      ),
+    ).resolves.toEqual({
+      state: 'resolved',
+      context: {
+        buttons: [[commentsButton]],
+        threadId: 'actual-thread',
+        includeCommentsButton: true,
+        includeSuggestButton: false,
+        suggestButtonText: null,
+        suggestionEntryMode: 'BOT',
+      },
+      shouldRecord: true,
+    });
+
+    expect(getExactChannelDialogButtonIdentities).toHaveBeenCalledTimes(1);
+    expect(buildChannelPublicationEngagementContext).toHaveBeenCalledWith('channel-1', 'bot-1');
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('records a restored engagement binding only when MAX exposes the same thread', async () => {
+    const recordChannelPublicationEngagement = jest.fn();
+    const getExactChannelDialogButtonIdentities = jest
+      .fn()
+      .mockResolvedValue([{ chatId: 'channel-1', kind: 'comments', threadId: 'existing-thread' }]);
+    const service = new ManagedPollService(
+      {} as never,
+      { getExactChannelDialogButtonIdentities } as never,
+      { recordChannelPublicationEngagement } as never,
+      {} as never,
+    );
+    const context = {
+      buttons: [[{ type: 'link', text: 'Комментарии', url: 'https://max.ru/entry-bot' }]],
+      threadId: 'new-thread',
+      includeCommentsButton: true,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      suggestionEntryMode: 'BOT',
+    };
+
+    await (service as any).recordPollChannelEngagementSafely({
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      messageId: 'message-1',
+      text: 'Вопрос',
+      publishedUrl: null,
+      context,
+      botId: 'bot-1',
+      verifyApplied: true,
+    });
+    expect(recordChannelPublicationEngagement).not.toHaveBeenCalled();
+
+    getExactChannelDialogButtonIdentities.mockResolvedValueOnce([
+      { chatId: 'channel-1', kind: 'comments', threadId: 'new-thread' },
+    ]);
+    await (service as any).recordPollChannelEngagementSafely({
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      messageId: 'message-1',
+      text: 'Вопрос',
+      publishedUrl: null,
+      context,
+      botId: 'bot-1',
+      verifyApplied: true,
+    });
+    expect(recordChannelPublicationEngagement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-1',
+        messageId: 'message-1',
+        context,
+      }),
+    );
+  });
+
+  it('closes a poll by removing only its callbacks without changing authored text', async () => {
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getExactChannelDialogButtonIdentities: jest.fn().mockResolvedValue([]),
+    };
     const service = new ManagedPollService(
       prisma as never,
       maxClient as never,
@@ -700,7 +1336,7 @@ describe('ManagedPollService callback rendering', () => {
       'channel-1',
       'message-1',
       'Текст администратора',
-      undefined,
+      { replaceCallbackPayloadPrefixes: ['poll|v2|poll-1|'] },
       expect.objectContaining({ botId: 'bot-1' }),
     );
     expect(prisma.managedPoll.updateMany).toHaveBeenCalledWith({
@@ -710,6 +1346,158 @@ describe('ManagedPollService callback rendering', () => {
         renderFormatVersion: POLL_RENDER_FORMAT_VERSION,
         lastRenderError: null,
       },
+    });
+  });
+
+  it('closes a stale active poll only after MAX confirms that its publication is absent', async () => {
+    const tx = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
+    };
+    const prisma = {
+      managedPoll: { updateMany: jest.fn() },
+      $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
+    };
+    const missingError = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(missingError),
+      getExactMessagePresence: jest.fn().mockResolvedValue('absent'),
+    };
+    const chatContextCache = { invalidate: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      chatContextCache as never,
+    );
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 0, percent: 0 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 0, percent: 0 },
+      ],
+      publicationMessageId: 'message-missing',
+      publicationBotId: 'bot-1',
+      publicationUrl: 'https://max.ru/channel/message-missing',
+      renderRevision: 0,
+    });
+
+    await expect(
+      (service as any).renderPollPublication('channel-1', 'poll-1', 'background-repair'),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getExactMessagePresence).toHaveBeenCalledWith(
+      'channel-1',
+      'message-missing',
+      expect.objectContaining({
+        botId: 'bot-1',
+        bypassCache: true,
+        trafficClass: 'background',
+        ignoreFailureMetricStatuses: [404],
+      }),
+    );
+    expect(tx.managedPoll.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'poll-1',
+        chatId: 'channel-1',
+        status: ManagedPollStatus.ACTIVE,
+        publicationMessageId: 'message-missing',
+        renderRevision: 0,
+      },
+      data: expect.objectContaining({
+        status: ManagedPollStatus.CLOSED,
+        closedAt: expect.any(Date),
+        publicationMessageId: null,
+        publicationUrl: null,
+        renderedRevision: 0,
+        renderFormatVersion: POLL_RENDER_FORMAT_VERSION,
+        lastRenderError: null,
+      }),
+    });
+    expect(tx.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        action: 'RECONCILE_MISSING_CHANNEL_POLL_PUBLICATION',
+        payload: expect.objectContaining({
+          pollId: 'poll-1',
+          publicationMessageId: 'message-missing',
+          previousStatus: ManagedPollStatus.ACTIVE,
+        }),
+      }),
+    });
+    expect(prisma.managedPoll.updateMany).not.toHaveBeenCalled();
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('channel-1');
+  });
+
+  it('does not report reconciliation success when a newer poll revision wins the CAS', async () => {
+    const tx = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      auditLog: { create: jest.fn() },
+    };
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
+    };
+    const missingError = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(missingError),
+      getExactMessagePresence: jest.fn().mockResolvedValue('absent'),
+    };
+    const chatContextCache = { invalidate: jest.fn() };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      chatContextCache as never,
+    );
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'chat-1',
+      actorUserId: 'admin-1',
+      chat: { entityType: ChatEntityType.CHAT },
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 0, percent: 0 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 0, percent: 0 },
+      ],
+      publicationMessageId: 'message-missing',
+      publicationBotId: 'bot-1',
+      publicationUrl: null,
+      renderRevision: 3,
+    });
+
+    await expect(
+      (service as any).renderPollPublication('chat-1', 'poll-1', 'background-repair'),
+    ).resolves.toBe(false);
+
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+    expect(chatContextCache.invalidate).not.toHaveBeenCalled();
+    expect(prisma.managedPoll.updateMany).toHaveBeenCalledWith({
+      where: { id: 'poll-1' },
+      data: { lastRenderError: 'Message not found' },
     });
   });
 
@@ -1064,6 +1852,14 @@ describe('ManagedPollService publication', () => {
     const adminService = {
       assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
       resolveChannelPollBotId: jest.fn().mockResolvedValue('bot-1'),
+      buildChannelPublicationEngagementContext: jest.fn().mockResolvedValue({
+        buttons: [],
+        threadId: null,
+        includeCommentsButton: false,
+        includeSuggestButton: false,
+        suggestButtonText: null,
+        suggestionEntryMode: 'BOT',
+      }),
     };
     const chatContextCache = { invalidate: jest.fn().mockResolvedValue(undefined) };
     const service = new ManagedPollService(
@@ -1174,6 +1970,18 @@ describe('ManagedPollService publication', () => {
     const adminService = {
       assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
       resolveChannelPollBotId: jest.fn().mockResolvedValue('bot-1'),
+      buildChannelPublicationEngagementContext: jest.fn().mockResolvedValue({
+        buttons: [
+          [{ type: 'link', text: 'Комментарии', url: 'https://example.com/comments' }],
+          [{ type: 'link', text: 'Предложить', url: 'https://example.com/suggest' }],
+        ],
+        threadId: 'thread-1',
+        includeCommentsButton: true,
+        includeSuggestButton: true,
+        suggestButtonText: 'Предложить',
+        suggestionEntryMode: 'BOT',
+      }),
+      recordChannelPublicationEngagement: jest.fn().mockResolvedValue(undefined),
     };
     const maxRoutedPublicationService = {
       publish: jest.fn().mockImplementation(async (request: any) => {
@@ -1183,8 +1991,26 @@ describe('ManagedPollService publication', () => {
           expect.objectContaining({
             textFormat: 'html',
             imagePayload: { token: 'poll-image-token' },
+            buttons: [
+              [expect.objectContaining({ payload: 'poll|v2|poll-1|option-1' })],
+              [expect.objectContaining({ payload: 'poll|v2|poll-1|option-2' })],
+              [{ type: 'link', text: 'Комментарии', url: 'https://example.com/comments' }],
+              [{ type: 'link', text: 'Предложить', url: 'https://example.com/suggest' }],
+            ],
           }),
         );
+        expect(prepared.ledgerContext).toEqual({
+          managedPoll: {
+            channelEngagement: {
+              threadId: 'thread-1',
+              includeCommentsButton: true,
+              includeSuggestButton: true,
+              suggestButtonText: 'Предложить',
+              suggestionEntryMode: 'BOT',
+              botId: 'bot-2',
+            },
+          },
+        });
         return {
           messageId: 'message-1',
           url: 'https://max.ru/channel/message-1',
@@ -1232,12 +2058,281 @@ describe('ManagedPollService publication', () => {
       }),
     );
     expect(adminService.resolveChannelPollBotId).not.toHaveBeenCalled();
+    expect(adminService.buildChannelPublicationEngagementContext).toHaveBeenCalledWith(
+      'channel-1',
+      'bot-2',
+    );
+    expect(adminService.recordChannelPublicationEngagement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        messageId: 'message-1',
+        text: '**Новый вопрос**',
+        source: 'managed_poll',
+        botId: 'bot-2',
+      }),
+    );
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(managedPoll.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ images: [], publicationBotId: 'bot-2' }),
       }),
     );
+  });
+
+  it('recovers the exact engagement binding when routed publication completes from its ledger', async () => {
+    const draft = {
+      id: 'poll-ledger-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      question: 'Какой вариант?',
+      questionFormat: 'plain',
+      imageCount: 0,
+      images: [],
+      status: ManagedPollStatus.DRAFT,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: '12345678901234567890123456789012',
+      renderRevision: 2,
+      renderedRevision: 0,
+      publicationMessageId: null,
+      publicationBotId: null,
+      publicationUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      options: [
+        { id: 'option-1', pollId: 'poll-ledger-1', position: 0, text: 'Первый' },
+        { id: 'option-2', pollId: 'poll-ledger-1', position: 1, text: 'Второй' },
+      ],
+    };
+    const managedPoll = {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      update: jest.fn().mockResolvedValue(draft),
+    };
+    const auditLog = {
+      create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
+      count: jest.fn().mockResolvedValue(0),
+    };
+    const prisma = {
+      managedPoll,
+      auditLog,
+      maxActionLedgerEntry: {
+        findUnique: jest.fn().mockResolvedValue({
+          metadata: {
+            ledgerContext: {
+              managedPoll: {
+                channelEngagement: {
+                  threadId: 'thread-ledger-1',
+                  includeCommentsButton: true,
+                  includeSuggestButton: false,
+                  suggestButtonText: null,
+                  suggestionEntryMode: 'BOT',
+                  botId: 'bot-ledger-1',
+                },
+              },
+            },
+          },
+        }),
+      },
+      $transaction: jest.fn(
+        async (
+          callback: (client: {
+            managedPoll: typeof managedPoll;
+            auditLog: typeof auditLog;
+          }) => unknown,
+        ) => callback({ managedPoll, auditLog }),
+      ),
+    };
+    const restoredContext = {
+      buttons: [
+        [
+          {
+            type: 'link',
+            text: '💬 Комментарии · 0',
+            url: 'https://max.ru/bot-ledger-1?startapp=thread-ledger-1',
+          },
+        ],
+      ],
+      threadId: 'thread-ledger-1',
+      includeCommentsButton: true,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      suggestionEntryMode: 'BOT',
+    };
+    const adminService = {
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+      recordChannelPublicationEngagement: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminDialogLinkService = {
+      buildChannelDialogButton: jest.fn().mockReturnValue(restoredContext.buttons[0][0]),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockResolvedValue({
+        messageId: 'message-ledger-1',
+        url: 'https://max.ru/channel/message-ledger-1',
+        botId: 'bot-ledger-1',
+        candidateBotIds: ['bot-ledger-1'],
+        routingVersion: 4,
+      }),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      {} as never,
+      adminService as never,
+      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
+      undefined,
+      adminDialogLinkService as never,
+    );
+    jest.spyOn(service as any, 'findPoll').mockResolvedValue(draft);
+    jest.spyOn(service as any, 'readPollDetails').mockResolvedValue({ id: draft.id });
+
+    await service.publishChannelPoll('channel-1', draft.id, {
+      userId: 'admin-1',
+    } as never);
+
+    expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith({
+      where: { jobId: 'managed-poll:publish:poll-ledger-1:revision:2:format:4' },
+      select: { metadata: true },
+    });
+    expect(adminDialogLinkService.buildChannelDialogButton).toHaveBeenCalledWith(
+      'channel-1',
+      'comments',
+      'thread-ledger-1',
+      '💬 Комментарии · 0',
+      'bot-ledger-1',
+    );
+    expect(adminService.recordChannelPublicationEngagement).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      messageId: 'message-ledger-1',
+      text: 'Какой вариант?',
+      publishedUrl: 'https://max.ru/channel/message-ledger-1',
+      context: restoredContext,
+      source: 'managed_poll',
+      botId: 'bot-ledger-1',
+    });
+  });
+
+  it('keeps a completed pre-context v4 publication repairable after ledger recovery', async () => {
+    const draft = {
+      id: 'poll-legacy-ledger-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      question: 'Старый опубликованный вопрос',
+      questionFormat: 'plain',
+      imageCount: 0,
+      images: [],
+      status: ManagedPollStatus.DRAFT,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: POLL_IDENTITY_SALT,
+      renderRevision: 2,
+      renderedRevision: 0,
+      renderFormatVersion: 4,
+      publicationMessageId: null,
+      publicationBotId: null,
+      publicationUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      options: [
+        { id: 'option-1', pollId: 'poll-legacy-ledger-1', position: 0, text: 'Да' },
+        { id: 'option-2', pollId: 'poll-legacy-ledger-1', position: 1, text: 'Нет' },
+      ],
+    };
+    const managedPoll = {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    };
+    const auditLog = { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) };
+    const maxActionLedgerEntry = {
+      findUnique: jest.fn().mockResolvedValue({
+        metadata: {
+          createdAt: '2026-08-08T10:00:00.000Z',
+          ledgerContext: null,
+        },
+      }),
+    };
+    const prisma = {
+      managedPoll,
+      auditLog,
+      maxActionLedgerEntry,
+      $transaction: jest.fn(
+        async (
+          callback: (client: {
+            managedPoll: typeof managedPoll;
+            auditLog: typeof auditLog;
+          }) => unknown,
+        ) => callback({ managedPoll, auditLog }),
+      ),
+    };
+    const buildChannelPublicationEngagementContext = jest.fn();
+    const recordChannelPublicationEngagement = jest.fn();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockResolvedValue({
+        messageId: 'message-v4-recovered-1',
+        url: 'https://max.ru/channel/message-v4-recovered-1',
+        botId: 'bot-legacy-1',
+        candidateBotIds: ['bot-legacy-1'],
+        routingVersion: 3,
+      }),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      {} as never,
+      {
+        assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+        buildChannelPublicationEngagementContext,
+        recordChannelPublicationEngagement,
+      } as never,
+      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+    jest.spyOn(service as any, 'findPoll').mockResolvedValue(draft);
+    jest.spyOn(service as any, 'readPollDetails').mockResolvedValue({ id: draft.id });
+    const scheduleRepair = jest
+      .spyOn(service as any, 'schedulePollRenderRepair')
+      .mockImplementation(() => undefined);
+
+    await service.publishChannelPoll('channel-1', draft.id, {
+      userId: 'admin-1',
+    } as never);
+
+    expect(maxActionLedgerEntry.findUnique).toHaveBeenCalledWith({
+      where: {
+        jobId: 'managed-poll:publish:poll-legacy-ledger-1:revision:2:format:4',
+      },
+      select: { metadata: true },
+    });
+    expect(managedPoll.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: draft.id,
+          status: ManagedPollStatus.DRAFT,
+        }),
+        data: expect.objectContaining({
+          publicationMessageId: 'message-v4-recovered-1',
+          renderedRevision: 2,
+          renderFormatVersion: 4,
+        }),
+      }),
+    );
+    expect(scheduleRepair).toHaveBeenCalledWith('channel-1', draft.id);
+    expect(buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
+    expect(recordChannelPublicationEngagement).not.toHaveBeenCalled();
   });
 
   it('builds gallery attachments from multiple uploaded poll images', async () => {

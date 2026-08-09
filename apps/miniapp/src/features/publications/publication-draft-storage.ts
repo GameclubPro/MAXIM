@@ -50,6 +50,21 @@ function readString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function readChannelOverview(value: unknown): PublicationTarget['channelOverview'] {
+  if (
+    !isObject(value) ||
+    typeof value.commentsEnabled !== 'boolean' ||
+    typeof value.postSuggestionsEnabled !== 'boolean'
+  ) {
+    return null;
+  }
+
+  return {
+    commentsEnabled: value.commentsEnabled,
+    postSuggestionsEnabled: value.postSuggestionsEnabled,
+  };
+}
+
 function readTargets(value: unknown): PublicationTarget[] {
   if (!Array.isArray(value)) {
     return [];
@@ -70,6 +85,8 @@ function readTargets(value: unknown): PublicationTarget[] {
         entityType,
         title: getPublicationTargetTitle({ entityType, title: readString(item.title) }),
         avatarUrl: typeof item.avatarUrl === 'string' ? item.avatarUrl : null,
+        channelOverview:
+          entityType === 'channel' ? readChannelOverview(item.channelOverview) : null,
       },
     ];
   });

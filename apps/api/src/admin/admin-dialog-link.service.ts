@@ -1,9 +1,10 @@
-import type { ChannelDialogType } from '@maxim/contracts';
+import type { ChannelDialogType, ChannelSettings } from '@maxim/contracts';
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import type { MaxMessageButton } from '../max/max-client.service';
 import {
   normalizeAppBaseUrl,
   normalizeBotContactId,
@@ -59,6 +60,24 @@ export class AdminDialogLinkService {
 
   buildChannelDialogStartParam(chatId: string, type: ChannelDialogType, threadId: string): string {
     return this.helper.buildChannelDialogStartParam(chatId, type, threadId);
+  }
+
+  buildChannelDialogButton(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+    text: string,
+    botId?: string | null,
+    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] = 'BOT',
+  ): MaxMessageButton {
+    return this.helper.buildChannelDialogButton(
+      chatId,
+      type,
+      threadId,
+      text,
+      botId,
+      suggestionEntryMode,
+    );
   }
 
   buildBotStartUrl(startPayload: string, botId?: string | null): string | null {

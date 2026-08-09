@@ -1,4 +1,12 @@
 @layer pages {
+  .broadcast-content-composer {
+    --broadcast-preview-button-bg: rgba(255, 255, 255, 0.82);
+    --broadcast-preview-button-ink: #0a6fa5;
+    --broadcast-preview-system-button-bg: rgba(11, 126, 170, 0.1);
+    --broadcast-preview-system-button-ink: #075f82;
+    min-width: 0;
+  }
+
   .broadcast-content-composer__bar {
     display: flex;
     align-items: center;
@@ -112,6 +120,44 @@
   .broadcast-content-composer__workspace--rich,
   .broadcast-content-composer__workspace.has-preview.broadcast-content-composer__workspace--rich {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .broadcast-message-card__buttons {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+    margin-top: 1px;
+  }
+
+  .broadcast-message-card__button-row {
+    min-width: 0;
+    display: flex;
+    gap: 5px;
+  }
+
+  .broadcast-message-card__button {
+    min-width: 0;
+    min-height: 32px;
+    flex: 1 1 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 0 8px;
+    border-radius: 11px;
+    background: var(--broadcast-preview-button-bg);
+    color: var(--broadcast-preview-button-ink);
+    font-size: 0.7rem;
+    font-weight: 850;
+    line-height: 1.12;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .broadcast-message-card__button.is-system {
+    background: var(--broadcast-preview-system-button-bg);
+    color: var(--broadcast-preview-system-button-ink);
   }
 
   .broadcast-content-composer__editor--rich {
@@ -290,6 +336,13 @@
     border-color: var(--color-border);
     background: var(--color-surface-tint);
     color: var(--text-secondary);
+  }
+
+  html[data-max-theme='dark'] .broadcast-content-composer {
+    --broadcast-preview-button-bg: color-mix(in srgb, var(--color-surface) 82%, transparent);
+    --broadcast-preview-button-ink: var(--color-accent);
+    --broadcast-preview-system-button-bg: var(--color-accent-soft);
+    --broadcast-preview-system-button-ink: var(--color-accent);
   }
 
   html[data-max-theme='dark'] .broadcast-content-composer__tool.is-active {

@@ -4,6 +4,7 @@ import {
   buildCreatePublicationRequest,
   buildPublicationContent,
   buildPublicationSaveFeedback,
+  buildPublicationSystemButtons,
   buildTestPublicationRequest,
   canResumePublication,
   createEmptyPublicationDraft,
@@ -14,6 +15,7 @@ import {
   getPublicationListPollingInterval,
   getPublicationRecurrenceIntervalNotice,
   getPublicationTargetTitle,
+  hasSamePublicationTargetMetadata,
   hasPublicationDraftChanges,
   inferPublicationVideoMimeType,
   isIsolatedPublicationEditor,
@@ -29,6 +31,7 @@ import {
   rebasePublicationDraft,
   shouldReviewPublicationScheduleConflict,
   shouldPersistPublicationDraft,
+  toPublicationTarget,
 } from '../src/features/publications/publication-model';
 import {
   buildPublicationDraftStorageKey,
@@ -50,12 +53,17 @@ const chatTarget = {
   entityType: 'chat' as const,
   title: 'Чат',
   avatarUrl: null,
+  channelOverview: null,
 };
 const channelTarget = {
   id: 'channel-1',
   entityType: 'channel' as const,
   title: 'Канал',
   avatarUrl: null,
+  channelOverview: {
+    commentsEnabled: false,
+    postSuggestionsEnabled: false,
+  },
 };
 
 test('isolates edit and duplicate drafts from the persisted create draft', () => {
@@ -414,6 +422,62 @@ test('uses a stable fallback when a persisted publication target has no title', 
   assert.equal(getPublicationTargetTitle({ entityType: 'chat', title: '  Новости  ' }), 'Новости');
 });
 
+test('preserves channel engagement toggles and previews their system buttons', () => {
+  const target = toPublicationTarget({
+    id: 'channel-2',
+    entityType: 'channel',
+    title: 'Новости',
+    avatarUrl: null,
+    channelOverview: {
+      enabledScenariosCount: 2,
+      commentsEnabled: true,
+      postSuggestionsEnabled: true,
+      commentsModerationEnabled: false,
+    },
+  } as never);
+
+  assert.deepEqual(target.channelOverview, {
+    commentsEnabled: true,
+    postSuggestionsEnabled: true,
+  });
+  assert.deepEqual(buildPublicationSystemButtons([target]), [
+    { kind: 'comments', text: '💬 Комментарии' },
+    { kind: 'suggest', text: '📰 Предложить пост' },
+  ]);
+});
+
+test('compares refreshed publication target engagement metadata', () => {
+  assert.equal(hasSamePublicationTargetMetadata(channelTarget, { ...channelTarget }), true);
+  assert.equal(
+    hasSamePublicationTargetMetadata(channelTarget, {
+      ...channelTarget,
+      channelOverview: { commentsEnabled: true, postSuggestionsEnabled: false },
+    }),
+    false,
+  );
+});
+
+test('deduplicates system button previews across mixed publication targets', () => {
+  assert.deepEqual(
+    buildPublicationSystemButtons([
+      chatTarget,
+      {
+        ...channelTarget,
+        channelOverview: { commentsEnabled: true, postSuggestionsEnabled: false },
+      },
+      {
+        ...channelTarget,
+        id: 'channel-2',
+        channelOverview: { commentsEnabled: false, postSuggestionsEnabled: true },
+      },
+    ]),
+    [
+      { kind: 'comments', text: '💬 Комментарии' },
+      { kind: 'suggest', text: '📰 Предложить пост' },
+    ],
+  );
+});
+
 test('duplicates content and recipients but requires a new schedule choice', () => {
   const source = createEmptyPublicationDraft([chatTarget, channelTarget]);
   source.title = 'Утренний дайджест';
@@ -449,11 +513,18 @@ test('duplicates content and recipients but requires a new schedule choice', () 
 });
 
 test('detects unsaved edit changes without treating refreshed target metadata as content', () => {
-  const initial = createEmptyPublicationDraft([chatTarget]);
+  const initial = createEmptyPublicationDraft([channelTarget]);
   initial.text = 'Исходный текст';
   const refreshedMetadata = {
     ...initial,
-    targets: [{ ...chatTarget, title: 'Новое название', avatarUrl: 'https://example.com/avatar' }],
+    targets: [
+      {
+        ...channelTarget,
+        title: 'Новое название',
+        avatarUrl: 'https://example.com/avatar',
+        channelOverview: { commentsEnabled: true, postSuggestionsEnabled: true },
+      },
+    ],
   };
 
   assert.equal(hasPublicationDraftChanges(initial, refreshedMetadata), false);

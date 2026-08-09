@@ -1772,6 +1772,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           return JSON.stringify(currentNormalized) === payloadKey ? saved : current;
         });
         setAutosaveState('saved');
+        void queryClient.invalidateQueries({
+          queryKey: ['publications', 'sources', 'channels'],
+        });
         return saved;
       })
       .catch((error: unknown) => {
@@ -2922,6 +2925,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (!editingManagedAutopostRule) {
+      if (!(await saveChannelSettingsForBroadcast())) {
+        return;
+      }
       navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
       return;
     }
@@ -2950,12 +2956,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function handleSendChannelBroadcast() {
+  async function handleSendChannelBroadcast() {
     if (!chatId) {
       return;
     }
 
     if (!editingManagedBroadcast && !hasLegacyBroadcastHandoff) {
+      if (!(await saveChannelSettingsForBroadcast())) {
+        return;
+      }
       navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
       return;
     }
