@@ -1,0 +1,865 @@
+import { ReplacementAttachMarkerStore } from './replacement-attach-marker.store';
+
+type TestMarkerRow = {
+  chatId: string;
+  messageId: string;
+  status: 'IN_PROGRESS' | 'SUCCEEDED' | 'SKIPPED';
+  lockToken: string | null;
+  lockedAt: Date | null;
+  source: 'webhook' | 'poll';
+  botId: string | null;
+  linkType: string | null;
+  deliveryMode: string | null;
+  replacementMessageId: string | null;
+  replyMessageId: string | null;
+  replacementSendStartedAt: Date | null;
+  lastError: string | null;
+  lastStatusCode?: number | null;
+};
+
+function createMarkerDelegate(initial: TestMarkerRow | null = null) {
+  let row = initial;
+
+  const delegate = {
+    findUnique: jest.fn(async () => row),
+    createMany: jest.fn(async ({ data }: any) => {
+      if (row) {
+        return { count: 0 };
+      }
+      row = {
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        lastError: null,
+        ...data[0],
+      } as TestMarkerRow;
+      return { count: 1 };
+    }),
+    updateMany: jest.fn(async ({ where, data }: any) => {
+      if (!row || row.chatId !== where.chatId || row.messageId !== where.messageId) {
+        return { count: 0 };
+      }
+      for (const field of [
+        'status',
+        'lockToken',
+        'deliveryMode',
+        'replacementMessageId',
+        'replyMessageId',
+        'replacementSendStartedAt',
+        'lastError',
+      ] as const) {
+        if (Object.prototype.hasOwnProperty.call(where, field) && row[field] !== where[field]) {
+          return { count: 0 };
+        }
+      }
+      if (
+        Array.isArray(where.OR) &&
+        !where.OR.some((condition: any) => {
+          if (condition.lockedAt === null) {
+            return row?.lockedAt === null;
+          }
+          const before = condition.lockedAt?.lt;
+          return before instanceof Date && row?.lockedAt instanceof Date && row.lockedAt < before;
+        })
+      ) {
+        return { count: 0 };
+      }
+      row = { ...row, ...data };
+      return { count: 1 };
+    }),
+  };
+
+  return {
+    delegate,
+    get row() {
+      return row;
+    },
+  };
+}
+
+function legacySkippedEdit(messageId: string): TestMarkerRow {
+  return {
+    chatId: 'channel-1',
+    messageId,
+    status: 'SKIPPED',
+    lockToken: null,
+    lockedAt: null,
+    source: 'poll',
+    botId: 'bot-edit',
+    linkType: null,
+    deliveryMode: 'edit_message',
+    replacementMessageId: null,
+    replyMessageId: null,
+    replacementSendStartedAt: null,
+    lastError: 'Error on message edit',
+    lastStatusCode: 400,
+  };
+}
+
+const channelClaim = {
+  chatId: 'channel-1',
+  source: 'poll' as const,
+  botId: 'bot-edit',
+  linkType: null,
+  hasEngagementButtons: true,
+};
+
+describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
+  it('reclaims a marker-backed skipped edit once and versions a repeated terminal edit failure', async () => {
+    const marker = createMarkerDelegate(legacySkippedEdit('message-marker'));
+    const auditFindFirst = jest.fn();
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: auditFindFirst },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    const first = await store.claimChannelAutoPost({
+      ...channelClaim,
+      messageId: 'message-marker',
+    });
+    expect(first).toEqual({
+      status: 'claimed',
+      lockToken: expect.stringContaining('channel-engagement-edit-recovery:v1:'),
+    });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'IN_PROGRESS',
+        lastError: expect.stringContaining('[channel-engagement-edit-recovery:v1]'),
+      }),
+    );
+
+    if (first.status !== 'claimed') {
+      throw new Error('Expected the legacy marker to be claimed');
+    }
+    await store.completeChannelAutoPost({
+      chatId: 'channel-1',
+      messageId: 'message-marker',
+      lockToken: first.lockToken,
+      status: 'SKIPPED',
+      source: 'poll',
+      botId: 'bot-edit',
+      linkType: null,
+      deliveryMode: 'edit_message',
+      lastError: 'Error on message edit',
+      lastStatusCode: 400,
+    });
+
+    await expect(
+      store.claimChannelAutoPost({ ...channelClaim, messageId: 'message-marker' }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        deliveryMode: 'edit_message',
+        lastError: '[channel-engagement-edit-recovery:v1] Error on message edit',
+      }),
+    );
+    expect(marker.delegate.updateMany).toHaveBeenCalledTimes(2);
+    expect(auditFindFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a stale replacement send fence on terminal completion', async () => {
+    const marker = createMarkerDelegate({
+      ...legacySkippedEdit('message-stale-fence'),
+      status: 'IN_PROGRESS',
+      lockToken: 'owned-lock',
+      lockedAt: new Date('2026-08-09T10:00:00.000Z'),
+      replacementSendStartedAt: new Date('2026-08-09T10:01:00.000Z'),
+    });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn() },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await store.completeChannelAutoPost({
+      chatId: 'channel-1',
+      messageId: 'message-stale-fence',
+      lockToken: 'owned-lock',
+      status: 'SUCCEEDED',
+      source: 'poll',
+      botId: 'bot-edit',
+      linkType: null,
+      deliveryMode: 'reply_message',
+      replyMessageId: 'reply-message',
+      lastError: null,
+      lastStatusCode: null,
+    });
+
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'SUCCEEDED',
+        replyMessageId: 'reply-message',
+        replacementSendStartedAt: null,
+      }),
+    );
+  });
+
+  it('clears a reply send fence after a confirmed terminal rejection without a remote id', async () => {
+    const marker = createMarkerDelegate({
+      ...legacySkippedEdit('message-confirmed-rejection'),
+      status: 'IN_PROGRESS',
+      lockToken: 'owned-lock',
+      lockedAt: new Date('2026-08-09T10:00:00.000Z'),
+      deliveryMode: 'reply_message',
+      replacementSendStartedAt: new Date('2026-08-09T10:01:00.000Z'),
+    });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn() },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await store.completeChannelAutoPost({
+      chatId: 'channel-1',
+      messageId: 'message-confirmed-rejection',
+      lockToken: 'owned-lock',
+      status: 'SKIPPED',
+      source: 'poll',
+      botId: 'bot-edit',
+      linkType: null,
+      deliveryMode: 'reply_message',
+      lastError: 'MAX rejected the fallback reply.',
+      lastStatusCode: 403,
+    });
+
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        lastStatusCode: 403,
+      }),
+    );
+  });
+
+  it('creates a durable marker for an audit-only skipped edit and does not reclaim it again', async () => {
+    const marker = createMarkerDelegate();
+    const auditFindFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: 'legacy-skip-audit',
+        payload: {
+          messageId: 'message-audit-only',
+          deliveryMode: 'edit_message',
+          linkType: null,
+          error: 'errors.process.attachment.movie.access.denied',
+        },
+      });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: auditFindFirst },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    const first = await store.claimChannelAutoPost({
+      ...channelClaim,
+      messageId: 'message-audit-only',
+    });
+    expect(first).toEqual({
+      status: 'claimed',
+      lockToken: expect.stringContaining('channel-engagement-edit-recovery:v1:'),
+    });
+    expect(marker.delegate.createMany).toHaveBeenCalledTimes(1);
+
+    if (first.status !== 'claimed') {
+      throw new Error('Expected the audit-only legacy skip to be claimed');
+    }
+    await store.completeChannelAutoPost({
+      chatId: 'channel-1',
+      messageId: 'message-audit-only',
+      lockToken: first.lockToken,
+      status: 'SKIPPED',
+      source: 'poll',
+      botId: null,
+      linkType: null,
+      deliveryMode: 'reply_message',
+      lastError: 'No eligible MAX send route is available for the channel reply fallback.',
+      lastStatusCode: 403,
+    });
+
+    await expect(
+      store.claimChannelAutoPost({ ...channelClaim, messageId: 'message-audit-only' }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        deliveryMode: 'reply_message',
+      }),
+    );
+    expect(marker.delegate.createMany).toHaveBeenCalledTimes(1);
+    expect(auditFindFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a transient fallback reply failure eligible for a later exact-state retry', async () => {
+    const marker = createMarkerDelegate(legacySkippedEdit('message-transient'));
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn() },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    const first = await store.claimChannelAutoPost({
+      ...channelClaim,
+      messageId: 'message-transient',
+    });
+    if (first.status !== 'claimed') {
+      throw new Error('Expected the legacy marker to be claimed');
+    }
+    await store.recordChannelReplySendStarted({
+      chatId: 'channel-1',
+      messageId: 'message-transient',
+      lockToken: first.lockToken,
+    });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        deliveryMode: 'reply_message',
+        replacementSendStartedAt: expect.any(Date),
+      }),
+    );
+    await store.releaseChannelAutoPost({
+      chatId: 'channel-1',
+      messageId: 'message-transient',
+      lockToken: first.lockToken,
+      source: 'poll',
+      botId: 'bot-edit',
+      linkType: null,
+      lastError: 'MAX throttle',
+      lastStatusCode: 429,
+    });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        lockToken: null,
+        lockedAt: null,
+        deliveryMode: 'edit_message',
+        replacementSendStartedAt: null,
+        lastError: 'MAX throttle',
+      }),
+    );
+
+    await expect(
+      store.claimChannelAutoPost({ ...channelClaim, messageId: 'message-transient' }),
+    ).resolves.toEqual({
+      status: 'claimed',
+      lockToken: expect.stringContaining('channel-engagement-edit-recovery:v1:'),
+    });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'IN_PROGRESS',
+        lastError: '[channel-engagement-edit-recovery:v1] MAX throttle',
+      }),
+    );
+  });
+
+  it.each([
+    {
+      label: 'only a post signature is enabled',
+      claim: { hasEngagementButtons: false, linkType: null },
+      marker: legacySkippedEdit('message-signature-only'),
+    },
+    {
+      label: 'the current post is forwarded',
+      claim: { hasEngagementButtons: true, linkType: 'forward' },
+      marker: legacySkippedEdit('message-forward'),
+    },
+    {
+      label: 'the old delivery used delete-message replacement',
+      claim: { hasEngagementButtons: true, linkType: null },
+      marker: {
+        ...legacySkippedEdit('message-replacement'),
+        deliveryMode: 'replace_with_bot_message',
+      },
+    },
+    {
+      label: 'the prior edit result is ambiguous',
+      claim: { hasEngagementButtons: true, linkType: null },
+      marker: {
+        ...legacySkippedEdit('message-ambiguous'),
+        lastError: '[max.send_ambiguous] Edit may have reached MAX',
+      },
+    },
+  ])('does not reclaim when $label', async ({ claim, marker: initialMarker }) => {
+    const marker = createMarkerDelegate(initialMarker);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn() },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        chatId: 'channel-1',
+        messageId: initialMarker.messageId,
+        source: 'poll',
+        botId: 'bot-edit',
+        ...claim,
+      }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(marker.delegate.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('lets successful auto-attach evidence win over an older skipped edit audit', async () => {
+    const marker = createMarkerDelegate();
+    const auditFindFirst = jest.fn().mockResolvedValueOnce({ id: 'successful-auto-attach' });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: auditFindFirst },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({ ...channelClaim, messageId: 'message-already-fixed' }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(auditFindFirst).toHaveBeenCalledTimes(1);
+    expect(marker.delegate.createMany).not.toHaveBeenCalled();
+  });
+
+  it('lets successful audit evidence win over a recoverable skipped marker', async () => {
+    const marker = createMarkerDelegate(legacySkippedEdit('message-marker-already-fixed'));
+    const auditFindFirst = jest.fn().mockResolvedValueOnce({ id: 'successful-publish' });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: auditFindFirst },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-marker-already-fixed',
+      }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(auditFindFirst).toHaveBeenCalledTimes(1);
+    expect(marker.delegate.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not reclaim an audit-only edit with ambiguous delivery evidence', async () => {
+    const marker = createMarkerDelegate();
+    const auditFindFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: 'ambiguous-skip-audit',
+        payload: {
+          messageId: 'message-ambiguous-audit',
+          deliveryMode: 'edit_message',
+          linkType: null,
+          error: '[max.send_ambiguous] Edit may have reached MAX',
+        },
+      });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: auditFindFirst },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-ambiguous-audit',
+      }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(marker.delegate.createMany).not.toHaveBeenCalled();
+  });
+
+  it('treats a managed channel engagement publish audit as completed', async () => {
+    const marker = createMarkerDelegate();
+    const auditFindFirst = jest.fn().mockImplementation(async ({ where }: any) => {
+      return where.action?.in?.includes('PUBLISH_CHANNEL_ENGAGEMENT')
+        ? { id: 'managed-publish-audit' }
+        : null;
+    });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: auditFindFirst },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({ ...channelClaim, messageId: 'message-managed-publish' }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(auditFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          action: {
+            in: ['AUTO_ATTACH_CHANNEL_ENGAGEMENT', 'PUBLISH_CHANNEL_ENGAGEMENT'],
+          },
+        }),
+      }),
+    );
+    expect(marker.delegate.createMany).not.toHaveBeenCalled();
+  });
+
+  it('lists marker-backed recovery candidates in a bounded eligible-channel window', async () => {
+    const markerFindMany = jest.fn().mockResolvedValue([
+      {
+        id: 'marker-oldest',
+        chatId: 'channel-1',
+        messageId: 'message-oldest',
+        createdAt: new Date('2026-08-03T10:00:00.000Z'),
+      },
+    ]);
+    const auditFindMany = jest.fn().mockResolvedValue([]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: auditFindMany },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:00:00.000Z'),
+        lookbackMs: 7 * 24 * 60 * 60_000,
+        minimumAgeMs: 10 * 60_000,
+        limit: 1,
+      }),
+    ).resolves.toEqual({
+      candidates: [
+        {
+          chatId: 'channel-1',
+          messageId: 'message-oldest',
+          evidence: 'marker',
+          evidenceId: 'marker-oldest',
+          evidenceAt: new Date('2026-08-03T10:00:00.000Z'),
+        },
+      ],
+      nextAuditCursor: null,
+      auditScanExhausted: false,
+    });
+    expect(markerFindMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        deliveryMode: 'edit_message',
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        createdAt: {
+          gte: new Date('2026-08-02T12:00:00.000Z'),
+          lte: new Date('2026-08-09T11:50:00.000Z'),
+        },
+        chat: {
+          channelSettings: {
+            is: {
+              OR: [{ commentsEnabled: true }, { postSuggestionsEnabled: true }],
+            },
+          },
+        },
+      }),
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 1,
+      select: {
+        id: true,
+        chatId: true,
+        messageId: true,
+        createdAt: true,
+      },
+    });
+    expect(auditFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          action: {
+            in: ['AUTO_ATTACH_CHANNEL_ENGAGEMENT', 'PUBLISH_CHANNEL_ENGAGEMENT'],
+          },
+          OR: [
+            {
+              chatId: 'channel-1',
+              payload: { path: ['messageId'], equals: 'message-oldest' },
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it('excludes marker candidates that already have successful audit evidence', async () => {
+    const markerFindMany = jest.fn().mockResolvedValue([
+      {
+        id: 'marker-already-fixed',
+        chatId: 'channel-1',
+        messageId: 'message-already-fixed',
+        createdAt: new Date('2026-08-09T10:00:00.000Z'),
+      },
+    ]);
+    const auditFindMany = jest
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          chatId: 'channel-1',
+          payload: { messageId: 'message-already-fixed' },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: auditFindMany },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:00:00.000Z'),
+        limit: 1,
+      }),
+    ).resolves.toEqual({
+      candidates: [],
+      nextAuditCursor: null,
+      auditScanExhausted: true,
+    });
+    expect(auditFindMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('includes stale in-progress recovery locks without a send fence', async () => {
+    const markerFindMany = jest.fn().mockResolvedValue([
+      {
+        id: 'marker-stale-recovery',
+        chatId: 'channel-1',
+        messageId: 'message-stale-recovery',
+        createdAt: new Date('2026-08-09T10:00:00.000Z'),
+      },
+    ]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: jest.fn().mockResolvedValue([]) },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:00:00.000Z'),
+        limit: 1,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        candidates: [
+          expect.objectContaining({
+            messageId: 'message-stale-recovery',
+            evidence: 'marker',
+          }),
+        ],
+      }),
+    );
+    expect(markerFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  status: 'IN_PROGRESS',
+                  lastError: {
+                    startsWith: '[channel-engagement-edit-recovery:v1]',
+                  },
+                  OR: [
+                    { lockedAt: null },
+                    { lockedAt: { lt: new Date('2026-08-09T11:58:00.000Z') } },
+                  ],
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it('uses only remaining page capacity for audit candidates', async () => {
+    const markerFindMany = jest
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          id: 'marker-1',
+          chatId: 'channel-1',
+          messageId: 'message-marker',
+          createdAt: new Date('2026-08-09T10:00:00.000Z'),
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    const auditFindMany = jest
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'audit-1',
+          chatId: 'channel-2',
+          payload: {
+            messageId: 'message-audit',
+            deliveryMode: 'edit_message',
+            linkType: null,
+          },
+          createdAt: new Date('2026-08-09T10:30:00.000Z'),
+        },
+      ]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: auditFindMany },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:00:00.000Z'),
+        limit: 2,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        candidates: [
+          expect.objectContaining({ messageId: 'message-marker' }),
+          expect.objectContaining({ messageId: 'message-audit' }),
+        ],
+        nextAuditCursor: {
+          createdAt: new Date('2026-08-09T10:30:00.000Z'),
+          id: 'audit-1',
+        },
+      }),
+    );
+    expect(auditFindMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ take: 1 }));
+  });
+
+  it('pages audit-only candidates deterministically and excludes rows with durable markers', async () => {
+    const markerFindMany = jest
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          chatId: 'channel-1',
+          messageId: 'message-with-marker',
+        },
+      ]);
+    const auditFindMany = jest.fn().mockResolvedValue([
+      {
+        id: 'audit-1',
+        chatId: 'channel-1',
+        payload: {
+          messageId: 'message-with-marker',
+          deliveryMode: 'edit_message',
+          linkType: null,
+        },
+        createdAt: new Date('2026-08-07T10:00:00.000Z'),
+      },
+      {
+        id: 'audit-2',
+        chatId: 'channel-2',
+        payload: {
+          messageId: 'message-audit-only',
+          deliveryMode: 'edit_message',
+          linkType: null,
+        },
+        createdAt: new Date('2026-08-07T11:00:00.000Z'),
+      },
+    ]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: auditFindMany },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:00:00.000Z'),
+        limit: 2,
+        auditCursor: {
+          createdAt: new Date('2026-08-07T08:00:00.000Z'),
+          id: 'audit-cursor',
+        },
+      }),
+    ).resolves.toEqual({
+      candidates: [
+        {
+          chatId: 'channel-2',
+          messageId: 'message-audit-only',
+          evidence: 'audit',
+          evidenceId: 'audit-2',
+          evidenceAt: new Date('2026-08-07T11:00:00.000Z'),
+        },
+      ],
+      nextAuditCursor: {
+        createdAt: new Date('2026-08-07T11:00:00.000Z'),
+        id: 'audit-2',
+      },
+      auditScanExhausted: false,
+    });
+    expect(auditFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
+          createdAt: {
+            gte: new Date('2026-08-06T12:00:00.000Z'),
+            lte: new Date('2026-08-09T11:55:00.000Z'),
+          },
+          payload: { path: ['deliveryMode'], equals: 'edit_message' },
+          OR: [
+            { createdAt: { gt: new Date('2026-08-07T08:00:00.000Z') } },
+            {
+              createdAt: new Date('2026-08-07T08:00:00.000Z'),
+              id: { gt: 'audit-cursor' },
+            },
+          ],
+          chat: {
+            channelSettings: {
+              is: {
+                OR: [{ commentsEnabled: true }, { postSuggestionsEnabled: true }],
+              },
+            },
+          },
+        }),
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: 2,
+      }),
+    );
+    expect(markerFindMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        OR: [
+          { chatId: 'channel-1', messageId: 'message-with-marker' },
+          { chatId: 'channel-2', messageId: 'message-audit-only' },
+        ],
+      },
+      select: { chatId: true, messageId: true },
+    });
+  });
+
+  it('caps candidate count and lookback before querying', async () => {
+    const markerFindMany = jest.fn().mockResolvedValue([]);
+    const auditFindMany = jest.fn().mockResolvedValue([]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: auditFindMany },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    await store.listLegacyChannelEditRecoveryCandidates({
+      now: new Date('2026-08-09T12:00:00.000Z'),
+      limit: 10_000,
+      lookbackMs: 10 * 365 * 24 * 60 * 60_000,
+      minimumAgeMs: 0,
+    });
+
+    expect(markerFindMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          createdAt: {
+            gte: new Date('2026-08-02T12:00:00.000Z'),
+            lte: new Date('2026-08-09T12:00:00.000Z'),
+          },
+        }),
+        take: 100,
+      }),
+    );
+    expect(auditFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 100,
+      }),
+    );
+  });
+});

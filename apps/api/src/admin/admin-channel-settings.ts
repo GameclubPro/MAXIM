@@ -20,39 +20,6 @@ function readTrimmedString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export function normalizeChannelAutoPostButtonsMode(
-  settings: Pick<ChannelSettings, 'autoPostButtonsMode'>,
-): ChannelSettings['autoPostButtonsMode'] {
-  // Delivery intersects this preference with enabled features at send time.
-  return settings.autoPostButtonsMode;
-}
-
-export function enableChannelSuggestionAutoPostButton(
-  mode: ChannelSettings['autoPostButtonsMode'],
-): ChannelSettings['autoPostButtonsMode'] {
-  if (mode === 'OFF') {
-    return 'SUGGEST';
-  }
-  if (mode === 'COMMENTS') {
-    return 'BOTH';
-  }
-  return mode;
-}
-
-export function applyChannelSettingsEnableTransitions(
-  settings: ChannelSettings,
-  current: Pick<ChannelSettings, 'postSuggestionsEnabled'> | null,
-): ChannelSettings {
-  if (!settings.postSuggestionsEnabled || current?.postSuggestionsEnabled === true) {
-    return settings;
-  }
-
-  return {
-    ...settings,
-    autoPostButtonsMode: enableChannelSuggestionAutoPostButton(settings.autoPostButtonsMode),
-  };
-}
-
 export function sanitizeStoredChannelSettings(settings: unknown): unknown {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
     return settings;
@@ -102,11 +69,7 @@ export function normalizeChannelSettings(
   settings: ChannelSettings,
   chatId?: string,
 ): ChannelSettings {
-  const normalizedSettings = {
-    ...settings,
-    autoPostButtonsMode: normalizeChannelAutoPostButtonsMode(settings),
-  };
-
+  const normalizedSettings = { ...settings };
   return chatId ? normalizeChannelSettingsButtonUrls(normalizedSettings) : normalizedSettings;
 }
 
@@ -138,20 +101,10 @@ export function getStoredChannelSettingsSanitizationChanges(
 }
 
 export function getChannelSettingsNormalizationChanges(
-  current: Pick<
-    ChannelSettings,
-    'autoPostButtonsMode' | 'postSuggestionsButtonEnabled' | 'postSuggestionsButtonUrl'
-  >,
-  normalized: Pick<
-    ChannelSettings,
-    'autoPostButtonsMode' | 'postSuggestionsButtonEnabled' | 'postSuggestionsButtonUrl'
-  >,
+  current: Pick<ChannelSettings, 'postSuggestionsButtonEnabled' | 'postSuggestionsButtonUrl'>,
+  normalized: Pick<ChannelSettings, 'postSuggestionsButtonEnabled' | 'postSuggestionsButtonUrl'>,
 ): Partial<ChannelSettings> {
   const changes: Partial<ChannelSettings> = {};
-
-  if (current.autoPostButtonsMode !== normalized.autoPostButtonsMode) {
-    changes.autoPostButtonsMode = normalized.autoPostButtonsMode;
-  }
 
   if (current.postSuggestionsButtonUrl !== normalized.postSuggestionsButtonUrl) {
     changes.postSuggestionsButtonUrl = normalized.postSuggestionsButtonUrl;
@@ -257,17 +210,8 @@ export async function saveChannelSettings(params: {
     throw new BadRequestException(parsed.error.format());
   }
   const normalizedSettings = normalizeChannelSettings(parsed.data, params.chatId);
-  const [currentSettings, botAssignmentData] = await Promise.all([
-    params.prisma.channelSettings.findUnique({
-      where: { chatId: params.chatId },
-      select: { postSuggestionsEnabled: true },
-    }),
-    params.resolveBotAssignmentData(),
-  ]);
-  const settingsToSave = applyChannelSettingsEnableTransitions(
-    normalizedSettings,
-    currentSettings,
-  );
+  const botAssignmentData = await params.resolveBotAssignmentData();
+  const settingsToSave = normalizedSettings;
 
   await params.prisma.chat.upsert({
     where: { id: params.chatId },

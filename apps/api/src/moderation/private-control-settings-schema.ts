@@ -20,7 +20,7 @@ export const SECTION_LABELS: Record<PrivateSectionKey, string> = {
 
 export const CHANNEL_SECTION_LABELS: Record<ChannelSectionKey, string> = {
   post_suggestions: 'Предложка',
-  comments: 'Обсуждение и реакции',
+  comments: 'Комментарии в приложении',
 };
 
 export const CHANNEL_SECTION_FIELDS: Record<
@@ -41,8 +41,8 @@ export const CHANNEL_SECTION_FIELDS: Record<
     { key: 'postSuggestionsButtonUrl', label: 'Ссылка кнопки (из MAX)', type: 'url' },
   ],
   comments: [
-    { key: 'commentsEnabled', label: 'Сценарий обсуждения через бота/чат', type: 'boolean' },
-    { key: 'commentsModerationEnabled', label: 'Модерация обсуждений ботом', type: 'boolean' },
+    { key: 'commentsEnabled', label: 'Комментарии в приложении', type: 'boolean' },
+    { key: 'commentsModerationEnabled', label: 'Модерация комментариев ботом', type: 'boolean' },
     { key: 'commentsMessageText', label: 'Текст-подсказка для участников', type: 'text' },
   ],
 };

@@ -35,7 +35,6 @@ export type ManagedBroadcastButtonContextResult = {
     includeSuggestButton: boolean;
     suggestButtonText: string | null;
     customButtons: BroadcastLinkButton[];
-    autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
     suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
     botId: string | null;
   } | null;

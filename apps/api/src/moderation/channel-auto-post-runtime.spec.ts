@@ -102,14 +102,70 @@ describe('channel auto-post runtime', () => {
       textFormat: null,
       linkType: 'forward',
       timestampMs: 1234,
-      hasInlineKeyboard: true,
       senderId: 'admin-1',
+      existingDialogButtonKinds: [],
+      existingDialogThreadId: null,
     });
     expect(parseChannelAutoPostListedMessage({ timestamp: 1234 })).toBeNull();
     expect(parseChannelAutoPostListedMessage({ id: 'message-1', timestamp: 'invalid' })).toBeNull();
   });
 
-  it('detects channel messages, link types, event timestamps, and retained button choices', () => {
+  it('detects existing internal channel buttons without treating custom or cross-channel links as owned', () => {
+    const commentsToken = `cdt-${Buffer.from(
+      JSON.stringify({ v: 1, d: 'comments-thread', s: 'a'.repeat(64) }),
+      'utf8',
+    ).toString('base64url')}`;
+    expect(
+      parseChannelAutoPostListedMessage(
+        {
+          id: 'message-1',
+          timestamp: 1234,
+          body: {
+            text: 'Post',
+            attachments: [
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [
+                    [
+                      {
+                        type: 'link',
+                        text: 'Мои комментарии',
+                        url: `https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=${commentsToken}`,
+                      },
+                    ],
+                    [
+                      {
+                        type: 'link',
+                        text: 'Предложить',
+                        url: `https://max.ru/bot-1?start=cds-channel-1.${'a'.repeat(32)}.${'b'.repeat(24)}`,
+                      },
+                    ],
+                    [
+                      {
+                        type: 'link',
+                        text: 'Другой канал',
+                        url: 'https://major-maksimov.ru/app/channel/channel-2/dialog/comments?token=cdt-other',
+                      },
+                    ],
+                    [{ type: 'link', text: 'Сайт', url: 'https://example.com/' }],
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        'channel-1',
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        existingDialogButtonKinds: ['comments', 'suggest'],
+        existingDialogThreadId: 'comments-thread',
+      }),
+    );
+  });
+
+  it('detects channel messages and derives button visibility from feature toggles', () => {
     const update = {
       updateId: 'update-1',
       type: 'message_created',
@@ -133,13 +189,29 @@ describe('channel auto-post runtime', () => {
     expect(resolveChannelAutoPostEventTimestampMs(update, 1)).toBe(
       Date.parse('2026-07-19T10:00:00.000Z'),
     );
-    expect(
+    expect([
       resolveChannelAutoPostButtonVisibility({
-        autoPostButtonsMode: 'BOTH',
+        commentsEnabled: false,
+        postSuggestionsEnabled: false,
+      }),
+      resolveChannelAutoPostButtonVisibility({
+        commentsEnabled: true,
+        postSuggestionsEnabled: false,
+      }),
+      resolveChannelAutoPostButtonVisibility({
         commentsEnabled: false,
         postSuggestionsEnabled: true,
       }),
-    ).toEqual({ includeCommentsButton: false, includeSuggestButton: true });
+      resolveChannelAutoPostButtonVisibility({
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+      }),
+    ]).toEqual([
+      { includeCommentsButton: false, includeSuggestButton: false },
+      { includeCommentsButton: true, includeSuggestButton: false },
+      { includeCommentsButton: false, includeSuggestButton: true },
+      { includeCommentsButton: true, includeSuggestButton: true },
+    ]);
   });
 
   it('selects only due channels and rotates large batches fairly', () => {
@@ -238,16 +310,16 @@ describe('channel auto-post runtime', () => {
     });
 
     expect(attach).toHaveBeenCalledTimes(1);
-    expect(attach).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'valid' }));
+    expect(attach).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'keyboard' }));
     expect(manager.states.get('channel-1')).toMatchObject({
-      latestTimestampMs: 103,
-      latestMessageIdsAtTimestamp: ['valid'],
+      latestTimestampMs: 102,
+      latestMessageIdsAtTimestamp: ['keyboard'],
       idleStreak: 0,
       nextScanAtMs: 11_000,
     });
   });
 
-  it('passes an existing inline keyboard to signature-only repair when explicitly enabled', async () => {
+  it('processes posts with an existing inline keyboard for repair', async () => {
     const manager = createScanManager(() => 10_000);
     const attach = jest.fn().mockResolvedValue('attached');
 
@@ -266,14 +338,12 @@ describe('channel auto-post runtime', () => {
       adminUserIds: [],
       settingsUpdatedAtMs: 102,
       maxNewMessagesPerScan: 1,
-      processMessagesWithInlineKeyboard: true,
       attach,
     });
 
     expect(attach).toHaveBeenCalledWith(
       expect.objectContaining({
         messageId: 'signed-repair',
-        hasInlineKeyboard: true,
       }),
     );
   });

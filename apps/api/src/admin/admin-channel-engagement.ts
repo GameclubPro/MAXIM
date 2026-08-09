@@ -85,9 +85,18 @@ export async function publishChannelEngagementMessage(params: {
       engagementPublishedBotId: true,
       engagementPublishedThreadId: true,
       engagementPublishedAt: true,
+      commentsEnabled: true,
+      postSuggestionsEnabled: true,
       postSuggestionsEntryMode: true,
     },
   });
+  const includeCommentsButton = persistedSettings.commentsEnabled;
+  const includeSuggestButton = persistedSettings.postSuggestionsEnabled;
+  if (!includeCommentsButton && !includeSuggestButton) {
+    throw new BadRequestException(
+      'Включите комментарии или предложения постов в настройках канала.',
+    );
+  }
   let sendBotIdResolved = false;
   let resolvedSendBotId: string | undefined;
   const resolveSendBotId = async () => {
@@ -124,10 +133,10 @@ export async function publishChannelEngagementMessage(params: {
       suggestionEntryMode,
     });
     const buttons: MaxMessageButton[][] = [];
-    if (parsed.data.includeCommentsButton) {
+    if (includeCommentsButton) {
       buttons.push([artifacts.commentsButton]);
     }
-    if (parsed.data.includeSuggestButton) {
+    if (includeSuggestButton) {
       buttons.push([artifacts.suggestButton]);
     }
     return { ...artifacts, buttons };
@@ -221,8 +230,8 @@ export async function publishChannelEngagementMessage(params: {
         text: parsed.data.text,
         commentsButtonText: parsed.data.commentsButtonText,
         suggestButtonText: parsed.data.suggestButtonText,
-        includeCommentsButton: parsed.data.includeCommentsButton,
-        includeSuggestButton: parsed.data.includeSuggestButton,
+        includeCommentsButton,
+        includeSuggestButton,
         threadId,
         updatedExisting,
         recreatedFromMessageId,

@@ -87,7 +87,6 @@ export type ChannelPublicationEngagementContext = {
   includeCommentsButton: boolean;
   includeSuggestButton: boolean;
   suggestButtonText: string | null;
-  autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
 };
 

@@ -1,5 +1,9 @@
 import type { MaxUpdate } from '@maxim/contracts';
 
+import {
+  readInternalChannelDialogButtonIdentitiesFromMessage,
+  type InternalChannelDialogButtonIdentity,
+} from '../common/channel-dialog-button-identity.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderMaxTextMarkupAsHtml, type MaxTextMarkup } from '../common/max-text-markup.util';
 import type { MaxMessageButton, MaxSendMessageOptions } from '../max/max-client.service';
@@ -22,8 +26,9 @@ export type ChannelAutoPostListedMessage = ChannelAutoPostMessageText & {
   messageId: string;
   linkType: string | null;
   timestampMs: number;
-  hasInlineKeyboard: boolean;
   senderId: string | null;
+  existingDialogButtonKinds: InternalChannelDialogButtonIdentity['kind'][];
+  existingDialogThreadId: string | null;
 };
 
 export type ChannelAutoPostAttachOutcome = 'attached' | 'skipped' | 'noop' | 'in_progress';
@@ -50,7 +55,6 @@ type ProcessChannelAutoPostListedMessagesParams = {
   adminUserIds: readonly string[];
   settingsUpdatedAtMs: number;
   maxNewMessagesPerScan: number;
-  processMessagesWithInlineKeyboard?: boolean;
   attach: (message: ChannelAutoPostListedMessage) => Promise<ChannelAutoPostAttachOutcome>;
 };
 
@@ -227,6 +231,7 @@ export function resolveChannelAutoPostMessageText(
 
 export function parseChannelAutoPostListedMessage(
   message: Record<string, unknown>,
+  expectedChatId?: string,
 ): ChannelAutoPostListedMessage | null {
   const body = asRecord(message.body);
   const link = asRecord(message.link);
@@ -252,13 +257,9 @@ export function parseChannelAutoPostListedMessage(
     return null;
   }
 
-  const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
-  const hasInlineKeyboard = attachments.some((attachment) => {
-    const row = asRecord(attachment);
-    return readLowerString(row?.type) === 'inline_keyboard';
-  });
   const messageText = resolveChannelAutoPostMessageText(message, null);
   const senderId = asRecord(message.sender)?.user_id ?? message.sender_id;
+  const existingDialogButtons = extractChannelAutoPostDialogButtons(message, expectedChatId);
 
   return {
     messageId: String(messageIdCandidate),
@@ -266,8 +267,27 @@ export function parseChannelAutoPostListedMessage(
     textFormat: messageText.textFormat,
     linkType: readLowerString(link?.type),
     timestampMs,
-    hasInlineKeyboard,
     senderId: typeof senderId === 'string' && senderId.trim() ? senderId.trim() : null,
+    existingDialogButtonKinds: existingDialogButtons.kinds,
+    existingDialogThreadId: existingDialogButtons.threadId,
+  };
+}
+
+export function extractChannelAutoPostDialogButtons(
+  message: Record<string, unknown> | null,
+  expectedChatId?: string,
+): {
+  kinds: InternalChannelDialogButtonIdentity['kind'][];
+  threadId: string | null;
+} {
+  const identities = readInternalChannelDialogButtonIdentitiesFromMessage(message, expectedChatId);
+
+  return {
+    kinds: [...new Set(identities.map((identity) => identity.kind))],
+    threadId:
+      identities.find((identity) => identity.kind === 'comments' && identity.threadId)?.threadId ??
+      identities.find((identity) => identity.threadId)?.threadId ??
+      null,
   };
 }
 
@@ -334,18 +354,15 @@ export function extractChannelAutoPostMessageLinkType(update: MaxUpdate): string
 }
 
 export function resolveChannelAutoPostButtonVisibility(settings: {
-  autoPostButtonsMode: 'OFF' | 'COMMENTS' | 'SUGGEST' | 'BOTH' | null;
   postSuggestionsEnabled: boolean;
   commentsEnabled: boolean;
 }): {
   includeCommentsButton: boolean;
   includeSuggestButton: boolean;
 } {
-  const mode = settings.autoPostButtonsMode ?? 'OFF';
   return {
-    includeCommentsButton: (mode === 'COMMENTS' || mode === 'BOTH') && settings.commentsEnabled,
-    includeSuggestButton:
-      (mode === 'SUGGEST' || mode === 'BOTH') && settings.postSuggestionsEnabled,
+    includeCommentsButton: settings.commentsEnabled,
+    includeSuggestButton: settings.postSuggestionsEnabled,
   };
 }
 
@@ -570,7 +587,7 @@ export class ChannelAutoPostScanManager {
 
   async processListedMessages(params: ProcessChannelAutoPostListedMessagesParams): Promise<void> {
     const normalizedMessages = params.messages
-      .map((message) => parseChannelAutoPostListedMessage(message))
+      .map((message) => parseChannelAutoPostListedMessage(message, params.chatId))
       .filter((item): item is ChannelAutoPostListedMessage => item !== null)
       .sort(
         (left, right) =>
@@ -587,8 +604,7 @@ export class ChannelAutoPostScanManager {
       sawNewMessages = true;
       if (
         (normalized.senderId && !params.adminUserIds.includes(normalized.senderId)) ||
-        normalized.timestampMs < params.settingsUpdatedAtMs ||
-        (normalized.hasInlineKeyboard && !params.processMessagesWithInlineKeyboard)
+        normalized.timestampMs < params.settingsUpdatedAtMs
       ) {
         scanState = this.advance(scanState, normalized);
         this.states.set(params.chatId, scanState);

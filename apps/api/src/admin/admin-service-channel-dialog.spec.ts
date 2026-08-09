@@ -12,9 +12,49 @@ import {
   createChatContextCacheMock,
   decodeBase64UrlJson,
   readDialogButtonToken,
-  publishCommentsDialogToken,
-  publishSuggestDialogToken,
+  publishCommentsDialogToken as publishCommentsDialogTokenFromPreparedSettings,
+  publishSuggestDialogToken as publishSuggestDialogTokenFromPreparedSettings,
 } from './admin-service-test-support';
+
+function mockChannelEngagementSettings(
+  prisma: ReturnType<typeof createPrismaMock>,
+  overrides: Record<string, unknown> = {},
+): void {
+  prisma.channelSettings.upsert.mockResolvedValueOnce({
+    chatId: 'channel-1',
+    ...channelSettingsSchema.parse({
+      commentsEnabled: true,
+      postSuggestionsEnabled: true,
+    }),
+    engagementPublishedMessageId: null,
+    engagementPublishedBotId: null,
+    engagementPublishedThreadId: null,
+    engagementPublishedAt: null,
+    ...overrides,
+  });
+}
+
+async function publishCommentsDialogToken(
+  ...args: Parameters<typeof publishCommentsDialogTokenFromPreparedSettings>
+) {
+  const prisma = (args[0] as unknown as { prisma: ReturnType<typeof createPrismaMock> }).prisma;
+  mockChannelEngagementSettings(prisma, {
+    commentsEnabled: true,
+    postSuggestionsEnabled: false,
+  });
+  return publishCommentsDialogTokenFromPreparedSettings(...args);
+}
+
+async function publishSuggestDialogToken(
+  ...args: Parameters<typeof publishSuggestDialogTokenFromPreparedSettings>
+) {
+  const prisma = (args[0] as unknown as { prisma: ReturnType<typeof createPrismaMock> }).prisma;
+  mockChannelEngagementSettings(prisma, {
+    commentsEnabled: false,
+    postSuggestionsEnabled: true,
+  });
+  return publishSuggestDialogTokenFromPreparedSettings(...args);
+}
 
 describe('AdminService.publishChannelEngagementMessage', () => {
   it('publishes channel buttons as MAX deep links with a dedicated post thread', async () => {
@@ -22,6 +62,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
     });
+    mockChannelEngagementSettings(prisma);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -114,17 +155,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
     });
-    prisma.channelSettings.upsert.mockResolvedValueOnce({
-      chatId: 'channel-1',
-      autoPostButtonsMode: 'BOTH',
-      postSuggestionsEnabled: true,
-      postSuggestionsEntryMode: 'MINIAPP',
-      postSuggestionsButtonText: 'Предложить пост',
-      commentsEnabled: true,
-      engagementPublishedMessageId: null,
-      engagementPublishedThreadId: null,
-      engagementPublishedAt: null,
-    });
+    mockChannelEngagementSettings(prisma, { postSuggestionsEntryMode: 'MINIAPP' });
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -173,10 +204,14 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(String(publishAuditPayload.suggestUrl)).toContain('?startapp=');
   });
 
-  it('publishes only the selected engagement button rows', async () => {
+  it('ignores legacy button flags and derives rows from channel feature toggles', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
+    });
+    mockChannelEngagementSettings(prisma, {
+      commentsEnabled: true,
+      postSuggestionsEnabled: false,
     });
 
     const maxClient = {
@@ -218,7 +253,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(options.buttons?.[0]).toHaveLength(1);
     expect(options.buttons?.[0]?.[0]).toMatchObject({
       type: 'link',
-      text: 'Предложить пост',
+      text: 'Комментарии · 0',
     });
   });
 
@@ -377,11 +412,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           text: 'Нажмите кнопку ниже.',
           commentsButtonText: 'Комментарии',
           suggestButtonText: 'Предложить пост',
-          includeCommentsButton: false,
-          includeSuggestButton: false,
         },
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow('Включите комментарии или предложения постов в настройках канала.');
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
@@ -396,6 +429,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         commentsEnabled: true,
       }),
     );
+    mockChannelEngagementSettings(prisma, {
+      commentsEnabled: true,
+      postSuggestionsEnabled: false,
+    });
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
       id: 'message-1',
       actorUserId: 'user-1',
@@ -1286,6 +1323,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-engagement-99',
       null,
       expect.objectContaining({
+        appendNewInlineKeyboardRows: true,
         buttons: [
           [
             {
@@ -1297,6 +1335,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
+        mergeExistingInlineKeyboard: true,
       }),
       { botId: 'channel-bot-2' },
     );
@@ -1389,11 +1428,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-auto-suggest-99',
       null,
       expect.objectContaining({
+        appendNewInlineKeyboardRows: true,
         buttons: [
           [{ type: 'link', text: 'Заказать рекламу', url: 'https://max.ru/advertiser' }],
           [{ type: 'link', text: 'Прайс', url: 'https://max.ru/pricelist' }],
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
+        mergeExistingInlineKeyboard: true,
       }),
     );
   });
@@ -4311,7 +4352,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
-        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: '📰 Предложить пост',
@@ -4596,7 +4636,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       });
       prisma.channelSettings.findUnique.mockResolvedValue(
         channelSettingsSchema.parse({
-          autoPostButtonsMode: 'OFF',
           commentsEnabled: false,
           postSuggestionsEnabled: false,
         }),
@@ -5140,7 +5179,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
-        autoPostButtonsMode: 'OFF',
         commentsEnabled: false,
         postSuggestionsEnabled: false,
       }),
@@ -5213,7 +5251,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
-        autoPostButtonsMode: 'OFF',
         commentsEnabled: false,
         postSuggestionsEnabled: false,
       }),
@@ -5288,7 +5325,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
-        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: '📰 Предложить пост',
@@ -5422,7 +5458,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
-        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: 'Предложить пост',
@@ -5574,7 +5609,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
-        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: 'Предложить пост',
@@ -5723,7 +5757,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
-        autoPostButtonsMode: 'BOTH',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: 'Предложить пост',
@@ -5867,6 +5900,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
+      commentsEnabled: true,
+      postSuggestionsEnabled: true,
+      postSuggestionsEntryMode: 'BOT',
       engagementPublishedMessageId: 'mid-existing-engagement-1',
       engagementPublishedThreadId: 'thread-existing-1',
       engagementPublishedAt: new Date('2026-03-10T12:00:00.000Z'),
@@ -5942,6 +5978,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
+      commentsEnabled: true,
+      postSuggestionsEnabled: true,
       engagementPublishedMessageId: 'mid-existing-engagement-1',
       engagementPublishedBotId: 'channel-bot-2',
       engagementPublishedThreadId: 'thread-existing-1',
@@ -6062,6 +6100,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
+      commentsEnabled: true,
+      postSuggestionsEnabled: true,
       engagementPublishedMessageId: 'mid-legacy-engagement-1',
       engagementPublishedBotId: null,
       engagementPublishedThreadId: 'thread-legacy-1',
@@ -6175,6 +6215,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
+      commentsEnabled: true,
+      postSuggestionsEnabled: true,
       engagementPublishedMessageId: 'mid-legacy-engagement-denied-1',
       engagementPublishedBotId: null,
       engagementPublishedThreadId: 'thread-legacy-denied-1',

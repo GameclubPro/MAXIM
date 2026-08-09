@@ -233,8 +233,6 @@ describe('ModerationService chat admin access lookups', () => {
             nightModeForceCloseEnabled: false,
             nightModeForceCloseForever: false,
             nightModeForceCloseUntil: null,
-            channelAutoPostButtonsEnabled: false,
-            channelAutoPostButtonsMode: 'OFF',
           },
           domainAllowlist: [],
           adminUserIds: ['admin-1'],

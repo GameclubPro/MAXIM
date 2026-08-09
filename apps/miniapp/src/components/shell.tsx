@@ -153,12 +153,12 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
     const isSuggest = pathname.includes('/dialog/suggest');
     const entityLabel = pathname.includes('/channel/') ? 'Канал' : 'Чат';
     return {
-      title: isSuggest ? 'Идея для поста' : 'Обсуждение',
+      title: isSuggest ? 'Идея для поста' : 'Комментарии в приложении',
       subtitle: chatLabel
         ? `${entityLabel}: ${chatLabel}`
         : isSuggest
           ? 'Отправка идеи поста админу.'
-          : 'Диалог обсуждения в приложении.',
+          : 'Комментарии к публикации в приложении.',
     };
   }
 

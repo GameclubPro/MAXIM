@@ -4266,7 +4266,6 @@ export class AdminManagedBroadcastRuntime {
             ...commonPayload,
             includeCommentsButton: reference.includeCommentsButton,
             includeSuggestButton: reference.includeSuggestButton,
-            autoPostButtonsMode: reference.autoPostButtonsMode,
             suggestionEntryMode: reference.suggestionEntryMode,
             ...(reference.suggestButtonText
               ? { suggestButtonText: reference.suggestButtonText }

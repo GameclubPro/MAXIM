@@ -85,10 +85,8 @@ export const applySettingsSectionSchema = z.enum([
   'commands',
   'extra',
 ]);
-export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
 export const channelSuggestionEntryModeSchema = z.enum(['BOT', 'MINIAPP']);
 export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
-export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
 export type ChannelSuggestionEntryMode = z.infer<typeof channelSuggestionEntryModeSchema>;
 
 export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
@@ -1367,7 +1365,6 @@ export type PublishChatRulesResult = z.infer<typeof publishChatRulesResultSchema
 
 export const channelSettingsSchema = z
   .object({
-    autoPostButtonsMode: channelAutoPostButtonsModeSchema.default('OFF'),
     postSuggestionsEnabled: z.boolean().default(false),
     postSuggestionsText: botMessageTextSchema,
     postSuggestionsDailyLimit: z.number().int().min(1).max(10).default(10),

@@ -11,7 +11,7 @@ export type ModerationBotRoutingDependencies = {
   maxBotContextService?: MaxBotContextService;
 };
 
-export type ModerationActionBotAction = 'delete_message' | 'moderate_member';
+export type ModerationActionBotAction = 'delete_message' | 'edit_message' | 'moderate_member';
 
 type ModerationActionBotResolver = {
   resolveBotIdsForModerationAction?: (params: {

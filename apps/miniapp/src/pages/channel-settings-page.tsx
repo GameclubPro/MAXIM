@@ -4,7 +4,6 @@ import {
   CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH,
   type BroadcastImage,
   type BroadcastLinkButton,
-  type ChannelAutoPostButtonsMode,
   type ChannelPostSignatureSettings,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
@@ -135,10 +134,7 @@ import {
   type BroadcastComposerDraft,
 } from '../lib/broadcast-composer-draft';
 import { normalizeComposerBroadcastImages } from '../lib/broadcast-image-list-basic';
-import {
-  buildChannelBroadcastSystemButtons,
-  enableChannelSuggestionAutoPostButton,
-} from '../lib/broadcast-system-buttons';
+import { buildChannelBroadcastSystemButtons } from '../lib/broadcast-system-buttons';
 import { saveUntilLatestDraftIsPersisted } from '../lib/latest-draft-save';
 import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
@@ -375,10 +371,6 @@ function toLocalTimeInputValue(value: Date): string {
   const hours = String(value.getHours()).padStart(2, '0');
   const minutes = String(value.getMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;
-}
-
-function sanitizeAutoPostButtonsMode(mode: ChannelAutoPostButtonsMode): ChannelAutoPostButtonsMode {
-  return mode;
 }
 
 function isHttpUrl(value: string): boolean {
@@ -863,11 +855,8 @@ function normalizeChannelSettingsDraft(
   draft: ChannelSettings,
   resolvedChannelLink: string,
 ): ChannelSettings {
-  const autoPostButtonsMode = sanitizeAutoPostButtonsMode(draft.autoPostButtonsMode);
-
   return {
     ...draft,
-    autoPostButtonsMode,
     engagementMessageText:
       draft.engagementMessageText.trim() || 'Есть идея или обратная связь? Нажмите кнопку ниже.',
     postSuggestionsDailyLimit: Math.max(
@@ -1713,20 +1702,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         return current;
       }
 
-      const nextDraft: ChannelSettings = {
+      return {
         ...current,
         [key]: value,
       };
-
-      if (key === 'postSuggestionsEnabled' && value === true && !current.postSuggestionsEnabled) {
-        nextDraft.autoPostButtonsMode = enableChannelSuggestionAutoPostButton(
-          current.autoPostButtonsMode,
-        );
-      }
-
-      nextDraft.autoPostButtonsMode = sanitizeAutoPostButtonsMode(nextDraft.autoPostButtonsMode);
-
-      return nextDraft;
     });
   };
 
@@ -2290,39 +2269,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     commentsEnabled: draft.commentsEnabled,
     postSuggestionsEnabled: draft.postSuggestionsEnabled,
     postSuggestionsButtonText: draft.postSuggestionsButtonText,
-    autoPostButtonsMode: draft.autoPostButtonsMode,
   });
-  const broadcastSystemButtonOptions: Array<{
-    value: ChannelAutoPostButtonsMode;
-    label: string;
-    disabled?: boolean;
-  }> = [
-    { value: 'OFF', label: 'Нет' },
-    ...(draft.commentsEnabled || draft.autoPostButtonsMode === 'COMMENTS'
-      ? [{ value: 'COMMENTS' as const, label: 'Комментарии', disabled: !draft.commentsEnabled }]
-      : []),
-    ...(draft.postSuggestionsEnabled || draft.autoPostButtonsMode === 'SUGGEST'
-      ? [
-          {
-            value: 'SUGGEST' as const,
-            label: 'Предложения',
-            disabled: !draft.postSuggestionsEnabled,
-          },
-        ]
-      : []),
-    ...(draft.commentsEnabled ||
-    draft.postSuggestionsEnabled ||
-    draft.autoPostButtonsMode === 'BOTH'
-      ? [
-          {
-            value: 'BOTH' as const,
-            label: 'Обе',
-            disabled: !draft.commentsEnabled || !draft.postSuggestionsEnabled,
-          },
-        ]
-      : []),
-  ];
-  const showBroadcastSystemButtonMode = draft.commentsEnabled || draft.postSuggestionsEnabled;
   const broadcastHasButton = normalizedBroadcastButtons.length > 0;
   const broadcastVisibleButtons = [...normalizedBroadcastButtons, ...broadcastSystemButtons];
   const broadcastHasVisibleButtons = broadcastVisibleButtons.length > 0;
@@ -3387,7 +3334,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Обсуждение"
+            title="Комментарии в приложении"
             summary={commentsCardSummary}
             status={commentsCardStatus}
             icon="comments"
@@ -3401,7 +3348,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <SettingsDrilldownPanel
           id="channel-settings-comments"
           open={expandedSections.comments}
-          title="Обсуждение"
+          title="Комментарии в приложении"
           summary={commentsCardSummary}
           tone="sky"
           className="settings-drilldown__panel--board settings-drilldown__panel--channel-comments"
@@ -3432,7 +3379,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         rows={2}
                         value={draft.commentsMessageText}
                         onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-                        placeholder="О чём обсуждение"
+                        placeholder="Например: поделитесь мнением о публикации"
                       />
                     </label>
 
@@ -3803,18 +3750,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
                               />
                             </Suspense>
-                            {showBroadcastSystemButtonMode ? (
-                              <div className="channel-settings-mode-card channel-settings-mode-card--broadcast-buttons">
-                                <span className="channel-settings-mode-card__label">Кнопки</span>
-                                <SegmentedControl<ChannelAutoPostButtonsMode>
-                                  value={draft.autoPostButtonsMode}
-                                  options={broadcastSystemButtonOptions}
-                                  onChange={(value) => patchDraft('autoPostButtonsMode', value)}
-                                  ariaLabel="Системные кнопки автопостинга"
-                                  className="channel-settings-mode-card__control"
-                                />
-                              </div>
-                            ) : null}
                           </div>
                         </div>
 

@@ -1091,6 +1091,22 @@ export class ModerationDeleteIntentService {
   async quarantineStaleReplacementSendFences(): Promise<number> {
     const staleBefore = new Date(Date.now() - MAX_SEND_FENCE_STALE_MS);
     const lastError = `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Replacement send started, but no remote message id was persisted before worker recovery.`;
+    const recoveredChannelReplies = await this.prisma.channelAutoPostAttachMarker.updateMany({
+      where: {
+        status: 'IN_PROGRESS',
+        deliveryMode: 'reply_message',
+        replyMessageId: { not: null },
+        replacementSendStartedAt: null,
+        OR: [{ lockedAt: null }, { lockedAt: { lte: staleBefore } }],
+      },
+      data: {
+        status: 'SUCCEEDED',
+        lockToken: null,
+        lockedAt: null,
+        lastError: null,
+        lastStatusCode: null,
+      },
+    });
     const recoveredChatReplies = await this.prisma.chatAutoCommentAttachMarker.updateMany({
       where: {
         status: 'IN_PROGRESS',
@@ -1146,16 +1162,17 @@ export class ModerationDeleteIntentService {
         'Quarantined stale ambiguous replacement sends without retrying MAX',
       );
     }
-    if (recoveredChatReplies.count > 0) {
+    if (recoveredChannelReplies.count > 0 || recoveredChatReplies.count > 0) {
       this.logger.warn(
         {
+          recoveredChannelReplies: recoveredChannelReplies.count,
           recoveredChatReplies: recoveredChatReplies.count,
           staleBefore: staleBefore.toISOString(),
         },
         'Finalized stale fallback replies with a persisted remote message id',
       );
     }
-    return recoveredChatReplies.count + quarantined;
+    return recoveredChannelReplies.count + recoveredChatReplies.count + quarantined;
   }
 
   private async markRecoveredReplacementOwned(

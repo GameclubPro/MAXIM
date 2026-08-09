@@ -4788,8 +4788,7 @@
       .managed-broadcast-card,
       .managed-autopost-rule-card,
       .broadcast-draft-card,
-      .managed-broadcasts-list__empty,
-      .channel-settings-mode-card--broadcast-buttons
+      .managed-broadcasts-list__empty
     ) {
     border-color: var(--color-border);
     background: var(--color-surface);

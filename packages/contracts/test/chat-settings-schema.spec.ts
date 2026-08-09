@@ -122,6 +122,18 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(enabledBooleanKeys).toEqual([]);
   });
 
+  it('strips the retired channel button mode while preserving feature toggles', () => {
+    const settings = channelSettingsSchema.parse({
+      autoPostButtonsMode: 'OFF',
+      commentsEnabled: true,
+      postSuggestionsEnabled: false,
+    }) as Record<string, unknown>;
+
+    expect(settings).not.toHaveProperty('autoPostButtonsMode');
+    expect(settings.commentsEnabled).toBe(true);
+    expect(settings.postSuggestionsEnabled).toBe(false);
+  });
+
   it('strips retired thematic settings and rejects their apply section', () => {
     const settings = chatSettingsSchema.parse({
       thematicCodewordEnabled: true,

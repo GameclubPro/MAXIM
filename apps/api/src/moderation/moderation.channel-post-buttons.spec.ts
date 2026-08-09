@@ -179,6 +179,55 @@ function createAdminServiceMock() {
   };
 }
 
+function createChannelAutoPostAttachMarkerMock() {
+  const rows = new Map<string, Record<string, any>>();
+  const buildKey = (chatId: string, messageId: string) => `${chatId}:${messageId}`;
+  const delegate = {
+    findUnique: jest.fn(async ({ where }: any) => {
+      const identity = where.chatId_messageId;
+      return rows.get(buildKey(identity.chatId, identity.messageId)) ?? null;
+    }),
+    createMany: jest.fn(async ({ data }: any) => {
+      const input = data[0];
+      const key = buildKey(input.chatId, input.messageId);
+      if (rows.has(key)) {
+        return { count: 0 };
+      }
+      rows.set(key, {
+        ...input,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+      });
+      return { count: 1 };
+    }),
+    updateMany: jest.fn(async ({ where, data }: any) => {
+      const key = buildKey(where.chatId, where.messageId);
+      const row = rows.get(key);
+      if (!row) {
+        return { count: 0 };
+      }
+      for (const field of [
+        'status',
+        'lockToken',
+        'replacementMessageId',
+        'replyMessageId',
+        'replacementSendStartedAt',
+      ]) {
+        if (Object.prototype.hasOwnProperty.call(where, field) && row[field] !== where[field]) {
+          return { count: 0 };
+        }
+      }
+      rows.set(key, { ...row, ...data });
+      return { count: 1 };
+    }),
+  };
+
+  return { delegate, rows };
+}
+
 describe('ModerationService channel auto post buttons', () => {
   it('auto-attaches buttons to a fresh admin post in a managed channel', async () => {
     const prisma = {
@@ -188,10 +237,9 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsEntryMode: 'BOT',
-            postSuggestionsButtonText: '📰 Предложить пост',
+            postSuggestionsButtonText: 'Прислать новость',
             commentsEnabled: true,
           },
           admins: [],
@@ -251,7 +299,7 @@ describe('ModerationService channel auto post buttons', () => {
           [
             expect.objectContaining({
               type: 'link',
-              text: '📰 Предложить пост',
+              text: 'Прислать новость',
               url: expect.stringContaining('https://max.ru/777000_bot?start='),
             }),
           ],
@@ -268,12 +316,59 @@ describe('ModerationService channel auto post buttons', () => {
           payload: expect.objectContaining({
             messageId: 'mid-channel-1',
             publishedUrl: 'https://max.ru/chats/channel-1/message/mid-channel-1',
+            suggestButtonText: 'Прислать новость',
             text: 'Новый пост в канале',
           }),
         }),
       }),
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+
+    maxClient.editMessageInlineKeyboard.mockClear();
+    prisma.auditLog.create.mockClear();
+    const existingThreadId = '12345678-1234-4123-8123-123456789abc';
+    const existingToken = `cdt-${Buffer.from(
+      JSON.stringify({ v: 1, d: existingThreadId, s: 'a'.repeat(64) }),
+      'utf8',
+    ).toString('base64url')}`;
+    const existingButtonsUpdate = createChannelPostUpdate();
+    existingButtonsUpdate.updateId = 'upd-channel-existing-buttons';
+    existingButtonsUpdate.message!.messageId = 'mid-channel-existing-buttons';
+    (existingButtonsUpdate.raw as any).message.body = {
+      mid: 'mid-channel-existing-buttons',
+      text: 'Пост с готовыми кнопками',
+      attachments: [
+        {
+          type: 'inline_keyboard',
+          payload: {
+            buttons: [
+              [
+                {
+                  type: 'link',
+                  text: 'Комментарии',
+                  url: `https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=${existingToken}`,
+                },
+              ],
+              [
+                {
+                  type: 'link',
+                  text: 'Прислать новость',
+                  url: `https://max.ru/777000_bot?start=cds-channel-1.${existingThreadId.replaceAll(
+                    '-',
+                    '',
+                  )}.${'a'.repeat(24)}`,
+                },
+              ],
+            ],
+          },
+        },
+      ],
+    };
+
+    await service.handleUpdate(existingButtonsUpdate);
+
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('opens channel suggestions in the mini app when admins select mini app mode', async () => {
@@ -284,7 +379,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsEntryMode: 'MINIAPP',
             postSuggestionsButtonText: '📰 Предложить пост',
@@ -358,7 +452,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -432,7 +525,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -503,7 +595,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: 'Предложить пост',
             commentsEnabled: true,
@@ -601,7 +692,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: 'Предложить пост',
             commentsEnabled: true,
@@ -677,7 +767,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('auto-attaches comments and suggestions when channel mode includes both buttons', async () => {
+  it('auto-attaches comments and suggestions when both features are enabled', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -685,7 +775,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -748,7 +837,6 @@ describe('ModerationService channel auto post buttons', () => {
           payload: expect.objectContaining({
             includeCommentsButton: true,
             includeSuggestButton: true,
-            autoPostButtonsMode: 'BOTH',
           }),
         }),
       }),
@@ -763,7 +851,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -791,6 +878,7 @@ describe('ModerationService channel auto post buttons', () => {
         },
         message: 'cannot replace forwarded message',
       }),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
       sendMessageReplyWithInlineKeyboard: jest.fn(),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -815,6 +903,7 @@ describe('ModerationService channel auto post buttons', () => {
 
     await service.handleUpdate(createForwardedChannelPostUpdateWithoutSender());
 
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -880,7 +969,6 @@ describe('ModerationService channel auto post buttons', () => {
       managedChannel: {
         channelSettings: {
           updatedAt: new Date('2026-03-06T15:00:00.000Z'),
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsEntryMode: 'MINIAPP',
@@ -940,7 +1028,7 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('does not auto-attach when the channel mode is off and comments are disabled', async () => {
+  it('does not auto-attach when comments and suggestions are disabled', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -948,7 +1036,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'OFF',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -1002,7 +1089,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Наука и Факты',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'OFF',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '',
             commentsEnabled: false,
@@ -1113,7 +1199,6 @@ describe('ModerationService channel auto post buttons', () => {
       linkType: null,
       managedChannel: {
         channelSettings: {
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsButtonText: '',
@@ -1185,7 +1270,6 @@ describe('ModerationService channel auto post buttons', () => {
       linkType: null,
       managedChannel: {
         channelSettings: {
-          autoPostButtonsMode: 'OFF',
           commentsEnabled: false,
           postSuggestionsEnabled: false,
           postSuggestionsButtonText: '',
@@ -1248,7 +1332,6 @@ describe('ModerationService channel auto post buttons', () => {
         linkType: null,
         managedChannel: {
           channelSettings: {
-            autoPostButtonsMode: 'OFF',
             commentsEnabled: false,
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '',
@@ -1272,7 +1355,7 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('auto-attaches the comments button when comments are enabled and the mode includes comments', async () => {
+  it('auto-attaches the comments button when comments are enabled', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1280,7 +1363,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'COMMENTS',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -1332,7 +1414,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('auto-attaches the suggestion button when suggestions are enabled and the mode includes suggestions', async () => {
+  it('auto-attaches the suggestion button when suggestions are enabled', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1340,7 +1422,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -1404,7 +1485,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('uses the resolved scan bot for suggestion start URL fallback during poll repair', async () => {
+  it('uses the existing comments thread and resolved scan bot when poll repair adds suggestions', async () => {
     const prisma = {
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -1438,14 +1519,15 @@ describe('ModerationService channel auto post buttons', () => {
       messageId: 'mid-channel-1',
       text: 'Новый пост в канале',
       linkType: null,
+      existingDialogButtonKinds: ['comments'],
+      existingDialogThreadId: 'existing-thread',
       managedChannel: {
         channelSettings: {
           updatedAt: new Date('2026-03-06T15:00:00.000Z'),
-          autoPostButtonsMode: 'SUGGEST',
-          commentsEnabled: false,
+          commentsEnabled: true,
           postSuggestionsEnabled: true,
           postSuggestionsEntryMode: 'BOT',
-          postSuggestionsButtonText: '📰 Предложить пост',
+          postSuggestionsButtonText: 'Прислать новость',
         },
         adminUserIds: ['admin-1'],
       },
@@ -1466,8 +1548,10 @@ describe('ModerationService channel auto post buttons', () => {
           [
             expect.objectContaining({
               type: 'link',
-              text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/scan-bot-2?start='),
+              text: 'Прислать новость',
+              url: expect.stringContaining(
+                'https://max.ru/scan-bot-2?start=cds-channel-1-existing-thread',
+              ),
             }),
           ],
         ],
@@ -1478,6 +1562,41 @@ describe('ModerationService channel auto post buttons', () => {
         actionHealthLane: 'background',
       }),
     );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            threadId: 'existing-thread',
+            includeCommentsButton: true,
+            includeSuggestButton: true,
+            suggestButtonText: 'Прислать новость',
+          }),
+        }),
+      }),
+    );
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-channel-complete-1',
+      text: 'Уже готовый пост',
+      linkType: null,
+      existingDialogButtonKinds: ['comments', 'suggest'],
+      existingDialogThreadId: 'existing-thread',
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
+          postSuggestionsEntryMode: 'BOT',
+          postSuggestionsButtonText: 'Прислать новость',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
 
   it('polls channel posts and attaches buttons even without webhook delivery', async () => {
@@ -1486,7 +1605,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -1558,15 +1676,9 @@ describe('ModerationService channel auto post buttons', () => {
             postSignatureEnabled: true,
           },
           {
-            autoPostButtonsMode: {
-              in: ['COMMENTS', 'BOTH'],
-            },
             commentsEnabled: true,
           },
           {
-            autoPostButtonsMode: {
-              in: ['SUGGEST', 'BOTH'],
-            },
             postSuggestionsEnabled: true,
           },
         ],
@@ -1639,7 +1751,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -1651,7 +1762,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -1720,7 +1830,7 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('records a terminal skip marker for non-retryable channel post edit failures', async () => {
+  it('falls back to a linked reply when MAX rejects a channel post edit', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1728,7 +1838,6 @@ describe('ModerationService channel auto post buttons', () => {
           title: 'Ищу модель | Ростов',
           entityType: 'CHANNEL',
           channelSettings: {
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -1755,6 +1864,13 @@ describe('ModerationService channel auto post buttons', () => {
         },
         message: 'Error on message edit',
       }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async (...args: any[]) => {
+        await args[2]?.beforeSend?.();
+        return {
+          messageId: 'mid-channel-reply-1',
+          url: 'https://max.ru/chats/channel-1/message/mid-channel-reply-1',
+        };
+      }),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
@@ -1776,13 +1892,34 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
-    await service.handleUpdate(createChannelPostUpdate());
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-channel-1',
+      text: 'Новый пост в канале',
+      linkType: null,
+      existingDialogButtonKinds: ['comments'],
+      existingDialogThreadId: 'existing-thread',
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
+          postSuggestionsEntryMode: 'BOT',
+          postSuggestionsButtonText: '📰 Предложить пост',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'webhook',
+      senderId: 'admin-1',
+    });
 
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.findFirst).toHaveBeenCalledWith({
       where: {
         chatId: 'channel-1',
         action: {
-          in: ['AUTO_ATTACH_CHANNEL_ENGAGEMENT', 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED'],
+          in: ['AUTO_ATTACH_CHANNEL_ENGAGEMENT', 'PUBLISH_CHANNEL_ENGAGEMENT'],
         },
         payload: {
           path: ['messageId'],
@@ -1793,22 +1930,355 @@ describe('ModerationService channel auto post buttons', () => {
         id: true,
       },
     });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Действия к публикации',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              text: '📰 Предложить пост',
+            }),
+          ],
+        ],
+        messageLink: {
+          type: 'reply',
+          mid: 'mid-channel-1',
+        },
+        beforeSend: expect.any(Function),
+      }),
+      expectChannelAutoPostOptions(),
+    );
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: {
+      data: expect.objectContaining({
         chatId: 'channel-1',
         actorUserId: 'admin-1',
-        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
-        payload: {
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
           messageId: 'mid-channel-1',
-          reason: 'terminal_delivery_failure',
-          linkType: null,
-          source: 'webhook',
-          deliveryMode: 'edit_message',
-          status: 400,
-          error: 'Error on message edit',
-        },
-      },
+          threadId: 'existing-thread',
+          includeCommentsButton: false,
+          includeSuggestButton: true,
+          deliveryMode: 'reply_message',
+          replyMessageId: 'mid-channel-reply-1',
+        }),
+      }),
     });
+  });
+
+  it('fences an ambiguous linked reply and never sends it again', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      channelAutoPostAttachMarker: markerMock.delegate,
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
+        response: { status: 400 },
+        message: 'Error on message edit',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async (...args: any[]) => {
+        await args[2]?.beforeSend?.();
+        throw Object.assign(new Error('fallback reply timed out'), { code: 'ETIMEDOUT' });
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+    const input = {
+      chatId: 'channel-1',
+      messageId: 'mid-channel-ambiguous-reply-1',
+      text: 'Пост с недоступным редактированием',
+      textFormat: null,
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    } as const;
+
+    await expect((service as any).tryAutoAttachChannelMessageButtons(input)).resolves.toBe(
+      'skipped',
+    );
+    await expect((service as any).tryAutoAttachChannelMessageButtons(input)).resolves.toBe(
+      'skipped',
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(markerMock.rows.get('channel-1:mid-channel-ambiguous-reply-1')).toMatchObject({
+      status: 'SKIPPED',
+      deliveryMode: 'reply_message',
+      replyMessageId: null,
+      replacementSendStartedAt: expect.any(Date),
+      lastError: expect.stringContaining('[max.send_ambiguous]'),
+    });
+  });
+
+  it('uses a separate send-message bot and rebuilds bot-specific reply buttons', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
+        response: { status: 200 },
+        message: 'errors.process.attachment.movie.access.denied',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async (...args: any[]) => {
+        await args[2]?.beforeSend?.();
+        return {
+          messageId: 'mid-channel-send-bot-reply-1',
+          url: 'https://max.ru/chats/channel-1/message/mid-channel-send-bot-reply-1',
+        };
+      }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'channel-1',
+        primaryBotId: 'edit-bot',
+        botId: 'edit-bot',
+        candidateBotIds: ['edit-bot'],
+        reason: 'primary_confirmed',
+        action: 'edit_message',
+      }),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'edit-bot',
+        botId: 'send-bot',
+        candidateBotIds: ['send-bot'],
+        reason: 'alternate_confirmed',
+        quarantinedCandidateBotIds: [],
+      }),
+      buildBotStartUrlSync: jest.fn(
+        (startPayload: string, botId?: string | null) =>
+          `https://max.ru/${botId}?start=${startPayload}`,
+      ),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-send-bot-1',
+        text: 'Видеопубликация',
+        textFormat: null,
+        linkType: null,
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: false,
+            postSuggestionsEnabled: true,
+            postSuggestionsEntryMode: 'BOT',
+            postSuggestionsButtonText: 'Предложить пост',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: null,
+      }),
+    ).resolves.toBe('attached');
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-send-bot-1',
+      'Видеопубликация',
+      expect.any(Object),
+      expectChannelAutoPostOptions({ botId: 'edit-bot' }),
+    );
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'channel-1',
+      fallbackToPrimary: true,
+    });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Действия к публикации',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              url: expect.stringContaining('https://max.ru/send-bot?start='),
+            }),
+          ],
+        ],
+        messageLink: { type: 'reply', mid: 'mid-channel-send-bot-1' },
+      }),
+      expectChannelAutoPostOptions({ botId: 'send-bot' }),
+    );
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      'send-bot',
+    );
+  });
+
+  it('terminally skips a reply fallback when the resolved send route has no eligible bot', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
+        response: { status: 400 },
+        message: 'Error on message edit',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'channel-1',
+        primaryBotId: 'edit-bot',
+        botId: 'edit-bot',
+        candidateBotIds: ['edit-bot'],
+        reason: 'primary_confirmed',
+        action: 'edit_message',
+      }),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'edit-bot',
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+        quarantinedCandidateBotIds: ['quarantined-send-bot'],
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-no-send-route-1',
+        text: 'Публикация',
+        textFormat: null,
+        linkType: null,
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: null,
+      }),
+    ).resolves.toBe('skipped');
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-no-send-route-1',
+          deliveryMode: 'reply_message',
+          error: 'No eligible MAX send route is available for the channel reply fallback.',
+        }),
+      }),
+    });
+  });
+
+  it('keeps an ambiguous channel edit retryable without sending a reply', async () => {
+    const editError = Object.assign(new Error('channel edit timed out'), {
+      response: { status: 408 },
+    });
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(editError),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-ambiguous-edit-1',
+        text: 'Публикация',
+        textFormat: null,
+        linkType: null,
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: null,
+      }),
+    ).rejects.toBe(editError);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('skips polled channel posts from non-admin authors', async () => {
@@ -1817,7 +2287,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -1892,7 +2361,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'SUGGEST',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
@@ -1976,13 +2444,12 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('polls forwarded channel posts when MAX omits body.mid and stores text under link.message', async () => {
+  it('routes forwarded channel replacement and cleanup through a delete-capable bot', async () => {
     const prisma = {
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'OFF',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '',
             commentsEnabled: false,
@@ -2050,6 +2517,18 @@ describe('ModerationService channel auto post buttons', () => {
         signatureApplied: true,
       }),
     };
+    const maxBotLinkService = {
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'channel-1',
+        primaryBotId: 'primary-bot',
+        botId: 'delete-capable-bot',
+        candidateBotIds: ['delete-capable-bot'],
+        quarantinedCandidateBotIds: [],
+        reason: 'alternate_confirmed',
+        action: 'delete_message',
+      }),
+    };
 
     const service = new ModerationService(
       prisma as never,
@@ -2062,6 +2541,8 @@ describe('ModerationService channel auto post buttons', () => {
       undefined,
       undefined,
       adminService as never,
+      undefined,
+      maxBotLinkService as never,
     );
     (service as any).channelPostSignatureService = channelPostSignatureService;
 
@@ -2082,6 +2563,7 @@ describe('ModerationService channel auto post buttons', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'channel_auto_post',
+        botId: 'delete-capable-bot',
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('channel-1', 'mid-polled-forward-1', {
@@ -2090,6 +2572,13 @@ describe('ModerationService channel auto post buttons', () => {
       actionHealthLane: 'background',
       sourceTag: 'channel_auto_post',
       timeoutMs: 2_000,
+      botId: 'delete-capable-bot',
+    });
+    expect(maxBotLinkService.resolveBotRoutes).toHaveBeenCalledWith({
+      purpose: 'moderation_action',
+      chatId: 'channel-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
     });
   });
 
@@ -2099,7 +2588,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -2110,7 +2598,6 @@ describe('ModerationService channel auto post buttons', () => {
           },
           {
             chatId: 'channel-2',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -2177,7 +2664,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -2263,7 +2749,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-skip',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -2274,7 +2759,6 @@ describe('ModerationService channel auto post buttons', () => {
           },
           {
             chatId: 'channel-due',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -2341,7 +2825,6 @@ describe('ModerationService channel auto post buttons', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'channel-1',
-            autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
@@ -2596,7 +3079,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.channelSettings.findMany).toHaveBeenCalled();
   });
 
-  it('routes poll-based auto-attach mutations through the background action lane', async () => {
+  it('routes ordinary auto-attach edits through an edit-capable bot', async () => {
     const prisma = {
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -2617,6 +3100,18 @@ describe('ModerationService channel auto post buttons', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const maxBotLinkService = {
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'channel-1',
+        primaryBotId: 'primary-bot',
+        botId: 'edit-capable-bot',
+        candidateBotIds: ['edit-capable-bot'],
+        quarantinedCandidateBotIds: [],
+        reason: 'alternate_confirmed',
+        action: 'edit_message',
+      }),
+    };
 
     const service = new ModerationService(
       prisma as never,
@@ -2629,6 +3124,8 @@ describe('ModerationService channel auto post buttons', () => {
       undefined,
       undefined,
       createAdminServiceMock() as never,
+      undefined,
+      maxBotLinkService as never,
     );
 
     await (
@@ -2640,7 +3137,6 @@ describe('ModerationService channel auto post buttons', () => {
           linkType: string | null;
           managedChannel: {
             channelSettings: {
-              autoPostButtonsMode: 'BOTH';
               postSuggestionsEnabled: true;
               postSuggestionsButtonText: string;
               commentsEnabled: true;
@@ -2658,7 +3154,6 @@ describe('ModerationService channel auto post buttons', () => {
       linkType: null,
       managedChannel: {
         channelSettings: {
-          autoPostButtonsMode: 'BOTH',
           postSuggestionsEnabled: true,
           postSuggestionsButtonText: '📰 Предложить пост',
           commentsEnabled: true,
@@ -2680,53 +3175,15 @@ describe('ModerationService channel auto post buttons', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'channel_auto_post',
+        botId: 'edit-capable-bot',
       },
     );
-  });
-
-  it('does not attach channel auto-post buttons when the explicit mode is off', async () => {
-    const prisma = {
-      auditLog: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-    };
-    const maxClient = {
-      editMessageInlineKeyboard: jest.fn(),
-    };
-    const service = new ModerationService(
-      prisma as never,
-      { detect: jest.fn() } as never,
-      { resolveAction: jest.fn() } as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      createAdminServiceMock() as never,
-    );
-
-    await (service as any).tryAutoAttachChannelMessageButtons({
+    expect(maxBotLinkService.resolveBotRoutes).toHaveBeenCalledWith({
+      purpose: 'moderation_action',
       chatId: 'channel-1',
-      messageId: 'mid-mode-off-1',
-      text: 'Пост',
-      linkType: null,
-      managedChannel: {
-        channelSettings: {
-          autoPostButtonsMode: 'OFF',
-          commentsEnabled: true,
-          postSuggestionsEnabled: true,
-          postSuggestionsButtonText: '📰 Предложить пост',
-        },
-        adminUserIds: ['admin-1'],
-      },
-      source: 'poll',
-      senderId: null,
+      action: 'edit_message',
+      fallbackToPrimary: true,
     });
-
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('keeps transient auto-attach failures retryable and does not advance the scan cursor', async () => {
@@ -2746,7 +3203,6 @@ describe('ModerationService channel auto post buttons', () => {
           .mockResolvedValueOnce([
             {
               chatId: 'channel-1',
-              autoPostButtonsMode: 'COMMENTS',
               commentsEnabled: true,
               postSuggestionsEnabled: false,
               postSuggestionsButtonText: '',
@@ -2867,7 +3323,6 @@ describe('ModerationService channel auto post buttons', () => {
       linkType: null,
       managedChannel: {
         channelSettings: {
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsButtonText: '',
@@ -2952,7 +3407,6 @@ describe('ModerationService channel auto post buttons', () => {
           .mockResolvedValueOnce([
             {
               chatId: 'channel-1',
-              autoPostButtonsMode: 'COMMENTS',
               commentsEnabled: true,
               postSuggestionsEnabled: false,
               postSuggestionsButtonText: '',
@@ -3091,7 +3545,6 @@ describe('ModerationService channel auto post buttons', () => {
       linkType: null,
       managedChannel: {
         channelSettings: {
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsButtonText: '',
@@ -3286,7 +3739,6 @@ describe('ModerationService channel auto post buttons', () => {
       managedChannel: {
         channelSettings: {
           updatedAt: new Date(),
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsEntryMode: 'MINIAPP',
@@ -3309,7 +3761,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(row).toMatchObject({
       status: 'SUCCEEDED',
       replacementMessageId: 'mid-delivered-copy',
-      replacementSendStartedAt: expect.any(Date),
+      replacementSendStartedAt: null,
       originalDeleted: false,
       lastError: expect.stringContaining('marker persistence failed'),
     });

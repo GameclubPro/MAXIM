@@ -9,7 +9,6 @@ export type ManagedBroadcastCommentDialogReference = {
   includeSuggestButton: boolean;
   suggestButtonText: string | null;
   customButtons: BroadcastLinkButton[];
-  autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
   botId: string | null;
 };
@@ -27,7 +26,6 @@ export function buildManagedBroadcastLedgerContext(
             includeSuggestButton: reference.includeSuggestButton,
             suggestButtonText: reference.suggestButtonText,
             customButtons: reference.customButtons,
-            autoPostButtonsMode: reference.autoPostButtonsMode,
             suggestionEntryMode: reference.suggestionEntryMode,
             botId: reference.botId,
           }
@@ -75,10 +73,6 @@ export function readManagedBroadcastLedgerCommentDialogContext(value: unknown): 
       includeSuggestButton: reference.includeSuggestButton,
       suggestButtonText: readTrimmedString(reference.suggestButtonText),
       customButtons: normalizeManagedBroadcastButtons(reference.customButtons),
-      autoPostButtonsMode:
-        typeof reference.autoPostButtonsMode === 'string'
-          ? (reference.autoPostButtonsMode as ManagedBroadcastCommentDialogReference['autoPostButtonsMode'])
-          : null,
       suggestionEntryMode:
         typeof reference.suggestionEntryMode === 'string'
           ? (reference.suggestionEntryMode as ManagedBroadcastCommentDialogReference['suggestionEntryMode'])

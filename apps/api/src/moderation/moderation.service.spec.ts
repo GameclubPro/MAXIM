@@ -26662,7 +26662,6 @@ describe('ModerationService', () => {
             channelBatch.map((chatId) => ({
               chatId,
               updatedAt: new Date('2026-04-13T00:00:00.000Z'),
-              autoPostButtonsMode: 'COMMENTS',
               commentsEnabled: true,
               commentsAdminsEnabled: true,
               commentsAllEnabled: false,
@@ -26785,7 +26784,6 @@ describe('ModerationService', () => {
       managedChannel: {
         channelSettings: {
           updatedAt: new Date('2026-04-13T00:00:00.000Z'),
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsButtonText: '',
@@ -26902,7 +26900,6 @@ describe('ModerationService', () => {
       managedChannel: {
         channelSettings: {
           updatedAt: new Date('2026-04-13T00:00:00.000Z'),
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsButtonText: '',
@@ -27065,7 +27062,6 @@ describe('ModerationService', () => {
       channelSettings: {
         chatId: 'channel-1',
         updatedAt: new Date('2026-04-13T00:00:00.000Z'),
-        autoPostButtonsMode: 'COMMENTS',
         commentsEnabled: true,
         postSuggestionsEnabled: false,
       },
@@ -27175,7 +27171,6 @@ describe('ModerationService', () => {
       managedChannel: {
         channelSettings: {
           updatedAt: new Date('2026-04-13T00:00:00.000Z'),
-          autoPostButtonsMode: 'COMMENTS',
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           postSuggestionsButtonText: '',

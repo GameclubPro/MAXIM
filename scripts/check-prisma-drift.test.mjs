@@ -179,10 +179,10 @@ test('supports injected command output and validates the committed baseline arti
   assert.deepEqual(comparison.classificationCounts, {
     'prisma-unrepresentable': 6,
     'schema-alignment-debt': 30,
-    'missing-migration-debt': 1,
+    'missing-migration-debt': 3,
   });
   assert.equal(
     formatClassificationCounts(comparison.classificationCounts),
-    'prisma-unrepresentable=6, schema-alignment-debt=30, missing-migration-debt=1',
+    'prisma-unrepresentable=6, schema-alignment-debt=30, missing-migration-debt=3',
   );
 });

@@ -325,7 +325,6 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     postSuggestionsButtonText: 'Предложить пост',
     postSuggestionsButtonUrl: 'https://maxim.play-team.ru/suggest',
     engagementMessageText: 'Есть идея или обратная связь? Выберите действие ниже.',
-    autoPostButtonsMode: 'BOTH',
   });
   const channelPostSignature: ChannelPostSignatureSettings = {
     enabled: false,

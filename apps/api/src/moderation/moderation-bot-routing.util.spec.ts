@@ -534,6 +534,37 @@ describe('moderation bot routing util', () => {
     expect(resolveBotIdForModerationAction).not.toHaveBeenCalled();
   });
 
+  it('preserves the edit-message action when resolving mutation candidates', async () => {
+    const resolveBotRoutes = jest.fn().mockResolvedValue(
+      createRoute({
+        purpose: 'moderation_action',
+        action: 'edit_message',
+        candidateBotIds: ['edit-bot'],
+      }),
+    );
+
+    await expect(
+      resolveModerationActionBotIds(
+        {
+          maxBotLinkService: {
+            resolveBotRoutes,
+          } as never,
+        },
+        {
+          chatId: 'channel-1',
+          action: 'edit_message',
+        },
+      ),
+    ).resolves.toEqual(['edit-bot']);
+
+    expect(resolveBotRoutes).toHaveBeenCalledWith({
+      purpose: 'moderation_action',
+      chatId: 'channel-1',
+      action: 'edit_message',
+      fallbackToPrimary: true,
+    });
+  });
+
   it('keeps an empty moderation action route as no candidates', async () => {
     const resolveBotRoutes = jest.fn().mockResolvedValue(
       createRoute({

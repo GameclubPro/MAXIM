@@ -2733,7 +2733,10 @@ describe('ModerationDeleteIntentService', () => {
   });
 
   it('quarantines stale replacement send fences in shadow mode without creating delete intents', async () => {
-    const channelUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
+    const channelUpdateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 2 });
     const chatUpdateMany = jest
       .fn()
       .mockResolvedValueOnce({ count: 1 })
@@ -2747,10 +2750,22 @@ describe('ModerationDeleteIntentService', () => {
     );
     const ensureIntent = jest.spyOn(service, 'ensureIntent');
 
-    await expect(service.quarantineStaleReplacementSendFences()).resolves.toBe(4);
+    await expect(service.quarantineStaleReplacementSendFences()).resolves.toBe(5);
 
     expect(ensureIntent).not.toHaveBeenCalled();
-    expect(channelUpdateMany).toHaveBeenCalledWith({
+    expect(channelUpdateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'IN_PROGRESS',
+          deliveryMode: 'reply_message',
+          replyMessageId: { not: null },
+          replacementSendStartedAt: null,
+        }),
+        data: expect.objectContaining({ status: 'SUCCEEDED' }),
+      }),
+    );
+    expect(channelUpdateMany).toHaveBeenNthCalledWith(2, {
       where: {
         status: 'IN_PROGRESS',
         replacementSendStartedAt: { lte: expect.any(Date) },

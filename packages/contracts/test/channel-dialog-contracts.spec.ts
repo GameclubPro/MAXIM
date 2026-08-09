@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   channelDialogMessageSchema as rootChannelDialogMessageSchema,
   createChannelDialogMessageRequestSchema as rootCreateChannelDialogMessageRequestSchema,
+  publishChannelEngagementRequestSchema as rootPublishChannelEngagementRequestSchema,
 } from '@maxim/contracts';
 import {
   channelDialogMessageSchema,
   createChannelDialogMessageRequestSchema,
+  publishChannelEngagementRequestSchema,
 } from '@maxim/contracts/channel-dialog';
 
 describe('channel dialog contract exports', () => {
@@ -15,6 +17,20 @@ describe('channel dialog contract exports', () => {
       createChannelDialogMessageRequestSchema,
     );
     expect(rootChannelDialogMessageSchema).toBe(channelDialogMessageSchema);
+    expect(rootPublishChannelEngagementRequestSchema).toBe(
+      publishChannelEngagementRequestSchema,
+    );
+  });
+
+  it('strips legacy button selection fields from engagement publish requests', () => {
+    const result = publishChannelEngagementRequestSchema.parse({
+      text: 'Пост с системными кнопками',
+      includeCommentsButton: false,
+      includeSuggestButton: false,
+    });
+
+    expect(result).not.toHaveProperty('includeCommentsButton');
+    expect(result).not.toHaveProperty('includeSuggestButton');
   });
 
   it('normalizes legacy image payloads into dialog images and attachments', () => {

@@ -21,6 +21,7 @@ import {
   MANAGED_GIVEAWAY_MAX_PRIZES,
   type ManagedEntityType,
   type MaxUpdate,
+  type PublishChannelEngagementRequest,
   type SendBroadcastResult,
   type UpdateManagedGiveawayRequest,
   DEFAULT_BROADCAST_BUTTON_TEXT,
@@ -2143,18 +2144,9 @@ export class PrivateControlService {
           throw new BadRequestException('Channel is not selected');
         }
         const settings = await this.adminService.getChannelSettings(chatId, context.actor);
-        const includeCommentsButton = settings.commentsEnabled;
-        const includeSuggestButton = true;
+        const request = this.buildChannelEngagementPublishRequest(settings);
 
-        await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
-          text:
-            settings.engagementMessageText.trim() ||
-            'Есть идея или обратная связь? Нажмите кнопку ниже.',
-          commentsButtonText: '💬 Комментарии',
-          suggestButtonText: settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
-          includeCommentsButton,
-          includeSuggestButton,
-        });
+        await this.adminService.publishChannelEngagementMessage(chatId, context.actor, request);
 
         const view = await this.renderChannelHomeScreen(context, session);
         await this.respond(context, session, view, {
@@ -6923,10 +6915,28 @@ export class PrivateControlService {
     }
 
     return [
-      `Обсуждения: ${this.describeBooleanCompact(settings.commentsEnabled)}`,
-      `Модерация обсуждений: ${this.describeBooleanCompact(settings.commentsModerationEnabled)}`,
+      `Комментарии: ${this.describeBooleanCompact(settings.commentsEnabled)}`,
+      `Модерация комментариев: ${this.describeBooleanCompact(settings.commentsModerationEnabled)}`,
       `Текст-подсказка: ${settings.commentsMessageText.trim() ? 'задан' : 'по умолчанию'}`,
     ];
+  }
+
+  private buildChannelEngagementPublishRequest(
+    settings: ChannelSettings,
+  ): PublishChannelEngagementRequest {
+    if (!settings.commentsEnabled && !settings.postSuggestionsEnabled) {
+      throw new BadRequestException(
+        'Включите комментарии или предложения постов в настройках канала.',
+      );
+    }
+
+    return {
+      text:
+        settings.engagementMessageText.trim() ||
+        'Есть идея или обратная связь? Нажмите кнопку ниже.',
+      commentsButtonText: '💬 Комментарии',
+      suggestButtonText: settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+    };
   }
 
   private buildChannelSectionRows(

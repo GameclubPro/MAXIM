@@ -2487,6 +2487,72 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Сначала заполните текст правил.');
   });
 
+  it('builds channel engagement requests without request-level button selectors', () => {
+    const channelSettings = {
+      ...defaultChannelSettings,
+      commentsEnabled: true,
+      postSuggestionsEnabled: false,
+      engagementMessageText: 'Оставьте комментарий к публикации.',
+      postSuggestionsButtonText: 'Предложить новость',
+    };
+    const { service } = createHarness({ channelSettings });
+    const request = (
+      service as unknown as {
+        buildChannelEngagementPublishRequest(
+          settings: typeof defaultChannelSettings,
+        ): Record<string, unknown>;
+      }
+    ).buildChannelEngagementPublishRequest(channelSettings);
+
+    expect(request).toEqual({
+      text: 'Оставьте комментарий к публикации.',
+      commentsButtonText: '💬 Комментарии',
+      suggestButtonText: 'Предложить новость',
+    });
+  });
+
+  it('rejects channel engagement requests when both feature toggles are off', () => {
+    const { service } = createHarness();
+    const buildRequest = () =>
+      (
+        service as unknown as {
+          buildChannelEngagementPublishRequest(
+            settings: typeof defaultChannelSettings,
+          ): Record<string, unknown>;
+        }
+      ).buildChannelEngagementPublishRequest(defaultChannelSettings);
+
+    expect(buildRequest).toThrow(
+      'Включите комментарии или предложения постов в настройках канала.',
+    );
+  });
+
+  it('uses channel comments terminology in the settings summary', () => {
+    const { service } = createHarness({
+      channelSettings: {
+        ...defaultChannelSettings,
+        commentsEnabled: true,
+        commentsModerationEnabled: false,
+      },
+    });
+    const summary = (
+      service as unknown as {
+        buildChannelSectionSummary(
+          section: 'comments',
+          settings: typeof defaultChannelSettings,
+        ): string[];
+      }
+    ).buildChannelSectionSummary('comments', {
+      ...defaultChannelSettings,
+      commentsEnabled: true,
+      commentsModerationEnabled: false,
+    });
+
+    expect(summary[0]).toMatch(/^Комментарии:/u);
+    expect(summary[1]).toMatch(/^Модерация комментариев:/u);
+    expect(summary.join('\n')).not.toContain('Обсуж');
+  });
+
   it('sends a channel broadcast from private control and posts a success follow-up', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
 
@@ -3760,7 +3826,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).not.toContain('Request failed with status code 403');
   });
 
-  it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {
+  it('shows only channel comments status on the handoff broadcast screen without footer links', async () => {
     const { service, maxClient, channels } = createHarness({
       channelSettings: {
         ...defaultChannelSettings,

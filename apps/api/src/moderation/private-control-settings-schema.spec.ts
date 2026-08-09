@@ -109,6 +109,20 @@ describe('private control settings schema', () => {
         );
       }
     }
+
+    expect(CHANNEL_SECTION_LABELS.comments).toBe('Комментарии в приложении');
+    expect(CHANNEL_SECTION_FIELDS.comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'commentsEnabled',
+          label: 'Комментарии в приложении',
+        }),
+        expect.objectContaining({
+          key: 'commentsModerationEnabled',
+          label: 'Модерация комментариев ботом',
+        }),
+      ]),
+    );
   });
 
   it('has no orphan section definitions', () => {

@@ -7,6 +7,12 @@ import FormData from 'form-data';
 import { createHash, randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
+import {
+  internalChannelDialogButtonIdentityKey,
+  readInternalChannelDialogButtonIdentity,
+  readInternalChannelDialogButtonIdentitiesFromMessage,
+  type InternalChannelDialogButtonIdentity,
+} from '../common/channel-dialog-button-identity.util';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
@@ -355,6 +361,8 @@ type MaxEditableMessageOptions = Pick<
   MaxSendMessageOptions,
   'button' | 'buttons' | 'debugContext' | 'textFormat'
 > & {
+  appendNewInlineKeyboardRows?: boolean;
+  mergeExistingInlineKeyboard?: boolean;
   preserveExistingInlineKeyboard?: boolean;
 };
 
@@ -1530,6 +1538,47 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return this.parseMessageSnapshot(normalizedChatId, message);
+  }
+
+  async getExactChannelDialogButtonIdentities(
+    chatId: string,
+    messageId: string,
+    options: MaxApiRequestOptions | MaxApiTrafficClass = 'background',
+  ): Promise<InternalChannelDialogButtonIdentity[] | null> {
+    const normalizedChatId = chatId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedChatId || !normalizedMessageId) {
+      throw new Error('chatId and messageId are required for channel dialog button lookup');
+    }
+
+    let message: Record<string, unknown> | null;
+    try {
+      message = await this.getMessageById(normalizedMessageId, options);
+    } catch (error: unknown) {
+      if (this.isExactMessageNotFoundError(error, normalizedMessageId)) {
+        return null;
+      }
+      throw error;
+    }
+    const nestedMessage = this.asRecord(message?.message);
+    const exactMessage = [message, nestedMessage].find(
+      (candidate) =>
+        candidate && this.extractMessageIdFromSendResponse(candidate) === normalizedMessageId,
+    );
+    if (!exactMessage) {
+      throw new Error(
+        'MAX exact channel dialog lookup returned a response without the requested id',
+      );
+    }
+    const responseChatId = this.extractChatIdFromSendResponse(exactMessage);
+    if (responseChatId && responseChatId !== normalizedChatId) {
+      throw this.createExactMessageTargetMismatchError(
+        normalizedChatId,
+        responseChatId,
+        normalizedMessageId,
+      );
+    }
+    return readInternalChannelDialogButtonIdentitiesFromMessage(exactMessage, normalizedChatId);
   }
 
   async getExactMessagePresence(
@@ -4990,11 +5039,130 @@ export class MaxClientService implements OnModuleDestroy {
     );
     const keyboardAttachment = this.buildInlineKeyboardAttachment(options);
     if (keyboardAttachment) {
+      if (options?.mergeExistingInlineKeyboard) {
+        return [
+          ...existingAttachmentsWithoutKeyboard,
+          this.mergeEditableInlineKeyboardAttachment(
+            keyboardAttachment,
+            editableAttachments,
+            options.appendNewInlineKeyboardRows === true,
+          ),
+        ];
+      }
       return [...existingAttachmentsWithoutKeyboard, keyboardAttachment];
     }
     return options?.preserveExistingInlineKeyboard
       ? editableAttachments
       : existingAttachmentsWithoutKeyboard;
+  }
+
+  private mergeEditableInlineKeyboardAttachment(
+    primaryKeyboard: Record<string, unknown>,
+    editableAttachments: readonly Record<string, unknown>[],
+    appendNewRows: boolean,
+  ): Record<string, unknown> {
+    const existingKeyboard = editableAttachments.find(
+      (attachment) => this.readLowerString(attachment.type) === 'inline_keyboard',
+    );
+    const primaryPayload = this.asRecord(primaryKeyboard.payload);
+    const existingPayload = this.asRecord(existingKeyboard?.payload);
+    const primaryRows = Array.isArray(primaryPayload?.buttons) ? primaryPayload.buttons : [];
+    const existingRows = Array.isArray(existingPayload?.buttons) ? existingPayload.buttons : [];
+    const existingDialogButtons = new Map<
+      string,
+      { button: unknown; identity: InternalChannelDialogButtonIdentity }
+    >();
+    for (const row of existingRows) {
+      if (!Array.isArray(row)) {
+        continue;
+      }
+      for (const button of row) {
+        const identity = readInternalChannelDialogButtonIdentity(button);
+        if (identity) {
+          const key = internalChannelDialogButtonIdentityKey(identity);
+          if (!existingDialogButtons.has(key)) {
+            existingDialogButtons.set(key, { button, identity });
+          }
+        }
+      }
+    }
+    const representedDialogButtons = new Set<string>();
+    const resolvedPrimaryRows = primaryRows
+      .filter((row): row is unknown[] => Array.isArray(row))
+      .map((row) =>
+        row.flatMap((button) => {
+          const identity = readInternalChannelDialogButtonIdentity(button);
+          if (!identity) {
+            return [button];
+          }
+          const key = internalChannelDialogButtonIdentityKey(identity);
+          if (representedDialogButtons.has(key)) {
+            return [];
+          }
+          representedDialogButtons.add(key);
+          const existing = existingDialogButtons.get(key);
+          if (!existing) {
+            return [button];
+          }
+          const primaryTarget = this.readInlineKeyboardButtonIdentity(button);
+          const existingTarget = this.readInlineKeyboardButtonIdentity(existing.button);
+          const sameTarget =
+            (primaryTarget !== null && primaryTarget === existingTarget) ||
+            (identity.threadId !== null && identity.threadId === existing.identity.threadId);
+          return [sameTarget ? button : existing.button];
+        }),
+      )
+      .filter((row) => row.length > 0);
+    const primaryButtonIdentities = new Set(
+      resolvedPrimaryRows.flatMap((row) =>
+        Array.isArray(row)
+          ? row
+              .map((button) => this.readInlineKeyboardButtonIdentity(button))
+              .filter((identity): identity is string => identity !== null)
+          : [],
+      ),
+    );
+    const preservedExistingRows = existingRows
+      .filter((row): row is unknown[] => Array.isArray(row))
+      .map((row) =>
+        row.filter((button) => {
+          const dialogIdentity = readInternalChannelDialogButtonIdentity(button);
+          if (
+            dialogIdentity &&
+            representedDialogButtons.has(internalChannelDialogButtonIdentityKey(dialogIdentity))
+          ) {
+            return false;
+          }
+          const identity = this.readInlineKeyboardButtonIdentity(button);
+          return identity === null || !primaryButtonIdentities.has(identity);
+        }),
+      )
+      .filter((row) => row.length > 0);
+    const mergedButtons = normalizeMaxInlineKeyboardButtons(
+      appendNewRows
+        ? [...preservedExistingRows, ...resolvedPrimaryRows]
+        : [...resolvedPrimaryRows, ...preservedExistingRows],
+    );
+
+    return {
+      type: 'inline_keyboard',
+      payload: {
+        ...existingPayload,
+        ...primaryPayload,
+        buttons: mergedButtons ?? resolvedPrimaryRows,
+      },
+    };
+  }
+
+  private readInlineKeyboardButtonIdentity(value: unknown): string | null {
+    const button = this.asRecord(value);
+    const type = this.readLowerString(button?.type);
+    if (type !== 'link') {
+      return null;
+    }
+
+    const url = this.readTrimmedString(button?.url);
+    return url ? `${type}:${url}` : null;
   }
 
   private extractReplyMessageLink(

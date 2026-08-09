@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260808153000_expand_managed_poll_question_length",
-  "baselineNamesSha256": "c026839b387f4b918d7d7249e5bf8723f66a67a577298f18ce83b29c34e518d3",
-  "baselineContentsSha256": "77da01d0c337a81b4b093688929cfb6a307297512faf2234536a976687fac284",
+  "baselineThrough": "20260809120000_add_channel_auto_post_reply_fallback",
+  "baselineNamesSha256": "70cb2070fe0db5d4b53e29c862ef221fdb1e7369fdb072e550d0fe5c410be2fc",
+  "baselineContentsSha256": "0f69b18e0538addfb162c8663338e5fdd54d6390e74d5387abaa500032c6cf48",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."

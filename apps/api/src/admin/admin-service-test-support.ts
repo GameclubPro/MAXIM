@@ -527,7 +527,6 @@ export function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue({
         chatId: 'channel-1',
-        autoPostButtonsMode: 'OFF',
         postSuggestionsEnabled: false,
         postSuggestionsEntryMode: 'BOT',
         postSuggestionsButtonText: 'Предложить пост',
@@ -1868,8 +1867,6 @@ export async function publishSuggestDialogToken(
       text: 'Нажмите кнопку ниже.',
       commentsButtonText: 'Комментарии',
       suggestButtonText: 'Предложить пост',
-      includeCommentsButton: false,
-      includeSuggestButton: true,
     },
   );
 

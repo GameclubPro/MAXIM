@@ -61,7 +61,7 @@
 - Open legacy publishing only for `workspace=autoposts`, an exact `legacyKind` + `legacyId`, or `handoff=1` backed by a real private-bot draft. A bare handoff flag cannot restore legacy creation.
 - Publication search, entity/status filters, and schedules are server-side and cursor-bound; never fetch every page for client filtering.
 - Rows with `publicationOccurrenceId != null` are Publication envelopes and must stay hidden from legacy broadcast/autopost APIs and UI.
-- Channel `autoPostButtonsMode` is the retained owner choice. Do not downgrade stored mode when comments/suggestions are temporarily disabled; delivery intersects it with current feature availability.
+- Channel publication buttons are derived directly from `commentsEnabled` and `postSuggestionsEnabled`; do not add a separate button-mode control or preview filter.
 - Settings section apply defaults to the current chat. Applying all requires explicit `mode: 'all'`; keep contract, UI default, and preview transport aligned.
 - Required-subscription controls list fresh managed chats and channels, preserve external-link fallback, and save only server-verifiable targets.
 - Stop-word UI owns both blocked words and blocked domains. Domain entry defaults to `DOMAIN`, not an accidental exact root URL.

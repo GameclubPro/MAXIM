@@ -14,6 +14,7 @@ const channelSettingsSource = readFileSync(
   new URL('../src/pages/channel-settings-page.tsx', import.meta.url),
   'utf8',
 );
+const shellSource = readFileSync(new URL('../src/components/shell.tsx', import.meta.url), 'utf8');
 const chatsPageCss = readFileSync(new URL('../src/pages/chats-page.css', import.meta.url), 'utf8');
 const chatsPageNativeCss = readFileSync(
   new URL('../src/pages/chats-page-native.css', import.meta.url),
@@ -31,6 +32,20 @@ test('settings headers do not expose abbreviated draft or saving statuses', () =
 
   assert.doesNotMatch(chatSettingsSource, /compactHeaderStatusLabel|showHeaderStatus/u);
   assert.doesNotMatch(channelSettingsSource, /compactHeaderStatusLabel|headerStatusTone/u);
+});
+
+test('channel comments use in-app terminology without a separate button mode', () => {
+  assert.equal(
+    channelSettingsSource.match(/title="Комментарии в приложении"/gu)?.length,
+    2,
+  );
+  assert.match(channelSettingsSource, /placeholder="Например: поделитесь мнением о публикации"/u);
+  assert.doesNotMatch(
+    channelSettingsSource,
+    /autoPostButtonsMode|Системные кнопки автопостинга|channel-settings-mode-card--broadcast-buttons/u,
+  );
+  assert.doesNotMatch(channelSettingsSource, /title="Обсуждение"|О чём обсуждение/u);
+  assert.doesNotMatch(shellSource, /Обсуждение|Диалог обсуждения/u);
 });
 
 test('home folds sync state into one refresh control without technical status copy', () => {

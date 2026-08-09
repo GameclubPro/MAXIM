@@ -1,12 +1,7 @@
 import { channelSettingsSchema } from '@maxim/contracts';
-import {
-  applyChannelSettingsEnableTransitions,
-  normalizeChannelAutoPostButtonsMode,
-  normalizeChannelSettings,
-  readChannelSettings,
-} from './admin-channel-settings';
+import { readChannelSettings } from './admin-channel-settings';
 
-describe('channel auto post button mode', () => {
+describe('channel settings normalization', () => {
   it('repairs a malformed stored button with an optimistic version guard', async () => {
     const updatedAt = new Date('2026-07-19T08:00:00.000Z');
     const storedSettings = {
@@ -38,56 +33,5 @@ describe('channel auto post button mode', () => {
         postSuggestionsButtonUrl: '',
       }),
     });
-  });
-
-  it.each([
-    ['BOTH', false, true],
-    ['COMMENTS', false, true],
-    ['SUGGEST', true, false],
-    ['OFF', true, true],
-  ] as const)(
-    'keeps %s as the selected mode when feature availability changes',
-    (mode, commentsEnabled, postSuggestionsEnabled) => {
-      const settings = channelSettingsSchema.parse({
-        autoPostButtonsMode: mode,
-        commentsEnabled,
-        postSuggestionsEnabled,
-      });
-
-      expect(normalizeChannelAutoPostButtonsMode(settings)).toBe(mode);
-      expect(normalizeChannelSettings(settings).autoPostButtonsMode).toBe(mode);
-    },
-  );
-
-  it.each([
-    ['OFF', 'SUGGEST'],
-    ['COMMENTS', 'BOTH'],
-    ['SUGGEST', 'SUGGEST'],
-    ['BOTH', 'BOTH'],
-  ] as const)(
-    'adds the suggestion button when suggestions are enabled from %s mode',
-    (mode, expectedMode) => {
-      const settings = channelSettingsSchema.parse({
-        autoPostButtonsMode: mode,
-        postSuggestionsEnabled: true,
-      });
-
-      expect(
-        applyChannelSettingsEnableTransitions(settings, { postSuggestionsEnabled: false })
-          .autoPostButtonsMode,
-      ).toBe(expectedMode);
-    },
-  );
-
-  it('preserves an explicit OFF mode after suggestions are already enabled', () => {
-    const settings = channelSettingsSchema.parse({
-      autoPostButtonsMode: 'OFF',
-      postSuggestionsEnabled: true,
-    });
-
-    expect(
-      applyChannelSettingsEnableTransitions(settings, { postSuggestionsEnabled: true })
-        .autoPostButtonsMode,
-    ).toBe('OFF');
   });
 });

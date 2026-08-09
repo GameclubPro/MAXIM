@@ -19,17 +19,6 @@ export const publishChannelEngagementRequestSchema = /*#__PURE__*/ z
       .default('Есть идея или обратная связь? Нажмите кнопку ниже.'),
     commentsButtonText: z.string().trim().min(1).max(32).default('💬 Комментарии'),
     suggestButtonText: z.string().trim().min(1).max(32).default('📰 Предложить пост'),
-    includeCommentsButton: z.boolean().default(true),
-    includeSuggestButton: z.boolean().default(true),
-  })
-  .superRefine((value, ctx) => {
-    if (!value.includeCommentsButton && !value.includeSuggestButton) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['includeCommentsButton'],
-        message: 'Включите хотя бы один вариант кнопки под постом.',
-      });
-    }
   });
 export type PublishChannelEngagementRequest = z.infer<typeof publishChannelEngagementRequestSchema>;
 

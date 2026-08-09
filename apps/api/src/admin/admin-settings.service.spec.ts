@@ -1033,7 +1033,7 @@ describe('AdminSettingsService chat rules', () => {
       postSuggestionsEnabled: true,
     });
 
-    expect(result.autoPostButtonsMode).toBe('SUGGEST');
+    expect(result).toMatchObject({ commentsEnabled: true, postSuggestionsEnabled: true });
     expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'channel-1',
       'admin-1',
@@ -1051,7 +1051,6 @@ describe('AdminSettingsService chat rules', () => {
           primaryBotId: 'bot-1',
           channelSettings: {
             create: expect.objectContaining({
-              autoPostButtonsMode: 'SUGGEST',
               commentsEnabled: true,
               postSuggestionsEnabled: true,
             }),
@@ -1063,12 +1062,10 @@ describe('AdminSettingsService chat rules', () => {
           channelSettings: {
             upsert: {
               update: expect.objectContaining({
-                autoPostButtonsMode: 'SUGGEST',
                 commentsEnabled: true,
                 postSuggestionsEnabled: true,
               }),
               create: expect.objectContaining({
-                autoPostButtonsMode: 'SUGGEST',
                 commentsEnabled: true,
                 postSuggestionsEnabled: true,
               }),
@@ -1083,7 +1080,6 @@ describe('AdminSettingsService chat rules', () => {
         actorUserId: 'admin-1',
         action: 'UPDATE_CHANNEL_SETTINGS',
         payload: expect.objectContaining({
-          autoPostButtonsMode: 'SUGGEST',
           commentsEnabled: true,
           postSuggestionsEnabled: true,
           source: 'miniapp',
@@ -1105,6 +1101,8 @@ describe('AdminSettingsService chat rules', () => {
         },
         persistedChannelSettings: createPersistedChannelSettings({
           chatId: 'channel-1',
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
           engagementPublishedMessageId: null,
           engagementPublishedThreadId: null,
           engagementPublishedAt: null,
@@ -1196,6 +1194,8 @@ describe('AdminSettingsService chat rules', () => {
         engagementPublishedBotId: true,
         engagementPublishedThreadId: true,
         engagementPublishedAt: true,
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
         postSuggestionsEntryMode: true,
       },
     });
@@ -1237,6 +1237,8 @@ describe('AdminSettingsService chat rules', () => {
     const { legacyAdminService, maxClient, prisma, service } = createService({
       persistedChannelSettings: createPersistedChannelSettings({
         chatId: 'channel-1',
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
         engagementPublishedMessageId: 'message-old',
         engagementPublishedBotId: null,
         engagementPublishedThreadId: 'thread-existing',

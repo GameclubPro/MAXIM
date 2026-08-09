@@ -204,7 +204,6 @@ describe('VkParsingService', () => {
         includeCommentsButton: false,
         includeSuggestButton: false,
         suggestButtonText: null,
-        autoPostButtonsMode: 'OFF',
         suggestionEntryMode: 'BOT',
       }),
       recordChannelPublicationEngagement: jest.fn().mockResolvedValue(undefined),
@@ -7200,7 +7199,6 @@ describe('VkParsingService', () => {
       includeCommentsButton: true,
       includeSuggestButton: true,
       suggestButtonText: 'Предложить пост',
-      autoPostButtonsMode: 'BOTH',
       suggestionEntryMode: 'BOT',
     };
     const source = {

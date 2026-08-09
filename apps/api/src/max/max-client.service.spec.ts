@@ -2289,9 +2289,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               {
                 type: 'inline_keyboard',
                 payload: {
-                  buttons: [
-                    [{ type: 'callback', text: 'Да', payload: 'poll|v2|poll-1|option-1' }],
-                  ],
+                  buttons: [[{ type: 'callback', text: 'Да', payload: 'poll|v2|poll-1|option-1' }]],
                 },
               },
             ],
@@ -3327,6 +3325,248 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
     );
 
+    await service.onModuleDestroy();
+  });
+
+  it('updates a channel dialog label when the route changes but the thread stays the same', async () => {
+    const threadId = '12345678-1234-4123-8123-123456789abc';
+    const token = `cdt-${Buffer.from(
+      JSON.stringify({ v: 1, d: threadId, s: 'a'.repeat(64) }),
+      'utf8',
+    ).toString('base64url')}`;
+    const startParam = `cd-${Buffer.from(
+      JSON.stringify({
+        v: 1,
+        k: 'channel-dialog',
+        c: 'channel-1',
+        m: 'comments',
+        t: token,
+      }),
+      'utf8',
+    ).toString('base64url')}`;
+    const existingCommentsUrl = `https://major-maksimov.ru/app/channel/channel-1/dialog/comments?token=${token}`;
+    const updatedCommentsUrl = `https://max.ru/bot-2?startapp=${startParam}`;
+    const existingKeyboard = {
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [
+          [
+            {
+              type: 'link',
+              text: 'Комментарии · 1',
+              url: existingCommentsUrl,
+            },
+          ],
+          [
+            {
+              type: 'link',
+              text: 'Сайт',
+              url: 'https://example.com/',
+            },
+          ],
+        ],
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-edit-merge-keyboard-1',
+                    text: 'Исходный текст',
+                    attachments: [
+                      { type: 'image', payload: { token: 'image-token-1' } },
+                      existingKeyboard,
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard(
+      'chat-1',
+      'mid-edit-merge-keyboard-1',
+      'Исходный текст',
+      {
+        buttons: [
+          [
+            {
+              type: 'link',
+              text: 'Комментарии · 2',
+              url: updatedCommentsUrl,
+            },
+          ],
+        ],
+        mergeExistingInlineKeyboard: true,
+      },
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        data: expect.objectContaining({
+          attachments: [
+            { type: 'image', payload: { token: 'image-token-1' } },
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Комментарии · 2',
+                      url: updatedCommentsUrl,
+                    },
+                  ],
+                  [
+                    {
+                      type: 'link',
+                      text: 'Сайт',
+                      url: 'https://example.com/',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps custom row order and the existing thread while appending scanner system buttons', async () => {
+    const buildDialogUrl = (kind: 'comments' | 'suggest', threadId: string) => {
+      const token = `cdt-${Buffer.from(
+        JSON.stringify({ v: 1, d: threadId, s: 'a'.repeat(64) }),
+        'utf8',
+      ).toString('base64url')}`;
+      const payload = Buffer.from(
+        JSON.stringify({
+          v: 1,
+          k: 'channel-dialog',
+          c: 'channel-1',
+          m: kind,
+          t: token,
+        }),
+        'utf8',
+      ).toString('base64url');
+      return `https://max.ru/bot-1?startapp=cd-${payload}`;
+    };
+    const existingCommentsUrl = buildDialogUrl('comments', 'existing-thread');
+    const replacementCommentsUrl = buildDialogUrl('comments', 'new-thread');
+    const suggestionUrl = buildDialogUrl('suggest', 'new-thread');
+    const existingKeyboard = {
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [
+          [
+            {
+              type: 'link',
+              text: 'Обсудить публикацию',
+              url: existingCommentsUrl,
+            },
+          ],
+          [{ type: 'link', text: 'Сайт', url: 'https://example.com/' }],
+          [
+            {
+              type: 'link',
+              text: 'Комментарии другого канала',
+              url: 'https://major-maksimov.ru/app/channel/channel-2/dialog/comments?token=cdt-other',
+            },
+          ],
+        ],
+      },
+    };
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-edit-semantic-merge-1',
+                    text: 'Исходный текст',
+                    attachments: [existingKeyboard],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard(
+      'channel-1',
+      'mid-edit-semantic-merge-1',
+      'Исходный текст',
+      {
+        buttons: [
+          [{ type: 'link', text: 'Комментарии', url: replacementCommentsUrl }],
+          [{ type: 'link', text: 'Предложить', url: suggestionUrl }],
+        ],
+        appendNewInlineKeyboardRows: true,
+        mergeExistingInlineKeyboard: true,
+      },
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [{ type: 'link', text: 'Сайт', url: 'https://example.com/' }],
+                  [
+                    {
+                      type: 'link',
+                      text: 'Комментарии другого канала',
+                      url: 'https://major-maksimov.ru/app/channel/channel-2/dialog/comments?token=cdt-other',
+                    },
+                  ],
+                  [
+                    {
+                      type: 'link',
+                      text: 'Обсудить публикацию',
+                      url: existingCommentsUrl,
+                    },
+                  ],
+                  [{ type: 'link', text: 'Предложить', url: suggestionUrl }],
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    const editRequest = httpService.request.mock.calls[1]?.[0] as {
+      data?: { attachments?: Array<{ payload?: { buttons?: unknown[][] } }> };
+    };
+    const deliveredButtons = editRequest.data?.attachments?.[0]?.payload?.buttons?.flat() ?? [];
+    expect(deliveredButtons).not.toContainEqual(
+      expect.objectContaining({ url: replacementCommentsUrl }),
+    );
     await service.onModuleDestroy();
   });
 
@@ -5108,6 +5348,146 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     await service.onModuleDestroy();
+  });
+
+  it('loads internal channel dialog identities by exact message id for background repair', async () => {
+    const threadId = '12345678-1234-4123-8123-123456789abc';
+    const token = `cdt-${Buffer.from(
+      JSON.stringify({ v: 1, d: threadId, s: 'a'.repeat(64) }),
+      'utf8',
+    ).toString('base64url')}`;
+    const startParam = `cd-${Buffer.from(
+      JSON.stringify({
+        v: 1,
+        k: 'channel-dialog',
+        c: 'channel-1',
+        m: 'comments',
+        t: token,
+      }),
+      'utf8',
+    ).toString('base64url')}`;
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-dialog-buttons-1',
+                  attachments: [
+                    {
+                      type: 'inline_keyboard',
+                      payload: {
+                        buttons: [
+                          [
+                            {
+                              type: 'link',
+                              text: 'Комментарии',
+                              url: `https://max.ru/bot-1?startapp=${startParam}`,
+                            },
+                          ],
+                          [
+                            {
+                              type: 'link',
+                              text: 'Предложить',
+                              url: `https://max.ru/bot-1?start=cds-channel-1.${threadId.replaceAll(
+                                '-',
+                                '',
+                              )}.${'a'.repeat(24)}`,
+                            },
+                          ],
+                          [{ type: 'link', text: 'Сайт', url: 'https://example.com/' }],
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactChannelDialogButtonIdentities('channel-1', 'mid-dialog-buttons-1', {
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+        botId: '777000_bot',
+      }),
+    ).resolves.toEqual([
+      { chatId: 'channel-1', kind: 'comments', threadId },
+      { chatId: 'channel-1', kind: 'suggest', threadId },
+    ]);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages',
+        params: { message_ids: 'mid-dialog-buttons-1' },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('distinguishes an existing message without owned buttons from confirmed absence', async () => {
+    const presentHttpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-without-dialog-buttons',
+                  attachments: [
+                    {
+                      type: 'inline_keyboard',
+                      payload: {
+                        buttons: [[{ type: 'link', text: 'Сайт', url: 'https://example.com/' }]],
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const presentService = createService(presentHttpService);
+    await expect(
+      presentService.getExactChannelDialogButtonIdentities(
+        'channel-1',
+        'mid-without-dialog-buttons',
+      ),
+    ).resolves.toEqual([]);
+    await presentService.onModuleDestroy();
+
+    const notFoundError = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const absentHttpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(throwError(() => notFoundError)),
+    };
+    const absentService = createService(absentHttpService);
+    await expect(
+      absentService.getExactChannelDialogButtonIdentities('channel-1', 'mid-absent-dialog'),
+    ).resolves.toBeNull();
+    expect(absentHttpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages/mid-absent-dialog',
+      }),
+    );
+    await absentService.onModuleDestroy();
   });
 
   it('reports an exact raw message as present even when snapshot fields are malformed', async () => {

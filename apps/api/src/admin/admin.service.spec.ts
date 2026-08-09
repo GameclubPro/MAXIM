@@ -21314,7 +21314,7 @@ describe('AdminService.updateChannelSettings', () => {
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
-  it('enables the auto post suggestion button when suggestions are turned on', async () => {
+  it('stores channel feature toggles used by publication buttons', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -21342,13 +21342,12 @@ describe('AdminService.updateChannelSettings', () => {
         chatTitle: null,
       },
       {
-        autoPostButtonsMode: 'OFF',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
       },
     );
 
-    expect(result.autoPostButtonsMode).toBe('SUGGEST');
+    expect(result).toMatchObject({ commentsEnabled: true, postSuggestionsEnabled: true });
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
@@ -21356,7 +21355,8 @@ describe('AdminService.updateChannelSettings', () => {
           channelSettings: expect.objectContaining({
             upsert: expect.objectContaining({
               update: expect.objectContaining({
-                autoPostButtonsMode: 'SUGGEST',
+                commentsEnabled: true,
+                postSuggestionsEnabled: true,
               }),
             }),
           }),
@@ -26935,7 +26935,6 @@ describe('AdminService.sendBroadcast', () => {
                 includeSuggestButton: false,
                 suggestButtonText: null,
                 customButtons: [{ text: 'Открыть прайс', url: 'https://max.ru/pricelist' }],
-                autoPostButtonsMode: null,
                 suggestionEntryMode: null,
                 botId: 'bot-3',
               },
@@ -27385,7 +27384,6 @@ describe('AdminService.sendBroadcast', () => {
     const prisma = createPrismaMock();
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
       postSuggestionsEnabled: false,
       postSuggestionsEntryMode: 'FORM',
       postSuggestionsButtonText: 'Предложить пост',
@@ -27431,53 +27429,42 @@ describe('AdminService.sendBroadcast', () => {
     ]);
   });
 
-  it('restores both channel system buttons when comments are enabled again', async () => {
-    const prisma = createPrismaMock();
-    prisma.channelSettings.upsert
-      .mockResolvedValueOnce({
+  it.each([
+    [false, false, []],
+    [true, false, ['💬 Комментарии · 0']],
+    [false, true, ['Предложить пост']],
+    [true, true, ['💬 Комментарии · 0', 'Предложить пост']],
+  ] as const)(
+    'derives channel system buttons from comments=%s and suggestions=%s',
+    async (commentsEnabled, postSuggestionsEnabled, expectedButtonTexts) => {
+      const prisma = createPrismaMock();
+      prisma.channelSettings.upsert.mockResolvedValue({
         chatId: 'channel-1',
-        autoPostButtonsMode: 'BOTH',
-        postSuggestionsEnabled: true,
+        postSuggestionsEnabled,
         postSuggestionsEntryMode: 'BOT',
         postSuggestionsButtonText: 'Предложить пост',
-        commentsEnabled: false,
-      })
-      .mockResolvedValueOnce({
-        chatId: 'channel-1',
-        autoPostButtonsMode: 'BOTH',
-        postSuggestionsEnabled: true,
-        postSuggestionsEntryMode: 'BOT',
-        postSuggestionsButtonText: 'Предложить пост',
-        commentsEnabled: true,
+        commentsEnabled,
       });
 
-    const service = new AdminService(
-      prisma as never,
-      { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']) } as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-    const options = {
-      includeCustomButton: false,
-      customButtonText: '',
-      customButtonUrl: '',
-    };
+      const service = new AdminService(
+        prisma as never,
+        { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']) } as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      const options = {
+        includeCustomButton: false,
+        customButtonText: '',
+        customButtonUrl: '',
+      };
 
-    const disabledCommentsButtons = await (
-      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
-    ).resolveBroadcastButtons('channel-1', 'channel', options);
-    const restoredCommentsButtons = await (
-      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
-    ).resolveBroadcastButtons('channel-1', 'channel', options);
+      const buttons = await (
+        service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
+      ).resolveBroadcastButtons('channel-1', 'channel', options);
 
-    expect(disabledCommentsButtons).toMatchObject([
-      [expect.objectContaining({ text: 'Предложить пост' })],
-    ]);
-    expect(restoredCommentsButtons).toMatchObject([
-      [expect.objectContaining({ text: '💬 Комментарии · 0' })],
-      [expect.objectContaining({ text: 'Предложить пост' })],
-    ]);
-  });
+      expect(buttons.map((row) => row[0]?.text)).toEqual(expectedButtonTexts);
+    },
+  );
 
   it('stores and queries chat dialog messages inside the thread encoded in the button token', async () => {
     const prisma = createPrismaMock();
@@ -28934,7 +28921,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: 'Предложить пост',
       commentsEnabled: false,
@@ -29048,8 +29034,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'COMMENTS',
-      postSuggestionsEnabled: true,
+      postSuggestionsEnabled: false,
       postSuggestionsEntryMode: 'MINIAPP',
       postSuggestionsButtonText: 'Предложить пост',
       commentsEnabled: true,
@@ -29126,7 +29111,6 @@ describe('AdminService.sendChannelBroadcast', () => {
           threadId: expect.any(String),
           includeCommentsButton: true,
           includeSuggestButton: false,
-          autoPostButtonsMode: 'COMMENTS',
           suggestionEntryMode: 'MINIAPP',
           source: 'managed_broadcast',
           managedBroadcastSource: 'immediate',
@@ -29156,7 +29140,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: 'Предложить пост',
       commentsEnabled: false,
@@ -29261,7 +29244,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: 'Предложить пост',
       commentsEnabled: false,
@@ -29348,7 +29330,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: false,
@@ -29434,7 +29415,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: false,
@@ -29577,7 +29557,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: false,
@@ -29663,7 +29642,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'COMMENTS',
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: true,
@@ -29811,7 +29789,6 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'SUGGEST',
       postSuggestionsEnabled: true,
       postSuggestionsEntryMode: 'BOT',
       postSuggestionsButtonText: '📰 Предложить пост',
@@ -29896,7 +29873,6 @@ describe('AdminService.sendChannelBroadcast', () => {
           threadId: expect.any(String),
           includeCommentsButton: false,
           includeSuggestButton: true,
-          autoPostButtonsMode: 'SUGGEST',
           suggestionEntryMode: 'BOT',
           suggestButtonText: '📰 Предложить пост',
           source: 'managed_broadcast',
@@ -29909,7 +29885,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
   });
 
-  it('does not publish channel broadcast system buttons when auto-post buttons mode is off', async () => {
+  it('does not publish channel broadcast system buttons when both feature toggles are off', async () => {
     const prisma = createPrismaMock();
     wireManagedBroadcastDeliveryStore(prisma);
     prisma.chat.findUnique.mockResolvedValue({
@@ -29925,10 +29901,9 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     prisma.channelSettings.upsert.mockResolvedValue({
       chatId: 'channel-1',
-      autoPostButtonsMode: 'OFF',
-      postSuggestionsEnabled: true,
+      postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
-      commentsEnabled: true,
+      commentsEnabled: false,
       engagementPublishedMessageId: null,
       engagementPublishedThreadId: null,
       engagementPublishedAt: null,
