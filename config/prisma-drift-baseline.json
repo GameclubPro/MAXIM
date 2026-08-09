@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "normalizedSha256": "1b685ec3374c3f8c30f54ae94446b50f1e4d88fe2212458ba0c8b897ccbe030a",
+  "normalizedSha256": "d12bfd089ad289f3d5cb6fa0b5229b385442b736ed1f0eab8c3fab177d2094ee",
   "classifications": {
     "prisma-unrepresentable": {
       "description": "PostgreSQL INCLUDE columns on these covering indexes are not represented by the current Prisma schema syntax.",
@@ -33,12 +33,6 @@
         "-- AlterTable\nALTER TABLE \"admin_global_spammer_exemptions\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
         "-- AlterTable\nALTER TABLE \"channel_auto_post_attach_markers\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
         "-- AlterTable\nALTER TABLE \"channel_posts\" ALTER COLUMN \"updated_at\" DROP DEFAULT;"
-      ]
-    },
-    {
-      "classification": "missing-migration-debt",
-      "operations": [
-        "-- AlterTable\nALTER TABLE \"channel_settings\" DROP COLUMN \"auto_post_buttons_mode\";"
       ]
     },
     {
@@ -82,12 +76,6 @@
         "-- AlterTable\nALTER TABLE \"spammer_observations\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
         "-- AlterTable\nALTER TABLE \"spammer_user_runtime_profiles\" ALTER COLUMN \"updated_at\" DROP DEFAULT;",
         "-- AlterTable\nALTER TABLE \"support_requests\" ALTER COLUMN \"updated_at\" DROP DEFAULT;"
-      ]
-    },
-    {
-      "classification": "missing-migration-debt",
-      "operations": [
-        "-- DropEnum\nDROP TYPE \"ChannelAutoPostButtonsMode\";"
       ]
     }
   ]

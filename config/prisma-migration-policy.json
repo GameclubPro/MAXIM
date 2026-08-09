@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260809120000_add_channel_auto_post_reply_fallback",
-  "baselineNamesSha256": "70cb2070fe0db5d4b53e29c862ef221fdb1e7369fdb072e550d0fe5c410be2fc",
-  "baselineContentsSha256": "0f69b18e0538addfb162c8663338e5fdd54d6390e74d5387abaa500032c6cf48",
+  "baselineThrough": "20260809123000_drop_channel_auto_post_buttons_mode",
+  "baselineNamesSha256": "81d2c714b9d2b373de1ee74d3132759734c80c09b9d824e7756f9440c4e0143f",
+  "baselineContentsSha256": "c13bab52802e947064cf70f6eb36c07217a2b9f3994cb2185048e514b9f561fe",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -31,6 +31,11 @@
     },
     "20260716050000_drop_thematic_codeword_settings": {
       "reason": "Historical migration recorded before the executable policy guard."
+    },
+    "20260809123000_drop_channel_auto_post_buttons_mode": {
+      "reason": "Remove the retired channel auto-post button mode after every production API role stopped selecting the column.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Compatible runtime SHA 38fc559155500934773e20b291c9498a6cae29ba was deployed as release release-20260809T020524Z-38fc55915550 and verified live on all 11 production API roles before this migration."
     }
   },
   "nonConcurrentIndexExceptions": {}
