@@ -3118,70 +3118,70 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="events-screen page-enter" data-managed-entity-workspace>
+      <ManagedEntityWorkspaceHeader
+        entityType="chat"
+        screen="stats"
+        title={chatTitle}
+        avatarUrl={chatAvatarUrl}
+        authoritativeIdentity={
+          authoritativeDashboardIdentity
+            ? {
+                title:
+                  chatTitleResolution.source === 'remote'
+                    ? authoritativeDashboardIdentity.title
+                    : null,
+                avatarUrl: authoritativeDashboardIdentity.avatarUrl ?? null,
+              }
+            : undefined
+        }
+        backTo={buildManagedEntitiesRoute('chat')}
+        counterpartTo={buildManagedEntitySettingsRoute('chat', chatId)}
+        busy={isAppbarBusy}
+        className="events-stage__workspace-header"
+      />
+
+      <div className="events-primary-tabs" role="group" aria-label="Раздел статистики">
+        <div className="events-primary-tabs__track">
+          <button
+            type="button"
+            aria-pressed={section === 'moderation'}
+            className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
+            onClick={() => handleSectionChange('moderation')}
+          >
+            <span className="events-primary-tab__icon" aria-hidden="true">
+              <ModerationTabIcon />
+            </span>
+            <span className="events-primary-tab__label">Модерация</span>
+          </button>
+
+          <button
+            type="button"
+            aria-pressed={section === 'participants'}
+            className={`events-primary-tab ${section === 'participants' ? 'is-active' : ''}`}
+            onClick={() => handleSectionChange('participants')}
+          >
+            <span className="events-primary-tab__icon" aria-hidden="true">
+              <ParticipantsTabIcon />
+            </span>
+            <span className="events-primary-tab__label">Участники</span>
+          </button>
+
+          <button
+            type="button"
+            aria-pressed={section === 'activity'}
+            className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
+            onClick={() => handleSectionChange('activity')}
+          >
+            <span className="events-primary-tab__icon" aria-hidden="true">
+              <ActivityTabIcon />
+            </span>
+            <span className="events-primary-tab__label">События</span>
+          </button>
+        </div>
+      </div>
+
       <section className={`events-stage events-stage--${section}`}>
-        <ManagedEntityWorkspaceHeader
-          entityType="chat"
-          screen="stats"
-          title={chatTitle}
-          avatarUrl={chatAvatarUrl}
-          authoritativeIdentity={
-            authoritativeDashboardIdentity
-              ? {
-                  title:
-                    chatTitleResolution.source === 'remote'
-                      ? authoritativeDashboardIdentity.title
-                      : null,
-                  avatarUrl: authoritativeDashboardIdentity.avatarUrl ?? null,
-                }
-              : undefined
-          }
-          backTo={buildManagedEntitiesRoute('chat')}
-          counterpartTo={buildManagedEntitySettingsRoute('chat', chatId)}
-          busy={isAppbarBusy}
-          className="events-stage__workspace-header"
-        />
-
         <div className="events-stage__panel stagger-in">
-          <div className="events-primary-tabs" role="group" aria-label="Раздел статистики">
-            <div className="events-primary-tabs__track">
-              <button
-                type="button"
-                aria-pressed={section === 'moderation'}
-                className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
-                onClick={() => handleSectionChange('moderation')}
-              >
-                <span className="events-primary-tab__icon" aria-hidden="true">
-                  <ModerationTabIcon />
-                </span>
-                <span className="events-primary-tab__label">Модерация</span>
-              </button>
-
-              <button
-                type="button"
-                aria-pressed={section === 'participants'}
-                className={`events-primary-tab ${section === 'participants' ? 'is-active' : ''}`}
-                onClick={() => handleSectionChange('participants')}
-              >
-                <span className="events-primary-tab__icon" aria-hidden="true">
-                  <ParticipantsTabIcon />
-                </span>
-                <span className="events-primary-tab__label">Участники</span>
-              </button>
-
-              <button
-                type="button"
-                aria-pressed={section === 'activity'}
-                className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
-                onClick={() => handleSectionChange('activity')}
-              >
-                <span className="events-primary-tab__icon" aria-hidden="true">
-                  <ActivityTabIcon />
-                </span>
-                <span className="events-primary-tab__label">События</span>
-              </button>
-            </div>
-          </div>
-
           <section
             className={`events-dashboard events-dashboard--${section}`}
             aria-label={

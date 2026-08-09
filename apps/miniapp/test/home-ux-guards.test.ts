@@ -25,12 +25,13 @@ const onboardingSource = readFileSync(
   'utf8',
 );
 
-test('entity cards expose one large settings target, statistics and category edit mode', () => {
+test('entity cards expose settings, favorite, statistics and category edit targets', () => {
   assert.match(chatsPageSource, /className="chat-card__primary-link"/u);
+  assert.match(chatsPageSource, /'chat-card__action--favorite'/u);
   assert.match(chatsPageSource, /chat-card__action chat-card__action--statistics/u);
   assert.doesNotMatch(chatsPageSource, /chat-card__action--settings|chat-card__title-link/u);
   assert.match(chatsPageSource, /chat-card__category-editor/u);
-  assert.match(chatsPageSource, /chat-card__category-marker/u);
+  assert.doesNotMatch(chatsPageSource, /chat-card__category-marker/u);
   assert.match(
     chatsPageSource,
     /aria-label=\{`Открыть настройки: \$\{entity\.title\}\$\{[\s\S]*?primaryFavoriteType \? `\. Категория: \$\{categoryLabel\}` : ''[\s\S]*?\}`\}/u,
@@ -49,6 +50,11 @@ test('entity cards expose one large settings target, statistics and category edi
   assert.doesNotMatch(chatsPageSource, /function buildEntity(?:Settings|Statistics)Route/u);
   assert.doesNotMatch(chatsPageSource, /<details\b/u);
   assert.match(chatsPageSource, /aria-haspopup="dialog"/u);
+  assert.match(
+    chatsPageSource,
+    /`Добавить в избранное: \$\{entity\.title\}`[\s\S]*?aria-controls="home-sheet-favorite"/u,
+  );
+  assert.match(chatsPageSource, /<StarGlyph aria-hidden focusable="false" \/>/u);
   assert.match(chatsPageSource, /import\('\.\/home-entity-sheets'\)/u);
   assert.doesNotMatch(chatsPageSource, /from '\.\.\/lib\/dialog-focus'/u);
   assert.doesNotMatch(chatsPageSource, /chat-card__more|MoreGlyph/u);
@@ -88,10 +94,22 @@ test('compact home controls keep direct 44px actions and one filter control', ()
   assert.match(chatsPageNativeCss, /\.chat-card\.glass-card \{[\s\S]*?height: 72px/u);
   assert.match(
     chatsPageNativeCss,
+    /\.chat-card\.glass-card \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) 44px 52px;/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
     /\.chat-card__primary-link \{[\s\S]*?position: relative;[\s\S]*?grid-column: 1;[\s\S]*?min-height: 72px/u,
   );
   assert.match(chatsPageNativeCss, /\.chat-card__category-editor \{[\s\S]*?grid-column: 1 \/ -1;/u);
   assert.match(chatsPageNativeCss, /\.chat-card__action \{[\s\S]*?min-width: 44px/u);
+  assert.match(
+    chatsPageNativeCss,
+    /\.chat-card__action--favorite\.is-active \{[\s\S]*?var\(--chat-card-favorite-accent\)/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
+    /html\[data-max-theme='dark'\] \.chat-card\.is-important \.chat-card__action--favorite\.is-active \{\s*color: var\(--warning\);/u,
+  );
   assert.match(
     chatsPageNativeCss,
     /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(112px, 1fr\) repeat\(3, 44px\)/u,
@@ -113,9 +131,14 @@ test('compact home controls keep direct 44px actions and one filter control', ()
   assert.match(sheetsSource, /sheetKey="filter"[\s\S]*?home-filter__grid/u);
   assert.match(sheetsSource, /Распределить по категориям/u);
   assert.match(sheetsSource, /<strong>Настроить названия<\/strong>/u);
+  assert.match(sheetsSource, /'Добавить в избранное'/u);
   assert.match(
     chatsPageNativeCss,
     /\.favorite-picker__header span \{[\s\S]*?color: var\(--home-muted\);/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
+    /@media \(max-width: 430px\) \{\s*\.home-sheet--favorite \.favorite-picker__grid \{\s*grid-template-columns: minmax\(0, 1fr\);/u,
   );
 });
 

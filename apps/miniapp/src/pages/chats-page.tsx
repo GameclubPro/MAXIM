@@ -24,6 +24,7 @@ import {
   PlusCircleGlyph,
   RefreshGlyph,
   SearchGlyph,
+  StarGlyph,
   StatisticsGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
@@ -1667,23 +1668,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               primaryFavoriteType ? `. Категория: ${categoryLabel}` : ''
             }`}
           >
-            <span className="chat-card__avatar-wrap">
-              <EntityAvatar
-                title={entity.title}
-                entityType={activeTab}
-                avatarUrl={entity.avatarUrl ?? null}
-                className="chat-card__avatar"
-              />
-              {primaryFavoriteType ? (
-                <span
-                  className="chat-card__category-marker"
-                  title={`Категория: ${categoryLabel}`}
-                  aria-hidden
-                >
-                  <CategoryIcon focusable="false" />
-                </span>
-              ) : null}
-            </span>
+            <EntityAvatar
+              title={entity.title}
+              entityType={activeTab}
+              avatarUrl={entity.avatarUrl ?? null}
+              className="chat-card__avatar"
+            />
             <span className="chat-card__title-wrap">
               <h3>{entity.title}</h3>
             </span>
@@ -1694,31 +1684,67 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         )}
 
         {!categoryEditMode ? (
-          <Link
-            to={statisticsRoute}
-            className="chat-card__action chat-card__action--statistics"
-            state={routeState}
-            aria-label={`Открыть статистику: ${entity.title}`}
-            title="Статистика"
-            data-action="statistics"
-            onClick={(event) => {
-              rememberEntity(activeTab, entity);
-              prefetchEntityActivity(activeTab, entity.id, statsPreference);
-              handleEntityNavigation(event, entity, index, 'statistics', statisticsRoute);
-            }}
-            onPointerEnter={(event) => {
-              if (shouldPrefetchFromPointerEvent(event)) {
-                prefetchEntityActivity(activeTab, entity.id, statsPreference);
+          <>
+            <button
+              type="button"
+              className={cn(
+                'chat-card__action',
+                'chat-card__action--favorite',
+                primaryFavoriteType && 'is-active',
+              )}
+              aria-label={
+                primaryFavoriteType
+                  ? `Изменить категорию избранного: ${entity.title}. Сейчас: ${categoryLabel}`
+                  : `Добавить в избранное: ${entity.title}`
               }
-            }}
-            onPointerDown={(event) => {
-              if (shouldPrefetchFromPressEvent(event)) {
+              title={primaryFavoriteType ? `Избранное: ${categoryLabel}` : 'Добавить в избранное'}
+              aria-haspopup="dialog"
+              aria-controls="home-sheet-favorite"
+              aria-expanded={pickerOpen}
+              disabled={savingFavoriteEntityKey !== null}
+              onPointerEnter={() => void preloadHomeEntitySheets()}
+              onPointerDown={() => void preloadHomeEntitySheets()}
+              onFocus={() => void preloadHomeEntitySheets()}
+              onClick={(event) => {
+                if (savingFavoriteEntityKey !== null) {
+                  return;
+                }
+                homeOverlayTriggerRef.current = event.currentTarget;
+                setFavoritePicker({ entityType: activeTab, entity });
+              }}
+            >
+              {primaryFavoriteType ? (
+                <CategoryIcon aria-hidden focusable="false" />
+              ) : (
+                <StarGlyph aria-hidden focusable="false" />
+              )}
+            </button>
+            <Link
+              to={statisticsRoute}
+              className="chat-card__action chat-card__action--statistics"
+              state={routeState}
+              aria-label={`Открыть статистику: ${entity.title}`}
+              title="Статистика"
+              data-action="statistics"
+              onClick={(event) => {
+                rememberEntity(activeTab, entity);
                 prefetchEntityActivity(activeTab, entity.id, statsPreference);
-              }
-            }}
-          >
-            <StatisticsGlyph aria-hidden focusable="false" />
-          </Link>
+                handleEntityNavigation(event, entity, index, 'statistics', statisticsRoute);
+              }}
+              onPointerEnter={(event) => {
+                if (shouldPrefetchFromPointerEvent(event)) {
+                  prefetchEntityActivity(activeTab, entity.id, statsPreference);
+                }
+              }}
+              onPointerDown={(event) => {
+                if (shouldPrefetchFromPressEvent(event)) {
+                  prefetchEntityActivity(activeTab, entity.id, statsPreference);
+                }
+              }}
+            >
+              <StatisticsGlyph aria-hidden focusable="false" />
+            </Link>
+          </>
         ) : null}
       </GlassCard>
     );
@@ -1968,7 +1994,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 <Skeleton className="chat-card__skeleton-title" />
                 <Skeleton className="chat-card__skeleton-chevron" />
               </div>
-              <Skeleton className="chat-card__skeleton-action" />
+              <Skeleton className="chat-card__skeleton-action chat-card__skeleton-action--favorite" />
+              <Skeleton className="chat-card__skeleton-action chat-card__skeleton-action--statistics" />
             </GlassCard>
           ))}
         </section>

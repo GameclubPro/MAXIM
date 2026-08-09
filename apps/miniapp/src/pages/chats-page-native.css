@@ -490,7 +490,7 @@
     height: 72px;
     min-height: 72px;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 52px;
+    grid-template-columns: minmax(0, 1fr) 44px 52px;
     align-items: stretch;
     gap: 0;
     padding: 0;
@@ -562,12 +562,6 @@
     opacity: 0.58;
   }
 
-  .chat-card__avatar-wrap {
-    position: relative;
-    width: 44px;
-    height: 44px;
-  }
-
   .chat-card__avatar {
     width: 44px;
     height: 44px;
@@ -613,26 +607,6 @@
   .chat-card__chevron svg {
     width: 18px;
     height: 18px;
-  }
-
-  .chat-card__category-marker {
-    position: absolute;
-    right: -3px;
-    bottom: -3px;
-    width: 18px;
-    height: 18px;
-    display: grid;
-    place-items: center;
-    border: 2px solid var(--home-surface);
-    border-radius: 7px;
-    background: var(--home-surface-muted);
-    color: var(--chat-card-favorite-accent);
-  }
-
-  .chat-card__category-marker svg {
-    width: 11px;
-    height: 11px;
-    stroke-width: 2.1;
   }
 
   .chat-card__category-editor {
@@ -707,6 +681,21 @@
     color: var(--home-action);
   }
 
+  .chat-card__action--favorite {
+    color: var(--home-muted);
+  }
+
+  .chat-card__action--favorite.is-active {
+    border-color: var(--home-border-strong);
+    background: var(--accent-soft);
+    color: var(--chat-card-favorite-accent);
+  }
+
+  .chat-card__action--favorite:disabled {
+    cursor: wait;
+    opacity: 0.58;
+  }
+
   .chat-card__action svg {
     width: 20px;
     height: 20px;
@@ -761,8 +750,11 @@
     align-self: center;
     width: 44px;
     height: 44px;
-    margin-right: 8px;
     border-radius: 10px;
+  }
+
+  .chat-card__skeleton-action--statistics {
+    margin-right: 8px;
   }
 
   .chat-grid--virtual {
@@ -1097,6 +1089,29 @@
       0 0 0 1px var(--home-border) inset;
   }
 
+  html[data-max-theme='dark'] .chat-card .chat-card__action--favorite.is-active {
+    border-color: var(--home-border-strong);
+    background: var(--home-surface-muted);
+  }
+
+  html[data-max-theme='dark'] .chat-card.is-important .chat-card__action--favorite.is-active {
+    color: var(--warning);
+  }
+
+  html[data-max-theme='dark'] .chat-card.is-watch .chat-card__action--favorite.is-active {
+    color: var(--danger);
+  }
+
+  html[data-max-theme='dark'] .chat-card.is-broadcast .chat-card__action--favorite.is-active,
+  html[data-max-theme='dark'] .chat-card.is-partner .chat-card__action--favorite.is-active {
+    color: var(--accent);
+  }
+
+  html[data-max-theme='dark'] .chat-card.is-test .chat-card__action--favorite.is-active,
+  html[data-max-theme='dark'] .chat-card.is-service .chat-card__action--favorite.is-active {
+    color: var(--success);
+  }
+
   html[data-max-theme='dark'] .favorite-picker__option.is-important.is-active,
   html[data-max-theme='dark'] .favorite-label-editor__icon.is-important {
     background: var(--home-surface-muted);
@@ -1131,6 +1146,12 @@
   html[data-max-theme='dark'] .favorite-label-editor__icon.is-service {
     background: var(--home-surface-muted);
     color: var(--success);
+  }
+
+  @media (max-width: 430px) {
+    .home-sheet--favorite .favorite-picker__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   @media (max-width: 380px) {
@@ -1177,7 +1198,7 @@
     }
 
     .chat-card.glass-card {
-      grid-template-columns: minmax(0, 1fr) 50px;
+      grid-template-columns: minmax(0, 1fr) 44px 50px;
     }
 
     .chat-card__primary-link,
@@ -1191,7 +1212,6 @@
       grid-template-columns: 40px minmax(0, 1fr) 16px;
     }
 
-    .chat-card__avatar-wrap,
     .chat-card__skeleton-avatar {
       width: 40px;
       height: 40px;
@@ -1212,8 +1232,8 @@
       font-size: 0.65rem;
     }
 
-    .chat-card__action,
-    .chat-card__skeleton-action {
+    .chat-card__action--statistics,
+    .chat-card__skeleton-action--statistics {
       margin-right: 6px;
     }
   }

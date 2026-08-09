@@ -201,6 +201,11 @@ test('shared workspace header replaces counterpart routes and preserves route st
   );
   assert.match(workspaceHeaderSource, /onBack=\{\(\) => requestBack\(backTo\)\}/u);
   assert.match(
+    workspaceHeaderSource,
+    /const height = Math\.max\(0, header\.getBoundingClientRect\(\)\.height\);[\s\S]*?--managed-entity-workspace-header-bottom/u,
+  );
+  assert.doesNotMatch(workspaceHeaderSource, /getBoundingClientRect\(\)\.bottom/u);
+  assert.match(
     workspaceHeaderCss,
     /\.managed-entity-workspace-header \.compact-page-header__back,\s*\.managed-entity-workspace-header__counterpart \{[\s\S]*?width: 44px;[\s\S]*?min-width: 44px;[\s\S]*?height: 44px;/u,
   );

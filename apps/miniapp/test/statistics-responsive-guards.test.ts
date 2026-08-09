@@ -15,6 +15,10 @@ const channelStatsPageSource = readFileSync(
   new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
   'utf8',
 );
+const eventsPageSource = readFileSync(
+  new URL('../src/pages/events-page.tsx', import.meta.url),
+  'utf8',
+);
 const statisticsExperienceCss = readFileSync(
   new URL('../src/styles/statistics-experience.css', import.meta.url),
   'utf8',
@@ -151,6 +155,14 @@ test('managed statistics workspace keeps sticky navigation below the measured he
   assert.match(
     statisticsExperienceCss,
     /\.channel-insights\[data-managed-entity-workspace\] \.channel-insights__section-tabs \{\s*top: var\(\s*--managed-entity-workspace-header-bottom,/u,
+  );
+  assert.match(
+    statisticsExperienceCss,
+    /\.events-screen\[data-managed-entity-workspace\] > \.events-primary-tabs \{\s*position: sticky;\s*top: var\(--managed-entity-workspace-header-bottom,/u,
+  );
+  assert.match(
+    eventsPageSource,
+    /<ManagedEntityWorkspaceHeader[\s\S]*?<div className="events-primary-tabs"[\s\S]*?<section className=\{`events-stage events-stage--\$\{section\}`\}>/u,
   );
   assert.match(
     statisticsExperienceCss,

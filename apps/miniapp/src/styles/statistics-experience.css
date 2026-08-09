@@ -127,10 +127,14 @@
   }
 
   .events-screen[data-managed-entity-workspace] .events-stage__panel {
-    padding-top: 10px;
+    padding-top: 0;
   }
 
-  .events-primary-tabs {
+  .events-screen[data-managed-entity-workspace] > .events-primary-tabs {
+    position: sticky;
+    top: var(--managed-entity-workspace-header-bottom, calc(var(--app-safe-top) + 60px));
+    z-index: 23;
+    margin-inline: 10px;
     overflow: hidden;
     border-color: var(--border-subtle);
     border-radius: 8px;

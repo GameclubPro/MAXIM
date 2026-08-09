@@ -51,8 +51,7 @@ export function ManagedEntityWorkspaceHeader({
     typeof location.state === 'object' && location.state !== null
       ? (location.state as Record<string, unknown>)
       : null;
-  const routeTitle =
-    typeof routeState?.chatTitle === 'string' ? routeState.chatTitle.trim() : '';
+  const routeTitle = typeof routeState?.chatTitle === 'string' ? routeState.chatTitle.trim() : '';
   const routeAvatarUrl =
     typeof routeState?.avatarUrl === 'string' && routeState.avatarUrl.trim()
       ? routeState.avatarUrl.trim()
@@ -64,7 +63,8 @@ export function ManagedEntityWorkspaceHeader({
       ? authoritativeIdentity.avatarUrl.trim()
       : null;
   const hasAuthoritativeIdentity = authoritativeIdentity !== undefined;
-  const displayedAvatarUrl = typeof avatarUrl === 'string' && avatarUrl.trim() ? avatarUrl.trim() : null;
+  const displayedAvatarUrl =
+    typeof avatarUrl === 'string' && avatarUrl.trim() ? avatarUrl.trim() : null;
   const counterpartRouteState = {
     ...(routeState ?? {}),
     chatTitle: authoritativeTitle || routeTitle || resolvedTitle,
@@ -72,7 +72,7 @@ export function ManagedEntityWorkspaceHeader({
       ? authoritativeAvatarUrl
       : hasRouteAvatar
         ? routeAvatarUrl
-      : displayedAvatarUrl,
+        : displayedAvatarUrl,
   };
   const resolvedCounterpartRoute = preserveManagedEntityRouteContext(
     counterpartTo,
@@ -125,8 +125,8 @@ export function ManagedEntityWorkspaceHeader({
     }
 
     const measure = () => {
-      const bottom = Math.max(0, header.getBoundingClientRect().bottom);
-      workspace.style.setProperty('--managed-entity-workspace-header-bottom', `${bottom}px`);
+      const height = Math.max(0, header.getBoundingClientRect().height);
+      workspace.style.setProperty('--managed-entity-workspace-header-bottom', `${height}px`);
     };
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(header);

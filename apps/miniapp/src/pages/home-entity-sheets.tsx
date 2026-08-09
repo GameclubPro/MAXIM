@@ -345,13 +345,13 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
       <HomeSheet
         key="favorite"
         sheetKey="favorite"
-        title="Категория"
+        title={props.selectedFavoriteType ? 'Избранное' : 'Добавить в избранное'}
         subtitle={props.favoriteTarget.entity.title}
         overlayStyle={overlayStyle}
         onClose={props.onClose}
       >
         <fieldset className="favorite-picker__fieldset" disabled={props.favoriteSaving}>
-          <legend className="favorite-picker__sr">Выберите одну категорию</legend>
+          <legend className="favorite-picker__sr">Выберите категорию избранного</legend>
           <div className="favorite-picker__grid" aria-busy={props.favoriteSaving || undefined}>
             <label
               className={cn(

@@ -361,12 +361,7 @@ const scenarioBehaviors = [
   {
     name: 'home-favorite-picker',
     beforeShot: async (page) => {
-      await page.getByRole('button', { name: 'Фильтр категорий' }).click();
-      await page.getByRole('button', { name: 'Распределить по категориям' }).click();
-      await page
-        .getByRole('button', { name: /^Выбрать категорию:/ })
-        .first()
-        .click();
+      await page.locator('.chat-card__action--favorite').first().click();
       await page.locator('.favorite-picker__panel').waitFor({ state: 'visible' });
     },
   },
