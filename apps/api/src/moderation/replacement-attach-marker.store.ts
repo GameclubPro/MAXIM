@@ -328,6 +328,7 @@ export class ReplacementAttachMarkerStore {
     replyMessageId?: string | null;
     publishedUrl?: string | null;
     originalDeleted?: boolean;
+    terminalEditAttemptExhausted?: boolean;
     lastError: string | null;
     lastStatusCode: number | null;
   }): Promise<void> {
@@ -691,6 +692,7 @@ export class ReplacementAttachMarkerStore {
       replyMessageId?: string | null;
       publishedUrl?: string | null;
       originalDeleted?: boolean;
+      terminalEditAttemptExhausted?: boolean;
       lastError: string | null;
       lastStatusCode: number | null;
     },
@@ -699,6 +701,12 @@ export class ReplacementAttachMarkerStore {
       !params.replacementMessageId &&
       !params.replyMessageId &&
       params.lastError?.startsWith(MAX_SEND_AMBIGUOUS_ERROR_PREFIX) === true;
+    const channelEditRecoveryExhausted =
+      kind === 'channel_auto_post' &&
+      params.status === 'SKIPPED' &&
+      params.deliveryMode === 'edit_message' &&
+      (params.terminalEditAttemptExhausted === true ||
+        this.isChannelEditRecoveryLock(params.lockToken));
     await this.getDelegate(kind)?.updateMany?.({
       where: {
         chatId: params.chatId,
@@ -719,13 +727,9 @@ export class ReplacementAttachMarkerStore {
         ...(!preserveAmbiguousSendFence ? { replacementSendStartedAt: null } : {}),
         publishedUrl: params.publishedUrl ?? null,
         ...(params.originalDeleted ? { originalDeleted: true } : {}),
-        lastError:
-          kind === 'channel_auto_post' &&
-          params.status === 'SKIPPED' &&
-          params.deliveryMode === 'edit_message' &&
-          this.isChannelEditRecoveryLock(params.lockToken)
-            ? this.withChannelEditRecoveryEvidence(params.lastError)
-            : params.lastError,
+        lastError: channelEditRecoveryExhausted
+          ? this.withChannelEditRecoveryEvidence(params.lastError)
+          : params.lastError,
         lastStatusCode: params.lastStatusCode,
       },
     });
@@ -1005,6 +1009,7 @@ export class ReplacementAttachMarkerStore {
     return (
       record.deliveryMode === 'edit_message' &&
       record.linkType !== 'forward' &&
+      record.terminalEditAttemptExhausted !== true &&
       !this.readNonEmptyString(record.error)?.startsWith(MAX_SEND_AMBIGUOUS_ERROR_PREFIX)
     );
   }

@@ -1830,160 +1830,28 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('falls back to a linked reply when MAX rejects a channel post edit', async () => {
-    const prisma = {
-      chat: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'channel-1',
-          title: 'Ищу модель | Ростов',
-          entityType: 'CHANNEL',
-          channelSettings: {
-            postSuggestionsEnabled: true,
-            postSuggestionsButtonText: '📰 Предложить пост',
-            commentsEnabled: true,
-          },
-          admins: [],
-        }),
-      },
-      auditLog: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn().mockResolvedValue(undefined),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn(),
-    };
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
-        response: {
-          status: 400,
-        },
-        message: 'Error on message edit',
-      }),
-      sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async (...args: any[]) => {
-        await args[2]?.beforeSend?.();
-        return {
-          messageId: 'mid-channel-reply-1',
-          url: 'https://max.ru/chats/channel-1/message/mid-channel-reply-1',
-        };
-      }),
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-    const adminService = createAdminServiceMock();
-
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      adminService as never,
-    );
-
-    await (service as any).tryAutoAttachChannelMessageButtons({
-      chatId: 'channel-1',
-      messageId: 'mid-channel-1',
-      text: 'Новый пост в канале',
-      linkType: null,
-      existingDialogButtonKinds: ['comments'],
-      existingDialogThreadId: 'existing-thread',
-      managedChannel: {
-        channelSettings: {
-          updatedAt: new Date('2026-03-06T15:00:00.000Z'),
-          commentsEnabled: true,
-          postSuggestionsEnabled: true,
-          postSuggestionsEntryMode: 'BOT',
-          postSuggestionsButtonText: '📰 Предложить пост',
-        },
-        adminUserIds: ['admin-1'],
-      },
-      source: 'webhook',
-      senderId: 'admin-1',
-    });
-
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
-    expect(prisma.auditLog.findFirst).toHaveBeenCalledWith({
-      where: {
-        chatId: 'channel-1',
-        action: {
-          in: ['AUTO_ATTACH_CHANNEL_ENGAGEMENT', 'PUBLISH_CHANNEL_ENGAGEMENT'],
-        },
-        payload: {
-          path: ['messageId'],
-          equals: 'mid-channel-1',
-        },
-      },
-      select: {
-        id: true,
-      },
-    });
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      'Действия к публикации',
-      expect.objectContaining({
-        buttons: [
-          [
-            expect.objectContaining({
-              type: 'link',
-              text: '📰 Предложить пост',
-            }),
-          ],
-        ],
-        messageLink: {
-          type: 'reply',
-          mid: 'mid-channel-1',
-        },
-        beforeSend: expect.any(Function),
-      }),
-      expectChannelAutoPostOptions(),
-    );
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        chatId: 'channel-1',
-        actorUserId: 'admin-1',
-        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
-        payload: expect.objectContaining({
-          messageId: 'mid-channel-1',
-          threadId: 'existing-thread',
-          includeCommentsButton: false,
-          includeSuggestButton: true,
-          deliveryMode: 'reply_message',
-          replyMessageId: 'mid-channel-reply-1',
-        }),
-      }),
-    });
-  });
-
-  it('fences an ambiguous linked reply and never sends it again', async () => {
-    const markerMock = createChannelAutoPostAttachMarkerMock();
+  it('retries a rejected merged edit by replacing the keyboard without losing the signature', async () => {
     const prisma = {
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
-      channelAutoPostAttachMarker: markerMock.delegate,
     };
     const maxClient = {
-      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
-        response: { status: 400 },
-        message: 'Error on message edit',
-      }),
-      sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async (...args: any[]) => {
-        await args[2]?.beforeSend?.();
-        throw Object.assign(new Error('fallback reply timed out'), { code: 'ETIMEDOUT' });
+      editMessageInlineKeyboard: jest
+        .fn()
+        .mockRejectedValueOnce({
+          response: { status: 200 },
+          message: 'Error on message edit',
+        })
+        .mockResolvedValueOnce(undefined),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+        signatureApplied: true,
       }),
     };
     const service = new ModerationService(
@@ -1998,17 +1866,133 @@ describe('ModerationService channel auto post buttons', () => {
       undefined,
       createAdminServiceMock() as never,
     );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-replacement-edit-1',
+        text: '**Пост**',
+        textFormat: 'markdown',
+        linkType: null,
+        existingDialogButtonKinds: ['comments'],
+        existingDialogThreadId: 'manual-thread',
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: true,
+            postSuggestionsEntryMode: 'BOT',
+            postSuggestionsButtonText: '📰 Предложить пост',
+            postSignatureEnabled: true,
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'webhook',
+        senderId: 'admin-1',
+      }),
+    ).resolves.toBe('attached');
+
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledTimes(1);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
+      1,
+      'channel-1',
+      'mid-channel-replacement-edit-1',
+      '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '📰 Предложить пост' })]],
+        textFormat: 'html',
+        appendNewInlineKeyboardRows: true,
+        mergeExistingInlineKeyboard: true,
+      }),
+      expectChannelAutoPostOptions(),
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
+      2,
+      'channel-1',
+      'mid-channel-replacement-edit-1',
+      '<b>Пост</b>\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [expect.objectContaining({ text: '📰 Предложить пост' })],
+        ],
+        textFormat: 'html',
+      }),
+      expectChannelAutoPostOptions(),
+    );
+    const replacementOptions = maxClient.editMessageInlineKeyboard.mock.calls[1]?.[3];
+    expect(replacementOptions).not.toHaveProperty('appendNewInlineKeyboardRows');
+    expect(replacementOptions).not.toHaveProperty('mergeExistingInlineKeyboard');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-replacement-edit-1',
+          threadId: 'manual-thread',
+          includeCommentsButton: true,
+          includeSuggestButton: true,
+          signatureApplied: true,
+          deliveryMode: 'edit_message',
+        }),
+      }),
+    });
+  });
+
+  it('terminally skips after both keyboard edit strategies fail and never retries or replies', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
+    const terminalEditError = {
+      response: { status: 200 },
+      message: 'Error on message edit',
+    };
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      channelAutoPostAttachMarker: markerMock.delegate,
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(terminalEditError),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: 'Пост\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
     const input = {
       chatId: 'channel-1',
-      messageId: 'mid-channel-ambiguous-reply-1',
-      text: 'Пост с недоступным редактированием',
+      messageId: 'mid-channel-terminal-edit-1',
+      text: 'Пост',
       textFormat: null,
       linkType: null,
+      existingDialogThreadId: 'terminal-thread',
       managedChannel: {
         channelSettings: {
           commentsEnabled: true,
-          postSuggestionsEnabled: false,
-          postSuggestionsButtonText: '',
+          postSuggestionsEnabled: true,
+          postSuggestionsEntryMode: 'BOT',
+          postSuggestionsButtonText: 'Предложить пост',
+          postSignatureEnabled: true,
         },
         adminUserIds: ['admin-1'],
       },
@@ -2023,208 +2007,36 @@ describe('ModerationService channel auto post buttons', () => {
       'skipped',
     );
 
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
-    expect(markerMock.rows.get('channel-1:mid-channel-ambiguous-reply-1')).toMatchObject({
-      status: 'SKIPPED',
-      deliveryMode: 'reply_message',
-      replyMessageId: null,
-      replacementSendStartedAt: expect.any(Date),
-      lastError: expect.stringContaining('[max.send_ambiguous]'),
-    });
-  });
-
-  it('uses a separate send-message bot and rebuilds bot-specific reply buttons', async () => {
-    const prisma = {
-      auditLog: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn().mockResolvedValue(undefined),
-      },
-    };
-    const maxClient = {
-      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
-        response: { status: 200 },
-        message: 'errors.process.attachment.movie.access.denied',
-      }),
-      sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async (...args: any[]) => {
-        await args[2]?.beforeSend?.();
-        return {
-          messageId: 'mid-channel-send-bot-reply-1',
-          url: 'https://max.ru/chats/channel-1/message/mid-channel-send-bot-reply-1',
-        };
-      }),
-    };
-    const maxBotLinkService = {
-      resolveBotRoutes: jest.fn().mockResolvedValue({
-        purpose: 'moderation_action',
-        chatId: 'channel-1',
-        primaryBotId: 'edit-bot',
-        botId: 'edit-bot',
-        candidateBotIds: ['edit-bot'],
-        reason: 'primary_confirmed',
-        action: 'edit_message',
-      }),
-      resolveBotRoute: jest.fn().mockResolvedValue({
-        purpose: 'send_message',
-        chatId: 'channel-1',
-        primaryBotId: 'edit-bot',
-        botId: 'send-bot',
-        candidateBotIds: ['send-bot'],
-        reason: 'alternate_confirmed',
-        quarantinedCandidateBotIds: [],
-      }),
-      buildBotStartUrlSync: jest.fn(
-        (startPayload: string, botId?: string | null) =>
-          `https://max.ru/${botId}?start=${startPayload}`,
-      ),
-    };
-    const service = new ModerationService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      createAdminServiceMock() as never,
-      undefined,
-      maxBotLinkService as never,
-    );
-
-    await expect(
-      (service as any).tryAutoAttachChannelMessageButtons({
-        chatId: 'channel-1',
-        messageId: 'mid-channel-send-bot-1',
-        text: 'Видеопубликация',
-        textFormat: null,
-        linkType: null,
-        managedChannel: {
-          channelSettings: {
-            commentsEnabled: false,
-            postSuggestionsEnabled: true,
-            postSuggestionsEntryMode: 'BOT',
-            postSuggestionsButtonText: 'Предложить пост',
-          },
-          adminUserIds: ['admin-1'],
-        },
-        source: 'poll',
-        senderId: null,
-      }),
-    ).resolves.toBe('attached');
-
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-channel-send-bot-1',
-      'Видеопубликация',
-      expect.any(Object),
-      expectChannelAutoPostOptions({ botId: 'edit-bot' }),
-    );
-    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
-      purpose: 'send_message',
-      chatId: 'channel-1',
-      fallbackToPrimary: true,
-    });
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      'Действия к публикации',
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledTimes(1);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3]).toEqual(
       expect.objectContaining({
-        buttons: [
-          [
-            expect.objectContaining({
-              type: 'link',
-              url: expect.stringContaining('https://max.ru/send-bot?start='),
-            }),
-          ],
-        ],
-        messageLink: { type: 'reply', mid: 'mid-channel-send-bot-1' },
+        appendNewInlineKeyboardRows: true,
+        mergeExistingInlineKeyboard: true,
       }),
-      expectChannelAutoPostOptions({ botId: 'send-bot' }),
     );
-    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
-      expect.any(String),
-      'send-bot',
-    );
-  });
-
-  it('terminally skips a reply fallback when the resolved send route has no eligible bot', async () => {
-    const prisma = {
-      auditLog: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn().mockResolvedValue(undefined),
-      },
-    };
-    const maxClient = {
-      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
-        response: { status: 400 },
-        message: 'Error on message edit',
-      }),
-      sendMessageImmediateWithResolvedLink: jest.fn(),
-    };
-    const maxBotLinkService = {
-      resolveBotRoutes: jest.fn().mockResolvedValue({
-        purpose: 'moderation_action',
-        chatId: 'channel-1',
-        primaryBotId: 'edit-bot',
-        botId: 'edit-bot',
-        candidateBotIds: ['edit-bot'],
-        reason: 'primary_confirmed',
-        action: 'edit_message',
-      }),
-      resolveBotRoute: jest.fn().mockResolvedValue({
-        purpose: 'send_message',
-        chatId: 'channel-1',
-        primaryBotId: 'edit-bot',
-        botId: null,
-        candidateBotIds: [],
-        reason: null,
-        quarantinedCandidateBotIds: ['quarantined-send-bot'],
-      }),
-    };
-    const service = new ModerationService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      createAdminServiceMock() as never,
-      undefined,
-      maxBotLinkService as never,
-    );
-
-    await expect(
-      (service as any).tryAutoAttachChannelMessageButtons({
-        chatId: 'channel-1',
-        messageId: 'mid-channel-no-send-route-1',
-        text: 'Публикация',
-        textFormat: null,
-        linkType: null,
-        managedChannel: {
-          channelSettings: {
-            commentsEnabled: true,
-            postSuggestionsEnabled: false,
-            postSuggestionsButtonText: '',
-          },
-          adminUserIds: ['admin-1'],
-        },
-        source: 'poll',
-        senderId: null,
-      }),
-    ).resolves.toBe('skipped');
-
+    const replacementOptions = maxClient.editMessageInlineKeyboard.mock.calls[1]?.[3];
+    expect(replacementOptions).not.toHaveProperty('appendNewInlineKeyboardRows');
+    expect(replacementOptions).not.toHaveProperty('mergeExistingInlineKeyboard');
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(markerMock.rows.get('channel-1:mid-channel-terminal-edit-1')).toMatchObject({
+      status: 'SKIPPED',
+      deliveryMode: 'edit_message',
+      replacementMessageId: null,
+      replyMessageId: null,
+      replacementSendStartedAt: null,
+      lastStatusCode: 200,
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
         payload: expect.objectContaining({
-          messageId: 'mid-channel-no-send-route-1',
-          deliveryMode: 'reply_message',
-          error: 'No eligible MAX send route is available for the channel reply fallback.',
+          messageId: 'mid-channel-terminal-edit-1',
+          deliveryMode: 'edit_message',
+          terminalEditAttemptExhausted: true,
+          status: 200,
+          error: 'Error on message edit',
         }),
       }),
     });

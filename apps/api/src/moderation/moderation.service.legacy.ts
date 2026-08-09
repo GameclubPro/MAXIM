@@ -74,7 +74,10 @@ import {
   type MaxBotRoute,
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
-import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import {
+  classifyMaxTerminalChatActionError,
+  ManagedEntityAccessLossService,
+} from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
@@ -245,7 +248,6 @@ import {
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
 import {
   buildMaxMessageFallbackUrl,
-  deliverChannelAutoPostReplyFallback,
   recordChannelAutoPostTerminalSkip,
 } from './channel-auto-post-reply-fallback';
 import {
@@ -14923,11 +14925,8 @@ export class ModerationService
           suggestionEntryMode,
         ),
     );
-    let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
-      'edit_message';
+    let deliveryMode: 'edit_message' | 'replace_with_bot_message' = 'edit_message';
     let replacementMessageId: string | null = null;
-    let replyMessageId: string | null = null;
-    let deliveryBotId = autoAttachBotId;
     let publishedUrl: string | null =
       linkType === 'forward' ? null : buildMaxMessageFallbackUrl(chatId, messageId);
     let originalDeleted = false;
@@ -14935,7 +14934,6 @@ export class ModerationService
     let originalCleanupStatusCode: number | null = null;
     let replacementSendStarted = false;
     let signatureApplied = false;
-    let recoveredWithReply = false;
 
     try {
       const preparedText = await prepareChannelAutoPostDecoration({
@@ -15051,23 +15049,78 @@ export class ModerationService
           );
         }
       } else {
-        await this.maxClient.editMessageInlineKeyboard(
-          chatId,
-          messageId,
-          preparedText.text,
-          {
-            buttons,
-            appendNewInlineKeyboardRows: true,
-            mergeExistingInlineKeyboard: true,
-            ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
-            ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
-            debugContext: {
-              screen: 'channel-auto-post',
-              action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
+        try {
+          await this.maxClient.editMessageInlineKeyboard(
+            chatId,
+            messageId,
+            preparedText.text,
+            {
+              buttons,
+              appendNewInlineKeyboardRows: true,
+              mergeExistingInlineKeyboard: true,
+              ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
+              ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
+              debugContext: {
+                screen: 'channel-auto-post',
+                action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
+              },
             },
-          },
-          mutationRequestOptions,
-        );
+            mutationRequestOptions,
+          );
+        } catch (mergedEditError: unknown) {
+          const mergedEditStatus = this.extractStatusCode(mergedEditError);
+          const mergedEditFailure = classifyMaxTerminalChatActionError(mergedEditError);
+          const canRetryWithReplacementKeyboard =
+            buttons.length > 0 &&
+            mergedEditStatus !== null &&
+            mergedEditStatus < 500 &&
+            mergedEditStatus !== 429 &&
+            !isAmbiguousMaxMutationError(mergedEditError) &&
+            mergedEditFailure === null;
+          if (!canRetryWithReplacementKeyboard) {
+            throw mergedEditError;
+          }
+
+          const replacementButtons = buildChannelAutoPostButtons(
+            managedChannel.channelSettings,
+            buttonVisibility,
+            (type, buttonText, suggestionEntryMode) =>
+              this.buildChannelDialogButton(
+                chatId,
+                type,
+                threadId,
+                buttonText,
+                autoAttachBotId,
+                suggestionEntryMode,
+              ),
+          );
+          this.logger.warn(
+            {
+              chatId,
+              messageId,
+              status: mergedEditStatus,
+              error: this.extractErrorSummary(mergedEditError),
+            },
+            'Failed to merge channel post buttons; retrying with a replacement keyboard',
+          );
+          await this.maxClient.editMessageInlineKeyboard(
+            chatId,
+            messageId,
+            preparedText.text,
+            {
+              buttons: replacementButtons,
+              ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
+              debugContext: {
+                screen: 'channel-auto-post',
+                action:
+                  source === 'poll'
+                    ? 'scan-attach-buttons-replace-keyboard'
+                    : 'attach-buttons-replace-keyboard',
+              },
+            },
+            mutationRequestOptions,
+          );
+        }
       }
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
@@ -15153,103 +15206,58 @@ export class ModerationService
         return 'skipped';
       }
       if (status && status < 500 && status !== 429 && !isAmbiguousMaxMutationError(error)) {
-        if (linkType !== 'forward' && buttons.length > 0) {
-          const fallback = await deliverChannelAutoPostReplyFallback({
-            maxClient: this.maxClient,
-            markerStore: this.replacementAttachMarkerStore,
-            prisma: this.prisma,
-            logger: this.logger,
-            resolveSendRoute: () =>
-              this.resolveUnifiedBotRoute({
-                purpose: 'send_message',
-                chatId,
-                fallbackToPrimary: true,
-              }),
-            buildButtons: (botId) =>
-              buildChannelAutoPostButtons(
-                managedChannel.channelSettings,
-                { includeCommentsButton, includeSuggestButton },
-                (type, buttonText, suggestionEntryMode) =>
-                  this.buildChannelDialogButton(
-                    chatId,
-                    type,
-                    threadId,
-                    buttonText,
-                    botId,
-                    suggestionEntryMode,
-                  ),
-              ),
+        this.logger.warn(
+          {
             chatId,
             messageId,
-            senderId,
-            source,
-            lockToken: claim.lockToken,
-            editBotId: autoAttachBotId,
-            editError: error,
-          });
-          if (fallback.status === 'skipped') {
-            return 'skipped';
-          }
-
-          deliveryMode = 'reply_message';
-          deliveryBotId = fallback.botId;
-          replyMessageId = fallback.replyMessageId;
-          publishedUrl = fallback.publishedUrl;
-          signatureApplied = false;
-          recoveredWithReply = true;
-        } else {
-          this.logger.warn(
-            {
-              chatId,
-              messageId,
-              status,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            linkType === 'forward'
-              ? 'Failed to replace forwarded channel post with bot copy; skipping reply fallback'
-              : 'Failed to edit a signature-only channel post; skipping retry',
-          );
-          const failedDeliveryMode =
-            linkType === 'forward' ? 'replace_with_bot_message' : 'edit_message';
-          await recordChannelAutoPostTerminalSkip(this.prisma, this.logger, {
-            chatId,
-            messageId,
-            senderId,
-            botId: autoAttachBotId,
-            linkType,
-            source,
-            deliveryMode: failedDeliveryMode,
             status,
-            error,
-          });
-          await this.replacementAttachMarkerStore.completeChannelAutoPost({
-            chatId,
-            messageId,
-            lockToken: claim.lockToken,
-            status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
-            source,
-            botId: autoAttachBotId,
-            linkType,
-            deliveryMode: failedDeliveryMode,
-            lastError: this.extractErrorSummary(error),
-            lastStatusCode: status,
-          });
-          return 'skipped';
-        }
-      }
-      if (!recoveredWithReply) {
-        await this.replacementAttachMarkerStore.releaseChannelAutoPost({
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          linkType === 'forward'
+            ? 'Failed to replace forwarded channel post with bot copy; skipping retry'
+            : 'Failed to edit channel post with managed buttons; skipping retry',
+        );
+        const failedDeliveryMode =
+          linkType === 'forward' ? 'replace_with_bot_message' : 'edit_message';
+        const terminalEditAttemptExhausted = failedDeliveryMode === 'edit_message';
+        await recordChannelAutoPostTerminalSkip(this.prisma, this.logger, {
+          chatId,
+          messageId,
+          senderId,
+          botId: autoAttachBotId,
+          linkType,
+          source,
+          deliveryMode: failedDeliveryMode,
+          ...(terminalEditAttemptExhausted ? { terminalEditAttemptExhausted: true } : {}),
+          status,
+          error,
+        });
+        await this.replacementAttachMarkerStore.completeChannelAutoPost({
           chatId,
           messageId,
           lockToken: claim.lockToken,
+          status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
           source,
           botId: autoAttachBotId,
           linkType,
+          deliveryMode: failedDeliveryMode,
+          ...(terminalEditAttemptExhausted ? { terminalEditAttemptExhausted: true } : {}),
           lastError: this.extractErrorSummary(error),
           lastStatusCode: status,
         });
-        throw error;
+        return 'skipped';
       }
+      await this.replacementAttachMarkerStore.releaseChannelAutoPost({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        source,
+        botId: autoAttachBotId,
+        linkType,
+        lastError: this.extractErrorSummary(error),
+        lastStatusCode: status,
+      });
+      throw error;
     }
 
     await this.replacementAttachMarkerStore.completeChannelAutoPost({
@@ -15258,22 +15266,18 @@ export class ModerationService
       lockToken: claim.lockToken,
       status: CHANNEL_AUTO_POST_ATTACH_STATUS.SUCCEEDED,
       source,
-      botId: deliveryBotId,
+      botId: autoAttachBotId,
       linkType,
       deliveryMode,
       replacementMessageId,
-      replyMessageId,
       publishedUrl,
       originalDeleted,
       lastError: originalCleanupError,
       lastStatusCode: originalCleanupStatusCode,
     });
     const auditIncludesCommentsButton =
-      includeCommentsButton ||
-      (deliveryMode !== 'reply_message' && existingButtonKinds.has('comments'));
-    const auditIncludesSuggestButton =
-      includeSuggestButton ||
-      (deliveryMode !== 'reply_message' && existingButtonKinds.has('suggest'));
+      includeCommentsButton || existingButtonKinds.has('comments');
+    const auditIncludesSuggestButton = includeSuggestButton || existingButtonKinds.has('suggest');
     try {
       await this.prisma.auditLog.create({
         data: {
@@ -15294,13 +15298,12 @@ export class ModerationService
             linkType,
             replacementMessageId,
             ...(publishedUrl ? { publishedUrl } : {}),
-            ...(replyMessageId ? { replyMessageId } : {}),
             ...(text?.trim() ? { text } : {}),
             originalDeleted,
             cleanupState: originalDeleted ? 'confirmed' : originalCleanupError ? 'failed' : 'owned',
             ...(originalCleanupError ? { cleanupError: originalCleanupError } : {}),
             source,
-            ...(deliveryBotId ? { botId: deliveryBotId } : {}),
+            ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
           },
         },
       });

@@ -290,6 +290,36 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
     expect(auditFindFirst).toHaveBeenCalledTimes(2);
   });
 
+  it('does not recover an audit-only edit after both current edit strategies were exhausted', async () => {
+    const marker = createMarkerDelegate();
+    const auditFindFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: 'terminal-skip-audit',
+        payload: {
+          messageId: 'message-terminal-audit-only',
+          deliveryMode: 'edit_message',
+          linkType: null,
+          terminalEditAttemptExhausted: true,
+          error: 'Error on message edit',
+        },
+      });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: auditFindFirst },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-terminal-audit-only',
+      }),
+    ).resolves.toEqual({ status: 'done' });
+    expect(marker.delegate.createMany).not.toHaveBeenCalled();
+    expect(auditFindFirst).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps a transient fallback reply failure eligible for a later exact-state retry', async () => {
     const marker = createMarkerDelegate(legacySkippedEdit('message-transient'));
     const store = new ReplacementAttachMarkerStore({
