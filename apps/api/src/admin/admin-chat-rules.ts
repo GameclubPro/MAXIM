@@ -709,6 +709,8 @@ export async function publishChatRules(params: {
   const claimed = await params.prisma.chatRules.updateMany({
     where: {
       chatId: params.chatId,
+      updatedAt: rules.updatedAt,
+      publishOperationId: null,
       publishSendStartedAt: null,
       pendingCleanupMessageId: null,
     },

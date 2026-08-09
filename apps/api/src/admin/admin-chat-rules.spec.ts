@@ -192,6 +192,25 @@ describe('admin chat rules MAX errors', () => {
     });
   });
 
+  it('claims the publish fence only for the revision it formatted', async () => {
+    const { prisma, publish } = createPublishFixture();
+
+    await publish();
+
+    expect(prisma.chatRules.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          updatedAt: createRules().updatedAt,
+          publishOperationId: null,
+          publishSendStartedAt: null,
+          pendingCleanupMessageId: null,
+        }),
+      }),
+    );
+  });
+
   it('retains the chat-rules send fence after an ambiguous MAX failure', async () => {
     const { maxClient, prisma, publish } = createPublishFixture();
     maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(
@@ -252,6 +271,20 @@ describe('admin chat rules MAX errors', () => {
 
     await expect(publish()).rejects.toThrow('Предыдущая публикация правил');
 
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
+  it('does not send after the formatted rules revision loses its claim', async () => {
+    const { maxClient, prisma, publish } = createPublishFixture();
+    prisma.chatRules.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(publish()).rejects.toThrow('Предыдущая публикация правил');
+
+    expect(prisma.chatRules.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ updatedAt: createRules().updatedAt }),
+      }),
+    );
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
