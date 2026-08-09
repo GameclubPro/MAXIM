@@ -2,6 +2,11 @@
   animation: pageReveal 0.45s ease both;
 }
 
+.events-screen[data-managed-entity-workspace].page-enter,
+.channel-insights[data-managed-entity-workspace].page-enter {
+  animation-fill-mode: none;
+}
+
 .channel-dialog-screen--comments.page-enter {
   animation-name: commentsPageReveal;
 }

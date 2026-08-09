@@ -8,7 +8,7 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 117888,
+        "jsGzipBytes": 123008,
         "cssGzipBytes": 43008
       },
       "allowances": [
@@ -29,7 +29,7 @@
       "label": "Chat settings",
       "entries": ["src/pages/settings-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 137728, "cssGzipBytes": 77824 }
+      "limits": { "jsGzipBytes": 141824, "cssGzipBytes": 77824 }
     },
     {
       "id": "channel-settings",

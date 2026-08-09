@@ -41,9 +41,7 @@ export function PublicationWorkspaceHandoff({
           </span>
           <span className="settings-section__toggle-main">
             <span className="settings-section__title">Посты</span>
-            <span className="settings-section__summary">Публикации и расписание</span>
           </span>
-          <span className="settings-section__status-chip is-mint">Открыть</span>
           <span className="settings-section__chevron" aria-hidden>
             <NavArrowRight className="settings-section__chevron-icon" />
           </span>

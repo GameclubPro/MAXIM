@@ -17,6 +17,7 @@ import {
   saveLastEntityType,
   type LastEntityType,
 } from '../lib/last-chat';
+import { useOptionalManagedEntityNavigation } from '../lib/managed-entity-navigation-context';
 import { runNativeBackHandlers, useNativeBackHandlersAvailable } from '../lib/native-back';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 
@@ -199,6 +200,7 @@ export function Shell() {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const managedEntityNavigation = useOptionalManagedEntityNavigation();
   const [lastEntityType, setLastEntityType] = useState<LastEntityType>(() => readLastEntityType());
   const isKeyboardOpen = useKeyboardOpen();
   const hasNativeBackHandlers = useNativeBackHandlersAvailable();
@@ -335,8 +337,12 @@ export function Shell() {
         return;
       }
 
-      if (window.history.length > 1) {
-        navigate(-1);
+      if (isManagedEntityRoute) {
+        if (managedEntityNavigation) {
+          managedEntityNavigation.requestBack(homeRoute);
+        } else {
+          navigate(homeRoute, { replace: true });
+        }
         return;
       }
 
@@ -347,7 +353,15 @@ export function Shell() {
       cleanup();
       setMaxBackButtonVisible(false);
     };
-  }, [hasNativeBackHandlers, homeRoute, isChatsRoute, navigate, shouldCloseMiniAppOnBack]);
+  }, [
+    hasNativeBackHandlers,
+    homeRoute,
+    isChatsRoute,
+    isManagedEntityRoute,
+    managedEntityNavigation,
+    navigate,
+    shouldCloseMiniAppOnBack,
+  ]);
 
   return (
     <div

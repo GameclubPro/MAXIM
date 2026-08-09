@@ -79,7 +79,6 @@ import {
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
 import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
-import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { DateField } from '../components/ui/date-field';
 import { GlassCard } from '../components/ui/glass-card';
@@ -191,7 +190,7 @@ import {
   splitMessageLimitsBlockedWordsInput,
 } from '../lib/message-limits-blocked-words';
 import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
-import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import { maxNotify, openMaxBotLink } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -352,6 +351,11 @@ import {
   areBroadcastPlannerStatesEqual,
   LazyWarnMessageEditor,
 } from './settings/settings-page-helpers';
+import {
+  ChatSettingsWorkspaceHeader,
+  normalizeRequiredSubscriptionDraftSettings,
+  useChatSettingsWorkspaceLeaveGuard,
+} from './settings/chat-settings-workspace';
 
 const LazyActionConfirmSheet = lazy(() =>
   import('../components/ui/action-confirm-sheet').then((module) => ({
@@ -1072,28 +1076,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [chatId, chatTitle]);
 
   useEffect(() => {
-    if (!chatTitle || routeChatTitle === chatTitle) {
-      return;
-    }
-
-    navigate(`${location.pathname}${location.search}`, {
-      replace: true,
-      state: {
-        chatTitle,
-        avatarUrl: chatHeaderQuery.data?.avatarUrl ?? routeChatAvatarUrl ?? null,
-      },
-    });
-  }, [
-    chatHeaderQuery.data?.avatarUrl,
-    chatTitle,
-    location.pathname,
-    location.search,
-    navigate,
-    routeChatAvatarUrl,
-    routeChatTitle,
-  ]);
-
-  useEffect(() => {
     if (!settingsQuery.data) {
       return;
     }
@@ -1266,8 +1248,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     () =>
       settingsQuery.data
         ? JSON.stringify(
-            normalizeLegacyChatCommentScope(
-              normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
+            normalizeDuplicateFlowSettings(
+              normalizeLegacyChatCommentScope(
+                normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
+              ),
             ),
           )
         : '',
@@ -1439,8 +1423,64 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isSavingRules = saveRulesMutation.isPending;
   const mutateRules = saveRulesMutation.mutate;
   const mutateRulesAsync = saveRulesMutation.mutateAsync;
-  const isHeaderSaving = isSavingSettings || isSavingRules || isSavingSpeechStyle;
-  const hasPendingHeaderChanges = hasChanges || hasRulesChanges;
+
+  const updateRulesAttachMutation = useMutation({
+    mutationFn: (enabled: boolean) => {
+      const base = settingsQuery.data ?? draft;
+      if (!chatId || !base) {
+        throw new Error('Чат не выбран');
+      }
+
+      return updateSettings(api, chatId, {
+        ...base,
+        rulesAttachViolationsEnabled: enabled,
+      });
+    },
+    onSuccess: (saved) => {
+      setDraft((current) =>
+        current
+          ? {
+              ...current,
+              rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+            }
+          : saved,
+      );
+      queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+        ['settings-screen', chatId],
+        (current) =>
+          current
+            ? {
+                ...current,
+                settings: {
+                  ...current.settings,
+                  rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+                },
+              }
+            : current,
+      );
+      pushToast({
+        tone: 'success',
+        title: saved.rulesAttachViolationsEnabled
+          ? 'Кнопка «Правила» включена'
+          : 'Кнопка «Правила» выключена',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить кнопку «Правила»',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+  const isHeaderSaving =
+    isSavingSettings ||
+    isSavingComments ||
+    isSavingRules ||
+    isSavingSpeechStyle ||
+    updateRulesAttachMutation.isPending;
   const activeSpeechStyle = draft?.botSpeechStyle ?? null;
   const pendingSpeechStyleSamples = pendingSpeechStyle
     ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
@@ -1588,14 +1628,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       cancelled = true;
     };
   }, [api, applyTargetSheet, chatId]);
-
-  useEffect(() => {
-    const shouldBlockClose = hasPendingHeaderChanges || isHeaderSaving || isApplyingSectionToAll;
-    setMaxClosingConfirmation(shouldBlockClose);
-    return () => {
-      setMaxClosingConfirmation(false);
-    };
-  }, [hasPendingHeaderChanges, isApplyingSectionToAll, isHeaderSaving]);
 
   const addDomainMutation = useMutation({
     mutationFn: (payload: { domain: string; matchType: AllowlistMatchType }) =>
@@ -1770,58 +1802,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось отменить автопост',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-
-  const updateRulesAttachMutation = useMutation({
-    mutationFn: (enabled: boolean) => {
-      const base = settingsQuery.data ?? draft;
-      if (!chatId || !base) {
-        throw new Error('Чат не выбран');
-      }
-
-      return updateSettings(api, chatId, {
-        ...base,
-        rulesAttachViolationsEnabled: enabled,
-      });
-    },
-    onSuccess: (saved) => {
-      setDraft((current) =>
-        current
-          ? {
-              ...current,
-              rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
-            }
-          : saved,
-      );
-      queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-        ['settings-screen', chatId],
-        (current) =>
-          current
-            ? {
-                ...current,
-                settings: {
-                  ...current.settings,
-                  rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
-                },
-              }
-            : current,
-      );
-      pushToast({
-        tone: 'success',
-        title: saved.rulesAttachViolationsEnabled
-          ? 'Кнопка «Правила» включена'
-          : 'Кнопка «Правила» выключена',
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось обновить кнопку «Правила»',
         description: formatApiError(error),
       });
       maxNotify('error');
@@ -2005,23 +1985,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   function setFieldValue<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
     clearFieldError(key);
-  }
-
-  function normalizeRequiredSubscriptionDraftSettings(settings: ChatSettings): ChatSettings {
-    const requiredSubscriptionChannelIds = Array.from(
-      new Set(
-        settings.requiredSubscriptionChannelIds
-          .map((item) => item.trim())
-          .filter((item) => item.length > 0),
-      ),
-    );
-
-    return {
-      ...settings,
-      requiredSubscriptionEnabled: requiredSubscriptionChannelIds.length > 0,
-      requiredSubscriptionChannelIds,
-      requiredSubscriptionExpiresAt: '',
-    };
   }
 
   function setBotSpeechMediaImage(key: BotSpeechMediaFieldKey, image: BotSpeechMediaImage | null) {
@@ -5192,6 +5155,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }
 
+  useChatSettingsWorkspaceLeaveGuard({
+    api,
+    chatId,
+    draft,
+    serverSettings: settingsQuery.data,
+    serverRules: rulesQuery.data,
+    settingsDirty: hasChanges,
+    rulesDirty: hasRulesChanges,
+    saving: isHeaderSaving || isApplyingSectionToAll,
+    validateDraft,
+    saveRules: () => saveRulesDraftNow({ forceButtonErrors: true }),
+    setDraft,
+    setRulesDraft,
+    clearValidationErrors: () => {
+      setFieldErrors({});
+      setRulesTextError('');
+      setRulesImageError('');
+      setRulesButtonErrors([]);
+    },
+  });
+
   function renderSectionSaveFooter(
     section: ApplySectionKey,
     options?: {
@@ -5253,7 +5237,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   return (
-    <div className="page-stack page-enter">
+    <div className="page-stack page-enter" data-managed-entity-workspace="chat-settings">
+      <ChatSettingsWorkspaceHeader
+        chatId={chatId}
+        title={chatTitle}
+        header={chatHeaderQuery.data}
+        fallbackAvatarUrl={routeChatAvatarUrl}
+        backTo={managedChatsRoute}
+        counterpartHidden={
+          !chatId ||
+          handoffRequested ||
+          Boolean(settingsHandoffMode) ||
+          legacyBroadcastWorkspaceRequested
+        }
+        compact={isHeaderCompact}
+      />
+
       {applyTargetSheet ? (
         <Suspense fallback={null}>
           <LazySettingsApplyTargetSheet
@@ -5308,22 +5307,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           aria-label="Настройки чата"
           onClickCapture={handleDesktopToggleRowClick}
         >
-          <CompactStickyHeader
-            backTo={managedChatsRoute}
-            backLabel="Назад к чатам"
-            title={chatTitle || 'Настройки чата'}
-            avatar={
-              <EntityAvatar
-                title={chatTitle || 'Настройки чата'}
-                entityType="chat"
-                avatarUrl={chatHeaderQuery.data?.avatarUrl ?? routeChatAvatarUrl ?? null}
-                className="compact-page-header__entity-avatar"
-              />
-            }
-            compact={isHeaderCompact}
-            className="settings-home-sticky-header stagger-in"
-          />
-
           {settingsScreenQuery.data?.header.accessDiagnostics?.state === 'bot_access_lost' ? (
             <Suspense fallback={null}>
               <LazyManagedEntityAccessDiagnosticsBanner

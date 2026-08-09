@@ -74,13 +74,38 @@ test('channel statistics keep overview and full request caches isolated', () => 
   assert.match(channelStatsPageSource, /includeActivityPreview: false,\s*mode: 'full'/u);
   assert.match(
     chatsPageSource,
-    /channelStatsQueryKey\(chatId, DEFAULT_CHANNEL_STATS_RANGE, 'overview'\)/u,
+    /const range = preference\.range \?\? DEFAULT_CHANNEL_STATS_RANGE/u,
   );
+  assert.match(chatsPageSource, /channelStatsQueryKey\(chatId, range, 'overview'\)/u);
   assert.match(chatsPageSource, /includeActivityPreview: false,\s*mode: 'overview'/u);
 });
 
 test('statistics navigation and chart controls retain explicit semantics', () => {
-  assert.match(eventsPageSource, /<h1 className="events-stage__appbar-title">/u);
+  assert.match(
+    eventsPageSource,
+    /<ManagedEntityWorkspaceHeader[\s\S]*?entityType="chat"[\s\S]*?screen="stats"[\s\S]*?counterpartTo=\{buildManagedEntitySettingsRoute\('chat', chatId\)\}/u,
+  );
+  assert.match(
+    channelStatsPageSource,
+    /<ManagedEntityWorkspaceHeader[\s\S]*?entityType="channel"[\s\S]*?screen="stats"[\s\S]*?counterpartTo=\{buildManagedEntitySettingsRoute\('channel', chatId\)\}/u,
+  );
+  assert.match(
+    eventsPageSource,
+    /className="events-screen page-enter" data-managed-entity-workspace/u,
+  );
+  assert.match(
+    channelStatsPageSource,
+    /className="channel-insights page-enter" data-managed-entity-workspace/u,
+  );
+  assert.doesNotMatch(
+    channelStatsPageSource,
+    /useAutoHideHeader|isHeaderHidden|<CompactStickyHeader/u,
+  );
+  for (const source of [eventsPageSource, channelStatsPageSource]) {
+    assert.match(source, /createManagedEntityWorkspaceState\(/u);
+    assert.match(source, /mergeManagedEntityStatsPreference\(/u);
+    assert.match(source, /mergeManagedEntityWorkspaceRouteState\(routeState, workspace\)/u);
+  }
   assert.match(channelStatsPageSource, /resolveChannelStatsSliderIndex\(/u);
   assert.match(channelStatsPageSource, /channel-posts-chart__row--linked/u);
   assert.match(channelStatsPageSource, /IconOpenNewWindow/u);

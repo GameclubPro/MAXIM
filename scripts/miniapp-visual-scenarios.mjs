@@ -273,6 +273,7 @@ const baseScenarios = [
     ['home-channels', { searchParams: { view: 'channel' } }],
     ['home-filter', { searchParams: { view: 'chat' } }],
     ['home-filter-active', { searchParams: { view: 'chat' } }],
+    ['home-category-edit', { searchParams: { view: 'chat' } }],
     ['home-favorite-picker', { searchParams: { view: 'chat' } }],
     ['home-favorite-categories', { searchParams: { view: 'chat' } }],
   ]),

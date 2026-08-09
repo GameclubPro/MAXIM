@@ -25,18 +25,28 @@ const onboardingSource = readFileSync(
   'utf8',
 );
 
-test('entity cards expose direct settings, statistics and category actions', () => {
-  assert.doesNotMatch(chatsPageSource, /chat-card__primary-link/u);
-  assert.match(chatsPageSource, /className="chat-card__title-link"/u);
+test('entity cards expose one large settings target, statistics and category edit mode', () => {
+  assert.match(chatsPageSource, /className="chat-card__primary-link"/u);
   assert.match(chatsPageSource, /chat-card__action chat-card__action--statistics/u);
-  assert.match(chatsPageSource, /chat-card__action chat-card__action--settings/u);
-  assert.match(chatsPageSource, /className=\{cn\([\s\S]*?'chat-card__category'/u);
+  assert.doesNotMatch(chatsPageSource, /chat-card__action--settings|chat-card__title-link/u);
+  assert.match(chatsPageSource, /chat-card__category-editor/u);
+  assert.match(chatsPageSource, /chat-card__category-marker/u);
+  assert.match(
+    chatsPageSource,
+    /aria-label=\{`Открыть настройки: \$\{entity\.title\}\$\{[\s\S]*?primaryFavoriteType \? `\. Категория: \$\{categoryLabel\}` : ''[\s\S]*?\}`\}/u,
+  );
+  assert.match(chatsPageSource, /<BackChevronIcon \/>/u);
   assert.match(chatsPageSource, /to=\{settingsRoute\}/u);
   assert.match(chatsPageSource, /to=\{statisticsRoute\}/u);
-  assert.match(chatsPageSource, /`\/channel\/\$\{entityId\}\/settings`/u);
-  assert.match(chatsPageSource, /`\/chat\/\$\{entityId\}\/settings`/u);
-  assert.match(chatsPageSource, /`\/channel\/\$\{entityId\}\/stats\?section=overview`/u);
-  assert.match(chatsPageSource, /`\/chat\/\$\{entityId\}\/events\?section=activity`/u);
+  assert.match(
+    chatsPageSource,
+    /const settingsRoute = preserveManagedEntityRouteContext\(\s*buildManagedEntitySettingsRoute\(activeTab, entity\.id\),\s*location\.search,\s*location\.hash,\s*\)/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /const statsPreference = readEntityStatsPreference\(entity\.id\);[\s\S]*?const statisticsRoute = preserveManagedEntityRouteContext\(\s*buildManagedEntityStatisticsRoute\(activeTab, entity\.id, statsPreference\),\s*location\.search,\s*location\.hash,\s*\);/u,
+  );
+  assert.doesNotMatch(chatsPageSource, /function buildEntity(?:Settings|Statistics)Route/u);
   assert.doesNotMatch(chatsPageSource, /<details\b/u);
   assert.match(chatsPageSource, /aria-haspopup="dialog"/u);
   assert.match(chatsPageSource, /import\('\.\/home-entity-sheets'\)/u);
@@ -75,14 +85,21 @@ test('home sheets are named, focus-trapped and leave the shell controls inert', 
 test('compact home controls keep direct 44px actions and one filter control', () => {
   assert.match(chatsPageCss, /\.chats-command__icon-button \{[\s\S]*?min-width: 44px/u);
   assert.match(chatsPageNativeCss, /\.favorite-filter__trigger \{[\s\S]*?min-width: 44px/u);
-  assert.match(chatsPageNativeCss, /\.chat-card__main \{[\s\S]*?min-height: 88px/u);
-  assert.match(chatsPageNativeCss, /\.chat-card__category \{[\s\S]*?min-height: 44px/u);
+  assert.match(chatsPageNativeCss, /\.chat-card\.glass-card \{[\s\S]*?height: 72px/u);
+  assert.match(
+    chatsPageNativeCss,
+    /\.chat-card__primary-link \{[\s\S]*?position: relative;[\s\S]*?grid-column: 1;[\s\S]*?min-height: 72px/u,
+  );
+  assert.match(chatsPageNativeCss, /\.chat-card__category-editor \{[\s\S]*?grid-column: 1 \/ -1;/u);
   assert.match(chatsPageNativeCss, /\.chat-card__action \{[\s\S]*?min-width: 44px/u);
   assert.match(
     chatsPageNativeCss,
-    /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto repeat\(2, 44px\)/u,
+    /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(112px, 1fr\) repeat\(3, 44px\)/u,
   );
-  assert.match(chatsPageNativeCss, /\.chat-card__category span \{[\s\S]*?text-overflow: ellipsis/u);
+  assert.match(
+    chatsPageNativeCss,
+    /\.chat-card__category-value span \{[\s\S]*?text-overflow: ellipsis/u,
+  );
   assert.match(
     chatsPageSource,
     /className=\{cn\([\s\S]*?'favorite-filter__trigger'[\s\S]*?aria-controls="home-sheet-filter"/u,
@@ -92,7 +109,9 @@ test('compact home controls keep direct 44px actions and one filter control', ()
     /const FavoriteFilterIcon =[\s\S]*?HOME_ENTITY_FAVORITE_ICONS\[favoriteFilter\]/u,
   );
   assert.doesNotMatch(chatsPageSource, /data-allow-horizontal-overflow|favorite-filter-bar/u);
+  assert.match(chatsPageSource, /className=\{cn\('home-active-filter'/u);
   assert.match(sheetsSource, /sheetKey="filter"[\s\S]*?home-filter__grid/u);
+  assert.match(sheetsSource, /Распределить по категориям/u);
   assert.match(sheetsSource, /<strong>Настроить названия<\/strong>/u);
   assert.match(
     chatsPageNativeCss,
@@ -103,8 +122,9 @@ test('compact home controls keep direct 44px actions and one filter control', ()
 test('home connection flow is always available and opens the signed launch bot dialog', () => {
   assert.match(
     chatsPageSource,
-    /className="chats-command__connect"[\s\S]*?aria-controls="home-sheet-connect"[\s\S]*?<span>Подключить<\/span>/u,
+    /className="chats-command__connect"[\s\S]*?aria-controls="home-sheet-connect"[\s\S]*?<PlusCircleGlyph/u,
   );
+  assert.doesNotMatch(chatsPageSource, /<span>Подключить<\/span>/u);
   assert.doesNotMatch(chatsPageSource, /botDialogUrl|setBotDialogUrl/u);
   assert.match(chatsPageSource, /import\('\.\.\/lib\/api\/me-client'\)/u);
   assert.doesNotMatch(chatsPageSource, /from '\.\.\/lib\/api\/me-client'/u);
@@ -138,8 +158,31 @@ test('home list keeps grouped rows at wide breakpoints', () => {
     chatsPageNativeCss,
     /\.chats-home \.chat-grid \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/u,
   );
-  assert.match(chatsPageSource, /const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 96;/u);
-  assert.match(chatsPageNativeCss, /\.chat-grid--virtual \.chat-card \{[\s\S]*?height: 88px;/u);
+  assert.match(chatsPageSource, /const CHAT_LIST_ROW_HEIGHT = 72;/u);
+  assert.match(chatsPageSource, /const CHAT_LIST_VIRTUAL_ROW_PITCH = 80;/u);
+  assert.match(
+    chatsPageSource,
+    /top: index \* CHAT_LIST_VIRTUAL_ROW_PITCH,[\s\S]*?height: CHAT_LIST_ROW_HEIGHT/u,
+  );
+  assert.match(chatsPageSource, /height: filteredEntities\.length \* CHAT_LIST_VIRTUAL_ROW_PITCH/u);
+  assert.match(chatsPageNativeCss, /\.chat-grid--virtual \.chat-card \{[\s\S]*?height: 72px;/u);
+});
+
+test('category assignment is explicit, exclusive and stable while editing', () => {
+  assert.match(
+    chatsPageSource,
+    /const \[categoryEditMode, setCategoryEditMode\] = useState\(false\)/u,
+  );
+  assert.match(chatsPageSource, /if \(categoryEditMode\) \{\s*return matchingEntities;/u);
+  assert.match(chatsPageSource, /enabled: categoryEditMode && !homeOverlayOpen, priority: 600/u);
+  assert.match(chatsPageSource, />\s*Готово\s*<\/button>/u);
+  assert.match(chatsPageSource, /handleSetHomeEntityFavoriteType/u);
+  assert.match(chatsPageSource, /setHomeEntityFavoriteTypes/u);
+  assert.doesNotMatch(chatsPageSource, /toggleHomeEntityFavoriteType/u);
+  assert.match(sheetsSource, /<fieldset className="favorite-picker__fieldset"/u);
+  assert.match(sheetsSource, /type="radio"/u);
+  assert.match(sheetsSource, /<strong>Без категории<\/strong>/u);
+  assert.doesNotMatch(sheetsSource, /aria-pressed=/u);
 });
 
 test('home exposes sync, result and virtual-list state to assistive technology', () => {
@@ -169,7 +212,8 @@ test('home exposes sync, result and virtual-list state to assistive technology',
     chatsPageSource,
     /role="list"[\s\S]*?aria-label=\{`\$\{tabLabel\}: \$\{filteredEntities\.length\}`\}[\s\S]*?aria-busy=/u,
   );
-  assert.match(chatsPageSource, /<GlassCard role="alert" aria-live="assertive">/u);
+  assert.doesNotMatch(chatsPageSource, /<GlassCard role="alert" aria-live="assertive">/u);
+  assert.match(chatsPageSource, /<StatusState[\s\S]*?tone="danger"/u);
 });
 
 test('home reports favorite persistence failures through the shared toast', () => {

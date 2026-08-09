@@ -58,8 +58,7 @@ import {
 } from '../components/broadcast-studio-workspace';
 import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
-import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
-import { EntityAvatar } from '../components/ui/entity-avatar';
+import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import { GlassCard } from '../components/ui/glass-card';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -139,6 +138,11 @@ import { saveUntilLatestDraftIsPersisted } from '../lib/latest-draft-save';
 import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
 import { maxNotify, openLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import { useManagedEntityLeaveGuard } from '../lib/managed-entity-navigation';
+import {
+  buildManagedEntityStatisticsRoute,
+  readManagedEntityWorkspaceState,
+} from '../lib/managed-entity-workspace';
 import {
   parseChannelPostSignatureUrl,
   resolveChannelPostSignaturePreviewUrl,
@@ -1819,6 +1823,47 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
   };
 
+  async function saveWorkspaceChanges(): Promise<boolean> {
+    try {
+      if (isDirty) {
+        const saved = await saveCurrentDraft({ force: true });
+        if (!saved) {
+          return false;
+        }
+      }
+
+      if (isPostSignatureDirty) {
+        await persistLatestPostSignature();
+        if (latestPostSignatureKeyRef.current !== savedPostSignatureKeyRef.current) {
+          return false;
+        }
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function discardWorkspaceChanges() {
+    discardChannelSettingsChanges();
+    if (savedPostSignature) {
+      const savedKey = postSignatureSettingsKey(savedPostSignature);
+      latestPostSignatureRef.current = savedPostSignature;
+      latestPostSignatureKeyRef.current = savedKey;
+      savedPostSignatureKeyRef.current = savedKey;
+      setPostSignatureDraft(savedPostSignature);
+      setPostSignatureSaveState('idle');
+    }
+  }
+
+  useManagedEntityLeaveGuard({
+    dirty: isDirty || isPostSignatureDirty,
+    saving: autosaveState === 'saving' || postSignatureSaveState === 'saving',
+    save: saveWorkspaceChanges,
+    discard: discardWorkspaceChanges,
+  });
+
   const recheckAccessMutation = useMutation({
     mutationFn: () => recheckChannelManagedEntityAccess(api, chatId ?? ''),
     onSuccess: () => {
@@ -2158,9 +2203,75 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     };
   }, []);
 
+  const showHeaderSaveRetry = autosaveState === 'error';
+  const workspaceHeader = (
+    <ManagedEntityWorkspaceHeader
+      entityType="channel"
+      screen="settings"
+      title={resolvedTitle}
+      avatarUrl={channelHeader ? (channelHeader.avatarUrl ?? null) : routeAvatarUrl}
+      authoritativeIdentity={
+        channelHeader
+          ? {
+              title: channelHeader.title,
+              avatarUrl: channelHeader.avatarUrl ?? null,
+            }
+          : undefined
+      }
+      backTo={buildManagedEntitiesRoute('channel')}
+      counterpartTo={
+        chatId
+          ? buildManagedEntityStatisticsRoute(
+              'channel',
+              chatId,
+              readManagedEntityWorkspaceState(location.state)?.statsPreference,
+            )
+          : buildManagedEntitiesRoute('channel')
+      }
+      counterpartHidden={
+        !chatId || handoffRequested || Boolean(settingsHandoffMode) || legacyBroadcastWorkspaceRequested
+      }
+      compact={isHeaderCompact}
+      busy={
+        settingsQuery.isLoading ||
+        autosaveState === 'saving' ||
+        postSignatureSaveState === 'saving'
+      }
+      className="channel-settings-screen__sticky-header"
+      status={
+        showHeaderSaveRetry ? (
+          <div
+            className="compact-page-header__actions"
+            role="status"
+            aria-live="assertive"
+            aria-atomic="true"
+          >
+            <span className="compact-page-header__sr">Не удалось сохранить изменения.</span>
+            <button
+              type="button"
+              className="compact-page-header__retry"
+              onClick={() => {
+                lastFailedDraftKeyRef.current = null;
+                void saveCurrentDraft({ force: true });
+              }}
+              aria-label="Не удалось сохранить. Повторить"
+              title="Повторить сохранение"
+            >
+              <IconoirRefreshDouble aria-hidden focusable="false" />
+            </button>
+          </div>
+        ) : null
+      }
+    />
+  );
+
   if (!chatId) {
     return (
-      <div className="page-stack page-enter">
+      <div
+        className="page-stack page-enter"
+        data-managed-entity-workspace="channel-settings"
+      >
+        {workspaceHeader}
         <GlassCard>
           <StatusState
             tone="warning"
@@ -2179,7 +2290,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   if (settingsHandoffMode === 'loading') {
     return (
-      <div className="page-stack page-enter">
+      <div
+        className="page-stack page-enter"
+        data-managed-entity-workspace="channel-settings"
+      >
+        {workspaceHeader}
         <Suspense fallback={null}>
           <LazySettingsHandoffState
             entityType="channel"
@@ -2196,7 +2311,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   if (settingsHandoffMode === 'error') {
     return (
-      <div className="page-stack page-enter">
+      <div
+        className="page-stack page-enter"
+        data-managed-entity-workspace="channel-settings"
+      >
+        {workspaceHeader}
         <Suspense fallback={null}>
           <LazySettingsHandoffState
             entityType="channel"
@@ -2213,7 +2332,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   if (settingsQuery.isLoading) {
     return (
-      <div className="page-stack page-enter">
+      <div
+        className="page-stack page-enter"
+        data-managed-entity-workspace="channel-settings"
+      >
+        {workspaceHeader}
         <GlassCard className="settings-section">
           <SkeletonCard lines={6} />
         </GlassCard>
@@ -2223,7 +2346,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   if (settingsQuery.error) {
     return (
-      <div className="page-stack page-enter">
+      <div
+        className="page-stack page-enter"
+        data-managed-entity-workspace="channel-settings"
+      >
+        {workspaceHeader}
         <GlassCard>
           <StatusState
             tone="danger"
@@ -2246,7 +2373,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   if (!draft) {
     return (
-      <div className="page-stack page-enter">
+      <div
+        className="page-stack page-enter"
+        data-managed-entity-workspace="channel-settings"
+      >
+        {workspaceHeader}
         <GlassCard className="settings-section">
           <SkeletonCard lines={6} />
         </GlassCard>
@@ -2266,7 +2397,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const fallbackPostSignatureUrl = parseChannelPostSignatureUrl(resolvedChannelLink).url;
   const postSignatureUrlError = resolvedPostSignaturePreviewUrl.error;
   const effectivePostSignatureUrl = resolvedPostSignaturePreviewUrl.url;
-  const showHeaderSaveRetry = autosaveState === 'error';
   const normalizedBroadcastButtons = trimBroadcastLinkButtons(broadcastButtons);
   const broadcastSystemButtons = buildChannelBroadcastSystemButtons({
     commentsEnabled: draft.commentsEnabled,
@@ -3128,47 +3258,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     <div
       id="channel-settings-overview"
       className="channel-settings-screen page-enter"
+      data-managed-entity-workspace="channel-settings"
       onClickCapture={handleDesktopToggleRowClick}
     >
-      <CompactStickyHeader
-        backTo={buildManagedEntitiesRoute('channel')}
-        backLabel="Назад к каналам"
-        title={resolvedTitle || 'Настройки'}
-        avatar={
-          <EntityAvatar
-            title={resolvedTitle || 'Настройки'}
-            entityType="channel"
-            avatarUrl={channelHeader?.avatarUrl ?? routeAvatarUrl ?? null}
-            className="compact-page-header__entity-avatar"
-          />
-        }
-        compact={isHeaderCompact}
-        className="channel-settings-screen__sticky-header"
-        aside={
-          showHeaderSaveRetry ? (
-            <div
-              className="compact-page-header__actions"
-              role="status"
-              aria-live="assertive"
-              aria-atomic="true"
-            >
-              <span className="compact-page-header__sr">Не удалось сохранить изменения.</span>
-              <button
-                type="button"
-                className="compact-page-header__retry"
-                onClick={() => {
-                  lastFailedDraftKeyRef.current = null;
-                  void saveCurrentDraft({ force: true });
-                }}
-                aria-label="Не удалось сохранить. Повторить"
-                title="Повторить сохранение"
-              >
-                <IconoirRefreshDouble aria-hidden focusable="false" />
-              </button>
-            </div>
-          ) : null
-        }
-      />
+      {workspaceHeader}
 
       {channelHeader?.accessDiagnostics?.state === 'bot_access_lost' ? (
         <Suspense fallback={null}>

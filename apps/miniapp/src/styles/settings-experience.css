@@ -172,6 +172,26 @@
     display: none;
   }
 
+  .settings-home-entry
+    .settings-section__toggle[aria-expanded='false']
+    :is(.settings-section__summary, .settings-section__status-chip),
+  .channel-settings-card
+    .settings-section__toggle[aria-expanded='false']
+    :is(.settings-section__summary, .settings-section__status-chip) {
+    position: absolute;
+    width: 1px;
+    min-width: 0;
+    max-width: 1px;
+    height: 1px;
+    min-height: 0;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .settings-home-entry .settings-section__toggle:hover,
   .channel-settings-card .settings-section__toggle:hover,
   .settings-home-entry .settings-section__toggle[aria-expanded='true'],

@@ -54,14 +54,17 @@ export function ActionConfirmSheet({
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
   useDialogFocusTrap(open, panelRef, cancelButtonRef);
   useEffect(() => {
-    if (!open || !isBusy) {
+    if (!open) {
       return undefined;
     }
 
     const focusFrame = window.requestAnimationFrame(() => {
       const panel = panelRef.current;
       if (panel && !panel.contains(document.activeElement)) {
-        panel.focus();
+        const cancelButton = cancelButtonRef.current;
+        (cancelButton && !cancelButton.disabled ? cancelButton : panel).focus({
+          preventScroll: true,
+        });
       }
     });
     return () => window.cancelAnimationFrame(focusFrame);

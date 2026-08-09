@@ -49,13 +49,14 @@ type HomeEntitySheetsProps = {
   favoriteCounts: Record<ManagedEntityFavoriteType, number>;
   favoriteLabelOverrides: HomeEntityFavoriteLabelOverrides;
   favoriteLabelDraft: FavoriteLabelDraft;
-  selectedFavoriteTypes: ManagedEntityFavoriteType[];
+  selectedFavoriteType: ManagedEntityFavoriteType | null;
   favoriteSaving: boolean;
   canSaveLabels: boolean;
   onClose: () => void;
   onFilterChange: (filter: FavoriteFilter) => void;
+  onStartCategoryEdit: () => void;
   onOpenLabelsEditor: () => void;
-  onToggleFavorite: (favoriteType: ManagedEntityFavoriteType) => void;
+  onFavoriteChange: (favoriteType: ManagedEntityFavoriteType | null) => void;
   onFavoriteLabelChange: (favoriteType: ManagedEntityFavoriteType, value: string) => void;
   onFavoriteLabelReset: (favoriteType: ManagedEntityFavoriteType) => void;
   onFavoriteLabelsSave: () => void;
@@ -349,32 +350,62 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
         overlayStyle={overlayStyle}
         onClose={props.onClose}
       >
-        <div className="favorite-picker__grid">
-          {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-            const active = props.selectedFavoriteTypes.includes(favoriteType);
-            return (
-              <button
-                key={favoriteType}
-                type="button"
-                className={cn(
-                  'favorite-picker__option',
-                  `is-${favoriteType}`,
-                  active && 'is-active',
-                )}
-                aria-pressed={active}
-                disabled={props.favoriteSaving}
-                onClick={() => props.onToggleFavorite(favoriteType)}
-              >
-                <span className="favorite-picker__icon">
-                  <FavoriteIcon aria-hidden />
-                </span>
-                <strong>{props.favoriteLabels[favoriteType]}</strong>
-                {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
-              </button>
-            );
-          })}
-        </div>
+        <fieldset className="favorite-picker__fieldset" disabled={props.favoriteSaving}>
+          <legend className="favorite-picker__sr">Выберите одну категорию</legend>
+          <div className="favorite-picker__grid" aria-busy={props.favoriteSaving || undefined}>
+            <label
+              className={cn(
+                'favorite-picker__option',
+                'is-none',
+                props.selectedFavoriteType === null && 'is-active',
+              )}
+            >
+              <input
+                className="favorite-picker__radio"
+                type="radio"
+                name="home-entity-category"
+                value="none"
+                checked={props.selectedFavoriteType === null}
+                onChange={() => props.onFavoriteChange(null)}
+              />
+              <span className="favorite-picker__icon">
+                <XmarkGlyph aria-hidden />
+              </span>
+              <strong>Без категории</strong>
+              {props.selectedFavoriteType === null ? (
+                <CheckGlyph aria-hidden className="favorite-picker__check" />
+              ) : null}
+            </label>
+            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
+              const active = props.selectedFavoriteType === favoriteType;
+              return (
+                <label
+                  key={favoriteType}
+                  className={cn(
+                    'favorite-picker__option',
+                    `is-${favoriteType}`,
+                    active && 'is-active',
+                  )}
+                >
+                  <input
+                    className="favorite-picker__radio"
+                    type="radio"
+                    name="home-entity-category"
+                    value={favoriteType}
+                    checked={active}
+                    onChange={() => props.onFavoriteChange(favoriteType)}
+                  />
+                  <span className="favorite-picker__icon">
+                    <FavoriteIcon aria-hidden />
+                  </span>
+                  <strong>{props.favoriteLabels[favoriteType]}</strong>
+                  {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
       </HomeSheet>
     );
   }
@@ -389,58 +420,78 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
         overlayStyle={overlayStyle}
         onClose={props.onClose}
       >
-        <div
-          className="favorite-picker__grid home-filter__grid"
-          role="group"
-          aria-label="Категория"
-        >
+        <fieldset className="favorite-picker__fieldset">
+          <legend className="favorite-picker__sr">Категория</legend>
+          <div className="favorite-picker__grid home-filter__grid">
+            <label
+              className={cn(
+                'favorite-picker__option home-filter__item',
+                props.filterValue === 'all' && 'is-active',
+              )}
+            >
+              <input
+                className="favorite-picker__radio"
+                type="radio"
+                name="home-category-filter"
+                value="all"
+                checked={props.filterValue === 'all'}
+                onChange={() => props.onFilterChange('all')}
+              />
+              <span className="favorite-picker__icon">
+                <FilterGlyph aria-hidden focusable="false" />
+              </span>
+              <strong>Все</strong>
+              {props.filterValue === 'all' ? (
+                <CheckGlyph aria-hidden className="favorite-picker__check" />
+              ) : null}
+            </label>
+            {HOME_ENTITY_FAVORITE_TYPES.filter(
+              (favoriteType) =>
+                props.favoriteCounts[favoriteType] > 0 || props.filterValue === favoriteType,
+            ).map((favoriteType) => {
+              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
+              const count = props.favoriteCounts[favoriteType];
+              const active = props.filterValue === favoriteType;
+              return (
+                <label
+                  key={favoriteType}
+                  className={cn(
+                    'favorite-picker__option',
+                    'home-filter__item',
+                    `is-${favoriteType}`,
+                    active && 'is-active',
+                  )}
+                >
+                  <input
+                    className="favorite-picker__radio"
+                    type="radio"
+                    name="home-category-filter"
+                    value={favoriteType}
+                    checked={active}
+                    onChange={() => props.onFilterChange(favoriteType)}
+                  />
+                  <span className="favorite-picker__icon">
+                    <FavoriteIcon aria-hidden />
+                  </span>
+                  <strong>{props.favoriteLabels[favoriteType]}</strong>
+                  <small>{count}</small>
+                  {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
+        <div className="home-filter__commands">
           <button
             type="button"
-            className={cn(
-              'favorite-picker__option home-filter__item',
-              props.filterValue === 'all' && 'is-active',
-            )}
-            aria-pressed={props.filterValue === 'all'}
-            onClick={() => props.onFilterChange('all')}
+            className="favorite-picker__option home-filter__manage"
+            onClick={props.onStartCategoryEdit}
           >
             <span className="favorite-picker__icon">
               <FilterGlyph aria-hidden focusable="false" />
             </span>
-            <strong>Все</strong>
-            {props.filterValue === 'all' ? (
-              <CheckGlyph aria-hidden className="favorite-picker__check" />
-            ) : null}
+            <strong>Распределить по категориям</strong>
           </button>
-          {HOME_ENTITY_FAVORITE_TYPES.filter(
-            (favoriteType) =>
-              props.favoriteCounts[favoriteType] > 0 || props.filterValue === favoriteType,
-          ).map((favoriteType) => {
-            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-            const count = props.favoriteCounts[favoriteType];
-            const active = props.filterValue === favoriteType;
-            return (
-              <button
-                key={favoriteType}
-                type="button"
-                className={cn(
-                  'favorite-picker__option',
-                  'home-filter__item',
-                  `is-${favoriteType}`,
-                  active && 'is-active',
-                )}
-                aria-pressed={active}
-                disabled={count === 0 && !active}
-                onClick={() => props.onFilterChange(favoriteType)}
-              >
-                <span className="favorite-picker__icon">
-                  <FavoriteIcon aria-hidden />
-                </span>
-                <strong>{props.favoriteLabels[favoriteType]}</strong>
-                <small>{count}</small>
-                {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
-              </button>
-            );
-          })}
           <button
             type="button"
             className="favorite-picker__option home-filter__manage"

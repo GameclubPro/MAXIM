@@ -1,0 +1,135 @@
+@layer pages {
+  .managed-entity-workspace-header.compact-page-header {
+    --compact-page-header-height: 60px;
+    --compact-page-header-radius: 8px;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__bar,
+  .managed-entity-workspace-header.compact-page-header.is-compact .compact-page-header__bar {
+    min-height: calc(var(--compact-page-header-safe-top) + 60px);
+    padding: calc(var(--compact-page-header-safe-top) + 8px) 10px 8px;
+    gap: 8px;
+    border-radius: 0 0 8px 8px;
+    background: var(--surface-overlay);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .managed-entity-workspace-header .compact-page-header__back,
+  .managed-entity-workspace-header__counterpart {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--color-surface);
+    color: var(--text-primary);
+    box-shadow: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__back svg,
+  .managed-entity-workspace-header__counterpart svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__identity {
+    gap: 8px;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__entity-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__title-wrap {
+    gap: 2px;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__subtitle,
+  .managed-entity-workspace-header.compact-page-header.is-compact
+    .compact-page-header__subtitle {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 0.65rem;
+    line-height: 1.1;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__title {
+    font-size: 0.95rem;
+    letter-spacing: 0;
+  }
+
+  .managed-entity-workspace-header__actions {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .managed-entity-workspace-header__busy {
+    position: absolute;
+    z-index: 1;
+    top: 3px;
+    right: 3px;
+    width: 8px;
+    height: 8px;
+    border: 2px solid var(--color-surface);
+    border-radius: 50%;
+    background: var(--accent);
+    animation: managed-entity-workspace-pulse 1.1s ease-in-out infinite;
+  }
+
+  .managed-entity-workspace-header .compact-page-header__back:focus-visible,
+  .managed-entity-workspace-header__counterpart:focus-visible {
+    outline: 3px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .managed-entity-workspace-header__counterpart:disabled {
+    cursor: wait;
+    opacity: 0.56;
+  }
+
+  @media (max-width: 359px) {
+    .managed-entity-workspace-header .compact-page-header__bar,
+    .managed-entity-workspace-header.compact-page-header.is-compact .compact-page-header__bar {
+      padding-inline: 8px;
+      gap: 6px;
+    }
+
+    .managed-entity-workspace-header .compact-page-header__entity-avatar {
+      width: 36px;
+      height: 36px;
+    }
+
+    .managed-entity-workspace-header .compact-page-header__title {
+      font-size: 0.9rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .managed-entity-workspace-header__busy {
+      animation: none;
+    }
+  }
+
+  @keyframes managed-entity-workspace-pulse {
+    0%,
+    100% {
+      opacity: 0.45;
+      transform: scale(0.8);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+}

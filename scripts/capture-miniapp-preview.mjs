@@ -348,9 +348,25 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'home-category-edit',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: 'Фильтр категорий' }).click();
+      await page.getByRole('button', { name: 'Распределить по категориям' }).click();
+      await page.getByRole('button', { name: 'Готово' }).waitFor({ state: 'visible' });
+      if ((await page.locator('.chat-card__action--statistics').count()) !== 0) {
+        throw new Error('Home category edit mode still exposes statistics actions.');
+      }
+    },
+  },
+  {
     name: 'home-favorite-picker',
     beforeShot: async (page) => {
-      await page.locator('.chat-card__category').first().click();
+      await page.getByRole('button', { name: 'Фильтр категорий' }).click();
+      await page.getByRole('button', { name: 'Распределить по категориям' }).click();
+      await page
+        .getByRole('button', { name: /^Выбрать категорию:/ })
+        .first()
+        .click();
       await page.locator('.favorite-picker__panel').waitFor({ state: 'visible' });
     },
   },

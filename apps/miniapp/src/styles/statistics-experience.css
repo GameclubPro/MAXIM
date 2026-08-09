@@ -1,6 +1,7 @@
 @layer pages {
   body.events-page-open,
   body.channel-stats-page-open {
+    overflow-x: clip;
     color-scheme: inherit;
     background: var(--surface-page);
   }
@@ -35,6 +36,10 @@
   .events-screen {
     gap: 8px;
     max-width: 600px;
+  }
+
+  .events-screen[data-managed-entity-workspace] .events-stage {
+    margin-top: 0;
   }
 
   .events-stage,
@@ -119,6 +124,10 @@
   .events-stage__panel {
     gap: 8px;
     padding: 8px 10px 10px;
+  }
+
+  .events-screen[data-managed-entity-workspace] .events-stage__panel {
+    padding-top: 10px;
   }
 
   .events-primary-tabs {
@@ -1908,6 +1917,10 @@
       grid-column: 2;
       justify-self: start;
     }
+  }
+
+  .channel-insights[data-managed-entity-workspace] .channel-insights__section-tabs {
+    top: var(--managed-entity-workspace-header-bottom, calc(var(--app-safe-top) + 60px));
   }
 
   @media (prefers-reduced-motion: reduce) {

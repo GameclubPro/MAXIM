@@ -7,9 +7,10 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import type {
   ChatSummary,
   ManagedEntitiesRefreshState,
@@ -23,11 +24,11 @@ import {
   PlusCircleGlyph,
   RefreshGlyph,
   SearchGlyph,
-  SettingsGlyph,
   StatisticsGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
-import { SkeletonCard } from '../components/ui/skeleton';
+import { BackChevronIcon } from '../components/ui/entity-header-icons';
+import { Skeleton, SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { describeApiError } from '../lib/api-error';
@@ -58,9 +59,27 @@ import {
   saveHomeEntityFavoriteLabels,
   saveHomeEntityFavorites,
   setHomeEntityFavoriteTypes,
-  toggleHomeEntityFavoriteType,
 } from '../lib/home-entity-favorites';
 import { getInitDataUserId } from '../lib/init-data';
+import {
+  buildManagedEntityHomeSnapshotStorageKey,
+  buildManagedEntitySettingsRoute,
+  buildManagedEntityStatsPreferenceStorageKey,
+  buildManagedEntityStatisticsRoute,
+  createManagedEntityWorkspaceState,
+  getManagedEntitySessionStorage,
+  mergeManagedEntityStatsPreference,
+  mergeManagedEntityWorkspaceRouteState,
+  preserveManagedEntityRouteContext,
+  readManagedEntityHomeSnapshot,
+  readManagedEntityStatsPreference,
+  readManagedEntityWorkspaceState,
+  resolveManagedEntityHomeAnchor,
+  saveManagedEntityHomeSnapshot,
+  type ManagedEntityHomeFocusTarget,
+  type ManagedEntityHomeSnapshot,
+  type ManagedEntityStatsPreference,
+} from '../lib/managed-entity-workspace';
 import {
   buildHomeView,
   normalizeEntityType,
@@ -97,6 +116,10 @@ type ManagedEntitiesReloadRequest = {
   nonce: number;
   behavior: 'default' | 'manual' | 'recovery';
 };
+type PendingHomeSnapshotRestore = {
+  restoreKey: string;
+  snapshot: ManagedEntityHomeSnapshot;
+};
 type WindowWithIdleCallback = {
   requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
   cancelIdleCallback?: (handle: number) => void;
@@ -110,7 +133,8 @@ const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
-const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 96;
+const CHAT_LIST_ROW_HEIGHT = 72;
+const CHAT_LIST_VIRTUAL_ROW_PITCH = 80;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
 type FavoriteLabelDraft = Record<ManagedEntityFavoriteType, string>;
@@ -217,16 +241,6 @@ async function saveManagedEntityFavoriteTypes(
   return updateManagedEntityFavorites(api, entityType, entityId, favoriteTypes);
 }
 
-function buildEntitySettingsRoute(entityType: ManagedTab, entityId: string): string {
-  return entityType === 'channel' ? `/channel/${entityId}/settings` : `/chat/${entityId}/settings`;
-}
-
-function buildEntityStatisticsRoute(entityType: ManagedTab, entityId: string): string {
-  return entityType === 'channel'
-    ? `/channel/${entityId}/stats?section=overview`
-    : `/chat/${entityId}/events?section=activity`;
-}
-
 function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity) {
   if (entityType === 'channel') {
     return {
@@ -242,15 +256,62 @@ function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity
   };
 }
 
+function readCurrentHistoryIndex(): number | null {
+  const historyIndex = (window.history.state as { idx?: unknown } | null)?.idx;
+  return typeof historyIndex === 'number' && Number.isSafeInteger(historyIndex) && historyIndex >= 0
+    ? historyIndex
+    : null;
+}
+
+function replaceCurrentRouterState(routeState: Record<string, unknown>): void {
+  const currentHistoryState =
+    typeof window.history.state === 'object' && window.history.state !== null
+      ? window.history.state
+      : {};
+  window.history.replaceState({ ...currentHistoryState, usr: routeState }, '');
+}
+
+function shouldHandleEntityLinkClick(event: ReactMouseEvent<HTMLAnchorElement>): boolean {
+  return (
+    event.button === 0 &&
+    !event.defaultPrevented &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey
+  );
+}
+
+function readHomeSnapshotFromRouteState(
+  routeState: unknown,
+  entityType: ManagedTab,
+): ManagedEntityHomeSnapshot | null {
+  const workspace = readManagedEntityWorkspaceState(routeState);
+  return workspace?.entityType === entityType ? (workspace.homeSnapshot ?? null) : null;
+}
+
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [query, setQuery] = useState('');
+  const activeTab = normalizeEntityType(
+    searchParams.get('view'),
+    readLastEntityType(),
+  ) as ManagedTab;
+  const initialHomeSnapshot = readHomeSnapshotFromRouteState(location.state, activeTab);
+  const [query, setQuery] = useState(() => initialHomeSnapshot?.query ?? '');
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
   const homeRootRef = useRef<HTMLDivElement | null>(null);
   const virtualListViewportRef = useRef<HTMLElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const homeOverlayTriggerRef = useRef<HTMLElement | null>(null);
+  const categoryEditDoneRef = useRef<HTMLButtonElement | null>(null);
+  const favoriteFilterTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const pendingHomeSnapshotRestoreRef = useRef<PendingHomeSnapshotRestore | null>(null);
+  const homeSnapshotRestoreAttemptRef = useRef<string | null>(null);
+  const entityNavigationPendingRef = useRef(false);
   const [virtualListScrollTop, setVirtualListScrollTop] = useState(0);
   const favoriteStorageScope = useMemo(() => {
     const normalizedUserId = currentUserId?.trim();
@@ -271,7 +332,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   );
   const [favoriteFilter, setFavoriteFilter] = useState<
     ManagedEntityFavoriteType | typeof FAVORITE_FILTER_ALL
-  >(FAVORITE_FILTER_ALL);
+  >(() => initialHomeSnapshot?.filter ?? FAVORITE_FILTER_ALL);
   const [favoritePicker, setFavoritePicker] = useState<{
     entityType: ManagedTab;
     entity: ManagedHomeEntity;
@@ -279,6 +340,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [favoriteFilterPickerOpen, setFavoriteFilterPickerOpen] = useState(false);
   const [favoriteLabelsEditorOpen, setFavoriteLabelsEditorOpen] = useState(false);
   const [connectSheetOpen, setConnectSheetOpen] = useState(false);
+  const [categoryEditMode, setCategoryEditMode] = useState(false);
   const [favoriteLabelDraft, setFavoriteLabelDraft] = useState<FavoriteLabelDraft>(() =>
     createFavoriteLabelDraft(readHomeEntityFavoriteLabels(favoriteStorageScope)),
   );
@@ -295,10 +357,42 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     chat: { nonce: 0, behavior: 'default' },
     channel: { nonce: 0, behavior: 'default' },
   });
-  const activeTab = normalizeEntityType(
-    searchParams.get('view'),
-    readLastEntityType(),
-  ) as ManagedTab;
+  const homeSnapshotRestoreKey = `${location.key}:${activeTab}`;
+
+  useEffect(() => {
+    if (homeSnapshotRestoreAttemptRef.current === homeSnapshotRestoreKey) {
+      return;
+    }
+
+    let snapshot = readHomeSnapshotFromRouteState(location.state, activeTab);
+
+    if (!snapshot && currentUserId) {
+      const storage = getManagedEntitySessionStorage();
+      const storageKey = buildManagedEntityHomeSnapshotStorageKey({
+        userId: currentUserId,
+        locationKey: location.key,
+        entityType: activeTab,
+      });
+      snapshot = storage ? readManagedEntityHomeSnapshot(storage, storageKey) : null;
+    }
+
+    if (!snapshot && !currentUserId) {
+      return;
+    }
+
+    homeSnapshotRestoreAttemptRef.current = homeSnapshotRestoreKey;
+    if (!snapshot) {
+      pendingHomeSnapshotRestoreRef.current = null;
+      return;
+    }
+
+    pendingHomeSnapshotRestoreRef.current = {
+      restoreKey: homeSnapshotRestoreKey,
+      snapshot,
+    };
+    setQuery(snapshot.query);
+    setFavoriteFilter(snapshot.filter);
+  }, [activeTab, currentUserId, homeSnapshotRestoreKey, location.key, location.state]);
 
   useNativeBackHandler(
     () => {
@@ -314,6 +408,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       return true;
     },
     { enabled: homeOverlayOpen, priority: 650 },
+  );
+
+  useNativeBackHandler(
+    () => {
+      exitCategoryEditMode();
+      return true;
+    },
+    { enabled: categoryEditMode && !homeOverlayOpen, priority: 600 },
   );
 
   const activeEntitiesKey = getEntitiesKey(activeTab);
@@ -427,6 +529,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       entities: activeEntities,
       query,
     });
+    if (categoryEditMode) {
+      return matchingEntities;
+    }
+
     const filteredByFavorite =
       favoriteFilter === FAVORITE_FILTER_ALL
         ? matchingEntities
@@ -439,7 +545,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       homeEntityFavorites[activeTab],
       favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
     );
-  }, [activeEntities, activeTab, favoriteFilter, homeEntityFavorites, query]);
+  }, [activeEntities, activeTab, categoryEditMode, favoriteFilter, homeEntityFavorites, query]);
   const favoriteCounts = useMemo(() => {
     if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
       return HOME_ENTITY_FAVORITE_TYPES.reduce(
@@ -465,12 +571,43 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
-  const shouldVirtualizeEntities = filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD;
+  const virtualizationContextKey = JSON.stringify([
+    activeTab,
+    query,
+    favoriteFilter,
+    categoryEditMode,
+  ]);
+  const virtualizationCanInitialize =
+    filteredEntities.length > 0 || isSyncSettled || Boolean(queryError);
+  const [virtualizationDecision, setVirtualizationDecision] = useState(() => ({
+    contextKey: virtualizationContextKey,
+    initialized: virtualizationCanInitialize,
+    enabled: filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD,
+  }));
+  const shouldVirtualizeEntities =
+    virtualizationDecision.contextKey === virtualizationContextKey &&
+    virtualizationDecision.initialized
+      ? virtualizationDecision.enabled
+      : virtualizationCanInitialize && filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD;
+
+  useEffect(() => {
+    setVirtualizationDecision((current) => {
+      if (current.contextKey === virtualizationContextKey && current.initialized) {
+        return current;
+      }
+
+      const next = {
+        contextKey: virtualizationContextKey,
+        initialized: virtualizationCanInitialize,
+        enabled: filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD,
+      };
+      return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+    });
+  }, [filteredEntities.length, virtualizationCanInitialize, virtualizationContextKey]);
   const virtualStartIndex = shouldVirtualizeEntities
     ? Math.max(
         0,
-        Math.floor(virtualListScrollTop / CHAT_LIST_VIRTUAL_ROW_HEIGHT) -
-          CHAT_LIST_VIRTUAL_OVERSCAN,
+        Math.floor(virtualListScrollTop / CHAT_LIST_VIRTUAL_ROW_PITCH) - CHAT_LIST_VIRTUAL_OVERSCAN,
       )
     : 0;
   const virtualEndIndex = shouldVirtualizeEntities
@@ -678,11 +815,101 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeTab]);
 
   useEffect(() => {
+    setCategoryEditMode(false);
+    setFavoritePicker(null);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (pendingHomeSnapshotRestoreRef.current?.restoreKey === homeSnapshotRestoreKey) {
+      return;
+    }
+
     setVirtualListScrollTop(0);
     if (virtualListViewportRef.current) {
       virtualListViewportRef.current.scrollTop = 0;
     }
-  }, [activeTab, favoriteFilter, query, shouldVirtualizeEntities]);
+  }, [
+    activeTab,
+    categoryEditMode,
+    favoriteFilter,
+    homeSnapshotRestoreKey,
+    query,
+    shouldVirtualizeEntities,
+  ]);
+
+  useEffect(() => {
+    const pendingRestore = pendingHomeSnapshotRestoreRef.current;
+    if (
+      pendingRestore?.restoreKey !== homeSnapshotRestoreKey ||
+      isLoading ||
+      queryError ||
+      !isSyncSettled
+    ) {
+      return undefined;
+    }
+
+    const resolution = resolveManagedEntityHomeAnchor(
+      pendingRestore.snapshot,
+      filteredEntities.map((entity) => entity.id),
+    );
+    let firstAnimationFrame = 0;
+    let secondAnimationFrame = 0;
+
+    if (resolution.kind === 'entity' && shouldVirtualizeEntities) {
+      const targetScrollTop = Math.max(
+        0,
+        resolution.index * CHAT_LIST_VIRTUAL_ROW_PITCH - resolution.offset,
+      );
+      setVirtualListScrollTop(targetScrollTop);
+      if (virtualListViewportRef.current) {
+        virtualListViewportRef.current.scrollTop = targetScrollTop;
+      }
+    }
+
+    firstAnimationFrame = window.requestAnimationFrame(() => {
+      secondAnimationFrame = window.requestAnimationFrame(() => {
+        const root = homeRootRef.current;
+        const entityCard =
+          resolution.kind === 'entity'
+            ? (Array.from(root?.querySelectorAll<HTMLElement>('[data-entity-id]') ?? []).find(
+                (element) => element.dataset.entityId === resolution.id,
+              ) ?? null)
+            : null;
+
+        if (resolution.kind === 'entity' && entityCard && !shouldVirtualizeEntities) {
+          const targetScrollTop = Math.max(
+            0,
+            window.scrollY + entityCard.getBoundingClientRect().top - resolution.offset,
+          );
+          window.scrollTo({ top: targetScrollTop, left: 0, behavior: 'auto' });
+        } else if (resolution.kind === 'search-heading') {
+          window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+        }
+
+        const action =
+          resolution.kind === 'entity' && resolution.focusTarget === 'statistics'
+            ? 'statistics'
+            : 'settings';
+        const focusTarget =
+          entityCard?.querySelector<HTMLElement>(`[data-action="${action}"]`) ??
+          searchInputRef.current;
+        focusTarget?.focus({ preventScroll: true });
+        pendingHomeSnapshotRestoreRef.current = null;
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstAnimationFrame);
+      window.cancelAnimationFrame(secondAnimationFrame);
+    };
+  }, [
+    filteredEntities,
+    homeSnapshotRestoreKey,
+    isLoading,
+    isSyncSettled,
+    queryError,
+    shouldVirtualizeEntities,
+  ]);
 
   useEffect(() => {
     document.body.classList.add('chats-home-page-open');
@@ -772,6 +999,23 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     homeEntityFavoriteLabels,
     homeOverlayOpen,
   ]);
+
+  useEffect(() => {
+    if (!categoryEditMode || homeOverlayOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      exitCategoryEditMode();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [categoryEditMode, homeOverlayOpen]);
 
   useEffect(() => {
     const previousScope = favoriteStorageScopeRef.current;
@@ -898,14 +1142,28 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadSettingsPage();
   }
 
-  function prefetchChatEvents(chatId: string) {
+  function prefetchChatEvents(chatId: string, preference: ManagedEntityStatsPreference) {
     preloadEventsPage();
+    if (preference.section === 'participants') {
+      return;
+    }
+
+    const range = preference.range ?? DEFAULT_DASHBOARD_RANGE;
+    const includeModerationPreview = preference.section === 'moderation';
+    const includeActivityPreview = !includeModerationPreview;
     void queryClient
       .prefetchQuery({
-        queryKey: logsDashboardQueryKey(chatId, DEFAULT_DASHBOARD_RANGE, true, false),
+        queryKey: logsDashboardQueryKey(
+          chatId,
+          range,
+          includeActivityPreview,
+          includeModerationPreview,
+        ),
         queryFn: async ({ signal }) => {
-          const { getChatActivityDashboard } = await import('../lib/api/events-client');
-          return getChatActivityDashboard(api, chatId, DEFAULT_DASHBOARD_RANGE, { signal });
+          const client = await import('../lib/api/events-client');
+          return includeModerationPreview
+            ? client.getChatModerationDashboard(api, chatId, range, { signal })
+            : client.getChatActivityDashboard(api, chatId, range, { signal });
         },
       })
       .catch(() => undefined);
@@ -921,6 +1179,129 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     saveChatTitle(entity.id, entity.title);
   }
 
+  function createHomeSnapshot(
+    entity: ManagedHomeEntity,
+    index: number,
+    focusTarget: ManagedEntityHomeFocusTarget,
+    trigger: HTMLAnchorElement,
+  ): ManagedEntityHomeSnapshot {
+    const entityCard = trigger.closest<HTMLElement>('[data-entity-id]');
+    const scrollMode = shouldVirtualizeEntities ? 'virtual' : 'document';
+    const viewportTop =
+      scrollMode === 'virtual'
+        ? (virtualListViewportRef.current?.getBoundingClientRect().top ?? 0)
+        : 0;
+    const offset = Math.max(
+      0,
+      (entityCard?.getBoundingClientRect().top ?? viewportTop) - viewportTop,
+    );
+
+    return {
+      query,
+      filter: favoriteFilter,
+      anchor: {
+        id: entity.id,
+        index,
+        offset,
+      },
+      focusTarget,
+      scrollMode,
+    };
+  }
+
+  function readEntityStatsPreference(entityId: string) {
+    const currentWorkspace = readManagedEntityWorkspaceState(location.state);
+    const matchingWorkspace =
+      currentWorkspace?.entityType === activeTab && currentWorkspace.entityId === entityId
+        ? currentWorkspace
+        : null;
+    const sessionStorage = getManagedEntitySessionStorage();
+    const persistedStatsPreference = sessionStorage
+      ? readManagedEntityStatsPreference(
+          sessionStorage,
+          buildManagedEntityStatsPreferenceStorageKey({
+            locationKey: location.key,
+            entityType: activeTab,
+            entityId,
+          }),
+          activeTab,
+        )
+      : {};
+
+    return mergeManagedEntityStatsPreference(
+      activeTab,
+      matchingWorkspace?.statsPreference,
+      persistedStatsPreference,
+    );
+  }
+
+  function handleEntityNavigation(
+    event: ReactMouseEvent<HTMLAnchorElement>,
+    entity: ManagedHomeEntity,
+    index: number,
+    focusTarget: ManagedEntityHomeFocusTarget,
+    targetRoute: string,
+  ) {
+    if (!shouldHandleEntityLinkClick(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    if (entityNavigationPendingRef.current) {
+      return;
+    }
+    entityNavigationPendingRef.current = true;
+
+    const homeSnapshot = createHomeSnapshot(entity, index, focusTarget, event.currentTarget);
+    const historyIndex = readCurrentHistoryIndex();
+    const sessionStorage = getManagedEntitySessionStorage();
+    const statsPreference = readEntityStatsPreference(entity.id);
+    const workspace = createManagedEntityWorkspaceState({
+      entityType: activeTab,
+      entityId: entity.id,
+      origin:
+        historyIndex === null
+          ? null
+          : {
+              locationKey: location.key,
+              historyIndex,
+            },
+      homeSnapshot,
+      statsPreference,
+    });
+    const homeRouteState = mergeManagedEntityWorkspaceRouteState(location.state, workspace);
+    const identityState = buildEntityRouteState(activeTab, entity);
+    const detailRouteState = mergeManagedEntityWorkspaceRouteState(
+      {
+        ...(typeof location.state === 'object' && location.state !== null ? location.state : {}),
+        ...identityState,
+      },
+      workspace,
+    );
+
+    replaceCurrentRouterState(homeRouteState);
+    if (currentUserId && sessionStorage) {
+      saveManagedEntityHomeSnapshot(
+        sessionStorage,
+        buildManagedEntityHomeSnapshotStorageKey({
+          userId: currentUserId,
+          locationKey: location.key,
+          entityType: activeTab,
+        }),
+        homeSnapshot,
+      );
+    }
+    const resolvedTargetRoute =
+      focusTarget === 'statistics'
+        ? preserveManagedEntityRouteContext(
+            buildManagedEntityStatisticsRoute(activeTab, entity.id, statsPreference),
+            location.search,
+            location.hash,
+          )
+        : targetRoute;
+    navigate(resolvedTargetRoute, { state: detailRouteState });
+  }
+
   function prefetchEntitySettings(entityType: ManagedTab, entityId: string) {
     if (entityType === 'channel') {
       prefetchChannelSettings(entityId);
@@ -930,13 +1311,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     prefetchChatSettings(entityId);
   }
 
-  function prefetchEntityActivity(entityType: ManagedTab, entityId: string) {
+  function prefetchEntityActivity(
+    entityType: ManagedTab,
+    entityId: string,
+    preference: ManagedEntityStatsPreference,
+  ) {
     if (entityType === 'channel') {
-      prefetchChannelStats(entityId);
+      prefetchChannelStats(entityId, preference);
       return;
     }
 
-    prefetchChatEvents(entityId);
+    prefetchChatEvents(entityId, preference);
   }
 
   function buildFavoriteEntityKey(entityType: ManagedTab, entityId: string) {
@@ -958,6 +1343,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     setFavoriteLabelsEditorOpen(false);
     setFavoritePicker(null);
     setFavoriteFilterPickerOpen(true);
+  }
+
+  function enterCategoryEditMode() {
+    closeHomeEntitySheet();
+    setCategoryEditMode(true);
+    window.requestAnimationFrame(() => categoryEditDoneRef.current?.focus());
+  }
+
+  function exitCategoryEditMode() {
+    setFavoritePicker(null);
+    setCategoryEditMode(false);
+    window.requestAnimationFrame(() => favoriteFilterTriggerRef.current?.focus());
   }
 
   function closeHomeEntitySheet() {
@@ -1014,37 +1411,53 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     setFavoriteLabelsEditorOpen(false);
   }
 
-  async function handleToggleHomeEntityFavoriteType(
+  async function handleSetHomeEntityFavoriteType(
     entityType: ManagedTab,
     entityId: string,
-    favoriteType: ManagedEntityFavoriteType,
+    favoriteType: ManagedEntityFavoriteType | null,
   ) {
+    if (savingFavoriteEntityKey !== null) {
+      return;
+    }
+
     const previousFavorites = homeEntityFavorites;
-    const result = toggleHomeEntityFavoriteType(
+    const previousFavoriteTypes = getHomeEntityFavoriteTypes(
       previousFavorites,
       entityType,
       entityId,
-      favoriteType,
     );
-    setHomeEntityFavorites(result.favorites);
-    saveHomeEntityFavorites(favoriteStorageScope, result.favorites);
+    const favoriteTypes = favoriteType ? [favoriteType] : [];
+    const nextFavorites = setHomeEntityFavoriteTypes(
+      previousFavorites,
+      entityType,
+      entityId,
+      favoriteTypes,
+    );
+    setHomeEntityFavorites(nextFavorites);
+    saveHomeEntityFavorites(favoriteStorageScope, nextFavorites);
     setSavingFavoriteEntityKey(buildFavoriteEntityKey(entityType, entityId));
 
     try {
-      const saved = await saveManagedEntityFavoriteTypes(
-        api,
-        entityType,
-        entityId,
-        result.favoriteTypes,
-      );
+      const saved = await saveManagedEntityFavoriteTypes(api, entityType, entityId, favoriteTypes);
       setHomeEntityFavorites((current) => {
         const next = setHomeEntityFavoriteTypes(current, entityType, entityId, saved.favoriteTypes);
         saveHomeEntityFavorites(favoriteStorageScope, next);
         return next;
       });
+      setFavoritePicker((current) =>
+        current?.entityType === entityType && current.entity.id === entityId ? null : current,
+      );
     } catch (error: unknown) {
-      setHomeEntityFavorites(previousFavorites);
-      saveHomeEntityFavorites(favoriteStorageScope, previousFavorites);
+      setHomeEntityFavorites((current) => {
+        const rollback = setHomeEntityFavoriteTypes(
+          current,
+          entityType,
+          entityId,
+          previousFavoriteTypes,
+        );
+        saveHomeEntityFavorites(favoriteStorageScope, rollback);
+        return rollback;
+      });
       pushToast({
         title: 'Не удалось сохранить категорию',
         description: describeApiError(error, 'Попробуйте ещё раз.'),
@@ -1057,17 +1470,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     }
   }
 
-  function prefetchChannelStats(chatId: string) {
+  function prefetchChannelStats(chatId: string, preference: ManagedEntityStatsPreference) {
     preloadChannelStatsPage();
+    const range = preference.range ?? DEFAULT_CHANNEL_STATS_RANGE;
     void queryClient
       .prefetchQuery({
-        queryKey: channelStatsQueryKey(chatId, DEFAULT_CHANNEL_STATS_RANGE, 'overview'),
+        queryKey: channelStatsQueryKey(chatId, range, 'overview'),
         queryFn: async ({ signal }) => {
           const { getChannelStats } = await import('../lib/api/channel-stats-client');
           return getChannelStats(
             api,
             chatId,
-            DEFAULT_CHANNEL_STATS_RANGE,
+            range,
             { signal },
             {
               includeActivityPreview: false,
@@ -1112,8 +1526,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeTab, filteredEntities]);
 
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
-  const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
-  const searchPlaceholder = 'Поиск';
+  const searchLabel = activeTab === 'chat' ? 'Поиск по чатам' : 'Поиск по каналам';
+  const searchPlaceholder = activeTab === 'chat' ? 'Поиск чатов' : 'Поиск каналов';
   const refreshButtonLabel =
     isFetching || isManualRefreshInProgressByState
       ? 'Обновляем список'
@@ -1143,11 +1557,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       'chat-card',
       favorite && 'is-favorite',
       favoriteTypes[0] && `is-${favoriteTypes[0]}`,
+      categoryEditMode && 'chat-card--category-editing',
       staggerIndex !== null && 'stagger-in',
     );
     let style: CSSProperties | undefined;
     if (shouldVirtualizeEntities) {
-      style = { top: index * CHAT_LIST_VIRTUAL_ROW_HEIGHT };
+      style = {
+        top: index * CHAT_LIST_VIRTUAL_ROW_PITCH,
+        height: CHAT_LIST_ROW_HEIGHT,
+      };
       if (staggerIndex !== null) {
         style.animationDelay = `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms`;
       }
@@ -1155,15 +1573,27 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       style = { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
     }
 
-    const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
-    const statisticsRoute = buildEntityStatisticsRoute(activeTab, entity.id);
+    const settingsRoute = preserveManagedEntityRouteContext(
+      buildManagedEntitySettingsRoute(activeTab, entity.id),
+      location.search,
+      location.hash,
+    );
+    const statsPreference = readEntityStatsPreference(entity.id);
+    const statisticsRoute = preserveManagedEntityRouteContext(
+      buildManagedEntityStatisticsRoute(activeTab, entity.id, statsPreference),
+      location.search,
+      location.hash,
+    );
     const routeState = buildEntityRouteState(activeTab, entity);
     const primaryFavoriteType = favoriteTypes[0] ?? null;
     const CategoryIcon = primaryFavoriteType
       ? HOME_ENTITY_FAVORITE_ICONS[primaryFavoriteType]
       : PlusCircleGlyph;
-    const categoryLabel = primaryFavoriteType ? favoriteLabels[primaryFavoriteType] : 'Категория';
-    const additionalFavoriteCount = Math.max(0, favoriteTypes.length - 1);
+    const categoryLabel = primaryFavoriteType
+      ? favoriteLabels[primaryFavoriteType]
+      : 'Без категории';
+    const pickerOpen =
+      favoritePicker?.entityType === activeTab && favoritePicker.entity.id === entity.id;
 
     return (
       <GlassCard
@@ -1174,128 +1604,133 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         role="listitem"
         aria-posinset={index + 1}
         aria-setsize={filteredEntities.length}
+        data-entity-id={entity.id}
       >
-        <div className="chat-card__main">
-          <EntityAvatar
-            title={entity.title}
-            entityType={activeTab}
-            avatarUrl={entity.avatarUrl ?? null}
-            className="chat-card__avatar"
-          />
-          <div className="chat-card__title-wrap">
-            <Link
-              to={settingsRoute}
-              className="chat-card__title-link"
-              state={routeState}
-              onClick={() => {
-                rememberEntity(activeTab, entity);
-                prefetchEntitySettings(activeTab, entity.id);
-              }}
-              onPointerEnter={(event) => {
-                if (shouldPrefetchFromPointerEvent(event)) {
-                  prefetchEntitySettings(activeTab, entity.id);
-                }
-              }}
-              onPointerDown={(event) => {
-                if (shouldPrefetchFromPressEvent(event)) {
-                  prefetchEntitySettings(activeTab, entity.id);
-                }
-              }}
-              aria-label={`Открыть настройки: ${entity.title}`}
-            >
-              <h3>{entity.title}</h3>
-            </Link>
-            <button
-              type="button"
-              className={cn(
-                'chat-card__category',
-                primaryFavoriteType && `is-${primaryFavoriteType}`,
-                favoriteTypes.length > 0 && 'is-active',
-              )}
-              aria-label={`${favoriteTypes.length > 0 ? 'Изменить' : 'Добавить'} категории: ${entity.title}`}
-              aria-haspopup="dialog"
-              aria-controls="home-sheet-favorite"
-              aria-expanded={
-                favoritePicker?.entityType === activeTab && favoritePicker.entity.id === entity.id
+        {categoryEditMode ? (
+          <button
+            type="button"
+            className="chat-card__primary-link chat-card__category-editor"
+            aria-label={`Выбрать категорию: ${entity.title}. Сейчас: ${categoryLabel}`}
+            aria-haspopup="dialog"
+            aria-controls="home-sheet-favorite"
+            aria-expanded={pickerOpen}
+            disabled={savingFavoriteEntityKey !== null}
+            onPointerEnter={() => void preloadHomeEntitySheets()}
+            onPointerDown={() => void preloadHomeEntitySheets()}
+            onClick={(event) => {
+              if (savingFavoriteEntityKey !== null) {
+                return;
               }
-              title={favoriteTypes.length > 0 ? 'Изменить категории' : 'Добавить категорию'}
-              onPointerEnter={() => void preloadHomeEntitySheets()}
-              onPointerDown={() => void preloadHomeEntitySheets()}
-              onClick={(event) => {
-                homeOverlayTriggerRef.current = event.currentTarget;
-                setFavoritePicker({ entityType: activeTab, entity });
-              }}
-            >
-              <CategoryIcon aria-hidden focusable="false" />
-              <span>{categoryLabel}</span>
-              {additionalFavoriteCount > 0 ? <strong>+{additionalFavoriteCount}</strong> : null}
-            </button>
-          </div>
-        </div>
+              homeOverlayTriggerRef.current = event.currentTarget;
+              setFavoritePicker({ entityType: activeTab, entity });
+            }}
+          >
+            <EntityAvatar
+              title={entity.title}
+              entityType={activeTab}
+              avatarUrl={entity.avatarUrl ?? null}
+              className="chat-card__avatar"
+            />
+            <span className="chat-card__title-wrap">
+              <h3>{entity.title}</h3>
+              <span className={cn('chat-card__category-value', primaryFavoriteType && 'is-active')}>
+                <CategoryIcon aria-hidden focusable="false" />
+                <span>{categoryLabel}</span>
+              </span>
+            </span>
+            <span className="chat-card__chevron" aria-hidden>
+              <BackChevronIcon />
+            </span>
+          </button>
+        ) : (
+          <Link
+            to={settingsRoute}
+            className="chat-card__primary-link"
+            state={routeState}
+            data-action="settings"
+            onClick={(event) => {
+              rememberEntity(activeTab, entity);
+              prefetchEntitySettings(activeTab, entity.id);
+              handleEntityNavigation(event, entity, index, 'settings', settingsRoute);
+            }}
+            onPointerEnter={(event) => {
+              if (shouldPrefetchFromPointerEvent(event)) {
+                prefetchEntitySettings(activeTab, entity.id);
+              }
+            }}
+            onPointerDown={(event) => {
+              if (shouldPrefetchFromPressEvent(event)) {
+                prefetchEntitySettings(activeTab, entity.id);
+              }
+            }}
+            aria-label={`Открыть настройки: ${entity.title}${
+              primaryFavoriteType ? `. Категория: ${categoryLabel}` : ''
+            }`}
+          >
+            <span className="chat-card__avatar-wrap">
+              <EntityAvatar
+                title={entity.title}
+                entityType={activeTab}
+                avatarUrl={entity.avatarUrl ?? null}
+                className="chat-card__avatar"
+              />
+              {primaryFavoriteType ? (
+                <span
+                  className="chat-card__category-marker"
+                  title={`Категория: ${categoryLabel}`}
+                  aria-hidden
+                >
+                  <CategoryIcon focusable="false" />
+                </span>
+              ) : null}
+            </span>
+            <span className="chat-card__title-wrap">
+              <h3>{entity.title}</h3>
+            </span>
+            <span className="chat-card__chevron" aria-hidden>
+              <BackChevronIcon />
+            </span>
+          </Link>
+        )}
 
-        <div
-          className="chat-card__quick-actions"
-          role="group"
-          aria-label={`Действия: ${entity.title}`}
-        >
+        {!categoryEditMode ? (
           <Link
             to={statisticsRoute}
             className="chat-card__action chat-card__action--statistics"
             state={routeState}
             aria-label={`Открыть статистику: ${entity.title}`}
             title="Статистика"
-            onClick={() => {
+            data-action="statistics"
+            onClick={(event) => {
               rememberEntity(activeTab, entity);
-              prefetchEntityActivity(activeTab, entity.id);
+              prefetchEntityActivity(activeTab, entity.id, statsPreference);
+              handleEntityNavigation(event, entity, index, 'statistics', statisticsRoute);
             }}
             onPointerEnter={(event) => {
               if (shouldPrefetchFromPointerEvent(event)) {
-                prefetchEntityActivity(activeTab, entity.id);
+                prefetchEntityActivity(activeTab, entity.id, statsPreference);
               }
             }}
             onPointerDown={(event) => {
               if (shouldPrefetchFromPressEvent(event)) {
-                prefetchEntityActivity(activeTab, entity.id);
+                prefetchEntityActivity(activeTab, entity.id, statsPreference);
               }
             }}
           >
             <StatisticsGlyph aria-hidden focusable="false" />
           </Link>
-          <Link
-            to={settingsRoute}
-            className="chat-card__action chat-card__action--settings"
-            state={routeState}
-            aria-label={`Открыть настройки: ${entity.title}`}
-            title="Настройки"
-            onClick={() => {
-              rememberEntity(activeTab, entity);
-              prefetchEntitySettings(activeTab, entity.id);
-            }}
-            onPointerEnter={(event) => {
-              if (shouldPrefetchFromPointerEvent(event)) {
-                prefetchEntitySettings(activeTab, entity.id);
-              }
-            }}
-            onPointerDown={(event) => {
-              if (shouldPrefetchFromPressEvent(event)) {
-                prefetchEntitySettings(activeTab, entity.id);
-              }
-            }}
-          >
-            <SettingsGlyph aria-hidden focusable="false" />
-          </Link>
-        </div>
+        ) : null}
       </GlassCard>
     );
   }
 
-  const selectedSheetFavoriteTypes = favoritePicker
-    ? getHomeEntityFavoriteTypes(
+  const selectedSheetFavoriteType = favoritePicker
+    ? (getHomeEntityFavoriteTypes(
         homeEntityFavorites,
         favoritePicker.entityType,
         favoritePicker.entity.id,
-      )
-    : [];
+      )[0] ?? null)
+    : null;
   const sheetFavoriteSaving = favoritePicker
     ? savingFavoriteEntityKey ===
       buildFavoriteEntityKey(favoritePicker.entityType, favoritePicker.entity.id)
@@ -1303,11 +1738,22 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const canSaveFavoriteLabels =
     JSON.stringify(sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft)) !==
     JSON.stringify(homeEntityFavoriteLabels);
+  const hasAppliedFavoriteFilter = !categoryEditMode && favoriteFilter !== FAVORITE_FILTER_ALL;
+  const noResultsResetLabel =
+    hasSearchQuery && hasAppliedFavoriteFilter
+      ? 'Сбросить поиск и фильтр'
+      : hasSearchQuery
+        ? 'Очистить поиск'
+        : 'Сбросить фильтр';
 
   return (
     <div
       ref={homeRootRef}
-      className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}
+      className={cn(
+        'page-stack page-enter chats-home',
+        `chats-home--${activeTab}`,
+        categoryEditMode && 'is-category-editing',
+      )}
     >
       {homeOverlayOpen ? (
         <Suspense fallback={null}>
@@ -1322,7 +1768,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             favoriteCounts={favoriteCounts}
             favoriteLabelOverrides={homeEntityFavoriteLabels}
             favoriteLabelDraft={favoriteLabelDraft}
-            selectedFavoriteTypes={selectedSheetFavoriteTypes}
+            selectedFavoriteType={selectedSheetFavoriteType}
             favoriteSaving={sheetFavoriteSaving}
             canSaveLabels={canSaveFavoriteLabels}
             onClose={closeHomeEntitySheet}
@@ -1330,10 +1776,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               setFavoriteFilter(nextFilter);
               setFavoriteFilterPickerOpen(false);
             }}
+            onStartCategoryEdit={enterCategoryEditMode}
             onOpenLabelsEditor={() => openFavoriteLabelsEditor()}
-            onToggleFavorite={(favoriteType) => {
+            onFavoriteChange={(favoriteType) => {
               if (favoritePicker) {
-                void handleToggleHomeEntityFavoriteType(
+                void handleSetHomeEntityFavoriteType(
                   favoritePicker.entityType,
                   favoritePicker.entity.id,
                   favoriteType,
@@ -1348,7 +1795,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       <GlassCard
-        className={cn('chats-command', isForegroundSyncing && 'is-syncing')}
+        className={cn(
+          'chats-command',
+          isForegroundSyncing && 'is-syncing',
+          categoryEditMode && 'is-category-editing',
+        )}
         padding="sm"
         elevated
       >
@@ -1384,6 +1835,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             <div className="chats-command__field-shell">
               <SearchGlyph aria-hidden className="chats-command__search-icon" />
               <input
+                ref={searchInputRef}
                 id="chat-search"
                 type="search"
                 inputMode="search"
@@ -1404,64 +1856,92 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               ) : null}
             </div>
           </label>
-          <button
-            type="button"
-            className="chats-command__connect"
-            aria-label="Подключить чат или канал"
-            aria-haspopup="dialog"
-            aria-controls="home-sheet-connect"
-            aria-expanded={connectSheetOpen}
-            onPointerEnter={() => void preloadHomeEntitySheets()}
-            onPointerDown={() => void preloadHomeEntitySheets()}
-            onFocus={() => void preloadHomeEntitySheets()}
-            onClick={(event) => void openConnectSheet(event.currentTarget)}
-          >
-            <PlusCircleGlyph aria-hidden focusable="false" />
-            <span>Подключить</span>
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'favorite-filter__trigger',
-              favoriteFilter !== FAVORITE_FILTER_ALL && 'is-active',
-              favoriteFilter !== FAVORITE_FILTER_ALL && `is-${favoriteFilter}`,
-            )}
-            aria-label={favoriteFilterButtonLabel}
-            aria-haspopup="dialog"
-            aria-controls="home-sheet-filter"
-            aria-expanded={favoriteFilterPickerOpen}
-            title={favoriteFilterButtonLabel}
-            onPointerEnter={() => void preloadHomeEntitySheets()}
-            onPointerDown={() => void preloadHomeEntitySheets()}
-            onClick={(event) => openFavoriteFilterPicker(event.currentTarget)}
-          >
-            <FavoriteFilterIcon aria-hidden focusable="false" />
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'chats-command__icon-button',
-              'chats-command__refresh',
-              `is-${homeSyncStatus.tone}`,
-            )}
-            onClick={() => handleRefresh(activeTab, 'manual')}
-            disabled={isFetching || isManualRefreshInProgressByState}
-            aria-label={refreshButtonLabel}
-            title={refreshButtonLabel}
-          >
-            {homeSyncStatus.tone === 'syncing' ? (
-              <span className="chats-command__sync-ring" aria-hidden />
-            ) : homeSyncStatus.tone === 'error' ? (
-              <XmarkGlyph aria-hidden />
-            ) : (
-              <RefreshGlyph aria-hidden />
-            )}
-          </button>
+          {categoryEditMode ? (
+            <button
+              ref={categoryEditDoneRef}
+              type="button"
+              className="chats-command__done"
+              onClick={exitCategoryEditMode}
+            >
+              Готово
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="chats-command__connect"
+                aria-label="Подключить чат или канал"
+                aria-haspopup="dialog"
+                aria-controls="home-sheet-connect"
+                aria-expanded={connectSheetOpen}
+                title="Подключить чат или канал"
+                onPointerEnter={() => void preloadHomeEntitySheets()}
+                onPointerDown={() => void preloadHomeEntitySheets()}
+                onFocus={() => void preloadHomeEntitySheets()}
+                onClick={(event) => void openConnectSheet(event.currentTarget)}
+              >
+                <PlusCircleGlyph aria-hidden focusable="false" />
+              </button>
+              <button
+                ref={favoriteFilterTriggerRef}
+                type="button"
+                className={cn(
+                  'favorite-filter__trigger',
+                  favoriteFilter !== FAVORITE_FILTER_ALL && 'is-active',
+                  favoriteFilter !== FAVORITE_FILTER_ALL && `is-${favoriteFilter}`,
+                )}
+                aria-label={favoriteFilterButtonLabel}
+                aria-haspopup="dialog"
+                aria-controls="home-sheet-filter"
+                aria-expanded={favoriteFilterPickerOpen}
+                title={favoriteFilterButtonLabel}
+                onPointerEnter={() => void preloadHomeEntitySheets()}
+                onPointerDown={() => void preloadHomeEntitySheets()}
+                onClick={(event) => openFavoriteFilterPicker(event.currentTarget)}
+              >
+                <FavoriteFilterIcon aria-hidden focusable="false" />
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'chats-command__icon-button',
+                  'chats-command__refresh',
+                  `is-${homeSyncStatus.tone}`,
+                )}
+                onClick={() => handleRefresh(activeTab, 'manual')}
+                disabled={isFetching || isManualRefreshInProgressByState}
+                aria-label={refreshButtonLabel}
+                title={refreshButtonLabel}
+              >
+                {homeSyncStatus.tone === 'syncing' ? (
+                  <span className="chats-command__sync-ring" aria-hidden />
+                ) : homeSyncStatus.tone === 'error' ? (
+                  <XmarkGlyph aria-hidden />
+                ) : (
+                  <RefreshGlyph aria-hidden />
+                )}
+              </button>
+            </>
+          )}
         </div>
       </GlassCard>
 
+      {activeFavoriteFilterLabel && !categoryEditMode ? (
+        <button
+          type="button"
+          className={cn('home-active-filter', `is-${favoriteFilter}`)}
+          onClick={() => setFavoriteFilter(FAVORITE_FILTER_ALL)}
+          aria-label={`Сбросить фильтр: ${activeFavoriteFilterLabel}`}
+          title={`Сбросить фильтр: ${activeFavoriteFilterLabel}`}
+        >
+          <FavoriteFilterIcon aria-hidden focusable="false" />
+          <span>{activeFavoriteFilterLabel}</span>
+          <XmarkGlyph aria-hidden focusable="false" />
+        </button>
+      ) : null}
+
       {showTransientEmptyState ? (
-        <GlassCard className="chats-transient-state">
+        <div className="chats-route-state chats-transient-state">
           <StatusState
             tone="warning"
             title="Пока не удалось обновить список"
@@ -1471,21 +1951,31 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 : 'Повторим автоматически.'
             }
           />
-        </GlassCard>
+        </div>
       ) : null}
 
       {isLoading ? (
-        <section className="chat-grid" aria-label="Загрузка" role="status" aria-busy="true">
+        <section
+          className="chat-grid chat-grid--skeleton"
+          aria-label="Загрузка"
+          role="status"
+          aria-busy="true"
+        >
           {Array.from({ length: 4 }).map((_, index) => (
-            <GlassCard key={index} as="article" className="chat-card">
-              <SkeletonCard lines={3} />
+            <GlassCard key={index} as="article" className="chat-card chat-card--skeleton">
+              <div className="chat-card__skeleton-main" aria-hidden>
+                <Skeleton className="chat-card__skeleton-avatar" />
+                <Skeleton className="chat-card__skeleton-title" />
+                <Skeleton className="chat-card__skeleton-chevron" />
+              </div>
+              <Skeleton className="chat-card__skeleton-action" />
             </GlassCard>
           ))}
         </section>
       ) : null}
 
       {queryError ? (
-        <GlassCard role="alert" aria-live="assertive">
+        <div className="chats-route-state">
           <StatusState
             tone="danger"
             title="Не удалось загрузить список"
@@ -1500,11 +1990,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               </button>
             }
           />
-        </GlassCard>
+        </div>
       ) : null}
 
       {isSyncPending && Array.isArray(activeEntities) && activeEntities.length === 0 ? (
-        <GlassCard>
+        <div className="chats-route-state">
           <StatusState
             tone="neutral"
             title={`Ищем ${tabLabel.toLowerCase()}`}
@@ -1514,7 +2004,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
             })}
           />
-        </GlassCard>
+        </div>
       ) : null}
 
       {showEmptyState ? (
@@ -1543,17 +2033,26 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       Array.isArray(activeEntities) &&
       activeEntities.length > 0 &&
       filteredEntities.length === 0 ? (
-        <GlassCard>
+        <div className="chats-route-state">
           <StatusState
             tone="neutral"
             title={`${tabLabel} не найдены`}
-            description={
-              favoriteFilter === FAVORITE_FILTER_ALL
-                ? 'Попробуйте изменить поисковый запрос.'
-                : 'В этом типе избранного пока нет подходящих элементов.'
+            action={
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => {
+                  setQuery('');
+                  if (hasAppliedFavoriteFilter) {
+                    setFavoriteFilter(FAVORITE_FILTER_ALL);
+                  }
+                }}
+              >
+                {noResultsResetLabel}
+              </button>
             }
           />
-        </GlassCard>
+        </div>
       ) : null}
 
       {!isLoading && !queryError && !showEmptyState && filteredEntities.length > 0 ? (
@@ -1573,7 +2072,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           {shouldVirtualizeEntities ? (
             <div
               className="chat-grid__virtual-spacer"
-              style={{ height: filteredEntities.length * CHAT_LIST_VIRTUAL_ROW_HEIGHT }}
+              style={{ height: filteredEntities.length * CHAT_LIST_VIRTUAL_ROW_PITCH }}
             >
               {renderedEntities.map((entity, index) =>
                 renderEntityCard(entity, virtualStartIndex + index),

@@ -24,9 +24,8 @@ import type { CSSProperties, PointerEvent } from 'react';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
-import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
-import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
+import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
@@ -39,6 +38,15 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import {
+  buildManagedEntitySettingsRoute,
+  createManagedEntityWorkspaceState,
+  getManagedEntitySessionStorage,
+  mergeManagedEntityStatsPreference,
+  mergeManagedEntityWorkspaceRouteState,
+  readManagedEntityWorkspaceState,
+  saveManagedEntityStatsPreferenceForWorkspace,
+} from '../lib/managed-entity-workspace';
 import {
   buildMembershipActivitySnapshotParts,
   isMembershipActivityPage,
@@ -64,7 +72,6 @@ import {
   buildStatisticsRouteSearch,
   parseChannelStatisticsRouteQuery,
 } from '../lib/statistics-route-query';
-import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ChannelStatsRouteState = {
@@ -243,6 +250,43 @@ function getRouteState(state: unknown): ChannelStatsRouteState {
     avatarUrl:
       typeof row.avatarUrl === 'string' && row.avatarUrl.trim() ? row.avatarUrl.trim() : null,
   };
+}
+
+function buildChannelStatsRouteState(
+  routeState: unknown,
+  chatId: string,
+  preference: { section?: ChannelStatsSection; range?: ChannelStatsRange },
+): Record<string, unknown> {
+  const currentWorkspace = readManagedEntityWorkspaceState(routeState);
+  const matchingWorkspace =
+    currentWorkspace?.entityType === 'channel' && currentWorkspace.entityId === chatId
+      ? currentWorkspace
+      : null;
+  const workspace = createManagedEntityWorkspaceState({
+    entityType: 'channel',
+    entityId: chatId,
+    origin: matchingWorkspace?.origin,
+    homeSnapshot: matchingWorkspace?.homeSnapshot,
+    statsPreference: mergeManagedEntityStatsPreference(
+      'channel',
+      matchingWorkspace?.statsPreference,
+      preference,
+    ),
+  });
+
+  return mergeManagedEntityWorkspaceRouteState(routeState, workspace);
+}
+
+function saveChannelStatsPreference(
+  routeState: unknown,
+  chatId: string,
+  preference: { section?: ChannelStatsSection; range?: ChannelStatsRange },
+): void {
+  saveManagedEntityStatsPreferenceForWorkspace(getManagedEntitySessionStorage(), routeState, {
+    entityType: 'channel',
+    entityId: chatId,
+    preference,
+  });
 }
 
 function formatCount(value: number | null): string {
@@ -1762,12 +1806,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     () => parseChannelStatisticsRouteQuery(location.search),
     [location.search],
   );
-  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader({
-    compactAfter: 12,
-    hideAfter: 72,
-    hideDistance: 44,
-    revealDistance: 6,
-  });
   const initialStatsSnapshot = useMemo(() => {
     if (!chatId) {
       return null;
@@ -1825,6 +1863,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       setSection(routeQuery.section);
       setRange(routeQuery.range);
     });
+    if (chatId) {
+      saveChannelStatsPreference(location.state, chatId, routeQuery);
+    }
 
     const nextSearch = buildStatisticsRouteSearch(location.search, routeQuery);
     if (nextSearch === location.search) {
@@ -1837,9 +1878,22 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         search: nextSearch,
         hash: location.hash,
       },
-      { replace: true, state: location.state },
+      {
+        replace: true,
+        state: chatId
+          ? buildChannelStatsRouteState(location.state, chatId, routeQuery)
+          : location.state,
+      },
     );
-  }, [location.hash, location.pathname, location.search, location.state, navigate, routeQuery]);
+  }, [
+    chatId,
+    location.hash,
+    location.pathname,
+    location.search,
+    location.state,
+    navigate,
+    routeQuery,
+  ]);
 
   useEffect(() => {
     if (!chatId) {
@@ -1938,6 +1992,22 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     [chatId, currentStatsIdentity?.channel.title, routeState.chatTitle],
   );
   const resolvedTitle = resolvedTitleResolution.title;
+  const authoritativeStatsIdentity =
+    currentStatsIdentity &&
+    statsQuery.isSuccess &&
+    !statsQuery.isFetching &&
+    !statsQuery.isPlaceholderData &&
+    !statsQuery.isRefetchError &&
+    statsQuery.dataUpdatedAt > 0
+      ? currentStatsIdentity.channel
+      : null;
+  const remoteAvatarUrl = currentStatsIdentity?.channel.avatarUrl;
+  const resolvedAvatarUrl =
+    typeof remoteAvatarUrl === 'string' && remoteAvatarUrl.trim()
+      ? remoteAvatarUrl.trim()
+      : authoritativeStatsIdentity
+        ? null
+        : routeState.avatarUrl;
 
   useEffect(() => {
     if (!chatId || !resolvedTitle || resolvedTitleResolution.source === 'fallback') {
@@ -2037,7 +2107,17 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
   if (!chatId) {
     return (
-      <div className="page-stack page-enter">
+      <div className="channel-insights page-stack page-enter" data-managed-entity-workspace>
+        <ManagedEntityWorkspaceHeader
+          entityType="channel"
+          screen="stats"
+          title={resolvedTitle}
+          avatarUrl={routeState.avatarUrl}
+          backTo={buildManagedEntitiesRoute('channel')}
+          counterpartTo={buildManagedEntitiesRoute('channel')}
+          counterpartHidden
+          className="channel-insights__sticky-header"
+        />
         <GlassCard>
           <StatusState
             tone="warning"
@@ -2062,13 +2142,20 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     startTransition(() => {
       setSection(nextSection);
     });
+    saveChannelStatsPreference(location.state, chatId, { section: nextSection, range });
     navigate(
       {
         pathname: location.pathname,
         search: buildStatisticsRouteSearch(location.search, { section: nextSection, range }),
         hash: location.hash,
       },
-      { replace: true, state: location.state },
+      {
+        replace: true,
+        state: buildChannelStatsRouteState(location.state, chatId, {
+          section: nextSection,
+          range,
+        }),
+      },
     );
   };
   const handleRangeChange = (nextRange: ChannelStatsRange) => {
@@ -2079,13 +2166,20 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     startTransition(() => {
       setRange(nextRange);
     });
+    saveChannelStatsPreference(location.state, chatId, { section, range: nextRange });
     navigate(
       {
         pathname: location.pathname,
         search: buildStatisticsRouteSearch(location.search, { section, range: nextRange }),
         hash: location.hash,
       },
-      { replace: true, state: location.state },
+      {
+        replace: true,
+        state: buildChannelStatsRouteState(location.state, chatId, {
+          section,
+          range: nextRange,
+        }),
+      },
     );
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
@@ -2102,32 +2196,27 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     (section === 'events' && (activityFeed.isReloading || activityFeed.isLoadingMore));
 
   return (
-    <div className="channel-insights page-enter">
-      <CompactStickyHeader
-        backTo={buildManagedEntitiesRoute('channel')}
-        backLabel="К списку каналов"
+    <div className="channel-insights page-enter" data-managed-entity-workspace>
+      <ManagedEntityWorkspaceHeader
+        entityType="channel"
+        screen="stats"
         title={resolvedTitle}
-        avatar={
-          <EntityAvatar
-            title={resolvedTitle}
-            entityType="channel"
-            avatarUrl={stats?.channel.avatarUrl ?? routeState.avatarUrl ?? null}
-            className="compact-page-header__entity-avatar"
-          />
+        avatarUrl={resolvedAvatarUrl}
+        authoritativeIdentity={
+          authoritativeStatsIdentity
+            ? {
+                title:
+                  resolvedTitleResolution.source === 'remote'
+                    ? authoritativeStatsIdentity.title
+                    : null,
+                avatarUrl: authoritativeStatsIdentity.avatarUrl ?? null,
+              }
+            : undefined
         }
-        compact={isHeaderCompact}
-        hidden={isHeaderHidden}
+        backTo={buildManagedEntitiesRoute('channel')}
+        counterpartTo={buildManagedEntitySettingsRoute('channel', chatId)}
+        busy={isBusy}
         className="channel-insights__sticky-header"
-        aside={
-          isBusy ? (
-            <span className="channel-insights__pulse" aria-label="Обновляем" title="Обновляем" />
-          ) : (
-            <span
-              className="channel-insights__pulse channel-insights__pulse--idle"
-              aria-hidden="true"
-            />
-          )
-        }
       />
 
       <div className="channel-insights__body">

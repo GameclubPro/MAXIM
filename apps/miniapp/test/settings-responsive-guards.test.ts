@@ -43,6 +43,10 @@ test('settings overviews use compact phone rows and expand only on wider screens
   assert.match(settingsTileGridCss, /\.settings-section__status-chip \{[\s\S]*?grid-column: 3;/u);
   assert.match(settingsTileGridCss, /\.settings-section__chevron \{[\s\S]*?grid-column: 4;/u);
   assert.match(
+    settingsExperienceCss,
+    /\.channel-settings-card[\s\S]*?\.settings-section__toggle\[aria-expanded='false'\][\s\S]*?:is\(\.settings-section__summary, \.settings-section__status-chip\)[\s\S]*?min-width: 0;[\s\S]*?max-width: 1px;/u,
+  );
+  assert.match(
     settingsTileGridCss,
     /@media \(min-width: 560px\)[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/u,
   );

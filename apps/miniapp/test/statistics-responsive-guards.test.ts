@@ -19,6 +19,7 @@ const statisticsExperienceCss = readFileSync(
   new URL('../src/styles/statistics-experience.css', import.meta.url),
   'utf8',
 );
+const motionCss = readFileSync(new URL('../src/styles/motion.css', import.meta.url), 'utf8');
 
 function relativeLuminance(hex: string): number {
   const channels = hex
@@ -136,4 +137,23 @@ test('events appbar heading and linked top posts stay readable on narrow screens
   );
   assert.match(channelStatsExecutiveCss, /\.channel-posts-chart__row--linked \{/u);
   assert.match(channelStatsExecutiveCss, /\.channel-posts-chart__external-icon \{/u);
+});
+
+test('managed statistics workspace keeps sticky navigation below the measured header', () => {
+  assert.match(
+    statisticsExperienceCss,
+    /body\.events-page-open,\s*body\.channel-stats-page-open \{\s*overflow-x: clip;/u,
+  );
+  assert.match(
+    motionCss,
+    /\.events-screen\[data-managed-entity-workspace\]\.page-enter,\s*\.channel-insights\[data-managed-entity-workspace\]\.page-enter \{\s*animation-fill-mode: none;/u,
+  );
+  assert.match(
+    statisticsExperienceCss,
+    /\.channel-insights\[data-managed-entity-workspace\] \.channel-insights__section-tabs \{\s*top: var\(\s*--managed-entity-workspace-header-bottom,/u,
+  );
+  assert.match(
+    statisticsExperienceCss,
+    /\.events-screen\[data-managed-entity-workspace\] \.events-stage \{\s*margin-top: 0;/u,
+  );
 });

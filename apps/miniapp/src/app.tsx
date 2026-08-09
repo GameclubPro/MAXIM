@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type RefObject,
   type ReactNode,
 } from 'react';
 import {
@@ -24,10 +25,7 @@ import { Spinner } from './components/ui/spinner';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import { createApiTransport } from './lib/api/transport';
-import {
-  createAuthQueryClient,
-  useAuthQueryPrincipalKey,
-} from './lib/auth-query-session';
+import { createAuthQueryClient, useAuthQueryPrincipalKey } from './lib/auth-query-session';
 import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { migrateHashRouterLegacyPathFromWindow } from './lib/hash-router-legacy-path';
@@ -56,6 +54,11 @@ import {
 const LazyPublicationsPage = lazy(async () => {
   const module = await import('./pages/publications-page');
   return { default: module.PublicationsPage };
+});
+
+const LazyManagedEntityNavigationProvider = lazy(async () => {
+  const module = await import('./lib/managed-entity-navigation');
+  return { default: module.ManagedEntityNavigationProvider };
 });
 
 function LegacyAutopostsRedirect() {
@@ -129,6 +132,31 @@ function buildMergedLaunchRoute(targetRoute: string, currentSearch: string): str
   return `${parsedTarget.pathname}${mergeRouteSearch(currentSearch, parsedTarget.search)}`;
 }
 
+function getManagedEntityType(route: string): 'chat' | 'channel' | null {
+  const parsedRoute = parseRoute(route);
+  const match = parsedRoute?.pathname.match(
+    /^\/(chat|channel)\/[^/]+\/(settings|events|stats)\/?$/iu,
+  );
+  if (!match) {
+    return null;
+  }
+
+  const entityType = match[1]?.toLowerCase() === 'channel' ? 'channel' : 'chat';
+  const screen = match[2]?.toLowerCase();
+  if (
+    (entityType === 'chat' && screen === 'stats') ||
+    (entityType === 'channel' && screen === 'events')
+  ) {
+    return null;
+  }
+
+  return entityType;
+}
+
+function isManagedEntityDetailRoute(route: string): boolean {
+  return getManagedEntityType(route) !== null;
+}
+
 function buildWindowPathForRoute(pathname: string): string {
   if (HASH_ROUTER_ENABLED) {
     return pathname;
@@ -139,6 +167,28 @@ function buildWindowPathForRoute(pathname: string): string {
   }
 
   return pathname === '/' ? `${PUBLIC_ROUTER_BASENAME}/` : `${PUBLIC_ROUTER_BASENAME}${pathname}`;
+}
+
+function hasManagedEntityDirectEntryFromWindow(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const parsedRoute = HASH_ROUTER_ENABLED
+    ? parseRoute(window.location.hash.replace(/^#/u, '') || '/')
+    : new URL(window.location.href);
+  if (!parsedRoute) {
+    return false;
+  }
+
+  const pathname = HASH_ROUTER_ENABLED
+    ? parsedRoute.pathname
+    : PUBLIC_ROUTER_BASENAME && parsedRoute.pathname.startsWith(PUBLIC_ROUTER_BASENAME)
+      ? parsedRoute.pathname.slice(PUBLIC_ROUTER_BASENAME.length) || '/'
+      : parsedRoute.pathname;
+  return /^\/(?:chat\/[^/]+\/(?:settings|events)|channel\/[^/]+\/(?:settings|stats))\/?$/iu.test(
+    pathname,
+  );
 }
 
 type AppMaxWebAppBridge = NonNullable<Window['MAX']>['WebApp'];
@@ -213,23 +263,111 @@ function applyInitialLaunchRoute(targetRoute: string): void {
   window.history.replaceState(window.history.state, '', nextUrl);
 }
 
-function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
+function LaunchRouteSync({
+  launchInitData,
+  appliedRouteRef,
+}: {
+  launchInitData: string;
+  appliedRouteRef: RefObject<string | null>;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
-  const appliedRouteRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const targetRoute = resolveLaunchRoute(launchInitData);
     traceMiniappLaunchRoute(targetRoute, 'router-sync');
     if (!targetRoute || appliedRouteRef.current === targetRoute) {
-      return;
+      return undefined;
     }
 
-    appliedRouteRef.current = targetRoute;
-    if (!isLaunchRouteApplied(location.pathname, location.search, targetRoute)) {
-      navigate(buildMergedLaunchRoute(targetRoute, location.search), { replace: true });
+    if (isLaunchRouteApplied(location.pathname, location.search, targetRoute)) {
+      appliedRouteRef.current = targetRoute;
+      return undefined;
     }
-  }, [launchInitData, location.pathname, location.search, navigate]);
+
+    const mergedTargetRoute = buildMergedLaunchRoute(targetRoute, location.search);
+    const managedEntityType = getManagedEntityType(targetRoute);
+    if (managedEntityType && location.pathname !== '/') {
+      const homeRoute = `/?view=${managedEntityType}`;
+      if (!isManagedEntityDetailRoute(location.pathname)) {
+        navigate(homeRoute, { replace: true });
+        return undefined;
+      }
+
+      const currentHistoryIndex =
+        typeof window.history.state?.idx === 'number' &&
+        Number.isSafeInteger(window.history.state.idx)
+          ? window.history.state.idx
+          : 0;
+      void import('./lib/managed-entity-direct-entry')
+        .then((module) =>
+          module.canReturnToManagedEntityHome({
+            currentRouteState: location.state,
+            currentLocationKey: location.key,
+            currentHistoryIndex,
+          }),
+        )
+        .then((canReturnToHome) => {
+          if (cancelled) {
+            return;
+          }
+          if (canReturnToHome) {
+            navigate(-1);
+          } else {
+            navigate(homeRoute, { replace: true });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            navigate(homeRoute, { replace: true });
+          }
+        });
+    } else if (location.pathname === '/' && managedEntityType) {
+      const currentHistoryIndex =
+        typeof window.history.state?.idx === 'number' &&
+        Number.isSafeInteger(window.history.state.idx)
+          ? window.history.state.idx
+          : 0;
+      void import('./lib/managed-entity-direct-entry')
+        .then((module) => {
+          if (cancelled) {
+            return;
+          }
+
+          const homeStep = module.resolveManagedEntityLaunchHomeStep({
+            targetEntityType: managedEntityType,
+            currentSearch: location.search,
+          });
+          if (homeStep.kind === 'normalize-home') {
+            navigate(homeStep.route, { replace: true });
+            return;
+          }
+
+          const routeState = module.buildManagedEntityLaunchRouteState({
+            targetRoute,
+            currentRouteState: location.state,
+            currentLocationKey: location.key,
+            currentHistoryIndex,
+          });
+          appliedRouteRef.current = targetRoute;
+          navigate(mergedTargetRoute, routeState ? { state: routeState } : { replace: true });
+        })
+        .catch(() => {
+          if (!cancelled) {
+            appliedRouteRef.current = targetRoute;
+            navigate(mergedTargetRoute, { replace: true });
+          }
+        });
+    } else {
+      appliedRouteRef.current = targetRoute;
+      navigate(mergedTargetRoute, { replace: true });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [launchInitData, location.key, location.pathname, location.search, location.state, navigate]);
 
   return null;
 }
@@ -253,6 +391,34 @@ function RouteLoadingFallback() {
   );
 }
 
+function AppRouteShell({
+  launchInitData,
+  launchRouteAppliedRef,
+  managedEntityWorkspace = false,
+}: {
+  launchInitData: string | null;
+  launchRouteAppliedRef: RefObject<string | null>;
+  managedEntityWorkspace?: boolean;
+}) {
+  const content = (
+    <>
+      {launchInitData ? (
+        <LaunchRouteSync
+          launchInitData={launchInitData}
+          appliedRouteRef={launchRouteAppliedRef}
+        />
+      ) : null}
+      <Shell />
+    </>
+  );
+
+  return managedEntityWorkspace ? (
+    <LazyManagedEntityNavigationProvider>{content}</LazyManagedEntityNavigationProvider>
+  ) : (
+    content
+  );
+}
+
 function AppRoutes({
   apiClient,
   launchInitData,
@@ -260,49 +426,65 @@ function AppRoutes({
   apiClient: ReturnType<typeof createApiTransport>;
   launchInitData: string | null;
 }) {
+  const launchRouteAppliedRef = useRef<string | null>(null);
+
   useEffect(() => {
     traceMiniappBoot('first_render', undefined, { once: true });
   }, []);
 
   return (
-    <>
-      {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
-      <Suspense fallback={<RouteLoadingFallback />}>
-        <Routes>
-          <Route element={<Shell />}>
-            <Route path="/" element={<LazyChatsPage api={apiClient} />} />
-            <Route path="/publications" element={<LazyPublicationsPage api={apiClient} />} />
-            <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
-            <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
-            <Route
-              path="/channel/:chatId/settings"
-              element={<LazyChannelSettingsPage api={apiClient} />}
+    <Suspense fallback={<RouteLoadingFallback />}>
+      <Routes>
+        <Route
+          element={
+            <AppRouteShell
+              launchInitData={launchInitData}
+              launchRouteAppliedRef={launchRouteAppliedRef}
             />
-            <Route
-              path="/channel/:chatId/stats"
-              element={<LazyChannelStatsPage api={apiClient} />}
+          }
+        >
+          <Route path="/" element={<LazyChatsPage api={apiClient} />} />
+          <Route path="/publications" element={<LazyPublicationsPage api={apiClient} />} />
+          <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
+          <Route
+            path="/channel/:chatId/dialog/comments"
+            element={<LazyChannelDialogPage api={apiClient} />}
+          />
+          <Route
+            path="/chat/:chatId/dialog/comments"
+            element={<LazyChannelDialogPage api={apiClient} />}
+          />
+          <Route
+            path="/channel/:chatId/dialog/suggest"
+            element={<LazyChannelSuggestDialogPage api={apiClient} />}
+          />
+          <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
+          <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
+          <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+        <Route
+          element={
+            <AppRouteShell
+              launchInitData={launchInitData}
+              launchRouteAppliedRef={launchRouteAppliedRef}
+              managedEntityWorkspace
             />
-            <Route
-              path="/channel/:chatId/dialog/comments"
-              element={<LazyChannelDialogPage api={apiClient} />}
-            />
-            <Route
-              path="/chat/:chatId/dialog/comments"
-              element={<LazyChannelDialogPage api={apiClient} />}
-            />
-            <Route
-              path="/channel/:chatId/dialog/suggest"
-              element={<LazyChannelSuggestDialogPage api={apiClient} />}
-            />
-            <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
-            <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
-            <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
-            <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </Suspense>
-    </>
+          }
+        >
+          <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
+          <Route
+            path="/channel/:chatId/settings"
+            element={<LazyChannelSettingsPage api={apiClient} />}
+          />
+          <Route
+            path="/channel/:chatId/stats"
+            element={<LazyChannelStatsPage api={apiClient} />}
+          />
+          <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
+        </Route>
+      </Routes>
+    </Suspense>
   );
 }
 
@@ -325,7 +507,10 @@ export function App() {
   const preview = getPreviewBootstrap(initData);
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
-  const preparedLaunchRouteRef = useRef<string | null>(null);
+  const authenticatedRouterPreparedRef = useRef(false);
+  const initialLaunchRoutePreparedRef = useRef(false);
+  const directEntryPreparationRef = useRef<Promise<void> | null>(null);
+  const [, setRouterPreparationRevision] = useState(0);
   const nativeReadyCalledRef = useRef(false);
   const [nativeEnvironmentSignature, setNativeEnvironmentSignature] = useState(() =>
     readMaxNativeEnvironmentSignature(getInitData()),
@@ -496,19 +681,37 @@ export function App() {
       ? createApiTransport(getInitData)
       : null;
 
-  if (!preview.enabled && initData) {
-    const launchRoute = resolveLaunchRoute(initData);
-    traceMiniappLaunchRoute(launchRoute, 'initial');
-    if (launchRoute && preparedLaunchRouteRef.current !== launchRoute) {
-      applyInitialLaunchRoute(launchRoute);
-      preparedLaunchRouteRef.current = launchRoute;
+  if (apiClient && !authenticatedRouterPreparedRef.current) {
+    if (!initialLaunchRoutePreparedRef.current && !preview.enabled && initData) {
+      const initialLaunchRoute = resolveLaunchRoute(initData);
+      traceMiniappLaunchRoute(initialLaunchRoute, 'initial');
+      if (initialLaunchRoute) {
+        applyInitialLaunchRoute(initialLaunchRoute);
+      }
+      initialLaunchRoutePreparedRef.current = true;
+    }
+
+    if (hasManagedEntityDirectEntryFromWindow()) {
+      if (!directEntryPreparationRef.current) {
+        directEntryPreparationRef.current = import('./lib/managed-entity-direct-entry')
+          .then((module) => {
+            module.prepareManagedEntityDirectEntry({
+              hashRouterEnabled: HASH_ROUTER_ENABLED,
+              publicRouterBasename: PUBLIC_ROUTER_BASENAME,
+            });
+          })
+          .catch(() => undefined)
+          .then(() => {
+            authenticatedRouterPreparedRef.current = true;
+            setRouterPreparationRevision((revision) => revision + 1);
+          });
+      }
+    } else {
+      authenticatedRouterPreparedRef.current = true;
     }
   }
 
-  if (
-    !apiClient &&
-    isPublicLegalPathnameFromWindow(HASH_ROUTER_ENABLED ? 'hash' : 'browser')
-  ) {
+  if (!apiClient && isPublicLegalPathnameFromWindow(HASH_ROUTER_ENABLED ? 'hash' : 'browser')) {
     return <PublicLegalRoutes />;
   }
 
@@ -535,6 +738,10 @@ export function App() {
         </GlassCard>
       </div>
     );
+  }
+
+  if (!authenticatedRouterPreparedRef.current) {
+    return <RouteLoadingFallback />;
   }
 
   return (

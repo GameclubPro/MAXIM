@@ -33,10 +33,9 @@ import { ChatParticipantSheet } from '../components/dashboard/chat-participant-s
 import { ChatParticipantsRoster } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
-import { EntityAvatar } from '../components/ui/entity-avatar';
 import { PersonAvatar } from '../components/ui/person-avatar';
-import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
+import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { Spinner } from '../components/ui/spinner';
@@ -60,6 +59,15 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import {
+  buildManagedEntitySettingsRoute,
+  createManagedEntityWorkspaceState,
+  getManagedEntitySessionStorage,
+  mergeManagedEntityStatsPreference,
+  mergeManagedEntityWorkspaceRouteState,
+  readManagedEntityWorkspaceState,
+  saveManagedEntityStatsPreferenceForWorkspace,
+} from '../lib/managed-entity-workspace';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { resolveModerationFeedReason } from '../lib/moderation-feed-reason';
 import { queryKeys } from '../lib/query-keys';
@@ -331,6 +339,43 @@ function getRouteChatAvatarUrl(state: unknown): string | null {
   }
 
   return null;
+}
+
+function buildChatStatsRouteState(
+  routeState: unknown,
+  chatId: string,
+  preference: { section?: EventsSection; range?: LogsDashboardRange },
+): Record<string, unknown> {
+  const currentWorkspace = readManagedEntityWorkspaceState(routeState);
+  const matchingWorkspace =
+    currentWorkspace?.entityType === 'chat' && currentWorkspace.entityId === chatId
+      ? currentWorkspace
+      : null;
+  const workspace = createManagedEntityWorkspaceState({
+    entityType: 'chat',
+    entityId: chatId,
+    origin: matchingWorkspace?.origin,
+    homeSnapshot: matchingWorkspace?.homeSnapshot,
+    statsPreference: mergeManagedEntityStatsPreference(
+      'chat',
+      matchingWorkspace?.statsPreference,
+      preference,
+    ),
+  });
+
+  return mergeManagedEntityWorkspaceRouteState(routeState, workspace);
+}
+
+function saveChatStatsPreference(
+  routeState: unknown,
+  chatId: string,
+  preference: { section?: EventsSection; range?: LogsDashboardRange },
+): void {
+  saveManagedEntityStatsPreferenceForWorkspace(getManagedEntitySessionStorage(), routeState, {
+    entityType: 'chat',
+    entityId: chatId,
+    preference,
+  });
 }
 
 function formatViolationRule(ruleCode: string): string {
@@ -2015,6 +2060,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       setSection(routeQuery.section);
       setRange(routeQuery.range);
     });
+    if (chatId) {
+      saveChatStatsPreference(location.state, chatId, routeQuery);
+    }
 
     const nextSearch = buildStatisticsRouteSearch(location.search, routeQuery);
     if (nextSearch === location.search) {
@@ -2027,9 +2075,22 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         search: nextSearch,
         hash: location.hash,
       },
-      { replace: true, state: location.state },
+      {
+        replace: true,
+        state: chatId
+          ? buildChatStatsRouteState(location.state, chatId, routeQuery)
+          : location.state,
+      },
     );
-  }, [location.hash, location.pathname, location.search, location.state, navigate, routeQuery]);
+  }, [
+    chatId,
+    location.hash,
+    location.pathname,
+    location.search,
+    location.state,
+    navigate,
+    routeQuery,
+  ]);
   const initialParticipantsPageSnapshot = useMemo(() => {
     if (
       !chatId ||
@@ -2240,6 +2301,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     [chatId, currentDashboardIdentity?.chat.title, routeChatTitle],
   );
   const chatTitle = chatTitleResolution.title;
+  const authoritativeDashboardIdentity =
+    currentDashboardIdentity &&
+    dashboardQuery.isSuccess &&
+    !dashboardQuery.isFetching &&
+    !dashboardQuery.isPlaceholderData &&
+    !dashboardQuery.isRefetchError &&
+    dashboardQuery.dataUpdatedAt > 0
+      ? currentDashboardIdentity.chat
+      : null;
 
   const chatAvatarUrl = useMemo(() => {
     if (!chatId) {
@@ -2251,12 +2321,21 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       return fromDashboard.trim();
     }
 
+    if (authoritativeDashboardIdentity) {
+      return null;
+    }
+
     if (routeChatAvatarUrl) {
       return routeChatAvatarUrl;
     }
 
     return null;
-  }, [chatId, currentDashboardIdentity?.chat.avatarUrl, routeChatAvatarUrl]);
+  }, [
+    authoritativeDashboardIdentity,
+    chatId,
+    currentDashboardIdentity?.chat.avatarUrl,
+    routeChatAvatarUrl,
+  ]);
 
   useEffect(() => {
     if (!chatId || !chatTitle || chatTitleResolution.source === 'fallback') {
@@ -2792,37 +2871,51 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const isModerationInitialLoading =
     moderationFeed.isReloading && moderationFeed.items.length === 0;
   const handleSectionChange = (nextSection: EventsSection) => {
-    if (nextSection === section) {
+    if (!chatId || nextSection === section) {
       return;
     }
 
     startTransition(() => {
       setSection(nextSection);
     });
+    saveChatStatsPreference(location.state, chatId, { section: nextSection, range });
     navigate(
       {
         pathname: location.pathname,
         search: buildStatisticsRouteSearch(location.search, { section: nextSection, range }),
         hash: location.hash,
       },
-      { replace: true, state: location.state },
+      {
+        replace: true,
+        state: buildChatStatsRouteState(location.state, chatId, {
+          section: nextSection,
+          range,
+        }),
+      },
     );
   };
   const handleRangeChange = (nextRange: LogsDashboardRange) => {
-    if (nextRange === range) {
+    if (!chatId || nextRange === range) {
       return;
     }
 
     startTransition(() => {
       setRange(nextRange);
     });
+    saveChatStatsPreference(location.state, chatId, { section, range: nextRange });
     navigate(
       {
         pathname: location.pathname,
         search: buildStatisticsRouteSearch(location.search, { section, range: nextRange }),
         hash: location.hash,
       },
-      { replace: true, state: location.state },
+      {
+        replace: true,
+        state: buildChatStatsRouteState(location.state, chatId, {
+          section,
+          range: nextRange,
+        }),
+      },
     );
   };
   const handleEventsFilterChange = (nextFilter: EventsFilter) => {
@@ -2927,18 +3020,29 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   if (!chatId) {
     return (
-      <GlassCard>
-        <StatusState
-          tone="warning"
-          title="Чат не выбран"
-          description="Выберите чат в разделе «Чаты»."
-          action={
-            <Link to={buildManagedEntitiesRoute('chat')} className="button button--accent">
-              К списку чатов
-            </Link>
-          }
+      <div className="events-screen page-enter" data-managed-entity-workspace>
+        <ManagedEntityWorkspaceHeader
+          entityType="chat"
+          screen="stats"
+          title={chatTitle}
+          backTo={buildManagedEntitiesRoute('chat')}
+          counterpartTo={buildManagedEntitiesRoute('chat')}
+          counterpartHidden
+          className="events-stage__workspace-header"
         />
-      </GlassCard>
+        <GlassCard>
+          <StatusState
+            tone="warning"
+            title="Чат не выбран"
+            description="Выберите чат в разделе «Чаты»."
+            action={
+              <Link to={buildManagedEntitiesRoute('chat')} className="button button--accent">
+                К списку чатов
+              </Link>
+            }
+          />
+        </GlassCard>
+      </div>
     );
   }
 
@@ -2994,8 +3098,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),
     },
   ];
-  const dashboardTitle =
-    section === 'activity' ? 'События' : section === 'participants' ? 'Участники' : 'Модерация';
   const activateProfile = (userId: string, displayName: string) => {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId || !chatId || profileHandoffMutation.isPending) {
@@ -3015,43 +3117,29 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       (participantsFeed.isReloading || participantsFeed.isLoadingMore));
 
   return (
-    <div className="events-screen page-enter">
+    <div className="events-screen page-enter" data-managed-entity-workspace>
       <section className={`events-stage events-stage--${section}`}>
-        <header className="events-stage__appbar">
-          <div className="events-stage__appbar-bar">
-            <Link
-              to={buildManagedEntitiesRoute('chat')}
-              className="events-stage__back"
-              aria-label="К списку чатов"
-            >
-              <BackChevronIcon />
-            </Link>
-
-            <div className="events-stage__appbar-identity">
-              <EntityAvatar
-                title={chatTitle}
-                entityType="chat"
-                avatarUrl={chatAvatarUrl}
-                className="events-stage__entity-avatar"
-              />
-              <div className="events-stage__appbar-copy">
-                <h1 className="events-stage__appbar-title">{chatTitle}</h1>
-                <span className="events-stage__appbar-label">{dashboardTitle}</span>
-              </div>
-            </div>
-
-            <div className="events-stage__appbar-side">
-              {isAppbarBusy ? (
-                <span className="events-stage__pulse" aria-label="Обновляем" title="Обновляем" />
-              ) : (
-                <span
-                  className="events-stage__pulse events-stage__pulse--idle"
-                  aria-hidden="true"
-                />
-              )}
-            </div>
-          </div>
-        </header>
+        <ManagedEntityWorkspaceHeader
+          entityType="chat"
+          screen="stats"
+          title={chatTitle}
+          avatarUrl={chatAvatarUrl}
+          authoritativeIdentity={
+            authoritativeDashboardIdentity
+              ? {
+                  title:
+                    chatTitleResolution.source === 'remote'
+                      ? authoritativeDashboardIdentity.title
+                      : null,
+                  avatarUrl: authoritativeDashboardIdentity.avatarUrl ?? null,
+                }
+              : undefined
+          }
+          backTo={buildManagedEntitiesRoute('chat')}
+          counterpartTo={buildManagedEntitySettingsRoute('chat', chatId)}
+          busy={isAppbarBusy}
+          className="events-stage__workspace-header"
+        />
 
         <div className="events-stage__panel stagger-in">
           <div className="events-primary-tabs" role="group" aria-label="Раздел статистики">
