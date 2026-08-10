@@ -1764,12 +1764,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 setFavoritePicker({ entityType: activeTab, entity });
               }}
             >
-              <StarGlyph aria-hidden focusable="false" />
-              {primaryFavoriteType && primaryFavoriteType !== 'important' ? (
-                <span className="chat-card__favorite-category" aria-hidden>
-                  <CategoryIcon focusable="false" />
-                </span>
-              ) : null}
+              <span
+                className={cn(
+                  'chat-card__favorite-mark',
+                  primaryFavoriteType && primaryFavoriteType !== 'important' && 'has-category',
+                )}
+                aria-hidden
+              >
+                <StarGlyph className="chat-card__favorite-star" focusable="false" />
+                {primaryFavoriteType && primaryFavoriteType !== 'important' ? (
+                  <CategoryIcon className="chat-card__favorite-category-icon" focusable="false" />
+                ) : null}
+              </span>
             </button>
             <Link
               to={statisticsRoute}

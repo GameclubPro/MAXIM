@@ -695,6 +695,7 @@
 
   .chat-card__action--favorite {
     position: relative;
+    overflow: hidden;
     color: var(--home-muted);
   }
 
@@ -704,29 +705,43 @@
     color: var(--chat-card-favorite-accent);
   }
 
-  .chat-card__action--favorite.is-active > svg {
+  .chat-card__action--favorite.is-active .chat-card__favorite-star {
     fill: currentColor;
   }
 
-  .chat-card__favorite-category {
-    position: absolute;
-    right: 3px;
-    bottom: 3px;
-    width: 13px;
-    height: 13px;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--home-border-strong);
-    border-radius: 4px;
-    background: var(--color-surface);
-    color: currentColor;
+  .chat-card__favorite-mark {
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
   }
 
-  .chat-card__favorite-category svg {
-    width: 9px;
-    height: 9px;
+  .chat-card__favorite-mark.has-category {
+    width: 34px;
+    gap: 2px;
+  }
+
+  .chat-card__favorite-star {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    stroke-width: 2;
+  }
+
+  .chat-card__favorite-mark.has-category .chat-card__favorite-star {
+    width: 18px;
+    height: 18px;
+    flex-basis: 18px;
+  }
+
+  .chat-card__favorite-category-icon {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 13px;
     fill: none;
-    stroke-width: 2.1;
+    stroke-width: 2;
   }
 
   .chat-card__action--favorite:disabled {
@@ -734,7 +749,7 @@
     opacity: 0.58;
   }
 
-  .chat-card__action svg {
+  .chat-card__action > svg {
     width: 20px;
     height: 20px;
     stroke-width: 2;

@@ -54,10 +54,10 @@ test('entity cards expose settings, favorite, statistics and category edit targe
     chatsPageSource,
     /`Добавить в избранное: \$\{entity\.title\}`[\s\S]*?aria-controls="home-sheet-favorite"/u,
   );
-  assert.match(chatsPageSource, /<StarGlyph aria-hidden focusable="false" \/>/u);
+  assert.match(chatsPageSource, /className="chat-card__favorite-star"/u);
   assert.match(
     chatsPageSource,
-    /'chat-card__action--favorite'[\s\S]*?<StarGlyph aria-hidden focusable="false" \/>[\s\S]*?<\/button>/u,
+    /'chat-card__action--favorite'[\s\S]*?className=\{cn\([\s\S]*?'chat-card__favorite-mark'[\s\S]*?<StarGlyph[\s\S]*?<\/button>/u,
   );
   assert.match(chatsPageSource, /import\('\.\/home-entity-sheets'\)/u);
   assert.doesNotMatch(chatsPageSource, /from '\.\.\/lib\/dialog-focus'/u);
@@ -134,16 +134,30 @@ test('compact home controls keep direct 44px actions and one filter control', ()
   assert.match(chatsPageNativeCss, /\.chat-card__action--statistics \{\s*margin-right: 8px;/u);
   assert.match(
     chatsPageNativeCss,
-    /\.chat-card__action--favorite\.is-active > svg \{\s*fill: currentColor;/u,
+    /\.chat-card__action--favorite\.is-active \.chat-card__favorite-star \{\s*fill: currentColor;/u,
   );
   assert.match(
     chatsPageSource,
-    /primaryFavoriteType !== 'important'[\s\S]*?className="chat-card__favorite-category"[\s\S]*?<CategoryIcon/u,
+    /primaryFavoriteType !== 'important'[\s\S]*?'has-category'[\s\S]*?className="chat-card__favorite-category-icon"/u,
   );
   assert.match(
     chatsPageNativeCss,
-    /\.chat-card__favorite-category \{[\s\S]*?width: 13px;[\s\S]*?background: var\(--color-surface\);/u,
+    /\.chat-card__action--favorite \{[\s\S]*?overflow: hidden;/u,
   );
+  assert.match(
+    chatsPageNativeCss,
+    /\.chat-card__favorite-mark\.has-category \{[\s\S]*?width: 34px;[\s\S]*?gap: 2px;/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
+    /\.chat-card__favorite-category-icon \{[\s\S]*?width: 13px;[\s\S]*?height: 13px;[\s\S]*?flex: 0 0 13px;/u,
+  );
+  assert.match(
+    chatsPageNativeCss,
+    /\.chat-card__action > svg \{[\s\S]*?width: 20px;[\s\S]*?height: 20px;/u,
+  );
+  assert.doesNotMatch(chatsPageNativeCss, /\.chat-card__action svg \{/u);
+  assert.doesNotMatch(chatsPageNativeCss, /chat-card__favorite-category\s*\{/u);
   assert.match(
     chatsPageNativeCss,
     /\.chat-card__category-value span \{[\s\S]*?text-overflow: ellipsis/u,

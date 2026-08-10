@@ -1503,6 +1503,7 @@ async function assertConfiguredChecks(page, scenario) {
     await assertAppHasVisibleContent(page, scenario);
     await assertViewportBounds(page, scenario);
     await assertNoUnexpectedHorizontalOverflow(page, scenario);
+    await assertFavoriteCategoryIndicatorsContained(page, scenario);
     await assertPrimaryControlsReachable(page, scenario);
     await assertTimeFieldOptionsReachable(page, scenario);
     await assertChartsPainted(page, scenario);
@@ -1517,6 +1518,80 @@ async function assertConfiguredChecks(page, scenario) {
   if (strictAccessibility) {
     await assertCriticalAccessibility(page, scenario);
     await assertPublicationTouchTargets(page, scenario);
+  }
+}
+
+async function assertFavoriteCategoryIndicatorsContained(page, scenario) {
+  const issues = await page.evaluate(() => {
+    const tolerance = 0.5;
+    const isContained = (inner, outer) =>
+      inner.left >= outer.left - tolerance &&
+      inner.top >= outer.top - tolerance &&
+      inner.right <= outer.right + tolerance &&
+      inner.bottom <= outer.bottom + tolerance;
+
+    return Array.from(document.querySelectorAll('.chat-card__favorite-mark.has-category')).flatMap(
+      (badge, index) => {
+        if (!(badge instanceof HTMLElement)) {
+          return [];
+        }
+
+        const action = badge.closest('.chat-card__action--favorite');
+        const star = badge.querySelector(':scope > .chat-card__favorite-star');
+        const category = badge.querySelector(':scope > .chat-card__favorite-category-icon');
+        const statistics = action?.nextElementSibling;
+        if (
+          !(action instanceof HTMLElement) ||
+          !(star instanceof SVGElement) ||
+          !(category instanceof SVGElement)
+        ) {
+          return [{ index, reason: 'missing action or compound mark icon' }];
+        }
+
+        const actionRect = action.getBoundingClientRect();
+        const badgeRect = badge.getBoundingClientRect();
+        const starRect = star.getBoundingClientRect();
+        const categoryRect = category.getBoundingClientRect();
+        const statisticsRect =
+          statistics instanceof HTMLElement ? statistics.getBoundingClientRect() : null;
+        const iconGap = categoryRect.left - starRect.right;
+        const actionGap = statisticsRect ? statisticsRect.left - actionRect.right : null;
+        if (
+          isContained(badgeRect, actionRect) &&
+          isContained(starRect, badgeRect) &&
+          isContained(categoryRect, badgeRect) &&
+          iconGap >= 1.5 &&
+          (actionGap === null || actionGap >= 5.5)
+        ) {
+          return [];
+        }
+
+        return [
+          {
+            index,
+            reason: 'compound mark is clipped, overlapping or too close to statistics',
+            action: `${actionRect.width.toFixed(1)}x${actionRect.height.toFixed(1)}`,
+            mark: `${badgeRect.width.toFixed(1)}x${badgeRect.height.toFixed(1)}`,
+            star: `${starRect.width.toFixed(1)}x${starRect.height.toFixed(1)}`,
+            category: `${categoryRect.width.toFixed(1)}x${categoryRect.height.toFixed(1)}`,
+            iconGap: iconGap.toFixed(1),
+            actionGap: actionGap?.toFixed(1) ?? 'n/a',
+          },
+        ];
+      },
+    );
+  });
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has an invalid favorite category indicator at index ${first.index}: ` +
+        `${first.reason}` +
+        (first.action
+          ? ` (action=${first.action}, mark=${first.mark}, star=${first.star}, category=${first.category}, ` +
+            `iconGap=${first.iconGap}, actionGap=${first.actionGap})`
+          : ''),
+    );
   }
 }
 
