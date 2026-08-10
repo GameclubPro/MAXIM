@@ -1,11 +1,13 @@
 import {
   managedEntitiesListResponseSchema,
   managedEntityBotExecutionPlanSchema,
+  managedEntityFavoriteLabelsResponseSchema,
   managedEntityFavoritesResponseSchema,
   meSchema,
   systemDashboardResponseSchema,
   systemModeSnapshotSchema,
   updateManagedEntityFavoritesRequestSchema,
+  updateManagedEntityFavoriteLabelsRequestSchema,
   type ApplySettingsTarget,
   type BotSpeechPersona,
   type BotSpeechPreviewProfile,
@@ -30,6 +32,7 @@ import {
   PREVIEW_CHAT_ID,
   PREVIEW_CHAT_TITLE,
 } from '../design-preview';
+import { ApiRequestError } from '../api-request-error';
 import type { PreviewState } from './preview-transport-state';
 import {
   PREVIEW_NOT_HANDLED,
@@ -1337,6 +1340,42 @@ export const handleSystemPreviewRequest: PreviewRequestHandler = ({
     return url.searchParams.get('includeRefreshState') === '1'
       ? cloneJson(buildPreviewManagedEntitiesResponse(state.channels, state.clock))
       : cloneJson(state.channels);
+  }
+  if (url.pathname === '/managed-entities/favorite-labels' && method === 'GET') {
+    return managedEntityFavoriteLabelsResponseSchema.parse({
+      initialized: state.favoriteLabelsInitialized,
+      labels: cloneJson(state.favoriteLabels),
+      revision: state.favoriteLabelsRevision,
+    });
+  }
+  if (url.pathname === '/managed-entities/favorite-labels' && method === 'PUT') {
+    const payload = updateManagedEntityFavoriteLabelsRequestSchema.parse(parseJsonBody(init));
+    if (payload.mode === 'replace') {
+      if (payload.expectedRevision !== state.favoriteLabelsRevision) {
+        const message =
+          'Названия категорий уже изменились. Обновите данные и повторите сохранение.';
+        throw new ApiRequestError(
+          409,
+          JSON.stringify({
+            code: 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
+            message,
+          }),
+          message,
+        );
+      }
+      state.favoriteLabels = payload.labels;
+      state.favoriteLabelsInitialized = true;
+      state.favoriteLabelsRevision = (state.favoriteLabelsRevision ?? 0) + 1;
+    } else if (!state.favoriteLabelsInitialized) {
+      state.favoriteLabels = payload.labels;
+      state.favoriteLabelsInitialized = true;
+      state.favoriteLabelsRevision = 1;
+    }
+    return managedEntityFavoriteLabelsResponseSchema.parse({
+      initialized: true,
+      labels: cloneJson(state.favoriteLabels),
+      revision: state.favoriteLabelsRevision,
+    });
   }
   if (
     segments[0] === 'managed-entities' &&

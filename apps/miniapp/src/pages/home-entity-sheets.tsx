@@ -23,7 +23,6 @@ import { createBotDialogHandoffCoordinator } from '../lib/bot-dialog-handoff';
 import { cn } from '../lib/cn';
 import { useDialogFocusTrap } from '../lib/dialog-focus';
 import {
-  HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH,
   HOME_ENTITY_FAVORITE_LABELS,
   HOME_ENTITY_FAVORITE_TYPES,
 } from '../lib/home-entity-favorites';
@@ -50,6 +49,8 @@ type HomeEntitySheetsProps = {
   favoriteLabelDraft: FavoriteLabelDraft;
   selectedFavoriteType: ManagedEntityFavoriteType | null;
   favoriteSaving: boolean;
+  favoriteLabelsReady: boolean;
+  favoriteLabelsSaving: boolean;
   canSaveLabels: boolean;
   onClose: () => void;
   onFilterChange: (filter: FavoriteFilter) => void;
@@ -283,7 +284,7 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
         title="Названия категорий"
         panelClassName="favorite-label-editor__panel"
         overlayStyle={overlayStyle}
-        onClose={props.onClose}
+        onClose={props.favoriteLabelsSaving ? () => undefined : props.onClose}
       >
         <div className="favorite-label-editor__list">
           {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
@@ -305,8 +306,8 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
                     type="text"
                     inputMode="text"
                     value={props.favoriteLabelDraft[favoriteType]}
-                    maxLength={HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH}
                     aria-label={`Название категории: ${defaultLabel}`}
+                    disabled={props.favoriteLabelsSaving}
                     onChange={(event) =>
                       props.onFavoriteLabelChange(favoriteType, event.currentTarget.value)
                     }
@@ -317,7 +318,7 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
                   className="favorite-label-editor__reset"
                   aria-label={`Вернуть стандартное название: ${defaultLabel}`}
                   title="Вернуть стандартное название"
-                  disabled={!canReset}
+                  disabled={props.favoriteLabelsSaving || !canReset}
                   onClick={() => props.onFavoriteLabelReset(favoriteType)}
                 >
                   <Undo aria-hidden />
@@ -327,16 +328,22 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
           })}
         </div>
         <div className="favorite-label-editor__actions">
-          <button type="button" className="button button--ghost" onClick={props.onClose}>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={props.onClose}
+            disabled={props.favoriteLabelsSaving}
+          >
             Отмена
           </button>
           <button
             type="button"
             className="button button--accent"
             onClick={props.onFavoriteLabelsSave}
-            disabled={!props.canSaveLabels}
+            disabled={props.favoriteLabelsSaving || !props.canSaveLabels}
+            aria-busy={props.favoriteLabelsSaving || undefined}
           >
-            Сохранить
+            {props.favoriteLabelsSaving ? 'Сохраняем...' : 'Сохранить'}
           </button>
         </div>
       </HomeSheet>
@@ -492,6 +499,7 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
               type="button"
               className="favorite-picker__option home-filter__manage"
               onClick={props.onOpenLabelsEditor}
+              disabled={!props.favoriteLabelsReady}
             >
               <span className="favorite-picker__icon">
                 <SettingsGlyph aria-hidden focusable="false" />

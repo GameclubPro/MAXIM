@@ -31,6 +31,33 @@ export const managedEntityFavoriteTypeSchema = z.enum([
   'partner',
   'service',
 ]);
+export const MANAGED_ENTITY_FAVORITE_LABEL_MAX_LENGTH = 24;
+export const managedEntityFavoriteLabelSchema = z
+  .string()
+  .transform((value) => value.replace(/\s+/gu, ' ').trim())
+  .pipe(
+    z
+      .string()
+      .min(1)
+      .refine(
+        (value) => !value.includes('\u0000'),
+        'Название категории содержит недопустимый символ.',
+      )
+      .refine(
+        (value) => Array.from(value).length <= MANAGED_ENTITY_FAVORITE_LABEL_MAX_LENGTH,
+        `Название категории не должно превышать ${MANAGED_ENTITY_FAVORITE_LABEL_MAX_LENGTH} символов.`,
+      ),
+  );
+export const managedEntityFavoriteLabelOverridesSchema = z
+  .object({
+    important: managedEntityFavoriteLabelSchema.optional(),
+    watch: managedEntityFavoriteLabelSchema.optional(),
+    broadcast: managedEntityFavoriteLabelSchema.optional(),
+    test: managedEntityFavoriteLabelSchema.optional(),
+    partner: managedEntityFavoriteLabelSchema.optional(),
+    service: managedEntityFavoriteLabelSchema.optional(),
+  })
+  .strict();
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 export type ManagedEntityBotRole = z.infer<typeof managedEntityBotRoleSchema>;
 export type ManagedEntityBotMembershipStatus = z.infer<
@@ -40,6 +67,9 @@ export type ManagedEntityBotLifecycleState = z.infer<typeof managedEntityBotLife
 export type ManagedEntityBotCapability = z.infer<typeof managedEntityBotCapabilitySchema>;
 export type ManagedEntitySharedMode = z.infer<typeof managedEntitySharedModeSchema>;
 export type ManagedEntityFavoriteType = z.infer<typeof managedEntityFavoriteTypeSchema>;
+export type ManagedEntityFavoriteLabelOverrides = z.infer<
+  typeof managedEntityFavoriteLabelOverridesSchema
+>;
 
 export const channelOverviewSchema = z.object({
   enabledScenariosCount: z.number().int().min(0).max(2),
@@ -341,3 +371,64 @@ export const managedEntityFavoritesResponseSchema = z.object({
   favoriteTypes: z.array(managedEntityFavoriteTypeSchema),
 });
 export type ManagedEntityFavoritesResponse = z.infer<typeof managedEntityFavoritesResponseSchema>;
+
+export const updateManagedEntityFavoriteLabelsRequestSchema = z
+  .object({
+    labels: managedEntityFavoriteLabelOverridesSchema,
+    mode: z.enum(['replace', 'initialize']).optional().default('replace'),
+    expectedRevision: z.number().int().min(1).nullable().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.mode === 'initialize' && Object.keys(value.labels).length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['labels'],
+        message: 'Для первичного переноса требуется хотя бы одно пользовательское название.',
+      });
+    }
+    if (value.mode === 'replace' && value.expectedRevision === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['expectedRevision'],
+        message: 'Для сохранения требуется актуальная ревизия названий.',
+      });
+    }
+    if (value.mode === 'initialize' && value.expectedRevision !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['expectedRevision'],
+        message: 'Первичный перенос не принимает ожидаемую ревизию.',
+      });
+    }
+  });
+export type UpdateManagedEntityFavoriteLabelsRequest = z.infer<
+  typeof updateManagedEntityFavoriteLabelsRequestSchema
+>;
+
+export const managedEntityFavoriteLabelsResponseSchema = z
+  .object({
+    initialized: z.boolean(),
+    labels: managedEntityFavoriteLabelOverridesSchema,
+    revision: z.number().int().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.initialized && (value.revision !== null || Object.keys(value.labels).length > 0)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['initialized'],
+        message: 'Неинициализированный профиль не может содержать названия или ревизию.',
+      });
+    }
+    if (value.initialized && value.revision === null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['revision'],
+        message: 'Инициализированный профиль должен содержать ревизию.',
+      });
+    }
+  });
+export type ManagedEntityFavoriteLabelsResponse = z.infer<
+  typeof managedEntityFavoriteLabelsResponseSchema
+>;

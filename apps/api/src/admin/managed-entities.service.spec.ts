@@ -1,4 +1,9 @@
-import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ManagedEntitiesService } from './managed-entities.service';
 
 const user = {
@@ -52,6 +57,12 @@ function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn(() => ({ operation: 'delete-many-favorites' })),
       upsert: jest.fn(() => ({ operation: 'upsert-favorite' })),
+    },
+    managedEntityFavoritePreference: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      upsert: jest.fn().mockResolvedValue({ labelOverrides: {}, revision: 1 }),
+      create: jest.fn().mockResolvedValue({ labelOverrides: {}, revision: 1 }),
+      update: jest.fn().mockResolvedValue({ labelOverrides: {}, revision: 2 }),
     },
     managedEntityLocalActivity: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -1615,6 +1626,216 @@ describe('ManagedEntitiesService bot execution plan', () => {
       },
     });
     expect(prisma.$transaction.mock.calls[0][0]).toHaveLength(4);
+  });
+
+  it('returns whether the administrator favorite-label profile has been initialized', async () => {
+    const { prisma, service } = createService();
+
+    await expect(service.getManagedEntityFavoriteLabels(user as never)).resolves.toEqual({
+      initialized: false,
+      labels: {},
+      revision: null,
+    });
+
+    prisma.managedEntityFavoritePreference.findUnique.mockResolvedValueOnce({
+      labelOverrides: { important: 'VIP', watch: 'Особый контроль' },
+      revision: 4,
+    });
+    await expect(service.getManagedEntityFavoriteLabels(user as never)).resolves.toEqual({
+      initialized: true,
+      labels: { important: 'VIP', watch: 'Особый контроль' },
+      revision: 4,
+    });
+    expect(prisma.managedEntityFavoritePreference.findUnique).toHaveBeenLastCalledWith({
+      where: { userId: 'admin-1' },
+      select: { labelOverrides: true, revision: true },
+    });
+  });
+
+  it('replaces favorite labels only for the authenticated administrator', async () => {
+    const { prisma, service } = createService();
+    prisma.managedEntityFavoritePreference.update.mockResolvedValueOnce({
+      labelOverrides: { important: 'VIP чаты' },
+      revision: 4,
+    });
+
+    await expect(
+      service.updateManagedEntityFavoriteLabels(user as never, {
+        labels: { important: '  VIP   чаты  ' },
+        expectedRevision: 3,
+      }),
+    ).resolves.toEqual({
+      initialized: true,
+      labels: { important: 'VIP чаты' },
+      revision: 4,
+    });
+    expect(prisma.managedEntityFavoritePreference.update).toHaveBeenCalledWith({
+      where: { userId: 'admin-1', revision: 3 },
+      data: {
+        labelOverrides: { important: 'VIP чаты' },
+        revision: { increment: 1 },
+      },
+      select: { labelOverrides: true, revision: true },
+    });
+  });
+
+  it('creates a favorite-label profile only when the client observed no server revision', async () => {
+    const { prisma, service } = createService();
+    prisma.managedEntityFavoritePreference.create.mockResolvedValueOnce({
+      labelOverrides: { service: 'Внутренние' },
+      revision: 1,
+    });
+
+    await expect(
+      service.updateManagedEntityFavoriteLabels(user as never, {
+        labels: { service: 'Внутренние' },
+        expectedRevision: null,
+      }),
+    ).resolves.toEqual({
+      initialized: true,
+      labels: { service: 'Внутренние' },
+      revision: 1,
+    });
+    expect(prisma.managedEntityFavoritePreference.create).toHaveBeenCalledWith({
+      data: {
+        userId: 'admin-1',
+        labelOverrides: { service: 'Внутренние' },
+      },
+      select: { labelOverrides: true, revision: true },
+    });
+    expect(prisma.managedEntityFavoritePreference.update).not.toHaveBeenCalled();
+    expect(prisma.managedEntityFavoritePreference.upsert).not.toHaveBeenCalled();
+  });
+
+  it('initializes legacy local labels without overwriting an existing server profile', async () => {
+    const { prisma, service } = createService();
+    prisma.managedEntityFavoritePreference.upsert.mockResolvedValueOnce({
+      labelOverrides: { important: 'Серверное название' },
+      revision: 7,
+    });
+
+    await expect(
+      service.updateManagedEntityFavoriteLabels(user as never, {
+        labels: { important: 'Локальное название' },
+        mode: 'initialize',
+      }),
+    ).resolves.toEqual({
+      initialized: true,
+      labels: { important: 'Серверное название' },
+      revision: 7,
+    });
+    expect(prisma.managedEntityFavoritePreference.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'admin-1' },
+        update: {},
+      }),
+    );
+  });
+
+  it('fails closed when a stored favorite-label profile is malformed', async () => {
+    const { prisma, service } = createService();
+    prisma.managedEntityFavoritePreference.findUnique.mockResolvedValueOnce({
+      labelOverrides: { unknown: 'Неизвестная категория' },
+      revision: 1,
+    });
+
+    await expect(service.getManagedEntityFavoriteLabels(user as never)).rejects.toThrow(
+      'Favorite label preferences are unavailable.',
+    );
+
+    prisma.managedEntityFavoritePreference.upsert.mockResolvedValueOnce({
+      labelOverrides: { important: '' },
+      revision: 1,
+    });
+    await expect(
+      service.updateManagedEntityFavoriteLabels(user as never, {
+        labels: { important: 'Локальное название' },
+        mode: 'initialize',
+      }),
+    ).rejects.toThrow('Favorite label preferences are unavailable.');
+  });
+
+  it('does not initialize an empty favorite-label profile from an unavailable local cache', async () => {
+    const { prisma, service } = createService();
+
+    await expect(
+      service.updateManagedEntityFavoriteLabels(user as never, {
+        labels: {},
+        mode: 'initialize',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.managedEntityFavoritePreference.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects stale favorite-label revisions instead of overwriting another session', async () => {
+    const { prisma, service } = createService();
+    prisma.managedEntityFavoritePreference.update.mockRejectedValueOnce({ code: 'P2025' });
+
+    const staleUpdate = service.updateManagedEntityFavoriteLabels(user as never, {
+      labels: { watch: 'Новый контроль' },
+      expectedRevision: 2,
+    });
+    await expect(staleUpdate).rejects.toMatchObject({
+      response: {
+        code: 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
+        message:
+          'Названия категорий уже изменились. Обновите данные и повторите сохранение.',
+      },
+    });
+    expect(prisma.managedEntityFavoritePreference.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'admin-1', revision: 2 } }),
+    );
+
+    prisma.managedEntityFavoritePreference.create.mockRejectedValueOnce({ code: 'P2002' });
+    const concurrentCreate = service.updateManagedEntityFavoriteLabels(user as never, {
+      labels: { watch: 'Новый контроль' },
+      expectedRevision: null,
+    });
+    await expect(concurrentCreate).rejects.toMatchObject({
+      response: {
+        code: 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
+      },
+    });
+  });
+
+  it('keeps CAS writes scoped to the authenticated administrator', async () => {
+    const { prisma, service } = createService();
+    const secondUser = { ...user, userId: 'admin-2' };
+    prisma.managedEntityFavoritePreference.update.mockResolvedValueOnce({
+      labelOverrides: { important: 'Команда 2' },
+      revision: 9,
+    });
+
+    await expect(
+      service.updateManagedEntityFavoriteLabels(secondUser as never, {
+        labels: { important: 'Команда 2' },
+        expectedRevision: 8,
+      }),
+    ).resolves.toEqual({
+      initialized: true,
+      labels: { important: 'Команда 2' },
+      revision: 9,
+    });
+    expect(prisma.managedEntityFavoritePreference.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'admin-2', revision: 8 } }),
+    );
+    expect(prisma.managedEntityFavoritePreference.findUnique).not.toHaveBeenCalled();
+    expect(prisma.managedEntityFavoritePreference.create).not.toHaveBeenCalled();
+  });
+
+  it('persists an intentional reset to default labels with optimistic concurrency', async () => {
+    const { prisma, service } = createService();
+    prisma.managedEntityFavoritePreference.update.mockResolvedValueOnce({
+      labelOverrides: {},
+      revision: 6,
+    });
+
+    await expect(
+      service.updateManagedEntityFavoriteLabels(user as never, {
+        labels: {},
+        expectedRevision: 5,
+      }),
+    ).resolves.toEqual({ initialized: true, labels: {}, revision: 6 });
   });
 
   it('schedules a roster access recheck when persisted admins need diagnostics recovery', async () => {

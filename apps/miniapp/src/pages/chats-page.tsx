@@ -45,13 +45,10 @@ import {
   createHomeEntityFavoritesFromLegacy,
   getHomeEntityFavoritesFallbackScope,
   getHomeEntityFavoriteTypes,
-  hydrateHomeEntityFavoriteLabels,
   hydrateHomeEntityFavorites,
   isHomeEntityFavorite,
-  mergeHomeEntityFavoriteLabels,
   mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
-  readHomeEntityFavoriteLabels,
   readLegacyHomeEntityFavorites,
   readHomeEntityFavorites,
   resolveHomeEntityFavoriteLabels,
@@ -145,7 +142,9 @@ function createFavoriteLabelDraft(labels: HomeEntityFavoriteLabelOverrides): Fav
 }
 
 function limitFavoriteLabelInput(value: string): string {
-  return Array.from(value).slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH).join('');
+  return Array.from(value.split('\u0000').join(''))
+    .slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH)
+    .join('');
 }
 
 const LazyChatOnboardingSection = lazy(async () => {
@@ -303,7 +302,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   ) as ManagedTab;
   const initialHomeSnapshot = readHomeSnapshotFromRouteState(location.state, activeTab);
   const [query, setQuery] = useState(() => initialHomeSnapshot?.query ?? '');
-  const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
+  const initDataUserId = getInitDataUserId()?.trim() || null;
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => initDataUserId);
+  const [validatedFavoriteLabelsIdentity, setValidatedFavoriteLabelsIdentity] = useState<{
+    api: ApiTransport;
+    userId: string;
+  } | null>(null);
   const homeRootRef = useRef<HTMLDivElement | null>(null);
   const virtualListViewportRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -318,15 +322,23 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const normalizedUserId = currentUserId?.trim();
     return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
   }, [currentUserId]);
+  const favoriteLabelsIdentityReady =
+    validatedFavoriteLabelsIdentity?.api === api &&
+    validatedFavoriteLabelsIdentity.userId === currentUserId?.trim() &&
+    (initDataUserId === null || validatedFavoriteLabelsIdentity.userId === initDataUserId);
   const favoriteStorageScopeRef = useRef(favoriteStorageScope);
   const [homeEntityFavorites, setHomeEntityFavorites] = useState(() =>
     readHomeEntityFavorites(favoriteStorageScope),
   );
   const favoriteLabelStorageScopeRef = useRef(favoriteStorageScope);
   const [homeEntityFavoriteLabels, setHomeEntityFavoriteLabels] =
-    useState<HomeEntityFavoriteLabelOverrides>(() =>
-      readHomeEntityFavoriteLabels(favoriteStorageScope),
-    );
+    useState<HomeEntityFavoriteLabelOverrides>({});
+  const homeEntityFavoriteLabelsRef = useRef(homeEntityFavoriteLabels);
+  homeEntityFavoriteLabelsRef.current = homeEntityFavoriteLabels;
+  const favoriteLabelsMutationVersionRef = useRef(0);
+  const favoriteLabelsSaveAbortControllerRef = useRef<AbortController | null>(null);
+  const [favoriteLabelsReady, setFavoriteLabelsReady] = useState(false);
+  const [savingFavoriteLabels, setSavingFavoriteLabels] = useState(false);
   const favoriteLabels = useMemo(
     () => resolveHomeEntityFavoriteLabels(homeEntityFavoriteLabels),
     [homeEntityFavoriteLabels],
@@ -343,7 +355,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [connectSheetOpen, setConnectSheetOpen] = useState(false);
   const [categoryEditMode, setCategoryEditMode] = useState(false);
   const [favoriteLabelDraft, setFavoriteLabelDraft] = useState<FavoriteLabelDraft>(() =>
-    createFavoriteLabelDraft(readHomeEntityFavoriteLabels(favoriteStorageScope)),
+    createFavoriteLabelDraft({}),
   );
   const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
   const pendingFavoriteMutationRef = useRef<{
@@ -356,6 +368,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     Boolean(favoritePicker) ||
     favoriteFilterPickerOpen ||
     favoriteLabelsEditorOpen;
+
+  useEffect(() => {
+    favoriteLabelsMutationVersionRef.current += 1;
+    favoriteLabelsSaveAbortControllerRef.current?.abort();
+    favoriteLabelsSaveAbortControllerRef.current = null;
+    setSavingFavoriteLabels(false);
+    setFavoriteLabelsEditorOpen(false);
+  }, [api, favoriteStorageScope]);
   const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
@@ -402,6 +422,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   useNativeBackHandler(
     () => {
+      if (favoriteLabelsEditorOpen && savingFavoriteLabels) {
+        return true;
+      }
       if (connectSheetOpen) {
         closeHomeEntitySheet();
       } else if (favoriteLabelsEditorOpen) {
@@ -788,28 +811,55 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [favoriteStorageScope]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (
+      !favoriteLabelsIdentityReady ||
+      favoriteStorageScope === getHomeEntityFavoritesFallbackScope()
+    ) {
+      homeEntityFavoriteLabelsRef.current = {};
+      setHomeEntityFavoriteLabels({});
+      setFavoriteLabelDraft(createFavoriteLabelDraft({}));
+      setFavoriteLabelsReady(false);
+      return undefined;
+    }
 
-    void hydrateHomeEntityFavoriteLabels(favoriteStorageScope).then((nativeLabels) => {
-      if (cancelled) {
+    const controller = new AbortController();
+    const mutationVersion = favoriteLabelsMutationVersionRef.current;
+    setFavoriteLabelsReady(false);
+
+    const isCurrent = () =>
+      !controller.signal.aborted && mutationVersion === favoriteLabelsMutationVersionRef.current;
+    const applyLabels = (
+      labels: HomeEntityFavoriteLabelOverrides,
+      options: { persistCache?: boolean } = {},
+    ) => {
+      if (!isCurrent()) {
         return;
       }
-
-      setHomeEntityFavoriteLabels((current) => {
-        const next = mergeHomeEntityFavoriteLabels(current, nativeLabels);
-        if (JSON.stringify(next) === JSON.stringify(current)) {
-          return current;
-        }
-
-        saveHomeEntityFavoriteLabels(favoriteStorageScope, next);
-        return next;
-      });
-    });
-
-    return () => {
-      cancelled = true;
+      const nextLabels = sanitizeHomeEntityFavoriteLabels(labels);
+      homeEntityFavoriteLabelsRef.current = nextLabels;
+      setHomeEntityFavoriteLabels(nextLabels);
+      setFavoriteLabelDraft(createFavoriteLabelDraft(nextLabels));
+      if (options.persistCache !== false) {
+        saveHomeEntityFavoriteLabels(favoriteStorageScope, nextLabels);
+      }
     };
-  }, [favoriteStorageScope]);
+
+    void import('../lib/home-entity-favorite-label-sync')
+      .then(async (runtime) => {
+        await runtime.synchronizeManagedEntityFavoriteLabels(
+          api,
+          favoriteStorageScope,
+          controller.signal,
+          applyLabels,
+        );
+        if (isCurrent()) {
+          setFavoriteLabelsReady(true);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => controller.abort();
+  }, [api, currentUserId, favoriteLabelsIdentityReady, favoriteStorageScope, initDataUserId]);
 
   useEffect(() => {
     const serverEntities = authoritativeFavoriteEntitiesRef.current;
@@ -1012,6 +1062,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         return;
       }
       if (favoriteLabelsEditorOpen) {
+        if (savingFavoriteLabels) {
+          return;
+        }
         setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
         setFavoriteLabelsEditorOpen(false);
         return;
@@ -1031,6 +1084,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     favoritePicker,
     homeEntityFavoriteLabels,
     homeOverlayOpen,
+    savingFavoriteLabels,
   ]);
 
   useEffect(() => {
@@ -1097,20 +1151,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const storedLabels = readHomeEntityFavoriteLabels(favoriteStorageScope);
-    const scopedLabels =
-      previousScope === getHomeEntityFavoritesFallbackScope() &&
-      favoriteStorageScope !== getHomeEntityFavoritesFallbackScope()
-        ? mergeHomeEntityFavoriteLabels(storedLabels, readHomeEntityFavoriteLabels(previousScope))
-        : storedLabels;
-
-    if (JSON.stringify(scopedLabels) !== JSON.stringify(storedLabels)) {
-      saveHomeEntityFavoriteLabels(favoriteStorageScope, scopedLabels);
-    }
-
     favoriteLabelStorageScopeRef.current = favoriteStorageScope;
-    setHomeEntityFavoriteLabels(scopedLabels);
-    setFavoriteLabelDraft(createFavoriteLabelDraft(scopedLabels));
+    homeEntityFavoriteLabelsRef.current = {};
+    setHomeEntityFavoriteLabels({});
+    setFavoriteLabelDraft(createFavoriteLabelDraft({}));
   }, [favoriteStorageScope]);
 
   useEffect(() => {
@@ -1158,18 +1202,26 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     const controller = new AbortController();
+    setValidatedFavoriteLabelsIdentity(null);
 
     void import('../lib/api/me-client')
       .then(({ getMe }) => getMe(api, { signal: controller.signal }))
       .then((me) => {
         if (!controller.signal.aborted) {
-          setCurrentUserId(me.userId);
+          const userId = me.userId.trim();
+          if (!userId) {
+            return;
+          }
+          setCurrentUserId(userId);
+          if (initDataUserId === null || initDataUserId === userId) {
+            setValidatedFavoriteLabelsIdentity({ api, userId });
+          }
         }
       })
       .catch(() => undefined);
 
     return () => controller.abort();
-  }, [api]);
+  }, [api, initDataUserId]);
 
   useEffect(() => {
     if (showEmptyState) {
@@ -1369,11 +1421,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }
 
   function openFavoriteLabelsEditor(trigger?: HTMLElement) {
+    if (!favoriteLabelsReady) {
+      return;
+    }
     if (trigger) {
       homeOverlayTriggerRef.current = trigger;
     }
     setFavoriteFilterPickerOpen(false);
     setFavoritePicker(null);
+    favoriteLabelsMutationVersionRef.current += 1;
     setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
     setFavoriteLabelsEditorOpen(true);
   }
@@ -1443,12 +1499,62 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     }));
   }
 
-  function saveFavoriteLabelDraft() {
-    const nextLabels = sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft);
-    setHomeEntityFavoriteLabels(nextLabels);
-    saveHomeEntityFavoriteLabels(favoriteStorageScope, nextLabels);
-    setFavoriteLabelDraft(createFavoriteLabelDraft(nextLabels));
-    setFavoriteLabelsEditorOpen(false);
+  async function saveFavoriteLabelDraft() {
+    if (savingFavoriteLabels || !favoriteLabelsIdentityReady || !favoriteLabelsReady) {
+      return;
+    }
+
+    const draftLabels = sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft);
+    const baseLabels = homeEntityFavoriteLabels;
+    const mutationVersion = favoriteLabelsMutationVersionRef.current + 1;
+    favoriteLabelsMutationVersionRef.current = mutationVersion;
+    const controller = new AbortController();
+    favoriteLabelsSaveAbortControllerRef.current?.abort();
+    favoriteLabelsSaveAbortControllerRef.current = controller;
+    setSavingFavoriteLabels(true);
+
+    try {
+      const { saveManagedEntityFavoriteLabelEdits } =
+        await import('../lib/home-entity-favorite-label-sync');
+      const saved = await saveManagedEntityFavoriteLabelEdits(
+        api,
+        baseLabels,
+        draftLabels,
+        controller.signal,
+      );
+      if (
+        controller.signal.aborted ||
+        mutationVersion !== favoriteLabelsMutationVersionRef.current
+      ) {
+        return;
+      }
+
+      const savedLabels = sanitizeHomeEntityFavoriteLabels(saved.labels);
+      homeEntityFavoriteLabelsRef.current = savedLabels;
+      setHomeEntityFavoriteLabels(savedLabels);
+      saveHomeEntityFavoriteLabels(favoriteStorageScope, savedLabels);
+      setFavoriteLabelDraft(createFavoriteLabelDraft(savedLabels));
+      setFavoriteLabelsEditorOpen(false);
+    } catch (error: unknown) {
+      if (
+        controller.signal.aborted ||
+        mutationVersion !== favoriteLabelsMutationVersionRef.current
+      ) {
+        return;
+      }
+      pushToast({
+        title: 'Не удалось сохранить названия',
+        description: describeApiError(error, 'Проверьте соединение и попробуйте ещё раз.'),
+        tone: 'danger',
+      });
+    } finally {
+      if (favoriteLabelsSaveAbortControllerRef.current === controller) {
+        favoriteLabelsSaveAbortControllerRef.current = null;
+      }
+      if (mutationVersion === favoriteLabelsMutationVersionRef.current) {
+        setSavingFavoriteLabels(false);
+      }
+    }
   }
 
   async function handleSetHomeEntityFavoriteType(
@@ -1820,8 +1926,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       buildFavoriteEntityKey(favoritePicker.entityType, favoritePicker.entity.id)
     : false;
   const canSaveFavoriteLabels =
+    favoriteLabelsReady &&
+    !savingFavoriteLabels &&
     JSON.stringify(sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft)) !==
-    JSON.stringify(homeEntityFavoriteLabels);
+      JSON.stringify(homeEntityFavoriteLabels);
   const hasAppliedFavoriteFilter = !categoryEditMode && favoriteFilter !== FAVORITE_FILTER_ALL;
   const noResultsResetLabel =
     hasSearchQuery && hasAppliedFavoriteFilter
@@ -1853,6 +1961,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             favoriteLabelDraft={favoriteLabelDraft}
             selectedFavoriteType={selectedSheetFavoriteType}
             favoriteSaving={sheetFavoriteSaving}
+            favoriteLabelsReady={favoriteLabelsReady}
+            favoriteLabelsSaving={savingFavoriteLabels}
             canSaveLabels={canSaveFavoriteLabels}
             onClose={closeHomeEntitySheet}
             onFilterChange={(nextFilter) => {
@@ -1872,7 +1982,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             }}
             onFavoriteLabelChange={updateFavoriteLabelDraft}
             onFavoriteLabelReset={resetFavoriteLabelDraft}
-            onFavoriteLabelsSave={saveFavoriteLabelDraft}
+            onFavoriteLabelsSave={() => void saveFavoriteLabelDraft()}
           />
         </Suspense>
       ) : null}

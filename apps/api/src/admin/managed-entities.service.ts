@@ -1,11 +1,14 @@
 import {
   managedEntityAccessRecheckResponseSchema,
+  managedEntityFavoriteLabelOverridesSchema,
+  managedEntityFavoriteLabelsResponseSchema,
   managedEntityFavoritesResponseSchema,
   managedEntityOnboardingDiagnosticsSchema,
   managedEntityTypeSchema,
   managedEntityBotExecutionPlanSchema,
   promoteManagedEntityStandbyRequestSchema,
   updateManagedEntityFavoritesRequestSchema,
+  updateManagedEntityFavoriteLabelsRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   type ChatSummary,
@@ -16,6 +19,7 @@ import {
   type ManagedEntityAccessRecheckResponse,
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityFavoriteType,
+  type ManagedEntityFavoriteLabelsResponse,
   type ManagedEntityFavoritesResponse,
   type ManagedEntityHeader,
   type ManagedEntityOnboardingDiagnostics,
@@ -26,6 +30,7 @@ import {
 } from '@maxim/contracts';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -76,6 +81,7 @@ import {
   toPrismaEntityType,
   isBotAdminLookupDeniedError,
   extractMaxErrorStatus,
+  isPrismaKnownError,
 } from './admin-legacy-utils';
 import {
   buildProfileMentionHandoffUrl,
@@ -96,6 +102,18 @@ import {
   MANAGED_ENTITIES_LEGACY_PORT,
   type ManagedEntitiesLegacyPort,
 } from './managed-entities-legacy.port';
+
+const MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT_CODE =
+  'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT';
+const MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT_MESSAGE =
+  'Названия категорий уже изменились. Обновите данные и повторите сохранение.';
+
+function createManagedEntityFavoriteLabelsRevisionConflict(): ConflictException {
+  return new ConflictException({
+    code: MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT_CODE,
+    message: MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT_MESSAGE,
+  });
+}
 
 const MANAGED_ENTITY_ACCESS_LOSS_REASONS = new Set<ManagedEntityAccessLossReason>([
   'chat_not_found',
@@ -726,6 +744,102 @@ export class ManagedEntitiesService {
       entityId,
       favoriteTypes,
     });
+  }
+
+  async getManagedEntityFavoriteLabels(
+    user: AuthUser,
+  ): Promise<ManagedEntityFavoriteLabelsResponse> {
+    const preference = await this.prisma.managedEntityFavoritePreference.findUnique({
+      where: { userId: user.userId },
+      select: { labelOverrides: true, revision: true },
+    });
+    if (!preference) {
+      return managedEntityFavoriteLabelsResponseSchema.parse({
+        initialized: false,
+        labels: {},
+        revision: null,
+      });
+    }
+
+    return managedEntityFavoriteLabelsResponseSchema.parse({
+      initialized: true,
+      labels: this.parseManagedEntityFavoriteLabels(preference.labelOverrides, user.userId),
+      revision: preference.revision,
+    });
+  }
+
+  async updateManagedEntityFavoriteLabels(
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedEntityFavoriteLabelsResponse> {
+    const parsed = updateManagedEntityFavoriteLabelsRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const select = { labelOverrides: true, revision: true } as const;
+    let preference: { labelOverrides: unknown; revision: number };
+    if (parsed.data.mode === 'initialize') {
+      preference = await this.prisma.managedEntityFavoritePreference.upsert({
+        where: { userId: user.userId },
+        create: {
+          userId: user.userId,
+          labelOverrides: parsed.data.labels,
+        },
+        update: {},
+        select,
+      });
+    } else if (parsed.data.expectedRevision === null) {
+      try {
+        preference = await this.prisma.managedEntityFavoritePreference.create({
+          data: {
+            userId: user.userId,
+            labelOverrides: parsed.data.labels,
+          },
+          select,
+        });
+      } catch (error: unknown) {
+        if (isPrismaKnownError(error, 'P2002')) {
+          throw createManagedEntityFavoriteLabelsRevisionConflict();
+        }
+        throw error;
+      }
+    } else {
+      try {
+        preference = await this.prisma.managedEntityFavoritePreference.update({
+          where: {
+            userId: user.userId,
+            revision: parsed.data.expectedRevision,
+          },
+          data: {
+            labelOverrides: parsed.data.labels,
+            revision: { increment: 1 },
+          },
+          select,
+        });
+      } catch (error: unknown) {
+        if (isPrismaKnownError(error, 'P2025')) {
+          throw createManagedEntityFavoriteLabelsRevisionConflict();
+        }
+        throw error;
+      }
+    }
+
+    return managedEntityFavoriteLabelsResponseSchema.parse({
+      initialized: true,
+      labels: this.parseManagedEntityFavoriteLabels(preference.labelOverrides, user.userId),
+      revision: preference.revision,
+    });
+  }
+
+  private parseManagedEntityFavoriteLabels(value: unknown, userId: string) {
+    const labels = managedEntityFavoriteLabelOverridesSchema.safeParse(value);
+    if (labels.success) {
+      return labels.data;
+    }
+
+    this.logger.error(`Invalid favorite label preferences for user ${userId}`);
+    throw new ServiceUnavailableException('Favorite label preferences are unavailable.');
   }
 
   async recheckManagedEntityAccess(

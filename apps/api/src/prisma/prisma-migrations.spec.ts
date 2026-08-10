@@ -13,6 +13,28 @@ function readSchema(): string {
 }
 
 describe('Prisma migrations', () => {
+  it('persists one validated favorite-label profile per administrator', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260810135000_persist_managed_entity_favorite_labels');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('model ManagedEntityFavoritePreference {');
+    expect(schema).toContain('userId         String   @id @map("user_id")');
+    expect(schema).toContain('labelOverrides Json     @default("{}") @map("label_overrides")');
+    expect(schema).toContain('revision       Int      @default(1)');
+    expect(schema).toContain('@@map("managed_entity_favorite_preferences")');
+    expect(compact).toContain('CREATE TABLE "managed_entity_favorite_preferences"');
+    expect(compact).toContain('"label_overrides" JSONB NOT NULL DEFAULT \'{}\'');
+    expect(compact).toContain('"revision" INTEGER NOT NULL DEFAULT 1');
+    expect(compact).toContain(
+      'CONSTRAINT "managed_entity_favorite_preferences_pkey" PRIMARY KEY ("user_id")',
+    );
+    expect(compact).toContain('CHECK (BTRIM("user_id") <> \'\')');
+    expect(compact).toContain('CHECK (JSONB_TYPEOF("label_overrides") = \'object\')');
+    expect(compact).toContain('CHECK ("revision" > 0)');
+    expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE)\b/i);
+  });
+
   it('adds ordered channel suggestion image assets without rewriting legacy audit payloads', () => {
     const schema = readSchema();
     const migration = readMigration('20260802061500_add_channel_suggestion_image_assets');

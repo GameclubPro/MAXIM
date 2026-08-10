@@ -5256,6 +5256,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       {applyTargetSheet ? (
         <Suspense fallback={null}>
           <LazySettingsApplyTargetSheet
+            api={api}
             sheet={applyTargetSheet}
             preview={applyTargetPreview}
             previewLoading={applyTargetPreviewLoading}

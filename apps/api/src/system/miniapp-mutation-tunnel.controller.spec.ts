@@ -272,6 +272,125 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
   });
 
+  it('allows durable favorite-label saves through the mutation tunnel', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({
+      labels: { important: 'VIP чаты' },
+      expectedRevision: 1,
+    });
+    const body = Buffer.from(payload, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          initialized: true,
+          labels: { important: 'VIP чаты' },
+          revision: 2,
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        },
+      ),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method: 'PUT',
+        path: '/managed-entities/favorite-labels',
+        body,
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      TEST_USER,
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/managed-entities/favorite-labels',
+      expect.objectContaining({
+        method: 'PUT',
+        body: payload,
+        headers: expect.objectContaining({
+          Authorization: 'InitData auth_date=1&hash=test',
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
+  it('forwards favorite-label revision conflicts without changing the status or payload', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({
+      labels: { important: 'VIP чаты' },
+      expectedRevision: 1,
+    });
+    const body = Buffer.from(payload, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+    const conflictPayload = JSON.stringify({
+      code: 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
+      message: 'Названия категорий уже изменились.',
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(conflictPayload, {
+        status: 409,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method: 'PUT',
+        path: '/managed-entities/favorite-labels',
+        body,
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      TEST_USER,
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/managed-entities/favorite-labels',
+      expect.objectContaining({ method: 'PUT', body: payload }),
+    );
+    expect(reply.header).toHaveBeenCalledWith('Cache-Control', 'no-store, private');
+    expect(reply.status).toHaveBeenCalledWith(409);
+    expect(reply.send).toHaveBeenCalledWith(conflictPayload);
+  });
+
+  it.each([
+    ['GET', '/managed-entities/favorite-labels'],
+    ['POST', '/managed-entities/favorite-labels'],
+    ['DELETE', '/managed-entities/favorite-labels'],
+    ['PUT', '/managed-entities/favorite-labels/'],
+    ['PUT', '/managed-entities/favorite-labels/extra'],
+  ])('rejects non-exact favorite-label tunnel target %s %s', async (method, path) => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    global.fetch = jest.fn();
+
+    await expect(
+      controller.tunnel(
+        { method, path, contentType: 'application/json' },
+        'InitData auth_date=1&hash=test',
+        TEST_USER,
+        reply as never,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['POST', '/chats/chat-1/broadcast/handoff'],
     ['DELETE', '/chats/chat-1/broadcast/handoff'],

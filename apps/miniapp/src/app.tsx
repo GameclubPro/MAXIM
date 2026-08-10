@@ -652,6 +652,11 @@ export function App() {
   const PreviewScaffold = previewRuntime?.DesignPreviewScaffold ?? null;
   const authQueryPrincipalKey = useAuthQueryPrincipalKey(initData, preview.enabled);
   const queryClient = useMemo(createAuthQueryClient, [authQueryPrincipalKey]);
+  const hasAuthenticatedInitData = Boolean(initData);
+  const authenticatedApiClient = useMemo(
+    () => (hasAuthenticatedInitData ? createApiTransport(getInitData) : null),
+    [authQueryPrincipalKey, hasAuthenticatedInitData],
+  );
 
   useEffect(
     () => () => {
@@ -677,9 +682,7 @@ export function App() {
 
   const apiClient = preview.enabled
     ? previewApiRef.current
-    : initData
-      ? createApiTransport(getInitData)
-      : null;
+    : authenticatedApiClient;
 
   if (apiClient && !authenticatedRouterPreparedRef.current) {
     if (!initialLaunchRoutePreparedRef.current && !preview.enabled && initData) {

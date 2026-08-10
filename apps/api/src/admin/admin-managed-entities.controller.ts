@@ -127,6 +127,16 @@ export class AdminManagedEntitiesController {
     return this.entitiesService.updateManagedEntityFavorites(entityType, entityId, user, body);
   }
 
+  @Get('managed-entities/favorite-labels')
+  getManagedEntityFavoriteLabels(@CurrentUser() user: AuthUser) {
+    return this.entitiesService.getManagedEntityFavoriteLabels(user);
+  }
+
+  @Put('managed-entities/favorite-labels')
+  updateManagedEntityFavoriteLabels(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.entitiesService.updateManagedEntityFavoriteLabels(user, body);
+  }
+
   @Get('managed-entities/:entityType/onboarding-diagnostics')
   getManagedEntityOnboardingDiagnostics(
     @Param('entityType') entityType: string,

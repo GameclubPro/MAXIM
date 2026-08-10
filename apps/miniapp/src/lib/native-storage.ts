@@ -51,6 +51,12 @@ function resolveNativeStorage(area: NativeStorageArea): NativeStorageBridge | un
   return area === 'secure' ? bridge?.SecureStorage : bridge?.DeviceStorage;
 }
 
+export function isNativeDeviceStorageAvailable(): boolean {
+  return (
+    typeof window !== 'undefined' && typeof resolveNativeStorage('device')?.getItem === 'function'
+  );
+}
+
 export function readLocalMirrorItem(key: string): string | null {
   if (typeof window === 'undefined') {
     return null;

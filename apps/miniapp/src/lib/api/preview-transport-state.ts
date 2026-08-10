@@ -22,6 +22,7 @@ import {
   type ManagedBroadcastDetails,
   type ManagedAutopostHubRuleDetails,
   type ManagedEntityAccessDiagnostics,
+  type ManagedEntityFavoriteLabelOverrides,
   type ManagedGiveawayDetails,
   type Me,
   type MembershipActivityItem,
@@ -73,6 +74,9 @@ export type PreviewState = {
   clock: PreviewClock;
   me: Me;
   systemModeSelection: 'auto' | 'normal' | 'degrade';
+  favoriteLabelsInitialized: boolean;
+  favoriteLabels: ManagedEntityFavoriteLabelOverrides;
+  favoriteLabelsRevision: number | null;
   chats: ChatSummary[];
   channels: ChatSummary[];
   chatDialogs: Record<ChannelDialogType, PreviewDialogBucket>;
@@ -757,6 +761,9 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       canAccessSystem: true,
     },
     systemModeSelection: 'auto',
+    favoriteLabelsInitialized: true,
+    favoriteLabels: {},
+    favoriteLabelsRevision: 1,
     chats: [
       createPreviewChatSummary(
         {

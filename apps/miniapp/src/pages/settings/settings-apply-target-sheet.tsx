@@ -6,17 +6,16 @@ import type { ManagedEntityFavoriteType } from '@maxim/contracts/managed-entitie
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { HOME_ENTITY_FAVORITE_ICONS, XmarkGlyph } from '../../components/ui/compact-icons';
+import { getMe } from '../../lib/api/me-client';
+import type { ApiTransport } from '../../lib/api/transport';
 import {
   HOME_ENTITY_FAVORITE_TITLES,
   HOME_ENTITY_FAVORITE_TYPES,
-  getHomeEntityFavoritesFallbackScope,
-  hydrateHomeEntityFavoriteLabels,
-  readHomeEntityFavoriteLabels,
   resolveHomeEntityFavoriteLabels,
+  type HomeEntityFavoriteLabelOverrides,
 } from '../../lib/home-entity-favorites';
 import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
-import { getInitDataUserId } from '../../lib/init-data';
 import { useNativeBackHandler } from '../../lib/native-back';
 import type { ApplySectionKey } from '../settings-page-state';
 import './settings-apply-target-sheet.css';
@@ -26,7 +25,10 @@ type ApplyTargetSheetState = {
   target: ApplySettingsTarget;
 };
 
+type FavoriteLabelsLoadStatus = 'loading' | 'ready' | 'error';
+
 type SettingsApplyTargetSheetProps = {
+  api: ApiTransport;
   sheet: ApplyTargetSheetState | null;
   preview: ApplySectionTargetPreviewResponse | null;
   previewLoading: boolean;
@@ -55,6 +57,7 @@ function formatApplyTargetCountLabel(count: number): string {
 }
 
 export function SettingsApplyTargetSheet({
+  api,
   sheet,
   preview,
   previewLoading,
@@ -69,13 +72,10 @@ export function SettingsApplyTargetSheet({
   const panelRef = useRef<HTMLElement | null>(null);
   const isOpen = Boolean(sheet);
   useDialogFocusTrap(isOpen, panelRef, panelRef);
-  const favoriteStorageScope = useMemo(() => {
-    const userId = getInitDataUserId()?.trim();
-    return userId ? `u:${userId}` : getHomeEntityFavoritesFallbackScope();
-  }, []);
-  const [favoriteLabelOverrides, setFavoriteLabelOverrides] = useState(() =>
-    readHomeEntityFavoriteLabels(favoriteStorageScope),
-  );
+  const [favoriteLabelOverrides, setFavoriteLabelOverrides] =
+    useState<HomeEntityFavoriteLabelOverrides>({});
+  const [favoriteLabelsStatus, setFavoriteLabelsStatus] =
+    useState<FavoriteLabelsLoadStatus>('loading');
   const favoriteLabels = useMemo(
     () => resolveHomeEntityFavoriteLabels(favoriteLabelOverrides),
     [favoriteLabelOverrides],
@@ -94,18 +94,42 @@ export function SettingsApplyTargetSheet({
   );
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    setFavoriteLabelOverrides({});
+    setFavoriteLabelsStatus('loading');
 
-    void hydrateHomeEntityFavoriteLabels(favoriteStorageScope).then((labels) => {
-      if (!cancelled) {
+    void import('../../lib/home-entity-favorite-label-sync')
+      .then(async (runtime) => {
+        const [me, server] = await Promise.all([
+          getMe(api, { signal: controller.signal }),
+          runtime.loadManagedEntityFavoriteLabels(api, controller.signal),
+        ]);
+        const userId = me.userId.trim();
+        if (!userId) {
+          throw new Error('Invalid favorite label profile identity');
+        }
+
+        const labels = server.initialized
+          ? server.labels
+          : await runtime.hydrateHomeEntityFavoriteLabelMigrationCandidate(`u:${userId}`, {
+              signal: controller.signal,
+              waitForNativeStorage: true,
+            });
+        if (controller.signal.aborted) {
+          return;
+        }
+
         setFavoriteLabelOverrides(labels);
-      }
-    });
+        setFavoriteLabelsStatus('ready');
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setFavoriteLabelsStatus('error');
+        }
+      });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [favoriteStorageScope]);
+    return () => controller.abort();
+  }, [api]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -136,8 +160,13 @@ export function SettingsApplyTargetSheet({
   }
 
   const { target } = sheet;
+  const favoriteTargetSelected = target.mode === 'allFavorites' || target.mode === 'favoriteTypes';
   const canConfirm =
-    !previewLoading && !previewError && !isApplying && (preview?.updatedChats ?? 0) > 0;
+    !previewLoading &&
+    !previewError &&
+    !isApplying &&
+    (!favoriteTargetSelected || favoriteLabelsStatus === 'ready') &&
+    (preview?.updatedChats ?? 0) > 0;
 
   function updateFavoriteType(favoriteType: ManagedEntityFavoriteType) {
     const currentTypes =
@@ -227,11 +256,12 @@ export function SettingsApplyTargetSheet({
           ))}
         </div>
 
-        {target.mode === 'allFavorites' || target.mode === 'favoriteTypes' ? (
+        {favoriteTargetSelected ? (
           <div
             className="settings-apply-target__favorites"
             role="group"
             aria-label="Категории избранного"
+            aria-busy={favoriteLabelsStatus === 'loading' || undefined}
           >
             {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
               const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
@@ -249,6 +279,7 @@ export function SettingsApplyTargetSheet({
                   )}
                   aria-pressed={active}
                   title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
+                  disabled={favoriteLabelsStatus !== 'ready'}
                   onClick={() => updateFavoriteType(favoriteType)}
                 >
                   <FavoriteIcon aria-hidden />
@@ -259,8 +290,12 @@ export function SettingsApplyTargetSheet({
           </div>
         ) : null}
 
-        <div className="settings-apply-target__preview">
-          {previewLoading ? (
+        <div className="settings-apply-target__preview" aria-live="polite">
+          {favoriteTargetSelected && favoriteLabelsStatus === 'loading' ? (
+            <span>Загружаем названия…</span>
+          ) : favoriteTargetSelected && favoriteLabelsStatus === 'error' ? (
+            <span className="is-danger">Названия категорий временно недоступны.</span>
+          ) : previewLoading ? (
             <span>Считаем…</span>
           ) : previewError ? (
             <span className="is-danger">{previewError}</span>

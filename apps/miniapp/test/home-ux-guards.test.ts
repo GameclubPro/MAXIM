@@ -6,6 +6,10 @@ const chatsPageSource = readFileSync(
   new URL('../src/pages/chats-page.tsx', import.meta.url),
   'utf8',
 );
+const favoriteLabelSyncSource = readFileSync(
+  new URL('../src/lib/home-entity-favorite-label-sync.ts', import.meta.url),
+  'utf8',
+);
 const chatsPageCss = readFileSync(new URL('../src/pages/chats-page.css', import.meta.url), 'utf8');
 const chatsPageNativeCss = readFileSync(
   new URL('../src/pages/chats-page-native.css', import.meta.url),
@@ -140,10 +144,7 @@ test('compact home controls keep direct 44px actions and one filter control', ()
     chatsPageSource,
     /primaryFavoriteType !== 'important'[\s\S]*?'has-category'[\s\S]*?className="chat-card__favorite-category-icon"/u,
   );
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__action--favorite \{[\s\S]*?overflow: hidden;/u,
-  );
+  assert.match(chatsPageNativeCss, /\.chat-card__action--favorite \{[\s\S]*?overflow: hidden;/u);
   assert.match(
     chatsPageNativeCss,
     /\.chat-card__favorite-mark\.has-category \{[\s\S]*?width: 34px;[\s\S]*?gap: 2px;/u,
@@ -202,7 +203,31 @@ test('compact home controls keep direct 44px actions and one filter control', ()
     sheetsSource,
     /className=\{cn\('favorite-label-editor__row', canReset && 'has-reset'\)\}/u,
   );
-  assert.match(sheetsSource, /disabled=\{!canReset\}[\s\S]*?<Undo aria-hidden \/>/u);
+  assert.match(
+    sheetsSource,
+    /disabled=\{props\.favoriteLabelsSaving \|\| !canReset\}[\s\S]*?<Undo aria-hidden \/>/u,
+  );
+  assert.match(chatsPageSource, /favoriteLabelsEditorOpen && savingFavoriteLabels/u);
+  assert.doesNotMatch(sheetsSource, /maxLength=\{HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH\}/u);
+  assert.match(chatsPageSource, /value\.split\('\\u0000'\)\.join\(''\)/u);
+  assert.match(
+    chatsPageSource,
+    /setValidatedFavoriteLabelsIdentity\(null\)[\s\S]*?getMe\(api,[\s\S]*?initDataUserId === null \|\| initDataUserId === userId[\s\S]*?setValidatedFavoriteLabelsIdentity\(\{ api, userId \}\)/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /useState<HomeEntityFavoriteLabelOverrides>\(\{\}\)[\s\S]*?!favoriteLabelsIdentityReady[\s\S]*?setHomeEntityFavoriteLabels\(\{\}\)/u,
+  );
+  assert.match(
+    favoriteLabelSyncSource,
+    /applyLabels\(cachedLabels, false\)[\s\S]*?waitForNativeStorage: true[\s\S]*?applyLabels\(lateLabels, false\)/u,
+  );
+  assert.match(
+    favoriteLabelSyncSource,
+    /migrateHomeEntityFavoriteLabelsAfterNativeStorage\([\s\S]*?serverProfileConfirmed \|\| Object\.keys\(labels\)\.length > 0/u,
+  );
+  assert.match(chatsPageSource, /import\('\.\.\/lib\/home-entity-favorite-label-sync'\)/u);
+  assert.match(chatsPageSource, /favoriteLabelsSaveAbortControllerRef\.current\?\.abort\(\)/u);
   assert.match(
     chatsPageNativeCss,
     /\.favorite-label-editor__reset:disabled \{[\s\S]*?display: none;[\s\S]*?opacity: 0;/u,

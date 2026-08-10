@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -25,10 +26,12 @@ function createSignedInitData(botToken: string, userId: string, authDateSec: num
     .join('&');
 }
 
-describe('AdminController chats refresh auth e2e', () => {
+describe('AdminController auth e2e', () => {
   let app: NestFastifyApplication;
   const botToken = 'test-bot-token';
   const listChatsWithRefreshState = jest.fn();
+  const getManagedEntityFavoriteLabels = jest.fn();
+  const updateManagedEntityFavoriteLabels = jest.fn();
 
   beforeEach(async () => {
     listChatsWithRefreshState.mockReset().mockResolvedValue({
@@ -54,6 +57,18 @@ describe('AdminController chats refresh auth e2e', () => {
         manualRefreshRetryAfterMs: 18_000,
       },
     });
+    getManagedEntityFavoriteLabels.mockReset().mockImplementation((user: { userId: string }) => ({
+      initialized: true,
+      labels: { important: `VIP ${user.userId}` },
+      revision: 1,
+    }));
+    updateManagedEntityFavoriteLabels
+      .mockReset()
+      .mockImplementation((_user: { userId: string }, body: { labels: unknown }) => ({
+        initialized: true,
+        labels: body.labels,
+        revision: 2,
+      }));
 
     const moduleRef = await Test.createTestingModule({
       controllers: [AdminManagedEntitiesController],
@@ -85,6 +100,8 @@ describe('AdminController chats refresh auth e2e', () => {
           provide: ManagedEntitiesService,
           useValue: {
             listChatsWithRefreshState,
+            getManagedEntityFavoriteLabels,
+            updateManagedEntityFavoriteLabels,
           },
         },
       ],
@@ -158,6 +175,104 @@ describe('AdminController chats refresh auth e2e', () => {
         bypassRemoteCache: true,
         resetRefreshCursor: false,
       },
+    );
+  });
+
+  it('rejects unauthenticated favorite-label reads and writes', async () => {
+    const [readResponse, writeResponse] = await Promise.all([
+      app.inject({
+        method: 'GET',
+        url: '/v1/managed-entities/favorite-labels',
+      }),
+      app.inject({
+        method: 'PUT',
+        url: '/v1/managed-entities/favorite-labels',
+        payload: { labels: { important: 'VIP' }, expectedRevision: 1 },
+      }),
+    ]);
+
+    expect(readResponse.statusCode).toBe(401);
+    expect(writeResponse.statusCode).toBe(401);
+    expect(getManagedEntityFavoriteLabels).not.toHaveBeenCalled();
+    expect(updateManagedEntityFavoriteLabels).not.toHaveBeenCalled();
+  });
+
+  it('isolates favorite-label profiles by the authenticated administrator', async () => {
+    const authDateSec = Math.floor(Date.now() / 1_000);
+    const authorization = (userId: string) =>
+      `InitData ${createSignedInitData(botToken, userId, authDateSec)}`;
+
+    const firstRead = await app.inject({
+      method: 'GET',
+      url: '/v1/managed-entities/favorite-labels',
+      headers: { authorization: authorization('100') },
+    });
+    const secondRead = await app.inject({
+      method: 'GET',
+      url: '/v1/managed-entities/favorite-labels',
+      headers: { authorization: authorization('200') },
+    });
+    const write = await app.inject({
+      method: 'PUT',
+      url: '/v1/managed-entities/favorite-labels',
+      headers: { authorization: authorization('200') },
+      payload: { labels: { important: 'Ключевые' }, expectedRevision: 1 },
+    });
+
+    expect(firstRead.statusCode).toBe(200);
+    expect(firstRead.json()).toEqual({
+      initialized: true,
+      labels: { important: 'VIP 100' },
+      revision: 1,
+    });
+    expect(secondRead.statusCode).toBe(200);
+    expect(secondRead.json()).toEqual({
+      initialized: true,
+      labels: { important: 'VIP 200' },
+      revision: 1,
+    });
+    expect(write.statusCode).toBe(200);
+    expect(write.json()).toEqual({
+      initialized: true,
+      labels: { important: 'Ключевые' },
+      revision: 2,
+    });
+    expect(getManagedEntityFavoriteLabels.mock.calls.map(([user]) => user.userId)).toEqual([
+      '100',
+      '200',
+    ]);
+    expect(updateManagedEntityFavoriteLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: '200' }),
+      { labels: { important: 'Ключевые' }, expectedRevision: 1 },
+    );
+  });
+
+  it('returns 409 when another session already advanced the favorite-label revision', async () => {
+    const message =
+      'Названия категорий уже изменились. Обновите данные и повторите сохранение.';
+    updateManagedEntityFavoriteLabels.mockRejectedValueOnce(
+      new ConflictException({
+        code: 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
+        message,
+      }),
+    );
+    const initData = createSignedInitData(botToken, '200', Math.floor(Date.now() / 1_000));
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/v1/managed-entities/favorite-labels',
+      headers: { authorization: `InitData ${initData}` },
+      payload: { labels: { important: 'Ключевые' }, expectedRevision: 1 },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      code: 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
+      message,
+    });
+    expect(updateManagedEntityFavoriteLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: '200' }),
+      { labels: { important: 'Ключевые' }, expectedRevision: 1 },
     );
   });
 });

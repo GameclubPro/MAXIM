@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ApiRequestError } from '../src/lib/api-request-error';
+import {
+  mergeHomeEntityFavoriteLabelEdits,
+  migrateHomeEntityFavoriteLabelsAfterNativeStorage,
+  planHomeEntityFavoriteLabelsSync,
+  saveHomeEntityFavoriteLabelEditsWithConflictRetry,
+} from '../src/lib/home-entity-favorite-label-sync';
 import {
   createEmptyHomeEntityFavorites,
   createEmptyHomeEntityFavoritesByType,
@@ -114,7 +121,7 @@ test('reads the selected favorite type for one entity', () => {
 test('sanitizes custom favorite category labels', () => {
   const longLabel = 'Очень длинное название категории избранного';
   const labels = sanitizeHomeEntityFavoriteLabels({
-    important: ' VIP   чаты ',
+    important: ' VIP\u0000   чаты ',
     watch: longLabel,
     broadcast: HOME_ENTITY_FAVORITE_LABELS.broadcast,
     service: 42,
@@ -124,6 +131,142 @@ test('sanitizes custom favorite category labels', () => {
     important: 'VIP чаты',
     watch: Array.from(longLabel).slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH).join(''),
   });
+});
+
+test('retries one structured revision conflict and merges onto the refreshed server profile', async () => {
+  const serverSnapshots = [
+    {
+      initialized: true as const,
+      labels: { important: 'Другое окно', watch: 'Старый контроль' },
+      revision: 4,
+    },
+    {
+      initialized: true as const,
+      labels: { important: 'Новее другого окна', watch: 'Старый контроль', test: 'QA' },
+      revision: 5,
+    },
+  ];
+  const replacements: Array<{ labels: Record<string, string>; expectedRevision: number | null }> =
+    [];
+  let loadCalls = 0;
+
+  const saved = await saveHomeEntityFavoriteLabelEditsWithConflictRetry(
+    { important: 'VIP', watch: 'Старый контроль' },
+    { important: 'VIP', watch: 'Новый контроль' },
+    async () => serverSnapshots[loadCalls++]!,
+    async (labels, expectedRevision) => {
+      replacements.push({ labels, expectedRevision });
+      if (replacements.length === 1) {
+        throw new ApiRequestError(
+          409,
+          '{"code":"MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT"}',
+          'Названия категорий уже изменились.',
+        );
+      }
+      return { initialized: true, labels, revision: 6 };
+    },
+  );
+
+  assert.equal(loadCalls, 2);
+  assert.deepEqual(replacements, [
+    {
+      labels: { important: 'Другое окно', watch: 'Новый контроль' },
+      expectedRevision: 4,
+    },
+    {
+      labels: { important: 'Новее другого окна', watch: 'Новый контроль', test: 'QA' },
+      expectedRevision: 5,
+    },
+  ]);
+  assert.deepEqual(saved, {
+    initialized: true,
+    labels: { important: 'Новее другого окна', watch: 'Новый контроль', test: 'QA' },
+    revision: 6,
+  });
+});
+
+test('preserves the complete local draft when the server profile is still uninitialized', async () => {
+  const replacements: Array<{
+    labels: Record<string, string>;
+    expectedRevision: number | null;
+  }> = [];
+
+  await saveHomeEntityFavoriteLabelEditsWithConflictRetry(
+    { important: 'VIP', watch: '24/7' },
+    { important: 'Особые', watch: '24/7' },
+    async () => ({ initialized: false, labels: {}, revision: null }),
+    async (labels, expectedRevision) => {
+      replacements.push({ labels, expectedRevision });
+      return { initialized: true, labels, revision: 1 };
+    },
+  );
+
+  assert.deepEqual(replacements, [
+    {
+      labels: { important: 'Особые', watch: '24/7' },
+      expectedRevision: null,
+    },
+  ]);
+});
+
+test('does not retry text-shaped or non-conflict save failures', async () => {
+  const failures = [
+    new Error('API request failed: 409 Conflict'),
+    new ApiRequestError(409, '{"code":"UNRELATED_CONFLICT"}', 'Другой конфликт.'),
+    new ApiRequestError(500, '{}', 'Внутренняя ошибка.'),
+  ];
+
+  for (const failure of failures) {
+    let loadCalls = 0;
+    let replaceCalls = 0;
+    await assert.rejects(
+      () =>
+        saveHomeEntityFavoriteLabelEditsWithConflictRetry(
+          {},
+          { important: 'VIP' },
+          async () => {
+            loadCalls += 1;
+            return { initialized: true, labels: {}, revision: 1 };
+          },
+          async () => {
+            replaceCalls += 1;
+            throw failure;
+          },
+        ),
+      (error: unknown) => error === failure,
+    );
+    assert.equal(loadCalls, 1);
+    assert.equal(replaceCalls, 1);
+  }
+});
+
+test('surfaces a second revision conflict without discarding the draft', async () => {
+  let loadCalls = 0;
+  let replaceCalls = 0;
+  const conflict = new ApiRequestError(
+    409,
+    '{"code":"MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT"}',
+    'Названия категорий уже изменились.',
+  );
+
+  await assert.rejects(
+    () =>
+      saveHomeEntityFavoriteLabelEditsWithConflictRetry(
+        {},
+        { important: 'VIP' },
+        async () => {
+          loadCalls += 1;
+          return { initialized: true, labels: {}, revision: loadCalls };
+        },
+        async () => {
+          replaceCalls += 1;
+          throw conflict;
+        },
+      ),
+    (error: unknown) => error === conflict,
+  );
+  assert.equal(loadCalls, 2);
+  assert.equal(replaceCalls, 2);
 });
 
 test('resolves and merges favorite category labels with standard fallbacks', () => {
@@ -136,4 +279,114 @@ test('resolves and merges favorite category labels with standard fallbacks', () 
   assert.equal(resolved.important, 'Первый экран');
   assert.equal(resolved.partner, 'Партнерки');
   assert.equal(resolved.broadcast, 'Автопостинг');
+});
+
+test('keeps initialized server labels authoritative over a stale device cache', () => {
+  assert.deepEqual(
+    planHomeEntityFavoriteLabelsSync(
+      { important: 'Старое локальное', watch: 'Локальный контроль' },
+      { initialized: true, labels: { important: 'Серверное название' }, revision: 2 },
+    ),
+    {
+      labels: { important: 'Серверное название' },
+      initializeServer: false,
+    },
+  );
+  assert.deepEqual(
+    planHomeEntityFavoriteLabelsSync(
+      { important: 'Не воскрешать после сброса' },
+      { initialized: true, labels: {}, revision: 3 },
+    ),
+    {
+      labels: {},
+      initializeServer: false,
+    },
+  );
+});
+
+test('imports legacy cached labels only when the server profile is absent', () => {
+  assert.deepEqual(
+    planHomeEntityFavoriteLabelsSync(
+      { important: 'VIP', watch: '24/7' },
+      { initialized: false, labels: {}, revision: null },
+    ),
+    {
+      labels: { important: 'VIP', watch: '24/7' },
+      initializeServer: true,
+    },
+  );
+  assert.deepEqual(
+    planHomeEntityFavoriteLabelsSync({}, { initialized: false, labels: {}, revision: null }),
+    {
+      labels: {},
+      initializeServer: false,
+    },
+  );
+});
+
+test('merges only edited labels onto the latest server profile', () => {
+  assert.deepEqual(
+    mergeHomeEntityFavoriteLabelEdits(
+      { important: 'VIP', watch: 'Старый контроль' },
+      { important: 'VIP', watch: 'Новый контроль' },
+      { important: 'Обновлено в другом окне', watch: 'Старый контроль', test: 'QA' },
+    ),
+    {
+      important: 'Обновлено в другом окне',
+      watch: 'Новый контроль',
+      test: 'QA',
+    },
+  );
+  assert.deepEqual(
+    mergeHomeEntityFavoriteLabelEdits(
+      { watch: 'Новый контроль' },
+      {},
+      { important: 'VIP', watch: 'Новый контроль' },
+    ),
+    { important: 'VIP' },
+  );
+});
+
+test('waits for late native labels before initializing the server profile', async () => {
+  let releaseNativeLabels!: (labels: { important: string }) => void;
+  const nativeLabels = new Promise<{ important: string }>((resolve) => {
+    releaseNativeLabels = resolve;
+  });
+  const initializedWith: Array<{ important?: string }> = [];
+
+  const migration = migrateHomeEntityFavoriteLabelsAfterNativeStorage(
+    { initialized: false, labels: {}, revision: null },
+    () => nativeLabels,
+    async (labels) => {
+      initializedWith.push(labels);
+      return { initialized: true, labels, revision: 1 };
+    },
+    () => undefined,
+  );
+
+  await Promise.resolve();
+  assert.equal(initializedWith.length, 0);
+  releaseNativeLabels({ important: 'VIP' });
+  assert.deepEqual(await migration, { important: 'VIP' });
+  assert.deepEqual(initializedWith, [{ important: 'VIP' }]);
+});
+
+test('keeps late native labels in the draft when server initialization fails', async () => {
+  const failure = new Error('Server unavailable');
+  const candidates: Array<Record<string, string>> = [];
+
+  await assert.rejects(
+    () =>
+      migrateHomeEntityFavoriteLabelsAfterNativeStorage(
+        { initialized: false, labels: {}, revision: null },
+        async () => ({ important: 'VIP', watch: '24/7' }),
+        async () => {
+          throw failure;
+        },
+        (labels) => candidates.push(labels),
+      ),
+    (error: unknown) => error === failure,
+  );
+
+  assert.deepEqual(candidates, [{ important: 'VIP', watch: '24/7' }]);
 });

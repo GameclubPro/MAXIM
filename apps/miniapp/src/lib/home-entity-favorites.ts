@@ -135,7 +135,7 @@ function normalizeFavoriteLabel(value: unknown): string | null {
     return null;
   }
 
-  const normalized = value.replace(/\s+/gu, ' ').trim();
+  const normalized = value.split('\u0000').join('').replace(/\s+/gu, ' ').trim();
   if (!normalized) {
     return null;
   }

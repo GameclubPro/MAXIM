@@ -29,3 +29,11 @@ test('late bridge discovery remains wired to script load and removes the listene
     /maxBridgeScript\?\.removeEventListener\('load', refreshNativeEnvironmentSignature\);/u,
   );
 });
+
+test('authenticated API transport stays stable across bridge-only rerenders for one principal', () => {
+  assert.match(
+    appSource,
+    /const authenticatedApiClient = useMemo\([\s\S]*?createApiTransport\(getInitData\)[\s\S]*?\[authQueryPrincipalKey, hasAuthenticatedInitData\]/u,
+  );
+  assert.doesNotMatch(appSource, /: initData\s*\? createApiTransport\(getInitData\)/u);
+});

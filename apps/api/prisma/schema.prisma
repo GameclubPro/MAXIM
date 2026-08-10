@@ -956,6 +956,16 @@ model ManagedEntityFavorite {
   @@map("managed_entity_favorites")
 }
 
+model ManagedEntityFavoritePreference {
+  userId         String   @id @map("user_id")
+  labelOverrides Json     @default("{}") @map("label_overrides")
+  revision       Int      @default(1)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("managed_entity_favorite_preferences")
+}
+
 model DialogNotificationSubscription {
   id         String                 @id @default(cuid())
   chatId     String                 @map("chat_id")

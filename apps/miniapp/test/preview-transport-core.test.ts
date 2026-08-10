@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import {
   PREVIEW_NOT_HANDLED,
@@ -48,6 +49,49 @@ test('preview transports keep mutable state isolated per instance', async () => 
   const secondRules = (await second.request('/chats/preview-chat/rules')) as { text: string };
   assert.equal(firstRules.text, 'Изменено только в первом preview.');
   assert.notEqual(secondRules.text, firstRules.text);
+});
+
+test('preview transport persists favorite labels and keeps initialization non-destructive', async () => {
+  const api = createPreviewApiTransport();
+
+  assert.deepEqual(await api.request('/managed-entities/favorite-labels'), {
+    initialized: true,
+    labels: {},
+    revision: 1,
+  });
+  assert.deepEqual(
+    await api.request('/managed-entities/favorite-labels', {
+      method: 'PUT',
+      body: JSON.stringify({
+        labels: { important: 'VIP' },
+        mode: 'replace',
+        expectedRevision: 1,
+      }),
+    }),
+    { initialized: true, labels: { important: 'VIP' }, revision: 2 },
+  );
+  assert.deepEqual(
+    await api.request('/managed-entities/favorite-labels', {
+      method: 'PUT',
+      body: JSON.stringify({ labels: { important: 'Старое' }, mode: 'initialize' }),
+    }),
+    { initialized: true, labels: { important: 'VIP' }, revision: 2 },
+  );
+  await assert.rejects(
+    () =>
+      api.request('/managed-entities/favorite-labels', {
+        method: 'PUT',
+        body: JSON.stringify({
+          labels: { watch: 'Старое окно' },
+          mode: 'replace',
+          expectedRevision: 1,
+        }),
+      }),
+    (error: unknown) =>
+      error instanceof ApiRequestError &&
+      error.status === 409 &&
+      error.code === 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
+  );
 });
 
 test('preview generated ids and timestamps use the injected clock', async () => {
