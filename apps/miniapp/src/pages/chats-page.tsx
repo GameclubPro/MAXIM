@@ -42,7 +42,6 @@ import {
   HOME_ENTITY_FAVORITE_LABELS,
   type HomeEntityFavoriteLabelOverrides,
   buildHomeEntityFavoritesMigrationKey,
-  createHomeEntityFavoritesFromEntities,
   createHomeEntityFavoritesFromLegacy,
   getHomeEntityFavoritesFallbackScope,
   getHomeEntityFavoriteTypes,
@@ -56,6 +55,7 @@ import {
   readLegacyHomeEntityFavorites,
   readHomeEntityFavorites,
   resolveHomeEntityFavoriteLabels,
+  reconcileHomeEntityFavoritesFromEntities,
   sanitizeHomeEntityFavoriteLabels,
   saveHomeEntityFavoriteLabels,
   saveHomeEntityFavorites,
@@ -346,6 +346,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     createFavoriteLabelDraft(readHomeEntityFavoriteLabels(favoriteStorageScope)),
   );
   const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
+  const pendingFavoriteMutationRef = useRef<{
+    entityType: ManagedTab;
+    entityId: string;
+    favoriteTypes: ManagedEntityFavoriteType[];
+  } | null>(null);
   const homeOverlayOpen =
     connectSheetOpen ||
     Boolean(favoritePicker) ||
@@ -450,6 +455,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     keepVisibleOnSameSnapshotVersion: true,
     treatUserVisibleCompleteAsSettled: false,
   });
+  const authoritativeFavoriteEntitiesRef = useRef<{
+    chats?: readonly ChatSummary[];
+    channels?: readonly ChatSummary[];
+  }>({});
+  authoritativeFavoriteEntitiesRef.current = {
+    chats: chatsState.hasLoadedFromServer ? (chatsState.data ?? []) : undefined,
+    channels: channelsState.hasLoadedFromServer ? (channelsState.data ?? []) : undefined,
+  };
 
   const activeEntities = useMemo(() => {
     return activeEntitiesKey === 'chats' ? chatsState.data : channelsState.data;
@@ -747,7 +760,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       }
 
       setHomeEntityFavorites((current) => {
-        const next = mergeHomeEntityFavorites(current, nativeFavorites);
+        let next = reconcileHomeEntityFavoritesFromEntities(
+          mergeHomeEntityFavorites(current, nativeFavorites),
+          authoritativeFavoriteEntitiesRef.current,
+        );
+        const pending = pendingFavoriteMutationRef.current;
+        if (pending) {
+          next = setHomeEntityFavoriteTypes(
+            next,
+            pending.entityType,
+            pending.entityId,
+            pending.favoriteTypes,
+          );
+        }
         if (JSON.stringify(next) === JSON.stringify(current)) {
           return current;
         }
@@ -787,21 +812,22 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [favoriteStorageScope]);
 
   useEffect(() => {
-    const serverFavorites = createHomeEntityFavoritesFromEntities({
-      chats: chatsState.data ?? undefined,
-      channels: channelsState.data ?? undefined,
-    });
-    const hasServerFavorites = HOME_ENTITY_FAVORITE_TYPES.some(
-      (favoriteType) =>
-        serverFavorites.chat[favoriteType].length > 0 ||
-        serverFavorites.channel[favoriteType].length > 0,
-    );
-    if (!hasServerFavorites) {
+    const serverEntities = authoritativeFavoriteEntitiesRef.current;
+    if (!serverEntities.chats && !serverEntities.channels) {
       return;
     }
 
     setHomeEntityFavorites((current) => {
-      const next = mergeHomeEntityFavorites(current, serverFavorites);
+      let next = reconcileHomeEntityFavoritesFromEntities(current, serverEntities);
+      const pending = pendingFavoriteMutationRef.current;
+      if (pending) {
+        next = setHomeEntityFavoriteTypes(
+          next,
+          pending.entityType,
+          pending.entityId,
+          pending.favoriteTypes,
+        );
+      }
       if (JSON.stringify(next) === JSON.stringify(current)) {
         return current;
       }
@@ -809,7 +835,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       saveHomeEntityFavorites(favoriteStorageScope, next);
       return next;
     });
-  }, [channelsState.data, chatsState.data, favoriteStorageScope]);
+  }, [
+    channelsState.data,
+    channelsState.hasLoadedFromServer,
+    chatsState.data,
+    chatsState.hasLoadedFromServer,
+    favoriteStorageScope,
+  ]);
 
   useEffect(() => {
     saveLastEntityType(activeTab);
@@ -1030,18 +1062,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       favoriteStorageScope !== getHomeEntityFavoritesFallbackScope()
         ? mergeHomeEntityFavorites(storedFavorites, readHomeEntityFavorites(previousScope))
         : storedFavorites;
-    const serverFavorites = createHomeEntityFavoritesFromEntities({
-      chats: chatsState.data ?? undefined,
-      channels: channelsState.data ?? undefined,
+    let scopedFavorites = reconcileHomeEntityFavoritesFromEntities(nextFavorites, {
+      chats: chatsState.hasLoadedFromServer ? (chatsState.data ?? []) : undefined,
+      channels: channelsState.hasLoadedFromServer ? (channelsState.data ?? []) : undefined,
     });
-    const hasServerFavorites = HOME_ENTITY_FAVORITE_TYPES.some(
-      (favoriteType) =>
-        serverFavorites.chat[favoriteType].length > 0 ||
-        serverFavorites.channel[favoriteType].length > 0,
-    );
-    const scopedFavorites = hasServerFavorites
-      ? mergeHomeEntityFavorites(nextFavorites, serverFavorites)
-      : nextFavorites;
+    const pending = pendingFavoriteMutationRef.current;
+    if (pending) {
+      scopedFavorites = setHomeEntityFavoriteTypes(
+        scopedFavorites,
+        pending.entityType,
+        pending.entityId,
+        pending.favoriteTypes,
+      );
+    }
 
     if (JSON.stringify(scopedFavorites) !== JSON.stringify(storedFavorites)) {
       saveHomeEntityFavorites(favoriteStorageScope, scopedFavorites);
@@ -1050,7 +1083,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     favoriteStorageScopeRef.current = favoriteStorageScope;
     favoriteMigrationAttemptedRef.current = false;
     setHomeEntityFavorites(scopedFavorites);
-  }, [channelsState.data, chatsState.data, favoriteStorageScope]);
+  }, [
+    channelsState.data,
+    channelsState.hasLoadedFromServer,
+    chatsState.data,
+    chatsState.hasLoadedFromServer,
+    favoriteStorageScope,
+  ]);
 
   useEffect(() => {
     const previousScope = favoriteLabelStorageScopeRef.current;
@@ -1428,6 +1467,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       entityId,
     );
     const favoriteTypes = favoriteType ? [favoriteType] : [];
+    pendingFavoriteMutationRef.current = { entityType, entityId, favoriteTypes };
     const nextFavorites = setHomeEntityFavoriteTypes(
       previousFavorites,
       entityType,
@@ -1440,6 +1480,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
     try {
       const saved = await saveManagedEntityFavoriteTypes(api, entityType, entityId, favoriteTypes);
+      pendingFavoriteMutationRef.current = {
+        entityType,
+        entityId,
+        favoriteTypes: saved.favoriteTypes,
+      };
       setHomeEntityFavorites((current) => {
         const next = setHomeEntityFavoriteTypes(current, entityType, entityId, saved.favoriteTypes);
         saveHomeEntityFavorites(favoriteStorageScope, next);
@@ -1449,6 +1494,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         current?.entityType === entityType && current.entity.id === entityId ? null : current,
       );
     } catch (error: unknown) {
+      pendingFavoriteMutationRef.current = {
+        entityType,
+        entityId,
+        favoriteTypes: previousFavoriteTypes,
+      };
       setHomeEntityFavorites((current) => {
         const rollback = setHomeEntityFavoriteTypes(
           current,
@@ -1465,6 +1515,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         tone: 'danger',
       });
     } finally {
+      pendingFavoriteMutationRef.current = null;
       setSavingFavoriteEntityKey((current) =>
         current === buildFavoriteEntityKey(entityType, entityId) ? null : current,
       );
@@ -1528,7 +1579,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск по чатам' : 'Поиск по каналам';
-  const searchPlaceholder = activeTab === 'chat' ? 'Поиск чатов' : 'Поиск каналов';
+  const searchPlaceholder = 'Поиск';
   const refreshButtonLabel =
     isFetching || isManualRefreshInProgressByState
       ? 'Обновляем список'
@@ -1540,7 +1591,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const favoriteFilterButtonLabel = activeFavoriteFilterLabel
     ? `Фильтр: ${activeFavoriteFilterLabel}`
     : 'Фильтр категорий';
-  const FavoriteFilterIcon =
+  const ActiveFavoriteFilterIcon =
     favoriteFilter === FAVORITE_FILTER_ALL
       ? FilterGlyph
       : HOME_ENTITY_FAVORITE_ICONS[favoriteFilter];
@@ -1713,11 +1764,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 setFavoritePicker({ entityType: activeTab, entity });
               }}
             >
-              {primaryFavoriteType ? (
-                <CategoryIcon aria-hidden focusable="false" />
-              ) : (
-                <StarGlyph aria-hidden focusable="false" />
-              )}
+              <StarGlyph aria-hidden focusable="false" />
+              {primaryFavoriteType && primaryFavoriteType !== 'important' ? (
+                <span className="chat-card__favorite-category" aria-hidden>
+                  <CategoryIcon focusable="false" />
+                </span>
+              ) : null}
             </button>
             <Link
               to={statisticsRoute}
@@ -1792,7 +1844,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             labelsEditorOpen={favoriteLabelsEditorOpen}
             favoriteLabels={favoriteLabels}
             favoriteCounts={favoriteCounts}
-            favoriteLabelOverrides={homeEntityFavoriteLabels}
             favoriteLabelDraft={favoriteLabelDraft}
             selectedFavoriteType={selectedSheetFavoriteType}
             favoriteSaving={sheetFavoriteSaving}
@@ -1856,7 +1907,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <span className="chats-command__sr" role="status" aria-live="polite" aria-atomic="true">
             {homeSyncAccessibleLabel}
           </span>
-          <label className="field field--search chats-command__field" htmlFor="chat-search">
+          <label
+            className={cn(
+              'field field--search chats-command__field',
+              hasSearchQuery && 'has-query',
+            )}
+            htmlFor="chat-search"
+          >
             <span>{searchLabel}</span>
             <div className="chats-command__field-shell">
               <SearchGlyph aria-hidden className="chats-command__search-icon" />
@@ -1892,7 +1949,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               Готово
             </button>
           ) : (
-            <>
+            <div className="chats-command__actions" role="group" aria-label="Действия со списком">
               <button
                 type="button"
                 className="chats-command__connect"
@@ -1925,7 +1982,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 onPointerDown={() => void preloadHomeEntitySheets()}
                 onClick={(event) => openFavoriteFilterPicker(event.currentTarget)}
               >
-                <FavoriteFilterIcon aria-hidden focusable="false" />
+                <FilterGlyph aria-hidden focusable="false" />
               </button>
               <button
                 type="button"
@@ -1947,7 +2004,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <RefreshGlyph aria-hidden />
                 )}
               </button>
-            </>
+            </div>
           )}
         </div>
       </GlassCard>
@@ -1960,7 +2017,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           aria-label={`Сбросить фильтр: ${activeFavoriteFilterLabel}`}
           title={`Сбросить фильтр: ${activeFavoriteFilterLabel}`}
         >
-          <FavoriteFilterIcon aria-hidden focusable="false" />
+          <ActiveFavoriteFilterIcon aria-hidden focusable="false" />
           <span>{activeFavoriteFilterLabel}</span>
           <XmarkGlyph aria-hidden focusable="false" />
         </button>

@@ -161,6 +161,18 @@ test('managed statistics workspace keeps sticky navigation below the measured he
     /\.events-screen\[data-managed-entity-workspace\] > \.events-primary-tabs \{\s*position: sticky;\s*top: var\(--managed-entity-workspace-header-bottom,/u,
   );
   assert.match(
+    statisticsExperienceCss,
+    /\.events-screen\[data-managed-entity-workspace\] > \.events-primary-tabs \{[\s\S]*?margin-top: -8px;[\s\S]*?padding: 8px 10px 0;[\s\S]*?background: var\(--surface-page\);/u,
+  );
+  assert.match(
+    statisticsExperienceCss,
+    /\.events-screen\[data-managed-entity-workspace\] > \.events-primary-tabs::before \{[\s\S]*?bottom: 0;[\s\S]*?width: 100vw;[\s\S]*?background: var\(--surface-page\);/u,
+  );
+  assert.match(
+    statisticsExperienceCss,
+    /> \.events-primary-tabs__track \{\s*position: relative;\s*z-index: 1;/u,
+  );
+  assert.match(
     eventsPageSource,
     /<ManagedEntityWorkspaceHeader[\s\S]*?<div className="events-primary-tabs"[\s\S]*?<section className=\{`events-stage events-stage--\$\{section\}`\}>/u,
   );

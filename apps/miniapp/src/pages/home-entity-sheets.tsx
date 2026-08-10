@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
+import { EditPencil, Undo } from 'iconoir-react';
 import {
   FilterGlyph,
   HOME_ENTITY_FAVORITE_ICONS,
@@ -25,7 +26,6 @@ import {
   HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH,
   HOME_ENTITY_FAVORITE_LABELS,
   HOME_ENTITY_FAVORITE_TYPES,
-  type HomeEntityFavoriteLabelOverrides,
 } from '../lib/home-entity-favorites';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
@@ -47,7 +47,6 @@ type HomeEntitySheetsProps = {
   labelsEditorOpen: boolean;
   favoriteLabels: FavoriteLabelDraft;
   favoriteCounts: Record<ManagedEntityFavoriteType, number>;
-  favoriteLabelOverrides: HomeEntityFavoriteLabelOverrides;
   favoriteLabelDraft: FavoriteLabelDraft;
   selectedFavoriteType: ManagedEntityFavoriteType | null;
   favoriteSaving: boolean;
@@ -94,9 +93,9 @@ function HomeSheet({
   children: ReactNode;
 }) {
   const panelRef = useRef<HTMLElement | null>(null);
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-  useDialogFocusTrap(true, panelRef, closeRef);
+  useDialogFocusTrap(true, panelRef, panelRef);
   const titleId = `home-sheet-${sheetKey}-title`;
+  const subtitleId = subtitle ? `home-sheet-${sheetKey}-subtitle` : undefined;
   const sheet = (
     <div className={cn('favorite-picker', `home-sheet--${sheetKey}`)} style={overlayStyle}>
       <button
@@ -113,15 +112,15 @@ function HomeSheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={subtitleId}
         tabIndex={-1}
       >
         <div className="favorite-picker__header">
           <div>
             <strong id={titleId}>{title}</strong>
-            {subtitle ? <span>{subtitle}</span> : null}
+            {subtitle ? <span id={subtitleId}>{subtitle}</span> : null}
           </div>
           <button
-            ref={closeRef}
             type="button"
             className="favorite-picker__close"
             aria-label="Закрыть"
@@ -281,7 +280,7 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
       <HomeSheet
         key="labels"
         sheetKey="labels"
-        title="Категории избранного"
+        title="Названия категорий"
         panelClassName="favorite-label-editor__panel"
         overlayStyle={overlayStyle}
         onClose={props.onClose}
@@ -289,37 +288,41 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
         <div className="favorite-label-editor__list">
           {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
             const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-            const isCustom = Boolean(props.favoriteLabelOverrides[favoriteType]);
+            const defaultLabel = HOME_ENTITY_FAVORITE_LABELS[favoriteType];
+            const canReset = props.favoriteLabelDraft[favoriteType] !== defaultLabel;
             return (
-              <label key={favoriteType} className="favorite-label-editor__row">
+              <div
+                key={favoriteType}
+                className={cn('favorite-label-editor__row', canReset && 'has-reset')}
+              >
                 <span className={cn('favorite-label-editor__icon', `is-${favoriteType}`)}>
                   <FavoriteIcon aria-hidden />
                 </span>
-                <input
-                  type="text"
-                  inputMode="text"
-                  value={props.favoriteLabelDraft[favoriteType]}
-                  maxLength={HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH}
-                  aria-label={`Название категории: ${HOME_ENTITY_FAVORITE_LABELS[favoriteType]}`}
-                  onChange={(event) =>
-                    props.onFavoriteLabelChange(favoriteType, event.currentTarget.value)
-                  }
-                />
+                <label className="favorite-label-editor__field">
+                  <span className="favorite-picker__sr">Название категории: {defaultLabel}</span>
+                  <EditPencil aria-hidden />
+                  <input
+                    type="text"
+                    inputMode="text"
+                    value={props.favoriteLabelDraft[favoriteType]}
+                    maxLength={HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH}
+                    aria-label={`Название категории: ${defaultLabel}`}
+                    onChange={(event) =>
+                      props.onFavoriteLabelChange(favoriteType, event.currentTarget.value)
+                    }
+                  />
+                </label>
                 <button
                   type="button"
                   className="favorite-label-editor__reset"
-                  aria-label="Вернуть стандартное название"
+                  aria-label={`Вернуть стандартное название: ${defaultLabel}`}
                   title="Вернуть стандартное название"
-                  disabled={
-                    !isCustom &&
-                    props.favoriteLabelDraft[favoriteType] ===
-                      HOME_ENTITY_FAVORITE_LABELS[favoriteType]
-                  }
+                  disabled={!canReset}
                   onClick={() => props.onFavoriteLabelReset(favoriteType)}
                 >
-                  <XmarkGlyph aria-hidden />
+                  <Undo aria-hidden />
                 </button>
-              </label>
+              </div>
             );
           })}
         </div>
@@ -353,29 +356,6 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
         <fieldset className="favorite-picker__fieldset" disabled={props.favoriteSaving}>
           <legend className="favorite-picker__sr">Выберите категорию избранного</legend>
           <div className="favorite-picker__grid" aria-busy={props.favoriteSaving || undefined}>
-            <label
-              className={cn(
-                'favorite-picker__option',
-                'is-none',
-                props.selectedFavoriteType === null && 'is-active',
-              )}
-            >
-              <input
-                className="favorite-picker__radio"
-                type="radio"
-                name="home-entity-category"
-                value="none"
-                checked={props.selectedFavoriteType === null}
-                onChange={() => props.onFavoriteChange(null)}
-              />
-              <span className="favorite-picker__icon">
-                <XmarkGlyph aria-hidden />
-              </span>
-              <strong>Без категории</strong>
-              {props.selectedFavoriteType === null ? (
-                <CheckGlyph aria-hidden className="favorite-picker__check" />
-              ) : null}
-            </label>
             {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
               const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
               const active = props.selectedFavoriteType === favoriteType;
@@ -404,6 +384,18 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
                 </label>
               );
             })}
+            {props.selectedFavoriteType ? (
+              <button
+                type="button"
+                className="favorite-picker__option favorite-picker__remove"
+                onClick={() => props.onFavoriteChange(null)}
+              >
+                <span className="favorite-picker__icon">
+                  <XmarkGlyph aria-hidden />
+                </span>
+                <strong>Убрать из избранного</strong>
+              </button>
+            ) : null}
           </div>
         </fieldset>
       </HomeSheet>
@@ -481,28 +473,33 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
             })}
           </div>
         </fieldset>
-        <div className="home-filter__commands">
-          <button
-            type="button"
-            className="favorite-picker__option home-filter__manage"
-            onClick={props.onStartCategoryEdit}
-          >
-            <span className="favorite-picker__icon">
-              <FilterGlyph aria-hidden focusable="false" />
-            </span>
-            <strong>Распределить по категориям</strong>
-          </button>
-          <button
-            type="button"
-            className="favorite-picker__option home-filter__manage"
-            onClick={props.onOpenLabelsEditor}
-          >
-            <span className="favorite-picker__icon">
-              <SettingsGlyph aria-hidden focusable="false" />
-            </span>
-            <strong>Настроить названия</strong>
-          </button>
-        </div>
+        <section className="home-filter__management" aria-labelledby="home-filter-management-title">
+          <p id="home-filter-management-title" className="home-filter__management-title">
+            Управление
+          </p>
+          <div className="home-filter__commands" role="group">
+            <button
+              type="button"
+              className="favorite-picker__option home-filter__manage"
+              onClick={props.onStartCategoryEdit}
+            >
+              <span className="favorite-picker__icon">
+                <FilterGlyph aria-hidden focusable="false" />
+              </span>
+              <strong>Распределить по категориям</strong>
+            </button>
+            <button
+              type="button"
+              className="favorite-picker__option home-filter__manage"
+              onClick={props.onOpenLabelsEditor}
+            >
+              <span className="favorite-picker__icon">
+                <SettingsGlyph aria-hidden focusable="false" />
+              </span>
+              <strong>Настроить названия</strong>
+            </button>
+          </div>
+        </section>
       </HomeSheet>
     );
   }

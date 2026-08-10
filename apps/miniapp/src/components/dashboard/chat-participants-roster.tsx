@@ -77,6 +77,22 @@ function resolveRoleTone(item: ChatParticipantItem): 'owner' | 'admin' | 'member
   return 'member';
 }
 
+function resolveRosterHeading(roleFilter: ChatParticipantRoleFilter): string {
+  if (roleFilter === 'admins') {
+    return 'Администраторы';
+  }
+
+  if (roleFilter === 'members') {
+    return 'Участники';
+  }
+
+  if (roleFilter === 'bots') {
+    return 'Боты';
+  }
+
+  return 'Все участники';
+}
+
 function resolveViolationTone(count: number): 'low' | 'medium' | 'high' {
   if (count >= 4) {
     return 'high';
@@ -316,7 +332,10 @@ export function ChatParticipantsRoster({
             </button>
           ))}
         </div>
-        <p>Нарушения {rangeLabel}</p>
+        <div className="participants-roster__scope-heading">
+          <h2>{resolveRosterHeading(roleFilter)}</h2>
+          <p>Нарушения {rangeLabel}</p>
+        </div>
       </div>
 
       {error ? (

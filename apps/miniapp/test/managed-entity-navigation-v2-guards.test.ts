@@ -25,6 +25,7 @@ const workspaceHeaderSource = readSource(
   '../src/components/ui/managed-entity-workspace-header.tsx',
 );
 const workspaceHeaderCss = readSource('../src/components/ui/managed-entity-workspace-header.css');
+const compactIconsSource = readSource('../src/components/ui/compact-icons.tsx');
 const actionConfirmSheetSource = readSource('../src/components/ui/action-confirm-sheet.tsx');
 const chatSettingsSource = readSource('../src/pages/settings-page.legacy.tsx');
 const chatSettingsWorkspaceSource = readSource('../src/pages/settings/chat-settings-workspace.tsx');
@@ -213,6 +214,27 @@ test('shared workspace header replaces counterpart routes and preserves route st
     workspaceHeaderCss,
     /\.managed-entity-workspace-header \.compact-page-header__subtitle,[\s\S]*?color: var\(--text-secondary\);/u,
   );
+  assert.match(
+    workspaceHeaderSource,
+    /const CounterpartIcon = screen === 'settings' \? StatisticsGlyph : SettingsGlyph/u,
+  );
+  assert.match(
+    compactIconsSource,
+    /export function SettingsGlyph[\s\S]*?<circle cx="12" cy="12" r="3" \/>/u,
+  );
+  assert.match(
+    workspaceHeaderCss,
+    /\.managed-entity-workspace-header \.compact-page-header__title \{[\s\S]*?white-space: normal;[\s\S]*?-webkit-line-clamp: 2;/u,
+  );
+  assert.match(
+    workspaceHeaderCss,
+    /\.managed-entity-workspace-header\.compact-page-header\.is-compact \.compact-page-header__bar \{[\s\S]*?52px/u,
+  );
+  assert.match(
+    workspaceHeaderCss,
+    /\.managed-entity-workspace-header\.compact-page-header\.is-compact \{\s*--compact-page-header-height: 52px;/u,
+  );
+  assert.match(workspaceHeaderCss, /background: var\(--color-surface\);/u);
 });
 
 test('home snapshots its entry before pushing detail and restores list context after Back', () => {
@@ -282,6 +304,33 @@ test('statistics pages persist route preferences against their Home origin', () 
   assert.match(
     readSource('../src/lib/managed-entity-workspace.ts'),
     /locationKey: workspace\.origin\.locationKey/u,
+  );
+});
+
+test('canonical statistics routes sync query preferences into route state before settings', () => {
+  for (const [source, entityType, stateBuilder] of [
+    [chatStatsSource, 'chat', 'buildChatStatsRouteState'],
+    [channelStatsSource, 'channel', 'buildChannelStatsRouteState'],
+  ] as const) {
+    assert.match(source, /hasManagedEntityStatsPreference\(location\.state/u);
+    assert.match(source, new RegExp(`entityType: '${entityType}'`, 'u'));
+    assert.match(
+      source,
+      /if \(nextSearch === location\.search && routeStateHasCurrentStatsPreference\)/u,
+    );
+    assert.match(
+      source,
+      new RegExp(`state: chatId[\\s\\S]*?${stateBuilder}\\(location\\.state, chatId, routeQuery\\)`, 'u'),
+    );
+  }
+
+  assert.match(
+    chatSettingsWorkspaceSource,
+    /buildManagedEntityStatisticsRoute\([\s\S]*?readManagedEntityWorkspaceState\(location\.state\)\?\.statsPreference/u,
+  );
+  assert.match(
+    channelSettingsSource,
+    /buildManagedEntityStatisticsRoute\([\s\S]*?readManagedEntityWorkspaceState\(location\.state\)\?\.statsPreference/u,
   );
 });
 

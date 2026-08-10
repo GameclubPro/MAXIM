@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getChatParticipantsPage } from '../src/lib/api/events-client';
+import { getChatParticipantsPage, getChatStatisticsIdentity } from '../src/lib/api/events-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 test('participant requests keep the selected period and role filter server-side', async () => {
@@ -41,5 +41,58 @@ test('participant requests reject unknown role filters before transport', async 
         roleFilter: 'unknown' as never,
       }),
     /Invalid participant role filter/u,
+  );
+});
+
+test('participant statistics load authoritative chat identity from the lightweight header', async () => {
+  let requestedPath = '';
+  let requestedSignal: AbortSignal | null | undefined;
+  const controller = new AbortController();
+  const api: ApiTransport = {
+    async request(path, init) {
+      requestedPath = path;
+      requestedSignal = init?.signal;
+      return {
+        id: 'chat-1',
+        entityType: 'chat',
+        title: 'Садоводы Южного',
+        avatarUrl: 'https://example.com/chat.png',
+        participantsCount: 48,
+      };
+    },
+    requestKeepalive() {},
+  };
+
+  const identity = await getChatStatisticsIdentity(api, 'chat-1', {
+    signal: controller.signal,
+  });
+
+  assert.equal(requestedPath, '/chats/chat-1/header');
+  assert.equal(requestedSignal, controller.signal);
+  assert.deepEqual(identity, {
+    id: 'chat-1',
+    title: 'Садоводы Южного',
+    avatarUrl: 'https://example.com/chat.png',
+    participantsCount: 48,
+  });
+});
+
+test('participant statistics reject a header from another chat', async () => {
+  const api: ApiTransport = {
+    async request() {
+      return {
+        id: 'chat-2',
+        entityType: 'chat',
+        title: 'Другой чат',
+        avatarUrl: null,
+        participantsCount: 12,
+      };
+    },
+    requestKeepalive() {},
+  };
+
+  await assert.rejects(
+    () => getChatStatisticsIdentity(api, 'chat-1'),
+    /Invalid chat statistics identity/u,
   );
 });

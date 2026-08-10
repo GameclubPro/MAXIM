@@ -49,11 +49,27 @@
     display: grid;
     gap: 7px;
   }
+  .participants-roster__scope-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .participants-roster__scope-heading h2 {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    font-weight: 800;
+    line-height: 1.3;
+  }
   .participants-roster__scope p {
     margin: 0;
     color: var(--text-secondary);
     font-size: 0.75rem;
     line-height: 1.35;
+    text-align: right;
+    white-space: nowrap;
   }
   .participants-roster__role-filters {
     display: grid;

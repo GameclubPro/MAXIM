@@ -76,12 +76,8 @@ export function SettingsGlyph(props: SVGProps<SVGSVGElement>) {
       strokeLinejoin="round"
       {...props}
     >
-      <path d="M4.5 7.5h15" />
-      <path d="M4.5 16.5h15" />
-      <path d="M8.2 4.8v5.4" />
-      <path d="M15.8 13.8v5.4" />
-      <path d="M6.6 7.5h3.2" />
-      <path d="M14.2 16.5h3.2" />
+      <circle cx="12" cy="12" r="3" />
+      <path d="m19.62 10.4-1.1-2.65L20 6l-2-2-1.74 1.48-2.7-1.11L12.94 2h-1.96l-.63 2.4-2.65 1.12L6 4 4 6l1.45 1.79-1.08 2.66L2 11v2l2.4.66 1.12 2.64L4 18l2 2 1.79-1.46 2.61 1.07L11 22h2l.6-2.39 2.66-1.1C16.7 18.83 18 20 18 20l2-2-1.48-1.75 1.1-2.65 2.38-.62V11l-2.38-.6Z" />
     </svg>
   );
 }

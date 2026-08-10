@@ -310,6 +310,32 @@ export function mergeManagedEntityStatsPreference(
   };
 }
 
+export function hasManagedEntityStatsPreference(
+  routeState: unknown,
+  options: {
+    entityType: ManagedEntityType;
+    entityId: string;
+    preference: unknown;
+  },
+): boolean {
+  const workspace = readManagedEntityWorkspaceState(routeState);
+  if (
+    workspace?.entityType !== options.entityType ||
+    workspace.entityId !== options.entityId
+  ) {
+    return false;
+  }
+
+  const preference = sanitizeManagedEntityStatsPreference(
+    options.entityType,
+    options.preference,
+  );
+  return (
+    workspace.statsPreference.section === preference.section &&
+    workspace.statsPreference.range === preference.range
+  );
+}
+
 export function readManagedEntityStatsPreference(
   storage: WorkspaceStorage,
   key: string,

@@ -14,18 +14,21 @@ const chatsPageSource = readFileSync(
   new URL('../src/pages/chats-page.tsx', import.meta.url),
   'utf8',
 );
+const participantsRosterSource = readFileSync(
+  new URL('../src/components/dashboard/chat-participants-roster.tsx', import.meta.url),
+  'utf8',
+);
 
-test('chat statistics identity only consumes a dashboard validated for the current route', () => {
+test('chat statistics identity only consumes sources validated for the current route', () => {
   assert.match(
     eventsPageSource,
     /const dashboard =\s*chatId && isLogsDashboardResponseForRange\(dashboardQuery\.data, chatId, range\)/u,
   );
-  assert.match(eventsPageSource, /remoteTitle: currentDashboardIdentity\?\.chat\.title/u);
+  assert.match(eventsPageSource, /enabled: Boolean\(chatId\) && section === 'participants'/u);
+  assert.match(eventsPageSource, /getChatStatisticsIdentity\(api, chatId \?\? '', \{ signal \}\)/u);
+  assert.match(eventsPageSource, /remoteTitle: currentChatIdentity\?\.title/u);
   assert.match(eventsPageSource, /remoteFallbackTitles: chatId/u);
-  assert.match(
-    eventsPageSource,
-    /const fromDashboard = currentDashboardIdentity\?\.chat\.avatarUrl/u,
-  );
+  assert.match(eventsPageSource, /const fromRemote = currentChatIdentity\?\.avatarUrl/u);
   assert.match(eventsPageSource, /chatTitleResolution\.source === 'fallback'/u);
   assert.match(
     eventsPageSource,
@@ -33,9 +36,18 @@ test('chat statistics identity only consumes a dashboard validated for the curre
   );
   assert.match(
     eventsPageSource,
-    /chatTitleResolution\.source === 'remote'[\s\S]*?dashboardQuery\.isFetching[\s\S]*?dashboardQuery\.isRefetchError[\s\S]*?dashboardQuery\.dataUpdatedAt <= 0/u,
+    /const authoritativeChatIdentity =\s*authoritativeDashboardIdentity \?\? authoritativeParticipantsIdentity/u,
   );
   assert.doesNotMatch(eventsPageSource, /remoteTitle: dashboardQuery\.data\?\.chat\.title/u);
+});
+
+test('participant roster labels the selected audience separately from violation period', () => {
+  assert.match(participantsRosterSource, /function resolveRosterHeading/u);
+  assert.match(participantsRosterSource, /return 'Все участники'/u);
+  assert.match(
+    participantsRosterSource,
+    /<h2>\{resolveRosterHeading\(roleFilter\)\}<\/h2>\s*<p>Нарушения \{rangeLabel\}<\/p>/u,
+  );
 });
 
 test('channel statistics identity rejects cross-channel placeholder data', () => {
@@ -97,10 +109,11 @@ test('statistics navigation and chart controls retain explicit semantics', () =>
     channelStatsPageSource,
     /className="channel-insights page-enter" data-managed-entity-workspace/u,
   );
-  assert.doesNotMatch(
-    channelStatsPageSource,
-    /useAutoHideHeader|isHeaderHidden|<CompactStickyHeader/u,
-  );
+  for (const source of [eventsPageSource, channelStatsPageSource]) {
+    assert.match(source, /<ManagedEntityWorkspaceHeader[\s\S]*?\scompact\s/u);
+    assert.doesNotMatch(source, /useAutoHideHeader|isHeaderHidden|hidden=\{/u);
+  }
+  assert.doesNotMatch(channelStatsPageSource, /<CompactStickyHeader/u);
   for (const source of [eventsPageSource, channelStatsPageSource]) {
     assert.match(source, /createManagedEntityWorkspaceState\(/u);
     assert.match(source, /mergeManagedEntityStatsPreference\(/u);
@@ -110,4 +123,17 @@ test('statistics navigation and chart controls retain explicit semantics', () =>
   assert.match(channelStatsPageSource, /channel-posts-chart__row--linked/u);
   assert.match(channelStatsPageSource, /IconOpenNewWindow/u);
   assert.match(channelStatsPageSource, /откроется в новой вкладке/u);
+});
+
+test('statistics polish keeps controls unambiguous and channel events compact', () => {
+  assert.match(eventsPageSource, /NavArrowDown as IconNavArrowDown/u);
+  assert.match(eventsPageSource, /className="event-feed-item__toggle"[\s\S]*?<IconNavArrowDown/u);
+  assert.doesNotMatch(eventsPageSource, /isExpanded \? '−' : '\+'/u);
+  assert.match(
+    channelStatsPageSource,
+    /channel-events-section__head--period[\s\S]*?channel-events-section__period-copy/u,
+  );
+  assert.doesNotMatch(channelStatsPageSource, /<h2>События<\/h2>/u);
+  assert.match(channelStatsPageSource, /channel-summary-card__unit">24 ч/u);
+  assert.match(channelStatsPageSource, /channel-summary-card__unit">48 ч/u);
 });

@@ -9,6 +9,7 @@ import {
   mergeHomeEntityFavoriteLabels,
   mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
+  reconcileHomeEntityFavoritesFromEntities,
   resolveHomeEntityFavoriteLabels,
   sanitizeHomeEntityFavoriteLabels,
   sanitizeHomeEntityFavorites,
@@ -81,6 +82,25 @@ test('merges migrated device favorites behind stored user favorites', () => {
 
   assert.deepEqual(merged.chat.important, ['user-1', 'shared', 'device-1']);
   assert.deepEqual(merged.channel.important, ['channel-1', 'channel-2']);
+});
+
+test('reconciles loaded favorites with the server while preserving unloaded entities', () => {
+  const current = createEmptyHomeEntityFavorites();
+  current.chat.important = ['chat-1', 'chat-unloaded'];
+  current.chat.watch = ['chat-2'];
+  current.channel.service = ['channel-unloaded'];
+
+  const reconciled = reconcileHomeEntityFavoritesFromEntities(current, {
+    chats: [
+      { id: 'chat-1', title: 'One', favoriteTypes: [] },
+      { id: 'chat-2', title: 'Two', favoriteTypes: ['broadcast'] },
+    ],
+  });
+
+  assert.deepEqual(reconciled.chat.important, ['chat-unloaded']);
+  assert.deepEqual(reconciled.chat.watch, []);
+  assert.deepEqual(reconciled.chat.broadcast, ['chat-2']);
+  assert.deepEqual(reconciled.channel.service, ['channel-unloaded']);
 });
 
 test('reads the selected favorite type for one entity', () => {

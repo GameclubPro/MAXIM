@@ -8,6 +8,7 @@ import {
   buildManagedEntityStatisticsRoute,
   createManagedEntityWorkspaceState,
   decideManagedEntityWorkspaceBack,
+  hasManagedEntityStatsPreference,
   mergeManagedEntityStatsPreference,
   mergeManagedEntityWorkspaceRouteState,
   preserveManagedEntityRouteContext,
@@ -202,6 +203,55 @@ test('sanitizes and merges statistics preferences without erasing valid prior fi
       { section: 'invalid', range: '30d' },
     ),
     { section: 'events', range: '30d' },
+  );
+});
+
+test('canonical statistics selection is synced before a settings round trip', () => {
+  const preference = { section: 'participants', range: '30d' } as const;
+  const hasPreference = (
+    routeState: unknown,
+    overrides: Partial<Parameters<typeof hasManagedEntityStatsPreference>[1]> = {},
+  ) =>
+    hasManagedEntityStatsPreference(routeState, {
+      entityType: 'chat',
+      entityId: 'chat-1',
+      preference,
+      ...overrides,
+    });
+
+  assert.equal(hasPreference(null), false);
+
+  const routeState = mergeManagedEntityWorkspaceRouteState(
+    { chatTitle: 'Садоводы Южного' },
+    createManagedEntityWorkspaceState({
+      entityType: 'chat',
+      entityId: 'chat-1',
+      statsPreference: preference,
+    }),
+  );
+  assert.equal(hasPreference(routeState), true);
+  assert.equal(hasPreference(routeState, { entityId: 'chat-2' }), false);
+  assert.equal(
+    hasPreference(routeState, {
+      entityType: 'channel',
+      preference: { section: 'events', range: '30d' },
+    }),
+    false,
+  );
+  assert.equal(
+    hasPreference(routeState, { preference: { section: 'moderation', range: '30d' } }),
+    false,
+  );
+  assert.equal(
+    hasPreference(routeState, { preference: { section: 'participants', range: '7d' } }),
+    false,
+  );
+
+  const workspace = readManagedEntityWorkspaceState(routeState);
+  assert.ok(workspace);
+  assert.equal(
+    buildManagedEntityStatisticsRoute('chat', 'chat-1', workspace.statsPreference),
+    '/chat/chat-1/events?section=participants&range=30d',
   );
 });
 

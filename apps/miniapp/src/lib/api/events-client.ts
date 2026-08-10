@@ -24,6 +24,13 @@ import type {
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
+export type ChatStatisticsIdentity = {
+  id: string;
+  title: string;
+  avatarUrl: string | null;
+  participantsCount: number | null;
+};
+
 const logsDashboardRanges = new Set<LogsDashboardRange>(['24h', '7d', '30d']);
 const membershipActivityFilters = new Set<MembershipActivityQuery['filter']>([
   'all',
@@ -108,6 +115,38 @@ function parseLogsDashboardRange(range: LogsDashboardRange): LogsDashboardRange 
   return range;
 }
 
+function parseChatStatisticsIdentity(
+  response: unknown,
+  expectedChatId: string,
+): ChatStatisticsIdentity {
+  if (
+    !isRecord(response) ||
+    response.id !== expectedChatId ||
+    response.entityType !== 'chat' ||
+    typeof response.title !== 'string' ||
+    !(
+      response.avatarUrl === null ||
+      response.avatarUrl === undefined ||
+      typeof response.avatarUrl === 'string'
+    ) ||
+    !(
+      response.participantsCount === null ||
+      (typeof response.participantsCount === 'number' &&
+        Number.isInteger(response.participantsCount) &&
+        response.participantsCount >= 0)
+    )
+  ) {
+    throw new Error('Invalid chat statistics identity');
+  }
+
+  return {
+    id: response.id,
+    title: response.title,
+    avatarUrl: typeof response.avatarUrl === 'string' ? response.avatarUrl : null,
+    participantsCount: response.participantsCount,
+  };
+}
+
 function normalizeLimit(value: number | undefined, fallback: number): number {
   const limit = value ?? fallback;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
@@ -178,6 +217,15 @@ function normalizeChatParticipantsQuery(
     ...(cursor ? { cursor } : {}),
     ...(search ? { search } : {}),
   };
+}
+
+export async function getChatStatisticsIdentity(
+  api: ApiTransport,
+  chatId: string,
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<ChatStatisticsIdentity> {
+  const response = await api.request(`/chats/${chatId}/header`, request);
+  return parseChatStatisticsIdentity(response, chatId);
 }
 
 export async function getLogsDashboard(

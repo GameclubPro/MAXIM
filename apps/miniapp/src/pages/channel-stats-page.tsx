@@ -42,6 +42,7 @@ import {
   buildManagedEntitySettingsRoute,
   createManagedEntityWorkspaceState,
   getManagedEntitySessionStorage,
+  hasManagedEntityStatsPreference,
   mergeManagedEntityStatsPreference,
   mergeManagedEntityWorkspaceRouteState,
   readManagedEntityWorkspaceState,
@@ -1647,12 +1648,16 @@ function ChannelStatsOverview({
               <span>Сейчас</span>
             </article>
             <article className="channel-summary-card channel-summary-card--compact">
-              <small>Средние просмотры за 24 ч</small>
+              <small>
+                Средние просмотры за <span className="channel-summary-card__unit">24 ч</span>
+              </small>
               <strong>{formatCount(averageViews24h.value)}</strong>
               <span>{formatReachCaption(averageViews24h)}</span>
             </article>
             <article className="channel-summary-card channel-summary-card--compact">
-              <small>Средние просмотры за 48 ч</small>
+              <small>
+                Средние просмотры за <span className="channel-summary-card__unit">48 ч</span>
+              </small>
               <strong>{formatCount(averageViews48h.value)}</strong>
               <span>{formatReachCaption(averageViews48h)}</span>
             </article>
@@ -1660,7 +1665,9 @@ function ChannelStatsOverview({
               className="channel-summary-card channel-summary-card--compact"
               title="Средние просмотры поста за первые 48 часов / подписчики × 100"
             >
-              <small>Охват подписчиков за 48 ч</small>
+              <small>
+                Охват подписчиков за <span className="channel-summary-card__unit">48 ч</span>
+              </small>
               <strong>{formatPercent(err48.value)}</strong>
               <span>
                 {formatReachCaption(err48, `ERR48 · выборка: ${formatCount(err48.sampleSize)}`)}
@@ -1868,7 +1875,14 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     }
 
     const nextSearch = buildStatisticsRouteSearch(location.search, routeQuery);
-    if (nextSearch === location.search) {
+    const routeStateHasCurrentStatsPreference = chatId
+      ? hasManagedEntityStatsPreference(location.state, {
+          entityType: 'channel',
+          entityId: chatId,
+          preference: routeQuery,
+        })
+      : true;
+    if (nextSearch === location.search && routeStateHasCurrentStatsPreference) {
       return;
     }
 
@@ -2049,28 +2063,10 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       joined,
       left,
       total: left === null ? null : joined + left,
-      balance: stats.official.audience.net,
     };
   }, [stats]);
 
-  const activityBalance = activitySummary?.balance ?? null;
   const isActivitySummaryLoading = !stats && statsQuery.isFetching;
-  const activityBalanceTone =
-    activityBalance !== null && activityBalance > 0
-      ? 'success'
-      : activityBalance !== null && activityBalance < 0
-        ? 'danger'
-        : 'neutral';
-  const activityBalanceLabel =
-    activityBalance === null
-      ? isActivitySummaryLoading
-        ? 'Считаем за период'
-        : 'Нет полных данных'
-      : activityBalance > 0
-        ? 'Рост аудитории'
-        : activityBalance < 0
-          ? 'Отток аудитории'
-          : 'Без изменений';
   const profileHandoffMutation = useMutation({
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
       handoffChannelMemberProfile(api, chatId, userId, { displayName }),
@@ -2215,6 +2211,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         }
         backTo={buildManagedEntitiesRoute('channel')}
         counterpartTo={buildManagedEntitySettingsRoute('channel', chatId)}
+        compact
         busy={isBusy}
         className="channel-insights__sticky-header"
       />
@@ -2231,28 +2228,16 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
         {section === 'events' ? (
           <section className="channel-events-section stagger-in" aria-label="События канала">
-            <div className="channel-events-section__head">
-              <div className="channel-events-section__head-main">
-                <div className="channel-insights__summary-copy channel-events-section__headline">
-                  <h2>События</h2>
-                  {stats ? (
-                    <p>
-                      {stats.meta.churnAvailable
-                        ? formatPeriodRange(stats.period.from, stats.period.to)
-                        : 'Неполные данные'}
-                    </p>
-                  ) : null}
-                </div>
-
-                <div
-                  className={`channel-events-section__balance channel-events-section__balance--${activityBalanceTone}`}
-                  aria-label={`Баланс: ${formatSignedCount(activityBalance)}`}
-                  aria-busy={isActivitySummaryLoading}
-                >
-                  <small>Баланс</small>
-                  <strong>{formatSignedCount(activityBalance)}</strong>
-                  <span>{activityBalanceLabel}</span>
-                </div>
+            <div className="channel-events-section__head channel-events-section__head--period">
+              <div className="channel-events-section__period-copy">
+                <strong>Период</strong>
+                {stats ? (
+                  <span>
+                    {stats.meta.churnAvailable
+                      ? formatPeriodRange(stats.period.from, stats.period.to)
+                      : 'Неполные данные'}
+                  </span>
+                ) : null}
               </div>
 
               <SegmentedControl

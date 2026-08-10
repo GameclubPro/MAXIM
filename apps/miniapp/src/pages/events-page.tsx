@@ -15,6 +15,7 @@ import type {
   MembershipActivityItem,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { NavArrowDown as IconNavArrowDown } from 'iconoir-react';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-experience.css';
 import '../styles/dashboard-events.css';
@@ -49,6 +50,7 @@ import {
   getChatModerationDashboard,
   getChatParticipantsPage,
   getChatModerationFeed,
+  getChatStatisticsIdentity,
   getGlobalSpammerReviewQueue,
   getGlobalSpammerUserDiagnostics,
   getLogsDashboard,
@@ -63,6 +65,7 @@ import {
   buildManagedEntitySettingsRoute,
   createManagedEntityWorkspaceState,
   getManagedEntitySessionStorage,
+  hasManagedEntityStatsPreference,
   mergeManagedEntityStatsPreference,
   mergeManagedEntityWorkspaceRouteState,
   readManagedEntityWorkspaceState,
@@ -2065,7 +2068,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
 
     const nextSearch = buildStatisticsRouteSearch(location.search, routeQuery);
-    if (nextSearch === location.search) {
+    const routeStateHasCurrentStatsPreference = chatId
+      ? hasManagedEntityStatsPreference(location.state, {
+          entityType: 'chat',
+          entityId: chatId,
+          preference: routeQuery,
+        })
+      : true;
+    if (nextSearch === location.search && routeStateHasCurrentStatsPreference) {
       return;
     }
 
@@ -2184,6 +2194,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
+  const participantsIdentityQuery = useQuery({
+    queryKey: ['chat-statistics-identity', chatId],
+    queryFn: ({ signal }) => getChatStatisticsIdentity(api, chatId ?? '', { signal }),
+    enabled: Boolean(chatId) && section === 'participants',
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
 
   useEffect(() => {
     if (!chatId || section === 'participants') {
@@ -2287,10 +2304,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       : null;
   const currentDashboardIdentity =
     dashboard && !dashboardQuery.isPlaceholderData ? dashboard : null;
+  const participantsIdentity =
+    chatId && participantsIdentityQuery.data?.id === chatId ? participantsIdentityQuery.data : null;
+  const currentChatIdentity = currentDashboardIdentity?.chat ?? participantsIdentity;
   const chatTitleResolution = useMemo(
     () =>
       resolveStatisticsTitle({
-        remoteTitle: currentDashboardIdentity?.chat.title,
+        remoteTitle: currentChatIdentity?.title,
         remoteFallbackTitles: chatId
           ? [`Чат ${chatId}`, `Chat ${chatId}`, `Канал ${chatId}`, `Channel ${chatId}`]
           : [],
@@ -2298,7 +2318,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         storedTitle: chatId ? readChatTitle(chatId) : null,
         fallback: chatId ? 'Чат без названия' : '',
       }),
-    [chatId, currentDashboardIdentity?.chat.title, routeChatTitle],
+    [chatId, currentChatIdentity?.title, routeChatTitle],
   );
   const chatTitle = chatTitleResolution.title;
   const authoritativeDashboardIdentity =
@@ -2310,18 +2330,28 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     dashboardQuery.dataUpdatedAt > 0
       ? currentDashboardIdentity.chat
       : null;
+  const authoritativeParticipantsIdentity =
+    participantsIdentity &&
+    participantsIdentityQuery.isSuccess &&
+    !participantsIdentityQuery.isFetching &&
+    !participantsIdentityQuery.isRefetchError &&
+    participantsIdentityQuery.dataUpdatedAt > 0
+      ? participantsIdentity
+      : null;
+  const authoritativeChatIdentity =
+    authoritativeDashboardIdentity ?? authoritativeParticipantsIdentity;
 
   const chatAvatarUrl = useMemo(() => {
     if (!chatId) {
       return null;
     }
 
-    const fromDashboard = currentDashboardIdentity?.chat.avatarUrl;
-    if (typeof fromDashboard === 'string' && fromDashboard.trim()) {
-      return fromDashboard.trim();
+    const fromRemote = currentChatIdentity?.avatarUrl;
+    if (typeof fromRemote === 'string' && fromRemote.trim()) {
+      return fromRemote.trim();
     }
 
-    if (authoritativeDashboardIdentity) {
+    if (authoritativeChatIdentity) {
       return null;
     }
 
@@ -2330,40 +2360,19 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
 
     return null;
-  }, [
-    authoritativeDashboardIdentity,
-    chatId,
-    currentDashboardIdentity?.chat.avatarUrl,
-    routeChatAvatarUrl,
-  ]);
+  }, [authoritativeChatIdentity, chatId, currentChatIdentity?.avatarUrl, routeChatAvatarUrl]);
 
   useEffect(() => {
     if (!chatId || !chatTitle || chatTitleResolution.source === 'fallback') {
       return;
     }
 
-    if (
-      chatTitleResolution.source === 'remote' &&
-      (!dashboardQuery.isSuccess ||
-        dashboardQuery.isFetching ||
-        dashboardQuery.isPlaceholderData ||
-        dashboardQuery.isRefetchError ||
-        dashboardQuery.dataUpdatedAt <= 0)
-    ) {
+    if (chatTitleResolution.source === 'remote' && !authoritativeChatIdentity) {
       return;
     }
 
     saveChatTitle(chatId, chatTitle);
-  }, [
-    chatId,
-    chatTitle,
-    chatTitleResolution.source,
-    dashboardQuery.dataUpdatedAt,
-    dashboardQuery.isFetching,
-    dashboardQuery.isPlaceholderData,
-    dashboardQuery.isRefetchError,
-    dashboardQuery.isSuccess,
-  ]);
+  }, [authoritativeChatIdentity, chatId, chatTitle, chatTitleResolution.source]);
   const isDashboardPending =
     !dashboard &&
     (dashboardQuery.isLoading || dashboardQuery.isFetching || dashboardQuery.isPlaceholderData);
@@ -2516,7 +2525,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     refetchInitialPage: Boolean(initialParticipantsPageSnapshot),
     loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });
-  const fullParticipantsTotal = dashboard?.chat.participantsCount ?? participantsFeed.totalCount;
+  const fullParticipantsTotal =
+    currentChatIdentity?.participantsCount ?? participantsFeed.totalCount;
 
   useEffect(() => {
     if (
@@ -3113,6 +3123,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   };
   const isAppbarBusy =
     dashboardQuery.isFetching ||
+    participantsIdentityQuery.isFetching ||
     (section === 'participants' &&
       (participantsFeed.isReloading || participantsFeed.isLoadingMore));
 
@@ -3124,18 +3135,17 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         title={chatTitle}
         avatarUrl={chatAvatarUrl}
         authoritativeIdentity={
-          authoritativeDashboardIdentity
+          authoritativeChatIdentity
             ? {
                 title:
-                  chatTitleResolution.source === 'remote'
-                    ? authoritativeDashboardIdentity.title
-                    : null,
-                avatarUrl: authoritativeDashboardIdentity.avatarUrl ?? null,
+                  chatTitleResolution.source === 'remote' ? authoritativeChatIdentity.title : null,
+                avatarUrl: authoritativeChatIdentity.avatarUrl ?? null,
               }
             : undefined
         }
         backTo={buildManagedEntitiesRoute('chat')}
         counterpartTo={buildManagedEntitySettingsRoute('chat', chatId)}
+        compact
         busy={isAppbarBusy}
         className="events-stage__workspace-header"
       />
@@ -3531,7 +3541,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                               </span>
 
                               <span className="event-feed-item__toggle" aria-hidden="true">
-                                {isExpanded ? '−' : '+'}
+                                <IconNavArrowDown width={18} height={18} strokeWidth={2.2} />
                               </span>
                             </span>
 

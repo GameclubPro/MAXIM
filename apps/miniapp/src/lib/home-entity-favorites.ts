@@ -437,6 +437,44 @@ export function createHomeEntityFavoritesFromEntities(params: {
   return favorites;
 }
 
+export function reconcileHomeEntityFavoritesFromEntities(
+  current: HomeEntityFavorites,
+  params: {
+    chats?: readonly ChatSummary[];
+    channels?: readonly ChatSummary[];
+  },
+): HomeEntityFavorites {
+  const next = sanitizeHomeEntityFavorites(current);
+  const serverFavorites = createHomeEntityFavoritesFromEntities(params);
+  const reconcileEntities = (
+    entityType: HomeEntityFavoriteEntityType,
+    entities: readonly ChatSummary[] | undefined,
+  ) => {
+    if (!entities) {
+      return;
+    }
+
+    const loadedIds = new Set(
+      entities
+        .map((entity) => normalizeFavoriteId(entity.id))
+        .filter((id): id is string => id !== null),
+    );
+    for (const favoriteType of HOME_ENTITY_FAVORITE_TYPES) {
+      const localForUnloadedEntities = next[entityType][favoriteType].filter(
+        (id) => !loadedIds.has(id),
+      );
+      next[entityType][favoriteType] = [
+        ...serverFavorites[entityType][favoriteType],
+        ...localForUnloadedEntities,
+      ];
+    }
+  };
+
+  reconcileEntities('chat', params.chats);
+  reconcileEntities('channel', params.channels);
+  return sanitizeHomeEntityFavorites(next);
+}
+
 export function getHomeEntityFavoriteTypes(
   favorites: HomeEntityFavorites,
   entityType: HomeEntityFavoriteEntityType,
