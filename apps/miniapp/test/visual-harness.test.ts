@@ -115,9 +115,7 @@ test('photo duplicate controls have a dedicated visual scenario', () => {
 });
 
 test('chat poll creation, saved draft, and publication have dedicated visual scenarios', () => {
-  const scenarios = new Map(
-    MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]),
-  );
+  const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
 
   for (const name of [
     'chat-settings-poll-editor',
@@ -168,6 +166,14 @@ test('changed-file selection uses route and feature source globs', () => {
   assert.ok(settingsNames.includes('channel-settings'));
   assert.ok(settingsNames.includes('navigation-home-settings-home'));
   assert.equal(settingsNames.includes('legal-agreement'), false);
+
+  const signatureSelection = selectMiniappVisualScenarios({
+    changedFiles: ['apps/miniapp/src/styles/channel-post-signature.css'],
+  });
+  const signatureNames = signatureSelection.scenarios.map((scenario) => scenario.name);
+  assert.ok(signatureNames.includes('channel-settings'));
+  assert.ok(signatureNames.includes('channel-settings-post-signature'));
+  assert.equal(signatureNames.includes('chat-settings'), false);
 
   const suggestSelection = selectMiniappVisualScenarios({
     changedFiles: ['apps/miniapp/src/pages/channel-suggest-dialog-page.tsx'],

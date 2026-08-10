@@ -127,6 +127,7 @@ const ROUTE_DEFINITIONS = {
     features: ['settings', 'channel'],
     sourceGlobs: [
       'apps/miniapp/src/pages/channel-settings-page.tsx',
+      'apps/miniapp/src/styles/channel-post-signature.css',
       ...FEATURE_SOURCE_GLOBS.settings,
     ],
   },

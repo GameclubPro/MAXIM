@@ -904,6 +904,24 @@ const scenarioBehaviors = [
   {
     name: 'channel-settings-post-signature',
     beforeShot: async (page) => {
+      const signatureEntry = page.getByRole('button', {
+        name: 'Подпись публикаций',
+        exact: true,
+      });
+      if ((await signatureEntry.getAttribute('aria-expanded')) !== 'false') {
+        throw new Error('Channel post signature editor is expanded on the overview.');
+      }
+      if ((await page.getByRole('textbox', { name: 'Текст ссылки' }).count()) !== 0) {
+        throw new Error('Channel post signature fields leaked into the overview.');
+      }
+      await openSettingsSection(
+        page,
+        'Подпись публикаций',
+        '.settings-drilldown__panel--signature',
+      );
+      if ((await signatureEntry.getAttribute('aria-expanded')) !== 'true') {
+        throw new Error('Channel post signature entry did not expose its open state.');
+      }
       const signatureToggle = page.getByRole('checkbox', { name: 'Подпись публикаций' });
       await signatureToggle.check();
       const signatureText = page.getByRole('textbox', { name: 'Текст ссылки' });
