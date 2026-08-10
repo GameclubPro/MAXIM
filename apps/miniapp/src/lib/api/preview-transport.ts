@@ -1,4 +1,5 @@
 import type { ApiTransport } from './transport';
+import { markPreviewApiPrincipal } from './preview-principal';
 import { handleAutopostsPreviewRequest } from './preview-transport-autoposts';
 import { handleDialogPreviewRequest } from './preview-transport-dialog';
 import { handleEventsPreviewRequest } from './preview-transport-events';
@@ -44,7 +45,7 @@ export function createPreviewApiTransport(options: PreviewApiTransportOptions = 
     );
   };
 
-  return {
+  const api: ApiTransport = {
     request,
     requestKeepalive(requestPath, init = {}) {
       void request(requestPath, init).catch((error: unknown) => {
@@ -56,4 +57,6 @@ export function createPreviewApiTransport(options: PreviewApiTransportOptions = 
       });
     },
   };
+
+  return markPreviewApiPrincipal(api, state.me.userId);
 }

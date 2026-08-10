@@ -9,7 +9,6 @@ import { HOME_ENTITY_FAVORITE_ICONS, XmarkGlyph } from '../../components/ui/comp
 import { getMe } from '../../lib/api/me-client';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
-  HOME_ENTITY_FAVORITE_TITLES,
   HOME_ENTITY_FAVORITE_TYPES,
   resolveHomeEntityFavoriteLabels,
   type HomeEntityFavoriteLabelOverrides,
@@ -26,6 +25,15 @@ type ApplyTargetSheetState = {
 };
 
 type FavoriteLabelsLoadStatus = 'loading' | 'ready' | 'error';
+
+const HOME_ENTITY_FAVORITE_TITLES: Record<ManagedEntityFavoriteType, string> = {
+  important: 'Ключевые чаты и каналы',
+  watch: 'Повышенное внимание модерации',
+  broadcast: 'Аудитории для автопостинга',
+  test: 'Песочницы и проверки',
+  partner: 'Партнерские и клиентские пространства',
+  service: 'Операционные и внутренние пространства',
+};
 
 type SettingsApplyTargetSheetProps = {
   api: ApiTransport;

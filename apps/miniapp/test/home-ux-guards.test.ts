@@ -10,6 +10,10 @@ const favoriteLabelSyncSource = readFileSync(
   new URL('../src/lib/home-entity-favorite-label-sync.ts', import.meta.url),
   'utf8',
 );
+const favoritesRuntimeSource = readFileSync(
+  new URL('../src/lib/home-entity-favorites-runtime.ts', import.meta.url),
+  'utf8',
+);
 const chatsPageCss = readFileSync(new URL('../src/pages/chats-page.css', import.meta.url), 'utf8');
 const chatsPageNativeCss = readFileSync(
   new URL('../src/pages/chats-page-native.css', import.meta.url),
@@ -179,7 +183,7 @@ test('compact home controls keep direct 44px actions and one filter control', ()
   assert.match(chatsPageSource, /className=\{cn\('home-active-filter'/u);
   assert.match(sheetsSource, /sheetKey="filter"[\s\S]*?home-filter__grid/u);
   assert.match(sheetsSource, /Распределить по категориям/u);
-  assert.match(sheetsSource, /<strong>Настроить названия<\/strong>/u);
+  assert.match(sheetsSource, /'Повторить загрузку названий'[\s\S]*?'Настроить названия'/u);
   assert.match(sheetsSource, /'Добавить в избранное'/u);
   assert.match(
     chatsPageNativeCss,
@@ -203,20 +207,17 @@ test('compact home controls keep direct 44px actions and one filter control', ()
     sheetsSource,
     /className=\{cn\('favorite-label-editor__row', canReset && 'has-reset'\)\}/u,
   );
-  assert.match(
-    sheetsSource,
-    /disabled=\{props\.favoriteLabelsSaving \|\| !canReset\}[\s\S]*?<Undo aria-hidden \/>/u,
-  );
-  assert.match(chatsPageSource, /favoriteLabelsEditorOpen && savingFavoriteLabels/u);
+  assert.match(sheetsSource, /disabled=\{saving \|\| !canReset\}[\s\S]*?<Undo aria-hidden \/>/u);
+  assert.match(sheetsSource, /useNativeBackHandler\([\s\S]*?if \(!saving\) \{\s*onClose\(\);/u);
   assert.doesNotMatch(sheetsSource, /maxLength=\{HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH\}/u);
-  assert.match(chatsPageSource, /value\.split\('\\u0000'\)\.join\(''\)/u);
+  assert.match(sheetsSource, /value\.split\('\\u0000'\)\.join\(''\)/u);
   assert.match(
-    chatsPageSource,
-    /setValidatedFavoriteLabelsIdentity\(null\)[\s\S]*?getMe\(api,[\s\S]*?initDataUserId === null \|\| initDataUserId === userId[\s\S]*?setValidatedFavoriteLabelsIdentity\(\{ api, userId \}\)/u,
+    favoritesRuntimeSource,
+    /getMe\(api, \{ signal \}\)[\s\S]*?onUserId\(userId\)[\s\S]*?initDataUserId !== null[\s\S]*?initDataUserId !== userId[\s\S]*?getPreviewApiPrincipalUserId\(api\) !== userId/u,
   );
   assert.match(
     chatsPageSource,
-    /useState<HomeEntityFavoriteLabelOverrides>\(\{\}\)[\s\S]*?!favoriteLabelsIdentityReady[\s\S]*?setHomeEntityFavoriteLabels\(\{\}\)/u,
+    /useState<HomeEntityFavoriteLabelOverrides>\(\{\}\)[\s\S]*?setHomeEntityFavoriteLabels\(\{\}\)[\s\S]*?synchronizeAuthenticatedHomeEntityFavoriteLabels/u,
   );
   assert.match(
     favoriteLabelSyncSource,
@@ -226,8 +227,24 @@ test('compact home controls keep direct 44px actions and one filter control', ()
     favoriteLabelSyncSource,
     /migrateHomeEntityFavoriteLabelsAfterNativeStorage\([\s\S]*?serverProfileConfirmed \|\| Object\.keys\(labels\)\.length > 0/u,
   );
-  assert.match(chatsPageSource, /import\('\.\.\/lib\/home-entity-favorite-label-sync'\)/u);
-  assert.match(chatsPageSource, /favoriteLabelsSaveAbortControllerRef\.current\?\.abort\(\)/u);
+  assert.match(chatsPageSource, /import\('\.\.\/lib\/home-entity-favorites-runtime'\)/u);
+  assert.match(
+    chatsPageSource,
+    /reloadAfterLazyPageLoadFailure\('HomeEntityFavoritesRuntime', cause\)/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /setFavoriteLabelsStatus\('api'\)[\s\S]*?setFavoriteLabelsStatus\('chunk'\)/u,
+  );
+  assert.match(
+    chatsPageSource,
+    /favoriteLabelsStatus === 'chunk'[\s\S]*?window\.location\.reload\(\)[\s\S]*?favoriteLabelsStatus === 'api'[\s\S]*?setFavoriteLabelsRetryNonce/u,
+  );
+  assert.match(
+    sheetsSource,
+    /disabled=\{props\.favoriteLabelsStatus === 'loading'\}/u,
+  );
+  assert.match(sheetsSource, /saveControllerRef\.current\?\.abort\(\)/u);
   assert.match(
     chatsPageNativeCss,
     /\.favorite-label-editor__reset:disabled \{[\s\S]*?display: none;[\s\S]*?opacity: 0;/u,
@@ -255,8 +272,9 @@ test('home connection flow is always available and opens the signed launch bot d
   );
   assert.doesNotMatch(chatsPageSource, /<span>Подключить<\/span>/u);
   assert.doesNotMatch(chatsPageSource, /botDialogUrl|setBotDialogUrl/u);
-  assert.match(chatsPageSource, /import\('\.\.\/lib\/api\/me-client'\)/u);
+  assert.match(chatsPageSource, /import\('\.\.\/lib\/home-entity-favorites-runtime'\)/u);
   assert.doesNotMatch(chatsPageSource, /from '\.\.\/lib\/api\/me-client'/u);
+  assert.match(favoritesRuntimeSource, /from '\.\/api\/me-client'/u);
   assert.doesNotMatch(rootClientSource, /\bgetMe\b|\bparseMe\b|botDialogUrl/u);
   assert.match(sheetsSource, /from '\.\.\/lib\/api\/me-client'/u);
   assert.match(sheetsSource, /getMe\(api,[\s\S]*?botDialogUrlRef\.current = me\.botDialogUrl/u);

@@ -17,16 +17,22 @@ import {
   XmarkGlyph,
 } from '../components/ui/compact-icons';
 import { useToast } from '../components/ui/toast';
+import { describeApiError } from '../lib/api-error';
 import { getCachedBotDialogUrl, getMe } from '../lib/api/me-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { createBotDialogHandoffCoordinator } from '../lib/bot-dialog-handoff';
 import { cn } from '../lib/cn';
 import { useDialogFocusTrap } from '../lib/dialog-focus';
 import {
+  HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH,
   HOME_ENTITY_FAVORITE_LABELS,
   HOME_ENTITY_FAVORITE_TYPES,
+  resolveHomeEntityFavoriteLabels,
+  sanitizeHomeEntityFavoriteLabels,
+  type HomeEntityFavoriteLabelOverrides,
 } from '../lib/home-entity-favorites';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
+import { useNativeBackHandler } from '../lib/native-back';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 
 type ManagedTab = 'chat' | 'channel';
@@ -45,21 +51,18 @@ type HomeEntitySheetsProps = {
   filterValue: FavoriteFilter;
   labelsEditorOpen: boolean;
   favoriteLabels: FavoriteLabelDraft;
+  favoriteLabelOverrides: HomeEntityFavoriteLabelOverrides;
+  favoriteStorageScope: string;
   favoriteCounts: Record<ManagedEntityFavoriteType, number>;
-  favoriteLabelDraft: FavoriteLabelDraft;
   selectedFavoriteType: ManagedEntityFavoriteType | null;
   favoriteSaving: boolean;
-  favoriteLabelsReady: boolean;
-  favoriteLabelsSaving: boolean;
-  canSaveLabels: boolean;
+  favoriteLabelsStatus: 'loading' | 'ready' | 'api' | 'chunk';
   onClose: () => void;
   onFilterChange: (filter: FavoriteFilter) => void;
   onStartCategoryEdit: () => void;
   onOpenLabelsEditor: () => void;
   onFavoriteChange: (favoriteType: ManagedEntityFavoriteType | null) => void;
-  onFavoriteLabelChange: (favoriteType: ManagedEntityFavoriteType, value: string) => void;
-  onFavoriteLabelReset: (favoriteType: ManagedEntityFavoriteType) => void;
-  onFavoriteLabelsSave: () => void;
+  onFavoriteLabelsSaved: (labels: HomeEntityFavoriteLabelOverrides) => void;
 };
 
 function CheckGlyph(props: SVGProps<SVGSVGElement>) {
@@ -262,6 +265,190 @@ function HomeConnectSheet({
   );
 }
 
+function createFavoriteLabelDraft(labels: HomeEntityFavoriteLabelOverrides): FavoriteLabelDraft {
+  return resolveHomeEntityFavoriteLabels(labels);
+}
+
+function limitFavoriteLabelInput(value: string): string {
+  return Array.from(value.split('\u0000').join(''))
+    .slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH)
+    .join('');
+}
+
+function HomeFavoriteLabelsEditor({
+  api,
+  favoriteLabelOverrides,
+  overlayStyle,
+  onClose,
+  onSaved,
+}: {
+  api: ApiTransport;
+  favoriteLabelOverrides: HomeEntityFavoriteLabelOverrides;
+  overlayStyle: CSSProperties | undefined;
+  onClose: () => void;
+  onSaved: (labels: HomeEntityFavoriteLabelOverrides) => void;
+}) {
+  const { pushToast } = useToast();
+  const baseLabelsRef = useRef(sanitizeHomeEntityFavoriteLabels(favoriteLabelOverrides));
+  const saveControllerRef = useRef<AbortController | null>(null);
+  const [draft, setDraft] = useState<FavoriteLabelDraft>(() =>
+    createFavoriteLabelDraft(baseLabelsRef.current),
+  );
+  const [saving, setSaving] = useState(false);
+  const sanitizedDraft = sanitizeHomeEntityFavoriteLabels(draft);
+  const canSave = JSON.stringify(sanitizedDraft) !== JSON.stringify(baseLabelsRef.current);
+
+  useEffect(
+    () => () => {
+      saveControllerRef.current?.abort();
+      saveControllerRef.current = null;
+    },
+    [],
+  );
+
+  useNativeBackHandler(
+    () => {
+      if (!saving) {
+        onClose();
+      }
+      return true;
+    },
+    { priority: 660 },
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!saving) {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, saving]);
+
+  function updateDraft(favoriteType: ManagedEntityFavoriteType, value: string) {
+    setDraft((current) => ({
+      ...current,
+      [favoriteType]: limitFavoriteLabelInput(value),
+    }));
+  }
+
+  function resetDraft(favoriteType: ManagedEntityFavoriteType) {
+    setDraft((current) => ({
+      ...current,
+      [favoriteType]: HOME_ENTITY_FAVORITE_LABELS[favoriteType],
+    }));
+  }
+
+  async function saveDraft() {
+    if (saving || !canSave) {
+      return;
+    }
+
+    const controller = new AbortController();
+    saveControllerRef.current?.abort();
+    saveControllerRef.current = controller;
+    setSaving(true);
+
+    try {
+      const { saveManagedEntityFavoriteLabelEdits } =
+        await import('../lib/home-entity-favorite-label-sync');
+      const saved = await saveManagedEntityFavoriteLabelEdits(
+        api,
+        baseLabelsRef.current,
+        sanitizedDraft,
+        controller.signal,
+      );
+      if (!controller.signal.aborted && saveControllerRef.current === controller) {
+        onSaved(sanitizeHomeEntityFavoriteLabels(saved.labels));
+      }
+    } catch (error: unknown) {
+      if (!controller.signal.aborted && saveControllerRef.current === controller) {
+        pushToast({
+          title: 'Не удалось сохранить названия',
+          description: describeApiError(error, 'Проверьте соединение и попробуйте ещё раз.'),
+          tone: 'danger',
+        });
+      }
+    } finally {
+      if (saveControllerRef.current === controller) {
+        saveControllerRef.current = null;
+        setSaving(false);
+      }
+    }
+  }
+
+  return (
+    <HomeSheet
+      sheetKey="labels"
+      title="Названия категорий"
+      panelClassName="favorite-label-editor__panel"
+      overlayStyle={overlayStyle}
+      onClose={saving ? () => undefined : onClose}
+    >
+      <div className="favorite-label-editor__list">
+        {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+          const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
+          const defaultLabel = HOME_ENTITY_FAVORITE_LABELS[favoriteType];
+          const canReset = draft[favoriteType] !== defaultLabel;
+          return (
+            <div
+              key={favoriteType}
+              className={cn('favorite-label-editor__row', canReset && 'has-reset')}
+            >
+              <span className={cn('favorite-label-editor__icon', `is-${favoriteType}`)}>
+                <FavoriteIcon aria-hidden />
+              </span>
+              <label className="favorite-label-editor__field">
+                <span className="favorite-picker__sr">Название категории: {defaultLabel}</span>
+                <EditPencil aria-hidden />
+                <input
+                  type="text"
+                  inputMode="text"
+                  value={draft[favoriteType]}
+                  aria-label={`Название категории: ${defaultLabel}`}
+                  disabled={saving}
+                  onChange={(event) => updateDraft(favoriteType, event.currentTarget.value)}
+                />
+              </label>
+              <button
+                type="button"
+                className="favorite-label-editor__reset"
+                aria-label={`Вернуть стандартное название: ${defaultLabel}`}
+                title="Вернуть стандартное название"
+                disabled={saving || !canReset}
+                onClick={() => resetDraft(favoriteType)}
+              >
+                <Undo aria-hidden />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="favorite-label-editor__actions">
+        <button type="button" className="button button--ghost" onClick={onClose} disabled={saving}>
+          Отмена
+        </button>
+        <button
+          type="button"
+          className="button button--accent"
+          onClick={() => void saveDraft()}
+          disabled={saving || !canSave}
+          aria-busy={saving || undefined}
+        >
+          {saving ? 'Сохраняем...' : 'Сохранить'}
+        </button>
+      </div>
+    </HomeSheet>
+  );
+}
+
 export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
   const overlayStyle = useVisualViewportOverlayStyle(true);
 
@@ -278,75 +465,14 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
 
   if (props.labelsEditorOpen) {
     return (
-      <HomeSheet
-        key="labels"
-        sheetKey="labels"
-        title="Названия категорий"
-        panelClassName="favorite-label-editor__panel"
+      <HomeFavoriteLabelsEditor
+        key={`${props.favoriteStorageScope}:labels`}
+        api={props.api}
+        favoriteLabelOverrides={props.favoriteLabelOverrides}
         overlayStyle={overlayStyle}
-        onClose={props.favoriteLabelsSaving ? () => undefined : props.onClose}
-      >
-        <div className="favorite-label-editor__list">
-          {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-            const defaultLabel = HOME_ENTITY_FAVORITE_LABELS[favoriteType];
-            const canReset = props.favoriteLabelDraft[favoriteType] !== defaultLabel;
-            return (
-              <div
-                key={favoriteType}
-                className={cn('favorite-label-editor__row', canReset && 'has-reset')}
-              >
-                <span className={cn('favorite-label-editor__icon', `is-${favoriteType}`)}>
-                  <FavoriteIcon aria-hidden />
-                </span>
-                <label className="favorite-label-editor__field">
-                  <span className="favorite-picker__sr">Название категории: {defaultLabel}</span>
-                  <EditPencil aria-hidden />
-                  <input
-                    type="text"
-                    inputMode="text"
-                    value={props.favoriteLabelDraft[favoriteType]}
-                    aria-label={`Название категории: ${defaultLabel}`}
-                    disabled={props.favoriteLabelsSaving}
-                    onChange={(event) =>
-                      props.onFavoriteLabelChange(favoriteType, event.currentTarget.value)
-                    }
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="favorite-label-editor__reset"
-                  aria-label={`Вернуть стандартное название: ${defaultLabel}`}
-                  title="Вернуть стандартное название"
-                  disabled={props.favoriteLabelsSaving || !canReset}
-                  onClick={() => props.onFavoriteLabelReset(favoriteType)}
-                >
-                  <Undo aria-hidden />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        <div className="favorite-label-editor__actions">
-          <button
-            type="button"
-            className="button button--ghost"
-            onClick={props.onClose}
-            disabled={props.favoriteLabelsSaving}
-          >
-            Отмена
-          </button>
-          <button
-            type="button"
-            className="button button--accent"
-            onClick={props.onFavoriteLabelsSave}
-            disabled={props.favoriteLabelsSaving || !props.canSaveLabels}
-            aria-busy={props.favoriteLabelsSaving || undefined}
-          >
-            {props.favoriteLabelsSaving ? 'Сохраняем...' : 'Сохранить'}
-          </button>
-        </div>
-      </HomeSheet>
+        onClose={props.onClose}
+        onSaved={props.onFavoriteLabelsSaved}
+      />
     );
   }
 
@@ -499,12 +625,16 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
               type="button"
               className="favorite-picker__option home-filter__manage"
               onClick={props.onOpenLabelsEditor}
-              disabled={!props.favoriteLabelsReady}
+              disabled={props.favoriteLabelsStatus === 'loading'}
             >
               <span className="favorite-picker__icon">
                 <SettingsGlyph aria-hidden focusable="false" />
               </span>
-              <strong>Настроить названия</strong>
+              <strong>
+                {props.favoriteLabelsStatus === 'api' || props.favoriteLabelsStatus === 'chunk'
+                  ? 'Повторить загрузку названий'
+                  : 'Настроить названия'}
+              </strong>
             </button>
           </div>
         </section>

@@ -8,12 +8,28 @@ import type { ApiTransport } from './api/transport';
 import {
   HOME_ENTITY_FAVORITE_LABELS,
   HOME_ENTITY_FAVORITE_TYPES,
-  hydrateHomeEntityFavoriteLabels,
+  buildHomeEntityFavoriteLabelsStorageKey,
   resolveHomeEntityFavoriteLabels,
   sanitizeHomeEntityFavoriteLabels,
   type HomeEntityFavoriteLabelOverrides,
 } from './home-entity-favorites';
+import { hydrateMirroredItem } from './native-storage';
 import { waitForNativeStorageRuntime } from './native-storage-runtime';
+
+async function hydrateHomeEntityFavoriteLabels(
+  scope: string | null | undefined,
+): Promise<HomeEntityFavoriteLabelOverrides> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const raw = await hydrateMirroredItem(buildHomeEntityFavoriteLabelsStorageKey(scope));
+    return raw ? sanitizeHomeEntityFavoriteLabels(JSON.parse(raw)) : {};
+  } catch {
+    return {};
+  }
+}
 
 export function planHomeEntityFavoriteLabelsSync(
   cachedLabels: HomeEntityFavoriteLabelOverrides,

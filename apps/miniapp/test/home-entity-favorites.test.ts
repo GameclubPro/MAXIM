@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ApiRequestError } from '../src/lib/api-request-error';
+import { markPreviewApiPrincipal } from '../src/lib/api/preview-principal';
+import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import {
   mergeHomeEntityFavoriteLabelEdits,
   migrateHomeEntityFavoriteLabelsAfterNativeStorage,
@@ -22,6 +24,7 @@ import {
   sanitizeHomeEntityFavorites,
   toggleHomeEntityFavoriteType,
 } from '../src/lib/home-entity-favorites';
+import { synchronizeAuthenticatedHomeEntityFavoriteLabels } from '../src/lib/home-entity-favorites-runtime';
 
 test('sanitizes favorite ids per entity type and favorite type', () => {
   const favorites = sanitizeHomeEntityFavorites({
@@ -38,6 +41,68 @@ test('sanitizes favorite ids per entity type and favorite type', () => {
   assert.deepEqual(favorites.chat.watch, ['watch-1']);
   assert.deepEqual(favorites.channel.broadcast, ['a', 'b']);
   assert.deepEqual(favorites.channel.important, []);
+});
+
+test('keeps production identity matching strict while allowing an explicit preview principal', async () => {
+  const productionPaths: string[] = [];
+  const productionApi = {
+    async request(path: string) {
+      productionPaths.push(path);
+      if (path === '/me') {
+        return {
+          userId: 'server-admin',
+          username: null,
+          displayName: null,
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
+          botDialogUrl: null,
+          canAccessSystem: false,
+        };
+      }
+      throw new Error(`Unexpected production request: ${path}`);
+    },
+    requestKeepalive() {},
+  };
+
+  const productionReady = await synchronizeAuthenticatedHomeEntityFavoriteLabels(
+    productionApi,
+    'bridge-admin',
+    new AbortController().signal,
+    () => undefined,
+    () => undefined,
+  );
+  assert.equal(productionReady, false);
+  assert.deepEqual(productionPaths, ['/me']);
+
+  productionPaths.length = 0;
+  const wrongPreviewPrincipalReady = await synchronizeAuthenticatedHomeEntityFavoriteLabels(
+    markPreviewApiPrincipal(productionApi, 'other-preview-admin'),
+    'bridge-admin',
+    new AbortController().signal,
+    () => undefined,
+    () => undefined,
+  );
+  assert.equal(wrongPreviewPrincipalReady, false);
+  assert.deepEqual(productionPaths, ['/me']);
+
+  const previewApi = createPreviewApiTransport();
+  let previewUserId: string | null = null;
+  let previewLabels: Record<string, string> | null = null;
+  const previewReady = await synchronizeAuthenticatedHomeEntityFavoriteLabels(
+    previewApi,
+    'bridge-admin',
+    new AbortController().signal,
+    (userId) => {
+      previewUserId = userId;
+    },
+    (labels) => {
+      previewLabels = labels;
+    },
+  );
+  assert.equal(previewReady, true);
+  assert.equal(previewUserId, 'preview-admin');
+  assert.deepEqual(previewLabels, {});
 });
 
 test('toggles favorite types with the newest favorite first', () => {

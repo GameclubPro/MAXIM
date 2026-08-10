@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildLazyPageReloadMarkerKey } from '../src/pages/lazy-pages';
+import { buildLazyPageReloadMarkerKey } from '../src/lib/lazy-load-recovery';
 
 test('keys lazy page reload recovery by failed asset URL when available', () => {
   const key = buildLazyPageReloadMarkerKey(
