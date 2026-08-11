@@ -27,25 +27,15 @@ describe('typed link moderation', () => {
     ).toBe('Links are not allowed by policy');
   });
 
-  it('blocks a profile mention in strict link mode and never acts in alert-only mode', () => {
+  it('never treats a MAX profile mention as a link-policy target', () => {
     const profile = [target('profile_mention', 'max://user/67123224')];
 
-    expect(detectBlockedLink('', LinkPolicy.BLOCKLIST_ONLY, [], undefined, profile)).toBe(
-      'Links are not allowed by policy',
-    );
+    expect(detectBlockedLink('', LinkPolicy.BLOCKLIST_ONLY, [], undefined, profile)).toBeNull();
+    expect(detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, [], undefined, profile)).toBeNull();
     expect(detectBlockedLink('', LinkPolicy.ALERT_ONLY, [], undefined, profile)).toBeNull();
   });
 
-  it('supports typed profile and MAX entity allowlist entries', () => {
-    expect(
-      detectBlockedLink(
-        '',
-        LinkPolicy.ALLOWLIST_ONLY,
-        ['max-profile:user-id%3A67123224'],
-        undefined,
-        [target('profile_mention', 'max://user/67123224')],
-      ),
-    ).toBeNull();
+  it('supports typed MAX entity allowlist entries', () => {
     expect(
       detectBlockedLink(
         '',
@@ -70,6 +60,14 @@ describe('typed link moderation', () => {
     );
 
     expect(result).toBe('Link https://blocked.example/b is not in allowlist');
+  });
+
+  it('fails closed for a custom-scheme target in allowlist-only mode', () => {
+    expect(
+      detectBlockedLink('', LinkPolicy.ALLOWLIST_ONLY, ['domain:allowed.example'], undefined, [
+        target('external_url', 'tg://resolve?domain=outside'),
+      ]),
+    ).toBe('Link tg://resolve?domain=outside is not in allowlist');
   });
 
   it('allows one open-app action by either its URL or contact alias', () => {

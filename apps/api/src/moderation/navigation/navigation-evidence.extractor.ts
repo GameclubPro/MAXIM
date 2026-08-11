@@ -99,13 +99,17 @@ function extractMarkupEvidence(
   markup: MaxNavigationMarkupView,
   state: ExtractionState,
 ): void {
+  if (markup.type !== 'link') {
+    extractUnexpectedMarkupUrlEvidence(content, markup, state);
+  }
+
   if (markup.type === 'link') {
     const rawTarget = readString(markup.url);
     if (!rawTarget) {
       pushDiagnostic(state, content, markup.path, 'ambiguous', 'AMBIGUOUS_TARGET', markup.type);
       return;
     }
-    const target = normalizeInboundHttpNavigationUrl(rawTarget);
+    const target = normalizeInboundMarkupLinkTarget(rawTarget);
     if (!target) {
       pushDiagnostic(
         state,
@@ -117,7 +121,7 @@ function extractMarkupEvidence(
       );
       return;
     }
-    const kind = classifyHttpTarget(target);
+    const kind = classifyMarkupLinkTarget(target);
     addTarget(state, kind, target, evidenceForMarkup(content, markup, 'link_markup', kind, state));
     return;
   }
@@ -163,6 +167,31 @@ function extractMarkupEvidence(
       markup.type,
     );
   }
+}
+
+function extractUnexpectedMarkupUrlEvidence(
+  content: MaxNavigationContentView,
+  markup: MaxNavigationMarkupView,
+  state: ExtractionState,
+): void {
+  const rawTarget = readString(markup.url);
+  if (!rawTarget) {
+    return;
+  }
+  const target = normalizeInboundMarkupLinkTarget(rawTarget);
+  if (!target) {
+    pushDiagnostic(
+      state,
+      content,
+      `${markup.path}.url`,
+      'invalid',
+      'INVALID_NAVIGATION_TARGET',
+      markup.type,
+    );
+    return;
+  }
+  const kind = classifyMarkupLinkTarget(target);
+  addTarget(state, kind, target, evidenceForMarkup(content, markup, 'link_markup', kind, state));
 }
 
 function extractAttachmentEvidence(
@@ -612,6 +641,24 @@ function normalizeInboundHttpNavigationUrl(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeInboundMarkupLinkTarget(value: string): string | null {
+  const candidate = value.trim();
+  if (
+    candidate.length === 0 ||
+    candidate.length > MAX_HTTP_BUTTON_URL_LENGTH ||
+    INBOUND_HTTP_NAVIGATION_WHITESPACE_OR_CONTROL.test(candidate)
+  ) {
+    return null;
+  }
+
+  // FLAG: LinkMarkup's discriminator is authoritative even for non-HTTP client schemes.
+  return normalizeInboundHttpNavigationUrl(candidate) ?? candidate;
+}
+
+function classifyMarkupLinkTarget(value: string): NavigationEvidenceKind {
+  return /^https?:\/\//iu.test(value) ? classifyHttpTarget(value) : 'external_url';
 }
 
 function classifyHttpTarget(value: string): NavigationEvidenceKind {

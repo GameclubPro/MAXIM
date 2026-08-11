@@ -27,7 +27,7 @@ export function resolveEnabledNavigationTargetOptions(
     ),
     profileMentionsEnabled: readBoolean(
       config?.get('MODERATION_LINK_PROFILE_MENTIONS_ENABLED'),
-      true,
+      false,
     ),
     forwardedTargetsEnabled: readBoolean(
       config?.get('MODERATION_LINK_FORWARDED_TARGETS_ENABLED'),

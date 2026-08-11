@@ -49,6 +49,41 @@ describe('LinkHistoryDeleteGuardService', () => {
     });
   });
 
+  it.each(['live', 'history'] as const)(
+    'rejects a pending %s link intent when the exact message is only a user mention',
+    async (reasonKind) => {
+      const row = buildProfileMentionMessage();
+      const harness = buildHarness({ reasonKind, candidateRow: row });
+
+      await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+        code:
+          reasonKind === 'live'
+            ? 'live_violation_no_longer_present'
+            : 'history_violation_no_longer_present',
+      });
+    },
+  );
+
+  it('keeps an @-shaped MAX channel hyperlink actionable', async () => {
+    const row = buildMessage({
+      text: '@participant',
+      url: 'https://max.ru/channels/blocked-channel',
+    });
+    const harness = buildHarness({ reasonKind: 'live', candidateRow: row });
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).resolves.toBe('allowed');
+  });
+
+  it('keeps a custom-scheme hyperlink actionable at execution time', async () => {
+    const row = buildMessage({
+      text: '@participant',
+      url: 'tg://resolve?domain=outside',
+    });
+    const harness = buildHarness({ reasonKind: 'live', candidateRow: row });
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).resolves.toBe('allowed');
+  });
+
   it('rejects a live intent recorded under an older policy revision', async () => {
     const harness = buildHarness({ reasonKind: 'live', settingsRevision: 2 });
 
@@ -332,6 +367,28 @@ function buildMessage(
           from: 0,
           length: text.length,
           url: options.url ?? 'https://blocked.example/path',
+        },
+      ],
+    },
+  };
+}
+
+function buildProfileMentionMessage(): Record<string, unknown> {
+  const text = '@participant';
+  return {
+    id: 'message-1',
+    timestamp: Date.now() - 60_000,
+    recipient: { chat_id: 'chat-1' },
+    sender: { user_id: 'user-1', is_bot: false },
+    body: {
+      mid: 'message-1',
+      text,
+      markup: [
+        {
+          type: 'user_mention',
+          from: 0,
+          length: text.length,
+          user_id: 67123224,
         },
       ],
     },

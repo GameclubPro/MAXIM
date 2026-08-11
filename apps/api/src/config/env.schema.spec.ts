@@ -228,7 +228,7 @@ describe('validateEnv boolean parsing', () => {
   it('enables live navigation evidence while keeping history recovery off by default', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.MODERATION_LINK_STRUCTURED_TARGETS_ENABLED).toBe(true);
-    expect(defaults.MODERATION_LINK_PROFILE_MENTIONS_ENABLED).toBe(true);
+    expect(defaults.MODERATION_LINK_PROFILE_MENTIONS_ENABLED).toBe(false);
     expect(defaults.MODERATION_LINK_FORWARDED_TARGETS_ENABLED).toBe(true);
     expect(defaults.MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(false);
     expect(defaults.MODERATION_LINK_HISTORY_SCAN_ENABLED).toBe(false);

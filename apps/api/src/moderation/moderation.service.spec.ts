@@ -635,6 +635,7 @@ function createLiveNavigationHarness(
     freshAllowlistError?: Error;
     adminUserIds?: string[];
     plainTextClickabilityEnabled?: boolean;
+    profileMentionsEnabled?: boolean;
     linkPolicyEffectiveAt?: Date | string | null;
     maxBotLinkService?: { isKnownBotUserId: jest.Mock };
   } = {},
@@ -702,6 +703,12 @@ function createLiveNavigationHarness(
         options.plainTextClickabilityEnabled !== undefined
       ) {
         return options.plainTextClickabilityEnabled;
+      }
+      if (
+        key === 'MODERATION_LINK_PROFILE_MENTIONS_ENABLED' &&
+        options.profileMentionsEnabled !== undefined
+      ) {
+        return options.profileMentionsEnabled;
       }
       return undefined;
     }),
@@ -18941,30 +18948,12 @@ describe('ModerationService', () => {
         plainTextClickabilityEnabled: false,
       },
       {
-        name: 'profile mention from the 02:57 incident',
-        type: 'message_created' as const,
-        content: INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE,
-        expectedKind: 'profile_mention',
-        expectedTarget: 'max://user/67123224',
-        expectedCarriers: ['user_mention_markup'],
-        plainTextClickabilityEnabled: false,
-      },
-      {
         name: 'external forward from the 02:56 incident after an edit',
         type: 'message_edited' as const,
         content: INCIDENT_EXTERNAL_FORWARD_FIXTURE,
         expectedKind: 'external_url',
         expectedTarget: INCIDENT_EXTERNAL_URL,
         expectedCarriers: ['link_markup', 'share_attachment'],
-        plainTextClickabilityEnabled: false,
-      },
-      {
-        name: 'profile mention from the 02:57 incident after an edit',
-        type: 'message_edited' as const,
-        content: INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE,
-        expectedKind: 'profile_mention',
-        expectedTarget: 'max://user/67123224',
-        expectedCarriers: ['user_mention_markup'],
         plainTextClickabilityEnabled: false,
       },
     ])('deletes $name in BLOCKLIST_ONLY mode', async (scenario) => {
@@ -19016,6 +19005,87 @@ describe('ModerationService', () => {
       );
     });
 
+    it.each([
+      ['message_created', 'BLOCKLIST_ONLY'],
+      ['message_edited', 'BLOCKLIST_ONLY'],
+      ['message_created', 'ALLOWLIST_ONLY'],
+      ['message_edited', 'ALLOWLIST_ONLY'],
+    ] as const)('preserves a platform profile mention on %s under %s', async (type, linkPolicy) => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy,
+        profileMentionsEnabled: true,
+      });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate(
+          type,
+          INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+        ),
+      );
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [
+            expect.objectContaining({
+              kind: 'profile_mention',
+              normalizedTarget: 'max://user/67123224',
+              enforceable: true,
+            }),
+          ],
+        }),
+      );
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+      expect(harness.prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(harness.prisma.domainAllowlist.findMany).not.toHaveBeenCalled();
+    });
+
+    it.each(['message_created', 'message_edited'] as const)(
+      'preserves direct multi-participant mentions on %s',
+      async (type) => {
+        const text = '😀 @first и @second';
+        const first = '@first';
+        const second = '@second';
+        const harness = createLiveNavigationHarness({
+          linkPolicy: 'BLOCKLIST_ONLY',
+          profileMentionsEnabled: true,
+        });
+
+        await harness.service.handleUpdate(
+          createLiveNavigationEnvelopeUpdate(type, {
+            body: {
+              text,
+              markup: [
+                {
+                  type: 'user_mention',
+                  from: text.indexOf(first),
+                  length: first.length,
+                  user_id: 67123224,
+                },
+                {
+                  type: 'user_mention',
+                  from: text.indexOf(second),
+                  length: second.length,
+                  user_link: second,
+                },
+              ],
+            },
+          }),
+        );
+
+        expect(harness.detectSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            navigationTargets: expect.arrayContaining([
+              expect.objectContaining({ kind: 'profile_mention', target: 'max://user/67123224' }),
+              expect.objectContaining({ kind: 'profile_mention', target: second }),
+            ]),
+          }),
+        );
+        expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+        expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+      },
+    );
+
     it('deletes an explicit HTTP URL with fuzzy text matching disabled by default', async () => {
       const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
       const update = createLiveNavigationEnvelopeUpdate('message_created', {
@@ -19029,6 +19099,41 @@ describe('ModerationService', () => {
           navigationTargets: [
             expect.objectContaining({
               normalizedTarget: 'https://blocked.example/path',
+              enforceable: true,
+            }),
+          ],
+        }),
+      );
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+    });
+
+    it.each([
+      ['external resource', 'https://outside.example/hidden'],
+      ['MAX channel', 'https://max.ru/channels/blocked-channel'],
+      ['custom-scheme resource', 'tg://resolve?domain=outside'],
+    ])('deletes an @-shaped hyperlink to an %s', async (_kind, url) => {
+      const label = '@participant';
+      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: {
+            text: label,
+            markup: [{ type: 'link', from: 0, length: label.length, url }],
+          },
+        }),
+      );
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [
+            expect.objectContaining({
+              kind: 'external_url',
+              normalizedTarget: url,
               enforceable: true,
             }),
           ],
@@ -19093,11 +19198,10 @@ describe('ModerationService', () => {
       );
     });
 
-    it('permits a typed allowlisted profile target in ALLOWLIST_ONLY mode', async () => {
+    it('does not require an allowlist entry for a profile mention', async () => {
       const harness = createLiveNavigationHarness({
         linkPolicy: 'ALLOWLIST_ONLY',
-        cachedAllowlist: [typedProfileAllowlist],
-        freshAllowlist: [typedProfileAllowlist],
+        profileMentionsEnabled: true,
       });
       const update = createLiveNavigationEnvelopeUpdate(
         'message_created',
@@ -19108,7 +19212,7 @@ describe('ModerationService', () => {
 
       expect(harness.detectSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          domainAllowlist: [typedProfileAllowlist],
+          domainAllowlist: [],
           navigationTargets: [
             expect.objectContaining({
               kind: 'profile_mention',
@@ -19118,7 +19222,7 @@ describe('ModerationService', () => {
           ],
         }),
       );
-      expect(harness.prisma.domainAllowlist.findMany).toHaveBeenCalledTimes(1);
+      expect(harness.prisma.domainAllowlist.findMany).not.toHaveBeenCalled();
       expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(harness.prisma.violation.create).not.toHaveBeenCalled();
       expect(harness.prisma.moderationEvent.create).not.toHaveBeenCalled();
@@ -19163,6 +19267,7 @@ describe('ModerationService', () => {
         linkPolicy: 'ALLOWLIST_ONLY',
         cachedAllowlist: [typedProfileAllowlist],
         freshAllowlist: [typedProfileAllowlist],
+        profileMentionsEnabled: true,
       });
       const update = createLiveNavigationEnvelopeUpdate('message_created', {
         body: {
@@ -19201,15 +19306,15 @@ describe('ModerationService', () => {
       });
     });
 
-    it('reintroduces a violation when a fresh empty allowlist removed a cached typed target', async () => {
+    it('reintroduces a violation when a fresh empty allowlist removed a cached URL target', async () => {
       const harness = createLiveNavigationHarness({
         linkPolicy: 'ALLOWLIST_ONLY',
-        cachedAllowlist: [typedProfileAllowlist],
+        cachedAllowlist: [INCIDENT_EXTERNAL_URL],
         freshAllowlist: [],
       });
       const update = createLiveNavigationEnvelopeUpdate(
         'message_created',
-        INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+        INCIDENT_EXTERNAL_FORWARD_FIXTURE as unknown as Record<string, unknown>,
       );
 
       await harness.service.handleUpdate(update);

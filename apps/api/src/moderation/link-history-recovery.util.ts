@@ -4,10 +4,8 @@ import type {
   MaxNavigationMessageView,
   NavigationTargetEvidence,
 } from './navigation/navigation-evidence.types';
-import {
-  buildNavigationTargetAllowlistPolicyKeys,
-  createNavigationAllowlistMatcher,
-} from './rule-engine-link-detector';
+import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.util';
+import { createNavigationAllowlistMatcher } from './rule-engine-link-detector';
 
 const MIN_UNIX_MILLISECONDS = 100_000_000_000;
 
@@ -110,7 +108,7 @@ export function deriveLinkPolicySemanticEffectiveAt(
 }
 
 function isActionableNavigationTarget(target: NavigationTargetEvidence): boolean {
-  return target.enforceable && buildNavigationTargetAllowlistPolicyKeys(target).length > 0;
+  return isEnforceableLinkPolicyTarget(target);
 }
 
 function readUnixMilliseconds(value: unknown): number | null {

@@ -1,5 +1,6 @@
 import type { ChatSettings } from '@maxim/contracts/settings';
 
+import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.util';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import type { RuleViolation } from './rule-engine.contract';
 import type { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
@@ -26,7 +27,7 @@ export function needsFreshLinkAllowlistRecheck(
   return (
     linkPolicy === 'ALLOWLIST_ONLY' &&
     (violations.some((violation) => violation.ruleCode === 'LINK_BLOCKED') ||
-      Boolean(navigationTargets?.some((target) => target.enforceable)))
+      Boolean(navigationTargets?.some(isEnforceableLinkPolicyTarget)))
   );
 }
 

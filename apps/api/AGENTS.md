@@ -58,6 +58,7 @@
 ## Message And Link Semantics
 
 - User formatting arrives in `message.body.markup`, not literal Markdown. Preserve/reconstruct markup when importing, editing, or republishing.
+- A valid MAX `user_mention` markup entity is not a link-policy violation. Trust the markup discriminator, not a visible `@` label: `link` markup, unexpected `url` fields, shares, buttons, and plain HTTP(S) targets remain subject to link moderation even when their label looks like a participant mention.
 - Treat `markup.from`/`length` as JavaScript string offsets in the original text; do not remap through code-point indexing on emoji-rich text.
 - Resolve `max://user/<id>` labels from the full display name, including split first/last fields.
 - For admin contact, prefer a direct HTTP(S) profile URL. With a saved label render `Связь с админом: [Display Name](max://user/<id>)`; without a label fall back to HTTP(S), because arbitrary-label mentions can render as plain text.

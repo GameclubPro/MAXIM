@@ -72,6 +72,34 @@ describe('LinkHistoryRecoveryService', () => {
     expect(harness.deleteIntents.ensureIntent).not.toHaveBeenCalled();
   });
 
+  it('does not create a history deletion intent for a platform user mention', async () => {
+    const now = Date.now();
+    const row = buildProfileMentionMessage(now - 60_000);
+    const harness = buildHarness({ now, listRows: [row], exactRow: row, deleteEnabled: true });
+
+    await harness.service.runOnce();
+
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(harness.deleteIntents.ensureIntent).not.toHaveBeenCalled();
+  });
+
+  it('recovers a custom-scheme link markup target', async () => {
+    const now = Date.now();
+    const row = buildLinkedMessage(now - 60_000, 'tg://resolve?domain=outside');
+    const harness = buildHarness({ now, listRows: [row], exactRow: row, deleteEnabled: true });
+
+    await harness.service.runOnce();
+
+    expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+    expect(harness.deleteIntents.ensureIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'message-1',
+        ruleCode: 'LINK_HISTORY_RECOVERY',
+      }),
+    );
+  });
+
   it.each(['http://example.com/blocked', 'https://example.com/blocked'])(
     'recovers an explicit plain-text URL by default: %s',
     async (target) => {
@@ -498,7 +526,10 @@ function buildHarness(options: {
   return { service, prisma, maxClient, maxBotLinkService, deleteIntents, governor };
 }
 
-function buildLinkedMessage(timestamp: number): Record<string, unknown> {
+function buildLinkedMessage(
+  timestamp: number,
+  url = 'https://blocked.example/path',
+): Record<string, unknown> {
   return {
     id: 'message-1',
     timestamp,
@@ -507,7 +538,29 @@ function buildLinkedMessage(timestamp: number): Record<string, unknown> {
     body: {
       mid: 'message-1',
       text: 'site',
-      markup: [{ type: 'link', from: 0, length: 4, url: 'https://blocked.example/path' }],
+      markup: [{ type: 'link', from: 0, length: 4, url }],
+    },
+  };
+}
+
+function buildProfileMentionMessage(timestamp: number): Record<string, unknown> {
+  const text = '@participant';
+  return {
+    id: 'message-1',
+    timestamp,
+    recipient: { chat_id: 'chat-1' },
+    sender: { user_id: 'user-1', is_bot: false },
+    body: {
+      mid: 'message-1',
+      text,
+      markup: [
+        {
+          type: 'user_mention',
+          from: 0,
+          length: text.length,
+          user_link: text,
+        },
+      ],
     },
   };
 }

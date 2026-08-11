@@ -634,7 +634,7 @@ describe('navigation evidence extractor', () => {
     ]);
   });
 
-  it('rejects malformed URL, mention, and open-app targets with explicit diagnostics', () => {
+  it('enforces non-HTTP link markup while rejecting malformed mention and action targets', () => {
     const result = extractNavigationEvidence(
       adaptMaxMessageNavigationView({
         body: {
@@ -662,9 +662,21 @@ describe('navigation evidence extractor', () => {
       }),
     );
 
-    expect(result.targets).toEqual([]);
+    expect(result.targets).toEqual([
+      expect.objectContaining({
+        kind: 'external_url',
+        target: 'javascript:alert(1)',
+        enforceable: true,
+        origins: [expect.objectContaining({ carrier: 'link_markup' })],
+      }),
+      expect.objectContaining({
+        kind: 'external_url',
+        target: 'https://unknown.example/path',
+        enforceable: true,
+        origins: [expect.objectContaining({ carrier: 'link_markup' })],
+      }),
+    ]);
     expect(result.diagnostics.map((item) => item.code)).toEqual([
-      'INVALID_NAVIGATION_TARGET',
       'INVALID_NAVIGATION_TARGET',
       'UNKNOWN_MARKUP_TYPE',
       'AMBIGUOUS_TARGET',
@@ -672,6 +684,70 @@ describe('navigation evidence extractor', () => {
       'INVALID_NAVIGATION_TARGET',
       'UNKNOWN_BUTTON_TYPE',
       'UNKNOWN_ATTACHMENT_TYPE',
+    ]);
+  });
+
+  it('extracts an unexpected URL on user-mention markup as an independent link target', () => {
+    const label = '@participant';
+    const result = extractNavigationEvidence(
+      adaptMaxMessageNavigationView({
+        body: {
+          text: label,
+          markup: [
+            {
+              type: 'user_mention',
+              from: 0,
+              length: label.length,
+              user_id: 67123224,
+              url: 'https://outside.example/hidden',
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.targets).toEqual([
+      expect.objectContaining({
+        kind: 'external_url',
+        target: 'https://outside.example/hidden',
+        origins: [expect.objectContaining({ carrier: 'link_markup' })],
+      }),
+      expect.objectContaining({
+        kind: 'profile_mention',
+        target: 'max://user/67123224',
+        origins: [expect.objectContaining({ carrier: 'user_mention_markup' })],
+      }),
+    ]);
+  });
+
+  it('extracts an unexpected custom-scheme URL as an independent link target', () => {
+    const label = '@participant';
+    const result = extractNavigationEvidence(
+      adaptMaxMessageNavigationView({
+        body: {
+          text: label,
+          markup: [
+            {
+              type: 'user_mention',
+              from: 0,
+              length: label.length,
+              user_id: 67123224,
+              url: 'tg://resolve?domain=outside',
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.targets).toEqual([
+      expect.objectContaining({
+        kind: 'external_url',
+        target: 'tg://resolve?domain=outside',
+        enforceable: true,
+      }),
+      expect.objectContaining({ kind: 'profile_mention' }),
     ]);
   });
 

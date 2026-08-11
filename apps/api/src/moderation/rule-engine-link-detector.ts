@@ -7,6 +7,7 @@ import {
 } from '@maxim/contracts/settings';
 import { LinkPolicy } from '../prisma/prisma-client';
 import { extractUrlsFromText as extractTextUrls } from '../common/url-text.util';
+import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.util';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 
 type AllowlistMatchers = {
@@ -40,7 +41,7 @@ export function detectBlockedLink(
   }
 
   if (navigationTargets) {
-    const enforceableTargets = navigationTargets.filter((target) => target.enforceable);
+    const enforceableTargets = navigationTargets.filter(isEnforceableLinkPolicyTarget);
     if (enforceableTargets.length === 0) {
       return null;
     }
