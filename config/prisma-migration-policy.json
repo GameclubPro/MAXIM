@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260811120000_add_link_history_recovery_state",
-  "baselineNamesSha256": "e2289826d42ae0bd8958a489984c3dfaa95e359306b922eb350803f2f540226a",
-  "baselineContentsSha256": "881ed4472a2f55322300ea6d77f173063b05175e5b32dcf7779c1f98200bb42e",
+  "baselineThrough": "20260811123000_align_link_history_timestamp_types",
+  "baselineNamesSha256": "0f1fe99917874894fcf3cfe08c3fc76293bb5de815bd3214255ae781af187414",
+  "baselineContentsSha256": "966fc2004cbcee0f6a96c08e2e6513d2f69298c5551b5683091da2c69f3c7601",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -41,6 +41,11 @@
       "reason": "Manual review approved two static trigger functions that maintain non-retroactive link-policy recovery baselines. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic and destructive, but this migration contains no dynamic EXECUTE and drops no schema objects.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "The parser's drop-column classification is a false positive from EXECUTE FUNCTION. The migration is additive: existing runtime continues to use chat_settings while new columns have compatible defaults or are nullable, and the new scan-state table has no existing consumers."
+    },
+    "20260811123000_align_link_history_timestamp_types": {
+      "reason": "Manual review approved an atomic drop-and-recreate of the chat settings recovery trigger because PostgreSQL blocks changing the type of a column named by a trigger definition. The migration restores the same trigger and function before commit, and it drops no table columns.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The parser's drop-column classification is a false positive from CREATE TRIGGER EXECUTE FUNCTION. Existing and new runtimes both expose these columns as Prisma DateTime values; the transaction preserves UTC instants, removes only the unintended updated_at default, and cannot commit without restoring the trigger."
     }
   },
   "nonConcurrentIndexExceptions": {}
