@@ -193,14 +193,18 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   const chatDomains = [
     domainAllowlistEntrySchema.parse({
       domain: 'https://maxim.play-team.ru',
+      target: 'https://maxim.play-team.ru',
       normalizedValue: 'https://maxim.play-team.ru',
       matchType: 'EXACT',
+      kind: 'WEB_EXACT',
       removeAfterAt: null,
     }),
     domainAllowlistEntrySchema.parse({
       domain: 'docs.max.ru',
+      target: 'docs.max.ru',
       normalizedValue: 'domain:docs.max.ru',
       matchType: 'DOMAIN',
+      kind: 'WEB_DOMAIN',
       removeAfterAt: addDays(now, 2).toISOString(),
     }),
   ];

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260810170000_align_managed_entity_favorite_labels_updated_at",
-  "baselineNamesSha256": "ed1df6a496f19d3ffd89b970f387e1a461662061a99d21cac7452ec4ea5bb76a",
-  "baselineContentsSha256": "2957355e3cc73ab2255a14437f67da437eee9f56dbc5a59c1b0d3a2ba8f9a883",
+  "baselineThrough": "20260811120000_add_link_history_recovery_state",
+  "baselineNamesSha256": "e2289826d42ae0bd8958a489984c3dfaa95e359306b922eb350803f2f540226a",
+  "baselineContentsSha256": "881ed4472a2f55322300ea6d77f173063b05175e5b32dcf7779c1f98200bb42e",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -36,6 +36,11 @@
       "reason": "Remove the retired channel auto-post button mode after every production API role stopped selecting the column.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Compatible runtime SHA 38fc559155500934773e20b291c9498a6cae29ba was deployed as release release-20260809T020524Z-38fc55915550 and verified live on all 11 production API roles before this migration."
+    },
+    "20260811120000_add_link_history_recovery_state": {
+      "reason": "Manual review approved two static trigger functions that maintain non-retroactive link-policy recovery baselines. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic and destructive, but this migration contains no dynamic EXECUTE and drops no schema objects.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The parser's drop-column classification is a false positive from EXECUTE FUNCTION. The migration is additive: existing runtime continues to use chat_settings while new columns have compatible defaults or are nullable, and the new scan-state table has no existing consumers."
     }
   },
   "nonConcurrentIndexExceptions": {}

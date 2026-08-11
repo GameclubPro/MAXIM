@@ -182,7 +182,19 @@ import type {
 } from './rule-engine.contract';
 import { selectTopModerationViolation } from './moderation-violation-selection';
 import { RuleEngineService } from './rule-engine.service';
-import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
+import {
+  needsFreshLinkAllowlistRecheck,
+  recalculateFreshLinkAllowlistViolations,
+  serializeLinkPolicyEffectiveAt,
+  suppressUnverifiedAllowlistDependentViolations,
+} from './link-allowlist-recheck.util';
+import { LINK_BLOCKED_DELETE_RULE_CODE } from './link-history-recovery.util';
+import {
+  extractEnabledWebhookNavigationTargets,
+  resolveEnabledNavigationTargetOptions,
+  type EnabledNavigationTargetOptions,
+} from './navigation/enabled-navigation-targets';
+import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
@@ -602,6 +614,7 @@ export class ModerationService
   private readonly sharedChatExecutionLockTimeoutMs: number;
   private readonly webhookUserFacingTimeoutMs: number;
   private readonly backgroundTasksEnabled: boolean;
+  private readonly navigationTargetOptions: EnabledNavigationTargetOptions;
   private readonly backgroundWorkSoftPauseQueueLagSec: number;
   private readonly backgroundWorkSoftPauseWorkerShare: number;
   private readonly backgroundWorkSoftPauseWorkerPressure: number;
@@ -777,6 +790,7 @@ export class ModerationService
     this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
       configService?.get<boolean | string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
     );
+    this.navigationTargetOptions = resolveEnabledNavigationTargetOptions(configService);
     this.backgroundWorkSoftPauseQueueLagSec = this.readPositiveConfigInt(
       configService?.get<number>('BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC'),
       DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC,
@@ -1787,6 +1801,10 @@ export class ModerationService
       if (settings.commercialAdsFilterEnabled) {
         this.markWebhookHotPathStage(hotPathProfile, 'rule-engine.commercial-campaign');
       }
+      const navigationTargets = extractEnabledWebhookNavigationTargets(
+        update.raw,
+        this.navigationTargetOptions,
+      );
       const detection = await this.ruleEngine.detect({
         chatId,
         userId: senderId,
@@ -1794,6 +1812,7 @@ export class ModerationService
         text,
         settings,
         domainAllowlist: chat.domainAllowlist,
+        ...(navigationTargets ? { navigationTargets } : {}),
         effectiveLength: effectiveMessageLength,
         hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
         hasStickerAttachment: mediaFlags.hasStickerAttachment,
@@ -1813,6 +1832,7 @@ export class ModerationService
           chatId,
           text,
           settings,
+          navigationTargets,
           cachedDomainAllowlist: chat.domainAllowlist,
           violations: detection.violations,
         })
@@ -2077,13 +2097,18 @@ export class ModerationService
           (commercialActionBand === 'WARN' ||
             commercialActionBand === 'DELETE' ||
             commercialActionBand === 'DELETE_AND_ESCALATE'));
+      const isLinkBlockedDelete = topViolation.ruleCode === 'LINK_BLOCKED';
       const violationDeleteIntent: EnsureModerationDeleteIntentInput | null =
         shouldDeleteByCommercialPolicy
           ? {
               chatId,
               messageId,
-              reasonKey: `${topViolation.ruleCode}:violation-delete`,
-              ruleCode: `${topViolation.ruleCode}_DELETE`,
+              reasonKey: isLinkBlockedDelete
+                ? `${topViolation.ruleCode}:violation-delete:r${settings.linkPolicyRevision}`
+                : `${topViolation.ruleCode}:violation-delete`,
+              ruleCode: isLinkBlockedDelete
+                ? LINK_BLOCKED_DELETE_RULE_CODE
+                : `${topViolation.ruleCode}_DELETE`,
               subjectUserId: senderId,
               sourceMessageAt: createdAt,
               entityType: 'CHAT',
@@ -2097,6 +2122,14 @@ export class ModerationService
                   reason: topViolation.reason,
                   ...(topViolation.metadata && typeof topViolation.metadata === 'object'
                     ? topViolation.metadata
+                    : {}),
+                  ...(isLinkBlockedDelete
+                    ? {
+                        linkPolicyRevision: settings.linkPolicyRevision,
+                        linkPolicyEffectiveAt: serializeLinkPolicyEffectiveAt(
+                          settings.linkPolicyEffectiveAt,
+                        ),
+                      }
                     : {}),
                 },
               },
@@ -16138,18 +16171,16 @@ export class ModerationService
     chatId: string;
     text: string;
     settings: ChatSettings;
+    navigationTargets?: readonly NavigationTargetEvidence[];
     cachedDomainAllowlist: string[];
     violations: RuleViolation[];
   }): Promise<RuleViolation[]> {
-    const hasLinkBlockedViolation = params.violations.some(
-      (violation) => violation.ruleCode === 'LINK_BLOCKED',
-    );
-    const hasBlockedDomainViolation = params.violations.some(
-      (violation) => violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN',
-    );
     if (
-      (!hasLinkBlockedViolation && !hasBlockedDomainViolation) ||
-      (params.settings.linkPolicy !== 'ALLOWLIST_ONLY' && !hasBlockedDomainViolation)
+      !needsFreshLinkAllowlistRecheck(
+        params.settings.linkPolicy,
+        params.violations,
+        params.navigationTargets,
+      )
     ) {
       return params.violations;
     }
@@ -16165,50 +16196,23 @@ export class ModerationService
         },
         'Fresh allowlist link recheck failed',
       );
+      return suppressUnverifiedAllowlistDependentViolations(
+        params.settings.linkPolicy,
+        params.violations,
+      );
+    }
+
+    if (!freshDomainAllowlist) {
       return params.violations;
     }
 
-    if (!freshDomainAllowlist || freshDomainAllowlist.length === 0) {
-      return params.violations;
-    }
-
-    const freshAllowlistMatcher = createAllowlistLinkMatcher(freshDomainAllowlist);
-    const linkViolation = detectBlockedLink(
-      params.text,
-      params.settings.linkPolicy,
+    const recalculatedViolations = recalculateFreshLinkAllowlistViolations({
+      text: params.text,
+      settings: params.settings,
       freshDomainAllowlist,
-      freshAllowlistMatcher,
-    );
-    const blockedDomain = this.blockedDomainDetector.detect(
-      params.text,
-      params.settings.messageLimitsBlockedDomains,
-      {
-        isLinkAllowlisted: freshAllowlistMatcher,
-      },
-    );
-    const recalculatedViolations = params.violations.flatMap((violation) => {
-      if (violation.ruleCode === 'LINK_BLOCKED') {
-        return linkViolation ? [{ ...violation, reason: linkViolation }] : [];
-      }
-
-      if (violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN') {
-        return blockedDomain
-          ? [
-              {
-                ...violation,
-                reason: `Blocked domain detected: ${blockedDomain.blockedDomain}`,
-                metadata: {
-                  ...(violation.metadata ?? {}),
-                  blockedDomain: blockedDomain.blockedDomain,
-                  matchedDomain: blockedDomain.matchedDomain,
-                  matchedLink: blockedDomain.matchedLink,
-                },
-              },
-            ]
-          : [];
-      }
-
-      return [violation];
+      navigationTargets: params.navigationTargets,
+      violations: params.violations,
+      blockedDomainDetector: this.blockedDomainDetector,
     });
 
     if (

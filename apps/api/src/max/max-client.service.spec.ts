@@ -5873,6 +5873,42 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('sends MAX message history boundaries as Unix milliseconds', async () => {
+    const from = new Date('2026-03-06T00:00:00.123Z');
+    const to = '2026-03-07T12:00:00.456Z';
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.listMessages('chat-1', {
+      count: 1,
+      from,
+      to,
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages',
+        params: {
+          chat_id: 'chat-1',
+          count: 1,
+          from: from.getTime(),
+          to: Date.parse(to),
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('parses official message snapshots, preserves missing views, and deduplicates pages', async () => {
     const latestTs = Date.parse('2026-03-07T09:00:00.000Z');
     const previousTs = Date.parse('2026-03-06T09:00:00.000Z');
@@ -5989,8 +6025,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         params: {
           chat_id: 'channel-1',
           count: 2,
-          from: Math.floor(rangeToTs / 1_000),
-          to: Math.floor(rangeFromTs / 1_000),
+          from: rangeToTs,
+          to: rangeFromTs,
         },
         headers: { Authorization: 'stats-token' },
       }),
@@ -6003,10 +6039,118 @@ describe('MaxClientService inline keyboard guardrails', () => {
         params: {
           chat_id: 'channel-1',
           count: 2,
-          from: Math.floor((previousTs - 1_000) / 1_000),
-          to: Math.floor(rangeFromTs / 1_000),
+          from: previousTs - 1,
+          to: rangeFromTs,
         },
         headers: { Authorization: 'stats-token' },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps millisecond-adjacent messages in the same second across snapshot pages', async () => {
+    const newestTimestamp = Date.parse('2026-03-07T09:00:00.901Z');
+    const pageBoundaryTimestamp = newestTimestamp - 1;
+    const nextTimestamp = pageBoundaryTimestamp - 1;
+    const rangeFromTs = Date.parse('2026-03-07T08:59:00.000Z');
+    const rangeToTs = Date.parse('2026-03-07T09:01:00.000Z');
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                { timestamp: newestTimestamp, body: { mid: 'mid-ms-newest' } },
+                { timestamp: pageBoundaryTimestamp, body: { mid: 'mid-ms-boundary' } },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [{ timestamp: nextTimestamp, body: { mid: 'mid-ms-older' } }],
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.listMessageSnapshots('channel-1', {
+      from: rangeFromTs,
+      to: rangeToTs,
+      count: 2,
+      maxPages: 2,
+    });
+
+    expect(result.map((item) => item.messageId)).toEqual([
+      'mid-ms-newest',
+      'mid-ms-boundary',
+      'mid-ms-older',
+    ]);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        params: {
+          chat_id: 'channel-1',
+          count: 2,
+          from: nextTimestamp,
+          to: rangeFromTs,
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('continues snapshot pagination when a full page ends with a timestamp tie', async () => {
+    const newestTimestamp = Date.parse('2026-03-07T09:00:01.000Z');
+    const tiedTimestamp = Date.parse('2026-03-07T09:00:00.900Z');
+    const olderTimestamp = tiedTimestamp - 1;
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                { timestamp: newestTimestamp, body: { mid: 'mid-tie-newest' } },
+                { timestamp: tiedTimestamp, body: { mid: 'mid-tie-a' } },
+                { timestamp: tiedTimestamp, body: { mid: 'mid-tie-b' } },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [{ timestamp: olderTimestamp, body: { mid: 'mid-tie-older' } }],
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.listMessageSnapshots('channel-1', {
+        from: tiedTimestamp - 60_000,
+        to: newestTimestamp + 60_000,
+        count: 3,
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: 'mid-tie-newest' }),
+        expect.objectContaining({ messageId: 'mid-tie-a' }),
+        expect.objectContaining({ messageId: 'mid-tie-b' }),
+        expect.objectContaining({ messageId: 'mid-tie-older' }),
+      ]),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        params: expect.objectContaining({ from: tiedTimestamp - 1 }),
       }),
     );
 
@@ -6054,8 +6198,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         params: {
           chat_id: 'channel-1',
           count: 100,
-          from: Math.floor(rangeToTs / 1_000),
-          to: Math.floor(rangeFromTs / 1_000),
+          from: rangeToTs,
+          to: rangeFromTs,
         },
       }),
     );
@@ -6129,6 +6273,75 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     await service.onModuleDestroy();
+  });
+
+  it('returns an exact raw message only when MAX identifies the requested chat', async () => {
+    const rawMessage = {
+      body: {
+        mid: 'mid-exact-link-1',
+        text: 'masked label',
+        markup: [{ type: 'link', from: 0, length: 12, url: 'https://example.com/path' }],
+      },
+      recipient: { chat_id: 'chat-1' },
+    };
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(of({ data: { messages: [rawMessage] } })),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getExactMessageRow('chat-1', 'mid-exact-link-1', {
+        trafficClass: 'critical',
+        botId: '777000_bot',
+      }),
+    ).resolves.toBe(rawMessage);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/messages',
+        params: { message_ids: 'mid-exact-link-1' },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps exact raw-message absence and chat mismatch fail-closed', async () => {
+    const mismatchService = createService({
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                body: { mid: 'mid-exact-mismatch' },
+                recipient: { chat_id: 'chat-2' },
+              },
+            ],
+          },
+        }),
+      ),
+    });
+    await expect(
+      mismatchService.getExactMessageRow('chat-1', 'mid-exact-mismatch'),
+    ).rejects.toThrow('for chat chat-2 instead of chat-1');
+    await mismatchService.onModuleDestroy();
+
+    const exactNotFound = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const absentService = createService({
+      request: jest
+        .fn()
+        .mockReturnValueOnce(of({ data: { messages: [] } }))
+        .mockReturnValueOnce(throwError(() => exactNotFound)),
+    });
+    await expect(
+      absentService.getExactMessageRow('chat-1', 'mid-exact-absent'),
+    ).resolves.toBeNull();
+    await absentService.onModuleDestroy();
   });
 
   it('loads internal channel dialog identities by exact message id for background repair', async () => {

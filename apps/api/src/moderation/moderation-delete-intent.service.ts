@@ -35,6 +35,11 @@ import type {
   ModerationDeleteIntentStatus,
 } from './moderation-delete-intent.types';
 import { NIGHT_MODE_TRANSITION_NOTICE_RULE_CODES } from './night-mode-transition-notice-persistence-error';
+import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.service';
+import {
+  LINK_BLOCKED_DELETE_RULE_CODE,
+  LINK_HISTORY_RECOVERY_RULE_CODE,
+} from './link-history-recovery.util';
 
 const DEFAULT_RETRY_HORIZON_MS = 24 * 60 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 5_000;
@@ -96,6 +101,7 @@ type IntentRow = {
   leasedFromStatus: ModerationDeleteIntentStatus | null;
   replacementCleanup?: boolean;
   botMessageAutoDeleteOnly?: boolean;
+  linkFamilyDeleteOnly?: boolean;
 };
 
 type ManagedBotMessageOwner = {
@@ -157,6 +163,13 @@ class ModerationDeleteProtectedMessageError extends Error {
   }
 }
 
+class ModerationDeleteGuardedLinkMessageAbsentError extends Error {
+  constructor() {
+    super('MAX confirmed that the guarded link message is absent');
+    this.name = 'ModerationDeleteGuardedLinkMessageAbsentError';
+  }
+}
+
 type DeleteErrorDetails = {
   status: 'RETRYABLE' | 'WAITING_CAPABILITY' | 'AMBIGUOUS' | 'EXPIRED' | 'FAILED_TERMINAL';
   statusCode: number | null;
@@ -204,6 +217,7 @@ export class ModerationDeleteIntentService {
     @InjectQueue(MODERATION_DELETE_INTENT_QUEUE)
     private readonly queue: Queue<ModerationDeleteIntentJob>,
     configService: ConfigService,
+    private readonly linkHistoryDeleteGuard: LinkHistoryDeleteGuardService,
   ) {
     this.mode = normalizeModerationDeleteIntentMode(
       configService.get('MODERATION_DELETE_INTENT_MODE'),
@@ -580,13 +594,7 @@ export class ModerationDeleteIntentService {
             if (protectedIntent) {
               throw new ModerationDeleteProtectedMessageError(protectedIntent);
             }
-            if (options?.beforeDeleteMutation) {
-              try {
-                await options.beforeDeleteMutation();
-              } catch (error: unknown) {
-                throw new ModerationDeletePreDispatchGuardError(error);
-              }
-            }
+            await this.runDeletePreDispatchGuards(intent, botId, options);
             if (!(await this.markDeleteDispatchStarted(intent.id, leaseToken, botId))) {
               throw new ModerationDeleteIntentLeaseLostError();
             }
@@ -594,13 +602,7 @@ export class ModerationDeleteIntentService {
             intent.deleteDispatchStartedAt = new Date();
             intent.deleteDispatchStartedBotId = botId;
             unresolvedDeleteDispatch = true;
-            if (options?.beforeDeleteMutation) {
-              try {
-                await options.beforeDeleteMutation();
-              } catch (error: unknown) {
-                throw new ModerationDeletePreDispatchGuardError(error);
-              }
-            }
+            await this.runDeletePreDispatchGuards(intent, botId, options);
           };
           await this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
             immediate: true,
@@ -615,6 +617,23 @@ export class ModerationDeleteIntentService {
         } catch (error: unknown) {
           if (error instanceof ModerationDeleteProtectedMessageError) {
             return this.toAttemptResult(error.protectedIntent);
+          }
+          if (error instanceof ModerationDeleteGuardedLinkMessageAbsentError) {
+            if (dispatchMarkerPersisted) {
+              if (!(await this.clearDeleteDispatchStarted(intent.id, leaseToken, botId))) {
+                throw new ModerationDeleteIntentLeaseLostError();
+              }
+              intent.deleteDispatchStartedAt = null;
+              intent.deleteDispatchStartedBotId = null;
+              unresolvedDeleteDispatch = false;
+            }
+            const completed = await this.completeAlreadyAbsent(
+              intent.id,
+              leaseToken,
+              botId,
+              'guarded_link_predispatch_exact_absence',
+            );
+            return this.toAttemptResult(completed);
           }
           if (error instanceof ModerationDeletePreDispatchGuardError) {
             if (dispatchMarkerPersisted) {
@@ -1286,6 +1305,36 @@ export class ModerationDeleteIntentService {
     return total;
   }
 
+  private async runDeletePreDispatchGuards(
+    intent: IntentRow,
+    botId: string,
+    options?: ModerationDeleteIntentAttemptOptions,
+  ): Promise<void> {
+    try {
+      if (intent.linkFamilyDeleteOnly === true) {
+        const result = await this.linkHistoryDeleteGuard.assertIntentStillActionable({
+          intentId: intent.id,
+          chatId: intent.chatId,
+          messageId: intent.messageId,
+          subjectUserId: intent.subjectUserId,
+          botId,
+        });
+        if (result === 'absent') {
+          throw new ModerationDeleteGuardedLinkMessageAbsentError();
+        }
+        if (result !== 'allowed') {
+          throw new Error('Guarded link delete intent lost its required reason metadata');
+        }
+      }
+      await options?.beforeDeleteMutation?.();
+    } catch (error: unknown) {
+      if (error instanceof ModerationDeleteGuardedLinkMessageAbsentError) {
+        throw error;
+      }
+      throw new ModerationDeletePreDispatchGuardError(error);
+    }
+  }
+
   private async persistIntent(
     input: EnsureModerationDeleteIntentInput,
     enqueue: boolean,
@@ -1347,10 +1396,23 @@ export class ModerationDeleteIntentService {
             "moderation_delete_intents"."subject_user_id",
             EXCLUDED."subject_user_id"
           ),
-          "source_message_at" = COALESCE(
-            "moderation_delete_intents"."source_message_at",
-            EXCLUDED."source_message_at"
-          ),
+          "source_message_at" = CASE
+            WHEN ${normalized.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE}
+              AND "moderation_delete_intents"."status" NOT IN (
+                CAST('EXPIRED' AS "ModerationDeleteIntentStatus"),
+                CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
+              )
+              AND EXCLUDED."source_message_at" IS NOT NULL
+              AND (
+                "moderation_delete_intents"."source_message_at" IS NULL
+                OR "moderation_delete_intents"."source_message_at" < EXCLUDED."source_message_at"
+              )
+            THEN EXCLUDED."source_message_at"
+            ELSE COALESCE(
+              "moderation_delete_intents"."source_message_at",
+              EXCLUDED."source_message_at"
+            )
+          END,
           "origin_bot_id" = CASE
             WHEN ${shouldPromoteObserved}
             THEN COALESCE(EXCLUDED."origin_bot_id", "moderation_delete_intents"."origin_bot_id")
@@ -1465,6 +1527,7 @@ export class ModerationDeleteIntentService {
         reasonChanged === 1 &&
         initialStatus === 'PENDING' &&
         normalized.ruleCode !== 'BOT_MESSAGE_AUTO_DELETE' &&
+        this.isReplacementCleanupRuleCode(normalized.ruleCode) &&
         intent.status === 'FAILED_TERMINAL' &&
         intent.lastErrorCode === 'managed_output_auto_delete_blocked'
       ) {
@@ -1496,6 +1559,54 @@ export class ModerationDeleteIntentService {
           WHERE "id" = ${intent.id}
             AND "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
             AND "last_error_code" = 'managed_output_auto_delete_blocked'
+          RETURNING ${this.intentReturningSql()}
+        `);
+        effectiveIntent = reopenedRows[0] ?? intent;
+      }
+      if (
+        effectiveIntent === intent &&
+        initialStatus === 'PENDING' &&
+        normalized.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE &&
+        normalized.messageAuthorKind === 'user' &&
+        normalized.sourceMessageAt &&
+        (intent.status === 'EXPIRED' || intent.status === 'FAILED_TERMINAL') &&
+        (!intent.sourceMessageAt || normalized.sourceMessageAt > intent.sourceMessageAt)
+      ) {
+        const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+          UPDATE "moderation_delete_intents"
+          SET
+            "status" = CASE
+              WHEN (
+                "remote_delete_succeeded_at" IS NOT NULL
+                AND "remote_delete_succeeded_bot_id" IS NOT NULL
+              ) OR (
+                "delete_dispatch_started_at" IS NOT NULL
+                AND "delete_dispatch_started_bot_id" IS NOT NULL
+              )
+              THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
+              ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
+            END,
+            "source_message_at" = ${normalized.sourceMessageAt},
+            "execute_at" = LEAST("execute_at", ${normalized.executeAt}),
+            "next_attempt_at" = ${normalized.executeAt},
+            "retry_until_at" = GREATEST("retry_until_at", ${normalized.retryUntilAt}),
+            "last_status_code" = NULL,
+            "last_error_code" = NULL,
+            "last_error" = NULL,
+            "completed_at" = NULL,
+            "lease_token" = NULL,
+            "lease_expires_at" = NULL,
+            "leased_from_status" = NULL,
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${intent.id}
+            AND "status" IN (
+              CAST('EXPIRED' AS "ModerationDeleteIntentStatus"),
+              CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
+            )
+            AND (
+              "source_message_at" IS NULL
+              OR "source_message_at" < ${normalized.sourceMessageAt}
+            )
           RETURNING ${this.intentReturningSql()}
         `);
         effectiveIntent = reopenedRows[0] ?? intent;
@@ -2520,7 +2631,10 @@ export class ModerationDeleteIntentService {
     intentId: string,
     leaseToken: string,
     botId: string,
-    verificationCode: 'retry_predelete_exact_presence' | 'postdelete_exact_presence',
+    verificationCode:
+      | 'retry_predelete_exact_presence'
+      | 'postdelete_exact_presence'
+      | 'guarded_link_predispatch_exact_absence',
   ): Promise<IntentRow> {
     await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents"
@@ -3197,7 +3311,27 @@ export class ModerationDeleteIntentService {
           WHERE other_reason."intent_id" = ${intentIdColumn}
             AND other_reason."rule_code" <> 'BOT_MESSAGE_AUTO_DELETE'
         )
-      ) AS "botMessageAutoDeleteOnly"
+      ) AS "botMessageAutoDeleteOnly",
+      (
+        EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" link_reason
+        WHERE link_reason."intent_id" = ${intentIdColumn}
+          AND link_reason."rule_code" IN (${Prisma.join([
+            LINK_BLOCKED_DELETE_RULE_CODE,
+            LINK_HISTORY_RECOVERY_RULE_CODE,
+          ])})
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" non_link_reason
+          WHERE non_link_reason."intent_id" = ${intentIdColumn}
+            AND non_link_reason."rule_code" NOT IN (${Prisma.join([
+              LINK_BLOCKED_DELETE_RULE_CODE,
+              LINK_HISTORY_RECOVERY_RULE_CODE,
+            ])})
+        )
+      ) AS "linkFamilyDeleteOnly"
     `;
   }
 

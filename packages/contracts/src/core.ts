@@ -39,6 +39,7 @@ import {
   normalizeBroadcastScheduledSlots,
 } from './broadcast-request-utils.js';
 import { membershipActivityPageSchema } from './membership-activity.js';
+import { domainAllowlistEntrySchema } from './navigation-allowlist.js';
 import {
   chatSummarySchema,
   managedEntityFavoriteTypeSchema,
@@ -49,11 +50,10 @@ import {
   DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
-  allowlistMatchTypeSchema,
   isValidDeleteBotMessagesDelayMinutes,
   normalizeAllowlistDomain,
-  normalizeAllowlistLink,
 } from './settings-utils.js';
+export * from './navigation-allowlist.js';
 export * from './settings-utils.js';
 export * from './system-core.js';
 export * from './vk-parsing.js';
@@ -1926,47 +1926,6 @@ export const updateSettingsRequestSchema = chatSettingsSchema;
 
 export const addAdminRequestSchema = z.object({
   userId: z.string(),
-});
-
-export const addDomainRequestSchema = z
-  .object({
-    domain: z.string().trim().min(3).max(2_048),
-    matchType: allowlistMatchTypeSchema.optional(),
-  })
-  .superRefine((value, ctx) => {
-    const normalized =
-      value.matchType === 'DOMAIN'
-        ? normalizeAllowlistDomain(value.domain)
-        : value.matchType === 'EXACT'
-          ? normalizeAllowlistLink(value.domain)
-          : (normalizeAllowlistLink(value.domain) ?? normalizeAllowlistDomain(value.domain));
-
-    if (normalized) {
-      return;
-    }
-
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message:
-        value.matchType === 'DOMAIN'
-          ? 'Укажите корректный домен.'
-          : value.matchType === 'EXACT'
-            ? 'Укажите корректную ссылку (http/https).'
-            : 'Укажите корректную ссылку или домен.',
-      path: ['domain'],
-    });
-  });
-
-export const domainAllowlistEntrySchema = z.object({
-  domain: z.string().trim().min(3).max(2_048),
-  normalizedValue: z.string().trim().min(3).max(2_048),
-  matchType: allowlistMatchTypeSchema,
-  removeAfterAt: z.string().datetime().nullable(),
-});
-export type DomainAllowlistEntry = z.infer<typeof domainAllowlistEntrySchema>;
-
-export const scheduleDomainRemovalRequestSchema = z.object({
-  removeAfterAt: z.string().datetime().nullable(),
 });
 
 const MAX_BROADCAST_CALENDAR_SLOTS = 186;

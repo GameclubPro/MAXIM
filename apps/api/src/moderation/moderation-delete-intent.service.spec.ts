@@ -51,6 +51,7 @@ function createService(
   prismaOverrides: Record<string, unknown> = {},
   maxClientOverrides: Record<string, unknown> = {},
   maxBotLinkOverrides: Record<string, unknown> = {},
+  linkHistoryDeleteGuardOverrides?: Record<string, unknown>,
 ) {
   const config = {
     MODERATION_DELETE_INTENT_MODE: 'on',
@@ -108,14 +109,19 @@ function createService(
     getExecutableBotById: jest.fn().mockReturnValue({ id: 'configured-bot' }),
     ...maxBotLinkOverrides,
   };
+  const linkHistoryDeleteGuard = {
+    assertIntentStillActionable: jest.fn().mockResolvedValue('allowed'),
+    ...linkHistoryDeleteGuardOverrides,
+  };
   const service = new ModerationDeleteIntentService(
     prisma as never,
     maxClient as never,
     maxBotLink as never,
     queue as never,
     new ConfigService(config),
+    linkHistoryDeleteGuard as never,
   );
-  return { service, prisma, queue, maxClient, maxBotLink };
+  return { service, prisma, queue, maxClient, maxBotLink, linkHistoryDeleteGuard };
 }
 
 const baseIntent = {
@@ -1580,6 +1586,167 @@ describe('ModerationDeleteIntentService', () => {
     expect(events.indexOf('dispatch-fence')).toBeLessThan(events.indexOf('max-delete'));
   });
 
+  it.each([
+    ['an initial attempt', 'PENDING', 1],
+    ['a retry', 'RETRYABLE', 2],
+  ] as const)(
+    'runs the link-family guard on both sides of the dispatch fence for %s',
+    async (_label, leasedFromStatus, attemptCount) => {
+      const intent = {
+        ...baseIntent,
+        leasedFromStatus,
+        attemptCount,
+        linkFamilyDeleteOnly: true,
+      };
+      const completed = {
+        ...intent,
+        status: 'SUCCEEDED',
+        succeededBotId: 'bot-1',
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-1',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const events: string[] = [];
+      const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+        const sql = query.strings?.join('?') ?? '';
+        if (sql.includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) {
+          events.push('dispatch-fence');
+        }
+        return 1;
+      });
+      const deleteMessage = jest.fn().mockImplementation(async () => {
+        events.push('max-delete');
+      });
+      const assertIntentStillActionable = jest.fn().mockImplementation(async () => {
+        events.push('history-guard');
+        return 'allowed';
+      });
+      const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
+      const { service } = createService(
+        {},
+        { $queryRaw: queryRaw, $executeRaw: executeRaw },
+        { deleteMessage },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        { assertIntentStillActionable },
+      );
+
+      await service.executeLeasedIntent('intent-1', 'lease-1');
+
+      expect(assertIntentStillActionable).toHaveBeenCalledTimes(2);
+      expect(assertIntentStillActionable).toHaveBeenNthCalledWith(1, {
+        intentId: 'intent-1',
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        subjectUserId: 'user-1',
+        botId: 'bot-1',
+      });
+      expect(events).toEqual(['history-guard', 'dispatch-fence', 'history-guard', 'max-delete']);
+    },
+  );
+
+  it('does not run the link-family guard for an ordinary delete intent', async () => {
+    const completed = {
+      ...baseIntent,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const assertIntentStillActionable = jest.fn().mockResolvedValue('allowed');
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ ...baseIntent, linkFamilyDeleteOnly: false }])
+      .mockResolvedValueOnce([completed]);
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      { deleteMessage: jest.fn() },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      { assertIntentStillActionable },
+    );
+
+    await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(assertIntentStillActionable).not.toHaveBeenCalled();
+  });
+
+  it('does not let a link reason gate an independent delete reason on the same intent', async () => {
+    const completed = {
+      ...baseIntent,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      linkFamilyDeleteOnly: false,
+    };
+    const assertIntentStillActionable = jest.fn().mockRejectedValue(new Error('history disabled'));
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ ...baseIntent, linkFamilyDeleteOnly: false }])
+      .mockResolvedValueOnce([completed]);
+    const deleteMessage = jest.fn();
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      { assertIntentStillActionable },
+    );
+
+    await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(assertIntentStillActionable).not.toHaveBeenCalled();
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when a link-only intent loses its required reason before dispatch', async () => {
+    const retryable = {
+      ...baseIntent,
+      status: 'RETRYABLE',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      linkFamilyDeleteOnly: true,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ ...baseIntent, linkFamilyDeleteOnly: true }])
+      .mockResolvedValueOnce([retryable]);
+    const deleteMessage = jest.fn();
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      { assertIntentStillActionable: jest.fn().mockResolvedValue('not_applicable') },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toThrow(
+      'Guarded link delete intent lost its required reason metadata',
+    );
+
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('classifies live and history link rules by rule code rather than reason metadata', () => {
+    const { service } = createService();
+    const query = (
+      service as unknown as {
+        intentSelectSql(alias: string): { strings?: readonly string[] };
+      }
+    ).intentSelectSql('intent');
+    const sql = query.strings?.join('?') ?? '';
+
+    expect(sql).toContain('link_reason."rule_code" IN (');
+    expect(sql).toContain('non_link_reason."rule_code" NOT IN (');
+    expect(sql).not.toContain('link_reason."reason_key"');
+  });
+
   it('rechecks its database lease inside MaxClient before persisting the dispatch fence', async () => {
     let leaseRenewals = 0;
     const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
@@ -2471,6 +2638,111 @@ describe('ModerationDeleteIntentService', () => {
     expect(queryRaw).toHaveBeenCalledTimes(1);
     expect(queue.add).not.toHaveBeenCalled();
   });
+
+  it.each(['EXPIRED', 'FAILED_TERMINAL'] as const)(
+    'reopens a %s live link intent only for a newer message event',
+    async (status) => {
+      const previousEventAt = new Date('2026-08-11T02:56:00.000Z');
+      const editedEventAt = new Date('2026-08-11T02:57:00.000Z');
+      const terminal = {
+        ...baseIntent,
+        status,
+        sourceMessageAt: previousEventAt,
+        completedAt: new Date(),
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const reopened = {
+        ...terminal,
+        status: 'PENDING',
+        sourceMessageAt: editedEventAt,
+        completedAt: null,
+        nextAttemptAt: new Date(Date.now() - 1_000),
+        retryUntilAt: new Date(Date.now() + 60_000),
+      };
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([terminal])
+        .mockResolvedValueOnce([reopened]);
+      const transaction = jest.fn(
+        async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+          callback({ $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(0) }),
+      );
+      const { service, queue } = createService({}, { $transaction: transaction });
+
+      await expect(
+        service.ensureIntent({
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          reasonKey: 'LINK_BLOCKED:violation-delete:r1',
+          ruleCode: 'LINK_BLOCKED_DELETE',
+          subjectUserId: 'user-1',
+          sourceMessageAt: editedEventAt,
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          originBotId: 'bot-1',
+          event: {
+            userId: 'user-1',
+            eventType: 'MESSAGE',
+            metadata: { linkPolicyRevision: 1 },
+          },
+        }),
+      ).resolves.toMatchObject({ status: 'PENDING' });
+
+      expect(queryRaw).toHaveBeenCalledTimes(2);
+      const upsertSql = queryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+      const reopenSql = queryRaw.mock.calls[1]?.[0]?.strings?.join('?') ?? '';
+      expect(upsertSql).toContain(
+        '"moderation_delete_intents"."source_message_at" < EXCLUDED."source_message_at"',
+      );
+      expect(reopenSql).toContain('"source_message_at" < ?');
+      expect(reopenSql).toContain("CAST('FAILED_TERMINAL' AS");
+      expect(queue.add).toHaveBeenCalledWith(
+        'execute-moderation-delete-intent',
+        { intentId: 'intent-1' },
+        expect.objectContaining({ priority: 1 }),
+      );
+    },
+  );
+
+  it.each(['EXPIRED', 'FAILED_TERMINAL'] as const)(
+    'does not reopen a %s live link intent for a replay of the same event',
+    async (status) => {
+      const sourceMessageAt = new Date('2026-08-11T02:56:00.000Z');
+      const terminal = {
+        ...baseIntent,
+        status,
+        sourceMessageAt,
+        completedAt: new Date(),
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const queryRaw = jest.fn().mockResolvedValue([terminal]);
+      const transaction = jest.fn(
+        async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+          callback({ $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(0) }),
+      );
+      const { service, queue } = createService({}, { $transaction: transaction });
+
+      await expect(
+        service.ensureIntent({
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          reasonKey: 'LINK_BLOCKED:violation-delete:r1',
+          ruleCode: 'LINK_BLOCKED_DELETE',
+          subjectUserId: 'user-1',
+          sourceMessageAt,
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          originBotId: 'bot-1',
+          event: { userId: 'user-1', eventType: 'MESSAGE' },
+        }),
+      ).resolves.toMatchObject({ status });
+
+      expect(queryRaw).toHaveBeenCalledTimes(1);
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
 
   it('reopens an expired replacement cleanup exactly when its recovery reason is first inserted', async () => {
     const expired = {

@@ -14,6 +14,18 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('keeps plain-text link clickability shadow-only unless explicitly enabled', () => {
+    expect(validateEnv(createValidEnv()).MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(false);
+    expect(
+      validateEnv(createValidEnv({ MODERATION_LINK_TEXT_CLICKABILITY_ENABLED: 'true' }))
+        .MODERATION_LINK_TEXT_CLICKABILITY_ENABLED,
+    ).toBe(true);
+    expect(
+      validateEnv(createValidEnv({ MODERATION_LINK_TEXT_CLICKABILITY_ENABLED: 'false' }))
+        .MODERATION_LINK_TEXT_CLICKABILITY_ENABLED,
+    ).toBe(false);
+  });
+
   it('retains the server-side Safety Desk access code', () => {
     expect(
       validateEnv(createValidEnv({ ADMIN_ACCESS_CODE: 'server-admin-code' })).ADMIN_ACCESS_CODE,
@@ -213,6 +225,25 @@ describe('validateEnv boolean parsing', () => {
     ).toThrow(/MODERATION_DELETE_INTENT_RETRY_MAX_MS/u);
   });
 
+  it('enables live navigation evidence while keeping history recovery off by default', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.MODERATION_LINK_STRUCTURED_TARGETS_ENABLED).toBe(true);
+    expect(defaults.MODERATION_LINK_PROFILE_MENTIONS_ENABLED).toBe(true);
+    expect(defaults.MODERATION_LINK_FORWARDED_TARGETS_ENABLED).toBe(true);
+    expect(defaults.MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(false);
+    expect(defaults.MODERATION_LINK_HISTORY_SCAN_ENABLED).toBe(false);
+    expect(defaults.MODERATION_LINK_HISTORY_DELETE_ENABLED).toBe(false);
+    expect(defaults.MODERATION_LINK_HISTORY_SCAN_PAGE_SIZE).toBe(50);
+
+    expect(
+      validateEnv(createValidEnv({ MODERATION_LINK_HISTORY_SCAN_PAGE_SIZE: '99' }))
+        .MODERATION_LINK_HISTORY_SCAN_PAGE_SIZE,
+    ).toBe(99);
+    expect(() =>
+      validateEnv(createValidEnv({ MODERATION_LINK_HISTORY_SCAN_PAGE_SIZE: '100' })),
+    ).toThrow(/MODERATION_LINK_HISTORY_SCAN_PAGE_SIZE/u);
+  });
+
   it('defaults photo duplicate analysis to bounded shadow mode', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.PHOTO_DUPLICATE_ROLLOUT_MODE).toBe('shadow');
@@ -238,9 +269,9 @@ describe('validateEnv boolean parsing', () => {
     expect(configured.PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS).toBe('chat-2');
     expect(configured.PHOTO_DUPLICATE_MAX_BYTES).toBe(8_388_608);
 
-    expect(() =>
-      validateEnv(createValidEnv({ PHOTO_DUPLICATE_ROLLOUT_MODE: 'unsafe' })),
-    ).toThrow(/PHOTO_DUPLICATE_ROLLOUT_MODE/u);
+    expect(() => validateEnv(createValidEnv({ PHOTO_DUPLICATE_ROLLOUT_MODE: 'unsafe' }))).toThrow(
+      /PHOTO_DUPLICATE_ROLLOUT_MODE/u,
+    );
   });
 
   it('defaults the action ledger watchdog to shadow rollout', () => {

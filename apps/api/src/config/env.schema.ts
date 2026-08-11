@@ -328,6 +328,41 @@ const envSchema = z.object({
   CHAT_ROUTING_RECONCILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
   MODERATION_ENABLED_QUEUES: z.string().optional(),
   MODERATION_BACKGROUND_TASKS_ENABLED: envBoolean(true),
+  MODERATION_LINK_STRUCTURED_TARGETS_ENABLED: envBoolean(true),
+  MODERATION_LINK_PROFILE_MENTIONS_ENABLED: envBoolean(true),
+  MODERATION_LINK_FORWARDED_TARGETS_ENABLED: envBoolean(true),
+  MODERATION_LINK_TEXT_CLICKABILITY_ENABLED: envBoolean(false),
+  MODERATION_LINK_HISTORY_SCAN_ENABLED: envBoolean(false),
+  MODERATION_LINK_HISTORY_DELETE_ENABLED: envBoolean(false),
+  MODERATION_LINK_HISTORY_SCAN_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
+  MODERATION_LINK_HISTORY_SCAN_STARTUP_DELAY_MS: z.coerce.number().int().min(0).default(30_000),
+  MODERATION_LINK_HISTORY_SCAN_LEASE_MS: z.coerce.number().int().positive().default(60_000),
+  MODERATION_LINK_HISTORY_SCAN_PAGE_SIZE: z.coerce.number().int().min(1).max(99).default(50),
+  MODERATION_LINK_HISTORY_SCAN_SUCCESS_DELAY_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 60_000),
+  MODERATION_LINK_HISTORY_SCAN_ERROR_BACKOFF_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 60_000),
+  MODERATION_LINK_HISTORY_DISCOVERY_OVERLAP_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 60_000),
+  MODERATION_LINK_HISTORY_REPAIR_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(24 * 60 * 60_000),
+  MODERATION_LINK_HISTORY_REPAIR_SLICE_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60 * 60_000),
   MODERATION_CONCURRENCY_LEGACY: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_CRITICAL: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_JOIN: z.coerce.number().int().positive().optional(),

@@ -4,11 +4,9 @@ import {
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   MAX_MESSAGE_LENGTH_MAX,
   MAX_MESSAGE_LENGTH_MIN,
-  type AllowlistMatchType,
   type BotSpeechMediaImage,
   type ChatSettings,
   type ChatSettingsScreenResponse,
-  type DomainAllowlistEntry,
   formatDeleteBotMessagesDelayLabel,
 } from '@maxim/contracts/settings';
 import { type BroadcastImage, type SendBroadcastResult } from '@maxim/contracts/broadcast';
@@ -42,8 +40,26 @@ import type { SendBroadcastPayload } from '../../lib/api/shared-types';
 import { cn } from '../../lib/cn';
 import type { SettingsWorkspaceState } from '../../lib/settings-workspace-state';
 import type { ApplySectionKey } from '../settings-page-state';
+import {
+  ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION as allowlistNavigationPolicyDescription,
+  STRICT_NAVIGATION_POLICY_DESCRIPTION as strictNavigationPolicyDescription,
+} from './settings-link-allowlist';
 export { createDefaultApplySettingsTarget } from './settings-apply-target';
 export { buildSpeechStylePreviewSamples } from '../../lib/bot-speech-style-preview';
+export {
+  ALLOWLIST_MATCH_OPTIONS,
+  ALLOWLIST_NAVIGATION_POLICY_DESCRIPTION,
+  NAVIGATION_ALLOWLIST_TARGET_OPTIONS,
+  STRICT_NAVIGATION_POLICY_DESCRIPTION,
+  formatAllowlistMetaLabel,
+  formatAllowlistModeLabel,
+  formatNavigationAllowlistEntryKindLabel,
+  formatNavigationAllowlistEntryTarget,
+  formatNavigationAllowlistKindLabel,
+  getNavigationAllowlistTargetOption,
+  resolveNavigationAllowlistEntryKind,
+  type NavigationAllowlistTargetOption,
+} from './settings-link-allowlist';
 
 export type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 export type { BotSpeechMediaFieldKey, BotSpeechMediaImage };
@@ -870,13 +886,13 @@ export const LINK_POLICY_OPTIONS: Array<{
     value: 'BLOCKLIST_ONLY',
     eyebrow: 'Жёсткий режим',
     label: 'Удалять все',
-    description: 'Любая ссылка удаляется сразу.',
+    description: strictNavigationPolicyDescription,
   },
   {
     value: 'ALLOWLIST_ONLY',
     eyebrow: 'Разрешённые',
     label: 'Только разрешённые',
-    description: 'Удаляются все ссылки, кроме списка ниже.',
+    description: allowlistNavigationPolicyDescription,
   },
 ];
 
@@ -1066,31 +1082,6 @@ export function formatMiniappBroadcastResultDescription(result: SendBroadcastRes
     ? `Отправлено: ${sentTargetLabel}.`
     : `Отправлено: ${result.sentChats}/${result.targetChats}.`;
 }
-
-export function formatAllowlistModeLabel(matchType: AllowlistMatchType): string {
-  return matchType === 'DOMAIN' ? 'Весь домен' : 'Точная ссылка';
-}
-
-export function formatAllowlistMetaLabel(
-  entry: DomainAllowlistEntry,
-  scheduledAtLabel: string,
-): string {
-  const targetLabel =
-    entry.matchType === 'DOMAIN'
-      ? 'Домен не удаляется без таймера.'
-      : 'Ссылка не удаляется без таймера.';
-
-  if (!scheduledAtLabel) {
-    return targetLabel;
-  }
-
-  return `Удаление: ${scheduledAtLabel}`;
-}
-
-export const ALLOWLIST_MATCH_OPTIONS: Array<{ value: AllowlistMatchType; label: string }> = [
-  { value: 'DOMAIN', label: 'Весь домен' },
-  { value: 'EXACT', label: 'Точная ссылка' },
-];
 
 export function formatCompactBroadcastDateTime(
   value: string | null,

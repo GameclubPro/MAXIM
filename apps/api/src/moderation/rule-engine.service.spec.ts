@@ -60,6 +60,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
+    linkPolicyRevision: 1,
+    linkPolicyEffectiveAt: new Date(),
     linkEscalationWindowHours: 24,
     linkWarnMaxCount: 2,
     linkMuteMaxCount: 3,
@@ -555,7 +557,7 @@ describe('RuleEngineService', () => {
     expect(blocked.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
-  it('allows root-domain links when a domain rule was saved with a www prefix', async () => {
+  it('does not broaden a www domain rule to its parent domain', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -567,10 +569,8 @@ describe('RuleEngineService', () => {
       domainAllowlist: ['domain:www.ozon.ru'],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
-    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_DOMAIN')).toBe(
-      false,
-    );
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_DOMAIN')).toBe(true);
   });
 
   it('does not apply blocked-domain limits to links covered by a domain allowlist rule', async () => {
@@ -623,7 +623,7 @@ describe('RuleEngineService', () => {
     ).toBe(true);
   });
 
-  it('treats vk.com and vk.ru as the same allowlisted link', async () => {
+  it('keeps exact links on vk.com and vk.ru distinct', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -633,7 +633,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: ['https://vk.com/studia_svetlana_armavir'],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
   it('detects blocked links with unicode domains', async () => {
@@ -758,7 +758,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
-  it('matches legacy allowlist rows with encoded trailing text', async () => {
+  it('does not shorten an exact allowlist URL at encoded whitespace', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -770,10 +770,10 @@ describe('RuleEngineService', () => {
       ],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
-  it('ignores bare branded domains when exact allowlisted URL is present', async () => {
+  it('ignores bare branded domains when an exact allowlisted URL is present', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',

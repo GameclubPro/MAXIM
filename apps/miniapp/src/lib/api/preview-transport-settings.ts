@@ -1,4 +1,5 @@
 import {
+  addDomainRequestSchema,
   applySectionTargetPreviewResponseSchema,
   applySectionToAllResponseSchema,
   applySettingsTargetSchema,
@@ -10,8 +11,11 @@ import {
   chatSettingsSchema,
   chatSettingsScreenResponseSchema,
   domainAllowlistEntrySchema,
+  inferAllowlistMatchType,
   managedBroadcastDetailsSchema,
   managedEntityHeaderSchema,
+  normalizeStoredNavigationAllowlistEntry,
+  parseStoredAllowlistEntry,
   publishChannelEngagementResultSchema,
   publishChatRulesResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
@@ -533,23 +537,21 @@ export async function handleChatRequest(
   }
 
   if (tail[0] === 'domain-allowlist' && tail.length === 1 && method === 'POST') {
-    const payload = parseJsonBody(init) as {
-      domain?: string;
-      matchType?: 'EXACT' | 'DOMAIN';
-    } | null;
-    const domain = payload?.domain?.trim();
-    const matchType = payload?.matchType === 'DOMAIN' ? 'DOMAIN' : 'EXACT';
-    if (!domain) {
-      throw new Error('Preview domain is required');
+    const payload = addDomainRequestSchema.parse(parseJsonBody(init));
+    const inputKind =
+      payload.kind ?? payload.matchType ?? inferAllowlistMatchType(payload.domain) ?? 'WEB_EXACT';
+    const normalizedValue = normalizeStoredNavigationAllowlistEntry(payload.domain, inputKind);
+    const normalizedEntry = normalizedValue ? parseStoredAllowlistEntry(normalizedValue) : null;
+    if (!normalizedEntry) {
+      throw new Error('Preview navigation target is invalid');
     }
 
-    const normalizedValue = matchType === 'DOMAIN' ? `domain:${domain}` : domain;
-    if (!state.chatDomains.some((item) => item.normalizedValue === normalizedValue)) {
+    if (
+      !state.chatDomains.some((item) => item.normalizedValue === normalizedEntry.normalizedValue)
+    ) {
       state.chatDomains = [
         domainAllowlistEntrySchema.parse({
-          domain,
-          normalizedValue,
-          matchType,
+          ...normalizedEntry,
           removeAfterAt: null,
         }),
         ...state.chatDomains,

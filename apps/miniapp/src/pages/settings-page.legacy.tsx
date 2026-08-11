@@ -5,15 +5,14 @@ import {
   type ApplySettingsTarget,
   chatRulesSchema,
   chatSettingsSchema,
-  normalizeAllowlistDomain,
-  normalizeAllowlistLink,
-  normalizeStoredAllowlistEntry,
+  normalizeNavigationAllowlistTarget,
+  normalizeStoredNavigationAllowlistEntry,
   stepDeleteBotMessagesDelayMinutes,
-  type AllowlistMatchType,
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
+  type NavigationAllowlistKind,
 } from '@maxim/contracts/settings';
 import {
   type BroadcastLinkButton,
@@ -320,8 +319,10 @@ import {
   toLocalTimeInputValue,
   parseIsoToLocalDateTime,
   formatRemovalDateTime,
-  formatAllowlistModeLabel,
-  ALLOWLIST_MATCH_OPTIONS,
+  formatNavigationAllowlistEntryKindLabel,
+  formatNavigationAllowlistEntryTarget,
+  getNavigationAllowlistTargetOption,
+  NAVIGATION_ALLOWLIST_TARGET_OPTIONS,
   formatCompactBroadcastDateTime,
   formatRussianCountLabel,
   formatBroadcastPayloadScheduleLabel,
@@ -396,7 +397,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [rulesButtonsSheetOpen, setRulesButtonsSheetOpen] = useState(false);
   const [rulesButtonRevealSignal, setRulesButtonRevealSignal] = useState(0);
   const [domainInput, setDomainInput] = useState('');
-  const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('DOMAIN');
+  const [domainInputKind, setDomainInputKind] = useState<NavigationAllowlistKind>('WEB_DOMAIN');
   const [domainInputError, setDomainInputError] = useState('');
   const [stopWordsMode, setStopWordsMode] = useState<StopWordsMode>('words');
   const [messageLimitsBlockedWordsInput, setMessageLimitsBlockedWordsInput] = useState('');
@@ -1630,7 +1631,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [api, applyTargetSheet, chatId]);
 
   const addDomainMutation = useMutation({
-    mutationFn: (payload: { domain: string; matchType: AllowlistMatchType }) =>
+    mutationFn: (payload: { domain: string; kind: NavigationAllowlistKind }) =>
       addDomain(api, chatId ?? '', payload),
     onSuccess: (_, payload) => {
       setDomainInput('');
@@ -1638,17 +1639,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
         tone: 'success',
-        title:
-          payload.matchType === 'DOMAIN'
-            ? 'Домен добавлен в разрешённые'
-            : 'Ссылка добавлена в разрешённые',
+        title: getNavigationAllowlistTargetOption(payload.kind).successTitle,
       });
     },
-    onError: (error) => {
+    onError: (error, payload) => {
       pushToast({
         tone: 'danger',
-        title:
-          domainInputMode === 'DOMAIN' ? 'Не удалось добавить домен' : 'Не удалось добавить ссылку',
+        title: getNavigationAllowlistTargetOption(payload.kind).errorTitle,
         description: formatApiError(error),
       });
     },
@@ -1660,7 +1657,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setScheduleDomain(null);
       setScheduleError('');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      pushToast({ tone: 'success', title: 'Удалено из разрешённых ссылок' });
+      pushToast({ tone: 'success', title: 'Удалено из разрешённых целей' });
     },
     onError: (error) => {
       pushToast({
@@ -2786,18 +2783,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const normalizedDomain =
-      domainInputMode === 'DOMAIN' ? normalizeAllowlistDomain(domainInput) : null;
-    const normalizedLink = domainInputMode === 'EXACT' ? normalizeAllowlistLink(domainInput) : null;
-    const normalizedValue = normalizeStoredAllowlistEntry(domainInput, domainInputMode);
-    const normalizedInput = normalizedDomain ?? normalizedLink;
+    const inputOption = getNavigationAllowlistTargetOption(domainInputKind);
+    const normalizedInput = normalizeNavigationAllowlistTarget(domainInput, domainInputKind);
+    const normalizedValue = normalizeStoredNavigationAllowlistEntry(domainInput, domainInputKind);
 
     if (!normalizedInput || !normalizedValue) {
-      setDomainInputError(
-        domainInputMode === 'DOMAIN'
-          ? 'Введите корректный домен.'
-          : 'Введите корректную ссылку (http/https).',
-      );
+      setDomainInputError(inputOption.invalidMessage);
       return;
     }
 
@@ -2814,7 +2805,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setDomainInputError('');
     addDomainMutation.mutate({
       domain: normalizedInput,
-      matchType: domainInputMode,
+      kind: domainInputKind,
     });
   }
 
@@ -5439,24 +5430,38 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
                             >
                               <div className="allowlist-panel__head">
-                                <span className="field__label">Разрешённые ссылки</span>
+                                <span className="field__label">Разрешённые цели</span>
                               </div>
 
                               <div className="allowlist-composer">
-                                <SegmentedControl
-                                  value={domainInputMode}
-                                  options={ALLOWLIST_MATCH_OPTIONS}
-                                  onChange={(value) => {
-                                    setDomainInputMode(value);
-                                    setDomainInputError('');
-                                  }}
-                                  className="allowlist-composer__mode"
-                                  ariaLabel="Что разрешить: домен или точную ссылку"
-                                />
+                                <label className="allowlist-composer__head">
+                                  <span className="field__label allowlist-composer__label">
+                                    Тип цели
+                                  </span>
+                                  <select
+                                    className="button button--ghost"
+                                    value={domainInputKind}
+                                    onChange={(event) => {
+                                      setDomainInputKind(
+                                        event.target.value as NavigationAllowlistKind,
+                                      );
+                                      setDomainInputError('');
+                                    }}
+                                    aria-label="Тип разрешённой цели"
+                                  >
+                                    {NAVIGATION_ALLOWLIST_TARGET_OPTIONS.map((option) => (
+                                      <option key={option.value} value={option.value}>
+                                        {option.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
                                 <div className="allowlist-add-row">
                                   <input
                                     type="text"
-                                    inputMode={domainInputMode === 'EXACT' ? 'url' : 'text'}
+                                    inputMode={
+                                      getNavigationAllowlistTargetOption(domainInputKind).inputMode
+                                    }
                                     value={domainInput}
                                     autoCapitalize="none"
                                     autoCorrect="off"
@@ -5473,14 +5478,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       }
                                     }}
                                     placeholder={
-                                      domainInputMode === 'DOMAIN'
-                                        ? 'example.com'
-                                        : 'https://site.ru'
+                                      getNavigationAllowlistTargetOption(domainInputKind)
+                                        .placeholder
                                     }
                                     aria-label={
-                                      domainInputMode === 'DOMAIN'
-                                        ? 'Разрешённый домен'
-                                        : 'Разрешённая ссылка'
+                                      getNavigationAllowlistTargetOption(domainInputKind).ariaLabel
                                     }
                                   />
 
@@ -5516,11 +5518,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   <div className="allowlist-results">
                                     <ul
                                       className="allowlist-list"
-                                      aria-label="Разрешённые ссылки и домены"
+                                      aria-label="Разрешённые навигационные цели"
                                     >
                                       {allowlistEntries.map((entry) => {
                                         const isScheduleOpen =
                                           scheduleDomain === entry.normalizedValue;
+                                        const targetLabel =
+                                          formatNavigationAllowlistEntryTarget(entry);
                                         const scheduledAtLabel = formatRemovalDateTime(
                                           entry.removeAfterAt,
                                         );
@@ -5537,12 +5541,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                 <div className="allowlist-item__lead">
                                                   <span
                                                     className="allowlist-item__domain"
-                                                    title={entry.domain}
+                                                    title={targetLabel}
                                                   >
-                                                    {entry.domain}
+                                                    {targetLabel}
                                                   </span>
                                                   <small className="allowlist-item__type">
-                                                    {formatAllowlistModeLabel(entry.matchType)} ·{' '}
+                                                    {formatNavigationAllowlistEntryKindLabel(entry)}{' '}
+                                                    ·{' '}
                                                     {scheduledAtLabel
                                                       ? `до ${scheduledAtLabel}`
                                                       : 'без срока'}
@@ -5558,10 +5563,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                     )}
                                                     aria-label={
                                                       isScheduleOpen
-                                                        ? `Закрыть выбор срока для ${entry.domain}`
+                                                        ? `Закрыть выбор срока для ${targetLabel}`
                                                         : scheduledAtLabel
-                                                          ? `Изменить срок для ${entry.domain}`
-                                                          : `Задать срок для ${entry.domain}`
+                                                          ? `Изменить срок для ${targetLabel}`
+                                                          : `Задать срок для ${targetLabel}`
                                                     }
                                                     title={
                                                       isScheduleOpen
@@ -5589,7 +5594,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                       )
                                                     }
                                                     disabled={isDomainMutationPending}
-                                                    aria-label={`Удалить ${entry.domain}`}
+                                                    aria-label={`Удалить ${targetLabel}`}
                                                     title="Удалить"
                                                   >
                                                     <TrashIcon />
@@ -5601,7 +5606,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                 <div
                                                   className="allowlist-item__schedule-editor"
                                                   role="group"
-                                                  aria-label={`План удаления ${entry.domain}`}
+                                                  aria-label={`План удаления ${targetLabel}`}
                                                 >
                                                   <div className="allowlist-item__schedule-fields">
                                                     <DateField

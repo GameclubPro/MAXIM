@@ -61,6 +61,7 @@ import { SecurePhotoDownloader } from './photo-duplicate/secure-photo-downloader
 import { PhotoDuplicateOrderingStore } from './photo-duplicate/photo-duplicate-ordering.store';
 import { PHOTO_DUPLICATE_MODERATION_ACTIONS } from './photo-duplicate/photo-duplicate-moderation.actions';
 import { PhotoDuplicateModerationService } from './photo-duplicate/photo-duplicate-moderation.service';
+import { LinkHistoryRecoveryService } from './link-history-recovery.service';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
@@ -86,6 +87,7 @@ const moderationProviders = [
   RuleEngineService,
   SanctionService,
   WebhookCanonicalExecutionService,
+  LinkHistoryRecoveryService,
   PhotoDuplicateEnqueueService,
   ...(roleRunsModeration(getAppRole()) ? [PhotoDuplicateOrderingStore] : []),
   ...(dynamicDefaultWorkerGroup ? [DefaultWebhookLeaseManagerService] : []),

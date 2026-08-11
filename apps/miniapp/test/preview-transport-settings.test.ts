@@ -172,3 +172,78 @@ test('preview apply section without target stays scoped to current chat', async 
   assert.equal(applied.updatedChats, 1);
   assert.deepEqual(applied.appliedChatIds, ['preview-chat']);
 });
+
+test('preview allowlist canonicalizes every navigation target kind and legacy requests', async () => {
+  const api = createPreviewApiTransport();
+  const requests = [
+    { domain: 'typed.example', kind: 'WEB_DOMAIN' },
+    { domain: 'https://typed.example/path', kind: 'WEB_EXACT' },
+    { domain: 'max://user/42', kind: 'MAX_PROFILE' },
+    { domain: 'https://max.ru/join/typed-team', kind: 'MAX_ENTITY' },
+    {
+      domain: 'https://max.ru/MajorBot?startapp=chat-settings-42',
+      kind: 'MINI_APP',
+    },
+    { domain: 'legacy.example', matchType: 'DOMAIN' },
+  ] as const;
+
+  for (const payload of requests) {
+    await api.request('/chats/preview-chat/domain-allowlist', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  const details = (await api.request('/chats/preview-chat/domain-allowlist/details')) as Array<{
+    target: string;
+    kind: string;
+    normalizedValue: string;
+  }>;
+
+  assert.deepEqual(
+    details
+      .filter((entry) =>
+        [
+          'domain:typed.example',
+          'https://typed.example/path',
+          'max-profile:user-id%3A42',
+          'max-entity:url%3Ahttps%3A%2F%2Fmax.ru%2Fjoin%2Ftyped-team',
+          'mini-app:bot%3Amajorbot',
+          'domain:legacy.example',
+        ].includes(entry.normalizedValue),
+      )
+      .map(({ target, kind, normalizedValue }) => ({ target, kind, normalizedValue })),
+    [
+      {
+        target: 'legacy.example',
+        kind: 'WEB_DOMAIN',
+        normalizedValue: 'domain:legacy.example',
+      },
+      {
+        target: 'bot:majorbot',
+        kind: 'MINI_APP',
+        normalizedValue: 'mini-app:bot%3Amajorbot',
+      },
+      {
+        target: 'url:https://max.ru/join/typed-team',
+        kind: 'MAX_ENTITY',
+        normalizedValue: 'max-entity:url%3Ahttps%3A%2F%2Fmax.ru%2Fjoin%2Ftyped-team',
+      },
+      {
+        target: 'user-id:42',
+        kind: 'MAX_PROFILE',
+        normalizedValue: 'max-profile:user-id%3A42',
+      },
+      {
+        target: 'https://typed.example/path',
+        kind: 'WEB_EXACT',
+        normalizedValue: 'https://typed.example/path',
+      },
+      {
+        target: 'typed.example',
+        kind: 'WEB_DOMAIN',
+        normalizedValue: 'domain:typed.example',
+      },
+    ],
+  );
+});

@@ -21450,10 +21450,11 @@ describe('AdminService allowlist normalization', () => {
       'https://example.org',
       'https://max.ru/news',
       'https://vk.com/studia_svetlana_armavir',
+      'https://vk.ru/studia_svetlana_armavir',
     ]);
   });
 
-  it('deduplicates host aliases when adding a link', async () => {
+  it('preserves distinct exact hosts when adding a link', async () => {
     const prisma = createPrismaMock();
     prisma.domainAllowlist.findMany.mockResolvedValueOnce([
       { domain: 'https://vk.ru/studia_svetlana_armavir' },
@@ -21502,14 +21503,7 @@ describe('AdminService allowlist normalization', () => {
         removeAfterAt: null,
       },
     });
-    expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
-      where: {
-        chatId: 'chat-1',
-        domain: {
-          in: ['https://vk.ru/studia_svetlana_armavir'],
-        },
-      },
-    });
+    expect(prisma.domainAllowlist.deleteMany).not.toHaveBeenCalled();
   });
 
   it('canonicalizes legacy link rows when adding a link', async () => {
@@ -21720,7 +21714,7 @@ describe('AdminService allowlist normalization', () => {
     });
   });
 
-  it('treats legacy encoded trailing-text rows as the same allowlist link', async () => {
+  it('preserves a distinct exact allowlist URL containing encoded whitespace', async () => {
     const prisma = createPrismaMock();
     prisma.domainAllowlist.findMany.mockResolvedValueOnce([
       {
@@ -21757,14 +21751,20 @@ describe('AdminService allowlist normalization', () => {
       },
     );
 
-    expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
+    expect(prisma.domainAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
       where: {
-        chatId: 'chat-1',
-        domain: {
-          in: [
-            'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU%20MAX%20%D0%BF%D0%BE%D0%B7%D0%B2%D0%BE%D0%BB%D1%8F%D0%B5%D1%82%20%D0%BE%D1%82%D0%BF%D1%80%D0%B0%D0%B2%D0%BB%D1%8F%D1%82%D1%8C',
-          ],
+        chatId_domain: {
+          chatId: 'chat-1',
+          domain: 'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU',
         },
+      },
+      create: {
+        chatId: 'chat-1',
+        domain: 'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU',
+      },
+      update: {
+        removeAfterAt: null,
       },
     });
   });

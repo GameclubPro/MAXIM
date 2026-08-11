@@ -252,10 +252,10 @@ export function formatPrivateControlSettingValue(value: unknown, type: SettingFi
 
 export function formatPrivateControlEnumValue(value: string): string {
   if (value === 'ALLOWLIST_ONLY') {
-    return 'Разрешать только домены из списка разрешённых';
+    return 'Разрешать только цели из списка разрешённых';
   }
   if (value === 'BLOCKLIST_ONLY') {
-    return 'Удалять домены из списка запрещённых';
+    return 'Удалять все кликабельные ссылки';
   }
   if (value === 'ALERT_ONLY') {
     return 'Только предупреждать';

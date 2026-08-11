@@ -1538,7 +1538,7 @@ export class MaxClientService implements OnModuleDestroy {
         break;
       }
 
-      const nextCursor = oldest.publishedAtMs - 1_000;
+      const nextCursor = oldest.publishedAtMs - 1;
       if (nextCursor >= cursorFrom) {
         break;
       }
@@ -1572,6 +1572,44 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return this.parseMessageSnapshot(normalizedChatId, message);
+  }
+
+  async getExactMessageRow(
+    chatId: string,
+    messageId: string,
+    options: MaxApiRequestOptions | MaxApiTrafficClass = {},
+  ): Promise<Record<string, unknown> | null> {
+    const normalizedChatId = chatId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedChatId || !normalizedMessageId) {
+      throw new Error('chatId and messageId are required for exact MAX message lookup');
+    }
+
+    let message: Record<string, unknown> | null;
+    try {
+      message = await this.getMessageById(normalizedMessageId, options);
+    } catch (error: unknown) {
+      if (this.isExactMessageNotFoundError(error, normalizedMessageId)) {
+        return null;
+      }
+      throw error;
+    }
+    if (!message) {
+      return null;
+    }
+
+    const responseChatId = this.extractChatIdFromSendResponse(message);
+    if (!responseChatId) {
+      throw new Error(`MAX exact message lookup returned ${normalizedMessageId} without a chat id`);
+    }
+    if (responseChatId !== normalizedChatId) {
+      throw this.createExactMessageTargetMismatchError(
+        normalizedChatId,
+        responseChatId,
+        normalizedMessageId,
+      );
+    }
+    return message;
   }
 
   async getExactChannelDialogButtonIdentities(
@@ -3968,7 +4006,7 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    return Math.floor(timestampMs / 1_000);
+    return Math.trunc(timestampMs);
   }
 
   private parseMessageSnapshot(

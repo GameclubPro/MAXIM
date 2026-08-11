@@ -119,6 +119,7 @@ describe('WebhookParser', () => {
         chat_title: 'Nested Title',
         actor: {
           user_id: 'user-title-2',
+          first_name: 'Пётр',
         },
       },
       timestamp: '2026-07-06T09:01:00.000Z',
@@ -128,6 +129,8 @@ describe('WebhookParser', () => {
       messageId: 'chat_title_changed:u-title-2',
       chatId: '-100502',
       chatTitle: 'Nested Title',
+      senderId: 'user-title-2',
+      senderName: 'Пётр',
       text: '',
       createdAt: '2026-07-06T09:01:00.000Z',
     });
@@ -284,7 +287,7 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://центр-занятости-иркутск38.рф');
   });
 
-  it('adds urls from forwarded payload when outer text has no links', () => {
+  it('does not recursively append urls from undocumented forwarded payload fields', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
       message: {
@@ -304,7 +307,7 @@ describe('WebhookParser', () => {
     });
 
     expect(parsed.message?.text).toContain('пересланное сообщение');
-    expect(parsed.message?.text).toContain('https://spam-forwarded.example/path');
+    expect(parsed.message?.text).not.toContain('https://spam-forwarded.example/path');
   });
 
   it('does not append service urls from forwarded metadata when forwarded text has no links', () => {
@@ -353,7 +356,7 @@ describe('WebhookParser', () => {
     expect(matches).toHaveLength(1);
   });
 
-  it('extracts urls from MAX message.link payload', () => {
+  it('does not treat an untyped MAX message.link payload as a visible forward', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
       message: {
@@ -372,10 +375,10 @@ describe('WebhookParser', () => {
       },
     });
 
-    expect(parsed.message?.text).toContain('https://forward-link.example/news');
+    expect(parsed.message?.text).not.toContain('https://forward-link.example/news');
   });
 
-  it('appends hidden urls from MAX message.link markup when only anchor text is visible', () => {
+  it('keeps hidden markup targets separate from normalized visible text', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
       message: {
@@ -404,10 +407,10 @@ describe('WebhookParser', () => {
     });
 
     expect(parsed.message?.text).toContain('Приглашаю в группы бесплатных объявлений');
-    expect(parsed.message?.text).toContain('https://max.ru/join/hidden-anchor-link');
+    expect(parsed.message?.text).not.toContain('https://max.ru/join/hidden-anchor-link');
   });
 
-  it('appends hidden urls from body markup when visible text is stored outside direct body text', () => {
+  it('does not synthesize normalized text from direct markup or share targets', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
       message: {
@@ -440,12 +443,10 @@ describe('WebhookParser', () => {
       },
     });
 
-    expect(parsed.message?.text).toContain(
-      'https://max.ru/join/xte75O0CZf_31UDr3PI1bqaRoWidHatl4yn3U2Rf8ZQ',
-    );
+    expect(parsed.message?.text).toBe('');
   });
 
-  it('extracts urls from direct share attachments on the current message', () => {
+  it('keeps direct share targets out of normalized visible text', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
       message: {
@@ -468,7 +469,7 @@ describe('WebhookParser', () => {
       },
     });
 
-    expect(parsed.message?.text).toContain('https://example.com/direct-share-link');
+    expect(parsed.message?.text).toBe('');
   });
 
   it('ignores MAX preview metadata on direct share attachments', () => {
@@ -688,7 +689,7 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).not.toContain('https://example.com/hidden-button-link');
   });
 
-  it('extracts url from nested structures when plain text is missing', () => {
+  it('does not recursively promote arbitrary nested url fields into message text', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
       message: {
@@ -707,7 +708,7 @@ describe('WebhookParser', () => {
       },
     });
 
-    expect(parsed.message?.text).toContain('https://bad.com/path');
+    expect(parsed.message?.text).toBe('');
   });
 
   it('parses message from message_created.message envelope and fills ids', () => {
@@ -787,6 +788,58 @@ describe('WebhookParser', () => {
     expect(parsed.message?.senderId).toBe('user-6');
     expect(parsed.message?.chatTitle).toBe('Envelope Chat');
     expect(parsed.message?.text).toBe('hello from envelope');
+  });
+
+  it('shares recursive wrapped-message selection with navigation moderation', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      data: {
+        wrapper: {
+          id: 'message-wrapped-1',
+          recipient: { chat_id: 'chat-wrapped-1' },
+          sender: { id: 'user-wrapped-1' },
+          body: { text: 'Wrapped message' },
+          timestamp: 1772249118580,
+        },
+      },
+    });
+
+    expect(parsed.message).toMatchObject({
+      messageId: 'message-wrapped-1',
+      chatId: 'chat-wrapped-1',
+      senderId: 'user-wrapped-1',
+      text: 'Wrapped message',
+    });
+  });
+
+  it('keeps a wrapped outer message ahead of a fuller forwarded message', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      data: {
+        wrapper: {
+          id: 'outer-message',
+          recipient: { chat_id: 'managed-chat' },
+          sender: { id: 'outer-user' },
+          body: { text: 'Outer' },
+          link: {
+            type: 'forward',
+            message: {
+              id: 'inner-message',
+              recipient: { chat_id: 'source-chat' },
+              sender: { id: 'inner-user' },
+              body: { text: 'Inner' },
+              timestamp: 1772249118580,
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.message).toMatchObject({
+      messageId: 'outer-message',
+      chatId: 'managed-chat',
+      senderId: 'outer-user',
+    });
   });
 
   it('parses MAX payload with body.mid and numeric sender/chat ids', () => {

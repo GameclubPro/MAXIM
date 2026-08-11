@@ -208,6 +208,8 @@ function buildSettings(chatId: string): ChatSettings {
     duplicateBanWindowSec: 172800,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    linkPolicyRevision: 1,
+    linkPolicyEffectiveAt: now,
     linkEscalationWindowHours: 24,
     linkWarnMaxCount: 2,
     linkMuteMaxCount: 3,

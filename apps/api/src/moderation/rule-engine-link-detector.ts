@@ -1,18 +1,22 @@
 import {
+  buildNavigationAllowlistPolicyKeys,
   normalizeAllowlistDomain,
   normalizeAllowlistLink,
   parseStoredAllowlistEntry,
+  type NavigationAllowlistPolicyKey,
 } from '@maxim/contracts/settings';
 import { LinkPolicy } from '../prisma/prisma-client';
 import { extractUrlsFromText as extractTextUrls } from '../common/url-text.util';
+import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 
 type AllowlistMatchers = {
   exactLinks: Set<string>;
   domains: Set<string>;
-  wwwRootDomains: Set<string>;
+  typedTargets: Set<string>;
 };
 
 export type AllowlistLinkMatcher = (value: string) => boolean;
+export type NavigationAllowlistMatcher = (value: NavigationTargetEvidence) => boolean;
 
 type ResolvedLink = {
   raw: string;
@@ -29,9 +33,24 @@ export function detectBlockedLink(
   policy: LinkPolicy,
   allowlist: readonly string[],
   allowlistMatcher?: AllowlistLinkMatcher,
+  navigationTargets?: readonly NavigationTargetEvidence[],
 ): string | null {
   if (policy === LinkPolicy.ALERT_ONLY) {
     return null;
+  }
+
+  if (navigationTargets) {
+    const enforceableTargets = navigationTargets.filter((target) => target.enforceable);
+    if (enforceableTargets.length === 0) {
+      return null;
+    }
+    if (policy === LinkPolicy.BLOCKLIST_ONLY) {
+      return 'Links are not allowed by policy';
+    }
+
+    const isAllowlisted = createNavigationAllowlistMatcher(allowlist);
+    const blockedTarget = enforceableTargets.find((target) => !isAllowlisted(target));
+    return blockedTarget ? `Link ${blockedTarget.normalizedTarget} is not in allowlist` : null;
   }
 
   const links = extractUrlsFromText(text);
@@ -58,7 +77,6 @@ export function detectBlockedLink(
       .map((domain) => extractDomainBrandLabel(domain))
       .filter((label): label is string => label !== null),
   );
-
   for (const link of resolvedLinks) {
     if (link.allowlisted) {
       continue;
@@ -95,10 +113,40 @@ export function createAllowlistLinkMatcher(allowlist: readonly string[]): Allowl
   };
 }
 
+export function createNavigationAllowlistMatcher(
+  allowlist: readonly string[],
+): NavigationAllowlistMatcher {
+  const matchers = buildAllowlistMatchers(allowlist);
+  return (value) =>
+    buildNavigationTargetAllowlistPolicyKeys(value).some((key) =>
+      isAllowlistedNavigationPolicyKey(matchers, key),
+    );
+}
+
+export function buildNavigationTargetAllowlistPolicyKeys(
+  value: NavigationTargetEvidence,
+): NavigationAllowlistPolicyKey[] {
+  const keys = [
+    ...buildNavigationAllowlistPolicyKeys(value.target, value.kind),
+    ...(value.allowlistAliases ?? []).flatMap((alias) =>
+      buildNavigationAllowlistPolicyKeys(alias.target, alias.kind),
+    ),
+  ];
+  const seen = new Set<string>();
+  return keys.filter((key) => {
+    const serialized = serializeNavigationPolicyKey(key);
+    if (seen.has(serialized)) {
+      return false;
+    }
+    seen.add(serialized);
+    return true;
+  });
+}
+
 function buildAllowlistMatchers(allowlist: readonly string[]): AllowlistMatchers {
   const exactLinks = new Set<string>();
   const domains = new Set<string>();
-  const wwwRootDomains = new Set<string>();
+  const typedTargets = new Set<string>();
 
   for (const entry of allowlist) {
     const parsed = parseStoredAllowlistEntry(entry);
@@ -106,19 +154,42 @@ function buildAllowlistMatchers(allowlist: readonly string[]): AllowlistMatchers
       continue;
     }
 
+    typedTargets.add(serializeNavigationPolicyKey(parsed));
+
     if (parsed.matchType === 'DOMAIN') {
       domains.add(parsed.domain);
-      const rootDomain = stripLeadingWwwDomain(parsed.domain);
-      if (rootDomain !== parsed.domain) {
-        wwwRootDomains.add(rootDomain);
-      }
       continue;
     }
 
     exactLinks.add(parsed.domain);
   }
 
-  return { exactLinks, domains, wwwRootDomains };
+  return { exactLinks, domains, typedTargets };
+}
+
+function isAllowlistedNavigationPolicyKey(
+  matchers: AllowlistMatchers,
+  key: NavigationAllowlistPolicyKey,
+): boolean {
+  if (matchers.typedTargets.has(serializeNavigationPolicyKey(key))) {
+    return true;
+  }
+  if (key.kind !== 'WEB_DOMAIN') {
+    return false;
+  }
+  if (matchers.domains.has(key.target)) {
+    return true;
+  }
+  for (const domain of matchers.domains) {
+    if (key.target.endsWith(`.${domain}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function serializeNavigationPolicyKey(key: NavigationAllowlistPolicyKey): string {
+  return `${key.kind}\0${key.target}`;
 }
 
 function resolveDetectedLinks(
@@ -170,10 +241,6 @@ function isAllowlistedLink(
     return true;
   }
 
-  if (match.normalizedDomain && matchers.wwwRootDomains.has(match.normalizedDomain)) {
-    return true;
-  }
-
   if (match.normalizedDomain) {
     for (const domain of matchers.domains) {
       if (match.normalizedDomain.endsWith(`.${domain}`)) {
@@ -183,10 +250,6 @@ function isAllowlistedLink(
   }
 
   return false;
-}
-
-function stripLeadingWwwDomain(domain: string): string {
-  return domain.toLowerCase().startsWith('www.') ? domain.slice(4) : domain;
 }
 
 function isBareBrandMentionForAllowedLink(

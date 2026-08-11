@@ -1,14 +1,12 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { maxUpdateSchema, type MaxUpdate } from '@maxim/contracts';
 import { createHash } from 'node:crypto';
-import {
-  extractUrlsFromText as extractTextUrls,
-  stripUrlsFromText as stripTextUrls,
-} from '../common/url-text.util';
+import { extractUrlsFromText as extractTextUrls } from '../common/url-text.util';
 import {
   normalizeMaxUserDisplayName,
   resolveMaxUserDisplayName,
 } from '../common/max-user-display-name.util';
+import { selectMaxMessageCandidate } from '../max/max-message-candidate.util';
 
 @Injectable()
 export class WebhookParser {
@@ -516,48 +514,7 @@ export class WebhookParser {
     payload: Record<string, unknown>,
     type: string,
   ): Record<string, unknown> | undefined {
-    const directMessage = this.asRecord(payload.message);
-    if (directMessage) {
-      return directMessage;
-    }
-
-    const envelopeKeys = [
-      type,
-      payload.update_type,
-      payload.event_type,
-      payload.type,
-      'data',
-      'event',
-    ];
-    for (const key of envelopeKeys) {
-      if (typeof key !== 'string' || key.trim().length === 0) {
-        continue;
-      }
-
-      const envelope = this.asRecord(payload[key]);
-      if (!envelope) {
-        continue;
-      }
-
-      const nestedMessage = this.asRecord(envelope.message);
-      if (nestedMessage) {
-        return nestedMessage;
-      }
-
-      const nestedData = this.asRecord(envelope.data);
-      const nestedDataMessage = nestedData ? this.asRecord(nestedData.message) : undefined;
-      if (nestedDataMessage) {
-        return nestedDataMessage;
-      }
-
-      const bestInEnvelope = this.findBestMessageCandidate(envelope);
-      if (bestInEnvelope && bestInEnvelope.score >= 4) {
-        return bestInEnvelope.node;
-      }
-    }
-
-    const bestInPayload = this.findBestMessageCandidate(payload);
-    return bestInPayload && bestInPayload.score >= 4 ? bestInPayload.node : undefined;
+    return selectMaxMessageCandidate(payload, type)?.node;
   }
 
   private extractMessageId(
@@ -658,19 +615,18 @@ export class WebhookParser {
     message: Record<string, unknown> | undefined,
     payload: Record<string, unknown>,
   ): string {
-    if (!message) {
-      return '';
-    }
-
-    const sender = this.asRecord(message.sender);
-    const from = this.asRecord(message.from);
-    const user = this.asRecord(message.user);
-    const actor = this.asRecord(message.actor);
+    const sender = this.asRecord(message?.sender);
+    const from = this.asRecord(message?.from);
+    const user = this.asRecord(message?.user);
+    const actor = this.asRecord(message?.actor);
     const payloadSender = this.asRecord(payload.sender);
+    const payloadActor = this.asRecord(payload.actor);
+    const titleChanged = this.asRecord(payload.chat_title_changed);
+    const titleChangedActor = this.asRecord(titleChanged?.actor);
 
     const candidates = [
-      message.senderId,
-      message.sender_id,
+      message?.senderId,
+      message?.sender_id,
       sender?.id,
       sender?.user_id,
       sender?.userId,
@@ -688,6 +644,12 @@ export class WebhookParser {
       payloadSender?.id,
       payloadSender?.user_id,
       payloadSender?.userId,
+      payloadActor?.id,
+      payloadActor?.user_id,
+      payloadActor?.userId,
+      titleChangedActor?.id,
+      titleChangedActor?.user_id,
+      titleChangedActor?.userId,
     ];
 
     for (const value of candidates) {
@@ -703,30 +665,31 @@ export class WebhookParser {
     message: Record<string, unknown> | undefined,
     payload: Record<string, unknown>,
   ): string | undefined {
-    if (!message) {
-      return undefined;
-    }
-
-    const sender = this.asRecord(message.sender);
-    const from = this.asRecord(message.from);
-    const user = this.asRecord(message.user);
-    const actor = this.asRecord(message.actor);
+    const sender = this.asRecord(message?.sender);
+    const from = this.asRecord(message?.from);
+    const user = this.asRecord(message?.user);
+    const actor = this.asRecord(message?.actor);
     const payloadSender = this.asRecord(payload.sender);
+    const payloadActor = this.asRecord(payload.actor);
+    const titleChanged = this.asRecord(payload.chat_title_changed);
+    const titleChangedActor = this.asRecord(titleChanged?.actor);
 
     return (
       normalizeMaxUserDisplayName(
         resolveMaxUserDisplayName(
           {
-            display_name: message.display_name,
-            displayName: message.displayName,
-            name: message.sender_name,
-            nickname: message.senderName,
+            display_name: message?.display_name,
+            displayName: message?.displayName,
+            name: message?.sender_name,
+            nickname: message?.senderName,
           },
           sender,
           from,
           user,
           actor,
           payloadSender,
+          payloadActor,
+          titleChangedActor,
         ),
         this.extractSenderId(message, payload),
       ) ?? undefined
@@ -840,6 +803,27 @@ export class WebhookParser {
       return '';
     }
 
+    const directText = this.extractVisibleContentText(message);
+    const link = this.asRecord(message.link);
+    if (this.readLowerString(link?.type) !== 'forward') {
+      return directText;
+    }
+
+    const forwardedMessage = this.asRecord(link?.message) ?? this.asRecord(link?.body);
+    if (!forwardedMessage) {
+      return directText;
+    }
+
+    const forwardedText = this.extractVisibleContentText(forwardedMessage);
+    const composedText = this.mergeTextSnippets(directText ? [directText] : [], [
+      forwardedText,
+    ]).join(' ');
+    const forwardedPreviewUrls = new Set<string>();
+    this.collectForwardedMaxMediaPreviewUrlsFromNode(forwardedMessage, forwardedPreviewUrls, true);
+    return this.stripForwardedMaxMediaPreviewUrls(composedText, forwardedPreviewUrls);
+  }
+
+  private extractVisibleContentText(message: Record<string, unknown>): string {
     const body = this.asRecord(message.body);
     const content = this.asRecord(message.content);
     const payload = this.asRecord(message.payload);
@@ -873,177 +857,7 @@ export class WebhookParser {
         directSnippets.push(value.trim());
       }
     }
-    const directText = this.mergeTextSnippets(directSnippets, []).join(' ');
-
-    const supplementalTextSnippets = this.collectSupplementalTextSnippets(message);
-    const supplementalLinkUrls = this.collectSupplementalLinkUrls(message);
-    const forwardedMaxMediaPreviewUrls = this.collectForwardedMaxMediaPreviewUrls(message);
-
-    const filteredSupplementalSnippets: string[] = [];
-    if (directText) {
-      const knownDirectUrls = new Set(
-        this.extractUrlsFromString(directText).map((url) => this.normalizeUrlForCompare(url)),
-      );
-      for (const snippet of supplementalTextSnippets) {
-        const normalizedSnippet = snippet.replace(/\s+/g, ' ').trim();
-        if (!normalizedSnippet) {
-          continue;
-        }
-
-        const snippetUrls = this.extractUrlsFromString(normalizedSnippet);
-        const hasNewUrl = snippetUrls.some(
-          (url) => !knownDirectUrls.has(this.normalizeUrlForCompare(url)),
-        );
-        const snippetWithoutUrls = this.stripUrlsFromText(normalizedSnippet).trim();
-
-        if (!hasNewUrl && snippetWithoutUrls.length === 0) {
-          continue;
-        }
-
-        if (!hasNewUrl && snippetWithoutUrls.length > 0) {
-          filteredSupplementalSnippets.push(snippetWithoutUrls);
-          continue;
-        }
-
-        filteredSupplementalSnippets.push(normalizedSnippet);
-        for (const url of snippetUrls) {
-          knownDirectUrls.add(this.normalizeUrlForCompare(url));
-        }
-      }
-    } else {
-      filteredSupplementalSnippets.push(...supplementalTextSnippets);
-    }
-
-    let composedText = this.mergeTextSnippets(
-      directText ? [directText] : [],
-      filteredSupplementalSnippets,
-    ).join(' ');
-    if (supplementalLinkUrls.length === 0) {
-      return this.stripForwardedMaxMediaPreviewUrls(composedText, forwardedMaxMediaPreviewUrls);
-    }
-
-    const composedUrls = new Set(
-      this.extractUrlsFromString(composedText).map((url) => this.normalizeUrlForCompare(url)),
-    );
-    const missingUrls = supplementalLinkUrls.filter(
-      (url) => !composedUrls.has(this.normalizeUrlForCompare(url)),
-    );
-
-    if (missingUrls.length === 0) {
-      return this.stripForwardedMaxMediaPreviewUrls(composedText, forwardedMaxMediaPreviewUrls);
-    }
-
-    composedText = `${composedText} ${missingUrls.join(' ')}`.trim();
-    return this.stripForwardedMaxMediaPreviewUrls(composedText, forwardedMaxMediaPreviewUrls);
-  }
-
-  private collectSupplementalTextSnippets(message: Record<string, unknown>): string[] {
-    const body = this.asRecord(message.body);
-    const content = this.asRecord(message.content);
-    const payload = this.asRecord(message.payload);
-    const messageNode = this.asRecord(message.message);
-
-    const candidates: unknown[] = [
-      message.markup,
-      message.caption_markup,
-      message.captionMarkup,
-      message.attachments,
-      message.link,
-      message.forward,
-      message.forwarded_message,
-      message.forwardedMessage,
-      body?.markup,
-      body?.caption_markup,
-      body?.captionMarkup,
-      body?.attachments,
-      body?.link,
-      body?.forward,
-      body?.forwarded_message,
-      body?.forwardedMessage,
-      content?.markup,
-      content?.caption_markup,
-      content?.captionMarkup,
-      content?.attachments,
-      content?.link,
-      content?.forward,
-      content?.forwarded_message,
-      content?.forwardedMessage,
-      payload?.markup,
-      payload?.caption_markup,
-      payload?.captionMarkup,
-      payload?.attachments,
-      payload?.link,
-      payload?.forward,
-      payload?.forwarded_message,
-      payload?.forwardedMessage,
-      messageNode?.link,
-      messageNode?.markup,
-      messageNode?.caption_markup,
-      messageNode?.captionMarkup,
-      messageNode?.attachments,
-      messageNode?.forward,
-      messageNode?.forwarded_message,
-      messageNode?.forwardedMessage,
-    ];
-
-    const acc = new Set<string>();
-    for (const candidate of candidates) {
-      this.collectTextSnippetsFromNode(candidate, acc);
-    }
-
-    return [...acc];
-  }
-
-  private collectSupplementalLinkUrls(message: Record<string, unknown>): string[] {
-    const body = this.asRecord(message.body);
-    const content = this.asRecord(message.content);
-    const payload = this.asRecord(message.payload);
-    const messageNode = this.asRecord(message.message);
-    // Direct MAX share attachments can carry the user's link only in payload.url.
-    // Keep this scoped to current-message attachment collections; reply/forward previews
-    // under message.link are intentionally ignored so quoted service/buttons do not moderate.
-    const candidates: Array<{ node: unknown; allowShareAttachmentUrls?: boolean }> = [
-      { node: message.link },
-      { node: message.markup },
-      { node: message.caption_markup },
-      { node: message.captionMarkup },
-      { node: message.attachments, allowShareAttachmentUrls: true },
-      { node: body?.link },
-      { node: body?.markup },
-      { node: body?.caption_markup },
-      { node: body?.captionMarkup },
-      { node: body?.attachments, allowShareAttachmentUrls: true },
-      { node: content?.link },
-      { node: content?.markup },
-      { node: content?.caption_markup },
-      { node: content?.captionMarkup },
-      { node: content?.attachments, allowShareAttachmentUrls: true },
-      { node: payload?.link },
-      { node: payload?.markup },
-      { node: payload?.caption_markup },
-      { node: payload?.captionMarkup },
-      { node: payload?.attachments, allowShareAttachmentUrls: true },
-      { node: messageNode?.link },
-      { node: messageNode?.markup },
-      { node: messageNode?.caption_markup },
-      { node: messageNode?.captionMarkup },
-      { node: messageNode?.attachments, allowShareAttachmentUrls: true },
-    ];
-
-    const acc = new Set<string>();
-    for (const candidate of candidates) {
-      this.collectLinkUrlsFromEntities(candidate.node, acc, '', 0, false, {
-        allowShareAttachmentUrls: Boolean(candidate.allowShareAttachmentUrls),
-      });
-    }
-
-    return [...acc];
-  }
-
-  private collectForwardedMaxMediaPreviewUrls(message: Record<string, unknown>): Set<string> {
-    const urls = new Set<string>();
-    this.collectForwardedMaxMediaPreviewUrlsFromNode(message, urls);
-    return urls;
+    return this.mergeTextSnippets(directSnippets, []).join(' ');
   }
 
   private collectForwardedMaxMediaPreviewUrlsFromNode(
@@ -1197,299 +1011,8 @@ export class WebhookParser {
     return merged;
   }
 
-  private normalizeUrlForCompare(url: string): string {
-    return url
-      .trim()
-      .toLowerCase()
-      .replace(/^https?:\/\//, '')
-      .replace(/\/$/, '');
-  }
-
-  private collectTextSnippetsFromNode(node: unknown, acc: Set<string>, parentKey = '', depth = 0) {
-    if (depth > 8 || node === null || node === undefined) {
-      return;
-    }
-
-    if (typeof node === 'string') {
-      if (!this.isContentTextKey(parentKey)) {
-        return;
-      }
-
-      const normalized = node.trim();
-      if (normalized.length > 0) {
-        acc.add(normalized);
-      }
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectTextSnippetsFromNode(item, acc, parentKey, depth + 1);
-      }
-      return;
-    }
-
-    const row = this.asRecord(node);
-    if (!row) {
-      return;
-    }
-
-    const entityType = this.readEntityType(row);
-    if (this.shouldSkipSupplementalEntity(entityType)) {
-      return;
-    }
-
-    for (const [key, value] of Object.entries(row)) {
-      this.collectTextSnippetsFromNode(value, acc, key, depth + 1);
-    }
-  }
-
-  private collectLinkUrlsFromEntities(
-    node: unknown,
-    acc: Set<string>,
-    parentKey = '',
-    depth = 0,
-    trustedLinkContext = false,
-    options: { allowShareAttachmentUrls?: boolean } = {},
-  ) {
-    if (depth > 8 || node === null || node === undefined) {
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectLinkUrlsFromEntities(
-          item,
-          acc,
-          parentKey,
-          depth + 1,
-          trustedLinkContext,
-          options,
-        );
-      }
-      return;
-    }
-
-    const row = this.asRecord(node);
-    if (!row) {
-      return;
-    }
-
-    const type = this.readEntityType(row);
-    if (this.shouldSkipSupplementalEntity(type, options)) {
-      return;
-    }
-
-    const parent = parentKey.toLowerCase();
-    const isDirectShareAttachment = options.allowShareAttachmentUrls === true && type === 'share';
-    if (isDirectShareAttachment) {
-      const payload = this.asRecord(row.payload);
-      if (typeof payload?.url === 'string') {
-        for (const url of this.extractUrlsFromString(payload.url)) {
-          acc.add(url);
-        }
-      }
-      return;
-    }
-    const isExplicitLinkEntity =
-      type === 'link' ||
-      type === 'url' ||
-      type === 'hyperlink' ||
-      parent === 'link' ||
-      parent === 'links' ||
-      parent === 'markup' ||
-      parent === 'entity' ||
-      parent === 'entities';
-    const hasLinkContext = trustedLinkContext || isExplicitLinkEntity;
-
-    if (hasLinkContext) {
-      const linkCandidates = [
-        row.url,
-        row.href,
-        row.link,
-        row.link_url,
-        row.linkUrl,
-        row.target_url,
-        row.targetUrl,
-        row.uri,
-      ];
-
-      for (const candidate of linkCandidates) {
-        if (typeof candidate !== 'string') {
-          continue;
-        }
-
-        for (const url of this.extractUrlsFromString(candidate)) {
-          acc.add(url);
-        }
-      }
-    }
-
-    for (const [key, value] of Object.entries(row)) {
-      if (typeof value === 'string' && this.isContentTextKey(key)) {
-        for (const url of this.extractUrlsFromString(value)) {
-          acc.add(url);
-        }
-      }
-
-      if (typeof value === 'string' && hasLinkContext && this.isLinkFieldKey(key)) {
-        for (const url of this.extractUrlsFromString(value)) {
-          acc.add(url);
-        }
-      }
-
-      if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectLinkUrlsFromEntities(value, acc, key, depth + 1, hasLinkContext, options);
-      }
-    }
-  }
-
-  private isContentTextKey(value: string): boolean {
-    const key = value.toLowerCase();
-    return (
-      key === 'text' ||
-      key === 'caption' ||
-      key === 'plain' ||
-      key === 'message_text' ||
-      key === 'messagetext' ||
-      key === 'description'
-    );
-  }
-
-  private isLinkFieldKey(value: string): boolean {
-    const key = value.toLowerCase();
-    return (
-      key === 'url' ||
-      key === 'href' ||
-      key === 'link' ||
-      key === 'uri' ||
-      key === 'link_url' ||
-      key === 'linkurl' ||
-      key === 'target_url' ||
-      key === 'targeturl' ||
-      key.endsWith('_url') ||
-      key.endsWith('url')
-    );
-  }
-
-  private stripUrlsFromText(value: string): string {
-    return stripTextUrls(value);
-  }
-
   private extractUrlsFromString(value: string): string[] {
     return extractTextUrls(value);
-  }
-
-  private findBestMessageCandidate(
-    node: unknown,
-    depth = 0,
-  ): { node: Record<string, unknown>; score: number } | undefined {
-    if (depth > 8 || node === null || node === undefined) {
-      return undefined;
-    }
-
-    if (Array.isArray(node)) {
-      let best: { node: Record<string, unknown>; score: number } | undefined;
-      for (const item of node) {
-        const candidate = this.findBestMessageCandidate(item, depth + 1);
-        if (candidate && (!best || candidate.score > best.score)) {
-          best = candidate;
-        }
-      }
-      return best;
-    }
-
-    const row = this.asRecord(node);
-    if (!row) {
-      return undefined;
-    }
-
-    const currentScore = this.scoreMessageCandidate(row);
-    let best: { node: Record<string, unknown>; score: number } | undefined =
-      currentScore > 0 ? { node: row, score: currentScore } : undefined;
-
-    for (const value of Object.values(row)) {
-      const candidate = this.findBestMessageCandidate(value, depth + 1);
-      if (candidate && (!best || candidate.score > best.score)) {
-        best = candidate;
-      }
-    }
-
-    return best;
-  }
-
-  private scoreMessageCandidate(row: Record<string, unknown>): number {
-    let score = 0;
-
-    if (
-      typeof row.message_id === 'string' ||
-      typeof row.message_id === 'number' ||
-      typeof row.messageId === 'string' ||
-      typeof row.messageId === 'number' ||
-      typeof row.id === 'string' ||
-      typeof row.id === 'number'
-    ) {
-      score += 2;
-    }
-
-    if (typeof row.chat_id === 'string' || typeof row.chat_id === 'number') {
-      score += 3;
-    }
-    if (typeof row.chatId === 'string' || typeof row.chatId === 'number') {
-      score += 3;
-    }
-
-    const chat = this.asRecord(row.chat);
-    if (chat && (typeof chat.id === 'string' || typeof chat.id === 'number')) {
-      score += 3;
-    }
-
-    const recipient = this.asRecord(row.recipient);
-    if (
-      recipient &&
-      (typeof recipient.chat_id === 'string' ||
-        typeof recipient.chat_id === 'number' ||
-        typeof recipient.chatId === 'string' ||
-        typeof recipient.chatId === 'number' ||
-        typeof recipient.id === 'string' ||
-        typeof recipient.id === 'number')
-    ) {
-      score += 3;
-    }
-
-    if (typeof row.sender_id === 'string' || typeof row.senderId === 'string') {
-      score += 2;
-    }
-    const sender = this.asRecord(row.sender);
-    const from = this.asRecord(row.from);
-    if ((sender && typeof sender.id === 'string') || (from && typeof from.id === 'string')) {
-      score += 2;
-    }
-
-    if (typeof row.text === 'string' || typeof row.caption === 'string') {
-      score += 1;
-    }
-    if (
-      typeof row.title === 'string' ||
-      typeof row.chat_title === 'string' ||
-      typeof row.chatTitle === 'string'
-    ) {
-      score += 1;
-    }
-    if (this.asRecord(row.body) || this.asRecord(row.content) || Array.isArray(row.attachments)) {
-      score += 1;
-    }
-
-    if (
-      typeof row.created_at === 'string' ||
-      typeof row.createdAt === 'string' ||
-      typeof row.timestamp === 'string' ||
-      typeof row.timestamp === 'number'
-    ) {
-      score += 1;
-    }
-
-    return score;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1585,16 +1108,5 @@ export class WebhookParser {
     }
 
     return undefined;
-  }
-
-  private shouldSkipSupplementalEntity(
-    entityType: string | undefined,
-    options: { allowShareAttachmentUrls?: boolean } = {},
-  ): boolean {
-    return (
-      entityType === 'reply' ||
-      (entityType === 'share' && !options.allowShareAttachmentUrls) ||
-      entityType === 'inline_keyboard'
-    );
   }
 }

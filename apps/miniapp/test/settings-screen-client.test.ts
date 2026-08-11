@@ -13,7 +13,7 @@ import {
   getChannelSettingsScreen,
   updateChannelPostSignature,
 } from '../src/lib/api/channel-settings-client';
-import { getSettingsScreen } from '../src/lib/api/chat-settings-client';
+import { addDomain, getSettingsScreen } from '../src/lib/api/chat-settings-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 type ApiCall = {
@@ -91,6 +91,28 @@ test('chat settings screen client only adds prefetch query when requested', asyn
   assert.equal(calls[0]?.init?.signal, controller.signal);
   assert.equal(calls[1]?.path, '/chats/chat-1/settings-screen?prefetch=1');
   assert.equal(calls[1]?.init?.signal, controller.signal);
+});
+
+test('chat settings client sends typed targets and preserves legacy allowlist requests', async () => {
+  const calls: ApiCall[] = [];
+  const api = createApiMock(undefined, calls);
+
+  await addDomain(api, 'chat-1', {
+    domain: 'user-id:42',
+    kind: 'MAX_PROFILE',
+  });
+  await addDomain(api, 'chat-1', {
+    domain: 'docs.max.ru',
+    matchType: 'DOMAIN',
+  });
+
+  assert.equal(calls[0]?.path, '/chats/chat-1/domain-allowlist');
+  assert.equal(calls[0]?.init?.method, 'POST');
+  assert.equal(calls[0]?.init?.body, JSON.stringify({ domain: 'user-id:42', kind: 'MAX_PROFILE' }));
+  assert.equal(
+    calls[1]?.init?.body,
+    JSON.stringify({ domain: 'docs.max.ru', matchType: 'DOMAIN' }),
+  );
 });
 
 test('channel post signature client preserves a custom URL across GET and PATCH', async () => {

@@ -374,6 +374,7 @@ model Chat {
   events                          ModerationEvent[]
   violationMessageClaims          ModerationViolationMessageClaim[]
   moderationDeleteIntents         ModerationDeleteIntent[]
+  linkHistoryScanState            ModerationLinkHistoryScanState?
   auditLogs                       AuditLog[]
   channelAutoPostAttachMarkers    ChannelAutoPostAttachMarker[]
   chatAutoCommentAttachMarkers    ChatAutoCommentAttachMarker[]
@@ -497,6 +498,8 @@ model ChatSettings {
   duplicateBanWindowSec                         Int                      @default(172800) @map("duplicate_ban_window_sec")
   duplicateBanMaxCount                          Int                      @default(4) @map("duplicate_ban_max_count")
   linkPolicy                                    LinkPolicy               @default(ALERT_ONLY) @map("link_policy")
+  linkPolicyRevision                            Int                      @default(0) @map("link_policy_revision")
+  linkPolicyEffectiveAt                         DateTime?                @map("link_policy_effective_at")
   linkEscalationWindowHours                     Int                      @default(24) @map("link_escalation_window_hours")
   linkWarnMaxCount                              Int                      @default(2) @map("link_warn_max_count")
   linkMuteMaxCount                              Int                      @default(3) @map("link_mute_max_count")
@@ -676,6 +679,34 @@ model ChatSettings {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("chat_settings")
+}
+
+model ModerationLinkHistoryScanState {
+  chatId               String    @id @map("chat_id")
+  policyRevision       Int       @map("policy_revision")
+  policyEffectiveAt    DateTime  @map("policy_effective_at")
+  discoveryCursorAt    DateTime  @map("discovery_cursor_at")
+  repairCursorAt       DateTime  @map("repair_cursor_at")
+  nextPhase            String    @default("DISCOVERY") @map("next_phase")
+  continuationPhase    String?   @map("continuation_phase")
+  windowLowerAt        DateTime? @map("window_lower_at")
+  windowUpperAt        DateTime? @map("window_upper_at")
+  continuationFromAt   DateTime? @map("continuation_from_at")
+  lastPageSignature    String?   @map("last_page_signature")
+  deleteModePrepared   Boolean   @default(false) @map("delete_mode_prepared")
+  nextScanAt           DateTime  @default(now()) @map("next_scan_at")
+  lastSuccessfulScanAt DateTime? @map("last_successful_scan_at")
+  lastErrorCode        String?   @map("last_error_code")
+  lastErrorAt          DateTime? @map("last_error_at")
+  leaseToken           String?   @map("lease_token")
+  leaseExpiresAt       DateTime? @map("lease_expires_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([nextScanAt, leaseExpiresAt, chatId], map: "moderation_link_history_scan_states_due_lease_chat_idx")
+  @@map("moderation_link_history_scan_states")
 }
 
 model ChatInvitationAccessProgress {

@@ -1,4 +1,5 @@
 import {
+  addDomainRequestSchema,
   applySectionTargetPreviewResponseSchema,
   applySectionToAllResponseSchema,
   applySettingsTargetSchema,
@@ -19,6 +20,7 @@ import {
   type ChatSettings,
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
+  type NavigationAllowlistKind,
   type PublishChatRulesResult,
   type ResolveRequiredSubscriptionChannelResponse,
 } from '@maxim/contracts/settings';
@@ -482,11 +484,16 @@ export async function getDomainAllowlistDetails(
 export async function addDomain(
   api: ApiTransport,
   chatId: string,
-  payload: { domain: string; matchType: AllowlistMatchType },
+  payload: {
+    domain: string;
+    kind?: NavigationAllowlistKind;
+    matchType?: AllowlistMatchType;
+  },
 ): Promise<void> {
+  const requestBody = addDomainRequestSchema.parse(payload);
   await api.request(`/chats/${chatId}/domain-allowlist`, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify(requestBody),
   });
 }
 

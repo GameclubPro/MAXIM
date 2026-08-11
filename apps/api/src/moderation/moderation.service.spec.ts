@@ -8,6 +8,11 @@ import { buildActiveMuteStateKey } from './moderation-state.util';
 import { buildModerationReleaseCallbackPayload } from './moderation-release-callback.util';
 import { ModerationSanctionStateLockLeaseLostError } from './moderation-sanction-state-lock.service';
 import {
+  INCIDENT_EXTERNAL_FORWARD_FIXTURE,
+  INCIDENT_EXTERNAL_URL,
+  INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE,
+} from './navigation/navigation-evidence.fixtures';
+import {
   DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
   buildDeveloperForcedGlobalSpammerCacheKey,
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
@@ -411,6 +416,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    linkPolicyRevision: 7,
+    linkPolicyEffectiveAt: new Date('2026-08-10T00:00:00.000Z'),
     linkEscalationWindowHours: 24,
     botSpeechStyle: null,
     botSpeechMedia: {},
@@ -575,6 +582,145 @@ function createUpdate(): MaxUpdate {
     },
     raw: {},
   };
+}
+
+type LiveNavigationEnvelopeType = 'message_created' | 'message_edited';
+
+function createLiveNavigationEnvelopeUpdate(
+  type: LiveNavigationEnvelopeType,
+  content: Record<string, unknown>,
+  options: {
+    messageId?: string;
+    senderId?: string;
+    senderName?: string;
+  } = {},
+): MaxUpdate {
+  const messageId = options.messageId ?? `msg-live-navigation-${type}`;
+  const senderId = options.senderId ?? 'user-1';
+  const senderName = options.senderName ?? 'Алексей';
+  const body =
+    content.body && typeof content.body === 'object' && !Array.isArray(content.body)
+      ? (content.body as Record<string, unknown>)
+      : {};
+  const message = {
+    ...content,
+    id: messageId,
+    sender: {
+      id: senderId,
+      display_name: senderName,
+    },
+    recipient: {
+      chat_id: 'chat-1',
+      title: 'Chat 1',
+    },
+    body: {
+      ...body,
+      mid: messageId,
+    },
+  };
+
+  return new WebhookParser().parse({
+    update_type: type,
+    timestamp: '2026-08-11T02:56:00.000Z',
+    [type]: { message },
+  });
+}
+
+function createLiveNavigationHarness(
+  options: {
+    linkPolicy?: 'ALLOWLIST_ONLY' | 'BLOCKLIST_ONLY' | 'ALERT_ONLY';
+    cachedAllowlist?: string[];
+    freshAllowlist?: string[];
+    freshAllowlistError?: Error;
+    adminUserIds?: string[];
+    plainTextClickabilityEnabled?: boolean;
+    linkPolicyEffectiveAt?: Date | string | null;
+    maxBotLinkService?: { isKnownBotUserId: jest.Mock };
+  } = {},
+) {
+  const cachedAllowlist = options.cachedAllowlist ?? [];
+  const freshAllowlist = options.freshAllowlist ?? cachedAllowlist;
+  const prisma = {
+    chat: {
+      upsert: jest.fn().mockResolvedValue({
+        id: 'chat-1',
+        title: 'Chat 1',
+        settings: createSettings({
+          antiSpamEnabled: false,
+          antiDuplicateEnabled: false,
+          russianProfanityFilterEnabled: false,
+          commercialAdsFilterEnabled: false,
+          linkPolicy: options.linkPolicy ?? 'BLOCKLIST_ONLY',
+          ...(Object.prototype.hasOwnProperty.call(options, 'linkPolicyEffectiveAt')
+            ? { linkPolicyEffectiveAt: options.linkPolicyEffectiveAt }
+            : {}),
+          linkBotMessageEnabled: false,
+          linkWarnEnabled: false,
+          linkBanEnabled: false,
+          linkMuteEnabled: false,
+        }),
+        domains: cachedAllowlist.map((domain) => ({ domain })),
+        admins: (options.adminUserIds ?? []).map((userId) => ({ userId })),
+        rules: {
+          publishedUrl: null,
+          publishedMessageId: null,
+        },
+      }),
+    },
+    domainAllowlist: {
+      findMany: options.freshAllowlistError
+        ? jest.fn().mockRejectedValue(options.freshAllowlistError)
+        : jest.fn().mockResolvedValue(freshAllowlist.map((domain) => ({ domain }))),
+    },
+    violation: {
+      create: jest.fn(),
+      count: jest.fn().mockResolvedValue(1),
+    },
+    moderationEvent: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      create: jest.fn(),
+    },
+    webhookEvent: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+  };
+  const ruleEngine = new RuleEngineService(createRedisCounterMock() as never);
+  const detectSpy = jest.spyOn(ruleEngine, 'detect');
+  const maxClient = {
+    deleteMessage: jest.fn(),
+    sendMessage: jest.fn(),
+    kickMember: jest.fn(),
+    banMember: jest.fn(),
+    notifyModerators: jest.fn(),
+  };
+  const configService = {
+    get: jest.fn((key: string) => {
+      if (
+        key === 'MODERATION_LINK_TEXT_CLICKABILITY_ENABLED' &&
+        options.plainTextClickabilityEnabled !== undefined
+      ) {
+        return options.plainTextClickabilityEnabled;
+      }
+      return undefined;
+    }),
+  };
+  const service = new ModerationService(
+    prisma as never,
+    ruleEngine,
+    { resolveAction: jest.fn() } as never,
+    maxClient as never,
+    undefined,
+    undefined,
+    configService as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    options.maxBotLinkService as never,
+  );
+
+  return { service, prisma, ruleEngine, detectSpy, maxClient };
 }
 
 function createNumericSenderNameUpdate(): MaxUpdate {
@@ -18346,6 +18492,580 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
+  describe('live typed navigation moderation', () => {
+    const typedProfileAllowlist = 'max-profile:user-id%3A67123224';
+
+    const staleLinkViolation = {
+      ruleCode: 'LINK_BLOCKED',
+      score: 0.9,
+      reason: 'Link https://blocked.example/path is not in allowlist',
+    };
+    const staleBlockedDomainViolation = {
+      ruleCode: 'MESSAGE_BLOCKED_DOMAIN',
+      score: 0.9,
+      reason: 'Blocked domain detected: blocked.example',
+      metadata: {
+        blockedDomain: 'blocked.example',
+        matchedDomain: 'blocked.example',
+        matchedLink: 'https://blocked.example/path',
+      },
+    };
+
+    it('persists live link deletion with a revision-scoped policy fence', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        linkPolicyEffectiveAt: '2026-08-10T00:00:00.000Z',
+      });
+      const ensureIntent = jest.fn().mockResolvedValue({
+        intentId: 'intent-link-1',
+        rollout: 'execute',
+        status: 'PENDING',
+      });
+      (harness.service as any).moderationDeleteIntentService = {
+        getRolloutForInput: jest.fn().mockReturnValue('execute'),
+        ensureIntent,
+        ensureAndAttempt: jest.fn().mockResolvedValue({
+          kind: 'confirmed',
+          confirmed: true,
+          intentId: 'intent-link-1',
+          status: 'SUCCEEDED',
+          botId: 'bot-1',
+        }),
+      };
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate(
+          'message_created',
+          INCIDENT_EXTERNAL_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+        ),
+      );
+
+      expect(ensureIntent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reasonKey: 'LINK_BLOCKED:violation-delete:r7',
+          ruleCode: 'LINK_BLOCKED_DELETE',
+          event: expect.objectContaining({
+            metadata: expect.objectContaining({
+              linkPolicyRevision: 7,
+              linkPolicyEffectiveAt: '2026-08-10T00:00:00.000Z',
+            }),
+          }),
+        }),
+      );
+    });
+
+    it.each([
+      {
+        name: 'external forward from the 02:56 incident',
+        type: 'message_created' as const,
+        content: INCIDENT_EXTERNAL_FORWARD_FIXTURE,
+        expectedKind: 'external_url',
+        expectedTarget: INCIDENT_EXTERNAL_URL,
+        expectedCarriers: ['link_markup', 'share_attachment'],
+        plainTextClickabilityEnabled: false,
+      },
+      {
+        name: 'profile mention from the 02:57 incident',
+        type: 'message_created' as const,
+        content: INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE,
+        expectedKind: 'profile_mention',
+        expectedTarget: 'max://user/67123224',
+        expectedCarriers: ['user_mention_markup'],
+        plainTextClickabilityEnabled: false,
+      },
+      {
+        name: 'external forward from the 02:56 incident after an edit',
+        type: 'message_edited' as const,
+        content: INCIDENT_EXTERNAL_FORWARD_FIXTURE,
+        expectedKind: 'external_url',
+        expectedTarget: INCIDENT_EXTERNAL_URL,
+        expectedCarriers: ['link_markup', 'share_attachment'],
+        plainTextClickabilityEnabled: false,
+      },
+      {
+        name: 'profile mention from the 02:57 incident after an edit',
+        type: 'message_edited' as const,
+        content: INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE,
+        expectedKind: 'profile_mention',
+        expectedTarget: 'max://user/67123224',
+        expectedCarriers: ['user_mention_markup'],
+        plainTextClickabilityEnabled: false,
+      },
+    ])('deletes $name in BLOCKLIST_ONLY mode', async (scenario) => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        plainTextClickabilityEnabled: scenario.plainTextClickabilityEnabled,
+      });
+      const update = createLiveNavigationEnvelopeUpdate(
+        scenario.type,
+        scenario.content as unknown as Record<string, unknown>,
+        { messageId: `msg-${scenario.type}-${scenario.expectedKind}` },
+      );
+
+      await harness.service.handleUpdate(update);
+
+      expect(update.type).toBe(scenario.type);
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        `msg-${scenario.type}-${scenario.expectedKind}`,
+      );
+      expect(harness.prisma.violation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          ruleCode: 'LINK_BLOCKED',
+        }),
+      });
+
+      const navigationTargets = harness.detectSpy.mock.calls[0]?.[0].navigationTargets ?? [];
+      const matchedTarget = navigationTargets.find(
+        (target) =>
+          target.kind === scenario.expectedKind &&
+          target.normalizedTarget === scenario.expectedTarget,
+      );
+      expect(matchedTarget).toEqual(
+        expect.objectContaining({
+          enforceable: true,
+          origins: expect.arrayContaining(
+            scenario.expectedCarriers.map((carrier) =>
+              expect.objectContaining({
+                carrier,
+                provenance: 'visible_forward',
+                enforcement: 'eligible',
+              }),
+            ),
+          ),
+        }),
+      );
+    });
+
+    it('deletes an explicit HTTP URL with fuzzy text matching disabled by default', async () => {
+      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+      const update = createLiveNavigationEnvelopeUpdate('message_created', {
+        body: { text: 'Открыть https://blocked.example/path' },
+      });
+
+      await harness.service.handleUpdate(update);
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [
+            expect.objectContaining({
+              normalizedTarget: 'https://blocked.example/path',
+              enforceable: true,
+            }),
+          ],
+        }),
+      );
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+    });
+
+    it('does not delete a fuzzy bare-domain candidate by default', async () => {
+      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: { text: 'Открыть example.com/blocked' },
+        }),
+      );
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [
+            expect.objectContaining({
+              normalizedTarget: 'https://example.com/blocked',
+              enforceable: false,
+            }),
+          ],
+        }),
+      );
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    });
+
+    it('deletes a fuzzy bare-domain candidate after explicit clickability opt-in', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        plainTextClickabilityEnabled: true,
+      });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: { text: 'Открыть example.com/blocked' },
+        }),
+      );
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [
+            expect.objectContaining({
+              normalizedTarget: 'https://example.com/blocked',
+              enforceable: true,
+            }),
+          ],
+        }),
+      );
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+    });
+
+    it('permits a typed allowlisted profile target in ALLOWLIST_ONLY mode', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'ALLOWLIST_ONLY',
+        cachedAllowlist: [typedProfileAllowlist],
+        freshAllowlist: [typedProfileAllowlist],
+      });
+      const update = createLiveNavigationEnvelopeUpdate(
+        'message_created',
+        INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+      );
+
+      await harness.service.handleUpdate(update);
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          domainAllowlist: [typedProfileAllowlist],
+          navigationTargets: [
+            expect.objectContaining({
+              kind: 'profile_mention',
+              normalizedTarget: 'max://user/67123224',
+              enforceable: true,
+            }),
+          ],
+        }),
+      );
+      expect(harness.prisma.domainAllowlist.findMany).toHaveBeenCalledTimes(1);
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+      expect(harness.prisma.moderationEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('checks a hyperlink href instead of separately blocking its URL-shaped label', async () => {
+      const label = 'https://visible.example.com/path';
+      const allowedTarget = 'https://allowed.example.com/path';
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'ALLOWLIST_ONLY',
+        cachedAllowlist: [allowedTarget],
+        freshAllowlist: [allowedTarget],
+      });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: {
+            text: label,
+            markup: [{ type: 'link', from: 0, length: label.length, url: allowedTarget }],
+          },
+        }),
+      );
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [
+            expect.objectContaining({
+              normalizedTarget: allowedTarget,
+              enforceable: true,
+              origins: [expect.objectContaining({ carrier: 'link_markup' })],
+            }),
+          ],
+        }),
+      );
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    });
+
+    it('blocks ALLOWLIST_ONLY when any structured target is not allowlisted', async () => {
+      const text = 'Профиль Сайт';
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'ALLOWLIST_ONLY',
+        cachedAllowlist: [typedProfileAllowlist],
+        freshAllowlist: [typedProfileAllowlist],
+      });
+      const update = createLiveNavigationEnvelopeUpdate('message_created', {
+        body: {
+          text,
+          markup: [
+            {
+              type: 'user_mention',
+              from: 0,
+              length: 'Профиль'.length,
+              user_link: 'user/67123224',
+            },
+            {
+              type: 'link',
+              from: text.indexOf('Сайт'),
+              length: 'Сайт'.length,
+              url: 'https://blocked.example/path',
+            },
+          ],
+        },
+      });
+
+      await harness.service.handleUpdate(update);
+
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+      expect(harness.prisma.moderationEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          ruleCode: 'LINK_BLOCKED_DELETE',
+          metadata: expect.objectContaining({
+            reason: 'Link https://blocked.example/path is not in allowlist',
+          }),
+        }),
+      });
+    });
+
+    it('reintroduces a violation when a fresh empty allowlist removed a cached typed target', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'ALLOWLIST_ONLY',
+        cachedAllowlist: [typedProfileAllowlist],
+        freshAllowlist: [],
+      });
+      const update = createLiveNavigationEnvelopeUpdate(
+        'message_created',
+        INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+      );
+
+      await harness.service.handleUpdate(update);
+
+      const initialDetection = await harness.detectSpy.mock.results[0]?.value;
+      expect(initialDetection.violations).toEqual([]);
+      expect(harness.prisma.domainAllowlist.findMany).toHaveBeenCalledTimes(1);
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+      expect(harness.prisma.violation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ ruleCode: 'LINK_BLOCKED' }),
+      });
+    });
+
+    it('fails open for allowlist-dependent violations when ALLOWLIST_ONLY recheck fails', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'ALLOWLIST_ONLY',
+        freshAllowlistError: new Error('database unavailable'),
+      });
+      harness.detectSpy.mockResolvedValue({
+        violations: [staleLinkViolation, staleBlockedDomainViolation],
+      });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: { text: 'https://blocked.example/path' },
+        }),
+      );
+
+      expect(harness.prisma.domainAllowlist.findMany).toHaveBeenCalledTimes(1);
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+      expect(harness.prisma.moderationEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('keeps ordinary LINK_BLOCKED when BLOCKLIST_ONLY recheck fails', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        freshAllowlistError: new Error('database unavailable'),
+      });
+      harness.detectSpy.mockResolvedValue({
+        violations: [staleLinkViolation, staleBlockedDomainViolation],
+      });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: { text: 'https://blocked.example/path' },
+        }),
+      );
+
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+      expect(harness.prisma.violation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ ruleCode: 'LINK_BLOCKED' }),
+      });
+      expect(harness.prisma.violation.create).not.toHaveBeenCalledWith({
+        data: expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_DOMAIN' }),
+      });
+    });
+
+    it('preserves independent violations when fresh allowlist recheck fails', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'ALLOWLIST_ONLY',
+        freshAllowlistError: new Error('database unavailable'),
+      });
+      harness.detectSpy.mockResolvedValue({
+        violations: [
+          staleLinkViolation,
+          staleBlockedDomainViolation,
+          { ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' },
+        ],
+      });
+
+      await harness.service.handleUpdate(
+        createLiveNavigationEnvelopeUpdate('message_created', {
+          body: { text: 'https://blocked.example/path' },
+        }),
+      );
+
+      expectImmediateDeleteMessage(
+        harness.maxClient.deleteMessage,
+        'chat-1',
+        'msg-live-navigation-message_created',
+      );
+      expect(harness.prisma.violation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ ruleCode: 'PROFANITY' }),
+      });
+      expect(harness.prisma.violation.create).not.toHaveBeenCalledWith({
+        data: expect.objectContaining({ ruleCode: 'LINK_BLOCKED' }),
+      });
+      expect(harness.prisma.violation.create).not.toHaveBeenCalledWith({
+        data: expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_DOMAIN' }),
+      });
+    });
+
+    it('never deletes typed navigation in ALERT_ONLY mode', async () => {
+      const harness = createLiveNavigationHarness({ linkPolicy: 'ALERT_ONLY' });
+      const update = createLiveNavigationEnvelopeUpdate(
+        'message_created',
+        INCIDENT_EXTERNAL_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+      );
+
+      await harness.service.handleUpdate(update);
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [expect.objectContaining({ enforceable: true })],
+        }),
+      );
+      expect(harness.prisma.domainAllowlist.findMany).not.toHaveBeenCalled();
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    });
+
+    it('ignores structured navigation inside reply quote metadata', async () => {
+      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+      const update = createLiveNavigationEnvelopeUpdate('message_created', {
+        body: { text: 'Обычный ответ' },
+        link: {
+          type: 'reply',
+          message: {
+            text: 'Ссылка',
+            markup: [
+              {
+                type: 'link',
+                from: 0,
+                length: 'Ссылка'.length,
+                url: 'https://quoted.example/path',
+              },
+            ],
+            attachments: [{ type: 'share', payload: { url: 'https://quoted-share.example/path' } }],
+          },
+        },
+      });
+
+      await harness.service.handleUpdate(update);
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ navigationTargets: [] }),
+      );
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    });
+
+    it('keeps malformed link markup shadow-only', async () => {
+      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+      const update = createLiveNavigationEnvelopeUpdate('message_created', {
+        body: {
+          text: 'Скрытая кнопка',
+          markup: [
+            {
+              type: 'link',
+              from: 99,
+              length: 6,
+              url: 'https://shadow.example/path',
+            },
+          ],
+        },
+      });
+
+      await harness.service.handleUpdate(update);
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          navigationTargets: [
+            expect.objectContaining({
+              normalizedTarget: 'https://shadow.example/path',
+              enforceable: false,
+              origins: [
+                expect.objectContaining({
+                  carrier: 'link_markup',
+                  enforcement: 'shadow_only',
+                  range: expect.objectContaining({
+                    status: 'invalid',
+                    invalidReason: 'out_of_bounds',
+                  }),
+                }),
+              ],
+            }),
+          ],
+        }),
+      );
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    });
+
+    it('preserves chat-admin immunity for structured navigation', async () => {
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        adminUserIds: ['user-1'],
+      });
+      const update = createLiveNavigationEnvelopeUpdate(
+        'message_created',
+        INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+      );
+
+      await harness.service.handleUpdate(update);
+
+      expect(harness.detectSpy).not.toHaveBeenCalled();
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    });
+
+    it('preserves configured runtime-bot immunity for structured navigation', async () => {
+      const maxBotLinkService = {
+        isKnownBotUserId: jest.fn().mockReturnValue(true),
+      };
+      const harness = createLiveNavigationHarness({
+        linkPolicy: 'BLOCKLIST_ONLY',
+        maxBotLinkService,
+      });
+      const update = createLiveNavigationEnvelopeUpdate(
+        'message_created',
+        INCIDENT_PROFILE_MENTION_FORWARD_FIXTURE as unknown as Record<string, unknown>,
+        { senderId: 'runtime-bot-user-1', senderName: 'Служебный бот' },
+      );
+
+      await harness.service.handleUpdate(update);
+
+      expect(maxBotLinkService.isKnownBotUserId).toHaveBeenCalledWith('runtime-bot-user-1');
+      expect(harness.detectSpy).not.toHaveBeenCalled();
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.prisma.violation.create).not.toHaveBeenCalled();
+    });
+  });
+
   it('prioritizes link moderation over duplicate escalation for link messages', async () => {
     const prisma = {
       chat: {
@@ -21030,18 +21750,20 @@ describe('ModerationService', () => {
   });
 
   describe('photo duplicate enqueue', () => {
-    function createHarness(options: {
-      adminUserIds?: string[];
-      duplicateOutcome?: 'decision' | 'hit';
-      karavanResult?: 'handled' | 'duplicate';
-      settingsOverrides?: Record<string, unknown>;
-      violations?: Array<{
-        ruleCode: string;
-        score: number;
-        reason: string;
-        metadata?: Record<string, unknown> | null;
-      }>;
-    } = {}) {
+    function createHarness(
+      options: {
+        adminUserIds?: string[];
+        duplicateOutcome?: 'decision' | 'hit';
+        karavanResult?: 'handled' | 'duplicate';
+        settingsOverrides?: Record<string, unknown>;
+        violations?: Array<{
+          ruleCode: string;
+          score: number;
+          reason: string;
+          metadata?: Record<string, unknown> | null;
+        }>;
+      } = {},
+    ) {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -21233,9 +21955,8 @@ describe('ModerationService', () => {
           ...(update.raw as { message?: Record<string, unknown> }).message,
           body: {
             text: '$ storefront item',
-            attachments: (
-              update.raw as { message?: { attachments?: unknown[] } }
-            ).message?.attachments,
+            attachments: (update.raw as { message?: { attachments?: unknown[] } }).message
+              ?.attachments,
           },
         },
       };
@@ -21322,47 +22043,43 @@ describe('ModerationService', () => {
       {
         name: 'required subscription',
         configure: (service: ModerationService) => {
-          jest
-            .spyOn(service as any, 'handleRequiredSubscriptionMessage')
-            .mockResolvedValue(true);
+          jest.spyOn(service as any, 'handleRequiredSubscriptionMessage').mockResolvedValue(true);
         },
       },
       {
         name: 'invitation access',
         configure: (service: ModerationService) => {
-          jest
-            .spyOn(service as any, 'handleRequiredSubscriptionMessage')
-            .mockResolvedValue(false);
+          jest.spyOn(service as any, 'handleRequiredSubscriptionMessage').mockResolvedValue(false);
           jest.spyOn(service as any, 'handleInvitationAccessMessage').mockResolvedValue(true);
         },
       },
-    ])('queues an observation-only photo before the $name early return', async ({
-      name,
-      configure,
-    }) => {
-      const harness = createHarness({
-        settingsOverrides: [
-          'developer-forced global spammer',
-          'local blocklist',
-          'known global spammer',
-        ].includes(name)
-          ? { deleteSpammersEnabled: true }
-          : {},
-      });
-      configure(harness.service);
-      const update = createPhotoAttachmentUpdate(98);
+    ])(
+      'queues an observation-only photo before the $name early return',
+      async ({ name, configure }) => {
+        const harness = createHarness({
+          settingsOverrides: [
+            'developer-forced global spammer',
+            'local blocklist',
+            'known global spammer',
+          ].includes(name)
+            ? { deleteSpammersEnabled: true }
+            : {},
+        });
+        configure(harness.service);
+        const update = createPhotoAttachmentUpdate(98);
 
-      await harness.service.handleUpdate(update, undefined, 'webhook-photo-98');
+        await harness.service.handleUpdate(update, undefined, 'webhook-photo-98');
 
-      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
-        webhookEventId: 'webhook-photo-98',
-        chatId: 'chat-1',
-        messageId: 'msg-photo-98',
-        sourceCreatedAt: update.message!.createdAt,
-        actionEligible: false,
-      });
-      expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
-    });
+        expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
+          webhookEventId: 'webhook-photo-98',
+          chatId: 'chat-1',
+          messageId: 'msg-photo-98',
+          sourceCreatedAt: update.message!.createdAt,
+          actionEligible: false,
+        });
+        expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
+      },
+    );
 
     it('keeps a developer-forced admin photo out of the duplicate queue', async () => {
       const harness = createHarness({ settingsOverrides: { deleteSpammersEnabled: true } });

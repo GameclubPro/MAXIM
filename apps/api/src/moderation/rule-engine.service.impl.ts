@@ -7,6 +7,7 @@ import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { isExactProfanityVariant, isTargetedInsultVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
 import { createRuleDetectionContext } from './rule-engine-detection-context';
+import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { RuleEngineDuplicateDetector } from './rule-engine-duplicate-detector';
 import type { DetectionResult, RuleViolation } from './rule-engine.contract';
 import {
@@ -979,6 +980,7 @@ export class RuleEngineService {
     text: string;
     settings: ChatSettings;
     domainAllowlist: string[];
+    navigationTargets?: readonly NavigationTargetEvidence[];
     effectiveLength?: number;
     hasPhotoAttachment?: boolean;
     hasStickerAttachment?: boolean;
@@ -998,6 +1000,7 @@ export class RuleEngineService {
       text,
       settings,
       domainAllowlist,
+      navigationTargets,
       effectiveLength,
       hasPhotoAttachment,
       hasStickerAttachment,
@@ -1093,6 +1096,7 @@ export class RuleEngineService {
       settings.linkPolicy,
       domainAllowlist,
       allowlistLinkMatcher,
+      navigationTargets,
     );
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });

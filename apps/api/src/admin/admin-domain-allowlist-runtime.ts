@@ -6,6 +6,7 @@ import {
   scheduleDomainRemovalRequestSchema,
   type AllowlistMatchType,
   type DomainAllowlistEntry,
+  type NavigationAllowlistKind,
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -48,7 +49,9 @@ export class AdminDomainAllowlistRuntime {
 
     const normalizedRows = await this.canonicalizeActiveAllowlistRows(chatId, rows);
 
-    return normalizedRows.map((row) => row.domain);
+    return normalizedRows.map((row) =>
+      row.kind === 'WEB_DOMAIN' ? row.domain : row.normalizedValue,
+    );
   }
 
   async getDomainAllowlistDetails(
@@ -84,9 +87,12 @@ export class AdminDomainAllowlistRuntime {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const matchType =
-      parsed.data.matchType ?? inferAllowlistMatchType(parsed.data.domain) ?? 'EXACT';
-    const normalized = normalizeStoredAllowlistEntry(parsed.data.domain, matchType);
+    const inputKind =
+      parsed.data.kind ??
+      parsed.data.matchType ??
+      inferAllowlistMatchType(parsed.data.domain) ??
+      'EXACT';
+    const normalized = normalizeStoredAllowlistEntry(parsed.data.domain, inputKind);
     if (!normalized) {
       throw new BadRequestException('Invalid allowlist link');
     }
@@ -104,7 +110,9 @@ export class AdminDomainAllowlistRuntime {
         action: 'ADD_DOMAIN',
         payload: {
           domain: normalizedEntry.domain,
-          matchType,
+          target: normalizedEntry.target,
+          kind: normalizedEntry.kind,
+          matchType: normalizedEntry.matchType,
           normalizedValue: normalizedEntry.normalizedValue,
           source,
         },
@@ -122,7 +130,7 @@ export class AdminDomainAllowlistRuntime {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalizedEntry = parseStoredAllowlistEntry(this.decodePathParam(domain));
+    const normalizedEntry = parseStoredAllowlistEntry(domain);
     if (!normalizedEntry) {
       throw new BadRequestException('Invalid allowlist link');
     }
@@ -148,6 +156,8 @@ export class AdminDomainAllowlistRuntime {
         action: 'REMOVE_DOMAIN',
         payload: {
           domain: normalizedEntry.domain,
+          target: normalizedEntry.target,
+          kind: normalizedEntry.kind,
           matchType: normalizedEntry.matchType,
           normalizedValue: normalizedEntry.normalizedValue,
           source,
@@ -167,7 +177,7 @@ export class AdminDomainAllowlistRuntime {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalizedEntry = parseStoredAllowlistEntry(this.decodePathParam(domain));
+    const normalizedEntry = parseStoredAllowlistEntry(domain);
     if (!normalizedEntry) {
       throw new BadRequestException('Invalid allowlist link');
     }
@@ -215,6 +225,8 @@ export class AdminDomainAllowlistRuntime {
         action: removeAfterAt ? 'SCHEDULE_DOMAIN_REMOVE' : 'CLEAR_DOMAIN_REMOVE_SCHEDULE',
         payload: {
           domain: normalizedEntry.domain,
+          target: normalizedEntry.target,
+          kind: normalizedEntry.kind,
           matchType: normalizedEntry.matchType,
           normalizedValue: normalizedEntry.normalizedValue,
           removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
@@ -240,14 +252,6 @@ export class AdminDomainAllowlistRuntime {
       chatId,
       OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: now } }],
     };
-  }
-
-  private decodePathParam(value: string): string {
-    try {
-      return decodeURIComponent(value);
-    } catch {
-      return value;
-    }
   }
 
   private async syncDomainAllowlistToChats(
@@ -382,8 +386,10 @@ export class AdminDomainAllowlistRuntime {
       string,
       {
         domain: string;
+        target: string;
         normalizedValue: string;
         matchType: AllowlistMatchType;
+        kind: NavigationAllowlistKind;
         removeAfterAt: Date | null;
       }
     >();
@@ -446,8 +452,10 @@ export class AdminDomainAllowlistRuntime {
       })
       .map((entry) => ({
         domain: entry.domain,
+        target: entry.target,
         normalizedValue: entry.normalizedValue,
         matchType: entry.matchType,
+        kind: entry.kind,
         removeAfterAt: entry.removeAfterAt ? entry.removeAfterAt.toISOString() : null,
       }));
 
