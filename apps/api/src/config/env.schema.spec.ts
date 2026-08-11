@@ -249,7 +249,9 @@ describe('validateEnv boolean parsing', () => {
     expect(defaults.PHOTO_DUPLICATE_ROLLOUT_MODE).toBe('shadow');
     expect(defaults.PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS).toBe('');
     expect(defaults.PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS).toBe('');
-    expect(defaults.PHOTO_DUPLICATE_ALLOWED_HOSTS).toBe('i.oneme.ru');
+    expect(defaults.PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS).toBe('canonical_sha256');
+    expect(defaults.PHOTO_DUPLICATE_MAX_ACTION).toBe('DELETE_MESSAGE');
+    expect(defaults.PHOTO_DUPLICATE_ALLOWED_HOSTS).toBe('i.oneme.ru,fd.oneme.ru');
     expect(defaults.PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS).toBe(5_000);
     expect(defaults.PHOTO_DUPLICATE_MAX_BYTES).toBe(16_777_216);
     expect(defaults.PHOTO_DUPLICATE_MAX_PIXELS).toBe(40_000_000);
@@ -260,6 +262,8 @@ describe('validateEnv boolean parsing', () => {
         PHOTO_DUPLICATE_ROLLOUT_MODE: 'delete_only',
         PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
         PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: 'chat-2',
+        PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: 'canonical_sha256,pdq',
+        PHOTO_DUPLICATE_MAX_ACTION: 'MUTE',
         PHOTO_DUPLICATE_ALLOWED_HOSTS: 'i.oneme.ru,cdn.example.test',
         PHOTO_DUPLICATE_MAX_BYTES: '8388608',
       }),
@@ -267,11 +271,30 @@ describe('validateEnv boolean parsing', () => {
     expect(configured.PHOTO_DUPLICATE_ROLLOUT_MODE).toBe('delete_only');
     expect(configured.PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS).toBe('chat-1');
     expect(configured.PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS).toBe('chat-2');
+    expect(configured.PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS).toBe('canonical_sha256,pdq');
+    expect(configured.PHOTO_DUPLICATE_MAX_ACTION).toBe('MUTE');
     expect(configured.PHOTO_DUPLICATE_MAX_BYTES).toBe(8_388_608);
 
     expect(() => validateEnv(createValidEnv({ PHOTO_DUPLICATE_ROLLOUT_MODE: 'unsafe' }))).toThrow(
       /PHOTO_DUPLICATE_ROLLOUT_MODE/u,
     );
+    expect(() =>
+      validateEnv(
+        createValidEnv({ PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: 'canonical_sha256,phash' }),
+      ),
+    ).toThrow(/PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS/u);
+    expect(() =>
+      validateEnv(createValidEnv({ PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: 'platform_id' })),
+    ).toThrow(/PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS/u);
+    expect(() => validateEnv(createValidEnv({ PHOTO_DUPLICATE_MAX_ACTION: 'KICK' }))).toThrow(
+      /PHOTO_DUPLICATE_MAX_ACTION/u,
+    );
+    expect(() =>
+      validateEnv(createValidEnv({ PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: '*' })),
+    ).toThrow(/wildcard/u);
+    expect(() =>
+      validateEnv(createValidEnv({ PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: 'chat-1,*' })),
+    ).toThrow(/wildcard/u);
   });
 
   it('defaults the action ledger watchdog to shadow rollout', () => {

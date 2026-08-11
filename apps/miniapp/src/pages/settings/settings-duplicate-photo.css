@@ -1,4 +1,13 @@
 @layer pages {
+  .settings-drilldown__panel--duplicates .duplicate-settings-group__title {
+    margin: 8px 2px 2px;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 750;
+    line-height: 1.2;
+    letter-spacing: 0;
+  }
+
   .duplicate-photo-settings {
     display: grid;
     gap: 8px;

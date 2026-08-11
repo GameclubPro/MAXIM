@@ -9,14 +9,18 @@ import {
   type PhotoFingerprint,
   type PhotoMatchPreset,
 } from './photo-fingerprint';
+import {
+  PHOTO_DUPLICATE_MATCH_KINDS,
+  type PhotoDuplicateMatchKind,
+} from './photo-duplicate.runtime';
 
-const HISTORY_NAMESPACE = 'photo-duplicate:history:v1';
+const HISTORY_NAMESPACE = 'photo-duplicate:history:v2';
 const DEFAULT_HISTORY_MAX_ITEMS = 250;
 const MAX_HISTORY_TTL_SECONDS = 31 * 24 * 60 * 60;
 const MAX_CACHE_BATCH_SIZE = 10;
 
-// FLAG: Replay lookup must stay before every mutation. Multi-bot deliveries of one logical MAX
-// message must return the stored result without inserting history or incrementing sanctions again.
+// FLAG: Observation records matching evidence only. Sanction counters are committed separately,
+// after execution-time moderation guards, so this script must never increment a counter.
 const OBSERVE_PHOTO_ALBUM_SCRIPT = `
 local replay_status = redis.call('HGET', KEYS[1], 'classification')
 if replay_status then
@@ -27,7 +31,11 @@ if replay_status then
     redis.call('HGET', KEYS[1], 'match_kind') or '',
     redis.call('HGET', KEYS[1], 'distance') or '',
     redis.call('HGET', KEYS[1], 'repeat_count') or '0',
-    redis.call('HGET', KEYS[1], 'previous_message_id') or ''
+    redis.call('HGET', KEYS[1], 'previous_message_id') or '',
+    redis.call('HGET', KEYS[1], 'sanction_cluster_id') or '',
+    redis.call('HGET', KEYS[1], 'violation_committed') or '0',
+    redis.call('HGET', KEYS[1], 'action_authorized') or '0',
+    redis.call('HGET', KEYS[1], 'authorization_digest') or ''
   }
 end
 
@@ -42,61 +50,83 @@ local forced_previous_message_id = ARGV[8]
 local exact_match_kind = ARGV[9]
 local forced_match_kind = ARGV[10]
 local forced_distance = ARGV[11]
-local commit_violation = ARGV[12]
-
-redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', cutoff_at)
-redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', cutoff_at)
+local recent_record_json = ARGV[12]
+local canonical_sanction_cluster_id = ARGV[13]
+local perceptual_sanction_cluster_id = ARGV[14]
+local authorization_eligible = ARGV[15]
+local authorization_digest = ARGV[16]
+local authorization_match_kinds = ARGV[17]
 
 local classification = 'new'
 local cluster_id = deterministic_cluster_id
 local match_kind = ''
 local distance = ''
 local previous_message_id = ''
+local sanction_cluster_id = canonical_sanction_cluster_id
 
-if forced_cluster_id ~= '' and forced_previous_message_id ~= '' then
+-- FLAG: An older delivery must be completely read-only. Inserting it into exact or perceptual
+-- history can make a later stale delivery look like an actionable duplicate.
+local newer = redis.call(
+  'ZRANGEBYSCORE',
+  KEYS[2],
+  '(' .. tostring(occurred_at),
+  '+inf',
+  'LIMIT',
+  0,
+  1
+)
+if newer[1] then
+  return {
+    3,
+    'out_of_order',
+    deterministic_cluster_id,
+    '',
+    '',
+    0,
+    '',
+    canonical_sanction_cluster_id,
+    0,
+    0,
+    authorization_digest
+  }
+end
+
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', cutoff_at)
+redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', cutoff_at)
+
+local prior_rows = redis.call(
+  'ZREVRANGEBYSCORE',
+  KEYS[2],
+  tostring(occurred_at),
+  cutoff_at,
+  'LIMIT',
+  0,
+  2
+)
+local prior = nil
+for _, candidate in ipairs(prior_rows) do
+  local candidate_message_id = string.sub(candidate, 66)
+  if candidate_message_id ~= current_message_id then
+    prior = candidate
+    break
+  end
+end
+
+-- FLAG: Exact history must win over a perceptual candidate. Otherwise A -> near B -> exact B is
+-- classified as PDQ forever and canonical-only enforcement can never count B.
+if prior then
+  classification = 'duplicate'
+  cluster_id = string.sub(prior, 1, 64)
+  previous_message_id = string.sub(prior, 66)
+  match_kind = exact_match_kind
+  distance = '0'
+elseif forced_cluster_id ~= '' and forced_previous_message_id ~= '' then
   classification = 'duplicate'
   cluster_id = forced_cluster_id
   previous_message_id = forced_previous_message_id
   match_kind = forced_match_kind
   distance = forced_distance
-else
-  local prior_rows = redis.call(
-    'ZREVRANGEBYSCORE',
-    KEYS[2],
-    tostring(occurred_at),
-    cutoff_at,
-    'LIMIT',
-    0,
-    2
-  )
-  local prior = nil
-  for _, candidate in ipairs(prior_rows) do
-    local candidate_message_id = string.sub(candidate, 66)
-    if candidate_message_id ~= current_message_id then
-      prior = candidate
-      break
-    end
-  end
-  if prior then
-    classification = 'duplicate'
-    cluster_id = string.sub(prior, 1, 64)
-    previous_message_id = string.sub(prior, 66)
-    match_kind = exact_match_kind
-    distance = '0'
-  else
-    local newer = redis.call(
-      'ZRANGEBYSCORE',
-      KEYS[2],
-      '(' .. tostring(occurred_at),
-      '+inf',
-      'LIMIT',
-      0,
-      1
-    )
-    if newer[1] then
-      classification = 'out_of_order'
-    end
-  end
+  sanction_cluster_id = perceptual_sanction_cluster_id
 end
 
 redis.call('ZADD', KEYS[2], occurred_at, cluster_id .. ':' .. current_message_id)
@@ -106,8 +136,8 @@ if exact_size > max_items then
 end
 redis.call('PEXPIRE', KEYS[2], ttl_ms)
 
-if ARGV[13] ~= '' then
-  local recent_record = cjson.decode(ARGV[13])
+if recent_record_json ~= '' then
+  local recent_record = cjson.decode(recent_record_json)
   recent_record.clusterId = cluster_id
   recent_record.messageId = current_message_id
   redis.call('ZADD', KEYS[3], occurred_at, cjson.encode(recent_record))
@@ -120,29 +150,20 @@ end
 
 local repeat_count = 0
 if classification == 'new' then
-  redis.call('HDEL', KEYS[4], cluster_id)
+  redis.call('HDEL', KEYS[4], sanction_cluster_id)
 elseif classification == 'duplicate' then
-  if commit_violation == '1' then
-    repeat_count = redis.call('HINCRBY', KEYS[4], cluster_id, 1)
-    redis.call('PEXPIRE', KEYS[4], ttl_ms)
-  else
-    repeat_count = tonumber(redis.call('HGET', KEYS[4], cluster_id) or '0')
-  end
+  repeat_count = tonumber(redis.call('HGET', KEYS[4], sanction_cluster_id) or '0') + 1
 end
 
-local counter_size = redis.call('HLEN', KEYS[4])
-if counter_size > max_items then
-  local counter_clusters = redis.call('HKEYS', KEYS[4])
-  local remove_count = counter_size - max_items
-  for _, candidate_cluster_id in ipairs(counter_clusters) do
-    if remove_count <= 0 then
-      break
-    end
-    if candidate_cluster_id ~= cluster_id then
-      redis.call('HDEL', KEYS[4], candidate_cluster_id)
-      remove_count = remove_count - 1
-    end
-  end
+local action_authorized = '0'
+local match_kind_allowed = string.find(
+  authorization_match_kinds,
+  ',' .. match_kind .. ',',
+  1,
+  true
+) ~= nil
+if authorization_eligible == '1' and (classification ~= 'duplicate' or match_kind_allowed) then
+  action_authorized = '1'
 end
 
 redis.call(
@@ -150,10 +171,15 @@ redis.call(
   KEYS[1],
   'classification', classification,
   'cluster_id', cluster_id,
+  'album_cluster_id', deterministic_cluster_id,
   'match_kind', match_kind,
   'distance', distance,
   'repeat_count', tostring(repeat_count),
-  'previous_message_id', previous_message_id
+  'previous_message_id', previous_message_id,
+  'sanction_cluster_id', sanction_cluster_id,
+  'violation_committed', '0',
+  'action_authorized', action_authorized,
+  'authorization_digest', authorization_digest
 )
 redis.call('PEXPIRE', KEYS[1], ttl_ms)
 
@@ -164,12 +190,129 @@ return {
   match_kind,
   distance,
   repeat_count,
-  previous_message_id
+  previous_message_id,
+  sanction_cluster_id,
+  0,
+  action_authorized,
+  authorization_digest
 }
 `;
 
+// FLAG: This is the only photo-duplicate sanction counter mutation. Replay state, observation
+// binding, match-kind policy and the expected next count must remain in the same Redis script.
+const COMMIT_PHOTO_VIOLATION_SCRIPT = `
+local classification = redis.call('HGET', KEYS[1], 'classification')
+if classification ~= 'duplicate' then
+  return {0, '0', '', '', '', '0'}
+end
+
+local match_kind = redis.call('HGET', KEYS[1], 'match_kind') or ''
+local cluster_id = redis.call('HGET', KEYS[1], 'cluster_id') or ''
+local album_cluster_id = redis.call('HGET', KEYS[1], 'album_cluster_id') or ''
+local sanction_cluster_id = redis.call('HGET', KEYS[1], 'sanction_cluster_id') or ''
+if match_kind ~= ARGV[1]
+  or cluster_id ~= ARGV[2]
+  or sanction_cluster_id ~= ARGV[3]
+  or album_cluster_id ~= ARGV[11]
+then
+  return {0, '0', '', '', '', '0'}
+end
+
+local expected_repeat_count = tonumber(ARGV[4])
+local stored_repeat_count = tonumber(redis.call('HGET', KEYS[1], 'repeat_count') or '-1')
+local stored_action = redis.call('HGET', KEYS[1], 'violation_action') or ''
+local stored_binding_digest = redis.call('HGET', KEYS[1], 'violation_binding_digest') or ''
+if stored_action ~= '' then
+  local request_matches = '1'
+  local match_kind_allowed = string.find(ARGV[7], ',' .. match_kind .. ',', 1, true) ~= nil
+  if stored_repeat_count ~= expected_repeat_count
+    or redis.call('HGET', KEYS[1], 'action_authorized') ~= '1'
+    or redis.call('HGET', KEYS[1], 'authorization_digest') ~= ARGV[8]
+    or not match_kind_allowed
+    or stored_action ~= ARGV[9]
+    or stored_binding_digest ~= ARGV[10]
+  then
+    request_matches = '0'
+  end
+  return {
+    2,
+    tostring(stored_repeat_count),
+    sanction_cluster_id,
+    stored_action,
+    stored_binding_digest,
+    request_matches
+  }
+end
+
+if redis.call('HGET', KEYS[1], 'violation_committed') == '1' then
+  return {0, '0', '', '', '', '0'}
+end
+
+local match_kind_allowed = string.find(ARGV[7], ',' .. match_kind .. ',', 1, true) ~= nil
+if stored_repeat_count ~= expected_repeat_count
+  or redis.call('HGET', KEYS[1], 'action_authorized') ~= '1'
+  or redis.call('HGET', KEYS[1], 'authorization_digest') ~= ARGV[8]
+  or not match_kind_allowed
+then
+  return {0, '0', '', '', '', '0'}
+end
+
+local current_repeat_count = tonumber(redis.call('HGET', KEYS[2], sanction_cluster_id) or '0')
+if current_repeat_count + 1 ~= expected_repeat_count then
+  return {0, '0', '', '', '', '0'}
+end
+
+local repeat_count = redis.call('HINCRBY', KEYS[2], sanction_cluster_id, 1)
+redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[5]))
+redis.call(
+  'HSET',
+  KEYS[1],
+  'repeat_count', tostring(repeat_count),
+  'violation_committed', '1',
+  'violation_action', ARGV[9],
+  'violation_binding_digest', ARGV[10]
+)
+redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[5]))
+
+local counter_size = redis.call('HLEN', KEYS[2])
+if counter_size > tonumber(ARGV[6]) then
+  local counter_clusters = redis.call('HKEYS', KEYS[2])
+  local remove_count = counter_size - tonumber(ARGV[6])
+  for _, candidate_cluster_id in ipairs(counter_clusters) do
+    if remove_count <= 0 then
+      break
+    end
+    if candidate_cluster_id ~= sanction_cluster_id then
+      redis.call('HDEL', KEYS[2], candidate_cluster_id)
+      remove_count = remove_count - 1
+    end
+  end
+end
+
+return {1, tostring(repeat_count), sanction_cluster_id, ARGV[9], ARGV[10], '1'}
+`;
+
 export type PhotoDuplicateScope = 'SAME_AUTHOR' | 'CHAT';
-export type PhotoHistoryMatchKind = 'platform_id' | 'canonical_sha256' | 'pdq';
+export type PhotoHistoryMatchKind = PhotoDuplicateMatchKind;
+export type PhotoHistoryViolationAction = 'NONE' | 'HIT' | 'WARN' | 'MUTE' | 'BAN';
+
+// FLAG: Callers hash semantic policy/settings only. Revisions, timestamps and rollout expiry do not
+// belong in this digest because replay compatibility must describe behavior, not storage metadata.
+export type PhotoHistoryObservationAuthorization = {
+  authorized: boolean;
+  configDigest: string;
+};
+
+export type PhotoHistoryObservationAuthorizationInput = {
+  eligible: boolean;
+  configDigest: string;
+  allowedMatchKinds: readonly PhotoHistoryMatchKind[];
+};
+
+export type PhotoHistoryViolationActionBinding = {
+  intendedAction: PhotoHistoryViolationAction;
+  configDigest: string;
+};
 
 export type PhotoHistoryObservationResult =
   | {
@@ -182,6 +325,21 @@ export type PhotoHistoryObservationResult =
       matchedDistance: number | null;
       repeatCount: number;
       duplicateOfMessageId: string | null;
+      sanctionClusterId: string;
+      violationCommitted: boolean;
+      authorization: PhotoHistoryObservationAuthorization;
+    }
+  | { kind: 'unavailable' };
+
+export type PhotoHistoryViolationCommitResult =
+  | {
+      kind: 'available';
+      committed: boolean;
+      replayed: boolean;
+      repeatCount: number;
+      sanctionClusterId: string;
+      bindingMatches: boolean;
+      actionBinding: PhotoHistoryViolationActionBinding;
     }
   | { kind: 'unavailable' };
 
@@ -202,7 +360,24 @@ export type ObservePhotoAlbumInput = {
   perceptualAlbum?: PhotoAlbumFingerprint;
   allowPerceptualMatch?: boolean;
   perceptualPreset?: PhotoMatchPreset;
-  commitViolation: boolean;
+  authorization: PhotoHistoryObservationAuthorizationInput;
+};
+
+export type CommitPhotoViolationInput = {
+  chatId: string;
+  senderId: string;
+  messageId: string;
+  ttlSeconds: number;
+  scope: PhotoDuplicateScope;
+  fingerprintVersion: string;
+  albumHash: string;
+  perceptualPreset?: PhotoMatchPreset;
+  observationClusterId: string;
+  matchKind: PhotoHistoryMatchKind;
+  expectedRepeatCount: number;
+  allowedMatchKinds: readonly PhotoHistoryMatchKind[];
+  authorizationConfigDigest: string;
+  actionBinding: PhotoHistoryViolationActionBinding;
 };
 
 type StoredPerceptualCandidate = {
@@ -242,6 +417,13 @@ export class PhotoDuplicateHistoryStore implements OnModuleDestroy {
         normalized.fingerprintVersion,
         normalized.albumHash,
       );
+      const canonicalSanctionClusterId = buildCanonicalSanctionClusterId(
+        normalized.fingerprintVersion,
+        normalized.albumHash,
+      );
+      const perceptualSanctionClusterId = perceptualMatch
+        ? buildPerceptualSanctionClusterId(normalized.fingerprintVersion, perceptualMatch.clusterId)
+        : '';
       const recentRecord = normalized.perceptualAlbum
         ? JSON.stringify({
             schemaVersion: 1,
@@ -270,13 +452,49 @@ export class PhotoDuplicateHistoryStore implements OnModuleDestroy {
         normalized.exactMatchKind,
         perceptualMatch ? 'pdq' : '',
         perceptualMatch ? String(perceptualMatch.distance) : '',
-        normalized.commitViolation ? '1' : '0',
         recentRecord,
+        canonicalSanctionClusterId,
+        perceptualSanctionClusterId,
+        normalized.authorization.eligible ? '1' : '0',
+        normalized.authorization.configDigest,
+        encodeMatchKinds(normalized.authorization.allowedMatchKinds),
       )) as Array<number | string | Buffer>;
 
       return parseObservationResponse(response);
     } catch {
       this.logger.warn('Photo duplicate history unavailable; continuing fail-open');
+      return { kind: 'unavailable' };
+    }
+  }
+
+  async commitViolation(
+    input: CommitPhotoViolationInput,
+  ): Promise<PhotoHistoryViolationCommitResult> {
+    const normalized = validateCommitInput(input);
+    try {
+      const keys = buildKeys(normalized);
+      const ttlMs = normalized.ttlSeconds * 1_000;
+      const response = (await this.redis.eval(
+        COMMIT_PHOTO_VIOLATION_SCRIPT,
+        2,
+        keys.replayKey,
+        keys.authorCounterKey,
+        normalized.matchKind,
+        normalized.observationClusterId,
+        buildViolationSanctionClusterId(normalized),
+        String(normalized.expectedRepeatCount),
+        String(ttlMs),
+        String(this.maxItems),
+        encodeMatchKinds(normalized.allowedMatchKinds),
+        normalized.authorizationConfigDigest,
+        normalized.actionBinding.intendedAction,
+        normalized.actionBinding.configDigest,
+        buildClusterId(normalized.fingerprintVersion, normalized.albumHash),
+      )) as Array<number | string | Buffer>;
+
+      return parseViolationCommitResponse(response);
+    } catch {
+      this.logger.warn('Photo duplicate violation commit unavailable; continuing fail-open');
       return { kind: 'unavailable' };
     }
   }
@@ -406,6 +624,7 @@ function validateInput(input: ObservePhotoAlbumInput): ObservePhotoAlbumInput {
   if (input.perceptualAlbum && input.perceptualAlbum.albumHash !== albumHash) {
     throw new Error('perceptualAlbum and albumHash must describe the same album');
   }
+  const authorization = validateObservationAuthorization(input.authorization);
 
   return {
     ...input,
@@ -414,7 +633,102 @@ function validateInput(input: ObservePhotoAlbumInput): ObservePhotoAlbumInput {
     messageId,
     fingerprintVersion,
     albumHash,
+    authorization,
   };
+}
+
+function validateCommitInput(input: CommitPhotoViolationInput): CommitPhotoViolationInput {
+  const chatId = validateIdentifier(input.chatId, 'chatId');
+  const senderId = validateIdentifier(input.senderId, 'senderId');
+  const messageId = validateIdentifier(input.messageId, 'messageId');
+  const fingerprintVersion = input.fingerprintVersion.trim();
+  const albumHash = input.albumHash.trim().toLowerCase();
+  const observationClusterId = input.observationClusterId.trim().toLowerCase();
+  if (!fingerprintVersion || fingerprintVersion.length > 128) {
+    throw new Error('fingerprintVersion is invalid');
+  }
+  if (!/^[0-9a-f]{64}$/.test(albumHash)) {
+    throw new Error('albumHash must be a 256-bit hexadecimal value');
+  }
+  if (!/^[0-9a-f]{64}$/.test(observationClusterId)) {
+    throw new Error('observationClusterId must be a 256-bit hexadecimal value');
+  }
+  if (
+    !Number.isSafeInteger(input.ttlSeconds) ||
+    input.ttlSeconds <= 0 ||
+    input.ttlSeconds > MAX_HISTORY_TTL_SECONDS
+  ) {
+    throw new Error('ttlSeconds is outside the supported range');
+  }
+  if (!Number.isSafeInteger(input.expectedRepeatCount) || input.expectedRepeatCount <= 0) {
+    throw new Error('expectedRepeatCount must be a positive integer');
+  }
+  if (!PHOTO_DUPLICATE_MATCH_KINDS.includes(input.matchKind)) {
+    throw new Error('matchKind is unsupported');
+  }
+  const allowedMatchKinds = Array.from(new Set(input.allowedMatchKinds));
+  if (allowedMatchKinds.some((kind) => !PHOTO_DUPLICATE_MATCH_KINDS.includes(kind))) {
+    throw new Error('allowedMatchKinds contains an unsupported match kind');
+  }
+  const authorizationConfigDigest = validateDigest(
+    input.authorizationConfigDigest,
+    'authorizationConfigDigest',
+  );
+  const actionBinding = validateActionBinding(input.actionBinding);
+
+  return {
+    ...input,
+    chatId,
+    senderId,
+    messageId,
+    fingerprintVersion,
+    albumHash,
+    observationClusterId,
+    allowedMatchKinds,
+    authorizationConfigDigest,
+    actionBinding,
+  };
+}
+
+function validateObservationAuthorization(
+  input: PhotoHistoryObservationAuthorizationInput,
+): PhotoHistoryObservationAuthorizationInput {
+  if (!input || typeof input.eligible !== 'boolean') {
+    throw new Error('authorization eligibility is invalid');
+  }
+  const allowedMatchKinds = Array.from(new Set(input.allowedMatchKinds));
+  if (allowedMatchKinds.some((kind) => !PHOTO_DUPLICATE_MATCH_KINDS.includes(kind))) {
+    throw new Error('authorization allowedMatchKinds contains an unsupported match kind');
+  }
+  return {
+    eligible: input.eligible,
+    configDigest: validateDigest(input.configDigest, 'authorization configDigest'),
+    allowedMatchKinds,
+  };
+}
+
+function validateActionBinding(
+  input: PhotoHistoryViolationActionBinding,
+): PhotoHistoryViolationActionBinding {
+  if (!input || !['NONE', 'HIT', 'WARN', 'MUTE', 'BAN'].includes(input.intendedAction)) {
+    throw new Error('actionBinding intendedAction is invalid');
+  }
+  return {
+    intendedAction: input.intendedAction,
+    configDigest: validateDigest(input.configDigest, 'actionBinding configDigest'),
+  };
+}
+
+function validateDigest(value: string, field: string): string {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!/^[0-9a-f]{64}$/.test(normalized)) {
+    throw new Error(`${field} must be a 256-bit hexadecimal value`);
+  }
+  return normalized;
+}
+
+function encodeMatchKinds(matchKinds: readonly PhotoHistoryMatchKind[]): string {
+  return `,${matchKinds.join(',')},`;
 }
 
 function validateIdentifier(value: string, field: string): string {
@@ -425,7 +739,18 @@ function validateIdentifier(value: string, field: string): string {
   return normalized;
 }
 
-function buildKeys(input: ObservePhotoAlbumInput): {
+function buildKeys(
+  input: Pick<
+    CommitPhotoViolationInput,
+    | 'chatId'
+    | 'senderId'
+    | 'messageId'
+    | 'fingerprintVersion'
+    | 'scope'
+    | 'albumHash'
+    | 'perceptualPreset'
+  >,
+): {
   replayKey: string;
   exactHistoryKey: string;
   recentKey: string;
@@ -460,6 +785,35 @@ function buildClusterId(fingerprintVersion: string, albumHash: string): string {
     .digest('hex');
 }
 
+function buildCanonicalSanctionClusterId(fingerprintVersion: string, albumHash: string): string {
+  return createHash('sha256')
+    .update('photo-sanction-cluster-v2:canonical')
+    .update('\0')
+    .update(fingerprintVersion)
+    .update('\0')
+    .update(albumHash)
+    .digest('hex');
+}
+
+function buildPerceptualSanctionClusterId(
+  fingerprintVersion: string,
+  observationClusterId: string,
+): string {
+  return createHash('sha256')
+    .update('photo-sanction-cluster-v2:pdq')
+    .update('\0')
+    .update(fingerprintVersion)
+    .update('\0')
+    .update(observationClusterId)
+    .digest('hex');
+}
+
+function buildViolationSanctionClusterId(input: CommitPhotoViolationInput): string {
+  return input.matchKind === 'pdq'
+    ? buildPerceptualSanctionClusterId(input.fingerprintVersion, input.observationClusterId)
+    : buildCanonicalSanctionClusterId(input.fingerprintVersion, input.albumHash);
+}
+
 function shortHash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 32);
 }
@@ -474,12 +828,21 @@ function parseObservationResponse(
   const rawDistance = readRedisValue(response[4]);
   const repeatCount = Number(readRedisValue(response[5]));
   const duplicateOfMessageId = readRedisValue(response[6]) || null;
+  const sanctionClusterId = readRedisValue(response[7]);
+  const rawViolationCommitted = readRedisValue(response[8]);
+  const rawActionAuthorized = readRedisValue(response[9]);
+  const authorizationConfigDigest = readRedisValue(response[10]);
   if (
-    (writeStatus !== 1 && writeStatus !== 2) ||
+    (writeStatus !== 1 && writeStatus !== 2 && writeStatus !== 3) ||
+    (writeStatus === 3 && classification !== 'out_of_order') ||
     !['new', 'duplicate', 'out_of_order'].includes(classification) ||
     !/^[0-9a-f]{64}$/.test(clusterId) ||
+    !/^[0-9a-f]{64}$/.test(sanctionClusterId) ||
     !Number.isSafeInteger(repeatCount) ||
-    repeatCount < 0
+    repeatCount < 0 ||
+    (rawViolationCommitted !== '0' && rawViolationCommitted !== '1') ||
+    (rawActionAuthorized !== '0' && rawActionAuthorized !== '1') ||
+    !/^[0-9a-f]{64}$/.test(authorizationConfigDigest)
   ) {
     throw new Error('Redis returned an invalid photo history result');
   }
@@ -505,6 +868,46 @@ function parseObservationResponse(
     matchedDistance,
     repeatCount,
     duplicateOfMessageId,
+    sanctionClusterId,
+    violationCommitted: rawViolationCommitted === '1',
+    authorization: {
+      authorized: rawActionAuthorized === '1',
+      configDigest: authorizationConfigDigest,
+    },
+  };
+}
+
+function parseViolationCommitResponse(
+  response: Array<number | string | Buffer>,
+): PhotoHistoryViolationCommitResult {
+  const status = Number(readRedisValue(response[0]));
+  const repeatCount = Number(readRedisValue(response[1]));
+  const sanctionClusterId = readRedisValue(response[2]);
+  const intendedAction = readRedisValue(response[3]);
+  const configDigest = readRedisValue(response[4]);
+  const rawBindingMatches = readRedisValue(response[5]);
+  if (
+    (status !== 1 && status !== 2) ||
+    !Number.isSafeInteger(repeatCount) ||
+    repeatCount <= 0 ||
+    !/^[0-9a-f]{64}$/.test(sanctionClusterId) ||
+    !['NONE', 'HIT', 'WARN', 'MUTE', 'BAN'].includes(intendedAction) ||
+    !/^[0-9a-f]{64}$/.test(configDigest) ||
+    (rawBindingMatches !== '0' && rawBindingMatches !== '1')
+  ) {
+    return { kind: 'unavailable' };
+  }
+  return {
+    kind: 'available',
+    committed: status === 1,
+    replayed: status === 2,
+    repeatCount,
+    sanctionClusterId,
+    bindingMatches: rawBindingMatches === '1',
+    actionBinding: {
+      intendedAction: intendedAction as PhotoHistoryViolationAction,
+      configDigest,
+    },
   };
 }
 

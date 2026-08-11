@@ -5,7 +5,7 @@ import {
   RuleEngineDuplicateDetector,
 } from './rule-engine-duplicate-detector';
 
-function buildSettings(): ChatSettings {
+function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     duplicateWarnEnabled: true,
     duplicateMuteEnabled: false,
@@ -21,7 +21,85 @@ function buildSettings(): ChatSettings {
     duplicateIgnoreLinksEnabled: false,
     duplicateIgnorePhonesEnabled: false,
     duplicateNearMatchEnabled: false,
+    ...overrides,
   } as ChatSettings;
+}
+
+class InMemoryRevisionedRedisCounter {
+  private readonly states = new Map<
+    string,
+    { revision: number; membershipKeys: string[]; countSnapshots: Map<string, number> }
+  >();
+  private readonly memberships = new Map<string, Set<string>>();
+
+  async replaceRevisionedSetMembershipsBeforeDeadline(params: {
+    stateKey: string;
+    member: string;
+    revision: number;
+    membershipKeys: readonly string[];
+  }) {
+    const current = this.states.get(params.stateKey);
+    if (current && params.revision < current.revision) {
+      return { kind: 'stale' as const };
+    }
+    if (current && params.revision === current.revision) {
+      const sameKeys =
+        current.membershipKeys.length === params.membershipKeys.length &&
+        current.membershipKeys.every((key) => params.membershipKeys.includes(key));
+      if (!sameKeys) {
+        return { kind: 'stale' as const };
+      }
+      return {
+        kind: 'replayed' as const,
+        counts: params.membershipKeys.map((key) => current.countSnapshots.get(key) ?? 0),
+      };
+    }
+
+    for (const key of current?.membershipKeys ?? []) {
+      const membership = this.memberships.get(key);
+      membership?.delete(params.member);
+      if (membership?.size === 0) {
+        this.memberships.delete(key);
+      }
+    }
+    for (const key of params.membershipKeys) {
+      const membership = this.memberships.get(key) ?? new Set<string>();
+      membership.add(params.member);
+      this.memberships.set(key, membership);
+    }
+
+    const countSnapshots = new Map(
+      params.membershipKeys.map((key) => [key, this.memberships.get(key)?.size ?? 0]),
+    );
+    this.states.set(params.stateKey, {
+      revision: params.revision,
+      membershipKeys: [...params.membershipKeys],
+      countSnapshots,
+    });
+    return {
+      kind: 'applied' as const,
+      counts: params.membershipKeys.map((key) => countSnapshots.get(key) ?? 0),
+    };
+  }
+}
+
+function detectRevision(params: {
+  detector: RuleEngineDuplicateDetector;
+  messageId: string;
+  revision: number;
+  text: string;
+  trackCurrentText?: boolean;
+}) {
+  return params.detector.detectWithin({
+    chatId: 'chat-1',
+    userId: 'user-1',
+    messageId: params.messageId,
+    eventTimestampMs: params.revision,
+    rawText: params.text,
+    compactText: params.text,
+    settings: buildSettings(),
+    trackCurrentText: params.trackCurrentText,
+  });
 }
 
 describe('RuleEngineDuplicateDetector', () => {
@@ -31,12 +109,12 @@ describe('RuleEngineDuplicateDetector', () => {
   });
 
   it('waits for the side-effecting Redis result and enforces the same message', async () => {
-    let finishIncrement: ((result: { inserted: boolean; count: number }) => void) | undefined;
+    let finishMutation: ((result: { kind: 'applied'; counts: number[] }) => void) | undefined;
     const redisCounter = {
-      incrementOncePerMemberWithTtl: jest.fn(
+      replaceRevisionedSetMembershipsBeforeDeadline: jest.fn(
         () =>
-          new Promise<{ inserted: boolean; count: number }>((resolve) => {
-            finishIncrement = resolve;
+          new Promise<{ kind: 'applied'; counts: number[] }>((resolve) => {
+            finishMutation = resolve;
           }),
       ),
     };
@@ -48,6 +126,7 @@ describe('RuleEngineDuplicateDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'message-2',
+        eventTimestampMs: 1_800_000_000_000,
         rawText: 'same message',
         compactText: 'same message',
         settings: buildSettings(),
@@ -59,7 +138,7 @@ describe('RuleEngineDuplicateDetector', () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
-    finishIncrement?.({ inserted: true, count: 2 });
+    finishMutation?.({ kind: 'applied', counts: [2] });
 
     await expect(detection).resolves.toEqual({
       hit: {
@@ -80,9 +159,11 @@ describe('RuleEngineDuplicateDetector', () => {
     });
   });
 
-  it('propagates Redis failures so the webhook can retry the same message', async () => {
+  it('returns a deletion hit when every optional reaction is disabled', async () => {
     const redisCounter = {
-      incrementOncePerMemberWithTtl: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+      replaceRevisionedSetMembershipsBeforeDeadline: jest
+        .fn()
+        .mockResolvedValue({ kind: 'applied', counts: [2] }),
     };
     const detector = new RuleEngineDuplicateDetector(redisCounter as never);
 
@@ -91,6 +172,266 @@ describe('RuleEngineDuplicateDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'message-2',
+        eventTimestampMs: 1_800_000_000_000,
+        rawText: 'same sufficiently detailed repeated message',
+        compactText: 'same sufficiently detailed repeated message',
+        settings: buildSettings({
+          duplicateWarnEnabled: false,
+          duplicateMuteEnabled: false,
+          duplicateBanEnabled: false,
+          duplicateWarnMaxCount: 1,
+        }),
+      }),
+    ).resolves.toEqual({
+      hit: {
+        count: 1,
+        windowSec: 60,
+        hash: expect.any(String),
+        fingerprintType: 'exact',
+      },
+    });
+  });
+
+  it('selects the strongest sanction across every matched fingerprint', async () => {
+    const mutate = jest.fn().mockResolvedValue({ kind: 'applied', counts: [2, 4] });
+    const detector = new RuleEngineDuplicateDetector({
+      replaceRevisionedSetMembershipsBeforeDeadline: mutate,
+    } as never);
+
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-4',
+        eventTimestampMs: 1_800_000_000_000,
+        rawText: 'Короткое объявление https://example.com/sale',
+        compactText: 'короткое объявление https://example.com/sale',
+        settings: buildSettings({
+          duplicateDetectionPreset: 'CUSTOM',
+          duplicateIgnoreLinksEnabled: true,
+          duplicateMuteEnabled: true,
+          duplicateBanEnabled: true,
+        }),
+      }),
+    ).resolves.toEqual({
+      hit: {
+        count: 3,
+        windowSec: 60,
+        hash: expect.any(String),
+        fingerprintType: 'link',
+      },
+      decision: {
+        action: 'BAN',
+        count: 3,
+        threshold: 3,
+        windowSec: 60,
+        hash: expect.any(String),
+        fingerprintType: 'link',
+        nextAction: null,
+      },
+    });
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ membershipKeys: [expect.any(String), expect.any(String)] }),
+    );
+  });
+
+  it('never invents a stronger sanction than the enabled ladder permits', async () => {
+    const detector = new RuleEngineDuplicateDetector({
+      replaceRevisionedSetMembershipsBeforeDeadline: jest
+        .fn()
+        .mockResolvedValue({ kind: 'applied', counts: [2, 40] }),
+    } as never);
+
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-40',
+        eventTimestampMs: 1_800_000_000_000,
+        rawText: 'Короткое объявление https://example.com/sale',
+        compactText: 'короткое объявление https://example.com/sale',
+        settings: buildSettings({
+          duplicateDetectionPreset: 'CUSTOM',
+          duplicateIgnoreLinksEnabled: true,
+          duplicateMuteEnabled: true,
+          duplicateBanEnabled: false,
+        }),
+      }),
+    ).resolves.toMatchObject({
+      hit: { count: 39, fingerprintType: 'link' },
+      decision: { action: 'MUTE', count: 39, fingerprintType: 'link', nextAction: null },
+    });
+  });
+
+  it('keeps insufficient STRICT text exact-only instead of creating fuzzy content history', async () => {
+    const mutate = jest.fn().mockResolvedValue({ kind: 'applied', counts: [2] });
+    const detector = new RuleEngineDuplicateDetector({
+      replaceRevisionedSetMembershipsBeforeDeadline: mutate,
+    } as never);
+
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'short-message',
+        eventTimestampMs: 1_800_000_000_000,
+        rawText: 'ок https://example.com/one',
+        compactText: 'ок https://example.com/one',
+        settings: buildSettings({ duplicateDetectionPreset: 'STRICT' }),
+      }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ membershipKeys: [expect.stringContaining(':fingerprint:exact:')] }),
+    );
+  });
+
+  it('moves a message membership from its created text to its edited text', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const firstText = 'original detailed message';
+    const editedText = 'edited detailed message';
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-1', revision: 100, text: firstText }),
+    ).resolves.toEqual({});
+    await expect(
+      detectRevision({ detector, messageId: 'message-1', revision: 200, text: editedText }),
+    ).resolves.toEqual({});
+    await expect(
+      detectRevision({ detector, messageId: 'message-2', revision: 300, text: editedText }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-3', revision: 400, text: firstText }),
+    ).resolves.toEqual({});
+  });
+
+  it('restores the original membership when a later edit rolls text back', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const firstText = 'original detailed message';
+    const editedText = 'edited detailed message';
+
+    await detectRevision({ detector, messageId: 'message-1', revision: 100, text: firstText });
+    await detectRevision({ detector, messageId: 'message-1', revision: 200, text: editedText });
+    await detectRevision({ detector, messageId: 'message-1', revision: 300, text: firstText });
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-2', revision: 400, text: firstText }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+  });
+
+  it('does not let a stale edit replace the latest message membership', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const latestText = 'latest detailed message';
+    const staleText = 'stale detailed message';
+
+    await detectRevision({ detector, messageId: 'message-1', revision: 200, text: latestText });
+    await expect(
+      detectRevision({ detector, messageId: 'message-1', revision: 100, text: staleText }),
+    ).resolves.toEqual({});
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-2', revision: 300, text: staleText }),
+    ).resolves.toEqual({});
+    await expect(
+      detectRevision({ detector, messageId: 'message-3', revision: 400, text: latestText }),
+    ).resolves.toMatchObject({ hit: { count: 1, fingerprintType: 'exact' } });
+  });
+
+  it('replays the first message outcome instead of current membership counts', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'same detailed message';
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-a', revision: 100, text }),
+    ).resolves.toEqual({});
+    await expect(
+      detectRevision({ detector, messageId: 'message-b', revision: 200, text }),
+    ).resolves.toMatchObject({ hit: { count: 1 } });
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-a', revision: 100, text }),
+    ).resolves.toEqual({});
+  });
+
+  it('replays the original duplicate outcome after later counts grow', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'same detailed message';
+
+    await detectRevision({ detector, messageId: 'message-a', revision: 100, text });
+    const originalDuplicate = await detectRevision({
+      detector,
+      messageId: 'message-b',
+      revision: 200,
+      text,
+    });
+    await expect(
+      detectRevision({ detector, messageId: 'message-c', revision: 300, text }),
+    ).resolves.toMatchObject({ hit: { count: 2 } });
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-b', revision: 200, text }),
+    ).resolves.toEqual(originalDuplicate);
+    expect(originalDuplicate).toMatchObject({ hit: { count: 1 } });
+  });
+
+  it('treats an equal-revision payload with different text as stale', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const originalText = 'original detailed message';
+    const conflictingText = 'conflicting detailed message';
+
+    await detectRevision({ detector, messageId: 'message-1', revision: 100, text: originalText });
+    await expect(
+      detectRevision({
+        detector,
+        messageId: 'message-1',
+        revision: 100,
+        text: conflictingText,
+      }),
+    ).resolves.toEqual({});
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-2', revision: 200, text: originalText }),
+    ).resolves.toMatchObject({ hit: { count: 1 } });
+    await expect(
+      detectRevision({ detector, messageId: 'message-3', revision: 300, text: conflictingText }),
+    ).resolves.toEqual({});
+  });
+
+  it('clears the previous membership when the current edit cannot be tracked', async () => {
+    const detector = new RuleEngineDuplicateDetector(new InMemoryRevisionedRedisCounter() as never);
+    const text = 'original detailed message';
+
+    await detectRevision({ detector, messageId: 'message-1', revision: 100, text });
+    await expect(
+      detectRevision({
+        detector,
+        messageId: 'message-1',
+        revision: 200,
+        text: 'blocked edit',
+        trackCurrentText: false,
+      }),
+    ).resolves.toEqual({});
+
+    await expect(
+      detectRevision({ detector, messageId: 'message-2', revision: 300, text }),
+    ).resolves.toEqual({});
+  });
+
+  it('propagates Redis failures so the webhook can retry the same message', async () => {
+    const redisCounter = {
+      replaceRevisionedSetMembershipsBeforeDeadline: jest
+        .fn()
+        .mockRejectedValue(new Error('redis unavailable')),
+    };
+    const detector = new RuleEngineDuplicateDetector(redisCounter as never);
+
+    await expect(
+      detector.detectWithin({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-2',
+        eventTimestampMs: 1_800_000_000_000,
         rawText: 'same message',
         compactText: 'same message',
         settings: buildSettings(),
@@ -103,7 +444,7 @@ describe('RuleEngineDuplicateDetector', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const onBudgetExceeded = jest.fn();
     const redisCounter = {
-      incrementOncePerMemberWithTtlBeforeDeadline: jest.fn(
+      replaceRevisionedSetMembershipsBeforeDeadline: jest.fn(
         () => new Promise<never>(() => undefined),
       ),
     };
@@ -112,6 +453,7 @@ describe('RuleEngineDuplicateDetector', () => {
       chatId: 'chat-1',
       userId: 'user-1',
       messageId: 'message-timeout',
+      eventTimestampMs: 1_800_000_000_000,
       rawText: 'same message',
       compactText: 'same message',
       settings: buildSettings(),
@@ -132,23 +474,24 @@ describe('RuleEngineDuplicateDetector', () => {
   it('replays the original counter value after a response arrives beyond the caller deadline', async () => {
     jest.useFakeTimers();
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    let finishLateResponse: ((result: { kind: 'inserted'; count: number }) => void) | undefined;
-    const increment = jest
+    let finishLateResponse: ((result: { kind: 'applied'; counts: number[] }) => void) | undefined;
+    const mutate = jest
       .fn()
       .mockImplementationOnce(
         () =>
-          new Promise<{ kind: 'inserted'; count: number }>((resolve) => {
+          new Promise<{ kind: 'applied'; counts: number[] }>((resolve) => {
             finishLateResponse = resolve;
           }),
       )
-      .mockResolvedValueOnce({ kind: 'replayed', count: 2 });
+      .mockResolvedValueOnce({ kind: 'replayed', counts: [2] });
     const detector = new RuleEngineDuplicateDetector({
-      incrementOncePerMemberWithTtlBeforeDeadline: increment,
+      replaceRevisionedSetMembershipsBeforeDeadline: mutate,
     } as never);
     const request = {
       chatId: 'chat-1',
       userId: 'user-1',
       messageId: 'message-replayed',
+      eventTimestampMs: 1_800_000_000_000,
       rawText: 'same message',
       compactText: 'same message',
       settings: buildSettings(),
@@ -179,16 +522,16 @@ describe('RuleEngineDuplicateDetector', () => {
       },
     });
 
-    finishLateResponse?.({ kind: 'inserted', count: 2 });
+    finishLateResponse?.({ kind: 'applied', counts: [2] });
     await Promise.resolve();
-    expect(increment).toHaveBeenCalledTimes(2);
+    expect(mutate).toHaveBeenCalledTimes(2);
   });
 
   it('propagates a server-side deadline refusal without attempting later fingerprints', async () => {
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const increment = jest.fn().mockResolvedValue({ kind: 'deadline_exceeded' });
+    const mutate = jest.fn().mockResolvedValue({ kind: 'deadline_exceeded' });
     const detector = new RuleEngineDuplicateDetector({
-      incrementOncePerMemberWithTtlBeforeDeadline: increment,
+      replaceRevisionedSetMembershipsBeforeDeadline: mutate,
     } as never);
 
     await expect(
@@ -196,6 +539,7 @@ describe('RuleEngineDuplicateDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'message-expired',
+        eventTimestampMs: 1_800_000_000_000,
         rawText: 'same message https://example.com',
         compactText: 'same message https://example.com',
         settings: {
@@ -210,6 +554,6 @@ describe('RuleEngineDuplicateDetector', () => {
       retryable: true,
     });
 
-    expect(increment).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledTimes(1);
   });
 });

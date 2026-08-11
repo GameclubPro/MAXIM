@@ -1,6 +1,9 @@
 import { ConfigService } from '@nestjs/config';
 
-import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
+import {
+  ModerationDeleteIntentService,
+  PhotoDuplicateDeleteIntentGuardRejectedError,
+} from './moderation-delete-intent.service';
 
 type ServiceInternals = {
   classifyDeleteError(
@@ -52,6 +55,7 @@ function createService(
   maxClientOverrides: Record<string, unknown> = {},
   maxBotLinkOverrides: Record<string, unknown> = {},
   linkHistoryDeleteGuardOverrides?: Record<string, unknown>,
+  photoDuplicateRuntimePolicyOverrides?: Record<string, unknown>,
 ) {
   const config = {
     MODERATION_DELETE_INTENT_MODE: 'on',
@@ -80,6 +84,12 @@ function createService(
     },
     moderationEvent: {
       findFirst: jest.fn().mockResolvedValue(null),
+    },
+    moderationDeleteIntentReason: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    chatSettings: {
+      findUnique: jest.fn().mockResolvedValue(null),
     },
     ...prismaOverrides,
   };
@@ -113,6 +123,18 @@ function createService(
     assertIntentStillActionable: jest.fn().mockResolvedValue('allowed'),
     ...linkHistoryDeleteGuardOverrides,
   };
+  const photoDuplicateRuntimePolicy = {
+    resolveEffectivePolicy: jest.fn().mockResolvedValue({
+      mode: 'delete_only',
+      enforce: true,
+      advancedCanary: false,
+      allowedMatchKinds: ['canonical_sha256'],
+      maxAction: 'DELETE_MESSAGE',
+      controlRevision: 1,
+      controlExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }),
+    ...photoDuplicateRuntimePolicyOverrides,
+  };
   const service = new ModerationDeleteIntentService(
     prisma as never,
     maxClient as never,
@@ -120,8 +142,17 @@ function createService(
     queue as never,
     new ConfigService(config),
     linkHistoryDeleteGuard as never,
+    photoDuplicateRuntimePolicy as never,
   );
-  return { service, prisma, queue, maxClient, maxBotLink, linkHistoryDeleteGuard };
+  return {
+    service,
+    prisma,
+    queue,
+    maxClient,
+    maxBotLink,
+    linkHistoryDeleteGuard,
+    photoDuplicateRuntimePolicy,
+  };
 }
 
 const baseIntent = {
@@ -1702,6 +1733,360 @@ describe('ModerationDeleteIntentService', () => {
 
     expect(assertIntentStillActionable).not.toHaveBeenCalled();
     expect(deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { label: 'explicit off', mode: 'off' },
+    { label: 'missing-control shadow', mode: 'shadow' },
+  ])('keeps a retryable photo-only intent inert after $label', async ({ mode }) => {
+    const photoIntent = {
+      ...baseIntent,
+      attemptCount: 2,
+      leasedFromStatus: 'RETRYABLE',
+      photoDuplicateDeleteOnly: true,
+    };
+    const retryableIntent = {
+      ...photoIntent,
+      status: 'RETRYABLE',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'delete_pre_dispatch_guard_rejected',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([photoIntent])
+      .mockResolvedValueOnce([retryableIntent]);
+    const remoteDelete = jest.fn();
+    const resolveEffectivePolicy = jest.fn().mockResolvedValue({
+      mode,
+      enforce: false,
+      advancedCanary: false,
+      allowedMatchKinds: ['canonical_sha256'],
+      maxAction: 'DELETE_MESSAGE',
+      controlRevision: mode === 'off' ? 9 : null,
+      controlExpiresAt: null,
+    });
+    const { service, prisma } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationDeleteIntentReason: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              ruleCode: 'DUPLICATE_DELETE',
+              metadata: {
+                duplicateSource: 'photo',
+                matchKind: 'canonical_sha256',
+                preset: 'SAME_IMAGE',
+                scope: 'SAME_AUTHOR',
+              },
+            },
+          ]),
+        },
+        chatSettings: {
+          findUnique: jest.fn().mockResolvedValue({
+            antiDuplicateEnabled: true,
+            duplicatePhotoEnabled: true,
+            duplicatePhotoMatchPreset: 'SAME_IMAGE',
+            duplicatePhotoScope: 'SAME_AUTHOR',
+          }),
+        },
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      { resolveEffectivePolicy },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toMatchObject({
+      code: 'photo_duplicate_runtime_downgraded',
+    });
+
+    expect(remoteDelete).not.toHaveBeenCalled();
+    expect(resolveEffectivePolicy).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      preset: 'SAME_IMAGE',
+      scope: 'SAME_AUTHOR',
+    });
+    expect(prisma.chatSettings.findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: 'the anti-duplicate toggle is disabled',
+      settings: {
+        antiDuplicateEnabled: false,
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'SAME_IMAGE',
+        duplicatePhotoScope: 'SAME_AUTHOR',
+      },
+      allowedMatchKinds: ['canonical_sha256'],
+      expectedCode: 'photo_duplicate_settings_disabled',
+      policyExpected: false,
+    },
+    {
+      label: 'the photo toggle is disabled',
+      settings: {
+        antiDuplicateEnabled: true,
+        duplicatePhotoEnabled: false,
+        duplicatePhotoMatchPreset: 'SAME_IMAGE',
+        duplicatePhotoScope: 'SAME_AUTHOR',
+      },
+      allowedMatchKinds: ['canonical_sha256'],
+      expectedCode: 'photo_duplicate_settings_disabled',
+      policyExpected: false,
+    },
+    {
+      label: 'the matching preset changed',
+      settings: {
+        antiDuplicateEnabled: true,
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'MINOR_EDITS',
+        duplicatePhotoScope: 'SAME_AUTHOR',
+      },
+      allowedMatchKinds: ['canonical_sha256'],
+      expectedCode: 'photo_duplicate_settings_changed',
+      policyExpected: false,
+    },
+    {
+      label: 'the matching scope changed',
+      settings: {
+        antiDuplicateEnabled: true,
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'SAME_IMAGE',
+        duplicatePhotoScope: 'CHAT',
+      },
+      allowedMatchKinds: ['canonical_sha256'],
+      expectedCode: 'photo_duplicate_settings_changed',
+      policyExpected: false,
+    },
+    {
+      label: 'the recorded match kind is no longer allowed',
+      settings: {
+        antiDuplicateEnabled: true,
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: 'SAME_IMAGE',
+        duplicatePhotoScope: 'SAME_AUTHOR',
+      },
+      allowedMatchKinds: ['pdq'],
+      expectedCode: 'photo_duplicate_match_kind_disabled',
+      policyExpected: true,
+    },
+  ])(
+    'rechecks retry authorization when $label',
+    async ({ settings, allowedMatchKinds, expectedCode, policyExpected }) => {
+      const photoIntent = {
+        ...baseIntent,
+        attemptCount: 2,
+        leasedFromStatus: 'RETRYABLE',
+        photoDuplicateDeleteOnly: true,
+      };
+      const retryableIntent = {
+        ...photoIntent,
+        status: 'RETRYABLE',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+        lastErrorCode: 'delete_pre_dispatch_guard_rejected',
+      };
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([photoIntent])
+        .mockResolvedValueOnce([retryableIntent]);
+      const remoteDelete = jest.fn();
+      const resolveEffectivePolicy = jest.fn().mockResolvedValue({
+        mode: 'delete_only',
+        enforce: true,
+        advancedCanary: false,
+        allowedMatchKinds,
+        maxAction: 'DELETE_MESSAGE',
+        controlRevision: 12,
+        controlExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const { service } = createService(
+        {},
+        {
+          $queryRaw: queryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          moderationDeleteIntentReason: {
+            findMany: jest.fn().mockResolvedValue([
+              {
+                ruleCode: 'DUPLICATE_DELETE',
+                metadata: {
+                  duplicateSource: 'photo',
+                  matchKind: 'canonical_sha256',
+                  preset: 'SAME_IMAGE',
+                  scope: 'SAME_AUTHOR',
+                },
+              },
+            ]),
+          },
+          chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
+        },
+        { deleteMessage: remoteDelete },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        { resolveEffectivePolicy },
+      );
+
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toMatchObject({
+        code: expectedCode,
+      });
+
+      expect(remoteDelete).not.toHaveBeenCalled();
+      expect(resolveEffectivePolicy).toHaveBeenCalledTimes(policyExpected ? 1 : 0);
+    },
+  );
+
+  it('re-reads photo policy after the dispatch fence and blocks a last-moment downgrade', async () => {
+    const photoIntent = {
+      ...baseIntent,
+      attemptCount: 2,
+      leasedFromStatus: 'RETRYABLE',
+      photoDuplicateDeleteOnly: true,
+    };
+    const retryableIntent = {
+      ...photoIntent,
+      status: 'RETRYABLE',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      deleteDispatchStartedAt: null,
+      deleteDispatchStartedBotId: null,
+      lastErrorCode: 'delete_pre_dispatch_guard_rejected',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([photoIntent])
+      .mockResolvedValueOnce([retryableIntent]);
+    const remoteDelete = jest.fn();
+    const resolveEffectivePolicy = jest
+      .fn()
+      .mockResolvedValueOnce({
+        mode: 'delete_only',
+        enforce: true,
+        advancedCanary: false,
+        allowedMatchKinds: ['canonical_sha256'],
+        maxAction: 'DELETE_MESSAGE',
+        controlRevision: 10,
+        controlExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      })
+      .mockResolvedValueOnce({
+        mode: 'off',
+        enforce: false,
+        advancedCanary: false,
+        allowedMatchKinds: ['canonical_sha256'],
+        maxAction: 'DELETE_MESSAGE',
+        controlRevision: 11,
+        controlExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationDeleteIntentReason: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              ruleCode: 'DUPLICATE_DELETE',
+              metadata: {
+                duplicateSource: 'photo',
+                matchKind: 'canonical_sha256',
+                preset: 'SAME_IMAGE',
+                scope: 'SAME_AUTHOR',
+              },
+            },
+          ]),
+        },
+        chatSettings: {
+          findUnique: jest.fn().mockResolvedValue({
+            antiDuplicateEnabled: true,
+            duplicatePhotoEnabled: true,
+            duplicatePhotoMatchPreset: 'SAME_IMAGE',
+            duplicatePhotoScope: 'SAME_AUTHOR',
+          }),
+        },
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      { resolveEffectivePolicy },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toBeInstanceOf(
+      PhotoDuplicateDeleteIntentGuardRejectedError,
+    );
+
+    expect(resolveEffectivePolicy).toHaveBeenCalledTimes(2);
+    expect(remoteDelete).not.toHaveBeenCalled();
+  });
+
+  it('does not let photo controls suppress an independent reason on the same intent', async () => {
+    const mixedIntent = { ...baseIntent, photoDuplicateDeleteOnly: true };
+    const completedIntent = {
+      ...mixedIntent,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([mixedIntent])
+      .mockResolvedValueOnce([completedIntent]);
+    const remoteDelete = jest.fn().mockResolvedValue(undefined);
+    const resolveEffectivePolicy = jest.fn().mockRejectedValue(new Error('control is off'));
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        ruleCode: 'DUPLICATE_DELETE',
+        metadata: {
+          duplicateSource: 'photo',
+          matchKind: 'canonical_sha256',
+          preset: 'SAME_IMAGE',
+          scope: 'SAME_AUTHOR',
+        },
+      },
+      { ruleCode: 'BLOCKED_WORD_DELETE', metadata: { source: 'text' } },
+    ]);
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationDeleteIntentReason: { findMany },
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      { resolveEffectivePolicy },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      confirmed: true,
+    });
+
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(resolveEffectivePolicy).not.toHaveBeenCalled();
+    expect(remoteDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies photo-only delete intents by rule and source metadata', () => {
+    const { service } = createService();
+    const query = (
+      service as unknown as {
+        intentSelectSql(alias: string): { strings?: readonly string[] };
+      }
+    ).intentSelectSql('intent');
+    const sql = query.strings?.join('?') ?? '';
+
+    expect(sql).toContain(`photo_reason."rule_code" = 'DUPLICATE_DELETE'`);
+    expect(sql).toContain(`photo_reason."metadata"->>'duplicateSource'`);
+    expect(sql).toContain('AS "photoDuplicateDeleteOnly"');
   });
 
   it('fails closed when a link-only intent loses its required reason before dispatch', async () => {

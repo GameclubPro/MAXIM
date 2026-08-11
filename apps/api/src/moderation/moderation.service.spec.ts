@@ -4,6 +4,7 @@ import { markMaxMemberMutationAttempted } from '../max/max-client.service';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { ChatRulesPublishFenceRetryError } from './chat-rules-own-bot-message-classifier';
+import { createDuplicateSanctionAuthorization } from './duplicate-execution-guards';
 import { buildActiveMuteStateKey } from './moderation-state.util';
 import { buildModerationReleaseCallbackPayload } from './moderation-release-callback.util';
 import { ModerationSanctionStateLockLeaseLostError } from './moderation-sanction-state-lock.service';
@@ -4175,8 +4176,8 @@ describe('ModerationService', () => {
     };
     const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
     (service as any).moderationDeleteIntentService = deleteIntents;
-    const claim = jest.fn().mockResolvedValue(false);
-    (service as any).claimMessageScopedModerationAction = claim;
+    const claim = jest.fn().mockResolvedValue('blocked');
+    (service as any).claimDuplicateMessageAction = claim;
 
     await (service as any).handleDuplicateDecision({
       chatId: 'chat-1',
@@ -4219,6 +4220,285 @@ describe('ModerationService', () => {
       claim.mock.invocationCallOrder[0],
     );
     expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();
+  });
+
+  it('rechecks photo authorization inside the sanction boundary after deletion', async () => {
+    const authorizeSanction = jest.fn().mockResolvedValue(false);
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      getRolloutForRule: jest.fn().mockReturnValue('execute'),
+      getRolloutForInput: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-photo-duplicate',
+        rollout: 'execute',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'confirmed',
+        confirmed: true,
+        intentId: 'intent-photo-duplicate',
+        status: 'SUCCEEDED',
+        botId: 'bot-1',
+      }),
+    };
+    const service = new ModerationService(
+      { moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) } } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    (service as any).buildBotMessageOptions = jest.fn().mockReturnValue(undefined);
+    const persistEvent = jest.fn();
+    (service as any).createBotModerationEvent = persistEvent;
+    const applyUnderLock = jest.spyOn(service as any, 'applySanctionActionUnderLock');
+
+    await (service as any).handleDuplicateDecision({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'message-1',
+      text: '',
+      createdAt: new Date().toISOString(),
+      decision: {
+        windowSec: 60,
+        count: 2,
+        threshold: 2,
+        action: 'WARN',
+        hash: 'photo-duplicate-hash',
+        fingerprintType: 'image',
+        nextAction: null,
+        metadata: { duplicateSource: 'photo' },
+      },
+      userLabel: 'User',
+      muteDurationHours: 1,
+      botSpeechStyle: null,
+      botSpeechMedia: null,
+      duplicateBotMessageEnabled: true,
+      duplicateBotMessageText: '',
+      duplicateBotButtons: [],
+      duplicateBotButtonEnabled: false,
+      duplicateBotButtonUrl: '',
+      duplicateBotButtonText: '',
+      duplicateAdminContactButtonEnabled: false,
+      duplicateAdminContactButtonUrl: '',
+      rulesAttachViolationsEnabled: false,
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+      deleteBotMessagesEnabled: false,
+      deleteBotMessagesDelayMinutes: 0,
+      suppressNonEssentialMessages: false,
+      backgroundExecution: true,
+      actionClaimed: true,
+      authorizeSanction,
+    });
+
+    expect(authorizeSanction).toHaveBeenCalledTimes(1);
+    expect(applyUnderLock).not.toHaveBeenCalled();
+    expect(persistEvent).not.toHaveBeenCalled();
+  });
+
+  it('rechecks photo authorization after acquiring the mute or ban sanction lock', async () => {
+    const events: string[] = [];
+    const authorizeSanction = jest.fn(async () => {
+      events.push('authorize');
+      return false;
+    });
+    const prepareFence = jest.fn();
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    (service as any).moderationSanctionStateLockServiceInstance = {
+      runExclusive: jest.fn(async (_key, operation) => {
+        events.push('lock');
+        return operation({
+          assertOwned: jest.fn(async () => {
+            events.push('lease');
+          }),
+        });
+      }),
+    };
+    (service as any).moderationSanctionStateFenceServiceInstance = { prepare: prepareFence };
+    const persistModerationEvent = jest.fn();
+
+    await expect(
+      (service as any).applySanctionAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        action: SanctionAction.BAN,
+        userLabel: 'User',
+        messageId: 'message-1',
+        muteDurationHours: 1,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        botSpeechStyle: null,
+        persistModerationEvent,
+        authorizeSanction,
+      }),
+    ).resolves.toBe(false);
+
+    expect(events).toEqual(['lock', 'lease', 'authorize']);
+    expect(prepareFence).not.toHaveBeenCalled();
+    expect(persistModerationEvent).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent duplicate WARN authorization and persists one terminal event', async () => {
+    let terminalEvent: { id: string } | null = null;
+    const terminalSnapshots: boolean[] = [];
+    const findFirst = jest.fn(async () => {
+      terminalSnapshots.push(terminalEvent !== null);
+      return terminalEvent;
+    });
+    const persistModerationEvent = jest.fn(async () => {
+      terminalEvent = { id: 'duplicate-warn-event-1' };
+      return terminalEvent;
+    });
+    let lockTail = Promise.resolve();
+    const sanctionStateLock = {
+      runExclusive: jest.fn(
+        async (
+          _key: unknown,
+          operation: (guard: { assertOwned: () => Promise<void> }) => Promise<boolean>,
+        ) => {
+          let releaseLock!: () => void;
+          const previousLock = lockTail;
+          lockTail = new Promise<void>((resolve) => {
+            releaseLock = resolve;
+          });
+          await previousLock;
+          try {
+            return await operation({ assertOwned: jest.fn().mockResolvedValue(undefined) });
+          } finally {
+            releaseLock();
+          }
+        },
+      ),
+    };
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const lockSpy = jest
+      .spyOn(service as any, 'moderationSanctionStateLockService', 'get')
+      .mockReturnValue(sanctionStateLock);
+    const executeWarn = () => {
+      const authorization = createDuplicateSanctionAuthorization({
+        model: { findFirst },
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'message-1',
+      });
+      return (service as any).applySanctionAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        action: SanctionAction.WARN,
+        userLabel: 'User',
+        messageId: 'message-1',
+        muteDurationHours: 1,
+        deleteBotMessagesEnabled: false,
+        deleteBotMessagesDelayMinutes: 0,
+        botSpeechStyle: null,
+        persistModerationEvent,
+        authorizeSanction: authorization.authorize,
+      });
+    };
+
+    await expect(Promise.all([executeWarn(), executeWarn()])).resolves.toEqual([true, false]);
+
+    expect(sanctionStateLock.runExclusive).toHaveBeenCalledTimes(2);
+    expect(findFirst).toHaveBeenCalledTimes(2);
+    expect(terminalSnapshots).toEqual([false, true]);
+    expect(persistModerationEvent).toHaveBeenCalledTimes(1);
+    lockSpy.mockRestore();
+  });
+
+  it('stops an observed duplicate delete when photo authorization is revoked pre-dispatch', async () => {
+    const authorizeDelete = jest.fn().mockResolvedValue(false);
+    const authorizeSanction = jest.fn().mockResolvedValue(true);
+    const remoteDeleteMutation = jest.fn();
+    const maxClient = {
+      deleteMessage: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          options?: { beforeImmediateDeleteMutation?: () => Promise<void> },
+        ) => {
+          await options?.beforeImmediateDeleteMutation?.();
+          remoteDeleteMutation();
+        },
+      ),
+      sendMessage: jest.fn(),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('observed'),
+      getRolloutForRule: jest.fn().mockReturnValue('observed'),
+      getRolloutForInput: jest.fn().mockReturnValue('observed'),
+      ensureIntent: jest.fn().mockResolvedValue({
+        intentId: 'intent-photo-observed',
+        rollout: 'observed',
+        status: 'PENDING',
+      }),
+      ensureAndAttempt: jest.fn().mockResolvedValue({
+        kind: 'observed',
+        confirmed: false,
+        intentId: 'intent-photo-observed',
+        status: 'PENDING',
+      }),
+    };
+    const service = new ModerationService(
+      { moderationEvent: { findFirst: jest.fn() } } as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+    (service as any).moderationDeleteIntentService = deleteIntents;
+    const persistEvent = jest.fn();
+    (service as any).createBotModerationEvent = persistEvent;
+
+    await (service as any).handleDuplicateDecision({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'message-1',
+      text: '',
+      createdAt: new Date().toISOString(),
+      decision: {
+        windowSec: 60,
+        count: 2,
+        threshold: 2,
+        action: 'WARN',
+        hash: 'photo-duplicate-hash',
+        fingerprintType: 'image',
+        nextAction: null,
+        metadata: { duplicateSource: 'photo' },
+      },
+      userLabel: 'User',
+      muteDurationHours: 1,
+      botSpeechStyle: null,
+      botSpeechMedia: null,
+      duplicateBotMessageEnabled: true,
+      duplicateBotMessageText: '',
+      duplicateBotButtons: [],
+      duplicateBotButtonEnabled: false,
+      duplicateBotButtonUrl: '',
+      duplicateBotButtonText: '',
+      duplicateAdminContactButtonEnabled: false,
+      duplicateAdminContactButtonUrl: '',
+      rulesAttachViolationsEnabled: false,
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+      deleteBotMessagesEnabled: false,
+      deleteBotMessagesDelayMinutes: 0,
+      suppressNonEssentialMessages: false,
+      backgroundExecution: true,
+      actionClaimed: true,
+      authorizeDelete,
+      authorizeSanction,
+    });
+
+    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'message-1' }),
+      { beforeDeleteMutation: expect.any(Function) },
+    );
+    expect(authorizeDelete).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(remoteDeleteMutation).not.toHaveBeenCalled();
+    expect(authorizeSanction).not.toHaveBeenCalled();
+    expect(persistEvent).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('stops duplicate action recovery when its ordering lease is lost after intent persistence', async () => {
@@ -4389,6 +4669,61 @@ describe('ModerationService', () => {
         'message-1',
       ),
     ).toBe('photo-duplicate:chat-2:message-1:explanation');
+  });
+
+  it('does not turn a photo duplicate ban into global spammer evidence', async () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+    const handleDuplicateDecision = jest
+      .spyOn(service as any, 'handleDuplicateDecision')
+      .mockResolvedValue(undefined);
+    const assertOwned = jest.fn();
+
+    await service.executePhotoDuplicateAction({
+      update: {
+        updateId: 'update-photo-ban-1',
+        type: 'message_created',
+        eventTimestampSource: 'payload',
+        message: {
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          senderId: 'user-1',
+          senderName: 'User',
+          text: '',
+          createdAt: '2026-08-11T12:00:00.000Z',
+        },
+        raw: {},
+      },
+      chatId: 'chat-1',
+      userId: 'user-1',
+      messageId: 'message-1',
+      settings: createSettings() as never,
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+      actionClaimed: true,
+      lease: { assertOwned } as never,
+      authorizeDelete: jest.fn().mockResolvedValue(true),
+      authorizeSanction: jest.fn().mockResolvedValue(true),
+      outcome: {
+        kind: 'decision',
+        decision: {
+          action: 'BAN',
+          count: 3,
+          threshold: 3,
+          windowSec: 3_600,
+          hash: 'photo-hash',
+          fingerprintType: 'image',
+          nextAction: null,
+          metadata: { duplicateSource: 'photo' },
+        },
+      },
+    });
+
+    expect(handleDuplicateDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: expect.objectContaining({ action: 'BAN' }),
+        trackAsGlobalSpammer: false,
+      }),
+    );
   });
 
   it('checks the photo lease after notice preparation and before durable send handoff', async () => {
@@ -18511,6 +18846,47 @@ describe('ModerationService', () => {
       },
     };
 
+    it.each(['message_created', 'message_edited'] as const)(
+      'passes the trusted event revision for %s into duplicate state',
+      async (type) => {
+        const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+        const update = createLiveNavigationEnvelopeUpdate(type, {
+          body: { text: 'Обычное сообщение без ссылки' },
+        });
+
+        await harness.service.handleUpdate(update);
+
+        expect(update.eventTimestampSource).toBe('payload');
+        expect(harness.detectSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            duplicateStateEventType: type,
+            duplicateStateEventTimestampMs: Date.parse('2026-08-11T02:56:00.000Z'),
+            skipStatefulMessageLimits: type === 'message_edited',
+          }),
+        );
+      },
+    );
+
+    it('does not use the ingress fallback timestamp as a duplicate revision', async () => {
+      const harness = createLiveNavigationHarness({ linkPolicy: 'BLOCKLIST_ONLY' });
+      const update: MaxUpdate = {
+        ...createLiveNavigationEnvelopeUpdate('message_edited', {
+          body: { text: 'Обычное сообщение без ссылки' },
+        }),
+        eventTimestampSource: 'ingress',
+      };
+
+      await harness.service.handleUpdate(update);
+
+      expect(harness.detectSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          duplicateStateEventType: 'message_edited',
+          duplicateStateEventTimestampMs: undefined,
+          skipStatefulMessageLimits: true,
+        }),
+      );
+    });
+
     it('persists live link deletion with a revision-scoped policy fence', async () => {
       const harness = createLiveNavigationHarness({
         linkPolicy: 'BLOCKLIST_ONLY',
@@ -19657,6 +20033,159 @@ describe('ModerationService', () => {
     expect(persistedClaims[1]?.dedupeKey).not.toBe(persistedClaims[0]?.dedupeKey);
     expect(persistedClaims[2]?.messageActionKey).not.toBe(persistedClaims[0]?.messageActionKey);
     expect(persistedClaims[3]?.messageActionKey).toBeNull();
+  });
+
+  it('blocks generic actions after an ambiguous insert even when PostgreSQL confirms ownership', async () => {
+    let storedClaim: Record<string, unknown> | undefined;
+    let attempt = 0;
+    const createMany = jest.fn(
+      async (args: { data: Array<Record<string, unknown>> }): Promise<{ count: number }> => {
+        attempt += 1;
+        if (attempt === 1) {
+          storedClaim = args.data[0];
+          throw new Error('connection reset after commit');
+        }
+        return { count: 0 };
+      },
+    );
+    const findUnique = jest.fn().mockImplementation(async () => storedClaim);
+    const redisCounter = { incrementOncePerMemberWithTtl: jest.fn() };
+    const service = new ModerationService(
+      { moderationViolationMessageClaim: { createMany, findUnique } } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+    const claim = (service as any).claimMessageScopedModerationAction.bind(service);
+
+    await expect(
+      Promise.all([
+        claim({ chatId: 'chat-1', userId: 'user-1', messageId: 'msg-1', ruleCode: 'RULE_A' }),
+        claim({ chatId: 'chat-1', userId: 'user-2', messageId: 'msg-1', ruleCode: 'RULE_B' }),
+      ]),
+    ).resolves.toEqual([false, false]);
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    expect(redisCounter.incrementOncePerMemberWithTtl).not.toHaveBeenCalled();
+  });
+
+  it('blocks an ambiguous generic action insert when PostgreSQL confirms a foreign owner', async () => {
+    let attemptedClaim: Record<string, unknown> | undefined;
+    const createMany = jest.fn(async (args: { data: Array<Record<string, unknown>> }) => {
+      attemptedClaim = args.data[0];
+      throw new Error('connection reset after insert attempt');
+    });
+    const findUnique = jest.fn().mockImplementation(async () => ({
+      ...attemptedClaim,
+      dedupeKey: 'photo-duplicate-action:v2:foreign-owner',
+      userId: 'user-2',
+    }));
+    const redisCounter = { incrementOncePerMemberWithTtl: jest.fn() };
+    const service = new ModerationService(
+      { moderationViolationMessageClaim: { createMany, findUnique } } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await expect(
+      (service as any).claimMessageScopedModerationAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'RULE_A',
+      }),
+    ).resolves.toBe(false);
+    expect(redisCounter.incrementOncePerMemberWithTtl).not.toHaveBeenCalled();
+  });
+
+  it('retries an ambiguous generic action insert that PostgreSQL cannot reconcile', async () => {
+    const createError = new Error('connection reset before commit status was known');
+    const createMany = jest.fn().mockRejectedValue(createError);
+    const findUnique = jest.fn().mockResolvedValue(null);
+    const redisCounter = { incrementOncePerMemberWithTtl: jest.fn() };
+    const service = new ModerationService(
+      { moderationViolationMessageClaim: { createMany, findUnique } } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await expect(
+      (service as any).claimMessageScopedModerationAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'RULE_A',
+      }),
+    ).rejects.toBe(createError);
+    expect(redisCounter.incrementOncePerMemberWithTtl).not.toHaveBeenCalled();
+  });
+
+  it('resumes the exact duplicate-decision claim owner without an early terminal lookup', async () => {
+    let attemptedClaim: Record<string, unknown> | undefined;
+    const createMany = jest.fn(async (args: { data: Array<Record<string, unknown>> }) => {
+      attemptedClaim = args.data[0];
+      return { count: 0 };
+    });
+    const findUnique = jest.fn().mockImplementation(async () => attemptedClaim);
+    const findTerminalEvent = jest.fn();
+    const service = new ModerationService(
+      {
+        moderationViolationMessageClaim: { createMany, findUnique },
+        moderationEvent: { findFirst: findTerminalEvent },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      (service as any).claimDuplicateMessageAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+      }),
+    ).resolves.toBe('resumed');
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    expect(findTerminalEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not enable known-owner resume for a non-duplicate action rule', async () => {
+    const createMany = jest.fn().mockResolvedValue({ count: 0 });
+    const findUnique = jest.fn();
+    const findTerminalEvent = jest.fn();
+    const service = new ModerationService(
+      {
+        moderationViolationMessageClaim: { createMany, findUnique },
+        moderationEvent: { findFirst: findTerminalEvent },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      (service as any).claimMessageScopedModerationAction({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'NIGHT_MODE_DELETE',
+      }),
+    ).resolves.toBe(false);
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(findTerminalEvent).not.toHaveBeenCalled();
   });
 
   it('treats persisted message claim unique conflicts as duplicate multi-bot deliveries', async () => {

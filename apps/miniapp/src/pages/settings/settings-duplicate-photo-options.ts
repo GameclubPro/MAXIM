@@ -1,4 +1,4 @@
-import type { ChatSettings, DuplicatePhotoModerationMode } from '@maxim/contracts/settings';
+import type { ChatSettings, DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 
 export type DuplicatePhotoMatchPreset = ChatSettings['duplicatePhotoMatchPreset'];
 export type DuplicatePhotoScope = ChatSettings['duplicatePhotoScope'];
@@ -31,10 +31,19 @@ export const DUPLICATE_PHOTO_SCOPE_OPTIONS: Array<{
   },
 ];
 
-export const DUPLICATE_PHOTO_MODERATION_HINTS: Record<DuplicatePhotoModerationMode, string> = {
-  OFF: 'Проверка фото сейчас выключена на сервере. Настройку можно сохранить, но фото не проверяются.',
-  OBSERVE:
-    'Бот только фиксирует совпадения для проверки. Фото не удаляются, предупреждение, мут и бан не применяются.',
-  DELETE_ONLY: 'Повторные фото удаляются. Предупреждение, мут и бан для фото не применяются.',
-  FULL: 'Повторные фото удаляются, а предупреждение, мут и бан могут применяться по общей лестнице повторов.',
-};
+export function formatDuplicatePhotoMatchPresetHint(
+  preset: DuplicatePhotoMatchPreset,
+  policy: DuplicatePhotoEffectivePolicy,
+): string {
+  if (policy.moderationMode === 'OFF') {
+    return 'Серверная проверка фото выключена. Выбранный режим можно сохранить заранее.';
+  }
+  const enforcementActive =
+    policy.moderationMode === 'DELETE_ONLY' || policy.moderationMode === 'FULL';
+  if (enforcementActive && !policy.allowedMatchKinds.includes('pdq')) {
+    return 'Действия применяются только к точным цифровым совпадениям. Изменённые версии остаются в наблюдении.';
+  }
+  return preset === 'SAME_IMAGE'
+    ? 'Учитываются пересылка, сжатие и изменение размера.'
+    : 'Дополнительно учитываются небольшая обрезка и цветокоррекция.';
+}

@@ -720,7 +720,7 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   greeting: 'Приветствие',
   profanityFilter: 'Мат и оскорбления',
   commercialFilter: 'Коммерческая реклама',
-  duplicates: 'Повторы',
+  duplicates: 'Антидубль',
   limits: 'Ограничения',
   stopWords: 'Стоп-слова',
   phones: 'Телефоны',

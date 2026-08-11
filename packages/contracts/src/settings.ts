@@ -67,11 +67,19 @@ export {
 } from './core.js';
 export {
   duplicateDetectionPresetSchema,
+  duplicatePhotoActionCeilingSchema,
+  duplicatePhotoEffectivePolicySchema,
   duplicatePhotoMatchPresetSchema,
+  duplicatePhotoMatchKindSchema,
   duplicatePhotoModerationModeSchema,
+  duplicatePhotoPolicyMatrixSchema,
   duplicatePhotoScopeSchema,
+  type DuplicatePhotoActionCeiling,
+  type DuplicatePhotoEffectivePolicy,
+  type DuplicatePhotoMatchKind,
   type DuplicatePhotoMatchPreset,
   type DuplicatePhotoModerationMode,
+  type DuplicatePhotoPolicyMatrix,
   type DuplicatePhotoScope,
 } from './duplicate-settings.js';
 export {

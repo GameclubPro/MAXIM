@@ -49,6 +49,62 @@ redis.call('SET', KEYS[2], tostring(count), 'PX', full_ttl_ms)
 return {1, count}
 `;
 
+const REVISIONED_MEMBERSHIP_STATE_MISSING = '__maxim_revisioned_membership_missing__';
+const REVISIONED_MEMBERSHIP_MAX_CAS_ATTEMPTS = 4;
+
+// FLAG: The compare and Redis TIME deadline check must both remain before ZREM/ZADD/SET. The
+// caller can stop awaiting at the same deadline, and an edit must replace every membership and
+// its message revision atomically or leave all of them unchanged.
+const REPLACE_REVISIONED_SET_MEMBERSHIPS_BEFORE_DEADLINE_SCRIPT = `
+local current_state = redis.call('GET', KEYS[1])
+if ARGV[1] == '${REVISIONED_MEMBERSHIP_STATE_MISSING}' then
+  if current_state then
+    return {2}
+  end
+elseif current_state ~= ARGV[1] then
+  return {2}
+end
+
+local redis_time = redis.call('TIME')
+local now_ms = (tonumber(redis_time[1]) * 1000) + math.floor(tonumber(redis_time[2]) / 1000)
+if now_ms >= tonumber(ARGV[4]) then
+  return {0}
+end
+
+local full_ttl_ms = tonumber(ARGV[3]) * 1000
+local cutoff_ms = now_ms - full_ttl_ms
+local response = {1}
+local stored_memberships = {}
+for key_index = 2, #KEYS do
+  local desired = ARGV[4 + key_index]
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', cutoff_ms)
+  if desired == '1' then
+    redis.call('ZADD', KEYS[key_index], now_ms, ARGV[5])
+    redis.call('PEXPIRE', KEYS[key_index], full_ttl_ms)
+    local membership_count = redis.call('ZCARD', KEYS[key_index])
+    table.insert(stored_memberships, {key = KEYS[key_index], count = membership_count})
+    table.insert(response, membership_count)
+  else
+    redis.call('ZREM', KEYS[key_index], ARGV[5])
+  end
+end
+
+local next_state = cjson.encode({
+  v = 1,
+  revision = tonumber(ARGV[2]),
+  memberships = stored_memberships
+})
+redis.call('SET', KEYS[1], next_state, 'PX', full_ttl_ms)
+return response
+`;
+
+const VERIFY_REVISIONED_MEMBERSHIP_STATE_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return 1
+end
+return 2
+`;
+
 const INCREMENT_BY_WITH_TTL_SCRIPT = `
 local count = redis.call('INCRBY', KEYS[1], ARGV[1])
 local ttl = redis.call('TTL', KEYS[1])
@@ -94,6 +150,16 @@ return 2
 export type ReplayableDeadlineIncrementResult =
   | { kind: 'deadline_exceeded' }
   | { kind: 'inserted' | 'replayed'; count: number };
+
+export type RevisionedSetMembershipResult =
+  | { kind: 'deadline_exceeded' }
+  | { kind: 'stale' }
+  | { kind: 'applied' | 'replayed'; counts: number[] };
+
+type StoredRevisionedSetMembershipState = {
+  revision: number;
+  memberships: Map<string, number>;
+};
 
 export type DeadlineLockAcquireResult =
   | { kind: 'acquired' }
@@ -170,6 +236,116 @@ export class RedisCounterService implements OnModuleDestroy {
       return { kind: status === 1 ? 'inserted' : 'replayed', count };
     }
     throw new Error('Redis returned an invalid replayable counter result');
+  }
+
+  async replaceRevisionedSetMembershipsBeforeDeadline(params: {
+    stateKey: string;
+    member: string;
+    revision: number;
+    membershipKeys: readonly string[];
+    ttlSeconds: number;
+    deadlineAtMs: number;
+  }): Promise<RevisionedSetMembershipResult> {
+    const stateKey = params.stateKey.trim();
+    const member = params.member.trim();
+    const revision = Math.trunc(params.revision);
+    const ttlSeconds = Math.trunc(params.ttlSeconds);
+    const deadlineAtMs = Math.trunc(params.deadlineAtMs);
+    const membershipKeys = params.membershipKeys.map((key) => key.trim());
+    if (
+      !stateKey ||
+      !member ||
+      membershipKeys.some((key) => !key) ||
+      new Set(membershipKeys).size !== membershipKeys.length ||
+      !Number.isSafeInteger(revision) ||
+      revision <= 0 ||
+      !Number.isSafeInteger(ttlSeconds) ||
+      ttlSeconds <= 0 ||
+      !Number.isSafeInteger(deadlineAtMs) ||
+      deadlineAtMs <= 0
+    ) {
+      throw new Error('Revisioned membership state input must contain valid unique keys and times');
+    }
+
+    for (let attempt = 0; attempt < REVISIONED_MEMBERSHIP_MAX_CAS_ATTEMPTS; attempt += 1) {
+      if (Date.now() >= deadlineAtMs) {
+        return { kind: 'deadline_exceeded' };
+      }
+
+      const currentRaw = await this.redis.get(stateKey);
+      if (Date.now() >= deadlineAtMs) {
+        return { kind: 'deadline_exceeded' };
+      }
+      const current = currentRaw ? this.parseRevisionedSetMembershipState(currentRaw) : null;
+      if (current && revision < current.revision) {
+        return { kind: 'stale' };
+      }
+      if (current && revision === current.revision) {
+        const currentMembershipKeys = Array.from(current.memberships.keys());
+        if (!this.stringSetsEqual(currentMembershipKeys, membershipKeys)) {
+          return { kind: 'stale' };
+        }
+        const replayStatus = Number(
+          await this.redis.eval(
+            VERIFY_REVISIONED_MEMBERSHIP_STATE_SCRIPT,
+            1,
+            stateKey,
+            currentRaw as string,
+          ),
+        );
+        if (replayStatus === 2) {
+          continue;
+        }
+        if (replayStatus === 1) {
+          return {
+            kind: 'replayed',
+            counts: membershipKeys.map((key) => current.memberships.get(key) ?? 0),
+          };
+        }
+        throw new Error('Redis returned an invalid revisioned membership replay result');
+      }
+
+      const desiredKeySet = new Set(membershipKeys);
+      const allMembershipKeys = Array.from(
+        new Set([...(current?.memberships.keys() ?? []), ...membershipKeys]),
+      ).sort();
+      const appliedResult = (await this.redis.eval(
+        REPLACE_REVISIONED_SET_MEMBERSHIPS_BEFORE_DEADLINE_SCRIPT,
+        1 + allMembershipKeys.length,
+        stateKey,
+        ...allMembershipKeys,
+        currentRaw ?? REVISIONED_MEMBERSHIP_STATE_MISSING,
+        String(revision),
+        String(ttlSeconds),
+        String(deadlineAtMs),
+        member,
+        ...allMembershipKeys.map((key) => (desiredKeySet.has(key) ? '1' : '0')),
+      )) as Array<number | string>;
+      const appliedStatus = Number(appliedResult?.[0]);
+      if (appliedStatus === 0) {
+        return { kind: 'deadline_exceeded' };
+      }
+      if (appliedStatus === 2) {
+        continue;
+      }
+      if (appliedStatus === 1) {
+        const sortedDesiredKeys = allMembershipKeys.filter((key) => desiredKeySet.has(key));
+        const sortedCounts = this.parseRevisionedMembershipCounts(
+          appliedResult.slice(1),
+          sortedDesiredKeys.length,
+        );
+        const countByKey = new Map(
+          sortedDesiredKeys.map((key, index) => [key, sortedCounts[index] ?? 0]),
+        );
+        return {
+          kind: 'applied',
+          counts: membershipKeys.map((key) => countByKey.get(key) ?? 0),
+        };
+      }
+      throw new Error('Redis returned an invalid revisioned membership mutation result');
+    }
+
+    throw new Error('Redis revisioned membership state changed too frequently');
   }
 
   async incrementByWithTtl(key: string, amount: number, ttlSeconds: number): Promise<number> {
@@ -338,5 +514,74 @@ export class RedisCounterService implements OnModuleDestroy {
       String(Math.trunc(ttlMs)),
     );
     return Number(renewed) > 0;
+  }
+
+  private parseRevisionedSetMembershipState(raw: string): StoredRevisionedSetMembershipState {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('Redis returned malformed revisioned membership state');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Redis returned malformed revisioned membership state');
+    }
+
+    const record = parsed as Record<string, unknown>;
+    const revision = record.revision;
+    const memberships = record.memberships;
+    if (
+      record.v !== 1 ||
+      typeof revision !== 'number' ||
+      !Number.isSafeInteger(revision) ||
+      revision <= 0 ||
+      !memberships ||
+      typeof memberships !== 'object'
+    ) {
+      throw new Error('Redis returned malformed revisioned membership state');
+    }
+
+    const membershipEntries = Array.isArray(memberships)
+      ? memberships.map((membership) => {
+          if (!membership || typeof membership !== 'object' || Array.isArray(membership)) {
+            return ['', Number.NaN] as [string, number];
+          }
+          const entry = membership as Record<string, unknown>;
+          return [entry.key, entry.count] as [unknown, unknown];
+        })
+      : Object.entries(memberships as Record<string, unknown>);
+    if (
+      membershipEntries.some(
+        ([key, count]) =>
+          typeof key !== 'string' ||
+          !key.trim() ||
+          typeof count !== 'number' ||
+          !Number.isSafeInteger(count) ||
+          count < 0,
+      ) ||
+      new Set(membershipEntries.map(([key]) => key)).size !== membershipEntries.length
+    ) {
+      throw new Error('Redis returned malformed revisioned membership state');
+    }
+
+    return {
+      revision,
+      memberships: new Map(membershipEntries as Array<[string, number]>),
+    };
+  }
+
+  private parseRevisionedMembershipCounts(values: unknown[], expectedLength: number): number[] {
+    const counts = values.map(Number);
+    if (
+      counts.length !== expectedLength ||
+      counts.some((count) => !Number.isSafeInteger(count) || count < 0)
+    ) {
+      throw new Error('Redis returned invalid revisioned membership counts');
+    }
+    return counts;
+  }
+
+  private stringSetsEqual(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length && left.every((value) => right.includes(value));
   }
 }

@@ -12,18 +12,18 @@ export const DUPLICATE_DETECTION_OPTIONS: Array<{
   },
   {
     value: 'STANDARD',
-    label: 'Одинаковые',
+    label: 'Точно',
   },
   {
     value: 'CUSTOM',
-    label: 'Свои',
+    label: 'Настроить',
   },
 ];
 
 export const DUPLICATE_DETECTION_LABELS: Record<DuplicateDetectionPreset, string> = {
-  STANDARD: 'Одинаковые',
+  STANDARD: 'Точно',
   STRICT: 'Похожие',
-  CUSTOM: 'Свои',
+  CUSTOM: 'Настроено',
 };
 
 export type NumericChatSettingKey =

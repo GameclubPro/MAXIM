@@ -209,8 +209,8 @@ import {
 import { SettingsCommentsSection } from './settings/settings-comments-section';
 import { SettingsCommercialFilterSection } from './settings/settings-commercial-filter-section';
 import {
-  formatDuplicatePhotoCardStatus,
   formatDuplicatePhotoCoverageLabel,
+  resolveDuplicatePhotoPolicyForDraft,
 } from './settings/settings-duplicate-photo-status';
 import { SettingsDuplicatesSection } from './settings/settings-duplicates-section';
 import { SettingsExtraSection } from './settings/settings-extra-section';
@@ -752,6 +752,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       getSettingsScreen(api, chatId ?? '', { signal, prefetch: handoffRequested }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
+    refetchInterval: expandedSections.duplicates ? 60_000 : false,
     ...(handoffRequested
       ? {
           retry: 7,
@@ -1004,8 +1005,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     requiredSubscriptionChannelCollections.unavailableManagedChannels;
   const availableRequiredSubscriptionChannelChoices =
     requiredSubscriptionChannelCollections.availableChoices;
-  const duplicatePhotoModerationMode =
-    settingsScreenQuery.data?.duplicatePhotoModerationMode ?? 'OBSERVE';
+  const duplicatePhotoModerationPolicy = resolveDuplicatePhotoPolicyForDraft(
+    settingsScreenQuery.data?.duplicatePhotoPolicyMatrix,
+    settingsScreenQuery.data?.duplicatePhotoModerationMode ?? 'OBSERVE',
+    draft?.duplicatePhotoMatchPreset ??
+      settingsScreenQuery.data?.settings.duplicatePhotoMatchPreset ??
+      'SAME_IMAGE',
+    draft?.duplicatePhotoScope ??
+      settingsScreenQuery.data?.settings.duplicatePhotoScope ??
+      'SAME_AUTHOR',
+    settingsScreenQuery.data?.settings,
+  );
+  const duplicatePhotoModerationMode = duplicatePhotoModerationPolicy.moderationMode;
   const currentRulesTextSource = useMemo(() => {
     const currentSettings = draft ?? settingsScreenQuery.data?.settings;
     if (!currentSettings) {
@@ -3898,6 +3909,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    if (section === 'duplicates' && !expandedSections.duplicates) void settingsScreenQuery.refetch();
     startTransition(() => {
       setExpandedSections({ ...INITIAL_EXPANDED_SECTIONS, [section]: true });
     });
@@ -4278,19 +4290,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicateDetectionLabel = draft
     ? DUPLICATE_DETECTION_LABELS[draft.duplicateDetectionPreset]
     : DUPLICATE_DETECTION_LABELS.STANDARD;
-  const duplicateCoverageLabel = draft?.duplicatePhotoEnabled
-    ? formatDuplicatePhotoCoverageLabel(duplicateDetectionLabel, duplicatePhotoModerationMode)
-    : duplicateDetectionLabel;
+  const duplicateCoverageLabel = formatDuplicatePhotoCoverageLabel(
+    duplicateDetectionLabel,
+    Boolean(draft?.duplicatePhotoEnabled),
+    duplicatePhotoModerationPolicy,
+    draft ?? undefined,
+  );
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
     ? `${duplicateCoverageLabel} • ${formatDuplicateAllowanceLabel(
         duplicateAllowedCount,
-      )} • ${duplicateSharedWindowHours}ч • ${duplicateStagesEnabledCount}/4 этапа`
+      )} • ${duplicateSharedWindowHours}ч • доп. действия ${duplicateStagesEnabledCount}/4`
     : 'Выключено';
-  const duplicatesCardStatus = draft?.antiDuplicateEnabled
-    ? draft.duplicatePhotoEnabled
-      ? formatDuplicatePhotoCardStatus(duplicatePhotoModerationMode)
-      : duplicateDetectionLabel
-    : 'Выкл';
+  const duplicatesCardStatus = draft?.antiDuplicateEnabled ? 'Вкл' : 'Выкл';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -6789,7 +6800,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               draft={draft}
               duplicateAllowedCount={duplicateAllowedCount}
               duplicateBotButtonErrors={duplicateBotButtonErrors}
-              duplicatePhotoModerationMode={duplicatePhotoModerationMode}
+              duplicatePhotoModerationPolicy={duplicatePhotoModerationPolicy}
               duplicateSharedWindowHours={duplicateSharedWindowHours}
               duplicateWindowInputValue={duplicateWindowInputValue}
               duplicatesCardStatus={duplicatesCardStatus}

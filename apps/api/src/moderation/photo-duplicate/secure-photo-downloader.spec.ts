@@ -119,38 +119,51 @@ describe('SecurePhotoDownloader', () => {
     },
   ];
 
-  it('pins the validated public address and validates the image signature', async () => {
-    const png = await createPng();
-    const downloader = new TestDownloader({}, [
-      {
-        statusCode: 200,
-        headers: { 'content-type': 'image/png', 'content-length': String(png.length) },
-        chunks: [png],
-      },
-    ]);
+  it.each(['i.oneme.ru', 'fd.oneme.ru'])(
+    'pins the validated public address for the default MAX CDN host %s',
+    async (hostname) => {
+      const png = await createPng();
+      const downloader = new TestDownloader({}, [
+        {
+          statusCode: 200,
+          headers: { 'content-type': 'image/png', 'content-length': String(png.length) },
+          chunks: [png],
+        },
+      ]);
 
-    await expect(downloader.download('https://i.oneme.ru/i?opaque=token')).resolves.toMatchObject({
-      format: 'png',
-    });
-    expect(downloader.requested).toEqual([
-      {
-        hostname: 'i.oneme.ru',
-        address: '93.184.216.34',
-        timeoutMs: expect.any(Number),
-      },
-    ]);
-    expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
-  });
+      await expect(
+        downloader.download(`https://${hostname}/i?opaque=token`),
+      ).resolves.toMatchObject({
+        format: 'png',
+      });
+      expect(downloader.requested).toEqual([
+        {
+          hostname,
+          address: '93.184.216.34',
+          timeoutMs: expect.any(Number),
+        },
+      ]);
+      expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([
     'http://i.oneme.ru/image',
     'https://user:password@i.oneme.ru/image',
     'https://i.oneme.ru:8443/image',
+    'https://evil.fd.oneme.ru/image',
     'https://evil.example/image',
   ])('rejects a URL outside the HTTPS allowlist before requesting it: %s', async (url) => {
     const downloader = new TestDownloader({}, []);
 
     await expect(downloader.download(url)).rejects.toThrow('not permitted');
+    expect(downloader.requested).toHaveLength(0);
+  });
+
+  it('allows deployments to narrow the default CDN host set explicitly', async () => {
+    const downloader = new TestDownloader({ PHOTO_DUPLICATE_ALLOWED_HOSTS: 'i.oneme.ru' }, []);
+
+    await expect(downloader.download('https://fd.oneme.ru/image')).rejects.toThrow('not permitted');
     expect(downloader.requested).toHaveLength(0);
   });
 

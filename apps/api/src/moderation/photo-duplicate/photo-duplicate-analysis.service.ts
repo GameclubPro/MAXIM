@@ -12,7 +12,10 @@ import {
 import {
   PhotoDuplicateHistoryStore,
   type PhotoDuplicateScope,
+  type PhotoHistoryMatchKind,
   type PhotoHistoryObservationResult,
+  type PhotoHistoryViolationActionBinding,
+  type PhotoHistoryViolationCommitResult,
 } from './photo-duplicate-history.store';
 import { SecurePhotoDownloader } from './secure-photo-downloader';
 
@@ -42,7 +45,9 @@ export class PhotoDuplicateAnalysisService {
     ttlSeconds: number;
     scope: PhotoDuplicateScope;
     preset: PhotoMatchPreset;
-    commitViolation: boolean;
+    actionEligible: boolean;
+    authorizationConfigDigest: string;
+    allowedViolationMatchKinds: readonly PhotoHistoryMatchKind[];
     resolveActionEligibility: () => Promise<boolean>;
   }): Promise<PhotoDuplicateAnalysisResult> {
     const cachedFingerprints = await this.readCachedFingerprints(params.album);
@@ -87,8 +92,9 @@ export class PhotoDuplicateAnalysisService {
     );
 
     const albumFingerprint = createPhotoAlbumFingerprint(completeFingerprints);
+    const authorizationConfigDigest = params.authorizationConfigDigest.trim().toLowerCase();
     const currentActionEligibility = await params.resolveActionEligibility();
-    const actionEligible = params.commitViolation && currentActionEligibility;
+    const actionEligible = params.actionEligible && currentActionEligibility;
     const observation = await this.historyStore.observeAlbum({
       chatId: params.album.chatId,
       senderId: params.album.senderId,
@@ -102,16 +108,62 @@ export class PhotoDuplicateAnalysisService {
       perceptualAlbum: albumFingerprint,
       allowPerceptualMatch: true,
       perceptualPreset: params.preset,
-      commitViolation: actionEligible,
+      authorization: {
+        eligible: actionEligible,
+        configDigest: authorizationConfigDigest,
+        allowedMatchKinds: params.allowedViolationMatchKinds,
+      },
     });
+
+    const matchKindAllowsAction =
+      observation.kind === 'available' &&
+      (observation.classification !== 'duplicate' ||
+        (observation.matchKind !== null &&
+          params.allowedViolationMatchKinds.includes(observation.matchKind)));
+    const observationAuthorizationAllowsAction =
+      observation.kind === 'available' &&
+      observation.authorization.authorized &&
+      observation.authorization.configDigest === authorizationConfigDigest;
 
     return {
       kind: 'observed',
       albumHash: albumFingerprint.albumHash,
       imageCount: albumFingerprint.images.length,
-      actionEligible,
+      actionEligible:
+        actionEligible && matchKindAllowsAction && observationAuthorizationAllowsAction,
       observation,
     };
+  }
+
+  async commitViolation(params: {
+    album: LogicalPhotoAlbum;
+    albumHash: string;
+    ttlSeconds: number;
+    scope: PhotoDuplicateScope;
+    preset: PhotoMatchPreset;
+    observationClusterId: string;
+    matchKind: PhotoHistoryMatchKind;
+    expectedRepeatCount: number;
+    allowedMatchKinds: readonly PhotoHistoryMatchKind[];
+    authorizationConfigDigest: string;
+    actionBinding: PhotoHistoryViolationActionBinding;
+  }): Promise<PhotoHistoryViolationCommitResult> {
+    return this.historyStore.commitViolation({
+      chatId: params.album.chatId,
+      senderId: params.album.senderId,
+      messageId: params.album.messageId,
+      ttlSeconds: params.ttlSeconds,
+      scope: params.scope,
+      fingerprintVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+      albumHash: params.albumHash,
+      perceptualPreset: params.preset,
+      observationClusterId: params.observationClusterId,
+      matchKind: params.matchKind,
+      expectedRepeatCount: params.expectedRepeatCount,
+      allowedMatchKinds: params.allowedMatchKinds,
+      authorizationConfigDigest: params.authorizationConfigDigest,
+      actionBinding: params.actionBinding,
+    });
   }
 
   private async readCachedFingerprints(

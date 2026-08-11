@@ -5,6 +5,7 @@ import { MaxModule } from '../max/max.module';
 import { ModerationDeleteIntentModule } from './moderation-delete-intent.module';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { ModerationModule } from './moderation.module';
+import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
 
 function readModuleMetadata(moduleType: unknown, key: string): unknown[] {
   return (Reflect.getMetadata(key, moduleType as object) as unknown[] | undefined) ?? [];
@@ -25,7 +26,9 @@ describe('ModerationDeleteIntentModule', () => {
 
     expect(intentImports).toContain(MaxModule);
     expect(intentProviders).toContain(ModerationDeleteIntentService);
+    expect(intentProviders).toContain(PhotoDuplicateRuntimePolicyService);
     expect(intentExports).toContain(ModerationDeleteIntentService);
+    expect(intentExports).toContain(PhotoDuplicateRuntimePolicyService);
     expect(moderationImports).toContain(ModerationDeleteIntentModule);
     expect(adminImports).toContain(ModerationDeleteIntentModule);
     expect(moderationProviders).not.toContain(ModerationDeleteIntentService);

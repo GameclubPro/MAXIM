@@ -60,7 +60,7 @@ export function resolveDuplicateFlowOutcome(params: {
   metadata?: Record<string, unknown>;
 }): { hit?: DuplicateHit; decision?: DuplicateDecision } {
   const flow = resolveDuplicateFlowConfig(params.settings);
-  if (params.repeatCount <= flow.allowedCount || flow.reactions.length === 0) {
+  if (params.repeatCount <= flow.allowedCount) {
     return {};
   }
 
@@ -71,6 +71,10 @@ export function resolveDuplicateFlowOutcome(params: {
     fingerprintType: params.fingerprintType,
     ...(params.metadata ? { metadata: params.metadata } : {}),
   };
+  if (flow.reactions.length === 0) {
+    return { hit };
+  }
+
   const reactionIndex = Math.min(
     flow.reactions.length - 1,
     params.repeatCount - flow.allowedCount - 1,

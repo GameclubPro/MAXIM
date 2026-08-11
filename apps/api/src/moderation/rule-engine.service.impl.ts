@@ -1,4 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
+import { isValidMaxBotStartPayload } from '../max/max-deep-link.util';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { stripUrlsFromText } from '../common/url-text.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
@@ -10,15 +11,8 @@ import { createRuleDetectionContext } from './rule-engine-detection-context';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { RuleEngineDuplicateDetector } from './rule-engine-duplicate-detector';
 import type { DetectionResult, RuleViolation } from './rule-engine.contract';
-import {
-  createAllowlistLinkMatcher,
-  detectBlockedLink,
-  extractUrlsFromText,
-} from './rule-engine-link-detector';
-import {
-  extractDetectedPhoneNumbers,
-  RuleEngineMessageLimitsDetector,
-} from './rule-engine-message-limits.detector';
+import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
+import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
 import {
   MIXED_CHAR_MAP,
   normalizeForDetection,
@@ -864,11 +858,11 @@ const PROFANITY_HOSTILE_AFTER_TARGET_TOKENS = new Set([
   'пришла',
   'пришли',
 ]);
-const DUPLICATE_EXCLUDED_PHONE_PATTERN =
-  /(?:^|[^\d])(?:\+?7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
-const DUPLICATE_MIN_LENGTH = 50;
-const DUPLICATE_MIN_TOKEN_COUNT = 6;
-const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
+const DUPLICATE_COMMAND_ONLY_PATTERN =
+  /^\s*\/[\p{L}\p{N}_]+(?:@[\p{L}\p{N}_]+)?\s*$/u;
+const DUPLICATE_START_WITH_PAYLOAD_PATTERN =
+  /^\s*\/start(?:@[\p{L}\p{N}_]+)?\s+(\S+)\s*$/iu;
+const DUPLICATE_EXACT_MIN_SIGNAL_CHARACTERS = 2;
 const PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP: Record<string, string> = {
   ...MIXED_CHAR_MAP,
   '!': 'и',
@@ -977,6 +971,8 @@ export class RuleEngineService {
     chatId: string;
     userId: string;
     messageId?: string;
+    duplicateStateEventType?: 'message_created' | 'message_edited';
+    duplicateStateEventTimestampMs?: number;
     text: string;
     settings: ChatSettings;
     domainAllowlist: string[];
@@ -997,6 +993,8 @@ export class RuleEngineService {
       chatId,
       userId,
       messageId,
+      duplicateStateEventType,
+      duplicateStateEventTimestampMs,
       text,
       settings,
       domainAllowlist,
@@ -1179,21 +1177,35 @@ export class RuleEngineService {
     );
     markRuleEngineDetectStage(profile, 'attachments');
 
-    const duplicateCandidate =
+    const duplicateTextCandidate =
       settings.antiDuplicateEnabled &&
       violations.length === 0 &&
       !linkViolation &&
-      this.shouldTrackDuplicate(text, detectionContext.compactText, settings);
+      this.shouldTrackDuplicate(text, detectionContext.compactText);
+    const editedDuplicateStateCandidate =
+      settings.antiDuplicateEnabled &&
+      duplicateStateEventType === 'message_edited' &&
+      Boolean(messageId);
+    const duplicateCandidate = duplicateTextCandidate || editedDuplicateStateCandidate;
+    const hasUsableDuplicateRevision =
+      !messageId ||
+      (Number.isSafeInteger(duplicateStateEventTimestampMs) &&
+        (duplicateStateEventTimestampMs ?? 0) > 0);
     markRuleEngineDetectStage(profile, 'duplicate-precheck');
     const duplicateState =
-      duplicateCandidate && !skipDuplicateState && !skipStatefulMessageLimits
+      duplicateCandidate &&
+      !skipDuplicateState &&
+      (!skipStatefulMessageLimits || duplicateStateEventType === 'message_edited') &&
+      hasUsableDuplicateRevision
         ? await this.duplicateDetector.detectWithin({
             chatId,
             userId,
             messageId,
+            eventTimestampMs: duplicateStateEventTimestampMs,
             rawText: text,
             compactText: detectionContext.compactText,
             settings,
+            trackCurrentText: duplicateTextCandidate,
           })
         : undefined;
     markRuleEngineDetectStage(profile, 'duplicate-state');
@@ -1964,57 +1976,22 @@ export class RuleEngineService {
     return false;
   }
 
-  private shouldTrackDuplicate(
-    rawText: string,
-    compactText: string,
-    settings: ChatSettings,
-  ): boolean {
-    const detectedPhoneCount = extractDetectedPhoneNumbers(rawText).length;
-    const hasPhone = detectedPhoneCount > 0 || DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText);
-    const isCustomDuplicateMode = settings.duplicateDetectionPreset === 'CUSTOM';
-    const duplicateIgnoresPhones = settings.duplicateDetectionPreset === 'STRICT';
-    const duplicateMatchesPhoneValues =
-      isCustomDuplicateMode && settings.duplicateIgnorePhonesEnabled;
-    if (hasPhone && !isCustomDuplicateMode && !duplicateIgnoresPhones) {
+  private shouldTrackDuplicate(rawText: string, compactText: string): boolean {
+    if (!compactText || this.isDuplicateServiceCommand(rawText)) {
       return false;
     }
 
-    const hasUrl = extractUrlsFromText(rawText).length > 0;
-    const duplicateMatchesLinkValues =
-      isCustomDuplicateMode && settings.duplicateIgnoreLinksEnabled;
-    if ((hasUrl && duplicateMatchesLinkValues) || (hasPhone && duplicateMatchesPhoneValues)) {
+    return (
+      (compactText.match(/[\p{L}\p{N}]/gu) ?? []).length >= DUPLICATE_EXACT_MIN_SIGNAL_CHARACTERS
+    );
+  }
+
+  private isDuplicateServiceCommand(rawText: string): boolean {
+    if (DUPLICATE_COMMAND_ONLY_PATTERN.test(rawText)) {
       return true;
     }
-
-    const shouldBuildContentCandidate = hasUrl || (hasPhone && duplicateIgnoresPhones);
-    let candidateText = compactText;
-
-    if (shouldBuildContentCandidate) {
-      let rawCandidate = rawText;
-      if (hasUrl) {
-        rawCandidate = stripUrlsFromText(rawCandidate);
-      }
-      if (hasPhone && duplicateIgnoresPhones) {
-        rawCandidate = rawCandidate.replace(DUPLICATE_EXCLUDED_PHONE_PATTERN, ' ');
-      }
-      candidateText = this.normalizeForDetection(rawCandidate);
-    }
-
-    if (!candidateText) {
-      return false;
-    }
-
-    if (this.commercialAdDetector.hasCommercialSpamMarkers(candidateText)) {
-      return true;
-    }
-
-    const tokens = this.extractTokens(candidateText);
-    if (tokens.length < DUPLICATE_MIN_TOKEN_COUNT || candidateText.length < DUPLICATE_MIN_LENGTH) {
-      return false;
-    }
-
-    const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4)).size;
-    return uniqueLongTokens >= DUPLICATE_MIN_UNIQUE_LONG_TOKENS;
+    const startWithPayload = DUPLICATE_START_WITH_PAYLOAD_PATTERN.exec(rawText);
+    return isValidMaxBotStartPayload(startWithPayload?.[1]);
   }
 
   private normalizeForDetection(value: string): string {

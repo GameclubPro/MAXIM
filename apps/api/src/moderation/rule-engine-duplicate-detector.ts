@@ -3,15 +3,16 @@ import { createHash } from 'node:crypto';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import { stripUrlsFromText } from '../common/url-text.util';
-import { buildDuplicateStageKey } from './duplicate-state';
+import {
+  buildDuplicateFingerprintMembershipKey,
+  buildDuplicateMessageStateKey,
+  buildDuplicateStageKey,
+} from './duplicate-state';
 import { extractUrlsFromText } from './rule-engine-link-detector';
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 import { normalizeForDetection } from './rule-engine-normalization';
 import { RedisCounterService } from './redis-counter.service';
-import {
-  resolveDuplicateFlowConfig,
-  type DuplicateReactionStage,
-} from './duplicate-flow-policy';
+import { resolveDuplicateFlowConfig, type DuplicateReactionStage } from './duplicate-flow-policy';
 import type {
   DuplicateAction,
   DuplicateDecision,
@@ -31,9 +32,21 @@ type DuplicateFingerprint = {
   value: string;
 };
 
+type ResolvedDuplicateFingerprint = DuplicateFingerprint & {
+  hash: string;
+  membershipKey: string;
+};
+
 const PHONE_NUMBER_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
 const NEAR_DUPLICATE_MIN_TOKEN_COUNT = 6;
 const NEAR_DUPLICATE_MIN_UNIQUE_TOKENS = 5;
+const DUPLICATE_APPROXIMATE_MIN_LENGTH = 50;
+const DUPLICATE_APPROXIMATE_MIN_UNIQUE_LONG_TOKENS = 4;
+const DUPLICATE_ACTION_PRIORITY: Readonly<Record<DuplicateAction, number>> = {
+  WARN: 1,
+  MUTE: 2,
+  BAN: 3,
+};
 export const DUPLICATE_STATE_BUDGET_MS = 250;
 
 export type DuplicateStateBudgetExceededEvent = {
@@ -57,11 +70,6 @@ type DuplicateBudgetContext = {
   reported: boolean;
 };
 
-type DuplicateFingerprintCountResult =
-  | { kind: 'deadline_exceeded' }
-  | { kind: 'skipped' }
-  | { kind: 'inserted' | 'replayed'; count: number };
-
 export class RuleEngineDuplicateDetector {
   private duplicateBudgetWarnAtMs: number | null = null;
 
@@ -74,23 +82,41 @@ export class RuleEngineDuplicateDetector {
     chatId: string;
     userId: string;
     messageId?: string;
+    eventTimestampMs?: number;
     rawText: string;
     compactText: string;
     settings: ChatSettings;
+    trackCurrentText?: boolean;
   }): Promise<{
     hit?: DuplicateHit;
     decision?: DuplicateDecision;
   }> {
     const messageId = params.messageId?.trim();
-    const deadlineMutation = this.redisCounter.incrementOncePerMemberWithTtlBeforeDeadline;
-    if (!messageId || typeof deadlineMutation !== 'function') {
-      return this.detectState(params);
+    if (!messageId) {
+      return this.detectLegacyState(params);
+    }
+
+    const eventTimestampMs = Math.trunc(params.eventTimestampMs ?? Number.NaN);
+    if (!Number.isSafeInteger(eventTimestampMs) || eventTimestampMs <= 0) {
+      return {};
+    }
+    if (typeof this.redisCounter.replaceRevisionedSetMembershipsBeforeDeadline !== 'function') {
+      throw new Error('Revisioned duplicate state mutation is unavailable');
     }
 
     const deadlineAtMs = Date.now() + DUPLICATE_STATE_BUDGET_MS;
     const budgetContext: DuplicateBudgetContext = { reported: false };
     return raceWithTimeout({
-      operation: () => this.detectState(params, deadlineAtMs, budgetContext),
+      operation: () =>
+        this.detectRevisionedState(
+          {
+            ...params,
+            messageId,
+            eventTimestampMs,
+          },
+          deadlineAtMs,
+          budgetContext,
+        ),
       timeoutMs: DUPLICATE_STATE_BUDGET_MS,
       onTimeout: () => {
         throw this.createBudgetExceededError(params, 'caller_deadline', budgetContext);
@@ -98,67 +124,118 @@ export class RuleEngineDuplicateDetector {
     });
   }
 
-  private async detectState(
+  private async detectRevisionedState(
     params: {
       chatId: string;
       userId: string;
-      messageId?: string;
+      messageId: string;
+      eventTimestampMs: number;
       rawText: string;
       compactText: string;
       settings: ChatSettings;
+      trackCurrentText?: boolean;
     },
-    deadlineAtMs?: number,
-    budgetContext?: DuplicateBudgetContext,
+    deadlineAtMs: number,
+    budgetContext: DuplicateBudgetContext,
   ): Promise<{
     hit?: DuplicateHit;
     decision?: DuplicateDecision;
   }> {
-    const { chatId, userId, compactText, settings } = params;
+    const { chatId, userId, settings } = params;
     const flow = this.getFlowConfig(settings);
-    const fingerprints = this.buildFingerprints(compactText, params.rawText, settings);
-    let strongestHit: DuplicateHit | undefined;
+    const fingerprints =
+      (params.trackCurrentText ?? true)
+        ? this.resolveFingerprints(chatId, userId, params.compactText, params.rawText, settings)
+        : [];
+    const messageHash = createHash('sha256').update(params.messageId).digest('hex').slice(0, 20);
+    const mutation = await this.redisCounter.replaceRevisionedSetMembershipsBeforeDeadline({
+      stateKey: buildDuplicateMessageStateKey(chatId, userId, messageHash),
+      member: messageHash,
+      revision: params.eventTimestampMs,
+      membershipKeys: fingerprints.map((fingerprint) => fingerprint.membershipKey),
+      ttlSeconds: flow.windowSec + 1,
+      deadlineAtMs,
+    });
+    if (mutation.kind === 'deadline_exceeded') {
+      throw this.createBudgetExceededError(params, 'redis_deadline', budgetContext);
+    }
+    if (mutation.kind === 'stale') {
+      return {};
+    }
+
+    return this.resolveOutcomeFromCounts(fingerprints, mutation.counts, flow);
+  }
+
+  private async detectLegacyState(params: {
+    chatId: string;
+    userId: string;
+    rawText: string;
+    compactText: string;
+    settings: ChatSettings;
+    trackCurrentText?: boolean;
+  }): Promise<{
+    hit?: DuplicateHit;
+    decision?: DuplicateDecision;
+  }> {
+    if (params.trackCurrentText === false) {
+      return {};
+    }
+
+    const { chatId, userId, settings } = params;
+    const flow = this.getFlowConfig(settings);
+    const fingerprints = this.resolveFingerprints(
+      chatId,
+      userId,
+      params.compactText,
+      params.rawText,
+      settings,
+    );
+    const counts: number[] = [];
 
     for (const fingerprint of fingerprints) {
-      const hash = createHash('sha256').update(fingerprint.value).digest('hex').slice(0, 20);
-      const flowKey = buildDuplicateStageKey(chatId, userId, hash, `flow:${fingerprint.type}`);
-      const countResult = await this.incrementFingerprintCount({
-        flowKey,
+      const flowKey = buildDuplicateStageKey(
         chatId,
         userId,
-        hash,
-        fingerprintType: fingerprint.type,
-        messageId: params.messageId,
-        ttlSec: flow.windowSec + 1,
-        deadlineAtMs,
-      });
-      if (countResult.kind === 'deadline_exceeded') {
-        throw this.createBudgetExceededError(
-          params,
-          'redis_deadline',
-          budgetContext ?? { reported: false },
-        );
-      }
-      if (countResult.kind === 'skipped') {
+        fingerprint.hash,
+        `legacy:flow:${fingerprint.type}`,
+      );
+      counts.push(await this.redisCounter.incrementWithTtl(flowKey, flow.windowSec + 1));
+    }
+
+    return this.resolveOutcomeFromCounts(fingerprints, counts, flow);
+  }
+
+  private resolveOutcomeFromCounts(
+    fingerprints: readonly ResolvedDuplicateFingerprint[],
+    counts: readonly number[],
+    flow: ReturnType<typeof resolveDuplicateFlowConfig>,
+  ): { hit?: DuplicateHit; decision?: DuplicateDecision } {
+    let strongestHit: DuplicateHit | undefined;
+    let strongestDecision: DuplicateDecision | undefined;
+
+    for (let index = 0; index < fingerprints.length; index += 1) {
+      const fingerprint = fingerprints[index];
+      if (!fingerprint) {
         continue;
       }
-      const total = countResult.count;
+      const total = counts[index] ?? 0;
       const repeatCount = Math.max(0, total - 1);
 
       if (repeatCount <= flow.allowedCount) {
         continue;
       }
 
-      if (flow.reactions.length === 0) {
-        continue;
-      }
-
       const hit: DuplicateHit = {
         count: repeatCount,
         windowSec: flow.windowSec,
-        hash,
+        hash: fingerprint.hash,
         fingerprintType: fingerprint.type,
       };
       strongestHit = this.pickStrongerHit(strongestHit, hit);
+
+      if (flow.reactions.length === 0) {
+        continue;
+      }
 
       const reactionIndex = Math.min(
         flow.reactions.length - 1,
@@ -170,67 +247,22 @@ export class RuleEngineDuplicateDetector {
         continue;
       }
 
-      return {
-        hit,
-        decision: {
-          action: reaction.action,
-          count: repeatCount,
-          threshold: flow.allowedCount + reactionIndex + 1,
-          windowSec: flow.windowSec,
-          hash,
-          fingerprintType: fingerprint.type,
-          nextAction: this.resolveNextAction(flow.reactions, reactionIndex),
-        },
+      const decision: DuplicateDecision = {
+        action: reaction.action,
+        count: repeatCount,
+        threshold: flow.allowedCount + reactionIndex + 1,
+        windowSec: flow.windowSec,
+        hash: fingerprint.hash,
+        fingerprintType: fingerprint.type,
+        nextAction: this.resolveNextAction(flow.reactions, reactionIndex),
       };
+      strongestDecision = this.pickStrongerDecision(strongestDecision, decision);
     }
 
-    return strongestHit ? { hit: strongestHit } : {};
-  }
-
-  private async incrementFingerprintCount(params: {
-    flowKey: string;
-    chatId: string;
-    userId: string;
-    hash: string;
-    fingerprintType: DuplicateFingerprintType;
-    messageId?: string;
-    ttlSec: number;
-    deadlineAtMs?: number;
-  }): Promise<DuplicateFingerprintCountResult> {
-    const messageId = params.messageId?.trim();
-    if (!messageId) {
-      return {
-        kind: 'inserted',
-        count: await this.redisCounter.incrementWithTtl(params.flowKey, params.ttlSec),
-      };
-    }
-
-    const messageHash = createHash('sha256').update(messageId).digest('hex').slice(0, 20);
-    const messageKey = buildDuplicateStageKey(
-      params.chatId,
-      params.userId,
-      params.hash,
-      `flow:${params.fingerprintType}:msg:v2:${messageHash}`,
-    );
-    const deadlineMutation = this.redisCounter.incrementOncePerMemberWithTtlBeforeDeadline;
-    if (params.deadlineAtMs !== undefined && typeof deadlineMutation === 'function') {
-      return deadlineMutation.call(
-        this.redisCounter,
-        params.flowKey,
-        messageKey,
-        params.ttlSec,
-        params.deadlineAtMs,
-      );
-    }
-
-    const legacyResult = await this.redisCounter.incrementOncePerMemberWithTtl(
-      params.flowKey,
-      messageKey,
-      params.ttlSec,
-    );
-    return legacyResult.inserted
-      ? { kind: 'inserted', count: legacyResult.count }
-      : { kind: 'skipped' };
+    return {
+      ...(strongestHit ? { hit: strongestHit } : {}),
+      ...(strongestDecision ? { decision: strongestDecision } : {}),
+    };
   }
 
   private createBudgetExceededError(
@@ -314,7 +346,9 @@ export class RuleEngineDuplicateDetector {
 
     if (config.ignoreLinks || config.ignorePhones) {
       const content = this.normalizeContentFingerprint(rawText, config);
-      push('content', content);
+      if (this.hasSufficientApproximateContent(content)) {
+        push('content', content);
+      }
     }
 
     if (config.nearMatch) {
@@ -325,6 +359,28 @@ export class RuleEngineDuplicateDetector {
     }
 
     return fingerprints;
+  }
+
+  private resolveFingerprints(
+    chatId: string,
+    userId: string,
+    compactText: string,
+    rawText: string,
+    settings: ChatSettings,
+  ): ResolvedDuplicateFingerprint[] {
+    return this.buildFingerprints(compactText, rawText, settings).map((fingerprint) => {
+      const hash = createHash('sha256').update(fingerprint.value).digest('hex').slice(0, 20);
+      return {
+        ...fingerprint,
+        hash,
+        membershipKey: buildDuplicateFingerprintMembershipKey(
+          chatId,
+          userId,
+          hash,
+          fingerprint.type,
+        ),
+      };
+    });
   }
 
   private resolveFingerprintConfig(settings: ChatSettings): {
@@ -396,6 +452,9 @@ export class RuleEngineDuplicateDetector {
     config: { ignoreLinks: boolean; ignorePhones: boolean },
   ): string | null {
     const normalized = this.normalizeContentFingerprint(compactText, config);
+    if (!this.hasSufficientApproximateContent(normalized)) {
+      return null;
+    }
     const tokens = normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
     const meaningfulTokens = tokens.filter((token) => token.length >= 4);
     const uniqueTokens = Array.from(new Set(meaningfulTokens)).sort();
@@ -409,11 +468,44 @@ export class RuleEngineDuplicateDetector {
     return uniqueTokens.join(' ');
   }
 
+  private hasSufficientApproximateContent(value: string): boolean {
+    if (value.length < DUPLICATE_APPROXIMATE_MIN_LENGTH) {
+      return false;
+    }
+
+    const tokens = value.match(/[a-zа-яё0-9]+/giu) ?? [];
+    const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4));
+    return (
+      tokens.length >= NEAR_DUPLICATE_MIN_TOKEN_COUNT &&
+      uniqueLongTokens.size >= DUPLICATE_APPROXIMATE_MIN_UNIQUE_LONG_TOKENS
+    );
+  }
+
   private pickStrongerHit(
     current: DuplicateHit | undefined,
     candidate: DuplicateHit,
   ): DuplicateHit {
     if (!current || candidate.count > current.count) {
+      return candidate;
+    }
+
+    return current;
+  }
+
+  private pickStrongerDecision(
+    current: DuplicateDecision | undefined,
+    candidate: DuplicateDecision,
+  ): DuplicateDecision {
+    if (!current) {
+      return candidate;
+    }
+
+    const currentPriority = DUPLICATE_ACTION_PRIORITY[current.action];
+    const candidatePriority = DUPLICATE_ACTION_PRIORITY[candidate.action];
+    if (candidatePriority > currentPriority) {
+      return candidate;
+    }
+    if (candidatePriority === currentPriority && candidate.count > current.count) {
       return candidate;
     }
 

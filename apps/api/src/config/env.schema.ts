@@ -12,7 +12,11 @@ import {
   RUNTIME_SERVICE_NAMES,
   WEBHOOK_DYNAMIC_LEASES_MODES,
 } from '../runtime/runtime-topology';
-import { PHOTO_DUPLICATE_ROLLOUT_MODES } from '../moderation/photo-duplicate/photo-duplicate.runtime';
+import {
+  PHOTO_DUPLICATE_ENFORCEABLE_MATCH_KINDS,
+  PHOTO_DUPLICATE_MAX_ACTIONS,
+  PHOTO_DUPLICATE_ROLLOUT_MODES,
+} from '../moderation/photo-duplicate/photo-duplicate.runtime';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -56,6 +60,32 @@ function envBoolean(defaultValue: boolean) {
     }, z.boolean().optional())
     .transform((value) => value ?? defaultValue);
 }
+
+const photoDuplicateAllowedMatchKindsSchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) =>
+      value === '' ||
+      value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .every((item) => PHOTO_DUPLICATE_ENFORCEABLE_MATCH_KINDS.some((kind) => kind === item)),
+    {
+      message: `PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS must contain only: ${PHOTO_DUPLICATE_ENFORCEABLE_MATCH_KINDS.join(', ')}`,
+    },
+  );
+
+const photoDuplicateExactChatIdsSchema = z.string().refine(
+  (value) =>
+    value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .every((item) => item !== '*'),
+  { message: 'Photo duplicate rollout chat IDs must be exact; wildcard is not allowed' },
+);
 
 function originOnlyUrl(key: string) {
   return z
@@ -256,9 +286,12 @@ const envSchema = z.object({
     .positive()
     .default(3_600_000),
   PHOTO_DUPLICATE_ROLLOUT_MODE: z.enum(PHOTO_DUPLICATE_ROLLOUT_MODES).default('shadow'),
-  PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: z.string().default(''),
-  PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: z.string().default(''),
-  PHOTO_DUPLICATE_ALLOWED_HOSTS: z.string().default('i.oneme.ru'),
+  PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: photoDuplicateExactChatIdsSchema.default(''),
+  PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: photoDuplicateExactChatIdsSchema.default(''),
+  PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS:
+    photoDuplicateAllowedMatchKindsSchema.default('canonical_sha256'),
+  PHOTO_DUPLICATE_MAX_ACTION: z.enum(PHOTO_DUPLICATE_MAX_ACTIONS).default('DELETE_MESSAGE'),
+  PHOTO_DUPLICATE_ALLOWED_HOSTS: z.string().default('i.oneme.ru,fd.oneme.ru'),
   PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(5_000),
   PHOTO_DUPLICATE_MAX_BYTES: z.coerce
     .number()

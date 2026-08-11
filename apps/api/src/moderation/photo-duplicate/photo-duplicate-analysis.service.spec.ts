@@ -7,6 +7,9 @@ import {
   type PhotoFingerprint,
 } from './photo-fingerprint';
 
+const authorizationConfigDigest = 'f'.repeat(64);
+const actionConfigDigest = 'e'.repeat(64);
+
 function fingerprint(seed: string): PhotoFingerprint {
   return {
     algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
@@ -56,6 +59,24 @@ function createService(cache: Array<PhotoFingerprint | null>) {
       matchedDistance: null,
       repeatCount: 0,
       duplicateOfMessageId: null,
+      sanctionClusterId: 'e'.repeat(64),
+      violationCommitted: false,
+      authorization: {
+        authorized: true,
+        configDigest: authorizationConfigDigest,
+      },
+    }),
+    commitViolation: jest.fn().mockResolvedValue({
+      kind: 'available',
+      committed: true,
+      replayed: false,
+      repeatCount: 1,
+      sanctionClusterId: 'e'.repeat(64),
+      bindingMatches: true,
+      actionBinding: {
+        intendedAction: 'HIT',
+        configDigest: actionConfigDigest,
+      },
     }),
   };
   return {
@@ -86,7 +107,9 @@ describe('PhotoDuplicateAnalysisService', () => {
       ttlSeconds: 3_601,
       scope: 'SAME_AUTHOR',
       preset: 'SAME_IMAGE',
-      commitViolation: true,
+      actionEligible: true,
+      authorizationConfigDigest,
+      allowedViolationMatchKinds: ['canonical_sha256'],
       resolveActionEligibility,
     });
 
@@ -98,7 +121,12 @@ describe('PhotoDuplicateAnalysisService', () => {
         fingerprintVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
         exactMatchKind: 'canonical_sha256',
         allowPerceptualMatch: true,
-        commitViolation: true,
+        perceptualPreset: 'SAME_IMAGE',
+        authorization: {
+          eligible: true,
+          configDigest: authorizationConfigDigest,
+          allowedMatchKinds: ['canonical_sha256'],
+        },
       }),
     );
   });
@@ -116,7 +144,9 @@ describe('PhotoDuplicateAnalysisService', () => {
       ttlSeconds: 7_201,
       scope: 'CHAT',
       preset: 'MINOR_EDITS',
-      commitViolation: false,
+      actionEligible: false,
+      authorizationConfigDigest,
+      allowedViolationMatchKinds: ['canonical_sha256'],
       resolveActionEligibility,
     });
 
@@ -148,7 +178,9 @@ describe('PhotoDuplicateAnalysisService', () => {
       ttlSeconds: 7_201,
       scope: 'CHAT',
       preset: 'MINOR_EDITS',
-      commitViolation: false,
+      actionEligible: false,
+      authorizationConfigDigest,
+      allowedViolationMatchKinds: ['canonical_sha256'],
       resolveActionEligibility: jest.fn().mockResolvedValue(true),
     });
 
@@ -178,7 +210,9 @@ describe('PhotoDuplicateAnalysisService', () => {
         ttlSeconds: 3_601,
         scope: 'SAME_AUTHOR',
         preset: 'SAME_IMAGE',
-        commitViolation: true,
+        actionEligible: true,
+        authorizationConfigDigest,
+        allowedViolationMatchKinds: ['canonical_sha256'],
         resolveActionEligibility: jest.fn().mockResolvedValue(true),
       }),
     ).resolves.toEqual({ kind: 'incomplete', reason: 'unsupported_multi_frame' });
@@ -195,7 +229,9 @@ describe('PhotoDuplicateAnalysisService', () => {
         ttlSeconds: 3_601,
         scope: 'SAME_AUTHOR',
         preset: 'SAME_IMAGE',
-        commitViolation: true,
+        actionEligible: true,
+        authorizationConfigDigest,
+        allowedViolationMatchKinds: ['canonical_sha256'],
         resolveActionEligibility: jest.fn().mockResolvedValue(true),
       }),
     ).resolves.toEqual({ kind: 'incomplete', reason: 'missing_download_url' });
@@ -208,21 +244,146 @@ describe('PhotoDuplicateAnalysisService', () => {
     const resolveActionEligibility = jest.fn().mockResolvedValue(false);
 
     const result = await service.analyzeAlbum({
-      album: album([
-        { source: 'direct', photoId: 'photo-1', downloadUrl: 'https://i.oneme.ru/1' },
-      ]),
+      album: album([{ source: 'direct', photoId: 'photo-1', downloadUrl: 'https://i.oneme.ru/1' }]),
       ttlSeconds: 3_601,
       scope: 'SAME_AUTHOR',
       preset: 'SAME_IMAGE',
-      commitViolation: true,
+      actionEligible: true,
+      authorizationConfigDigest,
+      allowedViolationMatchKinds: ['canonical_sha256'],
       resolveActionEligibility,
     });
 
     expect(resolveActionEligibility).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ kind: 'observed', actionEligible: false });
     expect(historyStore.observeAlbum).toHaveBeenCalledWith(
-      expect.objectContaining({ commitViolation: false }),
+      expect.objectContaining({
+        authorization: expect.objectContaining({ eligible: false }),
+      }),
     );
+  });
+
+  it('keeps a disallowed PDQ observation non-actionable after matching', async () => {
+    const cached = fingerprint('a');
+    const { service, historyStore } = createService([cached]);
+    historyStore.observeAlbum.mockResolvedValueOnce({
+      kind: 'available',
+      inserted: true,
+      replayed: false,
+      classification: 'duplicate',
+      clusterId: 'd'.repeat(64),
+      matchKind: 'pdq',
+      matchedDistance: 4,
+      repeatCount: 0,
+      duplicateOfMessageId: 'message-0',
+      sanctionClusterId: 'e'.repeat(64),
+      violationCommitted: false,
+      authorization: {
+        authorized: false,
+        configDigest: authorizationConfigDigest,
+      },
+    });
+
+    await expect(
+      service.analyzeAlbum({
+        album: album([
+          { source: 'direct', photoId: 'photo-1', downloadUrl: 'https://i.oneme.ru/1' },
+        ]),
+        ttlSeconds: 3_601,
+        scope: 'SAME_AUTHOR',
+        preset: 'SAME_IMAGE',
+        actionEligible: true,
+        authorizationConfigDigest,
+        allowedViolationMatchKinds: ['canonical_sha256'],
+        resolveActionEligibility: jest.fn().mockResolvedValue(true),
+      }),
+    ).resolves.toMatchObject({ kind: 'observed', actionEligible: false });
+    expect(historyStore.observeAlbum).toHaveBeenCalledWith(
+      expect.not.objectContaining({ commitViolation: expect.anything() }),
+    );
+  });
+
+  it('keeps an authorized replay non-actionable when its first-write config digest differs', async () => {
+    const cached = fingerprint('a');
+    const { service, historyStore } = createService([cached]);
+    historyStore.observeAlbum.mockResolvedValueOnce({
+      kind: 'available',
+      inserted: false,
+      replayed: true,
+      classification: 'duplicate',
+      clusterId: 'd'.repeat(64),
+      matchKind: 'canonical_sha256',
+      matchedDistance: 0,
+      repeatCount: 1,
+      duplicateOfMessageId: 'message-0',
+      sanctionClusterId: 'e'.repeat(64),
+      violationCommitted: false,
+      authorization: {
+        authorized: true,
+        configDigest: '1'.repeat(64),
+      },
+    });
+
+    await expect(
+      service.analyzeAlbum({
+        album: album([
+          { source: 'direct', photoId: 'photo-1', downloadUrl: 'https://i.oneme.ru/1' },
+        ]),
+        ttlSeconds: 3_601,
+        scope: 'SAME_AUTHOR',
+        preset: 'SAME_IMAGE',
+        actionEligible: true,
+        authorizationConfigDigest,
+        allowedViolationMatchKinds: ['canonical_sha256'],
+        resolveActionEligibility: jest.fn().mockResolvedValue(true),
+      }),
+    ).resolves.toMatchObject({ kind: 'observed', actionEligible: false });
+  });
+
+  it('delegates the guarded violation commit with the exact observed identity', async () => {
+    const cached = fingerprint('a');
+    const { service, historyStore } = createService([cached]);
+    const logicalAlbum = album([
+      { source: 'direct', photoId: 'photo-1', downloadUrl: 'https://i.oneme.ru/1' },
+    ]);
+
+    await expect(
+      service.commitViolation({
+        album: logicalAlbum,
+        albumHash: 'a'.repeat(64),
+        ttlSeconds: 3_601,
+        scope: 'SAME_AUTHOR',
+        preset: 'SAME_IMAGE',
+        observationClusterId: 'd'.repeat(64),
+        matchKind: 'canonical_sha256',
+        expectedRepeatCount: 1,
+        allowedMatchKinds: ['canonical_sha256'],
+        authorizationConfigDigest,
+        actionBinding: {
+          intendedAction: 'HIT',
+          configDigest: actionConfigDigest,
+        },
+      }),
+    ).resolves.toMatchObject({ kind: 'available', committed: true });
+    expect(historyStore.commitViolation).toHaveBeenCalledWith({
+      chatId: logicalAlbum.chatId,
+      senderId: logicalAlbum.senderId,
+      messageId: logicalAlbum.messageId,
+      ttlSeconds: 3_601,
+      scope: 'SAME_AUTHOR',
+      fingerprintVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+      albumHash: 'a'.repeat(64),
+      perceptualPreset: 'SAME_IMAGE',
+      observationClusterId: 'd'.repeat(64),
+      matchKind: 'canonical_sha256',
+      expectedRepeatCount: 1,
+      allowedMatchKinds: ['canonical_sha256'],
+      authorizationConfigDigest,
+      actionBinding: {
+        intendedAction: 'HIT',
+        configDigest: actionConfigDigest,
+      },
+    });
   });
 
   it('does not observe when action eligibility resolution rejects', async () => {
@@ -238,7 +399,9 @@ describe('PhotoDuplicateAnalysisService', () => {
         ttlSeconds: 3_601,
         scope: 'SAME_AUTHOR',
         preset: 'SAME_IMAGE',
-        commitViolation: true,
+        actionEligible: true,
+        authorizationConfigDigest,
+        allowedViolationMatchKinds: ['canonical_sha256'],
         resolveActionEligibility,
       }),
     ).rejects.toThrow('redis unavailable');

@@ -50,7 +50,7 @@ describe('duplicate flow policy', () => {
     ).toMatchObject({ action: 'WARN', nextAction: 'MUTE' });
   });
 
-  it('does not produce a hit when every reaction is disabled', () => {
+  it('produces a deletion hit without a sanction when every reaction is disabled', () => {
     expect(
       resolveDuplicateFlowOutcome({
         settings: settings({
@@ -63,7 +63,14 @@ describe('duplicate flow policy', () => {
         hash: 'hash-1',
         fingerprintType: 'image',
       }),
-    ).toEqual({});
+    ).toEqual({
+      hit: {
+        count: 10,
+        windowSec: 43_200,
+        hash: 'hash-1',
+        fingerprintType: 'image',
+      },
+    });
   });
 
   it('detects changes to the window, threshold or reaction ladder', () => {

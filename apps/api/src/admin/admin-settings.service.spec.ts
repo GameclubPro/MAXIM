@@ -1,5 +1,6 @@
 import { channelSettingsSchema, chatSettingsSchema } from '@maxim/contracts';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { resolvePhotoDuplicateRuntimePolicy } from '../moderation/photo-duplicate/photo-duplicate.runtime';
 import { UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES } from './admin-chat-settings';
 import { AdminSettingsService } from './admin-settings.service';
 
@@ -174,6 +175,7 @@ function createService(
     };
     domainAllowlistDetails?: Array<Record<string, unknown>>;
     photoDuplicateConfig?: Record<string, string>;
+    photoDuplicateDeleteIntentRollout?: 'off' | 'observed' | 'execute';
     managedBroadcasts?: Array<Record<string, unknown>>;
     managedEntityHeader?: Record<string, unknown>;
     persistedChannelSettings?: ReturnType<typeof createPersistedChannelSettings>;
@@ -385,6 +387,26 @@ function createService(
   const configService = {
     get: jest.fn((key: string) => options.photoDuplicateConfig?.[key]),
   };
+  const photoDuplicateRuntimePolicy = {
+    resolveEffectivePolicy: jest.fn(
+      (params: {
+        chatId: string;
+        preset: 'SAME_IMAGE' | 'MINOR_EDITS';
+        scope: 'SAME_AUTHOR' | 'CHAT';
+      }) =>
+        Promise.resolve(
+          resolvePhotoDuplicateRuntimePolicy({
+            ...params,
+            configService,
+          }),
+        ),
+    ),
+  };
+  const moderationDeleteIntents = {
+    getRolloutForRule: jest
+      .fn()
+      .mockReturnValue(options.photoDuplicateDeleteIntentRollout ?? 'execute'),
+  };
   const service = new AdminSettingsService(
     legacyAdminService as never,
     prisma as never,
@@ -393,16 +415,19 @@ function createService(
     managedEntitiesService as never,
     manualModerationService as never,
     managedBroadcastService as never,
+    photoDuplicateRuntimePolicy as never,
+    moderationDeleteIntents as never,
     nightModeTransitionScheduler as never,
     undefined,
     channelPostSignatureService as never,
-    configService as never,
   );
 
   return {
     chatContextCache,
     channelPostSignatureService,
     configService,
+    photoDuplicateRuntimePolicy,
+    moderationDeleteIntents,
     legacyAdminService,
     managedBroadcastService,
     managedEntitiesService,
@@ -549,6 +574,15 @@ describe('AdminSettingsService chat rules', () => {
       config: {
         PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
         PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+        PHOTO_DUPLICATE_MAX_ACTION: 'BAN',
+      },
+      settings: {},
+    },
+    {
+      expected: 'DELETE_ONLY',
+      config: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
       },
       settings: {},
     },
@@ -568,6 +602,16 @@ describe('AdminSettingsService chat rules', () => {
       },
       settings: { duplicatePhotoMatchPreset: 'MINOR_EDITS' },
     },
+    {
+      expected: 'OBSERVE',
+      config: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+        PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: '',
+        PHOTO_DUPLICATE_MAX_ACTION: 'BAN',
+      },
+      settings: {},
+    },
   ])(
     'reports the effective photo duplicate mode as $expected',
     async ({ config, expected, settings }) => {
@@ -581,6 +625,63 @@ describe('AdminSettingsService chat rules', () => {
       });
 
       expect(result.duplicatePhotoModerationMode).toBe(expected);
+    },
+  );
+
+  it('returns base and advanced photo policies with their exact action ceiling', async () => {
+    const { service } = createService({
+      photoDuplicateConfig: {
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+        PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: 'chat-1',
+        PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: 'canonical_sha256,pdq',
+        PHOTO_DUPLICATE_MAX_ACTION: 'MUTE',
+      },
+    });
+
+    const result = await service.getChatSettingsScreen('chat-1', user as never, {
+      liveAdminCheck: false,
+    });
+
+    expect(result.duplicatePhotoPolicyMatrix).toEqual({
+      base: {
+        moderationMode: 'FULL',
+        actionCeiling: 'MUTE',
+        allowedMatchKinds: ['canonical_sha256', 'pdq'],
+      },
+      advanced: {
+        moderationMode: 'FULL',
+        actionCeiling: 'MUTE',
+        allowedMatchKinds: ['canonical_sha256', 'pdq'],
+      },
+    });
+  });
+
+  it.each(['off', 'observed'] as const)(
+    'reports photo observation-only while durable delete rollout is %s',
+    async (photoDuplicateDeleteIntentRollout) => {
+      const { moderationDeleteIntents, service } = createService({
+        photoDuplicateDeleteIntentRollout,
+        photoDuplicateConfig: {
+          PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+          PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+          PHOTO_DUPLICATE_MAX_ACTION: 'BAN',
+        },
+      });
+
+      const result = await service.getChatSettingsScreen('chat-1', user as never, {
+        liveAdminCheck: false,
+      });
+
+      expect(result.duplicatePhotoModerationMode).toBe('OBSERVE');
+      expect(result.duplicatePhotoPolicyMatrix).toMatchObject({
+        base: { moderationMode: 'OBSERVE' },
+        advanced: { moderationMode: 'OBSERVE' },
+      });
+      expect(moderationDeleteIntents.getRolloutForRule).toHaveBeenCalledWith(
+        'chat-1',
+        'DUPLICATE_DELETE',
+      );
     },
   );
 

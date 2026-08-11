@@ -1,4 +1,4 @@
-import type { ChatSettings, DuplicatePhotoModerationMode } from '@maxim/contracts/settings';
+import type { ChatSettings, DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 import { lazy, Suspense } from 'react';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
@@ -15,6 +15,7 @@ import {
   DUPLICATE_DETECTION_OPTIONS,
   type DuplicateDetectionPreset,
 } from '../settings-page.constants';
+import { formatDuplicateActionSummary } from './settings-duplicate-photo-status';
 import {
   ClockIcon,
   DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
@@ -66,7 +67,7 @@ type SettingsDuplicatesSectionProps = SettingsSectionShellProps &
     }) => void;
     duplicateAllowedCount: number;
     duplicateBotButtonErrors: BroadcastLinkButtonFieldErrors[];
-    duplicatePhotoModerationMode: DuplicatePhotoModerationMode;
+    duplicatePhotoModerationPolicy: DuplicatePhotoEffectivePolicy;
     duplicateSharedWindowHours: number;
     duplicateWindowInputValue: string;
     duplicatesCardStatus: string;
@@ -94,7 +95,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
     draft,
     duplicateAllowedCount,
     duplicateBotButtonErrors,
-    duplicatePhotoModerationMode,
+    duplicatePhotoModerationPolicy,
     duplicateSharedWindowHours,
     duplicateWindowInputValue,
     duplicatesCardStatus,
@@ -121,16 +122,21 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
     toggleSection,
     updateDraftButtonGroup,
   } = props;
+  const duplicateActionSummary = formatDuplicateActionSummary(
+    draft,
+    duplicateAllowedCount,
+    duplicatePhotoModerationPolicy,
+  );
 
   return (
     <GlassCard
       className="settings-section settings-home-entry settings-home-entry--list stagger-in"
       style={{ animationDelay: '180ms', order: 15 }}
-      aria-label="Повторы"
+      aria-label="Антидубль"
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
-          title="Повторы"
+          title="Антидубль"
           summary={duplicatesHeaderSummary}
           status={duplicatesCardStatus}
           icon="repeat"
@@ -144,7 +150,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
       <SettingsDrilldownPanel
         id="settings-duplicates-content"
         open={expanded}
-        title="Повторы"
+        title="Антидубль"
         summary={duplicatesHeaderSummary}
         tone="rose"
         className="settings-drilldown__panel--ladder settings-drilldown__panel--duplicates"
@@ -163,31 +169,24 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
                   <div className="settings-native-toggle__title-wrap">
-                    <span className="settings-native-toggle__title">Удалять повторы</span>
+                    <span className="settings-native-toggle__title">Включить антидубль</span>
                     <SettingsHintAnchor
                       hintKey="antiDuplicate"
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
                       label="Пояснение для антидубля"
                     >
-                      Удаляет повтор. При новых нарушениях действие бота усиливается.
+                      Находит повторный текст и изображения. Действия зависят от выбранных правил и
+                      доступного режима фото.
                     </SettingsHintAnchor>
                   </div>
-                  <label className="settings-native-switch" aria-label="Включить удаление повторов">
+                  <label className="settings-native-switch" aria-label="Включить антидубль">
                     <input
                       type="checkbox"
                       checked={draft.antiDuplicateEnabled}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        setFieldValue('antiDuplicateEnabled', enabled);
-                        if (enabled) {
-                          applyDuplicateFlowConfig({
-                            duplicateBotMessageEnabled: true,
-                            duplicateWarnEnabled: true,
-                            duplicateMuteEnabled: true,
-                          });
-                        }
-                      }}
+                      onChange={(event) =>
+                        setFieldValue('antiDuplicateEnabled', event.target.checked)
+                      }
                     />
                     <span className="toggle-switch" aria-hidden>
                       <span className="toggle-switch__thumb" />
@@ -197,18 +196,22 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
               </div>
 
               {draft.antiDuplicateEnabled ? (
-                <div className="settings-policy">
-                  <div className="settings-policy__label-row">
-                    <span className="field__label">Как сравнивать текст</span>
+                <>
+                  <h3 className="duplicate-settings-group__title">Что проверять</h3>
+
+                  <div className="settings-policy">
+                    <div className="settings-policy__label-row">
+                      <span className="field__label">Текст</span>
+                    </div>
+                    <SegmentedControl
+                      value={draft.duplicateDetectionPreset}
+                      options={DUPLICATE_DETECTION_OPTIONS}
+                      onChange={applyDuplicateDetectionPreset}
+                      className="settings-mode-segments"
+                      ariaLabel="Как сравнивать текст"
+                    />
                   </div>
-                  <SegmentedControl
-                    value={draft.duplicateDetectionPreset}
-                    options={DUPLICATE_DETECTION_OPTIONS}
-                    onChange={applyDuplicateDetectionPreset}
-                    className="settings-mode-segments"
-                    ariaLabel="Как сравнивать текст"
-                  />
-                </div>
+                </>
               ) : null}
 
               {draft.antiDuplicateEnabled && draft.duplicateDetectionPreset === 'CUSTOM' ? (
@@ -314,9 +317,10 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
               {draft.antiDuplicateEnabled ? (
                 <Suspense fallback={null}>
                   <LazySettingsDuplicatePhotoControls
+                    actionSettings={draft}
                     enabled={draft.duplicatePhotoEnabled}
                     matchPreset={draft.duplicatePhotoMatchPreset}
-                    moderationMode={duplicatePhotoModerationMode}
+                    moderationPolicy={duplicatePhotoModerationPolicy}
                     scope={draft.duplicatePhotoScope}
                     onEnabledChange={(value) => setFieldValue('duplicatePhotoEnabled', value)}
                     onMatchPresetChange={(value) =>
@@ -328,10 +332,119 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
               ) : null}
 
               {draft.antiDuplicateEnabled ? (
+                <>
+                  <h3 className="duplicate-settings-group__title">Когда срабатывать</h3>
+
+                  <article
+                    className={cn(
+                      'duplicate-stage',
+                      (fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount) &&
+                        'field--error',
+                    )}
+                  >
+                    <div className="duplicate-stage__top">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="duplicate-stage__title">Условия удаления</span>
+                        <SettingsHintAnchor
+                          hintKey="duplicateModerationStart"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          label="Пояснение для условий удаления дублей"
+                        >
+                          За какой срок искать повторы и сколько дублей разрешить до удаления.
+                        </SettingsHintAnchor>
+                      </div>
+                    </div>
+
+                    <div className="duplicate-stage__controls">
+                      <label
+                        className={cn(
+                          'duplicate-stage__field',
+                          fieldErrors.duplicateWarnWindowSec && 'field--error',
+                        )}
+                      >
+                        <span className="duplicate-stage__field-label">Период проверки</span>
+                        <div className="duplicate-stage__input-wrap">
+                          <input
+                            type="number"
+                            min={1}
+                            max={168}
+                            step={1}
+                            value={duplicateWindowInputValue || String(duplicateSharedWindowHours)}
+                            onChange={(event) =>
+                              handleDuplicateWindowHoursChange(event.target.value)
+                            }
+                            onBlur={handleDuplicateWindowHoursBlur}
+                            aria-label="Период проверки дублей, часы"
+                          />
+                          <span className="duplicate-stage__suffix" aria-hidden>
+                            часы
+                          </span>
+                        </div>
+                      </label>
+
+                      <div
+                        className={cn(
+                          'duplicate-stage__field',
+                          fieldErrors.duplicateWarnMaxCount && 'field--error',
+                        )}
+                      >
+                        <span className="duplicate-stage__field-label">Разрешить дублей</span>
+                        <div
+                          className="duplicate-count-stepper"
+                          role="group"
+                          aria-label="Количество разрешённых дублей"
+                        >
+                          <button
+                            type="button"
+                            className="duplicate-count-stepper__button"
+                            onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, -1)}
+                            disabled={duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN}
+                            aria-label="Разрешить меньше дублей"
+                          >
+                            -
+                          </button>
+
+                          <output className="duplicate-count-stepper__value" aria-live="polite">
+                            {duplicateAllowedCount}
+                          </output>
+
+                          <button
+                            type="button"
+                            className="duplicate-count-stepper__button"
+                            onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, 1)}
+                            disabled={duplicateAllowedCount >= DUPLICATE_ALLOWED_COUNT_MAX}
+                            aria-label="Разрешить больше дублей"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount ? (
+                      <div className="duplicate-stage__errors">
+                        {fieldErrors.duplicateWarnWindowSec ? (
+                          <small className="field__hint">
+                            {fieldErrors.duplicateWarnWindowSec}
+                          </small>
+                        ) : null}
+                        {fieldErrors.duplicateWarnMaxCount ? (
+                          <small className="field__hint">{fieldErrors.duplicateWarnMaxCount}</small>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </article>
+
+                  <h3 className="duplicate-settings-group__title">Что делать</h3>
+                </>
+              ) : null}
+
+              {draft.antiDuplicateEnabled ? (
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
                     <div className="settings-native-toggle__title-wrap">
-                      <span className="settings-native-toggle__title">1. Объяснение</span>
+                      <span className="settings-native-toggle__title">Объяснить удаление</span>
                       <div className="settings-native-toggle__title-actions">
                         <EditToggleButton
                           label="Текст о дублях"
@@ -447,110 +560,9 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
 
               {draft.antiDuplicateEnabled ? (
                 <>
-                  <article
-                    className={cn(
-                      'duplicate-stage',
-                      (fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount) &&
-                        'field--error',
-                    )}
-                  >
-                    <div className="duplicate-stage__top">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="duplicate-stage__title">Порог реакции</span>
-                        <SettingsHintAnchor
-                          hintKey="duplicateModerationStart"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для порога дублей"
-                        >
-                          За какой срок считать повторы и сколько одинаковых сообщений пропустить.
-                        </SettingsHintAnchor>
-                      </div>
-                    </div>
-
-                    <div className="duplicate-stage__controls">
-                      <label
-                        className={cn(
-                          'duplicate-stage__field',
-                          fieldErrors.duplicateWarnWindowSec && 'field--error',
-                        )}
-                      >
-                        <span className="duplicate-stage__field-label">Интервал</span>
-                        <div className="duplicate-stage__input-wrap">
-                          <input
-                            type="number"
-                            min={1}
-                            max={168}
-                            step={1}
-                            value={duplicateWindowInputValue || String(duplicateSharedWindowHours)}
-                            onChange={(event) =>
-                              handleDuplicateWindowHoursChange(event.target.value)
-                            }
-                            onBlur={handleDuplicateWindowHoursBlur}
-                            aria-label="Интервал дублей, часы"
-                          />
-                          <span className="duplicate-stage__suffix" aria-hidden>
-                            часы
-                          </span>
-                        </div>
-                      </label>
-
-                      <div
-                        className={cn(
-                          'duplicate-stage__field',
-                          fieldErrors.duplicateWarnMaxCount && 'field--error',
-                        )}
-                      >
-                        <span className="duplicate-stage__field-label">До реакции</span>
-                        <div
-                          className="duplicate-count-stepper"
-                          role="group"
-                          aria-label="Количество дублей до реакции"
-                        >
-                          <button
-                            type="button"
-                            className="duplicate-count-stepper__button"
-                            onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, -1)}
-                            disabled={duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN}
-                            aria-label="Меньше дублей"
-                          >
-                            -
-                          </button>
-
-                          <output className="duplicate-count-stepper__value" aria-live="polite">
-                            {duplicateAllowedCount}
-                          </output>
-
-                          <button
-                            type="button"
-                            className="duplicate-count-stepper__button"
-                            onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, 1)}
-                            disabled={duplicateAllowedCount >= DUPLICATE_ALLOWED_COUNT_MAX}
-                            aria-label="Больше дублей"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount ? (
-                      <div className="duplicate-stage__errors">
-                        {fieldErrors.duplicateWarnWindowSec ? (
-                          <small className="field__hint">
-                            {fieldErrors.duplicateWarnWindowSec}
-                          </small>
-                        ) : null}
-                        {fieldErrors.duplicateWarnMaxCount ? (
-                          <small className="field__hint">{fieldErrors.duplicateWarnMaxCount}</small>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </article>
-
                   <div className="settings-native-toggle settings-native-toggle--nested">
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">2. Предупреждение</span>
+                      <span className="settings-native-toggle__title">Предупредить</span>
 
                       <label
                         className="settings-native-switch"
@@ -581,7 +593,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                   >
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">3. Ограничение</span>
+                        <span className="settings-native-toggle__title">Ограничить отправку</span>
                         <div className="settings-native-toggle__title-actions">
                           <button
                             type="button"
@@ -629,7 +641,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
 
                   <div className="settings-native-toggle settings-native-toggle--nested">
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">4. Блокировка</span>
+                      <span className="settings-native-toggle__title">Заблокировать</span>
 
                       <label
                         className="settings-native-switch"
@@ -650,6 +662,13 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
                       </label>
                     </div>
                   </div>
+
+                  <article className="duplicate-stage" aria-label="Итог действий антидубля">
+                    <div className="duplicate-stage__top">
+                      <span className="duplicate-stage__title">Итог</span>
+                    </div>
+                    <p className="settings-native-toggle__hint">{duplicateActionSummary}</p>
+                  </article>
                 </>
               ) : null}
             </div>

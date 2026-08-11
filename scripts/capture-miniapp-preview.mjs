@@ -544,14 +544,14 @@ const scenarioBehaviors = [
   {
     name: 'chat-settings-duplicates',
     beforeShot: async (page) => {
-      await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
     },
   },
   {
     name: 'chat-settings-duplicates-photos',
     beforeShot: async (page) => {
       const panel = page.locator('.settings-drilldown__panel--duplicates');
-      await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
       await panel.getByLabel('Включить проверку повторных фото').check();
       await panel.getByRole('radiogroup', { name: 'Где искать повторное фото' }).waitFor({
         state: 'visible',
@@ -565,7 +565,7 @@ const scenarioBehaviors = [
     name: 'chat-settings-duplicates-duration',
     beforeShot: async (page) => {
       const panel = page.locator('.settings-drilldown__panel--duplicates');
-      await openSettingsSection(page, 'Повторы', '.settings-drilldown__panel--duplicates');
+      await openSettingsSection(page, 'Антидубль', '.settings-drilldown__panel--duplicates');
       await panel.locator('.settings-duration-editor__preset--trigger').click();
       await panel.locator('.settings-duration-editor').waitFor({ state: 'visible' });
       await page.waitForTimeout(350);

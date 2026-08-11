@@ -1,4 +1,8 @@
 import {
+  capPhotoDuplicateAction,
+  isPhotoDuplicateMatchKindAllowed,
+  resolvePhotoDuplicateAllowedMatchKinds,
+  resolvePhotoDuplicateMaxAction,
   resolvePhotoDuplicateRolloutMode,
   resolvePhotoDuplicateRuntimePolicy,
 } from './photo-duplicate.runtime';
@@ -19,7 +23,13 @@ describe('photo duplicate runtime policy', () => {
         scope: 'SAME_AUTHOR',
         configService: config({}),
       }),
-    ).toEqual({ mode: 'shadow', enforce: false, advancedCanary: false });
+    ).toEqual({
+      mode: 'shadow',
+      enforce: false,
+      advancedCanary: false,
+      allowedMatchKinds: ['canonical_sha256'],
+      maxAction: 'DELETE_MESSAGE',
+    });
   });
 
   it('requires an explicit chat enforcement allowlist', () => {
@@ -69,7 +79,7 @@ describe('photo duplicate runtime policy', () => {
     ).toBe(true);
   });
 
-  it('allows an explicit global enforcement marker', () => {
+  it('rejects a wildcard global enforcement marker', () => {
     expect(
       resolvePhotoDuplicateRuntimePolicy({
         chatId: 'chat-1',
@@ -80,6 +90,57 @@ describe('photo duplicate runtime policy', () => {
           PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: '*',
         }),
       }).enforce,
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it('defaults enforcement to canonical matches and delete-only actions', () => {
+    const policy = resolvePhotoDuplicateRuntimePolicy({
+      chatId: 'chat-1',
+      preset: 'SAME_IMAGE',
+      scope: 'SAME_AUTHOR',
+      configService: config({
+        PHOTO_DUPLICATE_ROLLOUT_MODE: 'full',
+        PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: 'chat-1',
+      }),
+    });
+
+    expect(policy.maxAction).toBe('DELETE_MESSAGE');
+    expect(isPhotoDuplicateMatchKindAllowed(policy, 'canonical_sha256')).toBe(true);
+    expect(isPhotoDuplicateMatchKindAllowed(policy, 'pdq')).toBe(false);
+  });
+
+  it('parses only explicit recognized enforcement match kinds', () => {
+    expect(
+      resolvePhotoDuplicateAllowedMatchKinds(
+        config({ PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: 'pdq, canonical_sha256,pdq' }),
+      ),
+    ).toEqual(['canonical_sha256', 'pdq']);
+    expect(
+      resolvePhotoDuplicateAllowedMatchKinds(
+        config({ PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: 'unknown' }),
+      ),
+    ).toEqual([]);
+    expect(
+      resolvePhotoDuplicateAllowedMatchKinds(
+        config({ PHOTO_DUPLICATE_ALLOWED_MATCH_KINDS: 'platform_id,canonical_sha256' }),
+      ),
+    ).toEqual(['canonical_sha256']);
+  });
+
+  it('fails closed to delete-only for an absent or invalid maximum action', () => {
+    expect(resolvePhotoDuplicateMaxAction(config({}))).toBe('DELETE_MESSAGE');
+    expect(resolvePhotoDuplicateMaxAction(config({ PHOTO_DUPLICATE_MAX_ACTION: 'KICK' }))).toBe(
+      'DELETE_MESSAGE',
+    );
+  });
+
+  it.each([
+    ['WARN', 'DELETE_MESSAGE', null],
+    ['MUTE', 'WARN', 'WARN'],
+    ['BAN', 'MUTE', 'MUTE'],
+    ['WARN', 'BAN', 'WARN'],
+    ['BAN', 'BAN', 'BAN'],
+  ] as const)('caps %s at %s as %s', (action, maxAction, expected) => {
+    expect(capPhotoDuplicateAction(action, maxAction)).toBe(expected);
   });
 });

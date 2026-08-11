@@ -40,6 +40,14 @@ import {
   LINK_BLOCKED_DELETE_RULE_CODE,
   LINK_HISTORY_RECOVERY_RULE_CODE,
 } from './link-history-recovery.util';
+import {
+  isPhotoDuplicateMatchKindAllowed,
+  PHOTO_DUPLICATE_MATCH_KINDS,
+  type PhotoDuplicateMatchKind,
+  type PhotoDuplicateMatchPreset,
+  type PhotoDuplicateScope,
+} from './photo-duplicate/photo-duplicate.runtime';
+import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
 
 const DEFAULT_RETRY_HORIZON_MS = 24 * 60 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 5_000;
@@ -102,6 +110,13 @@ type IntentRow = {
   replacementCleanup?: boolean;
   botMessageAutoDeleteOnly?: boolean;
   linkFamilyDeleteOnly?: boolean;
+  photoDuplicateDeleteOnly?: boolean;
+};
+
+type PhotoDuplicateDeleteReasonFence = {
+  matchKind: PhotoDuplicateMatchKind;
+  preset: PhotoDuplicateMatchPreset;
+  scope: PhotoDuplicateScope;
 };
 
 type ManagedBotMessageOwner = {
@@ -170,6 +185,16 @@ class ModerationDeleteGuardedLinkMessageAbsentError extends Error {
   }
 }
 
+export class PhotoDuplicateDeleteIntentGuardRejectedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'PhotoDuplicateDeleteIntentGuardRejectedError';
+  }
+}
+
 type DeleteErrorDetails = {
   status: 'RETRYABLE' | 'WAITING_CAPABILITY' | 'AMBIGUOUS' | 'EXPIRED' | 'FAILED_TERMINAL';
   statusCode: number | null;
@@ -218,6 +243,7 @@ export class ModerationDeleteIntentService {
     private readonly queue: Queue<ModerationDeleteIntentJob>,
     configService: ConfigService,
     private readonly linkHistoryDeleteGuard: LinkHistoryDeleteGuardService,
+    private readonly photoDuplicateRuntimePolicy: PhotoDuplicateRuntimePolicyService,
   ) {
     this.mode = normalizeModerationDeleteIntentMode(
       configService.get('MODERATION_DELETE_INTENT_MODE'),
@@ -1311,6 +1337,9 @@ export class ModerationDeleteIntentService {
     options?: ModerationDeleteIntentAttemptOptions,
   ): Promise<void> {
     try {
+      // FLAG: A durable photo-only retry must regain authorization from current chat settings and
+      // a fresh shared runtime control immediately before every remote DELETE mutation.
+      await this.assertPhotoDuplicateDeleteIntentStillActionable(intent);
       if (intent.linkFamilyDeleteOnly === true) {
         const result = await this.linkHistoryDeleteGuard.assertIntentStillActionable({
           intentId: intent.id,
@@ -1333,6 +1362,111 @@ export class ModerationDeleteIntentService {
       }
       throw new ModerationDeletePreDispatchGuardError(error);
     }
+  }
+
+  private async assertPhotoDuplicateDeleteIntentStillActionable(intent: IntentRow): Promise<void> {
+    if (intent.photoDuplicateDeleteOnly !== true) {
+      return;
+    }
+
+    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+      where: { intentId: intent.id },
+      select: { ruleCode: true, metadata: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    if (reasons.length === 0) {
+      throw new PhotoDuplicateDeleteIntentGuardRejectedError(
+        'photo_duplicate_reason_missing',
+        'Photo duplicate delete intent lost its required reason metadata',
+      );
+    }
+
+    const fences: PhotoDuplicateDeleteReasonFence[] = [];
+    for (const reason of reasons) {
+      const metadata = this.asRecord(reason.metadata);
+      if (
+        reason.ruleCode !== 'DUPLICATE_DELETE' ||
+        this.firstString(metadata?.duplicateSource) !== 'photo'
+      ) {
+        // An independent reason still owns the same deletion, so photo rollout controls must not
+        // suppress it.
+        return;
+      }
+      const fence = this.parsePhotoDuplicateDeleteReasonFence(metadata);
+      if (!fence) {
+        throw new PhotoDuplicateDeleteIntentGuardRejectedError(
+          'photo_duplicate_reason_invalid',
+          'Photo duplicate delete intent has no valid preset, scope and match-kind fence',
+        );
+      }
+      fences.push(fence);
+    }
+
+    const settings = await this.prisma.chatSettings.findUnique({
+      where: { chatId: intent.chatId },
+      select: {
+        antiDuplicateEnabled: true,
+        duplicatePhotoEnabled: true,
+        duplicatePhotoMatchPreset: true,
+        duplicatePhotoScope: true,
+      },
+    });
+    if (!settings?.antiDuplicateEnabled || !settings.duplicatePhotoEnabled) {
+      throw new PhotoDuplicateDeleteIntentGuardRejectedError(
+        'photo_duplicate_settings_disabled',
+        'Photo duplicate deletion is no longer enabled for this chat',
+      );
+    }
+    if (
+      fences.some(
+        (fence) =>
+          fence.preset !== settings.duplicatePhotoMatchPreset ||
+          fence.scope !== settings.duplicatePhotoScope,
+      )
+    ) {
+      throw new PhotoDuplicateDeleteIntentGuardRejectedError(
+        'photo_duplicate_settings_changed',
+        'Photo duplicate preset or scope changed after the delete intent was recorded',
+      );
+    }
+
+    const policy = await this.photoDuplicateRuntimePolicy.resolveEffectivePolicy({
+      chatId: intent.chatId,
+      preset: settings.duplicatePhotoMatchPreset,
+      scope: settings.duplicatePhotoScope,
+    });
+    if (!policy.enforce) {
+      throw new PhotoDuplicateDeleteIntentGuardRejectedError(
+        'photo_duplicate_runtime_downgraded',
+        'Photo duplicate runtime control no longer authorizes deletion',
+      );
+    }
+    if (fences.some((fence) => !isPhotoDuplicateMatchKindAllowed(policy, fence.matchKind))) {
+      throw new PhotoDuplicateDeleteIntentGuardRejectedError(
+        'photo_duplicate_match_kind_disabled',
+        'Photo duplicate match kind is no longer authorized by runtime control',
+      );
+    }
+  }
+
+  private parsePhotoDuplicateDeleteReasonFence(
+    metadata: Record<string, unknown> | null,
+  ): PhotoDuplicateDeleteReasonFence | null {
+    const matchKind = this.firstString(metadata?.matchKind);
+    const preset = this.firstString(metadata?.preset);
+    const scope = this.firstString(metadata?.scope);
+    if (
+      !PHOTO_DUPLICATE_MATCH_KINDS.includes(matchKind as PhotoDuplicateMatchKind) ||
+      (preset !== 'SAME_IMAGE' && preset !== 'MINOR_EDITS') ||
+      (scope !== 'SAME_AUTHOR' && scope !== 'CHAT')
+    ) {
+      return null;
+    }
+    return {
+      matchKind: matchKind as PhotoDuplicateMatchKind,
+      preset,
+      scope,
+    };
   }
 
   private async persistIntent(
@@ -3332,6 +3466,25 @@ export class ModerationDeleteIntentService {
             ])})
         )
       ) AS "linkFamilyDeleteOnly"
+      ,
+      (
+        EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" photo_reason
+          WHERE photo_reason."intent_id" = ${intentIdColumn}
+            AND photo_reason."rule_code" = 'DUPLICATE_DELETE'
+            AND COALESCE(photo_reason."metadata"->>'duplicateSource', '') = 'photo'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" independent_reason
+          WHERE independent_reason."intent_id" = ${intentIdColumn}
+            AND (
+              independent_reason."rule_code" <> 'DUPLICATE_DELETE'
+              OR COALESCE(independent_reason."metadata"->>'duplicateSource', '') <> 'photo'
+            )
+        )
+      ) AS "photoDuplicateDeleteOnly"
     `;
   }
 

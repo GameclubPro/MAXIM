@@ -113,13 +113,23 @@ import { ChatContextCacheService } from '../chat-context/chat-context-cache.serv
 import * as rulesFence from './chat-rules-own-bot-message-classifier';
 import * as protectedEventFence from './own-bot-protected-event-classifier';
 import { ModerationExecutionService } from './moderation-execution.service';
+import {
+  createDuplicateDeleteAuthorizationGuard,
+  createDuplicateSanctionAuthorization,
+} from './duplicate-execution-guards';
+import {
+  buildModerationMessageViolationProcessingClaimKey,
+  claimPersistedModerationMessageViolation,
+  resolveDuplicateMessageActionClaim,
+  type DurableModerationMessageActionClaimResult,
+  type ModerationViolationMessageClaimModel,
+  type TerminalDuplicateSanctionEventModel,
+} from './moderation-message-action-claim';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import { resolveTrustedDuplicateStateRevision } from './duplicate-message-revision';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
-import type {
-  PhotoDuplicateModerationActionRequest,
-  PhotoDuplicateModerationActions,
-} from './photo-duplicate/photo-duplicate-moderation.actions';
+import type { PhotoDuplicateModerationActionRequest } from './photo-duplicate/photo-duplicate-moderation.actions';
 import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
 import {
   CHANNEL_AUTO_POST_ATTACH_STATUS,
@@ -476,6 +486,7 @@ type ApplySanctionActionParams = {
   trackAsGlobalSpammer?: boolean;
   persistModerationEvent: PersistModerationEvent;
   assertActiveLease?: () => void;
+  authorizeSanction?: () => Promise<boolean>;
 };
 
 type AutomaticSanctionStateFenceOutcome =
@@ -527,9 +538,7 @@ type ModerationDeleteExecutionResult = {
 };
 
 @Injectable()
-export class ModerationService
-  implements OnModuleInit, OnModuleDestroy, PhotoDuplicateModerationActions
-{
+export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
   private readonly logger = new Logger(ModerationService.name);
   private readonly replacementAttachMarkerStore: ReplacementAttachMarkerStore;
@@ -1157,6 +1166,7 @@ export class ModerationService
       backgroundExecution: true,
       actionClaimed: params.actionClaimed,
       assertActiveLease: params.lease.assertOwned,
+      authorizeDelete: params.authorizeDelete,
     } as const;
 
     if (params.outcome.kind === 'decision') {
@@ -1164,6 +1174,8 @@ export class ModerationService
         ...commonParams,
         decision: params.outcome.decision,
         muteDurationHours: params.settings.duplicateMuteDurationHours,
+        trackAsGlobalSpammer: false,
+        authorizeSanction: 'authorizeSanction' in params ? params.authorizeSanction : undefined,
       });
       return;
     }
@@ -1353,6 +1365,8 @@ export class ModerationService
       const rulesPublishedMessageId = chat.rulesPublishedMessageId;
 
       const updateType = this.readLowerString(update.type);
+      const { duplicateStateEventType, duplicateStateEventTimestampMs } =
+        resolveTrustedDuplicateStateRevision(updateType, createdAt, update.eventTimestampSource);
       const senderIsOwnBotInMessage =
         updateType === 'message_created' && senderId
           ? this.isCurrentBotSender(senderId, update)
@@ -1809,6 +1823,8 @@ export class ModerationService
         chatId,
         userId: senderId,
         messageId,
+        duplicateStateEventType,
+        duplicateStateEventTimestampMs,
         text,
         settings,
         domainAllowlist: chat.domainAllowlist,
@@ -3005,6 +3021,9 @@ export class ModerationService
     actionClaimed?: boolean;
     backgroundExecution?: boolean;
     assertActiveLease?: () => void;
+    trackAsGlobalSpammer?: boolean;
+    authorizeDelete?: () => Promise<boolean>;
+    authorizeSanction?: () => Promise<boolean>;
   }) {
     const {
       chatId,
@@ -3035,6 +3054,9 @@ export class ModerationService
       actionClaimed = false,
       backgroundExecution = false,
       assertActiveLease,
+      trackAsGlobalSpammer = true,
+      authorizeDelete,
+      authorizeSanction,
     } = params;
     let messageDeleted = false;
     const deleteIntent: EnsureModerationDeleteIntentInput = {
@@ -3065,29 +3087,28 @@ export class ModerationService
     await this.ensureModerationDeleteIntent(deleteIntent);
     assertActiveLease?.();
 
-    if (!actionClaimed) {
-      assertActiveLease?.();
-      const claimed = await this.claimMessageScopedModerationAction({
-        chatId,
-        userId,
-        messageId,
-        ruleCode: DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE,
-      });
-      if (!claimed) {
-        return;
-      }
-      assertActiveLease?.();
+    assertActiveLease?.();
+    const actionClaim = actionClaimed
+      ? 'claimed'
+      : await this.claimDuplicateMessageAction({ chatId, userId, messageId });
+    if (actionClaim === 'blocked') {
+      return;
     }
+    assertActiveLease?.();
 
+    const deleteAuthorization = createDuplicateDeleteAuthorizationGuard({
+      assertActiveLease,
+      authorizeDelete,
+    });
     assertActiveLease?.();
     try {
       this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
-      const deleteResult = await this.executeModerationDelete(
-        deleteIntent,
-        assertActiveLease
-          ? { beforeImmediateDeleteMutation: async () => assertActiveLease() }
-          : undefined,
-      );
+      const deleteResult = await this.executeModerationDelete(deleteIntent, {
+        beforeImmediateDeleteMutation: deleteAuthorization.beforeImmediateDeleteMutation,
+      });
+      if (deleteAuthorization.wasRejected()) {
+        return;
+      }
       assertActiveLease?.();
       messageDeleted = deleteResult.gone;
       if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
@@ -3119,6 +3140,9 @@ export class ModerationService
         this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
       }
     } catch (error: unknown) {
+      if (deleteAuthorization.wasRejected()) {
+        return;
+      }
       assertActiveLease?.();
       this.logger.warn(
         {
@@ -3180,6 +3204,13 @@ export class ModerationService
         });
       };
       assertActiveLease?.();
+      const sanctionAuthorization = createDuplicateSanctionAuthorization({
+        model: this.prisma.moderationEvent as unknown as TerminalDuplicateSanctionEventModel,
+        chatId,
+        userId,
+        messageId,
+        authorizeSanction,
+      });
       const sanctionEventPersisted = await this.applySanctionAction({
         chatId,
         userId,
@@ -3193,8 +3224,13 @@ export class ModerationService
         botSpeechStyle,
         persistModerationEvent,
         assertActiveLease,
+        trackAsGlobalSpammer,
+        authorizeSanction: sanctionAuthorization.authorize,
       });
       assertActiveLease?.();
+      if (sanctionAuthorization.wasRejected()) {
+        return;
+      }
 
       if (!sanctionEventPersisted) {
         assertActiveLease?.();
@@ -3305,6 +3341,7 @@ export class ModerationService
     actionClaimed?: boolean;
     backgroundExecution?: boolean;
     assertActiveLease?: () => void;
+    authorizeDelete?: () => Promise<boolean>;
   }) {
     const {
       chatId,
@@ -3334,6 +3371,7 @@ export class ModerationService
       actionClaimed = false,
       backgroundExecution = false,
       assertActiveLease,
+      authorizeDelete,
     } = params;
     let messageDeleted = false;
     const deleteIntent: EnsureModerationDeleteIntentInput = {
@@ -3377,15 +3415,19 @@ export class ModerationService
       assertActiveLease?.();
     }
 
+    const deleteAuthorization = createDuplicateDeleteAuthorizationGuard({
+      assertActiveLease,
+      authorizeDelete,
+    });
     assertActiveLease?.();
     try {
       this.markWebhookHotPathStage(hotPathProfile, 'duplicate-delete');
-      const deleteResult = await this.executeModerationDelete(
-        deleteIntent,
-        assertActiveLease
-          ? { beforeImmediateDeleteMutation: async () => assertActiveLease() }
-          : undefined,
-      );
+      const deleteResult = await this.executeModerationDelete(deleteIntent, {
+        beforeImmediateDeleteMutation: deleteAuthorization.beforeImmediateDeleteMutation,
+      });
+      if (deleteAuthorization.wasRejected()) {
+        return;
+      }
       assertActiveLease?.();
       messageDeleted = deleteResult.gone;
       if (deleteResult.deleted && !deleteResult.eventPersistedByIntent) {
@@ -3416,6 +3458,9 @@ export class ModerationService
         this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'duplicate-delete');
       }
     } catch (error: unknown) {
+      if (deleteAuthorization.wasRejected()) {
+        return;
+      }
       assertActiveLease?.();
       this.logger.warn(
         {
@@ -4241,7 +4286,11 @@ export class ModerationService
 
   private async applySanctionAction(params: ApplySanctionActionParams): Promise<boolean> {
     params.assertActiveLease?.();
-    if (params.action !== SanctionAction.BAN && params.action !== SanctionAction.MUTE) {
+    if (
+      params.action !== SanctionAction.BAN &&
+      params.action !== SanctionAction.MUTE &&
+      !(params.action === SanctionAction.WARN && params.authorizeSanction)
+    ) {
       return this.applySanctionActionUnderLock(
         params,
         this.combineModerationLeaseGuards(undefined, params.assertActiveLease),
@@ -4258,9 +4307,23 @@ export class ModerationService
             params.assertActiveLease,
           );
           await activeLeaseGuard?.assertOwned();
+          if (params.authorizeSanction) {
+            if (!(await params.authorizeSanction())) {
+              resolvedOutcome = false;
+              return false;
+            }
+            await activeLeaseGuard?.assertOwned();
+          }
           let outcome: boolean;
           if (this.isKnownRuntimeBotUserId(params.userId)) {
             outcome = await this.applySanctionActionUnderLock(params, activeLeaseGuard);
+          } else if (params.action === SanctionAction.WARN) {
+            await persistModerationDecisionWithoutAppliedSanction(
+              params.persistModerationEvent,
+              params.action,
+            );
+            await activeLeaseGuard?.assertOwned();
+            outcome = true;
           } else {
             await activeLeaseGuard?.assertOwned();
             const fence = await this.moderationSanctionStateFenceService.prepare({
@@ -5658,7 +5721,7 @@ export class ModerationService
     }
 
     const updateType = params.updateType?.trim().toLowerCase() || 'message';
-    const claimKey = this.buildMessageViolationProcessingClaimKey({
+    const claimKey = buildModerationMessageViolationProcessingClaimKey({
       chatId: params.chatId,
       userId: params.userId,
       messageId,
@@ -5683,14 +5746,27 @@ export class ModerationService
       return false;
     }
     if (persistedClaim === 'claimed') {
-      await this.markRedisMessageViolationProcessing(claimKey, {
-        chatId: params.chatId,
-        userId: params.userId,
-        messageId,
-        ruleCode: params.ruleCode,
-        updateType,
-      });
+      if (updateType !== 'message_action') {
+        await this.markRedisMessageViolationProcessing(claimKey, {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId,
+          ruleCode: params.ruleCode,
+          updateType,
+        });
+      }
       return true;
+    }
+
+    if (updateType === 'message_action') {
+      return persistedClaim === 'unsupported'
+        ? !(await this.hasPersistedBotModerationEventForMessageViolation({
+            chatId: params.chatId,
+            userId: params.userId,
+            messageId,
+            ruleCode: params.ruleCode,
+          }))
+        : false;
     }
 
     const redisClaim = await this.markRedisMessageViolationProcessing(claimKey, {
@@ -5737,24 +5813,19 @@ export class ModerationService
     });
   }
 
-  private buildMessageViolationProcessingClaimKey(params: {
+  private async claimDuplicateMessageAction(params: {
     chatId: string;
     userId: string;
     messageId: string;
-    ruleCode: string;
-    updateType: string;
-  }): { dedupeKey: string; counterKey: string; memberKey: string } {
-    const semanticHash = createHash('sha256')
-      .update(
-        `${params.chatId}:${params.userId}:${params.messageId}:${params.ruleCode}:${params.updateType}`,
-      )
-      .digest('hex');
-    const counterKey = `moderation:violation-message:v1:${params.chatId}:${params.ruleCode}`;
-    return {
-      dedupeKey: `v1:${semanticHash}`,
-      counterKey,
-      memberKey: `${counterKey}:msg:${semanticHash.slice(0, 32)}`,
-    };
+  }): Promise<DurableModerationMessageActionClaimResult> {
+    const ruleCode = DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE;
+    return resolveDuplicateMessageActionClaim({
+      ...params,
+      ruleCode,
+      claimPersisted: (input) => this.claimPersistedMessageViolationProcessing(input),
+      hasLegacyEvent: () =>
+        this.hasPersistedBotModerationEventForMessageViolation({ ...params, ruleCode }),
+    });
   }
 
   private async claimPersistedMessageViolationProcessing(params: {
@@ -5764,89 +5835,18 @@ export class ModerationService
     ruleCode: string;
     updateType: string;
     dedupeKey: string;
-  }): Promise<'claimed' | 'duplicate' | 'unavailable' | 'unsupported'> {
+    resumeKnownActionOwner?: boolean;
+  }): Promise<'claimed' | 'resumed' | 'duplicate' | 'unavailable' | 'unsupported'> {
     const claimModel = (
       this.prisma as unknown as {
-        moderationViolationMessageClaim?: {
-          create?: (args: {
-            data: {
-              dedupeKey: string;
-              messageActionKey: string | null;
-              chatId: string;
-              userId: string;
-              messageId: string;
-              ruleCode: string;
-              updateType: string;
-            };
-          }) => Promise<unknown>;
-          createMany?: (args: {
-            data: Array<{
-              dedupeKey: string;
-              messageActionKey: string | null;
-              chatId: string;
-              userId: string;
-              messageId: string;
-              ruleCode: string;
-              updateType: string;
-            }>;
-            skipDuplicates?: boolean;
-          }) => Promise<{ count: number }>;
-        };
+        moderationViolationMessageClaim?: PrismaService['moderationViolationMessageClaim'];
       }
     ).moderationViolationMessageClaim;
-    if (!claimModel?.create && !claimModel?.createMany) {
-      return 'unsupported';
-    }
-
-    const data = {
-      dedupeKey: params.dedupeKey,
-      messageActionKey:
-        params.updateType === 'message_action'
-          ? this.buildMessageScopedModerationActionClaimKey(params.chatId, params.messageId)
-          : null,
-      chatId: params.chatId,
-      userId: params.userId,
-      messageId: params.messageId,
-      ruleCode: params.ruleCode,
-      updateType: params.updateType,
-    };
-
-    try {
-      if (claimModel.createMany) {
-        const created = await claimModel.createMany({
-          data: [data],
-          skipDuplicates: true,
-        });
-        return created.count > 0 ? 'claimed' : 'duplicate';
-      }
-
-      await claimModel.create!({ data });
-      return 'claimed';
-    } catch (error: unknown) {
-      if (this.isPrismaKnownError(error, 'P2002')) {
-        return 'duplicate';
-      }
-
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          messageId: params.messageId,
-          ruleCode: params.ruleCode,
-          updateType: params.updateType,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to claim persisted moderation violation message marker',
-      );
-      return 'unavailable';
-    }
-  }
-
-  private buildMessageScopedModerationActionClaimKey(chatId: string, messageId: string): string {
-    const semanticHash = createHash('sha256')
-      .update(JSON.stringify([chatId, messageId]))
-      .digest('hex');
-    return `v1:${semanticHash}`;
+    return claimPersistedModerationMessageViolation({
+      model: claimModel as unknown as ModerationViolationMessageClaimModel | undefined,
+      data: params,
+      resumeKnownActionOwner: params.resumeKnownActionOwner,
+    });
   }
 
   private async markRedisMessageViolationProcessing(

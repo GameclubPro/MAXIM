@@ -60,6 +60,7 @@ import { PhotoFingerprintService } from './photo-duplicate/photo-fingerprint';
 import { SecurePhotoDownloader } from './photo-duplicate/secure-photo-downloader';
 import { PhotoDuplicateOrderingStore } from './photo-duplicate/photo-duplicate-ordering.store';
 import { PHOTO_DUPLICATE_MODERATION_ACTIONS } from './photo-duplicate/photo-duplicate-moderation.actions';
+import { PhotoDuplicateModerationActionsService } from './photo-duplicate/photo-duplicate-moderation-actions.service';
 import { PhotoDuplicateModerationService } from './photo-duplicate/photo-duplicate-moderation.service';
 import { LinkHistoryRecoveryService } from './link-history-recovery.service';
 
@@ -73,8 +74,9 @@ const moderationProviders = [
   },
   {
     provide: PHOTO_DUPLICATE_MODERATION_ACTIONS,
-    useExisting: ModerationService,
+    useExisting: PhotoDuplicateModerationActionsService,
   },
+  PhotoDuplicateModerationActionsService,
   ModerationExecutionService,
   ModerationAccessService,
   BotSpeechMediaService,

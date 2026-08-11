@@ -2629,6 +2629,7 @@ export type ManagedAutopostHubRuleDetails = z.infer<typeof managedAutopostHubRul
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,
   duplicatePhotoModerationMode: dupe.duplicatePhotoModerationModeSchema.default('OBSERVE'),
+  duplicatePhotoPolicyMatrix: dupe.duplicatePhotoPolicyMatrixSchema.optional(),
   rules: chatRulesSchema,
   header: managedEntityHeaderSchema,
   botSpeechPreviewProfile: botSpeechPreviewProfileSchema.nullable().default(null),

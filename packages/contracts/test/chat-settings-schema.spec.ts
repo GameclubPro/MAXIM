@@ -7,6 +7,7 @@ import {
   chatRulesSchema,
   chatSettingsScreenResponseSchema,
   chatSettingsSchema,
+  duplicatePhotoEffectivePolicySchema,
   normalizeHttpButtonUrl,
   sendBroadcastRequestSchema,
   updateChatRulesRequestSchema,
@@ -97,6 +98,9 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(chatSettingsScreenResponseSchema.parse(screen).duplicatePhotoModerationMode).toBe(
       'OBSERVE',
     );
+    expect(
+      chatSettingsScreenResponseSchema.parse(screen).duplicatePhotoPolicyMatrix,
+    ).toBeUndefined();
     for (const mode of ['OFF', 'OBSERVE', 'DELETE_ONLY', 'FULL'] as const) {
       expect(
         chatSettingsScreenResponseSchema.parse({
@@ -111,6 +115,96 @@ describe('chatSettingsSchema duplicate flow validation', () => {
         duplicatePhotoModerationMode: 'ENFORCE',
       }).success,
     ).toBe(false);
+
+    const policyMatrix = {
+      base: {
+        moderationMode: 'DELETE_ONLY' as const,
+        actionCeiling: 'DELETE_MESSAGE' as const,
+        allowedMatchKinds: ['canonical_sha256' as const],
+      },
+      advanced: {
+        moderationMode: 'FULL' as const,
+        actionCeiling: 'MUTE' as const,
+        allowedMatchKinds: ['canonical_sha256' as const, 'pdq' as const],
+      },
+    };
+    expect(
+      chatSettingsScreenResponseSchema.parse({
+        ...screen,
+        duplicatePhotoPolicyMatrix: policyMatrix,
+      }).duplicatePhotoPolicyMatrix,
+    ).toEqual(policyMatrix);
+    expect(
+      chatSettingsScreenResponseSchema.safeParse({
+        ...screen,
+        duplicatePhotoPolicyMatrix: {
+          ...policyMatrix,
+          advanced: { ...policyMatrix.advanced, actionCeiling: 'KICK' },
+        },
+      }).success,
+    ).toBe(false);
+    for (const invalidPolicy of [
+      {
+        moderationMode: 'FULL',
+        actionCeiling: 'DELETE_MESSAGE',
+        allowedMatchKinds: ['canonical_sha256'],
+      },
+      {
+        moderationMode: 'DELETE_ONLY',
+        actionCeiling: 'DELETE_MESSAGE',
+        allowedMatchKinds: [],
+      },
+      {
+        moderationMode: 'DELETE_ONLY',
+        actionCeiling: 'DELETE_MESSAGE',
+        allowedMatchKinds: ['platform_id'],
+      },
+      {
+        moderationMode: 'FULL',
+        actionCeiling: 'BAN',
+        allowedMatchKinds: ['platform_id'],
+      },
+      {
+        moderationMode: 'FULL',
+        actionCeiling: 'MUTE',
+        allowedMatchKinds: ['canonical_sha256', 'canonical_sha256'],
+      },
+    ]) {
+      expect(
+        chatSettingsScreenResponseSchema.safeParse({
+          ...screen,
+          duplicatePhotoPolicyMatrix: {
+            ...policyMatrix,
+            advanced: invalidPolicy,
+          },
+        }).success,
+      ).toBe(false);
+    }
+
+    expect(
+      duplicatePhotoEffectivePolicySchema.parse({
+        moderationMode: 'OBSERVE',
+        actionCeiling: 'BAN',
+        allowedMatchKinds: ['platform_id'],
+      }),
+    ).toEqual({
+      moderationMode: 'OBSERVE',
+      actionCeiling: 'BAN',
+      allowedMatchKinds: ['platform_id'],
+    });
+    for (const allowedMatchKinds of [
+      ['canonical_sha256'],
+      ['pdq'],
+      ['platform_id', 'canonical_sha256'],
+    ] as const) {
+      expect(
+        duplicatePhotoEffectivePolicySchema.safeParse({
+          moderationMode: 'DELETE_ONLY',
+          actionCeiling: 'DELETE_MESSAGE',
+          allowedMatchKinds,
+        }).success,
+      ).toBe(true);
+    }
   });
 
   it('keeps every channel automation toggle disabled by default', () => {

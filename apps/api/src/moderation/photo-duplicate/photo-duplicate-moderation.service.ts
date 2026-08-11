@@ -1,5 +1,4 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
 import { createHash } from 'node:crypto';
 import { MaxBotContextService } from '../../max/max-bot-context.service';
@@ -18,14 +17,23 @@ import {
   DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS,
   type ChatAdminCheckResult,
 } from '../moderation.service.support';
-import type { DuplicateAction } from '../rule-engine.contract';
+import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
+import type { DuplicateAction, DuplicateDecision, DuplicateHit } from '../rule-engine.contract';
 import {
   extractLogicalPhotoAlbumResult,
   type LogicalPhotoAlbum,
 } from './photo-attachment-extractor';
 import { PhotoDuplicateAnalysisService } from './photo-duplicate-analysis.service';
+import type {
+  PhotoHistoryViolationAction,
+  PhotoHistoryViolationActionBinding,
+} from './photo-duplicate-history.store';
 import {
+  buildPhotoDuplicateActionClaimDedupeKey,
+  PHOTO_DUPLICATE_ACTION_CLAIM_DEDUPE_PREFIX,
+  PHOTO_DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE,
   PHOTO_DUPLICATE_MODERATION_ACTIONS,
+  type ActionablePhotoDuplicateBinding,
   type PhotoDuplicateModerationActions,
 } from './photo-duplicate-moderation.actions';
 import type { PhotoDuplicateOrderingLease } from './photo-duplicate-ordering.store';
@@ -35,20 +43,24 @@ import {
   type PhotoDuplicateJob,
 } from './photo-duplicate.queue';
 import {
-  resolvePhotoDuplicateRuntimePolicy,
+  capPhotoDuplicateAction,
+  isPhotoDuplicateMatchKindAllowed,
+  restrictPhotoDuplicateMaxAction,
+  type PhotoDuplicateMatchKind,
+  type PhotoDuplicateMaxAction,
   type PhotoDuplicateRolloutMode,
 } from './photo-duplicate.runtime';
+import {
+  PhotoDuplicateRuntimePolicyService,
+  type EffectivePhotoDuplicateRuntimePolicy,
+} from './photo-duplicate-runtime-policy.service';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from './photo-fingerprint';
 
-const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
-const PHOTO_DUPLICATE_ACTION_BINDING_VERSION = 1;
+const PHOTO_DUPLICATE_ACTION_BINDING_VERSION = 2;
 
-export type PhotoDuplicateIntendedAction = 'HIT' | DuplicateAction;
+export type PhotoDuplicateIntendedAction = PhotoHistoryViolationAction;
 
-export type PhotoDuplicateActionBinding = {
-  intendedAction: PhotoDuplicateIntendedAction;
-  configDigest: string;
-};
+export type PhotoDuplicateActionBinding = PhotoHistoryViolationActionBinding;
 
 type PhotoDuplicateJobContext = {
   entityType: ChatEntityType;
@@ -64,6 +76,21 @@ type PhotoDuplicateMessageActionFence = {
   persistedBinding: PhotoDuplicateActionBinding | null;
 };
 
+type FreshPhotoDuplicateAuthorization = {
+  context: PhotoDuplicateJobContext;
+  flow: DuplicateFlowConfig;
+  policy: EffectivePhotoDuplicateRuntimePolicy;
+};
+
+export class PhotoDuplicateViolationCommitUnavailableError extends Error {
+  readonly retryable = true;
+
+  constructor() {
+    super('Photo duplicate violation commit is unavailable');
+    this.name = 'PhotoDuplicateViolationCommitUnavailableError';
+  }
+}
+
 @Injectable()
 export class PhotoDuplicateModerationService {
   private readonly logger = new Logger(PhotoDuplicateModerationService.name);
@@ -73,7 +100,8 @@ export class PhotoDuplicateModerationService {
     private readonly analysisService: PhotoDuplicateAnalysisService,
     private readonly maxClient: MaxClientService,
     private readonly moderationAccessService: ModerationAccessService,
-    private readonly configService: ConfigService,
+    private readonly moderationDeleteIntents: ModerationDeleteIntentService,
+    private readonly runtimePolicy: PhotoDuplicateRuntimePolicyService,
     private readonly maxBotContextService: MaxBotContextService,
     private readonly maxBotLinkService: MaxBotLinkService,
     @Inject(PHOTO_DUPLICATE_MODERATION_ACTIONS)
@@ -192,11 +220,10 @@ export class PhotoDuplicateModerationService {
       return;
     }
 
-    const initialPolicy = resolvePhotoDuplicateRuntimePolicy({
+    const initialPolicy = await this.runtimePolicy.resolveEffectivePolicy({
       chatId: album.chatId,
       preset: initialContext.settings.duplicatePhotoMatchPreset,
       scope: initialContext.settings.duplicatePhotoScope,
-      configService: this.configService,
     });
     if (initialPolicy.mode === 'off') {
       return;
@@ -211,18 +238,33 @@ export class PhotoDuplicateModerationService {
     const actionEligible: boolean =
       jobActionEligible &&
       initialPolicy.enforce &&
+      this.moderationDeleteIntents.getRolloutForRule(album.chatId, 'DUPLICATE_DELETE') ===
+        'execute' &&
       !initialActionFence.blocked &&
       initialAdminCheck !== null &&
       initialAdminCheck.source !== 'local_fallback' &&
       !releaseSuppressesEnforcement;
+    const authorizationConfigDigest = buildPhotoDuplicateAuthorizationConfigDigest({
+      settings: initialContext.settings,
+      flow,
+      rolloutMode: initialPolicy.mode,
+      allowedMatchKinds: initialPolicy.allowedMatchKinds,
+      maxAction: initialPolicy.maxAction,
+      rulesPublishedUrl: initialContext.rulesPublishedUrl,
+      rulesPublishedMessageId: initialContext.rulesPublishedMessageId,
+    });
 
+    // FLAG: Analysis is observation-only. It may establish a baseline in shadow mode, but the
+    // sanction counter is committed only after every execution-time guard below has passed.
     lease.assertOwned();
     const analysis = await this.analysisService.analyzeAlbum({
       album,
       ttlSeconds: flow.windowSec + 1,
       scope: initialContext.settings.duplicatePhotoScope,
       preset: initialContext.settings.duplicatePhotoMatchPreset,
-      commitViolation: actionEligible,
+      actionEligible,
+      authorizationConfigDigest,
+      allowedViolationMatchKinds: initialPolicy.allowedMatchKinds,
       resolveActionEligibility: lease.resolveActionEligibility,
     });
     lease.assertOwned();
@@ -266,17 +308,35 @@ export class PhotoDuplicateModerationService {
       return;
     }
 
-    const actionPolicy = resolvePhotoDuplicateRuntimePolicy({
+    const actionPolicy = await this.runtimePolicy.resolveEffectivePolicy({
       chatId: album.chatId,
       preset: actionContext.settings.duplicatePhotoMatchPreset,
       scope: actionContext.settings.duplicatePhotoScope,
-      configService: this.configService,
     });
-    if (!actionPolicy.enforce) {
+    // FLAG: The match kind is known only after analysis. Re-read policy and reject it before any
+    // immunity consumption or action binding; a global full rollout alone cannot authorize PDQ.
+    const matchKind = observation.matchKind;
+    if (
+      !actionPolicy.enforce ||
+      matchKind === null ||
+      !isPhotoDuplicateMatchKindAllowed(actionPolicy, matchKind)
+    ) {
       return;
     }
     const actionFlow = resolveDuplicateFlowConfig(actionContext.settings);
     if (!duplicateFlowConfigsEqual(flow, actionFlow)) {
+      return;
+    }
+    const actionAuthorizationConfigDigest = buildPhotoDuplicateAuthorizationConfigDigest({
+      settings: actionContext.settings,
+      flow: actionFlow,
+      rolloutMode: actionPolicy.mode,
+      allowedMatchKinds: actionPolicy.allowedMatchKinds,
+      maxAction: actionPolicy.maxAction,
+      rulesPublishedUrl: actionContext.rulesPublishedUrl,
+      rulesPublishedMessageId: actionContext.rulesPublishedMessageId,
+    });
+    if (actionAuthorizationConfigDigest !== authorizationConfigDigest) {
       return;
     }
 
@@ -284,29 +344,52 @@ export class PhotoDuplicateModerationService {
     const provisionalOutcome = resolveDuplicateFlowOutcome({
       settings: actionContext.settings,
       repeatCount: observation.repeatCount,
-      hash: observation.clusterId.slice(0, 20),
+      hash: observation.sanctionClusterId.slice(0, 20),
       fingerprintType,
     });
-    if (!provisionalOutcome.hit) {
-      return;
-    }
-    const intendedAction: PhotoDuplicateIntendedAction =
-      provisionalOutcome.decision && actionPolicy.mode === 'full'
-        ? provisionalOutcome.decision.action
-        : 'HIT';
+    const enforcementMode = resolveEffectivePhotoDuplicateMode(
+      initialPolicy.mode,
+      actionPolicy.mode,
+    );
+    // FLAG: A photo job may only retain the least permissive action ceiling it has observed.
+    // DELETE_MESSAGE maps every configured WARN/MUTE/BAN decision back to a delete-only hit.
+    const maxAction = restrictPhotoDuplicateMaxAction(
+      initialPolicy.maxAction,
+      actionPolicy.maxAction,
+    );
+    const provisionalActionOutcome = provisionalOutcome.hit
+      ? capPhotoDuplicateOutcome({
+          hit: provisionalOutcome.hit,
+          decision: provisionalOutcome.decision,
+          enforcementMode,
+          maxAction,
+          settings: actionContext.settings,
+        })
+      : null;
+    const intendedAction: PhotoDuplicateIntendedAction = provisionalActionOutcome
+      ? provisionalActionOutcome.kind === 'decision'
+        ? provisionalActionOutcome.decision.action
+        : 'HIT'
+      : 'NONE';
     const actionBinding = buildPhotoDuplicateActionBinding({
       settings: actionContext.settings,
       flow: actionFlow,
-      rolloutMode: actionPolicy.mode,
+      rolloutMode: enforcementMode,
       intendedAction,
+      matchKind,
+      maxAction,
       rulesPublishedUrl: actionContext.rulesPublishedUrl,
       rulesPublishedMessageId: actionContext.rulesPublishedMessageId,
     });
+    const actionableBinding: ActionablePhotoDuplicateBinding | null =
+      intendedAction === 'NONE'
+        ? null
+        : { intendedAction, configDigest: actionBinding.configDigest };
     const actionFence = await this.resolveMessageActionFence({
       chatId: album.chatId,
       userId: album.senderId,
       messageId: album.messageId,
-      expectedBinding: actionBinding,
+      ...(actionableBinding ? { expectedBinding: actionableBinding } : {}),
     });
     if (actionFence.blocked) {
       return;
@@ -328,29 +411,46 @@ export class PhotoDuplicateModerationService {
       return;
     }
 
-    const duplicateMetadata = {
-      duplicateSource: 'photo',
-      fingerprintType,
-      albumSize: analysis.imageCount,
-      matchKind: observation.matchKind,
-      distance: observation.matchedDistance,
-      preset: actionContext.settings.duplicatePhotoMatchPreset,
-      scope: actionContext.settings.duplicatePhotoScope,
-      algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
-      rolloutMode: actionPolicy.mode,
-      photoDuplicateActionBindingVersion: PHOTO_DUPLICATE_ACTION_BINDING_VERSION,
-      photoDuplicateIntendedAction: actionBinding.intendedAction,
-      photoDuplicateFlowConfigDigest: actionBinding.configDigest,
-    } satisfies Record<string, unknown>;
-    const outcome = resolveDuplicateFlowOutcome({
-      settings: actionContext.settings,
-      repeatCount: observation.repeatCount,
-      hash: observation.clusterId.slice(0, 20),
-      fingerprintType,
-      metadata: duplicateMetadata,
-    });
-    if (!outcome.hit) {
-      return;
+    let actionOutcome: PhotoDuplicateExecutionOutcome | null = null;
+    if (intendedAction !== 'NONE') {
+      const duplicateMetadata = {
+        duplicateSource: 'photo',
+        fingerprintType,
+        albumSize: analysis.imageCount,
+        matchKind,
+        distance: observation.matchedDistance,
+        preset: actionContext.settings.duplicatePhotoMatchPreset,
+        scope: actionContext.settings.duplicatePhotoScope,
+        algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+        rolloutMode: enforcementMode,
+        maxAction,
+        photoDuplicateActionBindingVersion: PHOTO_DUPLICATE_ACTION_BINDING_VERSION,
+        photoDuplicateIntendedAction: actionBinding.intendedAction,
+        photoDuplicateFlowConfigDigest: actionBinding.configDigest,
+      } satisfies Record<string, unknown>;
+      const outcome = resolveDuplicateFlowOutcome({
+        settings: actionContext.settings,
+        repeatCount: observation.repeatCount,
+        hash: observation.sanctionClusterId.slice(0, 20),
+        fingerprintType,
+        metadata: duplicateMetadata,
+      });
+      if (!outcome.hit) {
+        return;
+      }
+      actionOutcome = capPhotoDuplicateOutcome({
+        hit: outcome.hit,
+        decision: outcome.decision,
+        enforcementMode,
+        maxAction,
+        settings: actionContext.settings,
+      });
+      if (actionOutcome.kind === 'decision' && actionOutcome.decision.action !== intendedAction) {
+        return;
+      }
+      if (actionOutcome.kind === 'hit' && intendedAction !== 'HIT') {
+        return;
+      }
     }
 
     if (!(await lease.resolveActionEligibility())) {
@@ -358,11 +458,12 @@ export class PhotoDuplicateModerationService {
     }
     lease.assertOwned();
     if (
-      await this.actions.consumePhotoDuplicateParticipantImmunity({
+      actionOutcome &&
+      (await this.actions.consumePhotoDuplicateParticipantImmunity({
         chatId: album.chatId,
         userId: album.senderId,
         nightModeTimezone: actionContext.settings.nightModeTimezone,
-      })
+      }))
     ) {
       return;
     }
@@ -380,22 +481,346 @@ export class PhotoDuplicateModerationService {
       return;
     }
     lease.assertOwned();
-    await this.actions.executePhotoDuplicateAction({
+    // FLAG: This is the last execution-time ceiling read before the counter commit. Combine every
+    // snapshot monotonically so a mid-job upgrade cannot strengthen the action and a downgrade
+    // cancels the stale dispatch.
+    const finalPolicy = await this.runtimePolicy.resolveEffectivePolicy({
+      chatId: album.chatId,
+      preset: actionContext.settings.duplicatePhotoMatchPreset,
+      scope: actionContext.settings.duplicatePhotoScope,
+    });
+    const finalAuthorizationConfigDigest = buildPhotoDuplicateAuthorizationConfigDigest({
+      settings: actionContext.settings,
+      flow: actionFlow,
+      rolloutMode: finalPolicy.mode,
+      allowedMatchKinds: finalPolicy.allowedMatchKinds,
+      maxAction: finalPolicy.maxAction,
+      rulesPublishedUrl: actionContext.rulesPublishedUrl,
+      rulesPublishedMessageId: actionContext.rulesPublishedMessageId,
+    });
+    if (
+      !finalPolicy.enforce ||
+      !isPhotoDuplicateMatchKindAllowed(finalPolicy, matchKind) ||
+      finalAuthorizationConfigDigest !== authorizationConfigDigest ||
+      resolveEffectivePhotoDuplicateMode(
+        initialPolicy.mode,
+        actionPolicy.mode,
+        finalPolicy.mode,
+      ) !== enforcementMode ||
+      restrictPhotoDuplicateMaxAction(
+        initialPolicy.maxAction,
+        actionPolicy.maxAction,
+        finalPolicy.maxAction,
+      ) !== maxAction
+    ) {
+      return;
+    }
+    lease.assertOwned();
+    const precommitFence = await this.resolveMessageActionFence({
+      chatId: album.chatId,
+      userId: album.senderId,
+      messageId: album.messageId,
+      ...(actionableBinding ? { expectedBinding: actionableBinding } : {}),
+    });
+    if (precommitFence.blocked) {
+      return;
+    }
+    let actionClaimed = precommitFence.actionClaimed;
+    if (actionableBinding && !actionClaimed) {
+      lease.assertOwned();
+      const claim = await this.actions.claimPhotoDuplicateAction({
+        chatId: album.chatId,
+        userId: album.senderId,
+        messageId: album.messageId,
+        actionBinding: actionableBinding,
+      });
+      lease.assertOwned();
+      if (claim === 'blocked') {
+        return;
+      }
+      actionClaimed = true;
+    }
+    lease.assertOwned();
+    const violationCommit = await this.analysisService.commitViolation({
+      album,
+      albumHash: analysis.albumHash,
+      ttlSeconds: actionFlow.windowSec + 1,
+      scope: actionContext.settings.duplicatePhotoScope,
+      preset: actionContext.settings.duplicatePhotoMatchPreset,
+      observationClusterId: observation.clusterId,
+      matchKind,
+      expectedRepeatCount: observation.repeatCount,
+      allowedMatchKinds: finalPolicy.allowedMatchKinds,
+      authorizationConfigDigest,
+      actionBinding,
+    });
+    lease.assertOwned();
+    if (violationCommit.kind !== 'available') {
+      throw new PhotoDuplicateViolationCommitUnavailableError();
+    }
+    if (
+      violationCommit.repeatCount !== observation.repeatCount ||
+      violationCommit.sanctionClusterId !== observation.sanctionClusterId ||
+      !violationCommit.bindingMatches ||
+      !photoDuplicateActionBindingsEqual(violationCommit.actionBinding, actionBinding)
+    ) {
+      this.logger.warn(
+        {
+          chatId: album.chatId,
+          messageId: album.messageId,
+          bindingMatches: violationCommit.bindingMatches,
+        },
+        'Photo duplicate violation commit did not match its immutable observation binding',
+      );
+      return;
+    }
+    if (!actionOutcome || !actionableBinding) {
+      return;
+    }
+    const dispatchContext = await this.loadJobContext(album.chatId);
+    if (
+      !dispatchContext ||
+      dispatchContext.entityType !== ChatEntityType.CHAT ||
+      !dispatchContext.settings.antiDuplicateEnabled ||
+      !dispatchContext.settings.duplicatePhotoEnabled
+    ) {
+      return;
+    }
+    const dispatchFlow = resolveDuplicateFlowConfig(dispatchContext.settings);
+    const dispatchPolicy = await this.runtimePolicy.resolveEffectivePolicy({
+      chatId: album.chatId,
+      preset: dispatchContext.settings.duplicatePhotoMatchPreset,
+      scope: dispatchContext.settings.duplicatePhotoScope,
+    });
+    const dispatchAuthorizationConfigDigest = buildPhotoDuplicateAuthorizationConfigDigest({
+      settings: dispatchContext.settings,
+      flow: dispatchFlow,
+      rolloutMode: dispatchPolicy.mode,
+      allowedMatchKinds: dispatchPolicy.allowedMatchKinds,
+      maxAction: dispatchPolicy.maxAction,
+      rulesPublishedUrl: dispatchContext.rulesPublishedUrl,
+      rulesPublishedMessageId: dispatchContext.rulesPublishedMessageId,
+    });
+    if (
+      !dispatchPolicy.enforce ||
+      !isPhotoDuplicateMatchKindAllowed(dispatchPolicy, matchKind) ||
+      dispatchAuthorizationConfigDigest !== authorizationConfigDigest
+    ) {
+      return;
+    }
+    const actionRequest = {
       update,
       chatId: album.chatId,
       userId: album.senderId,
       messageId: album.messageId,
-      settings: actionContext.settings,
-      rulesPublishedUrl: actionContext.rulesPublishedUrl,
-      rulesPublishedMessageId: actionContext.rulesPublishedMessageId,
-      actionClaimed: actionFence.actionClaimed,
+      settings: dispatchContext.settings,
+      rulesPublishedUrl: dispatchContext.rulesPublishedUrl,
+      rulesPublishedMessageId: dispatchContext.rulesPublishedMessageId,
+      actionClaimed,
       lease,
-      outcome:
-        outcome.decision && actionPolicy.mode === 'full'
-          ? { kind: 'decision', decision: outcome.decision }
-          : { kind: 'hit', hit: outcome.hit },
-    });
+      authorizeDelete: () =>
+        this.resolveFreshDeleteAuthorization({
+          album,
+          expectedBinding: actionableBinding,
+          authorizationConfigDigest,
+          matchKind,
+          lease,
+        }),
+    } as const;
+    if (actionOutcome.kind === 'decision') {
+      await this.actions.executePhotoDuplicateAction({
+        ...actionRequest,
+        outcome: actionOutcome,
+        authorizeSanction: () =>
+          this.resolveFreshSanctionAuthorization({
+            album,
+            expectedDecision: actionOutcome.decision,
+            expectedBinding: actionableBinding,
+            authorizationConfigDigest,
+            matchKind,
+            lease,
+          }),
+      });
+    } else {
+      await this.actions.executePhotoDuplicateAction({ ...actionRequest, outcome: actionOutcome });
+    }
     lease.assertOwned();
+  }
+
+  private async resolveFreshDeleteAuthorization(params: {
+    album: LogicalPhotoAlbum;
+    expectedBinding: ActionablePhotoDuplicateBinding;
+    authorizationConfigDigest: string;
+    matchKind: PhotoDuplicateMatchKind;
+    lease: PhotoDuplicateOrderingLease;
+  }): Promise<boolean> {
+    return Boolean(
+      await this.resolveFreshActionAuthorization({
+        ...params,
+        requireFullMode: false,
+      }),
+    );
+  }
+
+  // FLAG: DELETE may take long enough for chat policy or membership to change. The actions port
+  // invokes this callback inside the sanction lock, immediately before WARN/MUTE/BAN.
+  private async resolveFreshSanctionAuthorization(params: {
+    album: LogicalPhotoAlbum;
+    expectedDecision: DuplicateDecision;
+    expectedBinding: ActionablePhotoDuplicateBinding | null;
+    authorizationConfigDigest: string;
+    matchKind: PhotoDuplicateMatchKind;
+    lease: PhotoDuplicateOrderingLease;
+  }): Promise<boolean> {
+    if (!params.expectedBinding) {
+      return false;
+    }
+    const authorization = await this.resolveFreshActionAuthorization({
+      album: params.album,
+      expectedBinding: params.expectedBinding,
+      authorizationConfigDigest: params.authorizationConfigDigest,
+      matchKind: params.matchKind,
+      lease: params.lease,
+      requireFullMode: true,
+    });
+    if (!authorization) {
+      return false;
+    }
+    const { context, flow, policy } = authorization;
+    const outcome = resolveDuplicateFlowOutcome({
+      settings: context.settings,
+      repeatCount: params.expectedDecision.count,
+      hash: params.expectedDecision.hash,
+      fingerprintType: params.expectedDecision.fingerprintType,
+      metadata: params.expectedDecision.metadata,
+    });
+    if (!outcome.hit) {
+      return false;
+    }
+    const currentOutcome = capPhotoDuplicateOutcome({
+      hit: outcome.hit,
+      decision: outcome.decision,
+      enforcementMode: 'full',
+      maxAction: policy.maxAction,
+      settings: context.settings,
+    });
+    if (
+      currentOutcome.kind !== 'decision' ||
+      currentOutcome.decision.action !== params.expectedDecision.action
+    ) {
+      return false;
+    }
+    const currentBinding = buildPhotoDuplicateActionBinding({
+      settings: context.settings,
+      flow,
+      rolloutMode: policy.mode,
+      intendedAction: currentOutcome.decision.action,
+      matchKind: params.matchKind,
+      maxAction: policy.maxAction,
+      rulesPublishedUrl: context.rulesPublishedUrl,
+      rulesPublishedMessageId: context.rulesPublishedMessageId,
+    });
+    if (!photoDuplicateActionBindingsEqual(currentBinding, params.expectedBinding)) {
+      return false;
+    }
+    params.lease.assertOwned();
+    return true;
+  }
+
+  // FLAG: Runtime control is the final asynchronous read. No awaited work may follow it before
+  // the caller crosses the DELETE or sanction mutation boundary.
+  private async resolveFreshActionAuthorization(params: {
+    album: LogicalPhotoAlbum;
+    expectedBinding: ActionablePhotoDuplicateBinding;
+    authorizationConfigDigest: string;
+    matchKind: PhotoDuplicateMatchKind;
+    lease: PhotoDuplicateOrderingLease;
+    requireFullMode: boolean;
+  }): Promise<FreshPhotoDuplicateAuthorization | null> {
+    params.lease.assertOwned();
+    const actionFence = await this.resolveMessageActionFence({
+      chatId: params.album.chatId,
+      userId: params.album.senderId,
+      messageId: params.album.messageId,
+      expectedBinding: params.expectedBinding,
+    });
+    if (actionFence.blocked || !actionFence.actionClaimed) {
+      return null;
+    }
+    const adminCheck = await this.resolveFreshAdminCheck({
+      chatId: params.album.chatId,
+      userId: params.album.senderId,
+      localAdminUserIds: [],
+    });
+    if (adminCheck !== 'non_admin') {
+      return null;
+    }
+    const manualReleaseAt = await this.resolveLatestManualReleaseCreatedAt(
+      params.album.chatId,
+      params.album.senderId,
+    );
+    if (!(await params.lease.resolveActionEligibility())) {
+      return null;
+    }
+    params.lease.assertOwned();
+
+    const context = await this.loadJobContext(params.album.chatId);
+    if (
+      !context ||
+      context.entityType !== ChatEntityType.CHAT ||
+      !context.settings.antiDuplicateEnabled ||
+      !context.settings.duplicatePhotoEnabled ||
+      context.adminUserIds.includes(params.album.senderId)
+    ) {
+      return null;
+    }
+    const flow = resolveDuplicateFlowConfig(context.settings);
+    if (
+      Date.now() - params.album.createdAtMs > flow.windowSec * 1_000 ||
+      (manualReleaseAt !== null && isWithinWindow(manualReleaseAt, flow.windowSec))
+    ) {
+      return null;
+    }
+
+    const policy = await this.runtimePolicy.resolveEffectivePolicy({
+      chatId: params.album.chatId,
+      preset: context.settings.duplicatePhotoMatchPreset,
+      scope: context.settings.duplicatePhotoScope,
+    });
+    if (
+      !policy.enforce ||
+      (params.requireFullMode && policy.mode !== 'full') ||
+      !isPhotoDuplicateMatchKindAllowed(policy, params.matchKind)
+    ) {
+      return null;
+    }
+    const currentAuthorizationConfigDigest = buildPhotoDuplicateAuthorizationConfigDigest({
+      settings: context.settings,
+      flow,
+      rolloutMode: policy.mode,
+      allowedMatchKinds: policy.allowedMatchKinds,
+      maxAction: policy.maxAction,
+      rulesPublishedUrl: context.rulesPublishedUrl,
+      rulesPublishedMessageId: context.rulesPublishedMessageId,
+    });
+    if (currentAuthorizationConfigDigest !== params.authorizationConfigDigest) {
+      return null;
+    }
+    const currentBinding = buildPhotoDuplicateActionBinding({
+      settings: context.settings,
+      flow,
+      rolloutMode: policy.mode,
+      intendedAction: params.expectedBinding.intendedAction,
+      matchKind: params.matchKind,
+      maxAction: policy.maxAction,
+      rulesPublishedUrl: context.rulesPublishedUrl,
+      rulesPublishedMessageId: context.rulesPublishedMessageId,
+    });
+    if (!photoDuplicateActionBindingsEqual(currentBinding, params.expectedBinding)) {
+      return null;
+    }
+    params.lease.assertOwned();
+    return { context, flow, policy };
   }
 
   private async loadJobContext(chatId: string): Promise<PhotoDuplicateJobContext | null> {
@@ -484,7 +909,7 @@ export class PhotoDuplicateModerationService {
     chatId: string;
     userId: string;
     messageId: string;
-    expectedBinding?: PhotoDuplicateActionBinding;
+    expectedBinding?: ActionablePhotoDuplicateBinding;
   }): Promise<PhotoDuplicateMessageActionFence> {
     try {
       const [deleteIntent, moderationEvents, messageActionClaims] = await Promise.all([
@@ -521,6 +946,8 @@ export class PhotoDuplicateModerationService {
             updateType: 'message_action',
           },
           select: {
+            dedupeKey: true,
+            messageActionKey: true,
             userId: true,
             ruleCode: true,
           },
@@ -564,12 +991,31 @@ export class PhotoDuplicateModerationService {
           !['DUPLICATE_WARN', 'DUPLICATE_MUTE', 'DUPLICATE_BAN'].includes(event.ruleCode),
       );
       const hasForeignEvent = moderationEvents.some((event) => !ownPhotoEvents.includes(event));
-      const ownActionClaims = messageActionClaims.filter(
+      const expectedClaimDedupeKey = params.expectedBinding
+        ? buildPhotoDuplicateActionClaimDedupeKey({
+            chatId: params.chatId,
+            userId: params.userId,
+            messageId: params.messageId,
+            actionBinding: params.expectedBinding,
+          })
+        : null;
+      const boundPhotoActionClaims = messageActionClaims.filter(
         (claim) =>
           claim.userId === params.userId &&
-          claim.ruleCode === DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE,
+          claim.ruleCode === PHOTO_DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE &&
+          (readString(claim.dedupeKey) ?? '').startsWith(
+            PHOTO_DUPLICATE_ACTION_CLAIM_DEDUPE_PREFIX,
+          ),
       );
-      const hasForeignClaim = messageActionClaims.length !== ownActionClaims.length;
+      const boundClaimOwnsAction =
+        boundPhotoActionClaims.length === 1 &&
+        (expectedClaimDedupeKey === null ||
+          boundPhotoActionClaims[0]?.dedupeKey === expectedClaimDedupeKey);
+      // Legacy duplicate claims are intentionally not recoverable here. Their key does not encode
+      // whether text or photo moderation won, and the old flow persisted a photo intent before it
+      // attempted the shared claim. Treating that pair as ownership could replay a second sanction.
+      const ownedClaimCount = boundClaimOwnsAction ? 1 : 0;
+      const hasForeignClaim = messageActionClaims.length !== ownedClaimCount;
       const bindingMismatch = Boolean(
         params.expectedBinding &&
         persistedBinding &&
@@ -579,12 +1025,11 @@ export class PhotoDuplicateModerationService {
       if (
         hasCompletedPhotoFollowUp ||
         hasUnexpectedOwnPhotoEvent ||
-        hasForeignDeleteReason ||
+        (hasForeignDeleteReason && !boundClaimOwnsAction) ||
         hasForeignEvent ||
         hasForeignClaim ||
-        (deleteIntent !== null && !ownPhotoDeleteIntent) ||
+        (deleteIntent !== null && !ownPhotoDeleteIntent && !boundClaimOwnsAction) ||
         (ownPhotoDeleteIntent && !persistedBinding) ||
-        (ownActionClaims.length > 0 && !ownPhotoDeleteIntent) ||
         bindingMismatch
       ) {
         return { blocked: true, actionClaimed: false, persistedBinding: null };
@@ -592,7 +1037,7 @@ export class PhotoDuplicateModerationService {
 
       return {
         blocked: false,
-        actionClaimed: ownActionClaims.length > 0,
+        actionClaimed: boundClaimOwnsAction,
         persistedBinding,
       };
     } catch (error: unknown) {
@@ -625,18 +1070,120 @@ export class PhotoDuplicateModerationService {
   }
 }
 
-export function buildPhotoDuplicateActionBinding(params: {
+type PhotoDuplicateExecutionOutcome =
+  | { kind: 'hit'; hit: DuplicateHit }
+  | { kind: 'decision'; decision: DuplicateDecision };
+
+function capPhotoDuplicateOutcome(params: {
+  hit: DuplicateHit;
+  decision?: DuplicateDecision;
+  enforcementMode: 'delete_only' | 'full';
+  maxAction: PhotoDuplicateMaxAction;
+  settings: ChatSettings;
+}): PhotoDuplicateExecutionOutcome {
+  if (params.enforcementMode !== 'full' || !params.decision) {
+    return { kind: 'hit', hit: params.hit };
+  }
+  const action = resolveEnabledCappedAction(
+    params.decision.action,
+    params.maxAction,
+    params.settings,
+  );
+  if (!action) {
+    return { kind: 'hit', hit: params.hit };
+  }
+  const cappedNextAction = params.decision.nextAction
+    ? resolveEnabledCappedAction(params.decision.nextAction, params.maxAction, params.settings)
+    : null;
+  return {
+    kind: 'decision',
+    decision: {
+      ...params.decision,
+      action,
+      nextAction: cappedNextAction === action ? null : cappedNextAction,
+    },
+  };
+}
+
+const PHOTO_DUPLICATE_ACTION_ORDER = ['WARN', 'MUTE', 'BAN'] as const;
+
+function resolveEnabledCappedAction(
+  requestedAction: DuplicateAction,
+  maxAction: PhotoDuplicateMaxAction,
+  settings: ChatSettings,
+): DuplicateAction | null {
+  const cappedAction = capPhotoDuplicateAction(requestedAction, maxAction);
+  if (!cappedAction) {
+    return null;
+  }
+  const cappedIndex = PHOTO_DUPLICATE_ACTION_ORDER.indexOf(cappedAction);
+  for (let index = cappedIndex; index >= 0; index -= 1) {
+    const candidate = PHOTO_DUPLICATE_ACTION_ORDER[index];
+    if (
+      candidate &&
+      ((candidate === 'WARN' && settings.duplicateWarnEnabled) ||
+        (candidate === 'MUTE' && settings.duplicateMuteEnabled) ||
+        (candidate === 'BAN' && settings.duplicateBanEnabled))
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function resolveEffectivePhotoDuplicateMode(
+  first: PhotoDuplicateRolloutMode,
+  ...rest: PhotoDuplicateRolloutMode[]
+): 'delete_only' | 'full' {
+  return first === 'full' && rest.every((mode) => mode === 'full') ? 'full' : 'delete_only';
+}
+
+type PhotoDuplicateSemanticConfigParams = {
   settings: ChatSettings;
   flow: DuplicateFlowConfig;
   rolloutMode: PhotoDuplicateRolloutMode;
-  intendedAction: PhotoDuplicateIntendedAction;
+  maxAction: PhotoDuplicateMaxAction;
   rulesPublishedUrl: string | null;
   rulesPublishedMessageId: string | null;
+};
+
+function buildPhotoDuplicateAuthorizationConfigDigest(
+  params: PhotoDuplicateSemanticConfigParams & {
+    allowedMatchKinds: readonly PhotoDuplicateMatchKind[];
+  },
+): string {
+  return hashPhotoDuplicateConfig({
+    ...buildPhotoDuplicateSemanticConfig(params),
+    allowedMatchKinds: [...params.allowedMatchKinds].sort(),
+  });
+}
+
+export function buildPhotoDuplicateActionBinding(params: {
+  settings: PhotoDuplicateSemanticConfigParams['settings'];
+  flow: PhotoDuplicateSemanticConfigParams['flow'];
+  rolloutMode: PhotoDuplicateSemanticConfigParams['rolloutMode'];
+  intendedAction: PhotoDuplicateIntendedAction;
+  matchKind: PhotoDuplicateMatchKind;
+  maxAction: PhotoDuplicateSemanticConfigParams['maxAction'];
+  rulesPublishedUrl: PhotoDuplicateSemanticConfigParams['rulesPublishedUrl'];
+  rulesPublishedMessageId: PhotoDuplicateSemanticConfigParams['rulesPublishedMessageId'];
 }): PhotoDuplicateActionBinding {
   const config = {
-    version: PHOTO_DUPLICATE_ACTION_BINDING_VERSION,
+    ...buildPhotoDuplicateSemanticConfig(params),
     intendedAction: params.intendedAction,
+    matchKind: params.matchKind,
+  };
+  return {
+    intendedAction: params.intendedAction,
+    configDigest: hashPhotoDuplicateConfig(config),
+  };
+}
+
+function buildPhotoDuplicateSemanticConfig(params: PhotoDuplicateSemanticConfigParams) {
+  return {
+    version: PHOTO_DUPLICATE_ACTION_BINDING_VERSION,
     rolloutMode: params.rolloutMode,
+    maxAction: params.maxAction,
     preset: params.settings.duplicatePhotoMatchPreset,
     scope: params.settings.duplicatePhotoScope,
     flow: {
@@ -663,10 +1210,10 @@ export function buildPhotoDuplicateActionBinding(params: {
       deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
     },
   };
-  return {
-    intendedAction: params.intendedAction,
-    configDigest: createHash('sha256').update(canonicalJson(config)).digest('hex'),
-  };
+}
+
+function hashPhotoDuplicateConfig(config: unknown): string {
+  return createHash('sha256').update(canonicalJson(config)).digest('hex');
 }
 
 function readPhotoDuplicateActionBinding(value: unknown): PhotoDuplicateActionBinding | null {

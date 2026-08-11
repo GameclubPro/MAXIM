@@ -5,7 +5,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { request as requestHttps } from 'node:https';
 import { isIP } from 'node:net';
 
-const DEFAULT_ALLOWED_HOSTS = ['i.oneme.ru'];
+const DEFAULT_ALLOWED_HOSTS = ['i.oneme.ru', 'fd.oneme.ru'];
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_BYTES = 16_777_216;
 const DEFAULT_MAX_REDIRECTS = 2;

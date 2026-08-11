@@ -1,17 +1,22 @@
-import type { DuplicatePhotoModerationMode } from '@maxim/contracts/settings';
+import type { DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import {
-  DUPLICATE_PHOTO_MODERATION_HINTS,
   DUPLICATE_PHOTO_MATCH_OPTIONS,
   DUPLICATE_PHOTO_SCOPE_OPTIONS,
+  formatDuplicatePhotoMatchPresetHint,
   type DuplicatePhotoMatchPreset,
   type DuplicatePhotoScope,
 } from './settings-duplicate-photo-options';
+import {
+  formatDuplicatePhotoModerationHint,
+  type DuplicatePhotoSanctionSettings,
+} from './settings-duplicate-photo-status';
 
 type SettingsDuplicatePhotoControlsProps = {
+  actionSettings: DuplicatePhotoSanctionSettings;
   enabled: boolean;
   matchPreset: DuplicatePhotoMatchPreset;
-  moderationMode: DuplicatePhotoModerationMode;
+  moderationPolicy: DuplicatePhotoEffectivePolicy;
   scope: DuplicatePhotoScope;
   onEnabledChange: (value: boolean) => void;
   onMatchPresetChange: (value: DuplicatePhotoMatchPreset) => void;
@@ -19,9 +24,10 @@ type SettingsDuplicatePhotoControlsProps = {
 };
 
 export default function SettingsDuplicatePhotoControls({
+  actionSettings,
   enabled,
   matchPreset,
-  moderationMode,
+  moderationPolicy,
   scope,
   onEnabledChange,
   onMatchPresetChange,
@@ -32,7 +38,7 @@ export default function SettingsDuplicatePhotoControls({
       <div className="settings-native-toggle duplicate-photo-toggle">
         <div className="settings-native-toggle__row">
           <div className="settings-native-toggle__title-wrap">
-            <span className="settings-native-toggle__title">Повторные фото</span>
+            <span className="settings-native-toggle__title">Изображения</span>
           </div>
 
           <label className="settings-native-switch" aria-label="Включить проверку повторных фото">
@@ -50,7 +56,11 @@ export default function SettingsDuplicatePhotoControls({
           Находит ту же картинку после пересылки, сжатия или изменения размера. Содержание и лица не
           распознаются.
         </p>
-        <p className="policy-mode-hint">{DUPLICATE_PHOTO_MODERATION_HINTS[moderationMode]}</p>
+        {enabled ? (
+          <p className="policy-mode-hint">
+            {formatDuplicatePhotoModerationHint(moderationPolicy, actionSettings)}
+          </p>
+        ) : null}
       </div>
 
       {enabled ? (
@@ -71,9 +81,7 @@ export default function SettingsDuplicatePhotoControls({
               ariaLabel="Какие фото считать повтором"
             />
             <p className="policy-mode-hint">
-              {matchPreset === 'SAME_IMAGE'
-                ? 'Учитываются пересылка, сжатие и изменение размера.'
-                : 'Дополнительно учитываются небольшая обрезка и цветокоррекция.'}
+              {formatDuplicatePhotoMatchPresetHint(matchPreset, moderationPolicy)}
             </p>
           </div>
 
