@@ -196,7 +196,15 @@ export async function claimPersistedModerationMessageViolation(params: {
     params.data.updateType === 'message_action'
       ? buildMessageScopedModerationActionClaimKey(params.data.chatId, params.data.messageId)
       : null;
-  const data = { ...params.data, messageActionKey };
+  const data: ModerationViolationMessageClaimData = {
+    dedupeKey: params.data.dedupeKey,
+    messageActionKey,
+    chatId: params.data.chatId,
+    userId: params.data.userId,
+    messageId: params.data.messageId,
+    ruleCode: params.data.ruleCode,
+    updateType: params.data.updateType,
+  };
 
   try {
     if (params.data.updateType === 'message_action') {

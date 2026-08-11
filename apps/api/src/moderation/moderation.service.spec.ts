@@ -20160,6 +20160,21 @@ describe('ModerationService', () => {
     ).resolves.toBe('resumed');
     expect(findUnique).toHaveBeenCalledTimes(1);
     expect(findTerminalEvent).not.toHaveBeenCalled();
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          chatId: 'chat-1',
+          dedupeKey: expect.stringMatching(/^v1:[a-f0-9]{64}$/u),
+          messageActionKey: expect.stringMatching(/^v1:[a-f0-9]{64}$/u),
+          messageId: 'msg-1',
+          ruleCode: 'DUPLICATE_MESSAGE_ACTION',
+          updateType: 'message_action',
+          userId: 'user-1',
+        },
+      ],
+      skipDuplicates: true,
+    });
+    expect(attemptedClaim).not.toHaveProperty('resumeKnownActionOwner');
   });
 
   it('does not enable known-owner resume for a non-duplicate action rule', async () => {

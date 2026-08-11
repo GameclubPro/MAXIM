@@ -5837,6 +5837,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     dedupeKey: string;
     resumeKnownActionOwner?: boolean;
   }): Promise<'claimed' | 'resumed' | 'duplicate' | 'unavailable' | 'unsupported'> {
+    const { resumeKnownActionOwner, ...data } = params;
     const claimModel = (
       this.prisma as unknown as {
         moderationViolationMessageClaim?: PrismaService['moderationViolationMessageClaim'];
@@ -5844,8 +5845,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ).moderationViolationMessageClaim;
     return claimPersistedModerationMessageViolation({
       model: claimModel as unknown as ModerationViolationMessageClaimModel | undefined,
-      data: params,
-      resumeKnownActionOwner: params.resumeKnownActionOwner,
+      data,
+      resumeKnownActionOwner,
     });
   }
 
