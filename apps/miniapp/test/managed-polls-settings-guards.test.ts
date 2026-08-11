@@ -31,6 +31,17 @@ test('shared poll workspace uses entity-neutral publication copy', () => {
   assert.match(pollWorkspaceSource, /entityType === 'channel' \? 'в канале' : 'в чате'/u);
 });
 
+test('new polls stay available alongside current polls and both tabs can load more', () => {
+  assert.doesNotMatch(pollWorkspaceSource, /currentPolls\.length\s*(?:>|===)\s*0/u);
+  assert.doesNotMatch(pollWorkspaceSource, /showCreateButton/u);
+  assert.match(
+    pollWorkspaceSource,
+    /className="managed-poll-workspace__create"[\s\S]*?onClick=\{startNewPoll\}/u,
+  );
+  assert.match(pollWorkspaceSource, /\{pollsQuery\.hasNextPage \? \(/u);
+  assert.doesNotMatch(pollWorkspaceSource, /tab === 'archive' && pollsQuery\.hasNextPage/u);
+});
+
 test('failed publication keeps the persisted draft open for retry', () => {
   const publishMutationSource = pollWorkspaceSource.match(
     /const publishMutation = useMutation\([\s\S]*?\n {2}const closeMutation = useMutation/u,

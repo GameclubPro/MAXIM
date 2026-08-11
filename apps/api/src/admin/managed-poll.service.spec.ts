@@ -1549,6 +1549,101 @@ describe('ManagedPollService callback rendering', () => {
   });
 });
 
+describe('ManagedPollService creation', () => {
+  it('creates two independent polls in the same chat', async () => {
+    const now = new Date('2026-08-11T10:00:00.000Z');
+    const buildPoll = (id: string, question: string) => ({
+      id,
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      question,
+      questionFormat: 'plain',
+      imageCount: 0,
+      images: [],
+      status: ManagedPollStatus.DRAFT,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: POLL_IDENTITY_SALT,
+      renderRevision: 0,
+      renderedRevision: 0,
+      renderFormatVersion: POLL_RENDER_FORMAT_VERSION,
+      publicationMessageId: null,
+      publicationBotId: null,
+      publicationUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: now,
+      updatedAt: now,
+      options: [
+        {
+          id: `${id}-option-1`,
+          pollId: id,
+          position: 0,
+          text: 'Да',
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: `${id}-option-2`,
+          pollId: id,
+          position: 1,
+          text: 'Нет',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+    const create = jest
+      .fn()
+      .mockResolvedValueOnce(buildPoll('poll-1', 'Первый вопрос?'))
+      .mockResolvedValueOnce(buildPoll('poll-2', 'Второй вопрос?'));
+    const tx = {
+      managedPoll: { create },
+      auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    };
+    const adminService = {
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = { invalidate: jest.fn().mockResolvedValue(undefined) };
+    const service = new ManagedPollService(
+      prisma as never,
+      {} as never,
+      adminService as never,
+      chatContextCache as never,
+    );
+    const request = (question: string) => ({
+      question,
+      options: [{ text: 'Да' }, { text: 'Нет' }],
+    });
+
+    const first = await service.createChannelPoll(
+      'channel-1',
+      { userId: 'admin-1' } as never,
+      request('Первый вопрос?'),
+    );
+    const second = await service.createChannelPoll(
+      'channel-1',
+      { userId: 'admin-1' } as never,
+      request('Второй вопрос?'),
+    );
+
+    expect([first.id, second.id]).toEqual(['poll-1', 'poll-2']);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls.map(([call]) => call.data.question)).toEqual([
+      'Первый вопрос?',
+      'Второй вопрос?',
+    ]);
+    expect(tx.auditLog.create).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.invalidate).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('ManagedPollService draft editing', () => {
   it('preserves rich content and advances the dispatch revision for every draft update', async () => {
     const now = new Date();

@@ -143,20 +143,7 @@ async function openPreviewPollEditor(page, { openSection = false } = {}) {
   }
 
   const workspace = page.locator('.managed-poll-workspace');
-  await workspace.getByRole('button', { name: 'Завершить', exact: true }).click();
-  const confirm = page.getByRole('dialog', { name: 'Завершить опрос?' });
-  await confirm.waitFor({ state: 'visible' });
-  await confirm.getByRole('button', { name: 'Завершить', exact: true }).click();
-  await page.waitForFunction(() => {
-    const createButton = document.querySelector('.managed-poll-workspace__create');
-    return createButton instanceof HTMLButtonElement && !createButton.disabled;
-  });
-
-  const pollClosedToast = page.locator('.toast').filter({ hasText: 'Опрос завершён' });
-  await pollClosedToast.waitFor({ state: 'visible' });
-  await pollClosedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
-  await pollClosedToast.waitFor({ state: 'detached' });
-  await page.locator('.managed-poll-workspace__create').click();
+  await workspace.getByRole('button', { name: 'Новый', exact: true }).click();
   await page.locator('.managed-poll-editor').waitFor({ state: 'visible' });
 }
 

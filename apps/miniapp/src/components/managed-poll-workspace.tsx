@@ -1181,9 +1181,6 @@ export const ManagedPollWorkspace = forwardRef<
   );
 
   const startNewPoll = () => {
-    if (currentPolls.length > 0) {
-      return;
-    }
     const nextDraft = createEmptyDraft();
     setDraft(nextDraft);
     setSavedDraft(nextDraft);
@@ -1279,9 +1276,6 @@ export const ManagedPollWorkspace = forwardRef<
     ) : (
       confirmQuestion
     );
-  const showCreateButton =
-    !pollsQuery.isLoading && !pollsInitialError && currentPolls.length === 0;
-
   if (draft) {
     return (
       <>
@@ -1362,9 +1356,7 @@ export const ManagedPollWorkspace = forwardRef<
 
   return (
     <section className="managed-poll-workspace">
-      <div
-        className={`managed-poll-workspace__toolbar${showCreateButton ? ' has-create' : ''}`}
-      >
+      <div className="managed-poll-workspace__toolbar has-create">
         <SegmentedControl
           value={tab}
           options={[
@@ -1374,17 +1366,15 @@ export const ManagedPollWorkspace = forwardRef<
           onChange={setTab}
           ariaLabel="Опросы"
         />
-        {showCreateButton ? (
-          <button
-            type="button"
-            className="managed-poll-workspace__create"
-            onClick={startNewPoll}
-            disabled={isBusy}
-          >
-            <Plus aria-hidden />
-            Новый
-          </button>
-        ) : null}
+        <button
+          type="button"
+          className="managed-poll-workspace__create"
+          onClick={startNewPoll}
+          disabled={isBusy}
+        >
+          <Plus aria-hidden />
+          Новый
+        </button>
       </div>
 
       {pollsQuery.isLoading ? <SkeletonCard lines={5} /> : null}
@@ -1442,7 +1432,7 @@ export const ManagedPollWorkspace = forwardRef<
         </div>
       ) : null}
 
-      {tab === 'archive' && pollsQuery.hasNextPage ? (
+      {pollsQuery.hasNextPage ? (
         <button
           type="button"
           className="managed-poll-action-button managed-poll-workspace__more"

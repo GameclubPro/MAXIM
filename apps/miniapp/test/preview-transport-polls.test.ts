@@ -17,7 +17,8 @@ import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
 for (const entityType of ['chat', 'channel'] as const satisfies readonly ManagedEntityType[]) {
   test(`preview ${entityType} polls support history, voters, and draft lifecycle`, async () => {
-    const api = createPreviewApiTransport();
+    const now = new Date('2026-08-11T09:00:00.000Z');
+    const api = createPreviewApiTransport({ clock: { now: () => now } });
     const entityId = `preview-${entityType}`;
     const activePollId = `poll-${entityType}-active`;
     const closedPollId = `poll-${entityType}-closed`;
@@ -34,15 +35,6 @@ for (const entityType of ['chat', 'channel'] as const satisfies readonly Managed
       initial.items.some((poll) => poll.status === 'CLOSED'),
       true,
     );
-    await assert.rejects(
-      createManagedPoll(api, entityType, entityId, {
-        question: 'Второй текущий опрос?',
-        visibility: 'ANONYMOUS',
-        options: [{ text: 'Да' }, { text: 'Нет' }],
-      }),
-      /Сначала завершите текущий опрос/u,
-    );
-
     const voters = await getManagedPollVoters(api, entityType, entityId, activePollId, {
       limit: 2,
     });
@@ -55,8 +47,6 @@ for (const entityType of ['chat', 'channel'] as const satisfies readonly Managed
       resetManagedPollPublication(api, entityType, entityId, activePollId),
       /Публикация не требует сброса/u,
     );
-
-    await closeManagedPoll(api, entityType, entityId, activePollId);
 
     const authoredQuestion = '**Какой день** удобнее?';
     const authoredOptions = ['Пятница', 'Суббота'];
@@ -119,8 +109,36 @@ for (const entityType of ['chat', 'channel'] as const satisfies readonly Managed
 
     const published = await publishManagedPoll(api, entityType, entityId, created.id);
     assert.equal(published.status, 'ACTIVE');
+    const concurrentlyCreated = await createManagedPoll(api, entityType, entityId, {
+      question: 'Какой формат выбрать следующим?',
+      visibility: 'ANONYMOUS',
+      options: [{ text: 'Текст' }, { text: 'Видео' }],
+    });
+    const concurrentlyPublished = await publishManagedPoll(
+      api,
+      entityType,
+      entityId,
+      concurrentlyCreated.id,
+    );
+    assert.notEqual(concurrentlyPublished.id, published.id);
+    assert.notEqual(concurrentlyPublished.publicationMessageId, published.publicationMessageId);
+
+    const activeTogether = await getManagedPolls(api, entityType, entityId);
+    assert.equal(activeTogether.items.find((poll) => poll.id === activePollId)?.status, 'ACTIVE');
+    assert.equal(activeTogether.items.find((poll) => poll.id === published.id)?.status, 'ACTIVE');
+    assert.equal(
+      activeTogether.items.find((poll) => poll.id === concurrentlyPublished.id)?.status,
+      'ACTIVE',
+    );
+
     const closed = await closeManagedPoll(api, entityType, entityId, created.id);
     assert.equal(closed.status, 'CLOSED');
+    const afterClose = await getManagedPolls(api, entityType, entityId);
+    assert.equal(afterClose.items.find((poll) => poll.id === activePollId)?.status, 'ACTIVE');
+    assert.equal(
+      afterClose.items.find((poll) => poll.id === concurrentlyPublished.id)?.status,
+      'ACTIVE',
+    );
 
     const disposable = await createManagedPoll(api, entityType, entityId, {
       question: 'Удалить этот черновик?',

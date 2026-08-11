@@ -794,7 +794,7 @@ model ChannelSettings {
   @@map("channel_settings")
 }
 
-/// FLAG: The poll migration permits only one DRAFT or ACTIVE poll per chat via a partial unique index.
+/// FLAG: Multiple DRAFT and ACTIVE polls per chat are intentional; poll lifecycle is scoped by poll ID.
 model ManagedPoll {
   id                   String                @id @default(cuid())
   chatId               String                @map("chat_id")

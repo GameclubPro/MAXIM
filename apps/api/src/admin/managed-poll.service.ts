@@ -60,7 +60,6 @@ import {
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { extractMaxApiErrorMessage } from './admin-chat-rules';
-import { isPrismaKnownError } from './admin-legacy-utils';
 import {
   decodeBroadcastImageBase64,
   resolveBroadcastImageFileName,
@@ -289,65 +288,44 @@ export class ManagedPollService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    try {
-      const created = await this.prisma.$transaction(async (tx) => {
-        const current = await tx.managedPoll.findFirst({
-          where: {
-            chatId,
-            status: { in: [ManagedPollStatus.DRAFT, ManagedPollStatus.ACTIVE] },
+    const created = await this.prisma.$transaction(async (tx) => {
+      const poll = await tx.managedPoll.create({
+        data: {
+          chat: { connect: { id: chatId } },
+          actorUserId: user.userId,
+          question: parsed.data.question,
+          questionFormat: parsed.data.questionFormat,
+          visibility: parsed.data.visibility,
+          imageCount: parsed.data.images.length,
+          images: parsed.data.images as Prisma.InputJsonValue,
+          identitySalt: randomUUID().replace(/-/gu, ''),
+          options: {
+            create: parsed.data.options.map((option, position) => ({
+              position,
+              text: option.text,
+            })),
           },
-          select: { id: true },
-        });
-        if (current) {
-          throw new ConflictException('Сначала завершите текущий опрос.');
-        }
-
-        const poll = await tx.managedPoll.create({
-          data: {
-            chat: { connect: { id: chatId } },
-            actorUserId: user.userId,
-            question: parsed.data.question,
-            questionFormat: parsed.data.questionFormat,
-            visibility: parsed.data.visibility,
-            imageCount: parsed.data.images.length,
-            images: parsed.data.images as Prisma.InputJsonValue,
-            identitySalt: randomUUID().replace(/-/gu, ''),
-            options: {
-              create: parsed.data.options.map((option, position) => ({
-                position,
-                text: option.text,
-              })),
-            },
-          },
-          include: { options: { orderBy: { position: 'asc' } } },
-        });
-        await tx.auditLog.create({
-          data: {
-            chatId,
-            actorUserId: user.userId,
-            action: `CREATE_${this.pollEntityAuditLabel(entityType)}_POLL`,
-            payload: {
-              pollId: poll.id,
-              questionFormat: poll.questionFormat,
-              visibility: poll.visibility,
-              imageCount: parsed.data.images.length,
-              optionsCount: poll.options.length,
-            },
-          },
-        });
-        return poll;
+        },
+        include: { options: { orderBy: { position: 'asc' } } },
       });
-      await this.chatContextCache.invalidate(chatId);
-      return managedPollDetailsSchema.parse(this.mapPoll(created, new Map(), true));
-    } catch (error: unknown) {
-      if (error instanceof ConflictException) {
-        throw error;
-      }
-      if (isPrismaKnownError(error, 'P2002')) {
-        throw new ConflictException('Сначала завершите текущий опрос.');
-      }
-      throw error;
-    }
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: `CREATE_${this.pollEntityAuditLabel(entityType)}_POLL`,
+          payload: {
+            pollId: poll.id,
+            questionFormat: poll.questionFormat,
+            visibility: poll.visibility,
+            imageCount: parsed.data.images.length,
+            optionsCount: poll.options.length,
+          },
+        },
+      });
+      return poll;
+    });
+    await this.chatContextCache.invalidate(chatId);
+    return managedPollDetailsSchema.parse(this.mapPoll(created, new Map(), true));
   }
 
   async updateChannelPoll(

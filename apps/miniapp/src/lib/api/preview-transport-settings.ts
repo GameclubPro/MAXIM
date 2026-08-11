@@ -271,6 +271,20 @@ export function findBroadcast(
   return broadcasts.find((item) => item.id === broadcastId) ?? null;
 }
 
+function createUniquePreviewId(
+  baseId: string,
+  existingIds: readonly (string | null | undefined)[],
+): string {
+  const usedIds = new Set(existingIds);
+  let candidate = baseId;
+  let suffix = 2;
+  while (usedIds.has(candidate)) {
+    candidate = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 export async function handleChatRequest(
   state: PreviewState,
   chatId: string,
@@ -829,12 +843,13 @@ export async function handleChannelRequest(
     }
 
     if (method === 'POST') {
-      if (managedPolls.some((poll) => poll.status !== 'CLOSED')) {
-        throw new Error('Сначала завершите текущий опрос.');
-      }
       const payload = createManagedPollRequestSchema.parse(parseJsonBody(init));
-      const nowIso = readPreviewClock(state.clock).toISOString();
-      const pollId = `poll-preview-${readPreviewClock(state.clock).getTime()}`;
+      const now = readPreviewClock(state.clock);
+      const nowIso = now.toISOString();
+      const pollId = createUniquePreviewId(
+        `poll-preview-${now.getTime()}`,
+        [...state.chatPolls, ...state.channelPolls].map((poll) => poll.id),
+      );
       const created = managedPollDetailsSchema.parse({
         id: pollId,
         channelId,
@@ -901,6 +916,7 @@ export async function handleChannelRequest(
     if (poll.status !== 'DRAFT' || poll.publicationPending) {
       throw new Error('Опубликовать можно только свободный черновик.');
     }
+    const now = readPreviewClock(state.clock);
     const published = managedPollDetailsSchema.parse({
       ...poll,
       status: 'ACTIVE',
@@ -911,9 +927,12 @@ export async function handleChannelRequest(
         pollEntityType === 'channel'
           ? 'https://max.ru/channels/yuzhnoe-news'
           : 'https://max.ru/chats/preview-chat',
-      publicationMessageId: `poll-preview-message-${readPreviewClock(state.clock).getTime()}`,
-      publishedAt: readPreviewClock(state.clock).toISOString(),
-      updatedAt: readPreviewClock(state.clock).toISOString(),
+      publicationMessageId: createUniquePreviewId(
+        `poll-preview-message-${now.getTime()}`,
+        [...state.chatPolls, ...state.channelPolls].map((item) => item.publicationMessageId),
+      ),
+      publishedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
     });
     updateManagedPolls(managedPolls.map((item) => (item.id === published.id ? published : item)));
     return cloneJson(published);
