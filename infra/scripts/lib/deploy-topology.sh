@@ -91,7 +91,8 @@ maxim_topology_smoke_media_analysis_tesseract() {
 maxim_topology_expand_api_services() {
   local services_var="$1"
   local reason="$2"
-  # shellcheck disable=SC2178 -- services_var intentionally names the caller's array.
+  # services_var intentionally names the caller's array.
+  # shellcheck disable=SC2178
   local -n services_ref="$services_var"
   local service
   local added=()
