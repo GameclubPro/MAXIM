@@ -91,6 +91,7 @@ maxim_topology_smoke_media_analysis_tesseract() {
 maxim_topology_expand_api_services() {
   local services_var="$1"
   local reason="$2"
+  # shellcheck disable=SC2178 -- services_var intentionally names the caller's array.
   local -n services_ref="$services_var"
   local service
   local added=()
@@ -145,7 +146,7 @@ maxim_topology_refuse_dirty_api_build_inputs() {
     infra/certs >"$ignored_inputs_path"; then
     while IFS= read -r -d '' ignored_file; do
       case "$ignored_file" in
-        */node_modules/* | */dist/* | */coverage/* | apps/api/src/generated/* | *.log | *.env | */.env | */.env.* | *.codex-backup-*)
+        */node_modules/* | */dist/* | */coverage/* | apps/api/src/generated/* | *.log | *.env | */.env.* | *.codex-backup-*)
           ;;
         *)
           if [[ "$unsafe_ignored_input" -eq 0 ]]; then
