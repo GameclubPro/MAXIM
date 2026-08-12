@@ -123,6 +123,7 @@ SELECT_MINIAPP=0
 SELECT_ADMIN=0
 SELECTED_COMPONENTS=()
 SERVICES=()
+TARGET_HAS_MEDIA_ANALYSIS=0
 declare -A COMPONENT_SOURCE_SHA=()
 declare -A COMPONENT_IMAGE_REF=()
 declare -A COMPONENT_IMAGE_ID=()
@@ -194,6 +195,16 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     echo "API component source commit is not available locally: $API_SOURCE_SHA" >&2
     echo "Fetch the immutable API source object without changing the VPS worktree, then retry." >&2
     exit 1
+  fi
+  if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
+    TARGET_HAS_MEDIA_ANALYSIS=1
+  else
+    topology_status=$?
+    if [[ "$topology_status" -ne 1 ]]; then
+      exit "$topology_status"
+    fi
+    maxim_topology_remove_service SERVICES "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+    echo "API rollback target predates $MAXIM_MEDIA_ANALYSIS_SERVICE; the role will be removed."
   fi
 fi
 
@@ -288,7 +299,32 @@ recreate_service() {
   wait_for_service_running "$service"
 }
 
+remove_incompatible_media_analysis_container() {
+  local container_list
+  local container_ids=()
+
+  if ! container_list="$(
+    docker ps -a -q \
+      --filter "label=com.docker.compose.project=infra" \
+      --filter "label=com.docker.compose.service=$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  )"; then
+    echo "Could not inspect the current $MAXIM_MEDIA_ANALYSIS_SERVICE container." >&2
+    return 1
+  fi
+  if [[ -z "$container_list" ]]; then
+    return 0
+  fi
+  mapfile -t container_ids <<<"$container_list"
+  ROLLBACK_RUNTIME_STARTED=1
+  echo "Stopping and removing $MAXIM_MEDIA_ANALYSIS_SERVICE for the pre-feature API target..."
+  docker stop --time 30 "${container_ids[@]}" >/dev/null
+  docker rm -f "${container_ids[@]}" >/dev/null
+}
+
 if [[ "$SELECT_API" -eq 1 ]]; then
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
+    remove_incompatible_media_analysis_container
+  fi
   for service in \
     api-enqueue \
     api-action \
@@ -301,6 +337,9 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     api-moderation-background; do
     recreate_service "$service"
   done
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+    recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  fi
   recreate_service api-admin
 fi
 if [[ "$SELECT_MINIAPP" -eq 1 ]]; then
@@ -372,6 +411,10 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   wait_for_strict_smoke json-ok http://127.0.0.1:3002/api/health/ready
   wait_for_strict_smoke json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=(api-local-live api-local-ready api-admin-live api-admin-ready api-public-live)
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
+    SMOKE_RESULTS+=(api-media-analysis-tesseract-rus-eng)
+  fi
 fi
 if [[ "$SELECT_MINIAPP" -eq 1 ]]; then
   wait_for_strict_smoke static https://major-maksimov.ru/app/

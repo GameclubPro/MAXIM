@@ -38,6 +38,7 @@ const expectedFullSelection = [
   'service=api-moderation-realtime-c',
   'service=api-moderation-realtime-d',
   'service=api-moderation-background',
+  'service=api-media-analysis',
   'service=api-action',
   'service=miniapp-major-static',
   'service=admin-static',

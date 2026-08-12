@@ -153,7 +153,7 @@ describe('runtime reliability queue group health', () => {
   });
 });
 
-describe('runtime reliability action queue profile', () => {
+describe('runtime reliability queue profile', () => {
   const previousAppRole = process.env.APP_ROLE;
   const previousServiceName = process.env.APP_SERVICE_NAME;
 
@@ -182,5 +182,12 @@ describe('runtime reliability action queue profile', () => {
         'max-actions-background',
       ]),
     );
+  });
+
+  it('reports the isolated OCR queue for the media-analysis runtime', () => {
+    process.env.APP_ROLE = 'moderation';
+    process.env.APP_SERVICE_NAME = 'api-media-analysis';
+
+    expect(buildSystemRuntimeProfile().enabledQueues).toEqual(['commercial-image-ocr']);
   });
 });

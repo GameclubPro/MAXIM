@@ -5,7 +5,7 @@ This is the active production entrypoint. Historical delivery/cloud experiments 
 
 ## Production Shape
 
-- Main stack: `infra/docker-compose.yml` with Postgres, Redis, eleven shared-image API roles,
+- Main stack: `infra/docker-compose.yml` with Postgres, Redis, twelve shared-image API roles,
   `miniapp-major-static`, legacy support `miniapp-static`, and `admin-static`.
 - Canonical mini app: `https://major-maksimov.ru/app/`, served by `miniapp-major-static`.
 - Closed Safety Desk: `https://admin.major-maksimov.ru/`, served by `admin-static` behind Basic Auth.
@@ -104,7 +104,7 @@ the rollout if its post-sync `HEAD` differs. An emergency bypass is not routine:
 Contract changes normally require all API roles plus affected public/admin clients. Do not deploy
 `miniapp-static` for ordinary Major work.
 
-Any API role expands to all eleven roles. Static-only `miniapp-major-static` or `admin-static`
+Any API role expands to all twelve roles. Static-only `miniapp-major-static` or `admin-static`
 deploys do not start the API build or run Prisma migrations. The deploy compares each active
 component's recorded source SHA with the target and adds unreleased affected components, so an
 explicit service list cannot silently leave known component impact behind.

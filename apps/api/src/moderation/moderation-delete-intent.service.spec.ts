@@ -56,6 +56,7 @@ function createService(
   maxBotLinkOverrides: Record<string, unknown> = {},
   linkHistoryDeleteGuardOverrides?: Record<string, unknown>,
   photoDuplicateRuntimePolicyOverrides?: Record<string, unknown>,
+  commercialOcrDeleteGuardOverrides?: Record<string, unknown>,
 ) {
   const config = {
     MODERATION_DELETE_INTENT_MODE: 'on',
@@ -135,6 +136,10 @@ function createService(
     }),
     ...photoDuplicateRuntimePolicyOverrides,
   };
+  const commercialOcrDeleteGuard = {
+    assertIntentStillActionable: jest.fn().mockResolvedValue('allowed'),
+    ...commercialOcrDeleteGuardOverrides,
+  };
   const service = new ModerationDeleteIntentService(
     prisma as never,
     maxClient as never,
@@ -143,6 +148,7 @@ function createService(
     new ConfigService(config),
     linkHistoryDeleteGuard as never,
     photoDuplicateRuntimePolicy as never,
+    commercialOcrDeleteGuard as never,
   );
   return {
     service,
@@ -152,6 +158,7 @@ function createService(
     maxBotLink,
     linkHistoryDeleteGuard,
     photoDuplicateRuntimePolicy,
+    commercialOcrDeleteGuard,
   };
 }
 
@@ -1735,6 +1742,97 @@ describe('ModerationDeleteIntentService', () => {
     expect(deleteMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('runs the commercial OCR guard on both sides of the dispatch fence', async () => {
+    const intent = { ...baseIntent, commercialOcrDeleteOnly: true };
+    const completed = {
+      ...intent,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const events: string[] = [];
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      if (
+        (query.strings?.join('?') ?? '').includes(
+          '"delete_dispatch_started_at" = CURRENT_TIMESTAMP',
+        )
+      ) {
+        events.push('dispatch-fence');
+      }
+      return 1;
+    });
+    const assertIntentStillActionable = jest.fn().mockImplementation(async () => {
+      events.push('commercial-ocr-guard');
+      return 'allowed';
+    });
+    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      {
+        deleteMessage: jest.fn(async () => {
+          events.push('max-delete');
+        }),
+      },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      undefined,
+      { assertIntentStillActionable },
+    );
+
+    await service.executeLeasedIntent('intent-1', 'lease-1');
+
+    expect(assertIntentStillActionable).toHaveBeenCalledTimes(2);
+    expect(assertIntentStillActionable).toHaveBeenNthCalledWith(1, {
+      intentId: 'intent-1',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      subjectUserId: 'user-1',
+      sourceMessageAt: baseIntent.sourceMessageAt,
+      botId: 'bot-1',
+    });
+    expect(events).toEqual([
+      'commercial-ocr-guard',
+      'dispatch-fence',
+      'commercial-ocr-guard',
+      'max-delete',
+    ]);
+  });
+
+  it('does not run the commercial OCR guard when an independent reason owns the intent', async () => {
+    const intent = { ...baseIntent, commercialOcrDeleteOnly: false };
+    const completed = {
+      ...intent,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const assertIntentStillActionable = jest.fn().mockRejectedValue(new Error('OCR disabled'));
+    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
+    const deleteMessage = jest.fn();
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      undefined,
+      { assertIntentStillActionable },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+    });
+    expect(assertIntentStillActionable).not.toHaveBeenCalled();
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     { label: 'explicit off', mode: 'off' },
     { label: 'missing-control shadow', mode: 'shadow' },
@@ -2087,6 +2185,24 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain(`photo_reason."rule_code" = 'DUPLICATE_DELETE'`);
     expect(sql).toContain(`photo_reason."metadata"->>'duplicateSource'`);
     expect(sql).toContain('AS "photoDuplicateDeleteOnly"');
+  });
+
+  it('classifies commercial OCR-only delete intents by their dedicated rule code', () => {
+    const { service } = createService();
+    const query = (
+      service as unknown as {
+        intentSelectSql(alias: string): {
+          strings?: readonly string[];
+          values?: readonly unknown[];
+        };
+      }
+    ).intentSelectSql('intent');
+    const sql = query.strings?.join('?') ?? '';
+
+    expect(sql).toContain('commercial_ocr_reason."rule_code" = ?');
+    expect(sql).toContain('independent_reason."rule_code" <> ?');
+    expect(query.values).toContain('COMMERCIAL_OCR_DELETE');
+    expect(sql).toContain('AS "commercialOcrDeleteOnly"');
   });
 
   it('fails closed when a link-only intent loses its required reason before dispatch', async () => {

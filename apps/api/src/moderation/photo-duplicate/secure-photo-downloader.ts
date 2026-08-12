@@ -28,6 +28,13 @@ export type DownloadedPhoto = {
   format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif' | 'heif' | 'tiff';
 };
 
+export class PhotoDownloadHttpError extends Error {
+  constructor(readonly statusCode: number) {
+    super(`Photo host returned HTTP ${statusCode}`);
+    this.name = 'PhotoDownloadHttpError';
+  }
+}
+
 @Injectable()
 export class SecurePhotoDownloader {
   private readonly allowedHosts: string[];
@@ -150,7 +157,7 @@ export class SecurePhotoDownloader {
       }
 
       if (response.statusCode !== 200) {
-        throw new Error('Photo host returned an unsuccessful response');
+        throw new PhotoDownloadHttpError(response.statusCode);
       }
       validateResponseContentType(response.headers['content-type']);
       const contentLength = parseContentLength(response.headers['content-length']);

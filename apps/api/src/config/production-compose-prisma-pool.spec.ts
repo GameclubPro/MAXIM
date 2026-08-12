@@ -12,6 +12,7 @@ const API_SERVICE_POOL_CAPS = {
   'api-moderation-realtime-c': 3,
   'api-moderation-realtime-d': 3,
   'api-moderation-background': 2,
+  'api-media-analysis': 2,
   'api-action': 6,
 } as const;
 
@@ -44,7 +45,7 @@ describe('production compose Prisma pool caps', () => {
         total += cap;
       }
 
-      expect(total).toBe(48);
+      expect(total).toBe(50);
     });
 
     it('caps the dedicated managed-entities read client separately', () => {

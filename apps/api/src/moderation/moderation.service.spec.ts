@@ -2045,6 +2045,15 @@ describe('ModerationService', () => {
       undefined,
       privateControlService as never,
     );
+    const completeWebhookExecution = jest.spyOn(
+      (service as any).webhookCanonicalExecutionService,
+      'completeExecution',
+    );
+    const commercialOcrEnqueueService = {
+      activatePendingBatch: jest.fn().mockResolvedValue(undefined),
+      suppressPendingBatch: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).commercialOcrEnqueueService = commercialOcrEnqueueService;
 
     await expect(
       service.processWebhookEvent('event-pure-forward-worker-1'),
@@ -2060,6 +2069,9 @@ describe('ModerationService', () => {
         nextEnqueueAt: null,
       }),
     });
+    expect(completeWebhookExecution.mock.invocationCallOrder[0]).toBeLessThan(
+      commercialOcrEnqueueService.activatePendingBatch.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('does not re-run an already processed webhook event', async () => {
@@ -2612,6 +2624,15 @@ describe('ModerationService', () => {
       { resolveAction: jest.fn() } as never,
       {} as never,
     );
+    const commercialOcrEnqueueService = {
+      activatePendingBatch: jest.fn().mockResolvedValue(undefined),
+      suppressPendingBatch: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).commercialOcrEnqueueService = commercialOcrEnqueueService;
+    const completeWebhookExecution = jest.spyOn(
+      (service as any).webhookCanonicalExecutionService,
+      'completeExecution',
+    );
     (service as any).webhookUserFacingTimeoutMs = 10;
     jest.spyOn(service, 'handleUpdate').mockReturnValue(handleUpdateGate);
     const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
@@ -2667,6 +2688,11 @@ describe('ModerationService', () => {
           leaseExpiresAt: null,
         },
       });
+      expect(commercialOcrEnqueueService.activatePendingBatch).toHaveBeenCalledTimes(1);
+      expect(completeWebhookExecution.mock.invocationCallOrder[0]).toBeLessThan(
+        commercialOcrEnqueueService.activatePendingBatch.mock.invocationCallOrder[0]!,
+      );
+      expect(commercialOcrEnqueueService.suppressPendingBatch).not.toHaveBeenCalled();
     } finally {
       setTimeoutSpy.mockRestore();
     }
@@ -2701,6 +2727,11 @@ describe('ModerationService', () => {
       { resolveAction: jest.fn() } as never,
       {} as never,
     );
+    const commercialOcrEnqueueService = {
+      activatePendingBatch: jest.fn().mockResolvedValue(undefined),
+      suppressPendingBatch: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).commercialOcrEnqueueService = commercialOcrEnqueueService;
     (service as any).webhookUserFacingTimeoutMs = 10;
     jest.spyOn(service, 'handleUpdate').mockReturnValue(handleUpdateGate);
     const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
@@ -2741,6 +2772,8 @@ describe('ModerationService', () => {
           nextEnqueueAt: null,
         }),
       });
+      expect(commercialOcrEnqueueService.suppressPendingBatch).toHaveBeenCalledTimes(1);
+      expect(commercialOcrEnqueueService.activatePendingBatch).not.toHaveBeenCalled();
     } finally {
       setTimeoutSpy.mockRestore();
     }
@@ -22398,7 +22431,7 @@ describe('ModerationService', () => {
     });
   });
 
-  describe('photo duplicate enqueue', () => {
+  describe('deferred photo analysis enqueue', () => {
     function createHarness(
       options: {
         adminUserIds?: string[];
@@ -22484,6 +22517,17 @@ describe('ModerationService', () => {
       const photoDuplicateEnqueueService = {
         enqueue: jest.fn().mockResolvedValue('queued'),
       };
+      const commercialOcrEnqueueService = {
+        enqueue: jest.fn().mockImplementation(async (params) => {
+          params.registerPendingActivation?.({
+            jobId: `commercial-image-ocr__${'a'.repeat(64)}`,
+            chatId: params.chatId,
+            imageCount: params.imageCount,
+            reservationTtlMs: 600_000,
+          });
+          return 'queued';
+        }),
+      };
       const karavanStorefrontRelayService = {
         handleMessageCreated: jest.fn().mockResolvedValue(options.karavanResult ?? 'noop'),
       };
@@ -22522,12 +22566,14 @@ describe('ModerationService', () => {
         undefined, // injectedModerationSanctionStateLock
         undefined, // injectedModerationSanctionStateFence
         photoDuplicateEnqueueService as never,
+        commercialOcrEnqueueService as never,
       );
 
       return {
         service,
         ruleEngine,
         photoDuplicateEnqueueService,
+        commercialOcrEnqueueService,
         karavanStorefrontRelayService,
       };
     }
@@ -22595,7 +22641,7 @@ describe('ModerationService', () => {
       },
     );
 
-    it('keeps a handled Karavan photo relay out of the duplicate queue', async () => {
+    it('lowers the duplicate action latch for a handled Karavan photo relay', async () => {
       const harness = createHarness({ karavanResult: 'handled' });
       const update = createPhotoAttachmentUpdate(97);
       update.message!.text = '$ storefront item';
@@ -22613,7 +22659,13 @@ describe('ModerationService', () => {
       await harness.service.handleUpdate(update, undefined, 'webhook-photo-97');
 
       expect(harness.karavanStorefrontRelayService.handleMessageCreated).toHaveBeenCalled();
-      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
+        webhookEventId: 'webhook-photo-97',
+        chatId: 'chat-1',
+        messageId: 'msg-photo-97',
+        sourceCreatedAt: update.message!.createdAt,
+        actionEligible: false,
+      });
     });
 
     it.each([
@@ -22753,17 +22805,20 @@ describe('ModerationService', () => {
       expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
     });
 
-    it('does not enqueue photo messages from chat admins', async () => {
+    it('only lowers the duplicate action latch for photo messages from chat admins', async () => {
       const harness = createHarness({ adminUserIds: ['user-1'] });
+      const update = createPhotoAttachmentUpdate(93);
 
-      await harness.service.handleUpdate(
-        createPhotoAttachmentUpdate(93),
-        undefined,
-        'webhook-photo-93',
-      );
+      await harness.service.handleUpdate(update, undefined, 'webhook-photo-93');
 
       expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
-      expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+      expect(harness.photoDuplicateEnqueueService.enqueue).toHaveBeenCalledWith({
+        webhookEventId: 'webhook-photo-93',
+        chatId: 'chat-1',
+        messageId: 'msg-photo-93',
+        sourceCreatedAt: update.message!.createdAt,
+        actionEligible: false,
+      });
     });
 
     it('does not enqueue bot-authored photo messages', async () => {
@@ -22784,6 +22839,263 @@ describe('ModerationService', () => {
 
       expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
       expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+    });
+
+    describe('commercial OCR', () => {
+      it('enqueues an eligible complete album with exact source identity and image count', async () => {
+        const harness = createHarness({
+          settingsOverrides: { commercialAdsFilterEnabled: true },
+        });
+        const update = createPhotoAttachmentUpdate(100);
+        const rawMessage = (update.raw as { message: { attachments: unknown[] } }).message;
+        rawMessage.attachments.push({
+          type: 'image',
+          payload: {
+            photo_id: 'photo-100-secondary',
+            url: 'https://cdn.example/photo-100-secondary.jpg',
+          },
+        });
+
+        await harness.service.handleUpdate(update, undefined, 'webhook-photo-100');
+
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledTimes(1);
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledWith({
+          webhookEventId: 'webhook-photo-100',
+          chatId: 'chat-1',
+          messageId: 'msg-photo-100',
+          sourceCreatedAt: update.message!.createdAt,
+          imageCount: 2,
+          actionEligible: true,
+        });
+      });
+
+      it.each([
+        {
+          name: 'non-photo message',
+          configureHarness: () =>
+            createHarness({ settingsOverrides: { commercialAdsFilterEnabled: true } }),
+          createCandidate: () => createUpdate(),
+        },
+        {
+          name: 'disabled commercial filter',
+          configureHarness: () => createHarness(),
+          createCandidate: () => createPhotoAttachmentUpdate(101),
+        },
+        {
+          name: 'bot-authored message',
+          configureHarness: () =>
+            createHarness({ settingsOverrides: { commercialAdsFilterEnabled: true } }),
+          createCandidate: () => {
+            const update = createPhotoAttachmentUpdate(102);
+            update.message!.senderId = 'bot-ocr';
+            update.raw = {
+              message: {
+                ...(update.raw as { message?: Record<string, unknown> }).message,
+                sender: { user_id: 'bot-ocr', is_bot: true },
+              },
+            };
+            return update;
+          },
+        },
+        {
+          name: 'service-authored message',
+          configureHarness: () => {
+            const harness = createHarness({
+              settingsOverrides: { commercialAdsFilterEnabled: true },
+            });
+            jest
+              .spyOn(harness.service as any, 'handleServiceMembershipUpdate')
+              .mockResolvedValue(undefined);
+            return harness;
+          },
+          createCandidate: () => {
+            const update = createPhotoAttachmentUpdate(103);
+            update.raw = {
+              message: {
+                ...(update.raw as { message?: Record<string, unknown> }).message,
+                sender: { user_id: 'service-ocr', type: 'service' },
+              },
+            };
+            return update;
+          },
+        },
+        {
+          name: 'message edit',
+          configureHarness: () =>
+            createHarness({ settingsOverrides: { commercialAdsFilterEnabled: true } }),
+          createCandidate: () => {
+            const update = createPhotoAttachmentUpdate(104);
+            update.type = 'message_edited';
+            return update;
+          },
+        },
+      ])('does not enqueue a $name for OCR', async ({ configureHarness, createCandidate }) => {
+        const harness = configureHarness();
+
+        await harness.service.handleUpdate(createCandidate(), undefined, 'webhook-ocr-negative');
+
+        expect(harness.commercialOcrEnqueueService.enqueue).not.toHaveBeenCalled();
+      });
+
+      it('only lowers the action latch for a photo message from a chat admin', async () => {
+        const harness = createHarness({
+          adminUserIds: ['user-1'],
+          settingsOverrides: { commercialAdsFilterEnabled: true },
+        });
+        const update = createPhotoAttachmentUpdate(105);
+
+        await harness.service.handleUpdate(update, undefined, 'webhook-photo-105');
+
+        expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledTimes(1);
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledWith({
+          webhookEventId: 'webhook-photo-105',
+          chatId: 'chat-1',
+          messageId: 'msg-photo-105',
+          sourceCreatedAt: update.message!.createdAt,
+          imageCount: 1,
+          actionEligible: false,
+        });
+      });
+
+      it('lowers the OCR latch for a developer-forced spammer when duplicate photos are disabled', async () => {
+        const harness = createHarness({
+          settingsOverrides: {
+            antiDuplicateEnabled: false,
+            duplicatePhotoEnabled: false,
+            commercialAdsFilterEnabled: true,
+            deleteSpammersEnabled: true,
+          },
+        });
+        jest
+          .spyOn(harness.service as any, 'isDeveloperForcedGlobalSpammerCachedWithHotPathBudget')
+          .mockResolvedValue(true);
+        jest.spyOn(harness.service as any, 'resolveSenderChatAdminCheck').mockResolvedValue({
+          isAdmin: false,
+          source: 'remote',
+        });
+        jest
+          .spyOn(harness.service as any, 'deleteAndKickDetectedGlobalSpammer')
+          .mockResolvedValue(undefined);
+        const update = createPhotoAttachmentUpdate(110);
+
+        await harness.service.handleUpdate(update, undefined, 'webhook-photo-110');
+
+        expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledWith({
+          webhookEventId: 'webhook-photo-110',
+          chatId: 'chat-1',
+          messageId: 'msg-photo-110',
+          sourceCreatedAt: update.message!.createdAt,
+          imageCount: 1,
+          actionEligible: false,
+        });
+        expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        {
+          name: 'actionable violation',
+          suffix: 106,
+          options: {
+            violations: [
+              {
+                ruleCode: 'PROFANITY',
+                score: 0.91,
+                reason: 'Profanity detected',
+              },
+            ],
+          },
+          configure: (service: ModerationService) => {
+            jest
+              .spyOn(service as any, 'consumeChatParticipantModerationImmunity')
+              .mockResolvedValue(true);
+          },
+        },
+        {
+          name: 'duplicate decision',
+          suffix: 107,
+          options: { duplicateOutcome: 'decision' as const },
+          configure: (service: ModerationService) => {
+            jest
+              .spyOn(service as any, 'consumeChatParticipantModerationImmunity')
+              .mockResolvedValue(true);
+          },
+        },
+        {
+          name: 'early destructive path',
+          suffix: 108,
+          options: {},
+          configure: (service: ModerationService) => {
+            jest.spyOn(service as any, 'getActiveMute').mockResolvedValue({});
+            jest.spyOn(service as any, 'handleActiveMuteMessage').mockResolvedValue(undefined);
+          },
+        },
+      ])(
+        'keeps the OCR action latch false for an $name',
+        async ({ options, configure, suffix }) => {
+          const harness = createHarness({
+            ...options,
+            settingsOverrides: { commercialAdsFilterEnabled: true },
+          });
+          configure(harness.service);
+          const update = createPhotoAttachmentUpdate(suffix);
+
+          await harness.service.handleUpdate(update, undefined, `webhook-photo-${suffix}`);
+
+          expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalled();
+          expect(harness.commercialOcrEnqueueService.enqueue.mock.calls).toEqual(
+            expect.arrayContaining([
+              [
+                {
+                  webhookEventId: `webhook-photo-${suffix}`,
+                  chatId: 'chat-1',
+                  messageId: `msg-photo-${suffix}`,
+                  sourceCreatedAt: update.message!.createdAt,
+                  imageCount: 1,
+                  actionEligible: false,
+                },
+              ],
+            ]),
+          );
+          expect(
+            harness.commercialOcrEnqueueService.enqueue.mock.calls.some(
+              ([params]) => params.actionEligible === true,
+            ),
+          ).toBe(false);
+        },
+      );
+
+      it('keeps COMMERCIAL_AD REVIEW_ONLY eligible for OCR', async () => {
+        const harness = createHarness({
+          settingsOverrides: { commercialAdsFilterEnabled: true },
+          violations: [
+            {
+              ruleCode: 'COMMERCIAL_AD',
+              score: 0,
+              reason: 'Review only commercial candidate',
+              metadata: {
+                actionBand: 'REVIEW_ONLY',
+                actionable: false,
+                recordable: false,
+              },
+            },
+          ],
+        });
+        const update = createPhotoAttachmentUpdate(109);
+
+        await harness.service.handleUpdate(update, undefined, 'webhook-photo-109');
+
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledTimes(1);
+        expect(harness.commercialOcrEnqueueService.enqueue).toHaveBeenCalledWith({
+          webhookEventId: 'webhook-photo-109',
+          chatId: 'chat-1',
+          messageId: 'msg-photo-109',
+          sourceCreatedAt: update.message!.createdAt,
+          imageCount: 1,
+          actionEligible: true,
+        });
+      });
     });
   });
 

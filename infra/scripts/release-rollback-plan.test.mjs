@@ -43,7 +43,7 @@ function completeManifest() {
   });
 }
 
-test('default plan selects every active component and all eleven API roles', () => {
+test('default plan selects every active component and all twelve API roles', () => {
   const plan = buildRollbackPlan({
     manifest: completeManifest(),
     now: new Date('2026-07-19T12:34:56.789Z'),
@@ -254,7 +254,10 @@ test('legacy ref rollback is API-only and builds a SHA-scoped temporary image ta
   assert.match(script, /maxim_topology_expand_api_services SERVICES/u);
   assert.match(script, /TARGET_FULL_SHA="\$\(git rev-parse/u);
   assert.match(script, /ROLLBACK_API_IMAGE="maxim-api:runtime-rollback-\$\{TARGET_FULL_SHA\}"/u);
-  assert.match(script, /maxim_topology_build_shared_api_image "\$ROLLBACK_API_IMAGE"/u);
+  assert.match(
+    script,
+    /maxim_topology_build_shared_api_image "\$ROLLBACK_API_IMAGE" "\$TARGET_FULL_SHA"/u,
+  );
   assert.match(script, /ensure_stateful_services_ready/u);
   assert.match(script, /refuse_conflicting_scale_stack/u);
   assert.match(script, /redis-cli ping/u);

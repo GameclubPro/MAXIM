@@ -40,6 +40,7 @@ else
     "api-moderation-realtime-c"
     "api-moderation-realtime-d"
     "api-moderation-background"
+    "api-media-analysis"
     "api-action"
     "miniapp-major-static"
   )
@@ -160,6 +161,7 @@ ensure_compose_env() {
     "infra-scale-api-moderation-realtime-c-1"
     "infra-scale-api-moderation-realtime-d-1"
     "infra-scale-api-moderation-background-1"
+    "infra-scale-api-media-analysis-1"
     "infra-scale-api-action-1"
     "infra-scale-api-1"
     "infra-api-1"
@@ -173,6 +175,7 @@ ensure_compose_env() {
     "infra-api-moderation-realtime-c-1"
     "infra-api-moderation-realtime-d-1"
     "infra-api-moderation-background-1"
+    "infra-api-media-analysis-1"
     "infra-api-action-1"
   )
 
@@ -520,6 +523,7 @@ fi
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   maxim_topology_expand_api_services SERVICES \
     "Shared API image build or API-related diff detected."
+  maxim_topology_refuse_untracked_api_build_inputs
 fi
 
 BUILD_STATIC_IMAGE=0
@@ -575,11 +579,16 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-b" \
   "api-moderation-realtime-c" \
   "api-moderation-realtime-d" \
-  "api-moderation-background"
+  "api-moderation-background" \
+  "api-media-analysis"
 recreate_service_wave "support" "api-admin" "miniapp-static"
 recreate_service_wave "major static" "miniapp-major-static"
 recreate_service_wave "ingress" "api-ingress"
 ensure_requested_services_running
+
+if contains_service "$MAXIM_MEDIA_ANALYSIS_SERVICE" "${SERVICES[@]}"; then
+  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
+fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180

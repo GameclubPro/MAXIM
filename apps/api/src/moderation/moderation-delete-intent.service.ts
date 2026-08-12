@@ -48,6 +48,10 @@ import {
   type PhotoDuplicateScope,
 } from './photo-duplicate/photo-duplicate.runtime';
 import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
+import {
+  COMMERCIAL_OCR_DELETE_RULE_CODE,
+  CommercialOcrDeleteGuardService,
+} from './commercial-ocr/commercial-ocr-delete-guard.service';
 
 const DEFAULT_RETRY_HORIZON_MS = 24 * 60 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 5_000;
@@ -111,6 +115,7 @@ type IntentRow = {
   botMessageAutoDeleteOnly?: boolean;
   linkFamilyDeleteOnly?: boolean;
   photoDuplicateDeleteOnly?: boolean;
+  commercialOcrDeleteOnly?: boolean;
 };
 
 type PhotoDuplicateDeleteReasonFence = {
@@ -178,10 +183,14 @@ class ModerationDeleteProtectedMessageError extends Error {
   }
 }
 
-class ModerationDeleteGuardedLinkMessageAbsentError extends Error {
-  constructor() {
-    super('MAX confirmed that the guarded link message is absent');
-    this.name = 'ModerationDeleteGuardedLinkMessageAbsentError';
+class ModerationDeleteGuardedMessageAbsentError extends Error {
+  constructor(
+    readonly verificationCode:
+      | 'guarded_link_predispatch_exact_absence'
+      | 'guarded_commercial_ocr_predispatch_exact_absence',
+  ) {
+    super('MAX confirmed that the guarded message is absent');
+    this.name = 'ModerationDeleteGuardedMessageAbsentError';
   }
 }
 
@@ -244,6 +253,7 @@ export class ModerationDeleteIntentService {
     configService: ConfigService,
     private readonly linkHistoryDeleteGuard: LinkHistoryDeleteGuardService,
     private readonly photoDuplicateRuntimePolicy: PhotoDuplicateRuntimePolicyService,
+    private readonly commercialOcrDeleteGuard: CommercialOcrDeleteGuardService,
   ) {
     this.mode = normalizeModerationDeleteIntentMode(
       configService.get('MODERATION_DELETE_INTENT_MODE'),
@@ -644,7 +654,7 @@ export class ModerationDeleteIntentService {
           if (error instanceof ModerationDeleteProtectedMessageError) {
             return this.toAttemptResult(error.protectedIntent);
           }
-          if (error instanceof ModerationDeleteGuardedLinkMessageAbsentError) {
+          if (error instanceof ModerationDeleteGuardedMessageAbsentError) {
             if (dispatchMarkerPersisted) {
               if (!(await this.clearDeleteDispatchStarted(intent.id, leaseToken, botId))) {
                 throw new ModerationDeleteIntentLeaseLostError();
@@ -657,7 +667,7 @@ export class ModerationDeleteIntentService {
               intent.id,
               leaseToken,
               botId,
-              'guarded_link_predispatch_exact_absence',
+              error.verificationCode,
             );
             return this.toAttemptResult(completed);
           }
@@ -1340,6 +1350,25 @@ export class ModerationDeleteIntentService {
       // FLAG: A durable photo-only retry must regain authorization from current chat settings and
       // a fresh shared runtime control immediately before every remote DELETE mutation.
       await this.assertPhotoDuplicateDeleteIntentStillActionable(intent);
+      if (intent.commercialOcrDeleteOnly === true) {
+        // FLAG: OCR is asynchronous. Bind every OCR-only DELETE to the current exact message,
+        // author immunity, filter setting, runtime rollout and behavior versions at dispatch time.
+        const result = await this.commercialOcrDeleteGuard.assertIntentStillActionable({
+          intentId: intent.id,
+          chatId: intent.chatId,
+          messageId: intent.messageId,
+          subjectUserId: intent.subjectUserId,
+          sourceMessageAt: intent.sourceMessageAt,
+          botId,
+        });
+        if (result === 'absent') {
+          throw new ModerationDeleteGuardedMessageAbsentError(
+            'guarded_commercial_ocr_predispatch_exact_absence',
+          );
+        }
+        // A concurrently attached independent reason owns the same DELETE and must not be
+        // suppressed by OCR-specific rollout controls.
+      }
       if (intent.linkFamilyDeleteOnly === true) {
         const result = await this.linkHistoryDeleteGuard.assertIntentStillActionable({
           intentId: intent.id,
@@ -1349,7 +1378,9 @@ export class ModerationDeleteIntentService {
           botId,
         });
         if (result === 'absent') {
-          throw new ModerationDeleteGuardedLinkMessageAbsentError();
+          throw new ModerationDeleteGuardedMessageAbsentError(
+            'guarded_link_predispatch_exact_absence',
+          );
         }
         if (result !== 'allowed') {
           throw new Error('Guarded link delete intent lost its required reason metadata');
@@ -1357,7 +1388,7 @@ export class ModerationDeleteIntentService {
       }
       await options?.beforeDeleteMutation?.();
     } catch (error: unknown) {
-      if (error instanceof ModerationDeleteGuardedLinkMessageAbsentError) {
+      if (error instanceof ModerationDeleteGuardedMessageAbsentError) {
         throw error;
       }
       throw new ModerationDeletePreDispatchGuardError(error);
@@ -2768,7 +2799,8 @@ export class ModerationDeleteIntentService {
     verificationCode:
       | 'retry_predelete_exact_presence'
       | 'postdelete_exact_presence'
-      | 'guarded_link_predispatch_exact_absence',
+      | 'guarded_link_predispatch_exact_absence'
+      | 'guarded_commercial_ocr_predispatch_exact_absence',
   ): Promise<IntentRow> {
     await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents"
@@ -3485,6 +3517,21 @@ export class ModerationDeleteIntentService {
             )
         )
       ) AS "photoDuplicateDeleteOnly"
+      ,
+      (
+        EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" commercial_ocr_reason
+          WHERE commercial_ocr_reason."intent_id" = ${intentIdColumn}
+            AND commercial_ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" independent_reason
+          WHERE independent_reason."intent_id" = ${intentIdColumn}
+            AND independent_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+        )
+      ) AS "commercialOcrDeleteOnly"
     `;
   }
 

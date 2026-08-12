@@ -38,6 +38,7 @@ export type RuntimeServiceName =
   | 'api-moderation-realtime-c'
   | 'api-moderation-realtime-d'
   | 'api-moderation-background'
+  | 'api-media-analysis'
   | 'api-action';
 
 export type RuntimeQueueProfile =
@@ -48,6 +49,7 @@ export type RuntimeQueueProfile =
   | 'webhook-join'
   | 'webhook-default'
   | 'webhook-background'
+  | 'commercial-image-ocr'
   | 'max-action-dispatch';
 
 export type RuntimeQueuePriority =
@@ -181,6 +183,7 @@ export const RUNTIME_SERVICE_NAMES = Object.freeze([
   'api-moderation-realtime-c',
   'api-moderation-realtime-d',
   'api-moderation-background',
+  'api-media-analysis',
   'api-action',
 ] as const satisfies readonly RuntimeServiceName[]);
 
@@ -332,6 +335,19 @@ export const RUNTIME_SERVICE_PROFILES = Object.freeze({
     dynamicLeasesWorkerGroup: null,
     canaryShardIds: [],
     backgroundTasksEnabled: true,
+  },
+  'api-media-analysis': {
+    serviceName: 'api-media-analysis',
+    serviceTitle: 'CPU-isolated media analysis worker',
+    appRole: 'moderation',
+    capabilities: RUNTIME_ROLE_CAPABILITIES.moderation,
+    queueProfile: 'commercial-image-ocr',
+    queuePriority: 'background',
+    moderationQueues: [],
+    dynamicLeasesMode: 'off',
+    dynamicLeasesWorkerGroup: null,
+    canaryShardIds: [],
+    backgroundTasksEnabled: false,
   },
   'api-action': {
     serviceName: 'api-action',

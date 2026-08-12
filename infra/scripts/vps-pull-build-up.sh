@@ -68,6 +68,7 @@ if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVIC
     "api-moderation-realtime-c"
     "api-moderation-realtime-d"
     "api-moderation-background"
+    "api-media-analysis"
     "api-action"
     "miniapp-major-static"
     "admin-static"
@@ -581,6 +582,7 @@ ensure_compose_env() {
     "infra-api-moderation-realtime-c-1"
     "infra-api-moderation-realtime-d-1"
     "infra-api-moderation-background-1"
+    "infra-api-media-analysis-1"
     "infra-api-action-1"
     "infra-api-1"
   )
@@ -1047,8 +1049,23 @@ if ! contains_service "admin-static" "${SERVICES[@]}" && impact_plan_selects_com
 fi
 validate_requested_services
 
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_refuse_untracked_api_build_inputs
+fi
+
 TARGET_SHA="$(git rev-parse HEAD)"
 RELEASE_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_SHA:0:12}"
+TARGET_HAS_MEDIA_ANALYSIS=0
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  if maxim_topology_git_compose_has_service "$TARGET_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
+    TARGET_HAS_MEDIA_ANALYSIS=1
+  else
+    topology_status=$?
+    if [[ "$topology_status" -ne 1 ]]; then
+      exit "$topology_status"
+    fi
+  fi
+fi
 DEPLOYED_COMPONENTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   export MAXIM_API_IMAGE="maxim-api:${TARGET_SHA}"
@@ -1081,7 +1098,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
       echo "Refusing to reuse or overwrite an unverified exact-SHA API image." >&2
       exit 1
     fi
-    maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE"
+    maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE" "$TARGET_SHA"
   fi
   if ! run_migrations; then
     echo "First migration attempt failed. Retrying once in 5 seconds..."
@@ -1132,7 +1149,8 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-b" \
   "api-moderation-realtime-c" \
   "api-moderation-realtime-d" \
-  "api-moderation-background"
+  "api-moderation-background" \
+  "api-media-analysis"
 recreate_service_wave "admin" "api-admin"
 recreate_service_wave "support static" "miniapp-static"
 recreate_service_wave "major static" "miniapp-major-static"
@@ -1153,6 +1171,10 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   node scripts/smoke-http.mjs json-ok http://127.0.0.1:3002/api/health/ready
   node scripts/smoke-http.mjs json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=("api-local-live" "api-local-ready" "api-admin-live" "api-admin-ready" "api-public-live")
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
+    SMOKE_RESULTS+=("api-media-analysis-tesseract-rus-eng")
+  fi
 fi
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then

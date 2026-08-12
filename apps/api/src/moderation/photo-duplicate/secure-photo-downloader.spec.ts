@@ -1,6 +1,6 @@
 import type { ConfigService } from '@nestjs/config';
 import sharp from 'sharp';
-import { SecurePhotoDownloader } from './secure-photo-downloader';
+import { PhotoDownloadHttpError, SecurePhotoDownloader } from './secure-photo-downloader';
 
 type MockResponse = {
   statusCode: number;
@@ -217,6 +217,18 @@ describe('SecurePhotoDownloader', () => {
     },
   );
 
+  it('preserves an unsuccessful HTTP status for caller retry classification', async () => {
+    const downloader = new TestDownloader({}, [{ statusCode: 503, headers: {} }]);
+
+    await expect(downloader.download('https://i.oneme.ru/image')).rejects.toEqual(
+      expect.objectContaining<Partial<PhotoDownloadHttpError>>({
+        name: 'PhotoDownloadHttpError',
+        statusCode: 503,
+      }),
+    );
+    expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
+  });
+
   it('falls back to another prevalidated address without resolving the hostname again', async () => {
     const png = await createPng();
     const downloader = new TestDownloader({}, [
@@ -249,7 +261,7 @@ describe('SecurePhotoDownloader', () => {
 
   it('aborts a stalled address within its share of the deadline before falling back', async () => {
     const png = await createPng();
-    const downloader = new TestDownloader({ PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS: '100' }, [
+    const downloader = new TestDownloader({ PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS: '1000' }, [
       {
         statusCode: 0,
         headers: {},

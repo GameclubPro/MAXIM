@@ -23,6 +23,7 @@ PRESERVED_MIGRATION_COMPOSE_FILE=""
 RELEASE_MANIFEST_HELPER=""
 SMOKE_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
+TARGET_HAS_MEDIA_ANALYSIS=0
 ROLLBACK_RUNTIME_STARTED=0
 MANIFEST_RECORDED=0
 
@@ -70,6 +71,16 @@ maxim_topology_expand_api_services SERVICES \
 if ! TARGET_FULL_SHA="$(git rev-parse --verify --end-of-options "${ROLLBACK_REF}^{commit}" 2>/dev/null)"; then
   echo "Cannot resolve rollback ref to an exact commit: $ROLLBACK_REF" >&2
   exit 2
+fi
+if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
+  TARGET_HAS_MEDIA_ANALYSIS=1
+else
+  topology_status=$?
+  if [[ "$topology_status" -ne 1 ]]; then
+    exit "$topology_status"
+  fi
+  maxim_topology_remove_service SERVICES "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  echo "Runtime rollback target predates $MAXIM_MEDIA_ANALYSIS_SERVICE; the role will be removed."
 fi
 
 validate_release_retain() {
@@ -254,6 +265,28 @@ strict_smoke_json_ok() {
     node "$SMOKE_HELPER" json-ok "$1"
 }
 
+remove_incompatible_media_analysis_container() {
+  local container_list
+  local container_ids=()
+
+  if ! container_list="$(
+    docker ps -a -q \
+      --filter "label=com.docker.compose.project=infra" \
+      --filter "label=com.docker.compose.service=$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  )"; then
+    echo "Could not inspect the current $MAXIM_MEDIA_ANALYSIS_SERVICE container." >&2
+    return 1
+  fi
+  if [[ -z "$container_list" ]]; then
+    return 0
+  fi
+  mapfile -t container_ids <<<"$container_list"
+  ROLLBACK_RUNTIME_STARTED=1
+  echo "Stopping and removing $MAXIM_MEDIA_ANALYSIS_SERVICE for the pre-feature API target..."
+  docker stop --time 30 "${container_ids[@]}" >/dev/null
+  docker rm -f "${container_ids[@]}" >/dev/null
+}
+
 record_runtime_rollback_release() {
   local release_id
   local args=()
@@ -274,6 +307,9 @@ record_runtime_rollback_release() {
     --smoke api-admin-ready
     --smoke api-public-live
   )
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+    args+=(--smoke api-media-analysis-tesseract-rus-eng)
+  fi
   MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" node "$RELEASE_MANIFEST_HELPER" "${args[@]}" >/dev/null
   MANIFEST_RECORDED=1
   echo "Release manifest committed: $release_id"
@@ -324,14 +360,18 @@ echo "Services: ${SERVICES[*]}"
 ensure_rollback_migrations_compatible
 maxim_check_deploy_disk_capacity 1 0
 git switch --detach "$TARGET_FULL_SHA"
+maxim_topology_refuse_untracked_api_build_inputs
 
 export MAXIM_API_IMAGE="$ROLLBACK_API_IMAGE"
-maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE"
+maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE" "$TARGET_FULL_SHA"
 ROLLBACK_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_API_IMAGE")"
 ROLLBACK_RUNTIME_STARTED=1
 MAXIM_MIGRATION_API_IMAGE="$ROLLBACK_API_IMAGE" \
   docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
   ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
+  remove_incompatible_media_analysis_container
+fi
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "${SERVICES[@]}"
 
 for service in "${SERVICES[@]}"; do
@@ -351,6 +391,9 @@ strict_smoke_json_ok "http://127.0.0.1:3001/api/health/ready"
 strict_smoke_json_ok "http://127.0.0.1:3002/api/health/live"
 strict_smoke_json_ok "http://127.0.0.1:3002/api/health/ready"
 strict_smoke_json_ok "$PUBLIC_HEALTH_URL/api/health/live"
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
+fi
 record_runtime_rollback_release
 
 echo "Done: runtime rollback target=$TARGET_HEAD services=${SERVICES[*]}"

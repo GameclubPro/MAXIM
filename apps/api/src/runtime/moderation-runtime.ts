@@ -20,7 +20,13 @@ import {
   type WebhookDynamicLeasesMode,
 } from './runtime-topology';
 
-export type ModerationQueueAlias = 'legacy' | 'critical' | 'join' | 'default' | 'background';
+export type ModerationQueueAlias =
+  | 'legacy'
+  | 'critical'
+  | 'join'
+  | 'default'
+  | 'background'
+  | 'none';
 export {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   type DefaultWebhookWorkerGroupName,
@@ -34,6 +40,7 @@ const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyW
     join: JOIN_WEBHOOK_QUEUE_NAMES,
     default: DEFAULT_WEBHOOK_QUEUE_NAMES,
     background: [WEBHOOK_QUEUE_BACKGROUND],
+    none: [],
   };
 
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
@@ -138,17 +145,33 @@ function normalizeQueueToken(rawToken: string): AnyWebhookQueueName[] {
 export function getEnabledModerationProcessorQueues(
   rawValue = process.env.MODERATION_ENABLED_QUEUES,
 ): Set<AnyWebhookQueueName> {
+  const runtimeService = resolveRuntimeServiceProfile();
+  if (runtimeService.service.serviceName === 'api-media-analysis') {
+    return new Set();
+  }
+
   if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
-    const runtimeService = resolveRuntimeServiceProfile();
     if (runtimeService.source === 'declared-service') {
       return new Set(runtimeService.service.moderationQueues);
     }
     return new Set(ALL_MODERATION_QUEUE_NAMES);
   }
 
-  const enabledQueues = new Set(rawValue.split(',').flatMap((token) => normalizeQueueToken(token)));
+  const tokens = rawValue
+    .split(',')
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean);
+  if (tokens.includes('none')) {
+    return new Set();
+  }
+  const enabledQueues = new Set(tokens.flatMap((token) => normalizeQueueToken(token)));
 
   return enabledQueues.size > 0 ? enabledQueues : new Set(ALL_MODERATION_QUEUE_NAMES);
+}
+
+export function commercialOcrProcessorEnabled(env: Record<string, unknown> = process.env): boolean {
+  const serviceName = resolveRuntimeServiceProfile(env).service.serviceName;
+  return serviceName === 'api-all' || serviceName === 'api-media-analysis';
 }
 
 export function moderationProcessorQueueEnabled(

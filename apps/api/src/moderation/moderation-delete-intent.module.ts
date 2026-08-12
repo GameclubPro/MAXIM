@@ -8,7 +8,9 @@ import { MODERATION_DELETE_INTENT_QUEUE } from './moderation-delete-intent.queue
 import { ModerationDeleteIntentReconcilerService } from './moderation-delete-intent-reconciler.service';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.service';
+import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
 import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
+import { CommercialOcrDeleteGuardService } from './commercial-ocr/commercial-ocr-delete-guard.service';
 
 const actionRoleProviders = roleRunsAction(getAppRole())
   ? [ModerationDeleteIntentProcessor, ModerationDeleteIntentReconcilerService]
@@ -18,10 +20,16 @@ const actionRoleProviders = roleRunsAction(getAppRole())
   imports: [BullModule.registerQueue({ name: MODERATION_DELETE_INTENT_QUEUE }), MaxModule],
   providers: [
     LinkHistoryDeleteGuardService,
+    ParticipantModerationImmunityService,
+    CommercialOcrDeleteGuardService,
     PhotoDuplicateRuntimePolicyService,
     ModerationDeleteIntentService,
     ...actionRoleProviders,
   ],
-  exports: [ModerationDeleteIntentService, PhotoDuplicateRuntimePolicyService],
+  exports: [
+    ModerationDeleteIntentService,
+    ParticipantModerationImmunityService,
+    PhotoDuplicateRuntimePolicyService,
+  ],
 })
 export class ModerationDeleteIntentModule {}

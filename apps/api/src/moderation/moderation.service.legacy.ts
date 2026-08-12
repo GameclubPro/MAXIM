@@ -128,6 +128,15 @@ import {
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
 import { resolveTrustedDuplicateStateRevision } from './duplicate-message-revision';
+import {
+  CommercialOcrEnqueueService,
+  type CommercialOcrPendingActivation,
+} from './commercial-ocr/commercial-ocr-enqueue.service';
+import {
+  hasActionableCompetingViolation,
+  resolveCommercialOcrEnqueueCandidate,
+} from './commercial-ocr/commercial-ocr-enqueue-candidate';
+import { consumeLegacyParticipantModerationImmunity } from './participant-moderation-immunity.service';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
 import type { PhotoDuplicateModerationActionRequest } from './photo-duplicate/photo-duplicate-moderation.actions';
 import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
@@ -695,6 +704,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly injectedModerationSanctionStateFence?: ModerationSanctionStateFenceService,
     @Optional()
     private readonly photoDuplicateEnqueueService?: PhotoDuplicateEnqueueService,
+    @Optional()
+    private readonly commercialOcrEnqueueService?: CommercialOcrEnqueueService,
   ) {
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.channelAutoPostLegacyRecovery = new ChannelAutoPostLegacyRecovery({
@@ -1051,6 +1062,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    const commercialOcrPendingActivations: CommercialOcrPendingActivation[] = [];
     try {
       let hotPathProfile: WebhookHotPathProfile | null = null;
       const guardResult = await this.executeWebhookUpdateWithGuard(
@@ -1061,10 +1073,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           hotPathProfile = this.createWebhookHotPathProfile();
           if (activeBotId && this.maxBotContextService) {
             await this.maxBotContextService.runWithBot(activeBotId, () =>
-              this.handleUpdate(update, hotPathProfile!, webhookEvent.id),
+              this.handleUpdate(
+                update,
+                hotPathProfile!,
+                webhookEvent.id,
+                commercialOcrPendingActivations,
+              ),
             );
           } else {
-            await this.handleUpdate(update, hotPathProfile, webhookEvent.id);
+            await this.handleUpdate(
+              update,
+              hotPathProfile,
+              webhookEvent.id,
+              commercialOcrPendingActivations,
+            );
           }
         },
         () => this.readWebhookHotPathProfileSnapshot(hotPathProfile),
@@ -1093,12 +1115,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.observeTimedOutWebhookExecution({
           execution,
           detachedTask: guardResult.detachedTask,
+          commercialOcrPendingActivations,
         });
         return;
       }
 
       await this.webhookCanonicalExecutionService.completeExecution(execution);
+      await this.commercialOcrEnqueueService?.activatePendingBatch(commercialOcrPendingActivations);
     } catch (error: unknown) {
+      await this.commercialOcrEnqueueService?.suppressPendingBatch(commercialOcrPendingActivations);
       if (this.isWebhookHotPathTimeoutError(error)) {
         await this.webhookCanonicalExecutionService.failTimedOutExecution(execution, {
           errorMessage: this.formatWebhookProcessingErrorMessage(error),
@@ -1186,6 +1211,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     update: MaxUpdate,
     hotPathProfile?: WebhookHotPathProfile,
     webhookEventId?: string,
+    commercialOcrPendingActivations?: CommercialOcrPendingActivation[],
   ) {
     if (!update.message) {
       const callbackId = extractMaxCallbackId(update);
@@ -1458,6 +1484,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           actionEligible,
         });
       };
+      const commercialOcrEnqueueBase = resolveCommercialOcrEnqueueCandidate({
+        update,
+        webhookEventId,
+        updateType,
+        commercialAdsFilterEnabled: settings.commercialAdsFilterEnabled,
+        hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
+        chatId,
+        messageId,
+        sourceCreatedAt: createdAt,
+      });
+      const enqueueCommercialOcr = async (actionEligible: boolean): Promise<void> => {
+        if (!commercialOcrEnqueueBase) return;
+        await this.commercialOcrEnqueueService?.enqueue({
+          ...commercialOcrEnqueueBase,
+          actionEligible,
+          ...(commercialOcrPendingActivations
+            ? {
+                registerPendingActivation: (activation: CommercialOcrPendingActivation) => {
+                  commercialOcrPendingActivations.push(activation);
+                },
+              }
+            : {}),
+        });
+      };
+      const suppressDeferredPhotoAnalysisActions = async (): Promise<void> => {
+        await enqueuePhotoDuplicate(false);
+        await enqueueCommercialOcr(false);
+      };
 
       if (
         messageId &&
@@ -1473,6 +1527,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ...(senderName !== undefined ? { senderName } : {}),
         }))
       ) {
+        await suppressDeferredPhotoAnalysisActions();
         return;
       }
 
@@ -1484,7 +1539,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
         }))
       ) {
-        if (photoDuplicateEnqueueBase) {
+        if (photoDuplicateEnqueueBase || commercialOcrEnqueueBase) {
           const photoSenderAdminCheck = await this.resolveSenderChatAdminCheck(
             chatId,
             chat.adminUserIds,
@@ -1492,7 +1547,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             { allowRemoteLookup: true, skipRemoteLookupWhenLocalAdminsKnown: false },
           );
           if (!photoSenderAdminCheck.isAdmin && photoSenderAdminCheck.source !== 'local_fallback') {
-            await enqueuePhotoDuplicate(false);
+            await suppressDeferredPhotoAnalysisActions();
           }
         }
         await this.deleteAndKickDetectedGlobalSpammer({
@@ -1533,6 +1588,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       );
       if (senderChatAdminCheck.isAdmin) {
+        await suppressDeferredPhotoAnalysisActions();
         if (
           await this.tryHandleKaravanStorefrontRelay({
             update,
@@ -1613,7 +1669,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!(await ensureDestructiveModerationAllowed('active-mute'))) {
           return;
         }
-        await enqueuePhotoDuplicate(false);
+        await suppressDeferredPhotoAnalysisActions();
         await this.handleActiveMuteMessage({
           chatId,
           userId: senderId,
@@ -1629,7 +1685,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!(await ensureDestructiveModerationAllowed('manual-group-close'))) {
           return;
         }
-        await enqueuePhotoDuplicate(false);
+        await suppressDeferredPhotoAnalysisActions();
         await this.handleNightModeForceCloseMessage({
           chatId,
           userId: senderId,
@@ -1646,7 +1702,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!(await ensureDestructiveModerationAllowed('night-mode'))) {
           return;
         }
-        await enqueuePhotoDuplicate(false);
+        await suppressDeferredPhotoAnalysisActions();
         await this.handleNightModeMessage({
           chatId,
           userId: senderId,
@@ -1690,7 +1746,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
         });
         if (handled) {
-          await enqueuePhotoDuplicate(false);
+          await suppressDeferredPhotoAnalysisActions();
           return;
         }
       }
@@ -1707,7 +1763,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           exemptFromEnforcement: isGlobalSpammerExempt,
         });
         if (globalSpammerTracking.handled) {
-          await enqueuePhotoDuplicate(false);
+          await suppressDeferredPhotoAnalysisActions();
           return;
         }
         skipKnownSpammerCheck = globalSpammerTracking.skipKnownSpammerCheck;
@@ -1722,7 +1778,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         });
         this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
         if (handled) {
-          await enqueuePhotoDuplicate(false);
+          await suppressDeferredPhotoAnalysisActions();
           return;
         }
       }
@@ -1744,7 +1800,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hotPathProfile,
       });
       if (requiredSubscriptionHandled) {
-        await enqueuePhotoDuplicate(false);
+        await suppressDeferredPhotoAnalysisActions();
         return;
       }
 
@@ -1764,7 +1820,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hotPathProfile,
       });
       if (invitationAccessHandled) {
-        await enqueuePhotoDuplicate(false);
+        await suppressDeferredPhotoAnalysisActions();
         return;
       }
 
@@ -1886,11 +1942,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
         }))
       ) {
+        await suppressDeferredPhotoAnalysisActions();
         return;
       }
       await enqueuePhotoDuplicate(
         !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
       );
+      const commercialOcrActionEligible =
+        !hasActionableCompetingViolation(violations) && !hasUnsuppressedDuplicateOutcome;
       if (
         hasUnsuppressedDuplicateOutcome &&
         (await this.consumeChatParticipantModerationImmunity({
@@ -1899,6 +1958,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeTimezone: settings.nightModeTimezone,
         }))
       ) {
+        await enqueueCommercialOcr(false);
         this.logger.debug(
           { chatId, userId: senderId },
           'Duplicate moderation bypassed for participant immunity',
@@ -1914,6 +1974,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           });
         }
         return;
+      }
+      if (hasUnsuppressedDuplicateOutcome) {
+        await enqueueCommercialOcr(false);
       }
       if (!hasCompetingViolation && detection.duplicateDecision && !duplicateDecisionSuppressed) {
         await this.handleDuplicateDecision({
@@ -1975,6 +2038,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       if (violations.length === 0) {
+        await enqueueCommercialOcr(commercialOcrActionEligible);
         if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
           await this.tryAutoAttachChatMessageComments({
             chatId,
@@ -2024,6 +2088,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
       if (violationSenderAdminCheck.isAdmin) {
+        await enqueueCommercialOcr(false);
         if (
           await this.tryHandleKaravanStorefrontRelay({
             update,
@@ -2059,6 +2124,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         nightModeTimezone: settings.nightModeTimezone,
       });
       if (immunityConsumed) {
+        await enqueueCommercialOcr(false);
         this.logger.debug(
           {
             chatId,
@@ -2080,6 +2146,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
         return;
       }
+
+      await enqueueCommercialOcr(commercialOcrActionEligible);
 
       const topViolation = selectTopModerationViolation(violations);
       if (!topViolation) {
@@ -14078,57 +14146,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     nightModeTimezone: string | null;
   }): Promise<boolean> {
-    if (typeof this.prisma.$queryRaw !== 'function') {
-      return false;
-    }
-
-    const now = new Date();
-    const timezone = this.normalizeNightModeTimezone(params.nightModeTimezone ?? '');
-    const dateKey = this.formatDateKeyInTimeZone(now, timezone);
-    const rows = await this.prisma.$queryRaw<
-      Array<{
-        expires_at: Date | string | null;
-      }>
-    >(Prisma.sql`
-      WITH active_immunity AS (
-        SELECT
-          "id",
-          "expires_at",
-          "daily_violation_limit",
-          "daily_violation_usage",
-          "usage_date_key"
-        FROM "chat_participant_moderation_immunities"
-        WHERE "chat_id" = ${params.chatId}
-          AND "user_id" = ${params.userId}
-          AND ("expires_at" IS NULL OR "expires_at" > ${now})
-      ),
-      limited_update AS (
-        UPDATE "chat_participant_moderation_immunities" immunity
-        SET
-          "usage_date_key" = ${dateKey},
-          "daily_violation_usage" = CASE
-            WHEN immunity."usage_date_key" = ${dateKey} THEN immunity."daily_violation_usage" + 1
-            ELSE 1
-          END,
-          "updated_at" = CURRENT_TIMESTAMP
-        FROM active_immunity active
-        WHERE immunity."id" = active."id"
-          AND active."daily_violation_limit" IS NOT NULL
-          AND CASE
-            WHEN active."usage_date_key" = ${dateKey} THEN active."daily_violation_usage" < active."daily_violation_limit"
-            ELSE TRUE
-          END
-        RETURNING immunity."expires_at"
-      )
-      SELECT "expires_at" FROM limited_update
-      UNION ALL
-      SELECT "expires_at"
-      FROM active_immunity
-      WHERE "expires_at" IS NULL
-        AND "daily_violation_limit" IS NULL
-    `);
-
-    return rows.length > 0;
+    return consumeLegacyParticipantModerationImmunity(this.prisma, params);
   }
 
   private getCurrentMinutesInTimeZone(timeZone: string, date = new Date()): number | null {
@@ -14150,27 +14168,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return hour * 60 + minute;
     } catch {
       return null;
-    }
-  }
-
-  private formatDateKeyInTimeZone(date: Date, timeZone: string): string {
-    try {
-      const parts = new Intl.DateTimeFormat('en-GB', {
-        timeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).formatToParts(date);
-      const year = parts.find((item) => item.type === 'year')?.value;
-      const month = parts.find((item) => item.type === 'month')?.value;
-      const day = parts.find((item) => item.type === 'day')?.value;
-      if (!year || !month || !day) {
-        return date.toISOString().slice(0, 10);
-      }
-
-      return `${year}-${month}-${day}`;
-    } catch {
-      return date.toISOString().slice(0, 10);
     }
   }
 
@@ -16765,11 +16762,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private observeTimedOutWebhookExecution(params: {
     execution: WebhookCanonicalExecutionContext;
     detachedTask: Promise<void>;
+    commercialOcrPendingActivations: CommercialOcrPendingActivation[];
   }): void {
+    const pendingActivations = params.commercialOcrPendingActivations;
     void (async () => {
       try {
         await params.detachedTask;
       } catch (error: unknown) {
+        await this.commercialOcrEnqueueService?.suppressPendingBatch(pendingActivations);
         await this.webhookCanonicalExecutionService
           .failTimedOutExecution(params.execution, {
             errorMessage: this.formatWebhookProcessingErrorMessage(error),
@@ -16798,11 +16798,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       try {
         await this.webhookCanonicalExecutionService.completeExecution(params.execution);
+        await this.commercialOcrEnqueueService?.activatePendingBatch(pendingActivations);
         this.logger.log(
           { webhookEventId: params.execution.webhookEvent.id },
           'Detached webhook execution completed after timeout quarantine',
         );
       } catch (error: unknown) {
+        await this.commercialOcrEnqueueService?.suppressPendingBatch(pendingActivations);
         await this.webhookCanonicalExecutionService
           .failTimedOutExecution(params.execution, {
             errorMessage: this.formatWebhookProcessingErrorMessage(error),

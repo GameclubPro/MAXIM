@@ -36,7 +36,11 @@ ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/russian-trusted-ca-bund
 
 COPY infra/certs/russian-trusted-root-ca.pem /usr/local/share/ca-certificates/russian-trusted-root-ca.crt
 COPY infra/certs/russian-trusted-sub-ca.pem /usr/local/share/ca-certificates/russian-trusted-sub-ca.crt
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache \
+    ca-certificates \
+    tesseract-ocr \
+    tesseract-ocr-data-eng \
+    tesseract-ocr-data-rus \
   && cat /usr/local/share/ca-certificates/russian-trusted-root-ca.crt \
     > /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
   && printf '\n' >> /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \

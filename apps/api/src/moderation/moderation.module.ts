@@ -6,6 +6,7 @@ import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import {
+  commercialOcrProcessorEnabled,
   getEnabledModerationProcessorQueues,
   getWebhookDynamicLeasesWorkerGroup,
   spammerDenormProcessorEnabled,
@@ -63,9 +64,22 @@ import { PHOTO_DUPLICATE_MODERATION_ACTIONS } from './photo-duplicate/photo-dupl
 import { PhotoDuplicateModerationActionsService } from './photo-duplicate/photo-duplicate-moderation-actions.service';
 import { PhotoDuplicateModerationService } from './photo-duplicate/photo-duplicate-moderation.service';
 import { LinkHistoryRecoveryService } from './link-history-recovery.service';
+import { CommercialOcrAdmissionStore } from './commercial-ocr/commercial-ocr-admission.store';
+import { CommercialOcrAnalysisService } from './commercial-ocr/commercial-ocr-analysis.service';
+import { CommercialOcrCacheStore } from './commercial-ocr/commercial-ocr-cache.store';
+import { CommercialOcrEnqueueService } from './commercial-ocr/commercial-ocr-enqueue.service';
+import { CommercialOcrModerationService } from './commercial-ocr/commercial-ocr-moderation.service';
+import { CommercialOcrPreprocessor } from './commercial-ocr/commercial-ocr-preprocessor';
+import { CommercialOcrProcessor } from './commercial-ocr/commercial-ocr.processor';
+import { COMMERCIAL_OCR_QUEUE } from './commercial-ocr/commercial-ocr.queue';
+import { NativeTesseractOcrAdapter } from './commercial-ocr/native-tesseract-ocr.adapter';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
+const moderationRoleEnabled = roleRunsModeration(getAppRole());
+const photoDuplicateProcessorEnabled =
+  moderationRoleEnabled && enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND);
+const commercialOcrWorkerEnabled = commercialOcrProcessorEnabled();
 const moderationProviders = [
   ModerationService,
   {
@@ -91,9 +105,12 @@ const moderationProviders = [
   WebhookCanonicalExecutionService,
   LinkHistoryRecoveryService,
   PhotoDuplicateEnqueueService,
-  ...(roleRunsModeration(getAppRole()) ? [PhotoDuplicateOrderingStore] : []),
+  ...(moderationRoleEnabled
+    ? [PhotoDuplicateOrderingStore, CommercialOcrAdmissionStore, CommercialOcrEnqueueService]
+    : []),
+  ...(photoDuplicateProcessorEnabled || commercialOcrWorkerEnabled ? [SecurePhotoDownloader] : []),
   ...(dynamicDefaultWorkerGroup ? [DefaultWebhookLeaseManagerService] : []),
-  ...(roleRunsModeration(getAppRole())
+  ...(moderationRoleEnabled
     ? [
         ...(enabledModerationQueues.has(LEGACY_WEBHOOK_QUEUE) ? [LegacyModerationProcessor] : []),
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_CRITICAL) ? [CriticalWebhookProcessor] : []),
@@ -115,9 +132,8 @@ const moderationProviders = [
           ? [NightModeTransitionProcessor]
           : []),
         ...(spammerDenormProcessorEnabled() ? [GlobalSpammerDenormProcessor] : []),
-        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND)
+        ...(photoDuplicateProcessorEnabled
           ? [
-              SecurePhotoDownloader,
               PhotoDuplicateHistoryStore,
               {
                 provide: PhotoFingerprintService,
@@ -135,6 +151,16 @@ const moderationProviders = [
               PhotoDuplicateProcessor,
             ]
           : []),
+        ...(commercialOcrWorkerEnabled
+          ? [
+              CommercialOcrCacheStore,
+              CommercialOcrPreprocessor,
+              NativeTesseractOcrAdapter,
+              CommercialOcrAnalysisService,
+              CommercialOcrModerationService,
+              CommercialOcrProcessor,
+            ]
+          : []),
       ]
     : []),
 ];
@@ -144,6 +170,7 @@ const moderationProviders = [
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
     BullModule.registerQueue({ name: PHOTO_DUPLICATE_QUEUE }),
+    BullModule.registerQueue({ name: COMMERCIAL_OCR_QUEUE }),
     MaxModule,
     SystemModule,
     ChatContextModule,

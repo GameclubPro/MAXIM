@@ -8,6 +8,7 @@ import {
   getWebhookDynamicLeasesWorkerGroup,
   moderationBackgroundTasksEnabled,
   moderationProcessorQueueEnabled,
+  commercialOcrProcessorEnabled,
   spammerDenormProcessorEnabled,
 } from './moderation-runtime';
 import {
@@ -28,6 +29,34 @@ describe('moderation-runtime', () => {
         ...DEFAULT_WEBHOOK_QUEUE_NAMES,
         WEBHOOK_QUEUE_BACKGROUND,
       ]),
+    );
+  });
+
+  it('supports an explicit empty webhook queue profile for isolated workers', () => {
+    expect(getEnabledModerationProcessorQueues('none')).toEqual(new Set());
+    expect(getEnabledModerationProcessorQueues('none,critical')).toEqual(new Set());
+  });
+
+  it('keeps the media-analysis role isolated even when its queue override is invalid', () => {
+    const originalServiceName = process.env.APP_SERVICE_NAME;
+    try {
+      process.env.APP_SERVICE_NAME = 'api-media-analysis';
+      expect(getEnabledModerationProcessorQueues('unknown')).toEqual(new Set());
+      expect(getEnabledModerationProcessorQueues('critical')).toEqual(new Set());
+    } finally {
+      if (originalServiceName === undefined) {
+        delete process.env.APP_SERVICE_NAME;
+      } else {
+        process.env.APP_SERVICE_NAME = originalServiceName;
+      }
+    }
+  });
+
+  it('runs commercial OCR only in its isolated service or all-in-one development', () => {
+    expect(commercialOcrProcessorEnabled({ APP_SERVICE_NAME: 'api-media-analysis' })).toBe(true);
+    expect(commercialOcrProcessorEnabled({ APP_SERVICE_NAME: 'api-all' })).toBe(true);
+    expect(commercialOcrProcessorEnabled({ APP_SERVICE_NAME: 'api-moderation-background' })).toBe(
+      false,
     );
   });
 

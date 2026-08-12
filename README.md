@@ -104,6 +104,7 @@ API image split into these services:
 - `api-moderation-critical`: critical/legacy moderation queues.
 - `api-moderation-join`: membership/join queues.
 - `api-moderation-background`: scheduled/background work.
+- `api-media-analysis`: CPU-isolated commercial-image OCR moderation.
 - `api-action`: durable MAX action dispatch.
 
 Static services:

@@ -18,6 +18,7 @@ import { resolveRuntimeServiceProfile, type RuntimeRoleCapabilities } from './ru
 import type { QueueCounters, QueueMetricsSnapshot } from '../system/queue-metrics.service';
 import { MAX_ACTION_ALL_QUEUE_NAMES } from '../max/max-action.queue';
 import { LEGACY_WEBHOOK_QUEUE } from '../webhook/webhook-queues';
+import { COMMERCIAL_OCR_QUEUE } from '../moderation/commercial-ocr/commercial-ocr.queue';
 
 export const DEFAULT_WEBHOOK_P95_TARGET_MS = 400;
 const QUEUE_GROUP_WAITING_WARNING = 1;
@@ -43,6 +44,9 @@ export function buildSystemRuntimeProfile(
   const enabledQueues = new Set<string>(getEnabledModerationProcessorQueues());
   if (service.capabilities.actionEnabled) {
     MAX_ACTION_ALL_QUEUE_NAMES.forEach((queueName) => enabledQueues.add(queueName));
+  }
+  if (service.queueProfile === 'commercial-image-ocr') {
+    enabledQueues.add(COMMERCIAL_OCR_QUEUE);
   }
 
   return {
@@ -173,7 +177,7 @@ export function buildSystemRollbackReadiness(
     failedWebhookOk,
     reasons,
     command:
-      './infra/scripts/vps-connect.sh rollback-runtime <git-ref> api-enqueue api-moderation api-moderation-critical api-moderation-join api-moderation-realtime-b api-moderation-realtime-c api-moderation-realtime-d api-moderation-background api-action api-ingress api-admin',
+      './infra/scripts/vps-connect.sh rollback-runtime <git-ref> api-enqueue api-moderation api-moderation-critical api-moderation-join api-moderation-realtime-b api-moderation-realtime-c api-moderation-realtime-d api-moderation-background api-media-analysis api-action api-ingress api-admin',
   };
 }
 

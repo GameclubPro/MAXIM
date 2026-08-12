@@ -10,6 +10,9 @@ x-spammer-read-model-shadow-env: &spammer-read-model-shadow-env
   MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: ${MODERATION_DELETE_INTENT_CANARY_CHAT_IDS:-}
   MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: ${MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS:-}
   MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: ${MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED:-false}
+  COMMERCIAL_OCR_ROLLOUT_MODE: ${COMMERCIAL_OCR_ROLLOUT_MODE:-shadow}
+  COMMERCIAL_OCR_CANARY_CHAT_IDS: ${COMMERCIAL_OCR_CANARY_CHAT_IDS:-}
+  COMMERCIAL_OCR_VERSION: ${COMMERCIAL_OCR_VERSION:-tesseract-rus-eng-v1}
 
 x-default-logging: &default-logging
   driver: json-file
@@ -427,6 +430,46 @@ services:
       MAX_API_LIST_BOT_CHATS_CACHE_SEC: 120
       MAX_API_CHAT_SNAPSHOT_CACHE_SEC: 300
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
+    depends_on:
+      - postgres
+      - redis
+
+  api-media-analysis:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 1g
+    pids_limit: 128
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt: !override
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1000,gid=1000
+    logging: *default-logging
+    env_file:
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
+    environment:
+      <<: *spammer-read-model-shadow-env
+      APP_SERVICE_NAME: api-media-analysis
+      APP_ROLE: moderation
+      PRISMA_PG_POOL_MAX: 2
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
+      MODERATION_ENABLED_QUEUES: none
+      MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
+      COMMERCIAL_OCR_PROCESSOR_CONCURRENCY: 1
+      COMMERCIAL_OCR_TESSERACT_CONCURRENCY: 1
+      COMMERCIAL_OCR_TESSERACT_MAX_QUEUE: 4
+      OMP_THREAD_LIMIT: 1
+      MAX_API_GLOBAL_RPS: 30
+      MAX_API_GLOBAL_RPS_CRITICAL: 8
+      MAX_API_GLOBAL_RPS_INTERACTIVE: 4
+      MAX_API_GLOBAL_RPS_BACKGROUND: 2
+      MAX_API_CHAT_RPS: 5
     depends_on:
       - postgres
       - redis

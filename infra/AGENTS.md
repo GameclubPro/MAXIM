@@ -15,6 +15,7 @@
   - `api-moderation-realtime-c`
   - `api-moderation-realtime-d`
   - `api-moderation-background`
+  - `api-media-analysis`
   - `api-action`
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
 - `miniapp-major-static` serves `https://major-maksimov.ru/app/` on local port 3003. `miniapp-static` serves legacy support host `maxim.play-team.ru` on port 3000 and is not a routine target.
@@ -56,6 +57,7 @@
 - Migration one-offs use `infra/docker-compose.runtime-no-build.yml` with an explicit prebuilt image and `--pull never`; `docker compose run` does not accept `--no-build` on every supported production Compose version. Runtime recreation still requires `docker compose up --no-build`.
 - `rollback-release` reuses locally retained immutable images, checks recorded image IDs, force-recreates only selected component services, runs strict smokes, and records a new rollback manifest. API selection additionally requires Postgres/Redis readiness and Prisma compatibility; static-only rollback is image-only and does not require Git or database access. It does not switch Git refs, build images, or run migrations; an incomplete attempt after runtime mutation invalidates stale `current.json` inventory.
 - `rollback-runtime` is the API-only fallback when a suitable immutable release is unavailable. It requires existing Postgres/Redis readiness, preserves the current Compose file before switching to the exact ref, checks Prisma compatibility, rebuilds the shared image, runs strict smokes, and records a partial API release manifest. It never starts/recreates stateful services and cannot restore static components; an incomplete attempt invalidates `current.json` rather than leaving false inventory.
+- API rollback topology follows `infra/docker-compose.yml` from the target API source SHA. Targets that predate `api-media-analysis` omit it from recreate/image verification and stop/remove the current role container; targets that include it must pass an exact `tesseract --list-langs` smoke for both `rus` and `eng` before a release manifest is recorded.
 - Deploy and both rollback paths serialize through the shared lock. Rebuild only affected application components. Ordinary API deploy requires Postgres and Redis to be already running and ready; it refuses instead of starting or recreating them.
 - Destructive DB column removal requires the API client-compatible release first and the drop migration in a later release.
 - The VPS is shared with sibling applications. Check for another Docker build before heavy work and avoid overlapping builds.

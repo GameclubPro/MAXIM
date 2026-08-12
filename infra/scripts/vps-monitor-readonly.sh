@@ -402,6 +402,7 @@ queues=(
   max-actions-background
   night-mode-transitions
   moderation-delete-intents
+  commercial-image-ocr
   managed-broadcast
   admin-managed-entities-refresh
   max-chat-admin-roster-sync

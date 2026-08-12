@@ -18,6 +18,7 @@ export const PRODUCTION_API_SERVICES = Object.freeze([
   'api-moderation-realtime-c',
   'api-moderation-realtime-d',
   'api-moderation-background',
+  'api-media-analysis',
   'api-action',
 ]);
 

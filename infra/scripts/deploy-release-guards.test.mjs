@@ -15,6 +15,7 @@ const apiServices = [
   'api-moderation-realtime-c',
   'api-moderation-realtime-d',
   'api-moderation-background',
+  'api-media-analysis',
   'api-action',
 ];
 

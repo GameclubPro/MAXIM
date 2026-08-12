@@ -45,6 +45,7 @@ Production-сервисы:
 | `api-moderation-realtime-c` | realtime shard group C                     |
 | `api-moderation-realtime-d` | realtime shard group D                     |
 | `api-moderation-background` | background moderation and scheduled work   |
+| `api-media-analysis`         | CPU-isolated commercial-image OCR          |
 | `api-action`                | durable MAX action dispatch                |
 
 Для локальной отладки доступны роли `all`, `ingress`, `admin`, `enqueue`, `moderation` и `action`.

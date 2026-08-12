@@ -6,6 +6,7 @@
 - The NestJS/Fastify API uses Prisma/Postgres and BullMQ/Redis. Runtime processes share one image and split work with `APP_ROLE`; `APP_SERVICE_NAME` selects the typed queue/service profile in `src/runtime/runtime-topology.ts`.
 - Keep the runtime topology aligned with both production Compose files and `infra/scripts/lib/deploy-topology.sh`.
 - Ingress accepts public health/webhooks, admin serves `/api/v1/` and local owner APIs, enqueue materializes queue work, moderation roles process their assigned queues, and action dispatches MAX actions.
+- `api-media-analysis` owns CPU-isolated commercial-image OCR; keep it single-concurrency, resource-capped, and in `shadow` until corpus gates authorize a wider rollout.
 - Runtime hot paths must go through `WebhookIngestionService`, `ModerationExecutionService`, `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`, not legacy implementations.
 - Admin entry points should use `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService` instead of growing legacy `AdminService`.
 - Refactor guards track real `*.legacy` files. New code imports public facades; only thin facade modules may import legacy implementations.

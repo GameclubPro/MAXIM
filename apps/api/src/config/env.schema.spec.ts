@@ -297,6 +297,73 @@ describe('validateEnv boolean parsing', () => {
     ).toThrow(/wildcard/u);
   });
 
+  it('keeps commercial OCR off by default with bounded isolated worker resources', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.COMMERCIAL_OCR_ROLLOUT_MODE).toBe('off');
+    expect(defaults.COMMERCIAL_OCR_CANARY_CHAT_IDS).toBe('');
+    expect(defaults.COMMERCIAL_OCR_VERSION).toBe('tesseract-rus-eng-v1');
+    expect(defaults.COMMERCIAL_OCR_PROCESSOR_CONCURRENCY).toBe(1);
+    expect(defaults.COMMERCIAL_OCR_TESSERACT_CONCURRENCY).toBe(1);
+    expect(defaults.OMP_THREAD_LIMIT).toBe(1);
+    expect(defaults.COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS).toBe(16);
+    expect(defaults.COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS).toBe(10);
+    expect(defaults.COMMERCIAL_OCR_MAX_JOB_AGE_MS).toBe(300_000);
+    expect(defaults.COMMERCIAL_OCR_RESERVATION_TTL_MS).toBe(600_000);
+    expect(defaults.COMMERCIAL_OCR_MAX_OUTPUT_PIXELS).toBe(3_000_000);
+
+    const configured = validateEnv(
+      createValidEnv({
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'canary',
+        COMMERCIAL_OCR_CANARY_CHAT_IDS: 'chat-1,chat-2',
+        COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: '7500',
+        OMP_THREAD_LIMIT: '2',
+      }),
+    );
+    expect(configured.COMMERCIAL_OCR_ROLLOUT_MODE).toBe('canary');
+    expect(configured.COMMERCIAL_OCR_CANARY_CHAT_IDS).toBe('chat-1,chat-2');
+    expect(configured.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS).toBe(7_500);
+    expect(configured.OMP_THREAD_LIMIT).toBe(2);
+
+    expect(() =>
+      validateEnv(createValidEnv({ COMMERCIAL_OCR_CANARY_CHAT_IDS: 'chat-1,*' })),
+    ).toThrow(/COMMERCIAL_OCR_CANARY_CHAT_IDS/u);
+    expect(() => validateEnv(createValidEnv({ OMP_THREAD_LIMIT: '0' }))).toThrow(
+      /OMP_THREAD_LIMIT/u,
+    );
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS: '3',
+          COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS: '4',
+        }),
+      ),
+    ).toThrow(/COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_MAX_INPUT_PIXELS: '1000000',
+          COMMERCIAL_OCR_MAX_OUTPUT_PIXELS: '2000000',
+        }),
+      ),
+    ).toThrow(/COMMERCIAL_OCR_MAX_OUTPUT_PIXELS/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_MAX_JOB_AGE_MS: '60000',
+          COMMERCIAL_OCR_RESERVATION_TTL_MS: '119999',
+        }),
+      ),
+    ).toThrow(/COMMERCIAL_OCR_RESERVATION_TTL_MS/u);
+    expect(
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_MAX_JOB_AGE_MS: '5000',
+          COMMERCIAL_OCR_RESERVATION_TTL_MS: '65000',
+        }),
+      ).COMMERCIAL_OCR_RESERVATION_TTL_MS,
+    ).toBe(65_000);
+  });
+
   it('defaults the action ledger watchdog to shadow rollout', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.MAX_ACTION_LEDGER_WATCHDOG_MODE).toBe('shadow');

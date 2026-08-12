@@ -17,6 +17,8 @@ import {
   PHOTO_DUPLICATE_MAX_ACTIONS,
   PHOTO_DUPLICATE_ROLLOUT_MODES,
 } from '../moderation/photo-duplicate/photo-duplicate.runtime';
+import { COMMERCIAL_OCR_ROLLOUT_MODES } from '../moderation/commercial-ocr/commercial-ocr.runtime';
+import { COMMERCIAL_OCR_DEFAULT_VERSION } from '../moderation/commercial-ocr/commercial-ocr.queue';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -85,6 +87,16 @@ const photoDuplicateExactChatIdsSchema = z.string().refine(
       .filter(Boolean)
       .every((item) => item !== '*'),
   { message: 'Photo duplicate rollout chat IDs must be exact; wildcard is not allowed' },
+);
+
+const commercialOcrExactChatIdsSchema = z.string().refine(
+  (value) =>
+    value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .every((item) => item !== '*'),
+  { message: 'Commercial OCR rollout chat IDs must be exact; wildcard is not allowed' },
 );
 
 function originOnlyUrl(key: string) {
@@ -306,6 +318,72 @@ const envSchema = z.object({
     .max(100_000_000)
     .default(40_000_000),
   PHOTO_DUPLICATE_HISTORY_MAX_ITEMS: z.coerce.number().int().min(10).max(2_000).default(250),
+  COMMERCIAL_OCR_ROLLOUT_MODE: z.enum(COMMERCIAL_OCR_ROLLOUT_MODES).default('off'),
+  COMMERCIAL_OCR_CANARY_CHAT_IDS: commercialOcrExactChatIdsSchema.default(''),
+  COMMERCIAL_OCR_VERSION: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u)
+    .default(COMMERCIAL_OCR_DEFAULT_VERSION),
+  COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS: z.coerce.number().int().min(1).max(10_000).default(16),
+  COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS: z.coerce.number().int().min(1).max(1_000).default(10),
+  COMMERCIAL_OCR_MAX_JOB_AGE_MS: z.coerce.number().int().min(1_000).max(600_000).default(300_000),
+  COMMERCIAL_OCR_RESERVATION_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(5_000)
+    .max(660_000)
+    .default(600_000),
+  COMMERCIAL_OCR_CACHE_TTL_SEC: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(31 * 24 * 60 * 60)
+    .default(7 * 24 * 60 * 60),
+  COMMERCIAL_OCR_SINGLEFLIGHT_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(60_000)
+    .default(15_000),
+  COMMERCIAL_OCR_PROCESSOR_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
+  COMMERCIAL_OCR_MAX_INPUT_PIXELS: z.coerce
+    .number()
+    .int()
+    .min(1_000_000)
+    .max(100_000_000)
+    .default(40_000_000),
+  COMMERCIAL_OCR_MAX_OUTPUT_PIXELS: z.coerce
+    .number()
+    .int()
+    .min(250_000)
+    .max(12_000_000)
+    .default(3_000_000),
+  COMMERCIAL_OCR_MAX_SIDE: z.coerce.number().int().min(512).max(4_096).default(2_000),
+  COMMERCIAL_OCR_TESSERACT_BINARY: z.string().trim().min(1).max(512).default('tesseract'),
+  COMMERCIAL_OCR_TESSDATA_PREFIX: z.string().trim().min(1).max(1_024).optional(),
+  COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: z.coerce.number().int().min(250).max(60_000).default(5_000),
+  COMMERCIAL_OCR_TESSERACT_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(1),
+  COMMERCIAL_OCR_TESSERACT_MAX_QUEUE: z.coerce.number().int().min(1).max(256).default(16),
+  COMMERCIAL_OCR_TESSERACT_RECYCLE_AFTER_JOBS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(10_000)
+    .default(250),
+  COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_024)
+    .max(64 * 1024 * 1024)
+    .default(16 * 1024 * 1024),
+  COMMERCIAL_OCR_TESSERACT_MAX_OUTPUT_BYTES: z.coerce
+    .number()
+    .int()
+    .min(64 * 1024)
+    .max(16 * 1024 * 1024)
+    .default(4 * 1024 * 1024),
+  OMP_THREAD_LIMIT: z.coerce.number().int().min(1).max(8).default(1),
   BACKGROUND_GOVERNOR_SOURCE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   BACKGROUND_GOVERNOR_CACHE_TTL_MS: z.coerce.number().int().positive().default(2_000),
   BACKGROUND_GOVERNOR_SOFT_QUEUE_LAG_SEC: z.coerce.number().positive().default(3),
@@ -507,6 +585,27 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
   ) {
     throw new Error(
       'Environment validation failed: MODERATION_DELETE_INTENT_RETRY_MAX_MS must be greater than or equal to MODERATION_DELETE_INTENT_RETRY_BASE_MS',
+    );
+  }
+  if (
+    parsed.data.COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS >
+    parsed.data.COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS
+  ) {
+    throw new Error(
+      'Environment validation failed: COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS must not exceed COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS',
+    );
+  }
+  if (
+    parsed.data.COMMERCIAL_OCR_RESERVATION_TTL_MS <
+    parsed.data.COMMERCIAL_OCR_MAX_JOB_AGE_MS + 60_000
+  ) {
+    throw new Error(
+      'Environment validation failed: COMMERCIAL_OCR_RESERVATION_TTL_MS must cover COMMERCIAL_OCR_MAX_JOB_AGE_MS plus the 60000ms source clock-skew window',
+    );
+  }
+  if (parsed.data.COMMERCIAL_OCR_MAX_OUTPUT_PIXELS > parsed.data.COMMERCIAL_OCR_MAX_INPUT_PIXELS) {
+    throw new Error(
+      'Environment validation failed: COMMERCIAL_OCR_MAX_OUTPUT_PIXELS must not exceed COMMERCIAL_OCR_MAX_INPUT_PIXELS',
     );
   }
 

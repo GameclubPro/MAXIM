@@ -18,6 +18,7 @@ ensure_compose_env() {
     "infra-api-moderation-realtime-c-1"
     "infra-api-moderation-realtime-d-1"
     "infra-api-moderation-background-1"
+    "infra-api-media-analysis-1"
     "infra-api-action-1"
     "infra-api-1"
   )
@@ -95,6 +96,7 @@ else
     "api-moderation-realtime-c"
     "api-moderation-realtime-d"
     "api-moderation-background"
+    "api-media-analysis"
     "api-action"
     "miniapp-major-static"
     "admin-static"

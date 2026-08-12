@@ -20,7 +20,9 @@ type ComposeFile = {
 
 function readComposeApiServices(fileName: string): Record<string, ComposeService> {
   const composePath = resolve(__dirname, '../../../../infra', fileName);
-  const compose = parseYaml(readFileSync(composePath, 'utf8')) as ComposeFile;
+  const compose = parseYaml(readFileSync(composePath, 'utf8'), {
+    customTags: [{ tag: '!override', collection: 'seq', resolve: (value) => value }],
+  }) as ComposeFile;
 
   return compose.services ?? {};
 }
@@ -76,6 +78,16 @@ describe('runtime-topology', () => {
       appRole: 'action',
       queueProfile: 'max-action-dispatch',
       backgroundTasksEnabled: true,
+    });
+  });
+
+  it('isolates commercial OCR from webhook moderation queues', () => {
+    expect(RUNTIME_SERVICE_PROFILES['api-media-analysis']).toMatchObject({
+      appRole: 'moderation',
+      queueProfile: 'commercial-image-ocr',
+      queuePriority: 'background',
+      moderationQueues: [],
+      backgroundTasksEnabled: false,
     });
   });
 
