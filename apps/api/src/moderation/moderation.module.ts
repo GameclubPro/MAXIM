@@ -71,6 +71,7 @@ import { CommercialOcrEnqueueService } from './commercial-ocr/commercial-ocr-enq
 import { CommercialOcrModerationService } from './commercial-ocr/commercial-ocr-moderation.service';
 import { CommercialOcrPreprocessor } from './commercial-ocr/commercial-ocr-preprocessor';
 import { CommercialOcrProcessor } from './commercial-ocr/commercial-ocr.processor';
+import { CommercialOcrQueueProducer } from './commercial-ocr/commercial-ocr-queue.producer';
 import { COMMERCIAL_OCR_QUEUE } from './commercial-ocr/commercial-ocr.queue';
 import { NativeTesseractOcrAdapter } from './commercial-ocr/native-tesseract-ocr.adapter';
 
@@ -80,6 +81,7 @@ const moderationRoleEnabled = roleRunsModeration(getAppRole());
 const photoDuplicateProcessorEnabled =
   moderationRoleEnabled && enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND);
 const commercialOcrWorkerEnabled = commercialOcrProcessorEnabled();
+const commercialOcrEnqueueEnabled = moderationRoleEnabled && enabledModerationQueues.size > 0;
 const moderationProviders = [
   ModerationService,
   {
@@ -105,8 +107,20 @@ const moderationProviders = [
   WebhookCanonicalExecutionService,
   LinkHistoryRecoveryService,
   PhotoDuplicateEnqueueService,
-  ...(moderationRoleEnabled
-    ? [PhotoDuplicateOrderingStore, CommercialOcrAdmissionStore, CommercialOcrEnqueueService]
+  ...(moderationRoleEnabled ? [PhotoDuplicateOrderingStore] : []),
+  ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
+    ? [CommercialOcrAdmissionStore]
+    : []),
+  ...(commercialOcrEnqueueEnabled
+    ? [
+        {
+          provide: CommercialOcrQueueProducer,
+          inject: [ConfigService],
+          useFactory: (configService: ConfigService) =>
+            new CommercialOcrQueueProducer(configService.getOrThrow<string>('REDIS_URL')),
+        },
+        CommercialOcrEnqueueService,
+      ]
     : []),
   ...(photoDuplicateProcessorEnabled || commercialOcrWorkerEnabled ? [SecurePhotoDownloader] : []),
   ...(dynamicDefaultWorkerGroup ? [DefaultWebhookLeaseManagerService] : []),
@@ -170,7 +184,9 @@ const moderationProviders = [
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
     BullModule.registerQueue({ name: PHOTO_DUPLICATE_QUEUE }),
-    BullModule.registerQueue({ name: COMMERCIAL_OCR_QUEUE }),
+    ...(commercialOcrWorkerEnabled
+      ? [BullModule.registerQueue({ name: COMMERCIAL_OCR_QUEUE })]
+      : []),
     MaxModule,
     SystemModule,
     ChatContextModule,

@@ -108,34 +108,71 @@ maxim_topology_expand_api_services() {
   fi
 }
 
-maxim_topology_refuse_untracked_api_build_inputs() {
-  local untracked_file
-  local untracked_files_path
+maxim_topology_refuse_dirty_api_build_inputs() {
+  local dirty_inputs_path
+  local ignored_inputs_path
+  local ignored_file
+  local unsafe_ignored_input=0
 
-  if ! untracked_files_path="$(mktemp)"; then
+  if ! dirty_inputs_path="$(mktemp)"; then
     echo "Could not create the API build-input preflight snapshot." >&2
     return 1
   fi
-  if ! git ls-files --others --exclude-standard -z -- \
+  if ! ignored_inputs_path="$(mktemp)"; then
+    rm -f "$dirty_inputs_path"
+    echo "Could not create the ignored API build-input preflight snapshot." >&2
+    return 1
+  fi
+  if ! git status --porcelain=v1 --untracked-files=all -- \
+    .dockerignore \
+    package.json \
+    package-lock.json \
+    tsconfig.base.json \
+    apps/admin/package.json \
+    apps/api \
+    apps/miniapp/package.json \
+    packages/contracts \
+    scripts \
+    infra/certs >"$dirty_inputs_path"; then
+    rm -f "$dirty_inputs_path" "$ignored_inputs_path"
+    echo "Could not inspect API Docker build inputs against HEAD." >&2
+    return 1
+  fi
+  if git ls-files --others --ignored --exclude-standard -z -- \
     apps/api \
     packages/contracts \
     scripts \
-    infra/certs >"$untracked_files_path"; then
-    rm -f "$untracked_files_path"
-    echo "Could not inspect untracked API Docker build inputs." >&2
+    infra/certs >"$ignored_inputs_path"; then
+    while IFS= read -r -d '' ignored_file; do
+      case "$ignored_file" in
+        */node_modules/* | */dist/* | */coverage/* | apps/api/src/generated/* | *.log | *.env | */.env | */.env.* | *.codex-backup-*)
+          ;;
+        *)
+          if [[ "$unsafe_ignored_input" -eq 0 ]]; then
+            echo "Refusing shared API image build with Git-ignored inputs included by Docker:" >&2
+          fi
+          printf '  %q\n' "$ignored_file" >&2
+          unsafe_ignored_input=1
+          ;;
+      esac
+    done <"$ignored_inputs_path"
+  else
+    rm -f "$dirty_inputs_path" "$ignored_inputs_path"
+    echo "Could not inspect ignored API Docker build inputs." >&2
     return 1
   fi
-  if [[ ! -s "$untracked_files_path" ]]; then
-    rm -f "$untracked_files_path"
+  rm -f "$ignored_inputs_path"
+
+  if [[ -s "$dirty_inputs_path" ]]; then
+    echo "Refusing shared API image build with Docker inputs that differ from HEAD:" >&2
+    sed 's/^/  /' "$dirty_inputs_path" >&2
+  fi
+  if [[ ! -s "$dirty_inputs_path" && "$unsafe_ignored_input" -eq 0 ]]; then
+    rm -f "$dirty_inputs_path"
     return 0
   fi
-
-  echo "Refusing shared API image build with untracked Docker build inputs:" >&2
-  while IFS= read -r -d '' untracked_file; do
-    printf '  %q\n' "$untracked_file" >&2
-  done <"$untracked_files_path"
-  rm -f "$untracked_files_path"
-  echo "Commit, remove, or ignore these files before building the production API image." >&2
+  rm -f "$dirty_inputs_path"
+  echo "Commit, restore, remove, or add a reviewed Docker exclusion before building the production API image." >&2
   return 1
 }
 
@@ -153,7 +190,7 @@ maxim_topology_build_shared_api_image() {
 
   if [[ "$image_ref" != *:* && "$image_ref" != */* ]]; then
     source_image="${image_ref}-api-ingress:latest"
-    maxim_topology_refuse_untracked_api_build_inputs
+    maxim_topology_refuse_dirty_api_build_inputs
     echo "Building compatibility shared API image for Compose project: $source_image"
     docker buildx build --load --provenance=false -t "$source_image" -f apps/api/Dockerfile .
     for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
@@ -181,7 +218,7 @@ maxim_topology_build_shared_api_image() {
     return 0
   fi
   echo "Building one shared API image without BuildKit provenance: $source_image"
-  maxim_topology_refuse_untracked_api_build_inputs
+  maxim_topology_refuse_dirty_api_build_inputs
   docker buildx build --load --provenance=false \
     --label "org.opencontainers.image.revision=$expected_revision" \
     --label com.maxim.release-protected=true \

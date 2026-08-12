@@ -1,21 +1,17 @@
-import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Queue } from 'bullmq';
 
-import { raceWithTimeout } from '../../common/promise-timeout.util';
 import { CommercialOcrAdmissionStore } from './commercial-ocr-admission.store';
+import { CommercialOcrQueueProducer } from './commercial-ocr-queue.producer';
 import {
   buildCommercialOcrJobId,
   COMMERCIAL_OCR_DEFAULT_VERSION,
   COMMERCIAL_OCR_JOB_NAME,
   COMMERCIAL_OCR_JOB_OPTIONS,
   COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
-  COMMERCIAL_OCR_QUEUE,
   normalizeCommercialOcrActionEligibility,
   validateCommercialOcrImageCount,
   validateCommercialOcrVersion,
-  type CommercialOcrJob,
 } from './commercial-ocr.queue';
 import { resolveCommercialOcrRuntimePolicy } from './commercial-ocr.runtime';
 
@@ -23,8 +19,6 @@ const DEFAULT_MAX_GLOBAL_IMAGE_UNITS = 16;
 const DEFAULT_MAX_CHAT_IMAGE_UNITS = 10;
 const DEFAULT_MAX_JOB_AGE_MS = 5 * 60_000;
 const DEFAULT_RESERVATION_TTL_MS = 10 * 60_000;
-const QUEUE_ADD_TIMEOUT_MS = 1_000;
-
 export type CommercialOcrEnqueueResult = 'queued' | 'skipped' | 'failed';
 
 export type CommercialOcrPendingActivation = Readonly<{
@@ -39,9 +33,7 @@ export class CommercialOcrEnqueueService {
   private readonly logger = new Logger(CommercialOcrEnqueueService.name);
 
   constructor(
-    @Optional()
-    @InjectQueue(COMMERCIAL_OCR_QUEUE)
-    private readonly queue?: Queue<CommercialOcrJob>,
+    @Optional() private readonly queue?: CommercialOcrQueueProducer,
     @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly admissionStore?: CommercialOcrAdmissionStore,
   ) {}
@@ -111,29 +103,23 @@ export class CommercialOcrEnqueueService {
 
     try {
       const createdAt = new Date().toISOString();
-      await raceWithTimeout({
-        operation: this.queue.add(
-          COMMERCIAL_OCR_JOB_NAME,
-          {
-            webhookEventId: params.webhookEventId,
-            chatId: params.chatId,
-            messageId: params.messageId,
-            sourceCreatedAt: params.sourceCreatedAt,
-            imageCount,
-            schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
-            ocrVersion,
-            actionEligible: false,
-            idempotencyKey: jobId,
-            sourceTag: 'commercial-image-ocr',
-            createdAt,
-          },
-          { ...COMMERCIAL_OCR_JOB_OPTIONS, jobId },
-        ),
-        timeoutMs: QUEUE_ADD_TIMEOUT_MS,
-        onTimeout: () => {
-          throw new Error(`Commercial OCR Queue.add timed out after ${QUEUE_ADD_TIMEOUT_MS}ms`);
+      await this.queue.add(
+        COMMERCIAL_OCR_JOB_NAME,
+        {
+          webhookEventId: params.webhookEventId,
+          chatId: params.chatId,
+          messageId: params.messageId,
+          sourceCreatedAt: params.sourceCreatedAt,
+          imageCount,
+          schemaVersion: COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
+          ocrVersion,
+          actionEligible: false,
+          idempotencyKey: jobId,
+          sourceTag: 'commercial-image-ocr',
+          createdAt,
         },
-      });
+        { ...COMMERCIAL_OCR_JOB_OPTIONS, jobId },
+      );
       if (!actionRequested) {
         return 'queued';
       }
@@ -150,8 +136,8 @@ export class CommercialOcrEnqueueService {
       }
       return 'queued';
     } catch (error: unknown) {
-      // A timed-out Queue.add may still have created the job. Pending is already fail-open; the
-      // tombstone also absorbs any concurrent or later activation when Redis is reachable.
+      // A timed-out add may still have created the job before its producer connection was closed.
+      // Pending is already fail-open; this tombstone also absorbs any later activation.
       await this.admissionStore
         .suppress({
           jobId,

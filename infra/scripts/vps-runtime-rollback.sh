@@ -360,7 +360,7 @@ echo "Services: ${SERVICES[*]}"
 ensure_rollback_migrations_compatible
 maxim_check_deploy_disk_capacity 1 0
 git switch --detach "$TARGET_FULL_SHA"
-maxim_topology_refuse_untracked_api_build_inputs
+maxim_topology_refuse_dirty_api_build_inputs
 
 export MAXIM_API_IMAGE="$ROLLBACK_API_IMAGE"
 maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE" "$TARGET_FULL_SHA"

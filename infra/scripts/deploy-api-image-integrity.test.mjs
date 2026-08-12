@@ -36,7 +36,7 @@ docker() {
   fi
   return 97
 }
-maxim_topology_refuse_untracked_api_build_inputs() { :; }
+maxim_topology_refuse_dirty_api_build_inputs() { :; }
 maxim_topology_build_shared_api_image "maxim-api:$EXPECTED_REVISION" "$EXPECTED_REVISION"
 `,
     {
@@ -77,7 +77,7 @@ test('requires a full lowercase SHA only for immutable API image refs', () => {
   const immutable = runImmutableImageBuild({ imageExists: false, revision: 'abc123' });
   const compatibility = runTopologyProbe(`
 docker() { printf '%s\\n' "$*"; }
-maxim_topology_refuse_untracked_api_build_inputs() { :; }
+maxim_topology_refuse_dirty_api_build_inputs() { :; }
 maxim_topology_build_shared_api_image infra-scale
 `);
 
@@ -104,7 +104,7 @@ function withGitFixture(callback) {
 test('rejects nonignored untracked API Docker build inputs', () => {
   withGitFixture((fixture) => {
     writeFileSync(join(fixture, 'apps/api/src/injected.ts'), 'export {};\n');
-    const result = runTopologyProbe('maxim_topology_refuse_untracked_api_build_inputs\n', {}, fixture);
+    const result = runTopologyProbe('maxim_topology_refuse_dirty_api_build_inputs\n', {}, fixture);
 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Refusing shared API image build/u);
@@ -112,12 +112,60 @@ test('rejects nonignored untracked API Docker build inputs', () => {
   });
 });
 
+test('rejects Git-ignored inputs that Docker would still include', () => {
+  withGitFixture((fixture) => {
+    writeFileSync(join(fixture, '.gitignore'), 'build/\n');
+    mkdirSync(join(fixture, 'apps/api/src/build'), { recursive: true });
+    writeFileSync(join(fixture, 'apps/api/src/build/injected.ts'), 'export {};\n');
+    const result = runTopologyProbe('maxim_topology_refuse_dirty_api_build_inputs\n', {}, fixture);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Git-ignored inputs included by Docker/u);
+    assert.match(result.stderr, /apps\/api\/src\/build\/injected\.ts/u);
+  });
+});
+
+test('rejects modified or staged tracked API Docker build inputs', () => {
+  withGitFixture((fixture) => {
+    const trackedPath = join(fixture, 'apps/api/src/tracked.ts');
+    writeFileSync(trackedPath, 'export const value = 1;\n');
+    let result = spawnSync('git', ['add', 'apps/api/src/tracked.ts'], {
+      cwd: fixture,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    result = spawnSync(
+      'git',
+      ['-c', 'user.name=MAXIM Test', '-c', 'user.email=maxim-test@example.invalid', 'commit', '--quiet', '-m', 'fixture'],
+      { cwd: fixture, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+
+    writeFileSync(trackedPath, 'export const value = 2;\n');
+    const modified = runTopologyProbe('maxim_topology_refuse_dirty_api_build_inputs\n', {}, fixture);
+    assert.equal(modified.status, 1);
+    assert.match(modified.stderr, / M apps\/api\/src\/tracked\.ts/u);
+
+    result = spawnSync('git', ['add', 'apps/api/src/tracked.ts'], {
+      cwd: fixture,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const staged = runTopologyProbe('maxim_topology_refuse_dirty_api_build_inputs\n', {}, fixture);
+    assert.equal(staged.status, 1);
+    assert.match(staged.stderr, /M {2}apps\/api\/src\/tracked\.ts/u);
+  });
+});
+
 test('allows ignored env files and unrelated untracked files outside API build inputs', () => {
   withGitFixture((fixture) => {
-    writeFileSync(join(fixture, '.gitignore'), '.env\n.env.*\n');
+    writeFileSync(join(fixture, '.gitignore'), '.env\n.env.*\ndist/\n*.codex-backup-*\n');
     writeFileSync(join(fixture, 'apps/api/.env.local'), 'IGNORED=true\n');
+    mkdirSync(join(fixture, 'apps/api/dist'), { recursive: true });
+    writeFileSync(join(fixture, 'apps/api/dist/index.js'), 'ignored Docker output\n');
+    writeFileSync(join(fixture, 'apps/api/src/local.codex-backup-1'), 'ignored backup\n');
     writeFileSync(join(fixture, 'docs/operator-note.md'), 'not a Docker build input\n');
-    const result = runTopologyProbe('maxim_topology_refuse_untracked_api_build_inputs\n', {}, fixture);
+    const result = runTopologyProbe('maxim_topology_refuse_dirty_api_build_inputs\n', {}, fixture);
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, '');
@@ -131,20 +179,20 @@ test('every local API build gates inputs and production builds pass the target S
   const rollback = read('infra/scripts/vps-runtime-rollback.sh');
   const topology = read('infra/scripts/lib/deploy-topology.sh');
 
-  assert.match(topology, /maxim_topology_refuse_untracked_api_build_inputs\n {4}echo "Building compatibility/u);
-  assert.match(topology, /echo "Building one shared API image[^\n]+\n {2}maxim_topology_refuse_untracked_api_build_inputs\n {2}docker buildx build/u);
-  const deployPreflight = deploy.lastIndexOf('maxim_topology_refuse_untracked_api_build_inputs');
+  assert.match(topology, /maxim_topology_refuse_dirty_api_build_inputs\n {4}echo "Building compatibility/u);
+  assert.match(topology, /echo "Building one shared API image[^\n]+\n {2}maxim_topology_refuse_dirty_api_build_inputs\n {2}docker buildx build/u);
+  const deployPreflight = deploy.lastIndexOf('maxim_topology_refuse_dirty_api_build_inputs');
   assert.ok(deployPreflight < deploy.lastIndexOf('prepare_deploy_disk_capacity'));
   assert.ok(deployPreflight < deploy.lastIndexOf('stop_conflicting_stacks'));
-  const scalePreflight = scale.indexOf('maxim_topology_refuse_untracked_api_build_inputs');
+  const scalePreflight = scale.indexOf('maxim_topology_refuse_dirty_api_build_inputs');
   assert.ok(scalePreflight < scale.lastIndexOf('prepare_scale_redis_named_volume'));
   assert.ok(scalePreflight < scale.lastIndexOf('stop_conflicting_stacks'));
-  const rollbackPreflight = rollback.lastIndexOf('maxim_topology_refuse_untracked_api_build_inputs');
+  const rollbackPreflight = rollback.lastIndexOf('maxim_topology_refuse_dirty_api_build_inputs');
   const rollbackSwitch = rollback.lastIndexOf('git switch --detach');
   const rollbackBuild = rollback.lastIndexOf('maxim_topology_build_shared_api_image');
   assert.match(
     rollback,
-    /git switch --detach "\$TARGET_FULL_SHA"\nmaxim_topology_refuse_untracked_api_build_inputs/u,
+    /git switch --detach "\$TARGET_FULL_SHA"\nmaxim_topology_refuse_dirty_api_build_inputs/u,
   );
   assert.ok(rollback.lastIndexOf('maxim_check_deploy_disk_capacity') < rollbackSwitch);
   assert.ok(rollbackSwitch < rollbackPreflight);

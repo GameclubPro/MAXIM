@@ -523,7 +523,7 @@ fi
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   maxim_topology_expand_api_services SERVICES \
     "Shared API image build or API-related diff detected."
-  maxim_topology_refuse_untracked_api_build_inputs
+  maxim_topology_refuse_dirty_api_build_inputs
 fi
 
 BUILD_STATIC_IMAGE=0

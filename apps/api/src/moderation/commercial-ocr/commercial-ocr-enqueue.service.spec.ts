@@ -274,46 +274,6 @@ describe('CommercialOcrEnqueueService', () => {
     );
   });
 
-  it('bounds a hanging Queue.add and suppresses any late-created job', async () => {
-    jest.useFakeTimers();
-    let finishAdd: ((value: { id: string }) => void) | undefined;
-    const queue = {
-      add: jest.fn().mockReturnValue(
-        new Promise<{ id: string }>((resolve) => {
-          finishAdd = resolve;
-        }),
-      ),
-    };
-    const store = admission();
-    const registerPendingActivation = jest.fn();
-    const service = new CommercialOcrEnqueueService(
-      queue as never,
-      config() as never,
-      store as never,
-    );
-
-    try {
-      const result = service.enqueue({ ...input, registerPendingActivation });
-
-      await jest.advanceTimersByTimeAsync(1_000);
-
-      await expect(result).resolves.toBe('failed');
-      expect(store.suppress).toHaveBeenCalledWith({
-        jobId: expect.stringMatching(/^commercial-image-ocr__[a-f0-9]{64}$/u),
-        chatId: 'chat-1',
-        imageCount: 2,
-        tombstoneTtlMs: 600_000,
-      });
-      expect(registerPendingActivation).not.toHaveBeenCalled();
-
-      finishAdd?.({ id: 'late-job' });
-      await Promise.resolve();
-      expect(registerPendingActivation).not.toHaveBeenCalled();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
   it('reports a concurrently suppressed commit activation without rearming the identity', async () => {
     const store = admission({ activate: jest.fn().mockResolvedValue('suppressed') });
     const service = new CommercialOcrEnqueueService(undefined, config() as never, store as never);

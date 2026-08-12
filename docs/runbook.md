@@ -109,6 +109,11 @@ deploys do not start the API build or run Prisma migrations. The deploy compares
 component's recorded source SHA with the target and adds unreleased affected components, so an
 explicit service list cannot silently leave known component impact behind.
 
+Shared API builds fail closed when any Docker input differs from `HEAD`, whether tracked, staged,
+untracked, or Git-ignored. Commit or remove the input before a deploy or ref-based rollback. A new
+intentional Docker exclusion must be reviewed together with the deploy guard allowlist so the image
+revision label always describes its actual contents.
+
 Nginx site changes are applied separately after config review. For the closed admin site:
 
 ```bash

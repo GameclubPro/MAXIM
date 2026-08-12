@@ -1050,7 +1050,7 @@ fi
 validate_requested_services
 
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
-  maxim_topology_refuse_untracked_api_build_inputs
+  maxim_topology_refuse_dirty_api_build_inputs
 fi
 
 TARGET_SHA="$(git rev-parse HEAD)"
