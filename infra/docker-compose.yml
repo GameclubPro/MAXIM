@@ -13,7 +13,7 @@ x-spammer-read-model-shadow-env: &spammer-read-model-shadow-env
   MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED: ${MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED:-false}
   COMMERCIAL_OCR_ROLLOUT_MODE: ${COMMERCIAL_OCR_ROLLOUT_MODE:-shadow}
   COMMERCIAL_OCR_CANARY_CHAT_IDS: ${COMMERCIAL_OCR_CANARY_CHAT_IDS:-}
-  COMMERCIAL_OCR_VERSION: ${COMMERCIAL_OCR_VERSION:-tesseract-rus-eng-v1}
+  COMMERCIAL_OCR_VERSION: ${COMMERCIAL_OCR_VERSION:-tesseract-rus-eng-v2}
 
 x-default-logging: &default-logging
   driver: json-file
@@ -454,7 +454,7 @@ services:
     init: true
     deploy:
       replicas: 1
-    cpus: 0.75
+    cpus: 1.0
     mem_limit: 1g
     pids_limit: 128
     read_only: true
@@ -478,6 +478,7 @@ services:
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
       COMMERCIAL_OCR_TESSERACT_CONCURRENCY: 1
       COMMERCIAL_OCR_TESSERACT_MAX_QUEUE: 4
+      COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 10000
       OMP_THREAD_LIMIT: 1
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 8

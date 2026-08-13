@@ -4,7 +4,10 @@ import type { QueueJobEnvelope } from '../../common/queue-job-envelope';
 export const COMMERCIAL_OCR_QUEUE = 'commercial-image-ocr';
 export const COMMERCIAL_OCR_JOB_NAME = 'commercial-image-ocr-analysis';
 export const COMMERCIAL_OCR_JOB_SCHEMA_VERSION = 1 as const;
-export const COMMERCIAL_OCR_DEFAULT_VERSION = 'tesseract-rus-eng-v1';
+// FLAG: This behavior identity is image-owned. Production deploys export the target source value
+// only so older immutable images receive their own version during rollback; runtime config must not
+// change the version used by current enqueue, processing, cache, or delete-guard code.
+export const COMMERCIAL_OCR_DEFAULT_VERSION = 'tesseract-rus-eng-v2';
 export const COMMERCIAL_OCR_JOB_ATTEMPTS = 3;
 export const COMMERCIAL_OCR_JOB_BACKOFF_MS = 5_000;
 

@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
@@ -235,7 +234,6 @@ export class CommercialOcrDeleteGuardService {
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
     private readonly maxBotLinkService: MaxBotLinkService,
-    private readonly configService: ConfigService,
     private readonly participantImmunity: ParticipantModerationImmunityService,
     private readonly runtimePolicy: CommercialOcrRuntimePolicyService,
   ) {}
@@ -310,12 +308,9 @@ export class CommercialOcrDeleteGuardService {
         'Commercial OCR runtime authorization changed after the deletion candidate was recorded',
       );
     }
-    const currentOcrVersion = validateCommercialOcrVersion(
-      this.configService.get<string>('COMMERCIAL_OCR_VERSION') ?? COMMERCIAL_OCR_DEFAULT_VERSION,
-    );
     if (
       binding.policyVersion !== COMMERCIAL_OCR_DECISION_POLICY_VERSION ||
-      binding.ocrVersion !== currentOcrVersion
+      binding.ocrVersion !== COMMERCIAL_OCR_DEFAULT_VERSION
     ) {
       throw rejected(
         'commercial_ocr_version_changed',
@@ -413,7 +408,7 @@ export class CommercialOcrDeleteGuardService {
     }
 
     const currentBinding = buildCommercialOcrDeleteBinding({
-      ocrVersion: currentOcrVersion,
+      ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
       settings,
       senderId: source.senderId,
       orderedPhotoIds: source.orderedPhotoIds,

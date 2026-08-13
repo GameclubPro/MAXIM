@@ -74,6 +74,158 @@ maxim_topology_git_has_commercial_ocr_raster_smoke() {
     "${commit_sha}:apps/api/src/scripts/smoke-commercial-ocr-worker.ts" 2>/dev/null
 }
 
+maxim_topology_git_commercial_ocr_version() {
+  local commit_sha="$1"
+  local source_path="apps/api/src/moderation/commercial-ocr/commercial-ocr.queue.ts"
+  local source
+  local version
+  local versions=()
+
+  if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
+    echo "Target commit is missing the commercial OCR behavior version source: $commit_sha" >&2
+    return 1
+  fi
+
+  mapfile -t versions < <(
+    printf '%s\n' "$source" | sed -nE \
+      -e "s/^[[:space:]]*export const COMMERCIAL_OCR_DEFAULT_VERSION[[:space:]]*=[[:space:]]*'([^']+)'([[:space:]]+as[[:space:]]+const)?;[[:space:]]*$/\\1/p" \
+      -e 's/^[[:space:]]*export const COMMERCIAL_OCR_DEFAULT_VERSION[[:space:]]*=[[:space:]]*"([^"]+)"([[:space:]]+as[[:space:]]+const)?;[[:space:]]*$/\1/p'
+  )
+  if [[ "${#versions[@]}" -ne 1 ]]; then
+    echo "Target commit must define exactly one literal COMMERCIAL_OCR_DEFAULT_VERSION: $commit_sha" >&2
+    return 1
+  fi
+
+  version="${versions[0]}"
+  if [[ ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+    echo "Target commit defines an invalid COMMERCIAL_OCR_DEFAULT_VERSION: $commit_sha" >&2
+    return 1
+  fi
+  printf '%s' "$version"
+}
+
+maxim_topology_require_api_commercial_ocr_version_config() {
+  local compose_args_var="$1"
+  local expected_version="$2"
+  local -n compose_args_ref="$compose_args_var"
+  local config
+
+  if ! config="$(docker compose "${compose_args_ref[@]}" config --format json 2>/dev/null)"; then
+    echo "Could not resolve effective Compose configuration for the commercial OCR version." >&2
+    return 1
+  fi
+  if ! printf '%s' "$config" | node -e '
+      const { readFileSync } = require("node:fs");
+      const expectedVersion = process.argv[1];
+      const services = process.argv.slice(2);
+      const config = JSON.parse(readFileSync(0, "utf8"));
+      const valid =
+        services.length === 12 &&
+        new Set(services).size === services.length &&
+        services.every(
+          (service) =>
+            config?.services?.[service]?.environment?.COMMERCIAL_OCR_VERSION === expectedVersion,
+        );
+      process.exit(valid ? 0 : 1);
+    ' "$expected_version" "${MAXIM_PRODUCTION_API_SERVICES[@]}" >/dev/null 2>&1; then
+    echo "Refusing API rollout unless every production API role has the target COMMERCIAL_OCR_VERSION." >&2
+    return 1
+  fi
+}
+
+maxim_topology_prepare_commercial_ocr_target() {
+  local commit_sha="$1"
+  local compose_args_var="$2"
+  local has_media_analysis_var="$3"
+  local version_var="$4"
+  local topology_status
+  local resolved_version
+
+  printf -v "$has_media_analysis_var" '%s' 0
+  printf -v "$version_var" '%s' ''
+  if maxim_topology_git_compose_has_service "$commit_sha" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
+    printf -v "$has_media_analysis_var" '%s' 1
+  else
+    topology_status=$?
+    if [[ "$topology_status" -eq 1 ]]; then
+      return 0
+    fi
+    return "$topology_status"
+  fi
+
+  if ! resolved_version="$(maxim_topology_git_commercial_ocr_version "$commit_sha")"; then
+    return 1
+  fi
+  printf -v "$version_var" '%s' "$resolved_version"
+  export COMMERCIAL_OCR_VERSION="$resolved_version"
+  maxim_topology_require_api_commercial_ocr_version_config "$compose_args_var" "$resolved_version"
+  maxim_topology_require_media_analysis_shadow_config "$compose_args_var"
+}
+
+maxim_topology_verify_api_commercial_ocr_version() {
+  local compose_args_var="$1"
+  local expected_version="$2"
+  local -n compose_args_ref="$compose_args_var"
+  local service
+  local container_id
+  local container_env
+  local entry
+  local actual_version
+  local matches
+
+  if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 12 ]]; then
+    echo "Commercial OCR version verification requires the reviewed 12-role API topology." >&2
+    return 1
+  fi
+  for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
+    container_id="$(docker compose "${compose_args_ref[@]}" ps -q "$service" 2>/dev/null || true)"
+    if [[ -z "$container_id" ]]; then
+      echo "Cannot verify commercial OCR version for missing API service container: $service" >&2
+      return 1
+    fi
+    if ! container_env="$(
+      docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" 2>/dev/null
+    )"; then
+      echo "Could not inspect commercial OCR version for API service: $service" >&2
+      return 1
+    fi
+
+    actual_version=""
+    matches=0
+    while IFS= read -r entry; do
+      if [[ "$entry" == COMMERCIAL_OCR_VERSION=* ]]; then
+        actual_version="${entry#COMMERCIAL_OCR_VERSION=}"
+        matches=$((matches + 1))
+      fi
+    done <<<"$container_env"
+    if [[ "$matches" -ne 1 || "$actual_version" != "$expected_version" ]]; then
+      echo "$service does not run with the target COMMERCIAL_OCR_VERSION." >&2
+      return 1
+    fi
+  done
+}
+
+maxim_topology_stop_media_analysis_before_api_transition() {
+  local compose_args_var="$1"
+  local -n compose_args_ref="$compose_args_var"
+  local container_list
+  local container_ids=()
+
+  if ! container_list="$(
+    docker compose "${compose_args_ref[@]}" ps -a -q "$MAXIM_MEDIA_ANALYSIS_SERVICE" 2>/dev/null
+  )"; then
+    echo "Could not inspect the current $MAXIM_MEDIA_ANALYSIS_SERVICE container." >&2
+    return 1
+  fi
+  if [[ -z "$container_list" ]]; then
+    return 0
+  fi
+
+  mapfile -t container_ids <<<"$container_list"
+  echo "Stopping the current $MAXIM_MEDIA_ANALYSIS_SERVICE before API behavior transition..."
+  docker stop --time 30 "${container_ids[@]}" >/dev/null
+}
+
 maxim_topology_require_media_analysis_shadow_config() {
   local compose_args_var="$1"
   local -n compose_args_ref="$compose_args_var"

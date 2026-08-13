@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter } from 'node:events';
 import { fork, type ChildProcess } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 
 import { NativeTesseractOcrAdapter } from './native-tesseract-ocr.adapter';
 import type {
@@ -15,6 +16,7 @@ class FakeWorker extends EventEmitter {
   readonly requests: NativeTesseractWorkerRequest[] = [];
   readonly killSignals: NodeJS.Signals[] = [];
   onRequest?: (request: NativeTesseractWorkerRequest) => void;
+  sendError: Error | null = null;
 
   constructor() {
     super();
@@ -26,7 +28,7 @@ class FakeWorker extends EventEmitter {
   send(request: NativeTesseractWorkerRequest, callback?: (error: Error | null) => void): boolean {
     this.requests.push(request);
     queueMicrotask(() => {
-      callback?.(null);
+      callback?.(this.sendError);
       this.onRequest?.(request);
     });
     return true;
@@ -47,6 +49,7 @@ class FakeWorker extends EventEmitter {
     this.emit('message', {
       type: 'result',
       jobId,
+      retireWorker: false,
       result: {
         ok: true,
         payload: {
@@ -80,6 +83,19 @@ class FakeWorker extends EventEmitter {
           truncated: false,
         },
       },
+    } satisfies NativeTesseractWorkerResponse);
+  }
+
+  fail(
+    jobId: string,
+    reason: 'timeout' | 'tesseract_failed' | 'output_limit' | 'invalid_output',
+    retireWorker = false,
+  ): void {
+    this.emit('message', {
+      type: 'result',
+      jobId,
+      retireWorker,
+      result: { ok: false, reason },
     } satisfies NativeTesseractWorkerResponse);
   }
 }
@@ -182,15 +198,221 @@ describe('NativeTesseractOcrAdapter', () => {
     const service = createService({ COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 2_000 });
     services.push(service);
     const recognition = service.recognize(Buffer.from('image'), {
-      deadlineAtMs: Date.now() + 250,
+      deadlineAtMs: Date.now() + 2_000,
     });
     const worker = await readyWorker(service, 0);
     const request = await recognizeRequest(worker);
 
     expect(request.timeoutMs).toBeGreaterThan(0);
-    expect(request.timeoutMs).toBeLessThanOrEqual(250);
+    expect(request.timeoutMs).toBeLessThanOrEqual(1_500);
     worker.respond(request.jobId);
     await expect(recognition).resolves.toMatchObject({ ok: true });
+  });
+
+  it('reserves watchdog grace inside a caller absolute deadline', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-13T12:00:00.000Z'));
+    const performanceNow = jest.spyOn(performance, 'now').mockReturnValue(0);
+    const service = new TestNativeTesseractOcrAdapter(
+      new ConfigService({ COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 10_000 }),
+    );
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      const worker = service.workers[0]!;
+      const recognition = service.recognize(Buffer.from('image'), {
+        deadlineAtMs: Date.now() + 9_000,
+      });
+      const request = worker.requests.find((candidate) => candidate.type === 'recognize');
+      if (!request || request.type !== 'recognize') {
+        throw new Error('Expected a recognize request');
+      }
+      expect(request.timeoutMs).toBe(8_500);
+
+      await jest.advanceTimersByTimeAsync(8_500);
+      worker.fail(request.jobId, 'timeout');
+
+      await expect(recognition).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+      expect(worker.killSignals).toEqual([]);
+      expect(service.getRuntimeStatus().counters).toMatchObject({ restarts: 0 });
+    } finally {
+      performanceNow.mockRestore();
+      jest.useRealTimers();
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('does not start native work without enough caller budget for watchdog grace', async () => {
+    const service = createService();
+    services.push(service);
+
+    await expect(
+      service.recognize(Buffer.from('private pixels'), {
+        deadlineAtMs: Date.now() + 500,
+      }),
+    ).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+    expect(service.workers).toHaveLength(0);
+  });
+
+  it('uses a ten-second native budget and keeps the worker alive for a native timeout', async () => {
+    jest.useFakeTimers();
+    const performanceNow = jest.spyOn(performance, 'now').mockReturnValue(0);
+    const service = new TestNativeTesseractOcrAdapter(new ConfigService({}));
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      const worker = service.workers[0]!;
+      const recognition = service.recognize(Buffer.from('image'));
+      const request = worker.requests.find((candidate) => candidate.type === 'recognize');
+      if (!request || request.type !== 'recognize') {
+        throw new Error('Expected a recognize request');
+      }
+      expect(request.timeoutMs).toBe(10_000);
+
+      let settled = false;
+      void recognition.then(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(settled).toBe(false);
+
+      worker.fail(request.jobId, 'timeout');
+      await expect(recognition).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+      expect(service.workers).toHaveLength(1);
+      expect(worker.killSignals).toEqual([]);
+      expect(service.getRuntimeStatus()).toMatchObject({
+        ready: true,
+        counters: {
+          failed: 1,
+          restarts: 0,
+          failuresByReason: { timeout: 1 },
+        },
+      });
+    } finally {
+      performanceNow.mockRestore();
+      jest.useRealTimers();
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('recycles and reports an unavailable worker that misses the result watchdog grace', async () => {
+    jest.useFakeTimers();
+    const performanceNow = jest.spyOn(performance, 'now').mockReturnValue(0);
+    const service = new TestNativeTesseractOcrAdapter(
+      new ConfigService({ COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 250 }),
+    );
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      const worker = service.workers[0]!;
+      const recognition = service.recognize(Buffer.from('image'));
+      expect(worker.requests).toContainEqual(expect.objectContaining({ timeoutMs: 250 }));
+
+      let settled = false;
+      void recognition.then(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(749);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+
+      await expect(recognition).resolves.toMatchObject({
+        ok: false,
+        reason: 'worker_unavailable',
+      });
+      await jest.advanceTimersByTimeAsync(1);
+      expect(service.workers).toHaveLength(2);
+      expect(worker.killSignals).toContain('SIGTERM');
+      expect(service.getRuntimeStatus().counters).toMatchObject({
+        failed: 1,
+        restarts: 1,
+        failuresByReason: { worker_unavailable: 1 },
+      });
+    } finally {
+      performanceNow.mockRestore();
+      jest.useRealTimers();
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('keeps an explicit worker send failure retryable', async () => {
+    const service = createService();
+    services.push(service);
+    service.onModuleInit();
+    const worker = await readyWorker(service, 0);
+    worker.sendError = new Error('IPC send failed');
+
+    const recognition = service.recognize(Buffer.from('image'));
+
+    await expect(recognition).resolves.toMatchObject({
+      ok: false,
+      reason: 'worker_unavailable',
+    });
+    await expect(readyWorker(service, 1)).resolves.not.toBe(worker);
+    expect(service.getRuntimeStatus().counters).toMatchObject({
+      failed: 1,
+      restarts: 1,
+      failuresByReason: { worker_unavailable: 1 },
+    });
+  });
+
+  it('dispatches queued work only after a retiring worker is replaced', async () => {
+    const service = createService();
+    services.push(service);
+    const first = service.recognize(Buffer.from('first'));
+    const firstWorker = await readyWorker(service, 0);
+    const firstRequest = await recognizeRequest(firstWorker);
+    const second = service.recognize(Buffer.from('second'));
+
+    firstWorker.fail(firstRequest.jobId, 'timeout', true);
+
+    await expect(first).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+    expect(firstWorker.requests.filter((request) => request.type === 'recognize')).toHaveLength(1);
+    const secondWorker = await readyWorker(service, 1);
+    expect(secondWorker).not.toBe(firstWorker);
+    const secondRequest = await recognizeRequest(secondWorker);
+    secondWorker.respond(secondRequest.jobId, 'Второй');
+    await expect(second).resolves.toMatchObject({ ok: true, text: 'Второй' });
+  });
+
+  it('fails work whose native budget expires in the adapter queue as capacity pressure', async () => {
+    jest.useFakeTimers();
+    let monotonicNowMs = 0;
+    const performanceNow = jest.spyOn(performance, 'now').mockImplementation(() => monotonicNowMs);
+    const service = new TestNativeTesseractOcrAdapter(
+      new ConfigService({ COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 250 }),
+    );
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      const worker = service.workers[0]!;
+      const first = service.recognize(Buffer.from('first'));
+      const firstRequest = worker.requests.find((candidate) => candidate.type === 'recognize');
+      if (!firstRequest || firstRequest.type !== 'recognize') {
+        throw new Error('Expected the first recognize request');
+      }
+      const queued = service.recognize(Buffer.from('queued'));
+
+      monotonicNowMs = 251;
+      worker.respond(firstRequest.jobId);
+
+      await expect(first).resolves.toMatchObject({ ok: true });
+      await expect(queued).resolves.toMatchObject({
+        ok: false,
+        reason: 'capacity_exhausted',
+      });
+      expect(service.workers).toHaveLength(1);
+      expect(worker.killSignals).toEqual([]);
+      expect(service.getRuntimeStatus().counters).toMatchObject({
+        completed: 1,
+        failed: 1,
+        restarts: 0,
+        failuresByReason: { capacity_exhausted: 1 },
+      });
+    } finally {
+      performanceNow.mockRestore();
+      jest.useRealTimers();
+      await service.onModuleDestroy();
+    }
   });
 
   it('bounds active work and its waiting queue', async () => {

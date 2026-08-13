@@ -138,7 +138,9 @@ reexec_if_current_script_changed() {
 
   if ! diff_in_paths \
     "$SCRIPT_REL_PATH" \
-    "infra/scripts/lib/deploy-disk-capacity.sh"; then
+    "infra/scripts/lib/deploy-disk-capacity.sh" \
+    "infra/scripts/lib/deploy-lock.sh" \
+    "infra/scripts/lib/deploy-topology.sh"; then
     return 0
   fi
 
@@ -324,9 +326,13 @@ recreate_service_wave() {
 }
 
 ensure_requested_services_running() {
+  local excluded_service="${1:-}"
   local service
 
   for service in "${SERVICES[@]}"; do
+    if [[ -n "$excluded_service" && "$service" == "$excluded_service" ]]; then
+      continue
+    fi
     if docker compose "${COMPOSE_FILES[@]}" ps --status running --services | grep -qx "$service"; then
       continue
     fi
@@ -525,8 +531,15 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     "Shared API image build or API-related diff detected."
   maxim_topology_refuse_dirty_api_build_inputs
 fi
-if contains_service "$MAXIM_MEDIA_ANALYSIS_SERVICE" "${SERVICES[@]}"; then
-  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
+TARGET_SHA="$(git rev-parse HEAD)"
+TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_COMMERCIAL_OCR_VERSION=""
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_prepare_commercial_ocr_target \
+    "$TARGET_SHA" \
+    COMPOSE_FILES \
+    TARGET_HAS_MEDIA_ANALYSIS \
+    TARGET_COMMERCIAL_OCR_VERSION
 fi
 
 BUILD_STATIC_IMAGE=0
@@ -573,6 +586,9 @@ fi
 
 ensure_compose_env
 remove_stale_service_containers "${SERVICES[@]}"
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
+fi
 recreate_service_wave "worker" \
   "api-enqueue" \
   "api-action" \
@@ -582,14 +598,17 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-b" \
   "api-moderation-realtime-c" \
   "api-moderation-realtime-d" \
-  "api-moderation-background" \
-  "api-media-analysis"
+  "api-moderation-background"
 recreate_service_wave "support" "api-admin" "miniapp-static"
 recreate_service_wave "major static" "miniapp-major-static"
 recreate_service_wave "ingress" "api-ingress"
-ensure_requested_services_running
+ensure_requested_services_running "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+recreate_service_wave "media analysis" "$MAXIM_MEDIA_ANALYSIS_SERVICE"
 
-if contains_service "$MAXIM_MEDIA_ANALYSIS_SERVICE" "${SERVICES[@]}"; then
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_verify_api_commercial_ocr_version \
+    COMPOSE_FILES \
+    "$TARGET_COMMERCIAL_OCR_VERSION"
   maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
 fi
 

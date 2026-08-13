@@ -23,17 +23,19 @@ describe('production Compose commercial OCR isolation', () => {
         /^ {2}COMMERCIAL_OCR_CANARY_CHAT_IDS: \$\{COMMERCIAL_OCR_CANARY_CHAT_IDS:-\}$/mu,
       );
       expect(compose).toMatch(
-        /^ {2}COMMERCIAL_OCR_VERSION: \$\{COMMERCIAL_OCR_VERSION:-tesseract-rus-eng-v1\}$/mu,
+        /^ {2}COMMERCIAL_OCR_VERSION: \$\{COMMERCIAL_OCR_VERSION:-tesseract-rus-eng-v2\}$/mu,
       );
     });
 
     it('keeps the native OCR process single-threaded and resource isolated', () => {
       expect(readEnvNumber(mediaAnalysis, 'COMMERCIAL_OCR_TESSERACT_CONCURRENCY')).toBe(1);
+      expect(readEnvNumber(mediaAnalysis, 'COMMERCIAL_OCR_TESSERACT_MAX_QUEUE')).toBe(4);
+      expect(readEnvNumber(mediaAnalysis, 'COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS')).toBe(10_000);
       expect(readEnvNumber(mediaAnalysis, 'OMP_THREAD_LIMIT')).toBe(1);
       expect(mediaAnalysis).not.toMatch(/^\s+COMMERCIAL_OCR_PROCESSOR_CONCURRENCY:/mu);
       expect(mediaAnalysis).toMatch(/^\s+init:\s+true\s*$/mu);
       expect(mediaAnalysis).toMatch(/^\s+deploy:\n\s+replicas:\s+1\s*$/mu);
-      expect(mediaAnalysis).toMatch(/^\s+cpus:\s+0\.75\s*$/mu);
+      expect(mediaAnalysis).toMatch(/^\s+cpus:\s+1\.0\s*$/mu);
       expect(mediaAnalysis).toMatch(/^\s+mem_limit:\s+1g\s*$/mu);
     });
 

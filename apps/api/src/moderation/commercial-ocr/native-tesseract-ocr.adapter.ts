@@ -20,7 +20,7 @@ import type {
   NativeTesseractWorkerResultResponse,
 } from './native-tesseract-worker.protocol';
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONCURRENCY = 1;
 const DEFAULT_MAX_QUEUE = 16;
 const DEFAULT_RECYCLE_AFTER_JOBS = 250;
@@ -33,6 +33,7 @@ const WORKER_RETRY_COOLDOWN_MS = 30_000;
 const WORKER_SHUTDOWN_GRACE_MS = 1_000;
 const WORKER_FORCE_EXIT_GRACE_MS = 250;
 const WORKER_STARTUP_TIMEOUT_MS = 5_000;
+const WORKER_RESULT_GRACE_MS = 500;
 const MAX_WORKER_RESTART_ATTEMPTS = 3;
 const MAX_CONCURRENCY = 8;
 const MAX_QUEUE = 256;
@@ -285,11 +286,21 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
 
     const externalRemainingMs =
       options.deadlineAtMs === undefined
-        ? this.timeoutMs
+        ? null
         : Number.isSafeInteger(options.deadlineAtMs)
           ? options.deadlineAtMs - Date.now()
           : 0;
-    if (externalRemainingMs <= 0) {
+    if (externalRemainingMs !== null && externalRemainingMs <= 0) {
+      return Promise.resolve({
+        ok: false,
+        status: 'failed_open',
+        passLabel,
+        psm,
+        reason: 'timeout',
+        durationMs: elapsedMs(startedAt),
+      });
+    }
+    if (externalRemainingMs !== null && externalRemainingMs <= WORKER_RESULT_GRACE_MS) {
       return Promise.resolve({
         ok: false,
         status: 'failed_open',
@@ -328,8 +339,12 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     }
 
     return new Promise<NativeTesseractOcrResult>((resolvePromise) => {
-      const timeoutMs = Math.min(this.timeoutMs, externalRemainingMs);
+      const timeoutMs =
+        externalRemainingMs === null
+          ? this.timeoutMs
+          : Math.min(this.timeoutMs, externalRemainingMs - WORKER_RESULT_GRACE_MS);
       const deadlineAt = performance.now() + timeoutMs;
+      const watchdogMs = timeoutMs + WORKER_RESULT_GRACE_MS;
       const job: OcrJob = {
         id: randomUUID(),
         image: Buffer.from(image),
@@ -339,7 +354,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
         deadlineAt,
         settled: false,
         resolve: resolvePromise,
-        timer: setTimeout(() => this.handleJobTimeout(job), timeoutMs),
+        timer: setTimeout(() => this.handleJobTimeout(job), watchdogMs),
       };
       job.timer.unref();
       this.queue.push(job);
@@ -443,6 +458,9 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     }
     slot.current = null;
     slot.jobsProcessed += 1;
+    if (message.retireWorker) {
+      this.retireWorker(slot, true);
+    }
     if (message.result.ok) {
       const payload = message.result.payload;
       if (!isWorkerPayload(payload)) {
@@ -463,7 +481,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       this.finishJob(job, this.failedOpen(job, message.result.reason));
     }
 
-    if (slot.jobsProcessed >= this.recycleAfterJobs) {
+    if (!message.retireWorker && slot.jobsProcessed >= this.recycleAfterJobs) {
       this.recycleCount += 1;
       this.retireWorker(slot);
     }
@@ -487,7 +505,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       }
       const remainingMs = Math.floor(job.deadlineAt - performance.now());
       if (remainingMs <= 0) {
-        this.finishJob(job, this.failedOpen(job, 'timeout'));
+        this.finishJob(job, this.failedOpen(job, 'capacity_exhausted'));
         continue;
       }
       slot.current = job;
@@ -516,12 +534,12 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     const queuedIndex = this.queue.indexOf(job);
     if (queuedIndex >= 0) {
       this.queue.splice(queuedIndex, 1);
-      this.finishJob(job, this.failedOpen(job, 'timeout'));
+      this.finishJob(job, this.failedOpen(job, 'capacity_exhausted'));
       return;
     }
     const slot = this.slots.find((candidate) => candidate.current === job);
     if (slot) {
-      this.finishJob(job, this.failedOpen(job, 'timeout'));
+      this.finishJob(job, this.failedOpen(job, 'worker_unavailable'));
       slot.current = null;
       this.retireWorker(slot, true);
       this.dispatch();
@@ -760,6 +778,7 @@ function isWorkerResponse(value: unknown): value is NativeTesseractWorkerRespons
   const resultMessage = candidate as Partial<NativeTesseractWorkerResultResponse>;
   if (
     typeof resultMessage.jobId !== 'string' ||
+    typeof resultMessage.retireWorker !== 'boolean' ||
     !resultMessage.result ||
     typeof resultMessage.result !== 'object'
   ) {

@@ -6,6 +6,10 @@ import {
   NativeTesseractOcrAdapter,
   type NativeTesseractRuntimeStatus,
 } from '../moderation/commercial-ocr/native-tesseract-ocr.adapter';
+import {
+  CommercialOcrMetricsService,
+  type CommercialOcrRolloutMetricsSnapshot,
+} from '../moderation/commercial-ocr/commercial-ocr-metrics.service';
 import { MaxApiMetricsService } from '../system/max-api-metrics.service';
 import { QueueMetricsService, type QueueMetricsSnapshot } from '../system/queue-metrics.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
@@ -75,7 +79,11 @@ export type ReadinessSnapshot = {
 };
 
 export type OcrReadinessSnapshot =
-  | NativeTesseractRuntimeStatus
+  | Readonly<
+      NativeTesseractRuntimeStatus & {
+        rolloutMetrics: CommercialOcrRolloutMetricsSnapshot | null;
+      }
+    >
   | Readonly<{
       state: 'unavailable';
       ready: false;
@@ -89,6 +97,7 @@ export type OcrReadinessSnapshot =
         failuresByReason: Readonly<Record<string, never>>;
       }>;
       latencyMs: Readonly<{ last: null; average: null; maximum: null }>;
+      rolloutMetrics: null;
     }>;
 
 export type BotLoadSnapshot = {
@@ -137,6 +146,7 @@ function unavailableOcrReadiness(): OcrReadinessSnapshot {
       failuresByReason: {},
     },
     latencyMs: { last: null, average: null, maximum: null },
+    rolloutMetrics: null,
   };
 }
 
@@ -177,6 +187,8 @@ export class HealthService implements OnModuleDestroy {
     private readonly maxApiMetricsService?: MaxApiMetricsService,
     @Optional()
     private readonly nativeTesseractOcr?: NativeTesseractOcrAdapter,
+    @Optional()
+    private readonly commercialOcrMetrics?: CommercialOcrMetricsService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.queueLagThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
@@ -427,6 +439,7 @@ export class HealthService implements OnModuleDestroy {
           average: status.latencyMs.average,
           maximum: status.latencyMs.maximum,
         },
+        rolloutMetrics: this.commercialOcrMetrics?.getSnapshot() ?? null,
       };
     } catch {
       return unavailableOcrReadiness();

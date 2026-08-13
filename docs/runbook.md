@@ -144,6 +144,26 @@ OCR passes. Latin, mixed, unknown, phone-only, incomplete, or ambiguous results 
 The service does not persist OCR text, source pixels, or MAX image URLs in Redis, Postgres, or
 ordinary logs.
 
+Each native OCR pass has one continuous 10-second Tesseract budget. A Tesseract-reported timeout
+is a terminal, fail-open incomplete result: BullMQ must not retry the image, and the native worker
+must stay alive. The parent IPC watchdog allows 500 ms beyond that native budget; only a worker
+that fails to answer the watchdog is recycled and reported as retryable `worker_unavailable`.
+Queue-capacity, worker-startup, shutdown, IPC, and transient download failures remain eligible for
+the queue's bounded three attempts. Keep raster preprocessing at 3 MP / 2000 px, processor and
+native-worker concurrency at one, `OMP_THREAD_LIMIT=1`, and the role CPU ceiling at `1.0` until a
+new corpus and production-throughput review justifies changing them.
+
+This timeout policy is behavior version `tesseract-rus-eng-v2`. Keep the same version across every
+API role. A version transition intentionally rejects older queued jobs and invalidates older OCR
+delete bindings instead of evaluating them under different recognition behavior.
+
+Deploy and both rollback paths read that behavior identity from the target API source, export it
+over any `.env` value, and verify it on all 12 effective and running API roles. They stop the old
+`api-media-analysis` before producer roles change and start the target worker last, so a `v1`/`v2`
+transition cannot send new-version jobs to the old worker. A target that predates the OCR role
+removes that role instead. Treat any missing or non-literal target version, role mismatch, or
+non-`shadow` effective rollout mode as a failed deployment; do not edit `.env` to bypass the gate.
+
 Keep the eval corpus outside Git or under `artifacts/commercial-ocr-private/`. Schema-v1 manifests
 remain readable, but an enforcement run fails closed unless every case has `imageTextScript` and
 `captionLanguage`. `captionLanguage` is a diagnostic slice, not deletion authorization. Every
@@ -200,8 +220,56 @@ survive Redis recovery.
 Every API image build in CI executes the compiled native worker against a generated raster before
 the image can be packaged. API deploy and rollback repeat exact `rus`/`eng` language and raster
 smokes inside `api-media-analysis`. After deployment, confirm that role is live/ready, has one OCR
-processor and one native worker, has not restarted, and still receives the `shadow` ceiling. Do not
-raise rollout during the code deployment.
+processor and one native worker, has not restarted, and still receives the `shadow` ceiling. Audit
+the terminal timeout count separately from retryable OCR failures and compare native-worker
+restarts, queue wait p95, OCR duration p95/p99, and CPU seconds per image with the prior release. Do
+not raise rollout during the code deployment.
+
+The internal `api-media-analysis` readiness response exposes privacy-safe `checks.ocr.rolloutMetrics`.
+It keeps the latest 512 first-attempt queue waits, native-pass durations, and attempted-image cgroup
+CPU samples in process memory; it never includes OCR text, pixels, URLs, chat/message identifiers,
+or persistent telemetry. `observed` is cumulative since `processStartedAt`, while `sampled`,
+`oldestSampleAt`, and `newestSampleAt` describe the bounded percentile population. Queue wait is
+recorded only when BullMQ first moves a job to active, so retries and governor deferrals cannot
+inflate it. CPU is the whole isolated container's cgroup CPU delta around an image that reached
+native OCR, so it includes Tesseract child work; compare it only while the role remains single-
+concurrency with background tasks disabled. A non-zero `cpuSecondsPerImage.unavailable` means the
+host did not expose a supported cgroup v1/v2 counter and blocks the performance gate.
+
+Capture a baseline with at least 100 sampled first-attempt jobs and 100 sampled attempted images
+immediately before deployment. Capture the candidate only after its new process has observed at
+least 100 of each. Each command is read-only and writes only an operator-local artifact:
+
+```bash
+./infra/scripts/vps-connect.sh exec \
+  'docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T api-media-analysis node -e '\''fetch("http://127.0.0.1:3001/api/health/ready").then(async (response) => { const body = await response.json(); if (!response.ok || !body?.checks?.ocr?.ready) process.exit(1); console.log(JSON.stringify({capturedAt:new Date().toISOString(),ocr:body.checks.ocr})); }).catch(() => process.exit(1));'\''' \
+  > artifacts/commercial-ocr-private/rollout-before.json
+
+# Run the same command after deployment with rollout-after.json as the output path.
+```
+
+For the first shadow deployment that introduces `rolloutMetrics`, the previous image cannot provide
+a comparable baseline. Record that absence explicitly in the change record; do not fabricate or
+substitute host-wide metrics. Keep the deployment in `shadow`, apply every absolute candidate gate
+below after 100 samples, and retain the accepted candidate snapshot as the baseline for the next
+release. A bootstrap snapshot without a comparable baseline can never support an enforcement
+promotion.
+
+Fail closed and keep `COMMERCIAL_OCR_ROLLOUT_MODE=shadow` if any candidate condition holds:
+
+- fewer than 100 new `queueWaitMs.observed` or `cpuSecondsPerImage.observed` samples;
+- `queueWaitMs.p95 > 30_000`, `nativePassDurationMs.p95 > 10_000`, or
+  `nativePassDurationMs.p99 > 10_500`;
+- `cpuSecondsPerImage.p95 > 20.0` or any CPU sample is unavailable;
+- candidate `counters.restarts - counters.recycles > 0`, or candidate retryable
+  `worker_unavailable`, `tesseract_failed`, and `capacity_exhausted` failures total more than 1% of
+  candidate `nativePassDurationMs.observed`;
+- candidate p95/p99/CPU is more than 25% above a baseline built from at least 100 samples.
+
+Timeouts remain a separate quality/coverage signal because a 10-second timeout is terminal and
+fail-open, not a retryable infrastructure failure. These operational metrics can reject a release;
+they can never authorize deletion. Enforcement remains blocked until the separately reviewed,
+fully labeled corpus gate passes and an operator deliberately changes the rollout control.
 
 ## Release Inventory
 

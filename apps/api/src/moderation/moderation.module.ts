@@ -69,6 +69,7 @@ import { CommercialOcrAnalysisService } from './commercial-ocr/commercial-ocr-an
 import { CommercialOcrCacheStore } from './commercial-ocr/commercial-ocr-cache.store';
 import { CommercialOcrEnqueueService } from './commercial-ocr/commercial-ocr-enqueue.service';
 import { CommercialOcrModerationService } from './commercial-ocr/commercial-ocr-moderation.service';
+import { CommercialOcrMetricsService } from './commercial-ocr/commercial-ocr-metrics.service';
 import { CommercialOcrPreprocessor } from './commercial-ocr/commercial-ocr-preprocessor';
 import { CommercialOcrProcessor } from './commercial-ocr/commercial-ocr.processor';
 import { CommercialOcrQueueProducer } from './commercial-ocr/commercial-ocr-queue.producer';
@@ -168,6 +169,7 @@ const moderationProviders = [
         ...(commercialOcrWorkerEnabled
           ? [
               CommercialOcrCacheStore,
+              CommercialOcrMetricsService,
               CommercialOcrPreprocessor,
               NativeTesseractOcrAdapter,
               CommercialOcrAnalysisService,
@@ -203,7 +205,7 @@ const moderationProviders = [
     ModerationService,
     ModerationDeleteIntentModule,
     GlobalSpammerIntelligenceService,
-    ...(commercialOcrWorkerEnabled ? [NativeTesseractOcrAdapter] : []),
+    ...(commercialOcrWorkerEnabled ? [NativeTesseractOcrAdapter, CommercialOcrMetricsService] : []),
   ],
 })
 export class ModerationModule {}

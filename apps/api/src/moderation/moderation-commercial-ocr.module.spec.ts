@@ -7,6 +7,8 @@ type CommercialOcrModuleProfile = Readonly<{
   producer: boolean;
   enqueueService: boolean;
   cacheStore: boolean;
+  metricsService: boolean;
+  metricsExport: boolean;
   processor: boolean;
   consumerQueue: boolean;
 }>;
@@ -32,6 +34,7 @@ async function loadCommercialOcrModuleProfile(params: {
       { CommercialOcrAdmissionStore },
       { CommercialOcrCacheStore },
       { CommercialOcrEnqueueService },
+      { CommercialOcrMetricsService },
       { CommercialOcrQueueProducer },
       { CommercialOcrProcessor },
       { COMMERCIAL_OCR_QUEUE },
@@ -39,6 +42,7 @@ async function loadCommercialOcrModuleProfile(params: {
       import('./commercial-ocr/commercial-ocr-admission.store'),
       import('./commercial-ocr/commercial-ocr-cache.store'),
       import('./commercial-ocr/commercial-ocr-enqueue.service'),
+      import('./commercial-ocr/commercial-ocr-metrics.service'),
       import('./commercial-ocr/commercial-ocr-queue.producer'),
       import('./commercial-ocr/commercial-ocr.processor'),
       import('./commercial-ocr/commercial-ocr.queue'),
@@ -46,12 +50,17 @@ async function loadCommercialOcrModuleProfile(params: {
     const providers = readModuleMetadata(ModerationModule, MODULE_METADATA.PROVIDERS);
     const providerTokens = new Set(providers.map(readProviderToken));
     const imports = readModuleMetadata(ModerationModule, MODULE_METADATA.IMPORTS);
+    const exports = new Set(
+      readModuleMetadata(ModerationModule, MODULE_METADATA.EXPORTS).map(readProviderToken),
+    );
 
     return {
       admissionStore: providerTokens.has(CommercialOcrAdmissionStore),
       producer: providerTokens.has(CommercialOcrQueueProducer),
       enqueueService: providerTokens.has(CommercialOcrEnqueueService),
       cacheStore: providerTokens.has(CommercialOcrCacheStore),
+      metricsService: providerTokens.has(CommercialOcrMetricsService),
+      metricsExport: exports.has(CommercialOcrMetricsService),
       processor: providerTokens.has(CommercialOcrProcessor),
       consumerQueue: imports.some((entry) =>
         dynamicModuleExportsToken(entry, getQueueToken(COMMERCIAL_OCR_QUEUE)),
@@ -109,6 +118,8 @@ describe('ModerationModule commercial OCR runtime boundaries', () => {
       producer: true,
       enqueueService: true,
       cacheStore: false,
+      metricsService: false,
+      metricsExport: false,
       processor: false,
       consumerQueue: false,
     });
@@ -117,6 +128,8 @@ describe('ModerationModule commercial OCR runtime boundaries', () => {
       producer: false,
       enqueueService: false,
       cacheStore: true,
+      metricsService: true,
+      metricsExport: true,
       processor: true,
       consumerQueue: true,
     });
@@ -125,6 +138,8 @@ describe('ModerationModule commercial OCR runtime boundaries', () => {
       producer: true,
       enqueueService: true,
       cacheStore: true,
+      metricsService: true,
+      metricsExport: true,
       processor: true,
       consumerQueue: true,
     });

@@ -5,6 +5,7 @@ import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
 
 import { CommercialOcrAdmissionStore } from './commercial-ocr-admission.store';
 import { CommercialOcrModerationService } from './commercial-ocr-moderation.service';
+import { CommercialOcrMetricsService } from './commercial-ocr-metrics.service';
 import {
   buildCommercialOcrJobId,
   COMMERCIAL_OCR_DEFAULT_VERSION,
@@ -52,6 +53,7 @@ export class CommercialOcrProcessor extends WorkerHost {
     private readonly moderationService: CommercialOcrModerationService,
     private readonly admissionStore: CommercialOcrAdmissionStore,
     private readonly configService: ConfigService,
+    private readonly metrics: CommercialOcrMetricsService,
   ) {
     super();
     this.maxJobAgeMs = readPositiveInteger(
@@ -75,6 +77,11 @@ export class CommercialOcrProcessor extends WorkerHost {
     } catch (error: unknown) {
       await this.releaseAdmission(identity);
       throw asUnrecoverableError(error, 'Commercial OCR job envelope is invalid');
+    }
+
+    if ((job.attemptsStarted ?? 1) <= 1) {
+      const processingStartedAtMs = job.processedOn ?? Date.now();
+      this.metrics.recordQueueWait(Math.max(0, processingStartedAtMs - job.timestamp));
     }
 
     const deadlineAtMs = Date.parse(job.data.sourceCreatedAt) + this.maxJobAgeMs;
@@ -143,10 +150,7 @@ export class CommercialOcrProcessor extends WorkerHost {
     }
     validateCommercialOcrImageCount(data.imageCount);
     const jobOcrVersion = validateCommercialOcrVersion(data.ocrVersion);
-    const currentOcrVersion = validateCommercialOcrVersion(
-      this.configService.get<string>('COMMERCIAL_OCR_VERSION') ?? COMMERCIAL_OCR_DEFAULT_VERSION,
-    );
-    if (jobOcrVersion !== currentOcrVersion) {
+    if (jobOcrVersion !== COMMERCIAL_OCR_DEFAULT_VERSION) {
       throw new Error('Commercial OCR job version is stale');
     }
     if (

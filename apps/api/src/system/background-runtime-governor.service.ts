@@ -12,6 +12,7 @@ import { MaxApiMetricsService } from './max-api-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 
 export type BackgroundRuntimeGovernorAction = 'run' | 'slow' | 'pause';
+export type BackgroundRuntimeGovernorPressureDomain = 'max_api_traffic';
 
 export type BackgroundRuntimeGovernorDecision = {
   action: BackgroundRuntimeGovernorAction;
@@ -234,12 +235,14 @@ export class BackgroundRuntimeGovernorService {
     allowRecoveryWindowRun?: boolean;
     allowQueueLagSlowPathBelowSec?: number;
     allowMaxApiCapacitySlowPath?: boolean;
+    ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): Promise<BackgroundRuntimeGovernorDecision> {
     const snapshot = await this.getPressureSnapshot();
     const decision = this.buildDecisionFromSnapshot(snapshot, {
       allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
       allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
       allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
+      ignoredPressureDomains: params.ignoredPressureDomains,
     });
 
     if (decision.action !== 'run') {
@@ -260,6 +263,7 @@ export class BackgroundRuntimeGovernorService {
     allowRecoveryWindowRun?: boolean;
     allowQueueLagSlowPathBelowSec?: number;
     allowMaxApiCapacitySlowPath?: boolean;
+    ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): BackgroundRuntimeGovernorDecision | null {
     const snapshot = this.getCachedSnapshot();
     if (!snapshot) {
@@ -270,13 +274,17 @@ export class BackgroundRuntimeGovernorService {
       allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
       allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
       allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
+      ignoredPressureDomains: params.ignoredPressureDomains,
     });
   }
 
   async getDashboardBudgetSummary(): Promise<BackgroundRuntimeBudgetSummary> {
-    const [snapshot, pauseReasons] = await Promise.all([
-      this.getPressureSnapshot(),
+    const snapshot = await this.getPressureSnapshot();
+    const rateLimitWindowSec = Math.min(60, this.sourceWindowSec);
+    const [pauseReasons, sharedStackRateLimit, sharedBotLoad] = await Promise.all([
       this.runtimeDiagnosticsService?.getBackgroundDecisionSummary(),
+      this.maxApiMetricsService.getStackRateLimitSnapshot({ windowSec: rateLimitWindowSec }),
+      this.buildBotLoadSnapshot(snapshot.queues, 'shared'),
     ]);
 
     return {
@@ -284,8 +292,8 @@ export class BackgroundRuntimeGovernorService {
       backgroundShare: Number(snapshot.backgroundShare.toFixed(3)),
       topSources: snapshot.topSources,
       pauseReasons: pauseReasons?.pauseReasons ?? [],
-      stackLoad: snapshot.stackLoad,
-      botLoad: snapshot.botLoad,
+      stackLoad: this.buildStackLoadSnapshot(sharedStackRateLimit),
+      botLoad: sharedBotLoad,
     };
   }
 
@@ -333,14 +341,17 @@ export class BackgroundRuntimeGovernorService {
       this.systemModeService.getEffectiveSnapshot(),
       this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
       this.maxApiMetricsService.getSourceSnapshot({ windowSec: this.sourceWindowSec }),
-      this.maxApiMetricsService.getStackRateLimitSnapshot({ windowSec: rateLimitWindowSec }),
+      this.maxApiMetricsService.getStackRateLimitSnapshot({
+        windowSec: rateLimitWindowSec,
+        capacityScope: 'service',
+      }),
       this.buildSystemPressureSnapshot(),
     ]);
     const totalRequests = maxApi.overall.totalRequests;
     const backgroundRequests = maxApi.overall.trafficClasses.background.totalRequests;
     const backgroundShare = totalRequests > 0 ? backgroundRequests / totalRequests : 0;
     const stackLoad = this.buildStackLoadSnapshot(stackRateLimit);
-    const botLoad = await this.buildBotLoadSnapshot(queues);
+    const botLoad = await this.buildBotLoadSnapshot(queues, 'service');
 
     const workerGroups = Object.entries(queues.webhookDefaultWorkerGroups ?? {}).map(
       ([groupName, metrics]) => ({
@@ -394,6 +405,7 @@ export class BackgroundRuntimeGovernorService {
       allowRecoveryWindowRun?: boolean;
       allowQueueLagSlowPathBelowSec?: number;
       allowMaxApiCapacitySlowPath?: boolean;
+      ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
     } = {},
   ): BackgroundRuntimeGovernorDecision {
     const queueLagSec =
@@ -405,6 +417,8 @@ export class BackgroundRuntimeGovernorService {
       Number.isFinite(options.allowQueueLagSlowPathBelowSec) &&
       queueLagSec >= this.softQueueLagSec &&
       queueLagSec < options.allowQueueLagSlowPathBelowSec;
+    const ignoreMaxApiTraffic =
+      options.ignoredPressureDomains?.includes('max_api_traffic') === true;
 
     if (snapshot.mode.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot.mode)) {
       return {
@@ -443,7 +457,10 @@ export class BackgroundRuntimeGovernorService {
       return systemPressureDecision;
     }
 
-    if (snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.pauseThreshold) {
+    if (
+      !ignoreMaxApiTraffic &&
+      snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.pauseThreshold
+    ) {
       return {
         action: options.allowMaxApiCapacitySlowPath === true ? 'slow' : 'pause',
         retryAfterMs:
@@ -454,7 +471,10 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
-    if (snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.slowThreshold) {
+    if (
+      !ignoreMaxApiTraffic &&
+      snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.slowThreshold
+    ) {
       return {
         action: 'slow',
         retryAfterMs: this.slowRetryAfterMs,
@@ -462,7 +482,7 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
-    if (snapshot.botLoad.maxSmoothedLoad >= this.botLoadPauseThreshold) {
+    if (!ignoreMaxApiTraffic && snapshot.botLoad.maxSmoothedLoad >= this.botLoadPauseThreshold) {
       return {
         action: options.allowMaxApiCapacitySlowPath === true ? 'slow' : 'pause',
         retryAfterMs:
@@ -473,7 +493,7 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
-    if (snapshot.botLoad.maxSmoothedLoad >= this.botLoadSlowThreshold) {
+    if (!ignoreMaxApiTraffic && snapshot.botLoad.maxSmoothedLoad >= this.botLoadSlowThreshold) {
       return {
         action: 'slow',
         retryAfterMs: this.slowRetryAfterMs,
@@ -481,7 +501,7 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
-    if (snapshot.backgroundShare >= this.backgroundShareThreshold) {
+    if (!ignoreMaxApiTraffic && snapshot.backgroundShare >= this.backgroundShareThreshold) {
       return {
         action: 'slow',
         retryAfterMs: this.slowRetryAfterMs,
@@ -636,6 +656,7 @@ export class BackgroundRuntimeGovernorService {
 
   private async buildBotLoadSnapshot(
     queues: QueueMetricsSnapshot,
+    capacityScope: 'shared' | 'service',
   ): Promise<BackgroundBotLoadSnapshot> {
     const botIds = Object.keys(queues.bots ?? {}).filter((botId) => botId.trim().length > 0);
     if (botIds.length === 0) {
@@ -648,9 +669,14 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
-    const snapshots = await this.maxApiMetricsService.getBotRateLimitSnapshot(botIds, {
-      windowSec: Math.min(60, this.sourceWindowSec),
-    });
+    const windowSec = Math.min(60, this.sourceWindowSec);
+    const snapshots =
+      capacityScope === 'service'
+        ? await this.maxApiMetricsService.getBotRateLimitSnapshot(botIds, {
+            windowSec,
+            capacityScope: 'service',
+          })
+        : await this.maxApiMetricsService.getBotRateLimitSnapshot(botIds, { windowSec });
     const topBots = Object.entries(snapshots)
       .map(([botId, snapshot]) => ({
         botId,

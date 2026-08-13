@@ -25,6 +25,7 @@ SMOKE_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
 TARGET_HAS_MEDIA_ANALYSIS=0
 TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
+TARGET_COMMERCIAL_OCR_VERSION=""
 ROLLBACK_RUNTIME_STARTED=0
 MANIFEST_RECORDED=0
 
@@ -313,6 +314,7 @@ record_runtime_rollback_release() {
   )
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     args+=(
+      --smoke api-commercial-ocr-version
       --smoke api-media-analysis-tesseract-rus-eng
       --smoke api-media-analysis-shadow
     )
@@ -364,9 +366,11 @@ cp infra/scripts/release-manifest.mjs "$RELEASE_MANIFEST_HELPER"
 cp scripts/smoke-http.mjs "$SMOKE_HELPER"
 COMPOSE_FILES=(--env-file "$ROOT_DIR/.env" -p infra -f "$PRESERVED_COMPOSE_FILE")
 MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "$PRESERVED_MIGRATION_COMPOSE_FILE")
-if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
-fi
+maxim_topology_prepare_commercial_ocr_target \
+  "$TARGET_FULL_SHA" \
+  COMPOSE_FILES \
+  TARGET_HAS_MEDIA_ANALYSIS \
+  TARGET_COMMERCIAL_OCR_VERSION
 CURRENT_HEAD="$(git rev-parse --short HEAD)"
 TARGET_HEAD="${TARGET_FULL_SHA:0:12}"
 ROLLBACK_API_IMAGE="maxim-api:runtime-rollback-${TARGET_FULL_SHA}"
@@ -387,13 +391,35 @@ MAXIM_MIGRATION_API_IMAGE="$ROLLBACK_API_IMAGE" \
   ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
   remove_incompatible_media_analysis_container
+else
+  ROLLBACK_RUNTIME_STARTED=1
+  maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
 fi
-docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate "${SERVICES[@]}"
+API_SERVICES_WITHOUT_MEDIA_ANALYSIS=()
+for service in "${SERVICES[@]}"; do
+  if [[ "$service" != "$MAXIM_MEDIA_ANALYSIS_SERVICE" ]]; then
+    API_SERVICES_WITHOUT_MEDIA_ANALYSIS+=("$service")
+  fi
+done
+docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate \
+  "${API_SERVICES_WITHOUT_MEDIA_ANALYSIS[@]}"
+for service in "${API_SERVICES_WITHOUT_MEDIA_ANALYSIS[@]}"; do
+  wait_for_service_running "$service" 180
+done
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate \
+    "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+fi
 
 for service in "${SERVICES[@]}"; do
   wait_for_service_running "$service" 180
   verify_service_image_id "$service" "$ROLLBACK_API_IMAGE_ID"
 done
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_verify_api_commercial_ocr_version \
+    COMPOSE_FILES \
+    "$TARGET_COMMERCIAL_OCR_VERSION"
+fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180

@@ -8455,6 +8455,62 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('records shared usage once while isolating service-scoped class metrics', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:10.000Z'));
+
+    const response = {
+      status: 200,
+      data: {
+        title: 'Chat 1',
+        participants_count: 10,
+        status: 'active',
+      },
+    };
+    const serviceA = createService(
+      { request: jest.fn().mockReturnValueOnce(of(response)) },
+      { APP_SERVICE_NAME: 'API Action / A' },
+    );
+    const serviceB = createService(
+      { request: jest.fn().mockReturnValueOnce(of(response)) },
+      { APP_SERVICE_NAME: 'API Action / B' },
+    );
+    const limiterRedis = (
+      serviceA as unknown as { limiterRedis: { get: jest.Mock; pttl: jest.Mock } }
+    ).limiterRedis;
+    const nowSec = Math.floor(Date.now() / 1_000);
+
+    await serviceA.getChatSnapshot('chat-a', { trafficClass: 'background' });
+    await serviceB.getChatSnapshot('chat-b', { trafficClass: 'background' });
+
+    await expect(limiterRedis.get(`maxapi:rps:global:777000_bot:${nowSec}`)).resolves.toBe('2');
+    await expect(
+      limiterRedis.get(`maxapi:rps:global:777000_bot:background:${nowSec}`),
+    ).resolves.toBe('2');
+    await expect(limiterRedis.get(`maxapi:rps:stack:${nowSec}`)).resolves.toBe('2');
+    await expect(limiterRedis.get(`maxapi:rps:stack:background:${nowSec}`)).resolves.toBe('2');
+    await expect(
+      limiterRedis.get(`maxapi:rps:service:v1:api_action_a:bot:777000_bot:background:${nowSec}`),
+    ).resolves.toBe('1');
+    await expect(
+      limiterRedis.get(`maxapi:rps:service:v1:api_action_b:bot:777000_bot:background:${nowSec}`),
+    ).resolves.toBe('1');
+    await expect(
+      limiterRedis.get(`maxapi:rps:service:v1:api_action_a:stack:background:${nowSec}`),
+    ).resolves.toBe('1');
+    await expect(
+      limiterRedis.get(`maxapi:rps:service:v1:api_action_b:stack:background:${nowSec}`),
+    ).resolves.toBe('1');
+    await expect(
+      limiterRedis.pttl(`maxapi:rps:service:v1:api_action_a:stack:background:${nowSec}`),
+    ).resolves.toBe(120_000);
+    await expect(limiterRedis.pttl(`maxapi:rps:stack:background:${nowSec}`)).resolves.toBe(
+      6 * 60 * 60 * 1_000,
+    );
+
+    await serviceA.onModuleDestroy();
+    await serviceB.onModuleDestroy();
+  });
+
   it('scopes class and source limiter budgets by service while retaining one 30 rps stack guard', async () => {
     const service = createService(
       { request: jest.fn() },

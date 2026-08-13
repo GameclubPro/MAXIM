@@ -40,10 +40,12 @@ jest.mock('ioredis', () => ({
   }),
 }));
 
-function createConfigMock() {
+function createConfigMock(appServiceName?: string) {
   return {
     get: jest.fn((key: string) => {
       switch (key) {
+        case 'APP_SERVICE_NAME':
+          return appServiceName;
         case 'MAX_API_GLOBAL_RPS':
           return 30;
         case 'MAX_API_GLOBAL_RPS_CRITICAL':
@@ -503,6 +505,102 @@ describe('MaxApiMetricsService', () => {
         peakLoad: 0.5,
         avgLoad: 0.0083,
         smoothedLoad: 0.1,
+      },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('combines shared overall pressure with isolated service class pressure', async () => {
+    const service = new MaxApiMetricsService(createConfigMock('API Action / A') as never);
+    const store = redisStores[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const servicePrefix = 'maxapi:rps:service:v1:api_action_a';
+
+    store.set(`${servicePrefix}:bot:bot-a:critical:${nowSec}`, '2');
+    store.set(`${servicePrefix}:bot:bot-a:interactive:${nowSec}`, '3');
+    store.set(`${servicePrefix}:bot:bot-a:background:${nowSec}`, '4');
+    store.set(`${servicePrefix}:bot:bot-a:background:${nowSec - 1}`, '1');
+    store.set(`${servicePrefix}:stack:critical:${nowSec}`, '2');
+    store.set(`${servicePrefix}:stack:interactive:${nowSec}`, '3');
+    store.set(`${servicePrefix}:stack:background:${nowSec}`, '4');
+    store.set(`${servicePrefix}:stack:background:${nowSec - 1}`, '1');
+
+    store.set(`maxapi:rps:service:v1:api_action_b:bot:bot-a:background:${nowSec}`, '100');
+    store.set(`maxapi:rps:service:v1:api_action_b:stack:background:${nowSec}`, '100');
+    store.set(`maxapi:rps:global:bot-a:${nowSec}`, '109');
+    store.set(`maxapi:rps:global:bot-a:${nowSec - 1}`, '1');
+    store.set(`maxapi:rps:global:bot-a:background:${nowSec}`, '200');
+    store.set(`maxapi:rps:stack:${nowSec}`, '109');
+    store.set(`maxapi:rps:stack:${nowSec - 1}`, '1');
+    store.set(`maxapi:rps:stack:background:${nowSec}`, '200');
+
+    const [bots, stack] = await Promise.all([
+      service.getBotRateLimitSnapshot(['bot-a'], {
+        windowSec: 60,
+        capacityScope: 'service',
+      }),
+      service.getStackRateLimitSnapshot({ windowSec: 60, capacityScope: 'service' }),
+    ]);
+
+    expect(bots['bot-a']).toMatchObject({
+      totalRequests: 110,
+      peakRps: 109,
+      activeSeconds: 2,
+      trafficClasses: {
+        critical: { totalRequests: 2 },
+        interactive: { totalRequests: 3 },
+        background: { totalRequests: 5 },
+      },
+    });
+    expect(stack).toMatchObject({
+      totalRequests: 110,
+      peakRps: 109,
+      activeSeconds: 2,
+      trafficClasses: {
+        critical: { totalRequests: 2 },
+        interactive: { totalRequests: 3 },
+        background: { totalRequests: 5 },
+      },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps shared overall load during service-metric cold start', async () => {
+    const service = new MaxApiMetricsService(createConfigMock('API Action / A') as never);
+    const store = redisStores[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+
+    store.set(`maxapi:rps:global:bot-a:${nowSec}`, '12');
+    store.set(`maxapi:rps:stack:${nowSec}`, '12');
+    store.set(`maxapi:rps:global:bot-a:background:${nowSec}`, '12');
+    store.set(`maxapi:rps:stack:background:${nowSec}`, '12');
+
+    const [bots, stack] = await Promise.all([
+      service.getBotRateLimitSnapshot(['bot-a'], {
+        windowSec: 60,
+        capacityScope: 'service',
+      }),
+      service.getStackRateLimitSnapshot({ windowSec: 60, capacityScope: 'service' }),
+    ]);
+
+    expect(bots['bot-a']).toMatchObject({
+      totalRequests: 12,
+      smoothedLoad: 0.08,
+      trafficClasses: {
+        critical: { totalRequests: 0 },
+        interactive: { totalRequests: 0 },
+        background: { totalRequests: 0 },
+      },
+    });
+    expect(stack).toMatchObject({
+      totalRequests: 12,
+      smoothedLoad: 0.08,
+      trafficClasses: {
+        critical: { totalRequests: 0 },
+        interactive: { totalRequests: 0 },
+        background: { totalRequests: 0 },
       },
     });
 

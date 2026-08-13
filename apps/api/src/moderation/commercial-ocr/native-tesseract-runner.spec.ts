@@ -134,8 +134,9 @@ describe('probeNativeTesseract', () => {
 
       await expect(result).resolves.toEqual({ ok: false, reason: 'timeout' });
       expect(child.killedWith).toBe('SIGKILL');
-      expect(processChanges).toEqual([child, null]);
+      expect(processChanges).toEqual([child]);
       expectLateErrorsGuardedUntilClose(child);
+      expect(processChanges).toEqual([child, null]);
     } finally {
       jest.useRealTimers();
     }
@@ -270,8 +271,9 @@ describe('runNativeTesseract', () => {
 
       await expect(result).resolves.toEqual({ ok: false, reason: 'timeout' });
       expect(child.killedWith).toBe('SIGKILL');
-      expect(processChanges).toEqual([child, null]);
+      expect(processChanges).toEqual([child]);
       expectLateErrorsGuardedUntilClose(child);
+      expect(processChanges).toEqual([child, null]);
     } finally {
       jest.useRealTimers();
     }

@@ -6,6 +6,20 @@ import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
 const topologyPath = resolve(root, 'infra/scripts/lib/deploy-topology.sh');
+const apiServices = [
+  'api-ingress',
+  'api-admin',
+  'api-enqueue',
+  'api-moderation',
+  'api-moderation-critical',
+  'api-moderation-join',
+  'api-moderation-realtime-b',
+  'api-moderation-realtime-c',
+  'api-moderation-realtime-d',
+  'api-moderation-background',
+  'api-media-analysis',
+  'api-action',
+];
 
 function read(path) {
   return readFileSync(resolve(root, path), 'utf8');
@@ -16,6 +30,23 @@ function runTopologyProbe(probe) {
     cwd: root,
     encoding: 'utf8',
     env: { ...process.env, TOPOLOGY_PATH: topologyPath },
+  });
+}
+
+function commercialOcrComposeConfig(version, overrides = {}) {
+  return JSON.stringify({
+    services: Object.fromEntries(
+      apiServices.map((service) => [
+        service,
+        {
+          environment: {
+            COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+            COMMERCIAL_OCR_VERSION: version,
+            ...overrides[service],
+          },
+        },
+      ]),
+    ),
   });
 }
 
@@ -45,6 +76,157 @@ git() {
 maxim_topology_git_compose_has_service target-sha "$MAXIM_MEDIA_ANALYSIS_SERVICE"
 `);
   assert.equal(absent.status, 1, absent.stderr);
+});
+
+test('extracts a single literal behavior version from the target Git source', () => {
+  const literal = runTopologyProbe(`
+git() {
+  printf '%s\\n' "export const COMMERCIAL_OCR_DEFAULT_VERSION = 'tesseract-rus-eng-v1' as const;"
+}
+maxim_topology_git_commercial_ocr_version target-sha
+`);
+  assert.equal(literal.status, 0, literal.stderr);
+  assert.equal(literal.stdout, 'tesseract-rus-eng-v1');
+
+  for (const source of [
+    'export const COMMERCIAL_OCR_DEFAULT_VERSION = resolveVersion();',
+    "export const COMMERCIAL_OCR_DEFAULT_VERSION = 'valid';\\nexport const COMMERCIAL_OCR_DEFAULT_VERSION = 'duplicate';",
+    "export const COMMERCIAL_OCR_DEFAULT_VERSION = 'unsafe value';",
+  ]) {
+    const invalid = runTopologyProbe(`
+git() { printf '%b\\n' '${source}'; }
+if maxim_topology_git_commercial_ocr_version target-sha; then exit 9; fi
+`);
+    assert.equal(invalid.status, 0, invalid.stderr);
+    assert.match(invalid.stderr, /COMMERCIAL_OCR_DEFAULT_VERSION/u);
+  }
+});
+
+test('target preparation skips pre-feature commits and pins OCR commits to source version', () => {
+  const withoutMediaAnalysis = runTopologyProbe(`
+unset COMMERCIAL_OCR_VERSION
+git() {
+  if [[ "$1" == "cat-file" ]]; then return 0; fi
+  if [[ "$1" == "show" ]]; then printf '%s\\n' 'services:' '  api-ingress:'; return 0; fi
+  return 2
+}
+docker() { echo 'docker must not be called' >&2; return 8; }
+compose_args=(-p infra -f infra/docker-compose.yml)
+has_media=9
+version=sentinel
+maxim_topology_prepare_commercial_ocr_target target-sha compose_args has_media version
+printf '%s|%s|%s' "$has_media" "$version" "\${COMMERCIAL_OCR_VERSION-unset}"
+`);
+  assert.equal(withoutMediaAnalysis.status, 0, withoutMediaAnalysis.stderr);
+  assert.equal(withoutMediaAnalysis.stdout, '0||unset');
+
+  const config = commercialOcrComposeConfig('tesseract-rus-eng-v1');
+  const withMediaAnalysis = runTopologyProbe(`
+git() {
+  if [[ "$1" == "cat-file" ]]; then return 0; fi
+  case "$2" in
+    *:infra/docker-compose.yml)
+      printf '%s\\n' 'services:' '  api-ingress:' '  api-media-analysis:'
+      ;;
+    *:apps/api/src/moderation/commercial-ocr/commercial-ocr.queue.ts)
+      printf '%s\\n' "export const COMMERCIAL_OCR_DEFAULT_VERSION = 'tesseract-rus-eng-v1';"
+      ;;
+    *) return 2 ;;
+  esac
+}
+docker() { printf '%s' '${config}'; }
+compose_args=(-p infra -f infra/docker-compose.yml)
+has_media=0
+version=''
+maxim_topology_prepare_commercial_ocr_target target-sha compose_args has_media version
+printf '%s|%s|%s' "$has_media" "$version" "$COMMERCIAL_OCR_VERSION"
+`);
+  assert.equal(withMediaAnalysis.status, 0, withMediaAnalysis.stderr);
+  assert.equal(withMediaAnalysis.stdout, '1|tesseract-rus-eng-v1|tesseract-rus-eng-v1');
+});
+
+test('effective OCR version preflight requires the target version on all 12 API roles', () => {
+  const matchingConfig = commercialOcrComposeConfig('tesseract-rus-eng-v2');
+  const matching = runTopologyProbe(`
+docker() { printf '%s' '${matchingConfig}'; }
+compose_args=(-p infra -f infra/docker-compose.yml)
+maxim_topology_require_api_commercial_ocr_version_config compose_args tesseract-rus-eng-v2
+`);
+  assert.equal(matching.status, 0, matching.stderr);
+
+  for (const config of [
+    commercialOcrComposeConfig('tesseract-rus-eng-v2', {
+      'api-action': { COMMERCIAL_OCR_VERSION: 'stale-private-value' },
+    }),
+    JSON.stringify({
+      services: Object.fromEntries(
+        apiServices.slice(0, -1).map((service) => [
+          service,
+          {
+            environment: {
+              COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+              COMMERCIAL_OCR_VERSION: 'tesseract-rus-eng-v2',
+            },
+          },
+        ]),
+      ),
+    }),
+  ]) {
+    const rejected = runTopologyProbe(`
+docker() { printf '%s' '${config}'; }
+compose_args=(-p infra -f infra/docker-compose.yml)
+if maxim_topology_require_api_commercial_ocr_version_config compose_args tesseract-rus-eng-v2; then
+  exit 9
+fi
+`);
+    assert.equal(rejected.status, 0, rejected.stderr);
+    assert.match(rejected.stderr, /every production API role/u);
+    assert.doesNotMatch(`${rejected.stdout}${rejected.stderr}`, /stale-private-value/u);
+  }
+});
+
+test('running OCR version verification inspects every production API container', () => {
+  const passing = runTopologyProbe(`
+docker() {
+  if [[ "$1 $2" == "compose -p" && "$*" == *' ps -q '* ]]; then
+    printf 'container-%s' "\${!#}"
+    return 0
+  fi
+  if [[ "$1" == "inspect" ]]; then
+    printf '%s\\n' 'NODE_ENV=production' 'COMMERCIAL_OCR_VERSION=tesseract-rus-eng-v2'
+    return 0
+  fi
+  return 8
+}
+compose_args=(-p infra -f infra/docker-compose.yml)
+maxim_topology_verify_api_commercial_ocr_version compose_args tesseract-rus-eng-v2
+`);
+  assert.equal(passing.status, 0, passing.stderr);
+
+  const mismatch = runTopologyProbe(`
+docker() {
+  if [[ "$1 $2" == "compose -p" && "$*" == *' ps -q '* ]]; then
+    printf 'container-%s' "\${!#}"
+    return 0
+  fi
+  if [[ "$1" == "inspect" ]]; then
+    if [[ "\${!#}" == 'container-api-action' ]]; then
+      printf '%s\\n' 'COMMERCIAL_OCR_VERSION=stale-private-value'
+    else
+      printf '%s\\n' 'COMMERCIAL_OCR_VERSION=tesseract-rus-eng-v2'
+    fi
+    return 0
+  fi
+  return 8
+}
+compose_args=(-p infra -f infra/docker-compose.yml)
+if maxim_topology_verify_api_commercial_ocr_version compose_args tesseract-rus-eng-v2; then
+  exit 9
+fi
+`);
+  assert.equal(mismatch.status, 0, mismatch.stderr);
+  assert.match(mismatch.stderr, /api-action does not run with the target/u);
+  assert.doesNotMatch(`${mismatch.stdout}${mismatch.stderr}`, /stale-private-value/u);
 });
 
 test('removes only media-analysis from a pre-feature target service list', () => {
@@ -200,41 +382,66 @@ if maxim_topology_require_media_analysis_shadow_config compose_args; then exit 9
   assert.doesNotMatch(`${enforcing.stdout}${enforcing.stderr}`, /canary-sensitive-value/u);
 });
 
-test('deploy and rollback guard target topology and smoke Tesseract before manifest commit', () => {
+test('deploy and rollback pin OCR identity, retire the old worker, and start it last', () => {
+  const topology = read('infra/scripts/lib/deploy-topology.sh');
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   const scaleDeploy = read('infra/scripts/vps-pull-build-up-scale.sh');
   const immutableRollback = read('infra/scripts/vps-release-rollback.sh');
   const refRollback = read('infra/scripts/vps-runtime-rollback.sh');
 
-  assert.match(
-    deploy,
-    /maxim_topology_git_compose_has_service "\$TARGET_SHA" "\$MAXIM_MEDIA_ANALYSIS_SERVICE"/u,
-  );
+  assert.match(topology, /maxim_topology_git_commercial_ocr_version "\$commit_sha"/u);
+  assert.match(deploy, /maxim_topology_prepare_commercial_ocr_target/u);
+  assert.match(topology, /export COMMERCIAL_OCR_VERSION="\$resolved_version"/u);
+  assert.match(deploy, /DEPLOY_RUNTIME_STARTED=0/u);
+  assert.match(deploy, /DEPLOY_MANIFEST_RECORDED=0/u);
+  assert.match(deploy, /invalidate_stale_release_inventory/u);
+  assert.match(deploy, /current\.invalid-deploy-/u);
   assert.match(deploy, /maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required/u);
   assert.ok(
-    deploy.indexOf('maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES') <
+    deploy.lastIndexOf('maxim_topology_prepare_commercial_ocr_target') <
       deploy.lastIndexOf('prepare_deploy_disk_capacity'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('maxim_topology_stop_media_analysis_before_api_transition') <
+      deploy.lastIndexOf('recreate_service_wave "worker"'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('recreate_service_wave "ingress"') <
+      deploy.lastIndexOf('recreate_service_wave "media analysis"'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('recreate_service_wave "media analysis"') <
+      deploy.lastIndexOf('maxim_topology_verify_api_commercial_ocr_version'),
   );
   assert.ok(
     deploy.lastIndexOf('maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES') <
       deploy.lastIndexOf('record_successful_release'),
   );
 
-  assert.match(
-    scaleDeploy,
-    /contains_service "\$MAXIM_MEDIA_ANALYSIS_SERVICE" "\$\{SERVICES\[@\]\}"/u,
-  );
+  assert.match(scaleDeploy, /maxim_topology_prepare_commercial_ocr_target/u);
   assert.match(
     scaleDeploy,
     /maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required/u,
   );
   assert.ok(
-    scaleDeploy.indexOf('maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES') <
+    scaleDeploy.lastIndexOf('maxim_topology_prepare_commercial_ocr_target') <
       scaleDeploy.lastIndexOf('prepare_scale_redis_named_volume'),
   );
   assert.ok(
     scaleDeploy.lastIndexOf('maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES') >
       scaleDeploy.lastIndexOf('ensure_requested_services_running'),
+  );
+  assert.ok(
+    scaleDeploy.lastIndexOf('maxim_topology_stop_media_analysis_before_api_transition') <
+      scaleDeploy.lastIndexOf('recreate_service_wave "worker"'),
+  );
+  assert.ok(
+    scaleDeploy.lastIndexOf('recreate_service_wave "ingress"') <
+      scaleDeploy.lastIndexOf('recreate_service_wave "media analysis"'),
+  );
+  assert.ok(
+    scaleDeploy.lastIndexOf('recreate_service_wave "media analysis"') <
+      scaleDeploy.lastIndexOf('maxim_topology_verify_api_commercial_ocr_version'),
   );
 
   assert.match(
@@ -258,14 +465,10 @@ test('deploy and rollback guard target topology and smoke Tesseract before manif
     /maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present/u,
   );
   assert.ok(
-    immutableRollback.indexOf(
-      'maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES',
-    ) < immutableRollback.indexOf("for component in \"${SELECTED_COMPONENTS[@]}\""),
+    immutableRollback.indexOf('maxim_topology_prepare_commercial_ocr_target') <
+      immutableRollback.indexOf('for component in "${SELECTED_COMPONENTS[@]}"'),
   );
-  assert.match(
-    immutableRollback,
-    /if \[\[ "\$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 \]\]; then\n {4}maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES/u,
-  );
+  assert.match(immutableRollback, /maxim_topology_verify_api_commercial_ocr_version/u);
   assert.match(immutableRollback, /label=com\.docker\.compose\.project=infra/u);
   assert.match(
     immutableRollback,
@@ -273,6 +476,18 @@ test('deploy and rollback guard target topology and smoke Tesseract before manif
   );
   assert.match(immutableRollback, /docker stop --time 30 "\$\{container_ids\[@\]\}"/u);
   assert.match(immutableRollback, /docker rm -f "\$\{container_ids\[@\]\}"/u);
+  assert.ok(
+    immutableRollback.lastIndexOf('maxim_topology_stop_media_analysis_before_api_transition') <
+      immutableRollback.lastIndexOf('recreate_service api-admin'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('recreate_service api-ingress') <
+      immutableRollback.lastIndexOf('recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"') <
+      immutableRollback.lastIndexOf('maxim_topology_verify_api_commercial_ocr_version'),
+  );
   assert.ok(
     immutableRollback.lastIndexOf('maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES') <
       immutableRollback.lastIndexOf('node infra/scripts/release-manifest.mjs'),
@@ -299,17 +514,22 @@ test('deploy and rollback guard target topology and smoke Tesseract before manif
     /maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present/u,
   );
   assert.ok(
-    refRollback.indexOf('maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES') <
+    refRollback.indexOf('maxim_topology_prepare_commercial_ocr_target') <
       refRollback.indexOf('git switch --detach'),
   );
-  assert.match(
-    refRollback,
-    /if \[\[ "\$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 \]\]; then\n {2}maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES/u,
-  );
+  assert.match(refRollback, /maxim_topology_verify_api_commercial_ocr_version/u);
   assert.match(refRollback, /label=com\.docker\.compose\.project=infra/u);
   assert.match(refRollback, /label=com\.docker\.compose\.service=\$MAXIM_MEDIA_ANALYSIS_SERVICE/u);
   assert.match(refRollback, /docker stop --time 30 "\$\{container_ids\[@\]\}"/u);
   assert.match(refRollback, /docker rm -f "\$\{container_ids\[@\]\}"/u);
+  assert.ok(
+    refRollback.lastIndexOf('maxim_topology_stop_media_analysis_before_api_transition') <
+      refRollback.lastIndexOf('API_SERVICES_WITHOUT_MEDIA_ANALYSIS'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('wait_for_service_running "$service" 180') <
+      refRollback.lastIndexOf('maxim_topology_verify_api_commercial_ocr_version'),
+  );
   assert.ok(
     refRollback.lastIndexOf('maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES') <
       refRollback.lastIndexOf('record_runtime_rollback_release'),

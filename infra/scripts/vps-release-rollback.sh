@@ -125,6 +125,7 @@ SELECTED_COMPONENTS=()
 SERVICES=()
 TARGET_HAS_MEDIA_ANALYSIS=0
 TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
+TARGET_COMMERCIAL_OCR_VERSION=""
 declare -A COMPONENT_SOURCE_SHA=()
 declare -A COMPONENT_IMAGE_REF=()
 declare -A COMPONENT_IMAGE_ID=()
@@ -210,9 +211,11 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     maxim_topology_remove_service SERVICES "$MAXIM_MEDIA_ANALYSIS_SERVICE"
     echo "API rollback target predates $MAXIM_MEDIA_ANALYSIS_SERVICE; the role will be removed."
   fi
-  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-    maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
-  fi
+  maxim_topology_prepare_commercial_ocr_target \
+    "$API_SOURCE_SHA" \
+    COMPOSE_FILES \
+    TARGET_HAS_MEDIA_ANALYSIS \
+    TARGET_COMMERCIAL_OCR_VERSION
 fi
 
 for component in "${SELECTED_COMPONENTS[@]}"; do
@@ -331,6 +334,9 @@ remove_incompatible_media_analysis_container() {
 if [[ "$SELECT_API" -eq 1 ]]; then
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
     remove_incompatible_media_analysis_container
+  else
+    ROLLBACK_RUNTIME_STARTED=1
+    maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
   fi
   for service in \
     api-enqueue \
@@ -344,9 +350,6 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     api-moderation-background; do
     recreate_service "$service"
   done
-  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-    recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"
-  fi
   recreate_service api-admin
 fi
 if [[ "$SELECT_MINIAPP" -eq 1 ]]; then
@@ -357,6 +360,9 @@ if [[ "$SELECT_ADMIN" -eq 1 ]]; then
 fi
 if [[ "$SELECT_API" -eq 1 ]]; then
   recreate_service api-ingress
+fi
+if [[ "$SELECT_API" -eq 1 && "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"
 fi
 
 verify_service_image_id() {
@@ -388,6 +394,11 @@ for service in "${SERVICES[@]}"; do
     exit 1
   fi
 done
+if [[ "$SELECT_API" -eq 1 && "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_verify_api_commercial_ocr_version \
+    COMPOSE_FILES \
+    "$TARGET_COMMERCIAL_OCR_VERSION"
+fi
 
 wait_for_strict_smoke() {
   local mode="$1"
@@ -424,7 +435,11 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     else
       maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present
     fi
-    SMOKE_RESULTS+=(api-media-analysis-tesseract-rus-eng api-media-analysis-shadow)
+    SMOKE_RESULTS+=(
+      api-commercial-ocr-version
+      api-media-analysis-tesseract-rus-eng
+      api-media-analysis-shadow
+    )
     if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
       SMOKE_RESULTS+=(
         api-media-analysis-native-raster

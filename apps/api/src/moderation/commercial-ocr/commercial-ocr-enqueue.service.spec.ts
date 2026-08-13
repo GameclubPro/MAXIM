@@ -1,4 +1,5 @@
 import { CommercialOcrEnqueueService } from './commercial-ocr-enqueue.service';
+import { COMMERCIAL_OCR_DEFAULT_VERSION } from './commercial-ocr.queue';
 
 const input = {
   webhookEventId: 'event-1',
@@ -23,7 +24,6 @@ function config(values: Record<string, unknown> = {}) {
       (
         {
           COMMERCIAL_OCR_ROLLOUT_MODE: 'on',
-          COMMERCIAL_OCR_VERSION: 'tesseract-rus-eng-v1',
         } as Record<string, unknown>
       )[key],
   };
@@ -68,6 +68,7 @@ describe('CommercialOcrEnqueueService', () => {
       chatId: 'chat-1',
       messageId: 'message-1',
       imageCount: 2,
+      ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
       actionEligible: false,
       sourceTag: 'commercial-image-ocr',
     });
@@ -83,6 +84,27 @@ describe('CommercialOcrEnqueueService', () => {
         reservationTtlMs: 600_000,
       },
     ]);
+  });
+
+  it('keeps behavior identity image-owned when runtime config contains another version', async () => {
+    const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    const store = admission({
+      reserve: jest.fn().mockResolvedValue({ kind: 'admitted', state: 'observation' }),
+    });
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config({
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+        COMMERCIAL_OCR_VERSION: 'runtime-override-must-not-apply',
+      }) as never,
+      store as never,
+    );
+
+    await expect(service.enqueue(input)).resolves.toBe('queued');
+
+    expect(queue.add.mock.calls[0]?.[1]).toMatchObject({
+      ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
+    });
   });
 
   it('suppresses enforce work when no canonical webhook collector is provided', async () => {

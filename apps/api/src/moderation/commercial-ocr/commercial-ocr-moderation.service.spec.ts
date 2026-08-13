@@ -131,6 +131,10 @@ describe('CommercialOcrModerationService', () => {
       label: 'incomplete OCR analysis',
       analysis: { kind: 'incomplete' as const, reason: 'ocr_failed' },
     },
+    {
+      label: 'terminal OCR timeout',
+      analysis: { kind: 'incomplete' as const, reason: 'ocr_timeout' },
+    },
   ] satisfies Array<{ label: string; analysis: AnalysisFixture }>)(
     'does not create an intent for $label',
     async ({ analysis }) => {
@@ -282,24 +286,27 @@ describe('CommercialOcrModerationService', () => {
 
   it.each([
     { action: 'run' as const, authorized: true },
-    { action: 'slow' as const, authorized: true },
+    { action: 'slow' as const, authorized: false },
     { action: 'pause' as const, authorized: false },
-  ])('treats governor $action as heavy-stage authorization=$authorized', async ({ action, authorized }) => {
-    const harness = buildHarness({
-      governorDecision: {
-        action,
-        retryAfterMs: action === 'run' ? 0 : 20_000,
-        reason: 'fixture pressure',
-      },
-    });
+  ])(
+    'treats governor $action as heavy-stage authorization=$authorized',
+    async ({ action, authorized }) => {
+      const harness = buildHarness({
+        governorDecision: {
+          action,
+          retryAfterMs: action === 'run' ? 0 : 20_000,
+          reason: 'fixture pressure',
+        },
+      });
 
-    await expect((harness.service as any).authorizeHeavyStage()).resolves.toBe(authorized);
-    expect(harness.governor.decide).toHaveBeenCalledWith({
-      component: 'commercial-image-ocr',
-      sourceTag: 'commercial_image_ocr',
-      allowMaxApiCapacitySlowPath: true,
-    });
-  });
+      await expect((harness.service as any).authorizeHeavyStage()).resolves.toBe(authorized);
+      expect(harness.governor.decide).toHaveBeenCalledWith({
+        component: 'commercial-image-ocr',
+        sourceTag: 'commercial_image_ocr',
+        ignoredPressureDomains: ['max_api_traffic'],
+      });
+    },
+  );
 
   it('fails heavy-stage authorization closed when the governor is unavailable', async () => {
     const harness = buildHarness({ governorError: new Error('redis unavailable') });

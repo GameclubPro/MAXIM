@@ -200,17 +200,31 @@ function harness(
       },
     ),
   };
+  const metrics = {
+    startImageCpuSample: jest.fn(() => ({
+      startedUsageMicros: 1n,
+      nativePasses: 0,
+      finished: false,
+    })),
+    recordNativePass: jest.fn((sample: { nativePasses: number }) => {
+      sample.nativePasses += 1;
+    }),
+    finishImageCpuSample: jest.fn((sample: { finished: boolean }) => {
+      sample.finished = true;
+    }),
+  };
   const service = new CommercialOcrAnalysisService(
     downloader as never,
     preprocessor as never,
     ocr as never,
     cache as never,
+    metrics as never,
     new ConfigService({
       COMMERCIAL_OCR_CACHE_TTL_SEC: 3_600,
     }),
   );
   Object.defineProperty(service, 'detector', { value: strictDetector() });
-  return { service, downloader, preprocessor, ocr, cache, events };
+  return { service, downloader, preprocessor, ocr, cache, metrics, events };
 }
 
 function analyze(
@@ -402,6 +416,8 @@ describe('CommercialOcrAnalysisService', () => {
     await expect(analyze(fixture.service)).resolves.toMatchObject({ kind: 'complete' });
     expect(fixture.ocr.recognize).toHaveBeenCalledTimes(2);
     expect(fixture.cache.write).toHaveBeenCalledTimes(2);
+    expect(fixture.metrics.recordNativePass).toHaveBeenCalledTimes(2);
+    expect(fixture.metrics.finishImageCpuSample).toHaveBeenCalledTimes(1);
   });
 
   it('coalesces matching process-local OCR work without deferring the duplicate analysis', async () => {
@@ -566,9 +582,31 @@ describe('CommercialOcrAnalysisService', () => {
     },
   );
 
+  it('fails open with a terminal reason when native OCR reaches its time budget', async () => {
+    const { service, cache } = harness({
+      ocrResults: [
+        {
+          ok: false,
+          status: 'failed_open',
+          passLabel: 'primary',
+          psm: 11,
+          reason: 'timeout',
+          durationMs: 10_000,
+        },
+      ],
+    });
+
+    await expect(analyze(service)).resolves.toEqual({
+      kind: 'incomplete',
+      reason: 'ocr_timeout',
+      imageIndex: 0,
+      pass: 'primary',
+    });
+    expect(cache.write).not.toHaveBeenCalled();
+  });
+
   it.each([
     'capacity_exhausted',
-    'timeout',
     'worker_unavailable',
     'tesseract_failed',
     'shutting_down',
@@ -596,7 +634,7 @@ describe('CommercialOcrAnalysisService', () => {
   });
 
   it('returns a retry when the OCR adapter rejects unexpectedly', async () => {
-    const { service, ocr, cache } = harness();
+    const { service, ocr, cache, metrics } = harness();
     ocr.recognize.mockRejectedValueOnce(new Error('worker IPC closed'));
 
     await expect(analyze(service)).resolves.toEqual({
@@ -606,6 +644,8 @@ describe('CommercialOcrAnalysisService', () => {
       pass: 'primary',
     });
     expect(cache.write).not.toHaveBeenCalled();
+    expect(metrics.recordNativePass).toHaveBeenCalledWith(expect.any(Object), expect.any(Number));
+    expect(metrics.finishImageCpuSample).toHaveBeenCalledTimes(1);
   });
 
   it.each([

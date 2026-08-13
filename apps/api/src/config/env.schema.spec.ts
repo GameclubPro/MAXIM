@@ -301,7 +301,8 @@ describe('validateEnv boolean parsing', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.COMMERCIAL_OCR_ROLLOUT_MODE).toBe('off');
     expect(defaults.COMMERCIAL_OCR_CANARY_CHAT_IDS).toBe('');
-    expect(defaults.COMMERCIAL_OCR_VERSION).toBe('tesseract-rus-eng-v1');
+    expect(defaults.COMMERCIAL_OCR_VERSION).toBe('tesseract-rus-eng-v2');
+    expect(defaults.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS).toBe(10_000);
     expect(defaults.COMMERCIAL_OCR_TESSERACT_CONCURRENCY).toBe(1);
     expect(defaults.OMP_THREAD_LIMIT).toBe(1);
     expect(defaults.COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS).toBe(16);

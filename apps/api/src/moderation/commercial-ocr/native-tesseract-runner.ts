@@ -128,7 +128,9 @@ export async function probeNativeTesseract(
       child.removeListener('error', onError);
       child.removeListener('close', onClose);
       child.stdin.removeListener('error', onStdinError);
-      if (!processClosed) retainLateProcessErrorGuards(child);
+      if (!processClosed) {
+        retainLateProcessErrorGuards(child, () => options.onProcessChange?.(null));
+      }
     };
 
     const finish = (result: NativeTesseractProbeResult, processClosed = false) => {
@@ -139,7 +141,7 @@ export async function probeNativeTesseract(
       clearTimeout(timeout);
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
       cleanup(processClosed);
-      options.onProcessChange?.(null);
+      if (processClosed) options.onProcessChange?.(null);
       resolve(result);
     };
     const stop = (reason: NativeTesseractProbeFailureReason) => {
@@ -154,10 +156,7 @@ export async function probeNativeTesseract(
         return;
       }
       if (settled) return;
-      forceSettleTimer = setTimeout(
-        () => finish({ ok: false, reason }),
-        POST_KILL_SETTLE_GRACE_MS,
-      );
+      forceSettleTimer = setTimeout(() => finish({ ok: false, reason }), POST_KILL_SETTLE_GRACE_MS);
       forceSettleTimer.unref();
     };
 
@@ -232,12 +231,15 @@ export async function runNativeTesseract(
         return;
       }
       try {
-        finish({
-          ok: true,
-          payload: parseNativeTesseractTsv(
-            Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'),
-          ),
-        }, true);
+        finish(
+          {
+            ok: true,
+            payload: parseNativeTesseractTsv(
+              Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'),
+            ),
+          },
+          true,
+        );
       } catch {
         finish({ ok: false, reason: 'invalid_output' }, true);
       }
@@ -249,7 +251,9 @@ export async function runNativeTesseract(
       child.removeListener('error', onError);
       child.removeListener('close', onClose);
       child.stdin.removeListener('error', onStdinError);
-      if (!processClosed) retainLateProcessErrorGuards(child);
+      if (!processClosed) {
+        retainLateProcessErrorGuards(child, () => options.onProcessChange?.(null));
+      }
     };
 
     const finish = (result: NativeTesseractRunResult, processClosed = false) => {
@@ -260,7 +264,7 @@ export async function runNativeTesseract(
       clearTimeout(timeout);
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
       cleanup(processClosed);
-      options.onProcessChange?.(null);
+      if (processClosed) options.onProcessChange?.(null);
       resolve(result);
     };
     const stop = (reason: NativeTesseractRunFailureReason) => {
@@ -275,10 +279,7 @@ export async function runNativeTesseract(
         return;
       }
       if (settled) return;
-      forceSettleTimer = setTimeout(
-        () => finish({ ok: false, reason }),
-        POST_KILL_SETTLE_GRACE_MS,
-      );
+      forceSettleTimer = setTimeout(() => finish({ ok: false, reason }), POST_KILL_SETTLE_GRACE_MS);
       forceSettleTimer.unref();
     };
 
@@ -294,7 +295,10 @@ export async function runNativeTesseract(
   });
 }
 
-function retainLateProcessErrorGuards(child: ChildProcessWithoutNullStreams): void {
+function retainLateProcessErrorGuards(
+  child: ChildProcessWithoutNullStreams,
+  onCloseConfirmed: () => void,
+): void {
   const onLateError = () => undefined;
   const onLateClose = () => {
     child.removeListener('error', onLateError);
@@ -302,6 +306,7 @@ function retainLateProcessErrorGuards(child: ChildProcessWithoutNullStreams): vo
     child.stdin.removeListener('error', onLateError);
     child.stdout.removeListener('error', onLateError);
     child.stderr.removeListener('error', onLateError);
+    onCloseConfirmed();
   };
 
   child.on('error', onLateError);

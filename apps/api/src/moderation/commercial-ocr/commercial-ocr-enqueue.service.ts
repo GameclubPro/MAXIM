@@ -11,7 +11,6 @@ import {
   COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   normalizeCommercialOcrActionEligibility,
   validateCommercialOcrImageCount,
-  validateCommercialOcrVersion,
 } from './commercial-ocr.queue';
 import { resolveCommercialOcrRuntimePolicy } from './commercial-ocr.runtime';
 
@@ -58,9 +57,7 @@ export class CommercialOcrEnqueueService {
     }
 
     const imageCount = validateCommercialOcrImageCount(params.imageCount);
-    const ocrVersion = validateCommercialOcrVersion(
-      this.configService?.get<string>('COMMERCIAL_OCR_VERSION') ?? COMMERCIAL_OCR_DEFAULT_VERSION,
-    );
+    const ocrVersion = COMMERCIAL_OCR_DEFAULT_VERSION;
     const jobId = buildCommercialOcrJobId({
       chatId: params.chatId,
       messageId: params.messageId,

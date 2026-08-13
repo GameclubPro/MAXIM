@@ -214,6 +214,48 @@ describe('HealthService', () => {
       jobId: 'private-job-id',
     };
     const ocr = { getRuntimeStatus: jest.fn(() => privateStatus) };
+    const rolloutMetrics = {
+      processStartedAt: '2026-08-13T10:00:00.000Z',
+      queueWaitMs: {
+        observed: 3,
+        sampled: 3,
+        capacity: 512,
+        oldestSampleAt: '2026-08-13T10:01:00.000Z',
+        newestSampleAt: '2026-08-13T10:03:00.000Z',
+        last: 120,
+        average: 100,
+        p95: 120,
+        p99: 120,
+        maximum: 120,
+      },
+      nativePassDurationMs: {
+        observed: 4,
+        sampled: 4,
+        capacity: 512,
+        oldestSampleAt: '2026-08-13T10:01:01.000Z',
+        newestSampleAt: '2026-08-13T10:03:01.000Z',
+        last: 900,
+        average: 750,
+        p95: 900,
+        p99: 900,
+        maximum: 900,
+      },
+      cpuSecondsPerImage: {
+        observed: 3,
+        sampled: 3,
+        capacity: 512,
+        oldestSampleAt: '2026-08-13T10:01:01.000Z',
+        newestSampleAt: '2026-08-13T10:03:01.000Z',
+        last: 0.8,
+        average: 0.7,
+        p95: 0.8,
+        p99: 0.8,
+        maximum: 0.8,
+        unavailable: 0,
+        source: 'cgroup' as const,
+      },
+    };
+    const metrics = { getSnapshot: jest.fn(() => rolloutMetrics) };
     const service = new HealthService(
       prisma as never,
       queueMetricsService as never,
@@ -222,6 +264,7 @@ describe('HealthService', () => {
       undefined,
       undefined,
       ocr as never,
+      metrics as never,
     );
 
     const ready = await service.ready();
@@ -239,6 +282,7 @@ describe('HealthService', () => {
         failuresByReason: { timeout: 1 },
       },
       latencyMs: { last: 12, average: 15, maximum: 20 },
+      rolloutMetrics,
     });
     const serialized = JSON.stringify(ready);
     expect(serialized).not.toContain('СЕКРЕТНЫЙ OCR ТЕКСТ');
@@ -279,6 +323,7 @@ describe('HealthService', () => {
         failuresByReason: {},
       },
       latencyMs: { last: null, average: null, maximum: null },
+      rolloutMetrics: null,
     });
 
     await service.onModuleDestroy();

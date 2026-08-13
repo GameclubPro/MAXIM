@@ -36,6 +36,7 @@ export type NativeTesseractWorkerReadyResponse = {
 export type NativeTesseractWorkerResultResponse = {
   type: 'result';
   jobId: string;
+  retireWorker: boolean;
   result:
     | { ok: true; payload: NativeTesseractWorkerPayload }
     | {

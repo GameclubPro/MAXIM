@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
 import { raceWithTimeout } from '../../common/promise-timeout.util';
 import type { ChatSettings } from '../../prisma/prisma-client';
@@ -24,6 +25,10 @@ import {
   type CommercialOcrPass,
 } from './commercial-ocr-decision-policy';
 import { deriveCommercialOcrCriticalEvidence } from './commercial-ocr-evidence';
+import {
+  CommercialOcrMetricsService,
+  type CommercialOcrImageCpuSample,
+} from './commercial-ocr-metrics.service';
 import {
   COMMERCIAL_OCR_PREPROCESS_PROFILES,
   CommercialOcrPreprocessor,
@@ -59,7 +64,6 @@ const RETRYABLE_DOWNLOAD_ERROR_CODES = new Set([
 ]);
 const RETRYABLE_OCR_FAILURE_REASONS = new Set<NativeTesseractFailureReason>([
   'capacity_exhausted',
-  'timeout',
   'worker_unavailable',
   'tesseract_failed',
   'shutting_down',
@@ -74,6 +78,7 @@ export type CommercialOcrAnalysisIncompleteReason =
   | 'download_failed'
   | 'image_rejected'
   | 'ocr_failed'
+  | 'ocr_timeout'
   | 'ocr_truncated'
   | 'invalid_ocr_output';
 
@@ -120,6 +125,7 @@ export class CommercialOcrAnalysisService {
     private readonly preprocessor: CommercialOcrPreprocessor,
     private readonly ocr: NativeTesseractOcrAdapter,
     private readonly cache: CommercialOcrCacheStore,
+    private readonly metrics: CommercialOcrMetricsService,
     configService: ConfigService,
   ) {
     this.cacheTtlSeconds = readPositiveInteger(
@@ -175,84 +181,91 @@ export class CommercialOcrAnalysisService {
 
     const images: AnalyzedImage[] = [];
     for (let imageIndex = 0; imageIndex < imageCount; imageIndex += 1) {
-      const image = params.album.images[imageIndex];
-      const downloadUrl = image!.downloadUrl!;
-      if (deadlineExpired(params.deadlineAtMs)) {
-        return deadlineIncomplete(imageIndex);
-      }
-      if (!(await authorize(params.authorizeStage, 'download'))) {
-        return governorDefer();
-      }
-      if (deadlineExpired(params.deadlineAtMs)) {
-        return deadlineIncomplete(imageIndex);
-      }
-
-      let rawBytes: Buffer;
+      const cpuSample = this.metrics.startImageCpuSample();
       try {
-        rawBytes = (
-          await this.downloader.download(downloadUrl, { deadlineAtMs: params.deadlineAtMs })
-        ).bytes;
-      } catch (error: unknown) {
-        if (isRetryableDownloadError(error)) {
-          return { kind: 'retry', reason: 'download_failed', imageIndex };
+        const image = params.album.images[imageIndex];
+        const downloadUrl = image!.downloadUrl!;
+        if (deadlineExpired(params.deadlineAtMs)) {
+          return deadlineIncomplete(imageIndex);
         }
-        return { kind: 'incomplete', reason: 'download_failed', imageIndex };
-      }
-      const contentSha256 = createHash('sha256').update(rawBytes).digest('hex');
-      const primary = await this.resolvePass({
-        rawBytes,
-        contentSha256,
-        ocrVersion,
-        pass: 'primary',
-        psm: 11,
-        authorizeStage: params.authorizeStage,
-        deadlineAtMs: params.deadlineAtMs,
-        imageIndex,
-      });
-      if (primary.kind !== 'ready') {
-        return primary;
-      }
-      images.push({
-        imageIndex,
-        source: image!.source,
-        primary: primary.pass,
-        verification: null,
-      });
-      const primaryDecision = this.evaluate({
-        caption: params.caption,
-        expectedImageCount: imageCount,
-        images: toDecisionImages(images),
-        settings: params.settings,
-      });
-      if (hasSafeContextVeto(primaryDecision)) {
-        return { kind: 'complete', decision: primaryDecision };
-      }
-      if (!isPrimaryDeleteCandidate(primaryDecision, imageIndex)) {
-        continue;
-      }
+        if (!(await authorize(params.authorizeStage, 'download'))) {
+          return governorDefer();
+        }
+        if (deadlineExpired(params.deadlineAtMs)) {
+          return deadlineIncomplete(imageIndex);
+        }
 
-      const confirmation = await this.resolvePass({
-        rawBytes,
-        contentSha256,
-        ocrVersion,
-        pass: 'confirmation',
-        psm: 6,
-        authorizeStage: params.authorizeStage,
-        deadlineAtMs: params.deadlineAtMs,
-        imageIndex,
-      });
-      if (confirmation.kind !== 'ready') {
-        return confirmation;
-      }
-      images[images.length - 1]!.verification = confirmation.pass;
-      const confirmedDecision = this.evaluate({
-        caption: params.caption,
-        expectedImageCount: imageCount,
-        images: toDecisionImages(images),
-        settings: params.settings,
-      });
-      if (hasSafeContextVeto(confirmedDecision)) {
-        return { kind: 'complete', decision: confirmedDecision };
+        let rawBytes: Buffer;
+        try {
+          rawBytes = (
+            await this.downloader.download(downloadUrl, { deadlineAtMs: params.deadlineAtMs })
+          ).bytes;
+        } catch (error: unknown) {
+          if (isRetryableDownloadError(error)) {
+            return { kind: 'retry', reason: 'download_failed', imageIndex };
+          }
+          return { kind: 'incomplete', reason: 'download_failed', imageIndex };
+        }
+        const contentSha256 = createHash('sha256').update(rawBytes).digest('hex');
+        const primary = await this.resolvePass({
+          rawBytes,
+          contentSha256,
+          ocrVersion,
+          pass: 'primary',
+          psm: 11,
+          authorizeStage: params.authorizeStage,
+          deadlineAtMs: params.deadlineAtMs,
+          imageIndex,
+          cpuSample,
+        });
+        if (primary.kind !== 'ready') {
+          return primary;
+        }
+        images.push({
+          imageIndex,
+          source: image!.source,
+          primary: primary.pass,
+          verification: null,
+        });
+        const primaryDecision = this.evaluate({
+          caption: params.caption,
+          expectedImageCount: imageCount,
+          images: toDecisionImages(images),
+          settings: params.settings,
+        });
+        if (hasSafeContextVeto(primaryDecision)) {
+          return { kind: 'complete', decision: primaryDecision };
+        }
+        if (!isPrimaryDeleteCandidate(primaryDecision, imageIndex)) {
+          continue;
+        }
+
+        const confirmation = await this.resolvePass({
+          rawBytes,
+          contentSha256,
+          ocrVersion,
+          pass: 'confirmation',
+          psm: 6,
+          authorizeStage: params.authorizeStage,
+          deadlineAtMs: params.deadlineAtMs,
+          imageIndex,
+          cpuSample,
+        });
+        if (confirmation.kind !== 'ready') {
+          return confirmation;
+        }
+        images[images.length - 1]!.verification = confirmation.pass;
+        const confirmedDecision = this.evaluate({
+          caption: params.caption,
+          expectedImageCount: imageCount,
+          images: toDecisionImages(images),
+          settings: params.settings,
+        });
+        if (hasSafeContextVeto(confirmedDecision)) {
+          return { kind: 'complete', decision: confirmedDecision };
+        }
+      } finally {
+        this.metrics.finishImageCpuSample(cpuSample);
       }
     }
 
@@ -285,6 +298,7 @@ export class CommercialOcrAnalysisService {
     authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
     deadlineAtMs: number;
     imageIndex: number;
+    cpuSample: CommercialOcrImageCpuSample;
   }): Promise<PassResult> {
     const identity: CommercialOcrCacheIdentity = {
       contentSha256: params.contentSha256,
@@ -324,14 +338,18 @@ export class CommercialOcrAnalysisService {
     });
   }
 
-  private async runLocalOcr(params: {
-    rawBytes: Buffer;
-    pass: CommercialOcrPassName;
-    psm: NativeTesseractPageSegmentationMode;
-    authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
-    deadlineAtMs: number;
-    imageIndex: number;
-  }, identity: CommercialOcrCacheIdentity): Promise<PassResult> {
+  private async runLocalOcr(
+    params: {
+      rawBytes: Buffer;
+      pass: CommercialOcrPassName;
+      psm: NativeTesseractPageSegmentationMode;
+      authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
+      deadlineAtMs: number;
+      imageIndex: number;
+      cpuSample: CommercialOcrImageCpuSample;
+    },
+    identity: CommercialOcrCacheIdentity,
+  ): Promise<PassResult> {
     if (deadlineExpired(params.deadlineAtMs)) {
       return deadlineIncomplete(params.imageIndex, params.pass);
     }
@@ -351,16 +369,30 @@ export class CommercialOcrAnalysisService {
     }
 
     let result: Awaited<ReturnType<NativeTesseractOcrAdapter['recognize']>>;
+    const nativePassStartedAt = performance.now();
     try {
       result = await this.ocr.recognize(prepared, {
         psm: params.psm,
         passLabel: params.pass,
         deadlineAtMs: params.deadlineAtMs,
       });
+      this.metrics.recordNativePass(params.cpuSample, result.durationMs);
     } catch {
+      this.metrics.recordNativePass(
+        params.cpuSample,
+        Math.max(0, performance.now() - nativePassStartedAt),
+      );
       return {
         kind: 'retry',
         reason: 'ocr_failed',
+        imageIndex: params.imageIndex,
+        pass: params.pass,
+      };
+    }
+    if (!result.ok && result.reason === 'timeout') {
+      return {
+        kind: 'incomplete',
+        reason: 'ocr_timeout',
         imageIndex: params.imageIndex,
         pass: params.pass,
       };

@@ -1,4 +1,3 @@
-import { ConfigService } from '@nestjs/config';
 import { extractLogicalPhotoAlbumResult } from '../photo-duplicate/photo-attachment-extractor';
 
 import {
@@ -10,6 +9,7 @@ import {
   type CommercialOcrPolicySettings,
 } from './commercial-ocr-delete-guard.service';
 import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decision-policy';
+import { COMMERCIAL_OCR_DEFAULT_VERSION } from './commercial-ocr.queue';
 
 const sourceCreatedAt = '2026-08-12T08:00:00.000Z';
 const controlExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
@@ -37,7 +37,7 @@ describe('CommercialOcrDeleteGuardService', () => {
     expect(binding).toMatchObject({
       version: 4,
       policyVersion: COMMERCIAL_OCR_DECISION_POLICY_VERSION,
-      ocrVersion: 'tesseract-rus-eng-v1',
+      ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
       senderId: 'user-1',
       expectedImageCount: 2,
     });
@@ -151,11 +151,11 @@ describe('CommercialOcrDeleteGuardService', () => {
     },
     {
       label: 'OCR behavior version changed',
-      config: { COMMERCIAL_OCR_VERSION: 'tesseract-rus-eng-v2' },
+      bindingOcrVersion: 'tesseract-rus-eng-v1',
       code: 'commercial_ocr_version_changed',
     },
-  ])('rejects when $label', async ({ config, code }) => {
-    const harness = buildHarness({ config });
+  ])('rejects when $label', async ({ config, bindingOcrVersion, code }) => {
+    const harness = buildHarness({ config, bindingOcrVersion });
 
     await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
       code,
@@ -336,10 +336,11 @@ function buildHarness(
     immunityResult?: 'granted' | 'not_granted';
     immunityError?: Error;
     runtimeEnforcementAuthority?: 'authorized' | 'revoked' | 'unavailable';
+    bindingOcrVersion?: string;
   } = {},
 ) {
   const exactRow = options.exactRow === undefined ? messageRow() : options.exactRow;
-  const binding = bindingFor(messageRow());
+  const binding = bindingFor(messageRow(), {}, options.bindingOcrVersion);
   const prisma = {
     moderationDeleteIntentReason: {
       findMany: jest.fn().mockResolvedValue([
@@ -404,11 +405,6 @@ function buildHarness(
     prisma as never,
     maxClient as never,
     maxBotLinkService as never,
-    new ConfigService({
-      COMMERCIAL_OCR_ROLLOUT_MODE: 'on',
-      COMMERCIAL_OCR_VERSION: 'tesseract-rus-eng-v1',
-      ...options.config,
-    }),
     participantImmunity as never,
     runtimePolicy as never,
   );
@@ -425,13 +421,14 @@ function buildHarness(
 function bindingFor(
   row: Record<string, unknown>,
   settingsOverride: Partial<typeof commercialPolicySettings> = {},
+  ocrVersion = COMMERCIAL_OCR_DEFAULT_VERSION,
 ) {
   const source = extractCommercialOcrDeleteSource(row);
   if (!source) {
     throw new Error('Fixture did not produce a commercial OCR source');
   }
   return buildCommercialOcrDeleteBinding({
-    ocrVersion: 'tesseract-rus-eng-v1',
+    ocrVersion,
     settings: { ...commercialPolicySettings, ...settingsOverride },
     senderId: source.senderId,
     orderedPhotoIds: source.orderedPhotoIds,

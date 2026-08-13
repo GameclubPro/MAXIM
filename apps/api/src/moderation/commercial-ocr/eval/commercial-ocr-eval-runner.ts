@@ -17,7 +17,7 @@ import {
 } from './commercial-ocr-eval.schema';
 
 const DEFAULT_MAX_IMAGE_BYTES = 16 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_EVAL_CONCURRENCY = 1;
 const MAX_EVAL_CONCURRENCY = 4;

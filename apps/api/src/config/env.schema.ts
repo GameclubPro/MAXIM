@@ -355,7 +355,7 @@ const envSchema = z.object({
   COMMERCIAL_OCR_MAX_SIDE: z.coerce.number().int().min(512).max(4_096).default(2_000),
   COMMERCIAL_OCR_TESSERACT_BINARY: z.string().trim().min(1).max(512).default('tesseract'),
   COMMERCIAL_OCR_TESSDATA_PREFIX: z.string().trim().min(1).max(1_024).optional(),
-  COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: z.coerce.number().int().min(250).max(60_000).default(5_000),
+  COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: z.coerce.number().int().min(250).max(60_000).default(10_000),
   COMMERCIAL_OCR_TESSERACT_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(1),
   COMMERCIAL_OCR_TESSERACT_MAX_QUEUE: z.coerce.number().int().min(1).max(256).default(16),
   COMMERCIAL_OCR_TESSERACT_RECYCLE_AFTER_JOBS: z.coerce

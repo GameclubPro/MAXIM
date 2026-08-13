@@ -17,108 +17,174 @@ const maxImageBytes = readPositiveInteger(
   process.env.COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES,
   16 * 1024 * 1024,
 );
-const maxTimeoutMs = readPositiveInteger(
-  process.env.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS,
-  5_000,
-);
+const maxTimeoutMs = readPositiveInteger(process.env.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS, 10_000);
 const STARTUP_PROBE_TIMEOUT_MS = 4_000;
 const STARTUP_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
 
-let activeNativeProcess: ChildProcessWithoutNullStreams | null = null;
-let initializing = true;
-let ready = false;
-let busy = false;
-let shuttingDown = false;
-let shutdownExitCode = 0;
+export type NativeTesseractWorkerHost = {
+  readonly connected: boolean;
+  readonly send?: (
+    response: NativeTesseractWorkerResponse,
+    callback?: (error: Error | null) => void,
+  ) => boolean;
+  on: (event: 'message', listener: (request: unknown) => void) => unknown;
+  once: (event: 'disconnect' | 'SIGTERM' | 'SIGINT', listener: () => void) => unknown;
+  exit: (exitCode?: number) => unknown;
+};
 
-function send(response: NativeTesseractWorkerResponse): void {
-  if (process.connected && process.send) {
-    process.send(response);
-  }
-}
+type NativeTesseractWorkerDependencies = {
+  probeNativeTesseract: typeof probeNativeTesseract;
+  runNativeTesseract: typeof runNativeTesseract;
+};
 
-async function handleRecognize(request: NativeTesseractWorkerRecognizeRequest): Promise<void> {
-  if (!ready || busy || shuttingDown) {
-    send({
-      type: 'result',
-      jobId: request.jobId,
-      result: { ok: false, reason: 'tesseract_failed' },
-    });
-    return;
-  }
-  busy = true;
-  try {
-    const result = await runNativeTesseract({
+export function startNativeTesseractWorker(
+  host: NativeTesseractWorkerHost = process as NativeTesseractWorkerHost,
+  dependencies: NativeTesseractWorkerDependencies = {
+    probeNativeTesseract,
+    runNativeTesseract,
+  },
+): void {
+  let activeNativeProcess: ChildProcessWithoutNullStreams | null = null;
+  let initializing = true;
+  let ready = false;
+  let busy = false;
+  let shuttingDown = false;
+  let shutdownExitCode = 0;
+
+  const send = (
+    response: NativeTesseractWorkerResponse,
+    callback?: (error: Error | null) => void,
+  ): void => {
+    if (!host.connected || !host.send) {
+      callback?.(new Error('Tesseract worker IPC is disconnected'));
+      return;
+    }
+    try {
+      host.send(response, (error) => callback?.(error ?? null));
+    } catch (error: unknown) {
+      callback?.(error instanceof Error ? error : new Error('Tesseract worker IPC failed'));
+    }
+  };
+
+  const killActiveNativeProcess = (): void => {
+    try {
+      activeNativeProcess?.kill('SIGKILL');
+    } catch {
+      // Exiting the host worker remains the final containment boundary.
+    }
+  };
+
+  const retireAfterResponse = (response: NativeTesseractWorkerResponse): void => {
+    shutdownExitCode = Math.max(shutdownExitCode, 1);
+    shuttingDown = true;
+    ready = false;
+    killActiveNativeProcess();
+    send(response, () => host.exit(shutdownExitCode));
+  };
+
+  const handleRecognize = async (request: NativeTesseractWorkerRecognizeRequest): Promise<void> => {
+    if (!ready || busy || shuttingDown) {
+      send({
+        type: 'result',
+        jobId: request.jobId,
+        retireWorker: false,
+        result: { ok: false, reason: 'tesseract_failed' },
+      });
+      return;
+    }
+    busy = true;
+    let retiringAfterResponse = false;
+    try {
+      const result = await dependencies.runNativeTesseract({
+        binary,
+        tessdataPrefix,
+        image: Buffer.from(request.image),
+        psm: request.psm,
+        timeoutMs: request.timeoutMs,
+        maxOutputBytes,
+        onProcessChange: (child) => {
+          activeNativeProcess = child;
+        },
+      });
+      const response = {
+        type: 'result',
+        jobId: request.jobId,
+        retireWorker: activeNativeProcess !== null,
+        result,
+      } satisfies NativeTesseractWorkerResponse;
+      if (response.retireWorker) {
+        retiringAfterResponse = true;
+        retireAfterResponse(response);
+        return;
+      }
+      send(response);
+    } finally {
+      busy = false;
+      if (shuttingDown && !retiringAfterResponse) {
+        host.exit(shutdownExitCode);
+      }
+    }
+  };
+
+  const shutdown = (exitCode = 0): void => {
+    shutdownExitCode = Math.max(shutdownExitCode, exitCode);
+    if (!shuttingDown) {
+      shuttingDown = true;
+      ready = false;
+    }
+    killActiveNativeProcess();
+    if (!initializing && !busy) {
+      host.exit(shutdownExitCode);
+    }
+  };
+
+  const initialize = async (): Promise<void> => {
+    const result = await dependencies.probeNativeTesseract({
       binary,
       tessdataPrefix,
-      image: Buffer.from(request.image),
-      psm: request.psm,
-      timeoutMs: request.timeoutMs,
-      maxOutputBytes,
+      timeoutMs: STARTUP_PROBE_TIMEOUT_MS,
+      maxOutputBytes: STARTUP_PROBE_MAX_OUTPUT_BYTES,
       onProcessChange: (child) => {
         activeNativeProcess = child;
       },
     });
-    send({ type: 'result', jobId: request.jobId, result });
-  } finally {
-    busy = false;
+    initializing = false;
     if (shuttingDown) {
-      process.exit(shutdownExitCode);
+      host.exit(shutdownExitCode);
+      return;
     }
-  }
-}
+    if (!result.ok) {
+      host.exit(1);
+      return;
+    }
+    ready = true;
+    send({ type: 'ready' });
+  };
 
-function shutdown(exitCode = 0): void {
-  if (shuttingDown) {
-    shutdownExitCode = Math.max(shutdownExitCode, exitCode);
-    return;
-  }
-  shutdownExitCode = exitCode;
-  shuttingDown = true;
-  ready = false;
-  activeNativeProcess?.kill('SIGKILL');
-  if (!initializing && !busy) {
-    process.exit(shutdownExitCode);
-  }
-}
-
-async function initialize(): Promise<void> {
-  const result = await probeNativeTesseract({
-    binary,
-    tessdataPrefix,
-    timeoutMs: STARTUP_PROBE_TIMEOUT_MS,
-    maxOutputBytes: STARTUP_PROBE_MAX_OUTPUT_BYTES,
-    onProcessChange: (child) => {
-      activeNativeProcess = child;
-    },
+  host.on('message', (request: unknown) => {
+    if (!isNativeTesseractWorkerRequest(request, { maxImageBytes, maxTimeoutMs })) {
+      shutdown(1);
+      return;
+    }
+    if (request.type === 'shutdown') {
+      shutdown();
+      return;
+    }
+    if (shuttingDown) {
+      return;
+    }
+    void handleRecognize(request);
   });
-  initializing = false;
-  if (shuttingDown) {
-    process.exit(shutdownExitCode);
-  }
-  if (!result.ok) {
-    process.exit(1);
-  }
-  ready = true;
-  send({ type: 'ready' });
+  host.once('disconnect', () => shutdown());
+  host.once('SIGTERM', () => shutdown());
+  host.once('SIGINT', () => shutdown());
+
+  void initialize().catch(() => host.exit(1));
 }
 
-process.on('message', (request: unknown) => {
-  if (!isNativeTesseractWorkerRequest(request, { maxImageBytes, maxTimeoutMs })) {
-    shutdown(1);
-    return;
-  }
-  if (request.type === 'shutdown') {
-    shutdown();
-    return;
-  }
-  void handleRecognize(request);
-});
-process.once('disconnect', () => shutdown());
-process.once('SIGTERM', () => shutdown());
-process.once('SIGINT', () => shutdown());
-
-void initialize().catch(() => process.exit(1));
+if (require.main === module) {
+  startNativeTesseractWorker();
+}
 
 function readPositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);

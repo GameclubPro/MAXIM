@@ -1,6 +1,11 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import {
+  buildMaxApiServiceBotClassMetricKey,
+  buildMaxApiServiceStackClassMetricKey,
+  normalizeMaxApiRateLimitServiceScope,
+} from '../max/max-api-metrics-key.util';
 
 export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
 
@@ -68,6 +73,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   private readonly criticalGlobalRpsLimit: number;
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
+  private readonly rateLimitServiceScope: string;
 
   constructor(configService: ConfigService) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
@@ -89,6 +95,9 @@ export class MaxApiMetricsService implements OnModuleDestroy {
         1,
         this.globalRpsLimit - this.criticalGlobalRpsLimit - this.interactiveGlobalRpsLimit,
       ),
+    );
+    this.rateLimitServiceScope = normalizeMaxApiRateLimitServiceScope(
+      configService.get('APP_SERVICE_NAME', process.env.APP_SERVICE_NAME ?? 'api'),
     );
   }
 
@@ -243,7 +252,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
 
   async getBotRateLimitSnapshot(
     botIds: readonly string[],
-    options: { windowSec?: number } = {},
+    options: { windowSec?: number; capacityScope?: 'shared' | 'service' } = {},
   ): Promise<Record<string, MaxApiBotRateLimitSnapshot>> {
     const normalizedBotIds = [...new Set(botIds.map((botId) => botId.trim()).filter(Boolean))].sort(
       (left, right) => left.localeCompare(right),
@@ -260,13 +269,27 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       key: string;
       botId: string;
       sec: number;
-      trafficClass: MaxApiTrafficClass;
+      trafficClass: MaxApiTrafficClass | null;
     }> = [];
 
     for (const botId of normalizedBotIds) {
       for (let sec = startSec; sec <= nowSec; sec += 1) {
+        // Match GCRA: the all-traffic guard is shared, while class budgets are service-local.
+        if (options.capacityScope === 'service') {
+          const key = `${MAX_API_GLOBAL_METRICS_KEY_PREFIX}:${botId}:${sec}`;
+          keys.push(key);
+          entries.push({ key, botId, sec, trafficClass: null });
+        }
         for (const trafficClass of MAX_API_TRAFFIC_CLASSES) {
-          const key = `${MAX_API_GLOBAL_METRICS_KEY_PREFIX}:${botId}:${trafficClass}:${sec}`;
+          const key =
+            options.capacityScope === 'service'
+              ? buildMaxApiServiceBotClassMetricKey({
+                  serviceScope: this.rateLimitServiceScope,
+                  botId,
+                  trafficClass,
+                  sec,
+                })
+              : `${MAX_API_GLOBAL_METRICS_KEY_PREFIX}:${botId}:${trafficClass}:${sec}`;
           keys.push(key);
           entries.push({ key, botId, sec, trafficClass });
         }
@@ -289,7 +312,15 @@ export class MaxApiMetricsService implements OnModuleDestroy {
           buckets.set(entry.botId, created);
           return created;
         })();
-      this.incrementBucket(bucket, entry.trafficClass, entry.sec, count);
+      if (entry.trafficClass) {
+        const trafficClassBucket = bucket.trafficClassBuckets[entry.trafficClass];
+        trafficClassBucket.set(entry.sec, (trafficClassBucket.get(entry.sec) ?? 0) + count);
+        if (options.capacityScope !== 'service') {
+          bucket.perSecond.set(entry.sec, (bucket.perSecond.get(entry.sec) ?? 0) + count);
+        }
+      } else {
+        bucket.perSecond.set(entry.sec, (bucket.perSecond.get(entry.sec) ?? 0) + count);
+      }
     }
 
     return Object.fromEntries(
@@ -304,7 +335,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   }
 
   async getStackRateLimitSnapshot(
-    options: { windowSec?: number } = {},
+    options: { windowSec?: number; capacityScope?: 'shared' | 'service' } = {},
   ): Promise<MaxApiStackRateLimitSnapshot> {
     const windowSec = this.normalizeWindowSec(options.windowSec);
     const nowSec = Math.floor(Date.now() / 1_000);
@@ -317,12 +348,20 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     }> = [];
 
     for (let sec = startSec; sec <= nowSec; sec += 1) {
+      // Match GCRA: the all-traffic guard is shared, while class budgets are service-local.
       const overallKey = `maxapi:rps:stack:${sec}`;
       keys.push(overallKey);
       entries.push({ key: overallKey, sec, trafficClass: null });
 
       for (const trafficClass of MAX_API_TRAFFIC_CLASSES) {
-        const key = `maxapi:rps:stack:${trafficClass}:${sec}`;
+        const key =
+          options.capacityScope === 'service'
+            ? buildMaxApiServiceStackClassMetricKey({
+                serviceScope: this.rateLimitServiceScope,
+                trafficClass,
+                sec,
+              })
+            : `maxapi:rps:stack:${trafficClass}:${sec}`;
         keys.push(key);
         entries.push({ key, sec, trafficClass });
       }

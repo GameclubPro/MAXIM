@@ -31,6 +31,11 @@ import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout'
 import { isAmbiguousMaxMutationError, isAmbiguousMaxSendError } from './max-send-ambiguity.util';
 import { MAX_VIDEO_UPLOAD_MAX_BYTES } from './max-video-upload.constants';
 import {
+  buildMaxApiServiceBotClassMetricKey,
+  buildMaxApiServiceStackClassMetricKey,
+  normalizeMaxApiRateLimitServiceScope,
+} from './max-api-metrics-key.util';
+import {
   markMaxSendDispatchLedgerFinalized,
   MaxActionLedgerService,
 } from './max-action-ledger.service';
@@ -569,6 +574,7 @@ const MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
 const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
+const MAX_API_SERVICE_CAPACITY_METRICS_TTL_SEC = 2 * 60;
 const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
 const MAX_API_RATE_LIMIT_LOG_COALESCE_MS = 60_000;
 const MAX_API_CIRCUIT_KEY_PREFIX = 'maxapi:circuit:v1';
@@ -862,7 +868,7 @@ export class MaxClientService implements OnModuleDestroy {
       DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS,
       0,
     );
-    this.rateLimitServiceScope = this.normalizeRateLimitServiceScope(
+    this.rateLimitServiceScope = normalizeMaxApiRateLimitServiceScope(
       configService.get('APP_SERVICE_NAME', process.env.APP_SERVICE_NAME ?? 'api'),
     );
     this.chatRpsLimit = this.readConfigInt(configService.get('MAX_API_CHAT_RPS'), 10);
@@ -6916,20 +6922,48 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<void> {
     const normalizedSourceTag = this.normalizeMetricSourceTag(sourceTag);
     const nowSec = Math.floor(Date.now() / 1_000);
-    const keys = [
-      `maxapi:rps:global:${botId}:${nowSec}`,
-      `maxapi:rps:global:${botId}:${trafficClass}:${nowSec}`,
-      `maxapi:rps:stack:${nowSec}`,
-      `maxapi:rps:stack:${trafficClass}:${nowSec}`,
+    const metrics = [
+      { key: `maxapi:rps:global:${botId}:${nowSec}`, ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC },
+      {
+        key: `maxapi:rps:global:${botId}:${trafficClass}:${nowSec}`,
+        ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC,
+      },
+      { key: `maxapi:rps:stack:${nowSec}`, ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC },
+      {
+        key: `maxapi:rps:stack:${trafficClass}:${nowSec}`,
+        ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC,
+      },
+      {
+        key: buildMaxApiServiceBotClassMetricKey({
+          serviceScope: this.rateLimitServiceScope,
+          botId,
+          trafficClass,
+          sec: nowSec,
+        }),
+        ttlSec: MAX_API_SERVICE_CAPACITY_METRICS_TTL_SEC,
+      },
+      {
+        key: buildMaxApiServiceStackClassMetricKey({
+          serviceScope: this.rateLimitServiceScope,
+          trafficClass,
+          sec: nowSec,
+        }),
+        ttlSec: MAX_API_SERVICE_CAPACITY_METRICS_TTL_SEC,
+      },
       ...(normalizedSourceTag
-        ? [`maxapi:rps:source:v1:${botId}:${trafficClass}:${normalizedSourceTag}:${nowSec}`]
+        ? [
+            {
+              key: `maxapi:rps:source:v1:${botId}:${trafficClass}:${normalizedSourceTag}:${nowSec}`,
+              ttlSec: MAX_API_SOURCE_METRICS_TTL_SEC,
+            },
+          ]
         : []),
     ];
 
     try {
       const pipeline = this.limiterRedis.multi();
-      for (const key of keys) {
-        pipeline.incr(key).expire(key, MAX_API_SOURCE_METRICS_TTL_SEC);
+      for (const metric of metrics) {
+        pipeline.incr(metric.key).expire(metric.key, metric.ttlSec);
       }
       await pipeline.exec();
     } catch (error: unknown) {
@@ -6986,16 +7020,6 @@ export class MaxClientService implements OnModuleDestroy {
       default:
         return this.interactiveRateLimitWaitMs;
     }
-  }
-
-  private normalizeRateLimitServiceScope(value: unknown): string {
-    const normalized = String(value ?? '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/gu, '_')
-      .replace(/^_+|_+$/gu, '')
-      .slice(0, 64);
-    return normalized || 'api';
   }
 
   private async runWithMessageKeyboardEditLock<T>(

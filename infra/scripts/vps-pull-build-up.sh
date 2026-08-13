@@ -26,6 +26,8 @@ PRE_PULL_HEAD=""
 EXPECTED_DEPLOY_SHA="${MAXIM_EXPECTED_DEPLOY_SHA:-}"
 RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
 DEPLOY_MODE="manual"
+DEPLOY_RUNTIME_STARTED=0
+DEPLOY_MANIFEST_RECORDED=0
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 
@@ -114,6 +116,25 @@ release_manifest() {
 
 release_field() {
   release_manifest field current "$1" "$2" 2>/dev/null
+}
+
+invalidate_stale_release_inventory() {
+  local current_manifest="$RELEASE_STATE_DIR/current.json"
+  local invalid_manifest
+
+  [[ "$DEPLOY_RUNTIME_STARTED" -eq 1 && "$DEPLOY_MANIFEST_RECORDED" -eq 0 ]] || return 0
+  [[ -f "$current_manifest" ]] || return 0
+  invalid_manifest="$RELEASE_STATE_DIR/current.invalid-deploy-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
+  if mv "$current_manifest" "$invalid_manifest"; then
+    echo "Invalidated stale release inventory after incomplete deploy: $invalid_manifest" >&2
+  else
+    echo "CRITICAL: failed to invalidate stale release inventory: $current_manifest" >&2
+  fi
+}
+
+cleanup() {
+  invalidate_stale_release_inventory
+  release_deploy_lock
 }
 
 inspect_container_component() {
@@ -789,6 +810,7 @@ record_successful_release() {
     return 1
   fi
   [[ -z "$migrations_file" ]] || rm -f "$migrations_file"
+  DEPLOY_MANIFEST_RECORDED=1
   echo "Release manifest committed: $RELEASE_ID"
 }
 
@@ -942,9 +964,13 @@ validate_nonnegative_int() {
 }
 
 ensure_requested_services_running() {
+  local excluded_service="${1:-}"
   local service
 
   for service in "${SERVICES[@]}"; do
+    if [[ -n "$excluded_service" && "$service" == "$excluded_service" ]]; then
+      continue
+    fi
     if docker compose "${COMPOSE_FILES[@]}" ps --status running --services | grep -qx "$service"; then
       continue
     fi
@@ -998,6 +1024,7 @@ require_node_24
 require_production_branch_confirmation
 validate_requested_services
 acquire_deploy_lock
+trap cleanup EXIT
 sync_branch
 verify_expected_deploy_sha
 reexec_if_current_script_changed
@@ -1056,18 +1083,13 @@ fi
 TARGET_SHA="$(git rev-parse HEAD)"
 RELEASE_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_SHA:0:12}"
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_COMMERCIAL_OCR_VERSION=""
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
-  if maxim_topology_git_compose_has_service "$TARGET_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
-    TARGET_HAS_MEDIA_ANALYSIS=1
-  else
-    topology_status=$?
-    if [[ "$topology_status" -ne 1 ]]; then
-      exit "$topology_status"
-    fi
-  fi
-fi
-if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
+  maxim_topology_prepare_commercial_ocr_target \
+    "$TARGET_SHA" \
+    COMPOSE_FILES \
+    TARGET_HAS_MEDIA_ANALYSIS \
+    TARGET_COMMERCIAL_OCR_VERSION
 fi
 DEPLOYED_COMPONENTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
@@ -1142,7 +1164,13 @@ for service in "${SERVICES_TO_BUILD[@]}"; do
 done
 
 ensure_compose_env
+if [[ "${#DEPLOYED_COMPONENTS[@]}" -gt 0 ]]; then
+  DEPLOY_RUNTIME_STARTED=1
+fi
 remove_stale_service_containers "${SERVICES[@]}"
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
+fi
 recreate_service_wave "worker" \
   "api-enqueue" \
   "api-action" \
@@ -1152,14 +1180,19 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-b" \
   "api-moderation-realtime-c" \
   "api-moderation-realtime-d" \
-  "api-moderation-background" \
-  "api-media-analysis"
+  "api-moderation-background"
 recreate_service_wave "admin" "api-admin"
 recreate_service_wave "support static" "miniapp-static"
 recreate_service_wave "major static" "miniapp-major-static"
 recreate_service_wave "admin static" "admin-static"
 recreate_service_wave "ingress" "api-ingress"
-ensure_requested_services_running
+ensure_requested_services_running "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+recreate_service_wave "media analysis" "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_verify_api_commercial_ocr_version \
+    COMPOSE_FILES \
+    "$TARGET_COMMERCIAL_OCR_VERSION"
+fi
 
 SMOKE_RESULTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
@@ -1177,6 +1210,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
     SMOKE_RESULTS+=(
+      "api-commercial-ocr-version"
       "api-media-analysis-tesseract-rus-eng"
       "api-media-analysis-shadow"
       "api-media-analysis-native-raster"
