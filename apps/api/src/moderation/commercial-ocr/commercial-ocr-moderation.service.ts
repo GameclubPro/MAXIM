@@ -530,8 +530,10 @@ export class CommercialOcrModerationService {
       const decision = await this.governor.decide({
         component: GOVERNOR_COMPONENT,
         sourceTag: GOVERNOR_SOURCE_TAG,
+        allowMaxApiCapacitySlowPath: true,
       });
-      return decision.action === 'run';
+      // The dedicated role already runs at minimum capacity: one job and one OCR worker.
+      return decision.action === 'run' || decision.action === 'slow';
     } catch {
       return false;
     }

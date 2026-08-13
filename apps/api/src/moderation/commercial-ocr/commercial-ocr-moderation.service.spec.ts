@@ -53,6 +53,12 @@ type HarnessOptions = {
   immunityResult?: 'granted' | 'not_granted';
   immunityError?: Error;
   runtimePolicies?: Array<{ enforce: boolean; controlExpiresAt?: string }>;
+  governorDecision?: {
+    action: 'run' | 'slow' | 'pause';
+    retryAfterMs: number;
+    reason: string;
+  };
+  governorError?: Error;
 };
 
 describe('CommercialOcrModerationService', () => {
@@ -272,6 +278,33 @@ describe('CommercialOcrModerationService', () => {
     });
     expect(harness.prisma.webhookEvent.findUnique).not.toHaveBeenCalled();
     expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { action: 'run' as const, authorized: true },
+    { action: 'slow' as const, authorized: true },
+    { action: 'pause' as const, authorized: false },
+  ])('treats governor $action as heavy-stage authorization=$authorized', async ({ action, authorized }) => {
+    const harness = buildHarness({
+      governorDecision: {
+        action,
+        retryAfterMs: action === 'run' ? 0 : 20_000,
+        reason: 'fixture pressure',
+      },
+    });
+
+    await expect((harness.service as any).authorizeHeavyStage()).resolves.toBe(authorized);
+    expect(harness.governor.decide).toHaveBeenCalledWith({
+      component: 'commercial-image-ocr',
+      sourceTag: 'commercial_image_ocr',
+      allowMaxApiCapacitySlowPath: true,
+    });
+  });
+
+  it('fails heavy-stage authorization closed when the governor is unavailable', async () => {
+    const harness = buildHarness({ governorError: new Error('redis unavailable') });
+
+    await expect((harness.service as any).authorizeHeavyStage()).resolves.toBe(false);
   });
 
   it.each(['download_failed', 'ocr_failed'] as const)(
@@ -576,7 +609,17 @@ function buildHarness(options: HarnessOptions = {}) {
       return { kind: 'available', state };
     }),
   };
-  const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
+  const governor = {
+    decide: options.governorError
+      ? jest.fn().mockRejectedValue(options.governorError)
+      : jest.fn().mockResolvedValue(
+          options.governorDecision ?? {
+            action: 'run',
+            retryAfterMs: 0,
+            reason: 'background headroom available',
+          },
+        ),
+  };
   const maxClient = {
     deleteMessage: jest.fn(),
     getExactMessageRow: jest.fn().mockImplementation(async () => {
@@ -652,6 +695,7 @@ function buildHarness(options: HarnessOptions = {}) {
     prisma,
     analysisService,
     admissionStore,
+    governor,
     maxClient,
     participantImmunity,
     moderationDeleteIntents,
