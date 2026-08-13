@@ -1066,6 +1066,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     fi
   fi
 fi
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
+fi
 DEPLOYED_COMPONENTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   export MAXIM_API_IMAGE="maxim-api:${TARGET_SHA}"
@@ -1172,8 +1175,13 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   node scripts/smoke-http.mjs json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=("api-local-live" "api-local-ready" "api-admin-live" "api-admin-ready" "api-public-live")
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
-    SMOKE_RESULTS+=("api-media-analysis-tesseract-rus-eng")
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+    SMOKE_RESULTS+=(
+      "api-media-analysis-tesseract-rus-eng"
+      "api-media-analysis-shadow"
+      "api-media-analysis-native-raster"
+      "api-media-analysis-internal-ready"
+    )
   fi
 fi
 

@@ -3,7 +3,7 @@ import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fa
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { SanitizedExceptionFilter } from './common/sanitized-exception.filter';
-import { getAppRole, roleRunsHttp } from './runtime/app-role';
+import { getAppRole, resolveHttpListenHost, roleRunsHttp } from './runtime/app-role';
 
 async function bootstrap() {
   const bodyLimit = Number(process.env.JSON_BODY_LIMIT ?? 33_554_432);
@@ -50,7 +50,7 @@ async function bootstrap() {
       done(null, payload);
     });
 
-  await app.listen(port, '0.0.0.0');
+  await app.listen(port, resolveHttpListenHost());
 }
 
 void bootstrap();

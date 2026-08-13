@@ -67,14 +67,68 @@ maxim_topology_git_compose_has_service() {
   '
 }
 
-maxim_topology_smoke_media_analysis_tesseract() {
+maxim_topology_git_has_commercial_ocr_raster_smoke() {
+  local commit_sha="$1"
+
+  git cat-file -e \
+    "${commit_sha}:apps/api/src/scripts/smoke-commercial-ocr-worker.ts" 2>/dev/null
+}
+
+maxim_topology_require_media_analysis_shadow_config() {
   local compose_args_var="$1"
   local -n compose_args_ref="$compose_args_var"
+
+  if ! docker compose "${compose_args_ref[@]}" config --format json 2>/dev/null \
+    | node -e '
+        const { readFileSync } = require("node:fs");
+        const config = JSON.parse(readFileSync(0, "utf8"));
+        process.exit(
+          config?.services?.["api-media-analysis"]?.environment?.COMMERCIAL_OCR_ROLLOUT_MODE ===
+            "shadow"
+            ? 0
+            : 1,
+        );
+      ' >/dev/null 2>&1; then
+    echo "Refusing media-analysis rollout unless effective COMMERCIAL_OCR_ROLLOUT_MODE=shadow." >&2
+    return 1
+  fi
+}
+
+maxim_topology_smoke_media_analysis_tesseract() {
+  local compose_args_var="$1"
+  local raster_smoke_policy="${2:-required}"
+  local -n compose_args_ref="$compose_args_var"
+  local raster_smoke_capability
+  local attempt
+  local binary
   local output
+  local ready=0
+
+  case "$raster_smoke_policy" in
+    required | if-present)
+      ;;
+    *)
+      echo "Unknown media-analysis raster smoke policy: $raster_smoke_policy" >&2
+      return 2
+      ;;
+  esac
+
+  if ! binary="$(
+    docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
+      sh -c 'printf "%s" "${COMMERCIAL_OCR_TESSERACT_BINARY:-tesseract}"' 2>&1
+  )"; then
+    echo "Could not resolve the configured Tesseract binary in $MAXIM_MEDIA_ANALYSIS_SERVICE." >&2
+    [[ -z "$binary" ]] || printf '%s\n' "$binary" >&2
+    return 1
+  fi
+  if [[ -z "$binary" || "$binary" == *$'\n'* || "$binary" == *$'\r'* ]]; then
+    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE has an invalid configured Tesseract binary." >&2
+    return 1
+  fi
 
   if ! output="$(
     docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
-      tesseract --list-langs 2>&1
+      "$binary" --list-langs 2>&1
   )"; then
     echo "Tesseract language smoke failed in $MAXIM_MEDIA_ANALYSIS_SERVICE." >&2
     [[ -z "$output" ]] || printf '%s\n' "$output" >&2
@@ -85,7 +139,68 @@ maxim_topology_smoke_media_analysis_tesseract() {
     [[ -z "$output" ]] || printf '%s\n' "$output" >&2
     return 1
   fi
-  echo "Tesseract language smoke passed in $MAXIM_MEDIA_ANALYSIS_SERVICE: rus+eng."
+
+  if ! docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
+    sh -c 'test "${COMMERCIAL_OCR_ROLLOUT_MODE:-}" = shadow' >/dev/null 2>&1; then
+    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE must run with COMMERCIAL_OCR_ROLLOUT_MODE=shadow for this rollout." >&2
+    return 1
+  fi
+
+  if ! raster_smoke_capability="$(
+    docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
+      sh -c \
+      'if [ -f apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js ]; then printf present; else printf absent; fi'
+  )"; then
+    echo "Could not inspect the native OCR worker raster smoke capability in $MAXIM_MEDIA_ANALYSIS_SERVICE." >&2
+    return 1
+  fi
+  case "$raster_smoke_capability" in
+    present)
+      ;;
+    absent)
+      if [[ "$raster_smoke_policy" == "required" ]]; then
+        echo "$MAXIM_MEDIA_ANALYSIS_SERVICE is missing the required native OCR worker raster smoke." >&2
+        return 1
+      fi
+      echo "Tesseract language smoke passed in legacy $MAXIM_MEDIA_ANALYSIS_SERVICE image: rus+eng; raster smoke unavailable."
+      return 0
+      ;;
+    *)
+      echo "$MAXIM_MEDIA_ANALYSIS_SERVICE returned an invalid raster smoke capability marker." >&2
+      return 1
+      ;;
+  esac
+
+  if ! output="$(
+    docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
+      node apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js 2>&1
+  )"; then
+    echo "Native OCR worker raster smoke failed in $MAXIM_MEDIA_ANALYSIS_SERVICE." >&2
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    return 1
+  fi
+  if ! grep -Fxq 'Commercial OCR worker smoke passed.' <<<"$output"; then
+    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE did not complete the native OCR worker raster smoke." >&2
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    return 1
+  fi
+
+  for ((attempt = 1; attempt <= 30; attempt += 1)); do
+    if docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
+      node -e \
+      'fetch("http://127.0.0.1:3001/api/health/ready", { signal: AbortSignal.timeout(3000) }).then(async (response) => { const body = await response.json(); if (!response.ok || body?.ok !== true || body?.checks?.ocr?.ready !== true) process.exit(1); }).catch(() => process.exit(1));' \
+      >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    [[ "$attempt" -eq 30 ]] || sleep 2
+  done
+  if [[ "$ready" -ne 1 ]]; then
+    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE did not reach internal OCR readiness." >&2
+    return 1
+  fi
+
+  echo "Tesseract rus+eng, shadow rollout, native worker raster, and internal OCR readiness smokes passed in $MAXIM_MEDIA_ANALYSIS_SERVICE."
 }
 
 maxim_topology_expand_api_services() {

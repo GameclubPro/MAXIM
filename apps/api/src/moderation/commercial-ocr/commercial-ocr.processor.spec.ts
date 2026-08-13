@@ -24,6 +24,10 @@ const data = {
 
 const jobId = buildCommercialOcrJobId(data);
 const jobData: CommercialOcrJob = { ...data, idempotencyKey: jobId };
+const sourceCreatedAtMs = Date.parse(data.sourceCreatedAt);
+const maxJobAgeMs = 300_000;
+const activeNowMs = sourceCreatedAtMs + 60_000;
+const deadlineAtMs = sourceCreatedAtMs + maxJobAgeMs;
 
 function createHarness(
   options: {
@@ -46,11 +50,15 @@ function createHarness(
     release: jest.fn().mockResolvedValue(options.releaseResult ?? true),
   };
   const configService = {
-    get: jest.fn((key: string) =>
-      key === 'COMMERCIAL_OCR_VERSION'
-        ? (options.currentOcrVersion ?? 'tesseract-rus-eng-v1')
-        : undefined,
-    ),
+    get: jest.fn((key: string) => {
+      if (key === 'COMMERCIAL_OCR_VERSION') {
+        return options.currentOcrVersion ?? 'tesseract-rus-eng-v1';
+      }
+      if (key === 'COMMERCIAL_OCR_MAX_JOB_AGE_MS') {
+        return maxJobAgeMs;
+      }
+      return undefined;
+    }),
   };
   const effectiveData = { ...jobData, ...options.dataOverrides };
   const job = {
@@ -72,12 +80,35 @@ function createHarness(
 }
 
 describe('CommercialOcrProcessor', () => {
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(activeNowMs);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('validates the exact job identity and releases admission after terminal completion', async () => {
     const harness = createHarness();
 
     await expect(harness.processor.process(harness.job, 'lock-1')).resolves.toBeUndefined();
 
-    expect(harness.moderationService.processCommercialOcrJob).toHaveBeenCalledWith(jobData, jobId);
+    expect(harness.moderationService.processCommercialOcrJob).toHaveBeenCalledWith(
+      jobData,
+      jobId,
+      deadlineAtMs,
+    );
+    expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
+  });
+
+  it('drops an expired job before moderation I/O and releases its admission reservation', async () => {
+    jest.mocked(Date.now).mockReturnValue(deadlineAtMs);
+    const harness = createHarness();
+
+    await expect(harness.processor.process(harness.job, 'lock-1')).resolves.toBeUndefined();
+
+    expect(harness.moderationService.processCommercialOcrJob).not.toHaveBeenCalled();
+    expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
     expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
   });
 
@@ -109,19 +140,34 @@ describe('CommercialOcrProcessor', () => {
   it.each([
     'source_not_ready',
     'governor_pressure',
-    'singleflight_busy',
     'admission_pending',
   ] as const)('delays %s without consuming an attempt or releasing admission', async (reason) => {
-    jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    jest.mocked(Date.now).mockReturnValue(activeNowMs);
     const harness = createHarness({ result: { kind: 'defer', delayMs: 5_000, reason } });
 
     await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toBeInstanceOf(
       DelayedError,
     );
 
-    expect(harness.job.moveToDelayed).toHaveBeenCalledWith(1_005_000, 'lock-1');
+    expect(harness.job.moveToDelayed).toHaveBeenCalledWith(activeNowMs + 5_000, 'lock-1');
     expect(harness.admissionStore.release).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+  });
+
+  it('refuses a defer that would reach the absolute job deadline', async () => {
+    jest.mocked(Date.now).mockReturnValue(deadlineAtMs - 5_000);
+    const harness = createHarness({
+      result: { kind: 'defer', delayMs: 5_000, reason: 'governor_pressure' },
+    });
+
+    const error = await harness.processor.process(harness.job, 'lock-1').catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect(error).toHaveProperty(
+      'message',
+      'Commercial OCR job deadline exhausted: governor_pressure',
+    );
+    expect(harness.job.moveToDelayed).not.toHaveBeenCalled();
+    expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
   });
 
   it('does not release admission after an ordinary retryable failure', async () => {

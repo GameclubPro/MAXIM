@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260811130000_allow_concurrent_managed_polls",
-  "baselineNamesSha256": "724c5da086846a53585fcc969cf56a902ac13475d8f5b1eef51422ab89177f8a",
-  "baselineContentsSha256": "793c23a4b30c0019e599d7ed2203d7dc178f4f05795c326cc0f0d9f2cb5f0a26",
+  "baselineThrough": "20260813090000_add_commercial_ocr_delete_guard_ownership",
+  "baselineNamesSha256": "67f915b672b9d5210b22fba7ccc10f2b84a2605398de2039bab1cbb8e51217e3",
+  "baselineContentsSha256": "70a622fc514e3dcb1d269141ea4b38ba4e1cbc8661b0c4700146556416c87fff",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."

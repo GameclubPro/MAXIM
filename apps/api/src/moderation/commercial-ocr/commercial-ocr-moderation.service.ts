@@ -10,11 +10,7 @@ import { MaxClientService } from '../../max/max-client.service';
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
-import {
-  buildMessageScopedModerationActionClaimKey,
-  claimDurableModerationMessageAction,
-  type ModerationMessageActionClaimModel,
-} from '../moderation-message-action-claim';
+import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import {
@@ -26,21 +22,23 @@ import {
   CommercialOcrAnalysisService,
   type CommercialOcrAnalysisRetryReason,
 } from './commercial-ocr-analysis.service';
+import { isCommercialOcrCyrillicOnlyDeleteDecision } from './commercial-ocr-decision-policy';
 import {
   buildCommercialOcrDeleteBinding,
   COMMERCIAL_OCR_DELETE_RULE_CODE,
+  COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE,
   COMMERCIAL_OCR_PARTICIPANT_IMMUNITY_SCOPE,
   extractCommercialOcrDeleteSource,
   type CommercialOcrDeleteBinding,
   type CommercialOcrDeleteSource,
 } from './commercial-ocr-delete-guard.service';
 import { COMMERCIAL_OCR_JOB_SCHEMA_VERSION, type CommercialOcrJob } from './commercial-ocr.queue';
+import { CommercialOcrRuntimePolicyService } from './commercial-ocr-runtime-policy.service';
 import { resolveCommercialOcrRuntimePolicy } from './commercial-ocr.runtime';
 
 const GOVERNOR_COMPONENT = 'commercial-image-ocr';
 const GOVERNOR_SOURCE_TAG = 'commercial_image_ocr';
 const ADMIN_LOOKUP_TIMEOUT_MS = 3_000;
-const MESSAGE_ACTION_CLAIM_RULE_CODE = 'COMMERCIAL_OCR_MESSAGE_ACTION';
 
 export type CommercialOcrJobProcessResult =
   | { kind: 'completed' }
@@ -48,7 +46,7 @@ export type CommercialOcrJobProcessResult =
   | {
       kind: 'defer';
       delayMs: number;
-      reason: 'source_not_ready' | 'governor_pressure' | 'singleflight_busy' | 'admission_pending';
+      reason: 'source_not_ready' | 'governor_pressure' | 'admission_pending';
     };
 
 type CommercialOcrJobContext = {
@@ -78,13 +76,18 @@ export class CommercialOcrModerationService {
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly participantImmunity: ParticipantModerationImmunityService,
     private readonly moderationDeleteIntents: ModerationDeleteIntentService,
+    private readonly runtimePolicy: CommercialOcrRuntimePolicyService,
     private readonly configService: ConfigService,
   ) {}
 
   async processCommercialOcrJob(
     job: CommercialOcrJob,
     jobId: string,
+    deadlineAtMs: number,
   ): Promise<CommercialOcrJobProcessResult> {
+    if (deadlineExpired(deadlineAtMs)) {
+      return { kind: 'completed' };
+    }
     if (job.schemaVersion !== COMMERCIAL_OCR_JOB_SCHEMA_VERSION) {
       return { kind: 'completed' };
     }
@@ -103,7 +106,7 @@ export class CommercialOcrModerationService {
       return { kind: 'completed' };
     }
 
-    const source = await this.loadSource(job);
+    const source = await this.loadSource(job, deadlineAtMs);
     if (source.kind !== 'ready') {
       return source.kind === 'defer'
         ? { kind: 'defer', delayMs: source.delayMs, reason: 'source_not_ready' }
@@ -111,7 +114,13 @@ export class CommercialOcrModerationService {
     }
 
     const execute = () =>
-      this.processReadySource(job, jobId, source.value, initialAdmission.state === 'actionable');
+      this.processReadySource(
+        job,
+        jobId,
+        source.value,
+        initialAdmission.state === 'actionable',
+        deadlineAtMs,
+      );
     return this.maxBotContextService.runWithBot(source.value.originBotId, execute);
   }
 
@@ -120,7 +129,11 @@ export class CommercialOcrModerationService {
     jobId: string,
     source: SourceEnvelope,
     admissionActionEligible: boolean,
+    deadlineAtMs: number,
   ): Promise<CommercialOcrJobProcessResult> {
+    if (deadlineExpired(deadlineAtMs)) {
+      return { kind: 'completed' };
+    }
     if (
       isPrivateDirectChatId(source.album.chatId) ||
       this.maxBotLinkService.isKnownBotUserId(source.album.senderId) ||
@@ -138,15 +151,23 @@ export class CommercialOcrModerationService {
     ) {
       return { kind: 'completed' };
     }
-    if (!(await this.isFreshNonAdmin(job.chatId, source.album.senderId, source.originBotId))) {
+    if (
+      !(await this.isFreshNonAdmin(
+        job.chatId,
+        source.album.senderId,
+        source.originBotId,
+        deadlineAtMs,
+      ))
+    ) {
       return { kind: 'completed' };
     }
 
     const analysis = await this.analysisService.analyzeAlbum({
       album: source.album,
-      caption: source.exactSource.caption,
+      caption: source.album.caption,
       settings: context.settings,
       ocrVersion: job.ocrVersion,
+      deadlineAtMs,
       authorizeStage: () => this.authorizeHeavyStage(),
     });
     if (analysis.kind === 'defer') {
@@ -193,7 +214,19 @@ export class CommercialOcrModerationService {
       },
       'Commercial OCR decision completed',
     );
-    if (analysis.decision.action !== 'DELETE' || !admissionActionEligible) {
+    if (
+      analysis.decision.action !== 'DELETE' ||
+      !admissionActionEligible ||
+      !isCommercialOcrCyrillicOnlyDeleteDecision(analysis.decision) ||
+      deadlineExpired(deadlineAtMs)
+    ) {
+      return { kind: 'completed' };
+    }
+
+    // FLAG: The environment policy is only a processing ceiling. A fresh shared control must
+    // authorize enforcement before the final MAX lookups and again immediately before commit.
+    const actionRuntime = await this.runtimePolicy.resolveEffectivePolicy({ chatId: job.chatId });
+    if (!actionRuntime.enforce || deadlineExpired(deadlineAtMs)) {
       return { kind: 'completed' };
     }
 
@@ -202,22 +235,47 @@ export class CommercialOcrModerationService {
       jobId,
       initialContext: context,
       initialSource: source,
+      deadlineAtMs,
     });
     if (!authorization) {
       return { kind: 'completed' };
     }
 
+    const preImmunityRuntime = await this.runtimePolicy.resolveEffectivePolicy({
+      chatId: job.chatId,
+    });
+    if (!preImmunityRuntime.enforce || deadlineExpired(deadlineAtMs)) {
+      return { kind: 'completed' };
+    }
+
     if (
-      await this.consumeParticipantImmunityFailOpen({
+      deadlineExpired(deadlineAtMs) ||
+      (await this.consumeParticipantImmunityFailOpen({
         chatId: job.chatId,
         userId: authorization.exactSource.senderId,
         messageId: job.messageId,
         nightModeTimezone: authorization.context.settings.nightModeTimezone,
-      })
+      }))
     ) {
       return { kind: 'completed' };
     }
 
+    if (deadlineExpired(deadlineAtMs)) {
+      return { kind: 'completed' };
+    }
+    const commitRuntime = await this.runtimePolicy.resolveEffectivePolicy({ chatId: job.chatId });
+    const controlExpiresAtMs = Date.parse(commitRuntime.controlExpiresAt ?? '');
+    if (
+      !commitRuntime.enforce ||
+      commitRuntime.controlRevision === null ||
+      commitRuntime.controlExpiresAt === null ||
+      !Number.isFinite(controlExpiresAtMs) ||
+      controlExpiresAtMs <= Date.now() ||
+      deadlineExpired(deadlineAtMs)
+    ) {
+      return { kind: 'completed' };
+    }
+    const deleteDeadlineAtMs = Math.min(deadlineAtMs, controlExpiresAtMs);
     const binding = buildCommercialOcrDeleteBinding({
       ocrVersion: job.ocrVersion,
       senderId: authorization.exactSource.senderId,
@@ -226,40 +284,25 @@ export class CommercialOcrModerationService {
       sourceCreatedAt: authorization.exactSource.sourceCreatedAt,
       expectedImageCount: job.imageCount,
       settings: authorization.context.settings,
+      controlRevision: commitRuntime.controlRevision,
+      controlExpiresAt: commitRuntime.controlExpiresAt,
+      ocrDeadlineAt: new Date(deleteDeadlineAtMs),
     });
-    const claim = await this.claimMessageAction({
-      chatId: job.chatId,
-      messageId: job.messageId,
-      userId: authorization.exactSource.senderId,
+    await this.persistDeleteAction({
+      job,
+      jobId,
       binding,
-    });
-    if (claim === 'blocked') {
-      return { kind: 'completed' };
-    }
-
-    await this.moderationDeleteIntents.ensureIntent({
-      chatId: job.chatId,
-      messageId: job.messageId,
-      reasonKey: `commercial-ocr-delete:${jobId}`,
-      ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE,
-      subjectUserId: authorization.exactSource.senderId,
-      sourceMessageAt: authorization.exactSource.sourceCreatedAt,
-      entityType: 'CHAT',
-      messageAuthorKind: 'user',
+      senderId: authorization.exactSource.senderId,
+      sourceCreatedAt: authorization.exactSource.sourceCreatedAt,
       originBotId: authorization.originBotId,
-      routingPolicy: 'delete_capable',
-      event: {
-        userId: authorization.exactSource.senderId,
-        eventType: 'MESSAGE',
-        score: 1,
-        metadata: { commercialOcrBinding: binding },
-      },
+      deadlineAtMs: deleteDeadlineAtMs,
     });
     return { kind: 'completed' };
   }
 
   private async loadSource(
     job: CommercialOcrJob,
+    deadlineAtMs: number,
   ): Promise<
     | { kind: 'ready'; value: SourceEnvelope }
     | { kind: 'defer'; delayMs: number }
@@ -317,7 +360,7 @@ export class CommercialOcrModerationService {
       readString(updateRecord.executionOwnerBotId) ??
       readString(update.botId) ??
       this.maxBotLinkService.getDefaultBotId();
-    const exact = await this.loadExactSource(job, originBotId);
+    const exact = await this.loadExactSource(job, originBotId, deadlineAtMs);
     if (!exact || !sameAlbumSource(album, exact, job)) {
       return { kind: 'terminal' };
     }
@@ -327,13 +370,19 @@ export class CommercialOcrModerationService {
   private async loadExactSource(
     job: CommercialOcrJob,
     botId: string,
+    deadlineAtMs: number,
   ): Promise<CommercialOcrDeleteSource | null> {
+    const timeoutMs = remainingStageTimeoutMs(deadlineAtMs, ADMIN_LOOKUP_TIMEOUT_MS);
+    if (timeoutMs === null) {
+      return null;
+    }
     try {
       const row = await this.maxClient.getExactMessageRow(job.chatId, job.messageId, {
         trafficClass: 'background',
         sourceTag: GOVERNOR_SOURCE_TAG,
         botId,
         bypassCache: true,
+        timeoutMs,
       });
       return row ? extractCommercialOcrDeleteSource(row) : null;
     } catch (error: unknown) {
@@ -354,21 +403,20 @@ export class CommercialOcrModerationService {
     jobId: string;
     initialContext: CommercialOcrJobContext;
     initialSource: SourceEnvelope;
+    deadlineAtMs: number;
   }): Promise<{
     context: CommercialOcrJobContext;
     exactSource: CommercialOcrDeleteSource;
     originBotId: string;
   } | null> {
+    if (deadlineExpired(params.deadlineAtMs)) {
+      return null;
+    }
     const admission = await this.admissionStore.resolveState(params.jobId);
     if (admission.kind !== 'available' || admission.state !== 'actionable') {
       return null;
     }
-    const runtime = resolveCommercialOcrRuntimePolicy({
-      chatId: params.job.chatId,
-      configService: this.configService,
-    });
     if (
-      !runtime.enforce ||
       this.moderationDeleteIntents.getRolloutForRule(
         params.job.chatId,
         COMMERCIAL_OCR_DELETE_RULE_CODE,
@@ -392,12 +440,17 @@ export class CommercialOcrModerationService {
         params.job.chatId,
         params.initialSource.album.senderId,
         params.initialSource.originBotId,
+        params.deadlineAtMs,
       ))
     ) {
       return null;
     }
 
-    const exactSource = await this.loadExactSource(params.job, params.initialSource.originBotId);
+    const exactSource = await this.loadExactSource(
+      params.job,
+      params.initialSource.originBotId,
+      params.deadlineAtMs,
+    );
     if (
       !exactSource ||
       !sameAlbumSource(params.initialSource.album, exactSource, params.job) ||
@@ -410,11 +463,7 @@ export class CommercialOcrModerationService {
     if (finalAdmission.kind !== 'available' || finalAdmission.state !== 'actionable') {
       return null;
     }
-    const finalRuntime = resolveCommercialOcrRuntimePolicy({
-      chatId: params.job.chatId,
-      configService: this.configService,
-    });
-    if (!finalRuntime.enforce) {
+    if (deadlineExpired(params.deadlineAtMs)) {
       return null;
     }
     return { context, exactSource, originBotId: params.initialSource.originBotId };
@@ -439,14 +488,23 @@ export class CommercialOcrModerationService {
     };
   }
 
-  private async isFreshNonAdmin(chatId: string, userId: string, botId: string): Promise<boolean> {
+  private async isFreshNonAdmin(
+    chatId: string,
+    userId: string,
+    botId: string,
+    deadlineAtMs: number,
+  ): Promise<boolean> {
+    const timeoutMs = remainingStageTimeoutMs(deadlineAtMs, ADMIN_LOOKUP_TIMEOUT_MS);
+    if (timeoutMs === null) {
+      return false;
+    }
     try {
       const access = await this.maxClient.getChatMemberAccess(chatId, userId, {
         trafficClass: 'background',
         sourceTag: GOVERNOR_SOURCE_TAG,
         botId,
         bypassCache: true,
-        timeoutMs: ADMIN_LOOKUP_TIMEOUT_MS,
+        timeoutMs,
       });
       return Boolean(
         access &&
@@ -506,41 +564,61 @@ export class CommercialOcrModerationService {
     }
   }
 
-  private async claimMessageAction(params: {
-    chatId: string;
-    messageId: string;
-    userId: string;
+  private async persistDeleteAction(params: {
+    job: CommercialOcrJob;
+    jobId: string;
     binding: CommercialOcrDeleteBinding;
-  }): Promise<'claimed' | 'resumed' | 'blocked'> {
+    senderId: string;
+    sourceCreatedAt: string;
+    originBotId: string;
+    deadlineAtMs: number;
+  }): Promise<void> {
     const bindingDigest = createHash('sha256').update(JSON.stringify(params.binding)).digest('hex');
     try {
-      return await claimDurableModerationMessageAction({
-        model: this.prisma
-          .moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
-        data: {
+      await this.moderationDeleteIntents.ensureIntentWithMessageActionClaim({
+        claim: {
           dedupeKey: `commercial-ocr-action:v1:${bindingDigest}`,
           messageActionKey: buildMessageScopedModerationActionClaimKey(
-            params.chatId,
-            params.messageId,
+            params.job.chatId,
+            params.job.messageId,
           ),
-          chatId: params.chatId,
-          userId: params.userId,
-          messageId: params.messageId,
-          ruleCode: MESSAGE_ACTION_CLAIM_RULE_CODE,
+          chatId: params.job.chatId,
+          userId: params.senderId,
+          messageId: params.job.messageId,
+          ruleCode: COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE,
           updateType: 'message_action',
         },
-        resumeKnownOwner: true,
+        intent: {
+          chatId: params.job.chatId,
+          messageId: params.job.messageId,
+          reasonKey: `commercial-ocr-delete:${params.jobId}`,
+          ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE,
+          subjectUserId: params.senderId,
+          sourceMessageAt: params.sourceCreatedAt,
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          originBotId: params.originBotId,
+          routingPolicy: 'delete_capable',
+          retryUntilAt: new Date(params.deadlineAtMs),
+          commercialOcrDeadlineAt: new Date(params.deadlineAtMs),
+          event: {
+            userId: params.senderId,
+            eventType: 'MESSAGE',
+            score: 1,
+            metadata: { commercialOcrBinding: params.binding },
+          },
+        },
       });
     } catch (error: unknown) {
       this.logger.warn(
         {
-          chatId: params.chatId,
-          messageId: params.messageId,
+          chatId: params.job.chatId,
+          messageId: params.job.messageId,
           error: error instanceof Error ? error.message : String(error),
         },
-        'Failed to establish durable commercial OCR action ownership',
+        'Failed to atomically persist commercial OCR action ownership and delete intent',
       );
-      return 'blocked';
+      throw error;
     }
   }
 }
@@ -557,6 +635,7 @@ function sameAlbumSource(
     source.senderId === album.senderId &&
     source.sourceCreatedAt === new Date(album.createdAtMs).toISOString() &&
     source.sourceCreatedAt === new Date(job.sourceCreatedAt).toISOString() &&
+    source.caption === album.caption &&
     source.orderedPhotoIds.length === job.imageCount &&
     photoIds.length === source.orderedPhotoIds.length &&
     photoIds.every(
@@ -636,4 +715,21 @@ function readString(value: unknown): string | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null;
   const normalized = String(value).trim();
   return normalized || null;
+}
+
+function deadlineExpired(deadlineAtMs: number): boolean {
+  return !Number.isSafeInteger(deadlineAtMs) || deadlineAtMs <= Date.now();
+}
+
+function remainingStageTimeoutMs(deadlineAtMs: number, stageCeilingMs: number): number | null {
+  const remainingMs = deadlineAtMs - Date.now();
+  if (
+    !Number.isSafeInteger(deadlineAtMs) ||
+    !Number.isSafeInteger(stageCeilingMs) ||
+    stageCeilingMs <= 0 ||
+    remainingMs <= 0
+  ) {
+    return null;
+  }
+  return Math.max(1, Math.min(stageCeilingMs, remainingMs));
 }

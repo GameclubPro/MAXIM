@@ -3,15 +3,23 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { probeNativeTesseract, runNativeTesseract } from './native-tesseract-runner';
 import type {
   NativeTesseractWorkerRecognizeRequest,
-  NativeTesseractWorkerRequest,
   NativeTesseractWorkerResponse,
 } from './native-tesseract-worker.protocol';
+import { isNativeTesseractWorkerRequest } from './native-tesseract-worker-validation';
 
 const binary = process.env.COMMERCIAL_OCR_TESSERACT_BINARY?.trim() || 'tesseract';
 const tessdataPrefix = process.env.COMMERCIAL_OCR_TESSDATA_PREFIX?.trim() || undefined;
 const maxOutputBytes = readPositiveInteger(
   process.env.COMMERCIAL_OCR_TESSERACT_MAX_OUTPUT_BYTES,
   4 * 1024 * 1024,
+);
+const maxImageBytes = readPositiveInteger(
+  process.env.COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES,
+  16 * 1024 * 1024,
+);
+const maxTimeoutMs = readPositiveInteger(
+  process.env.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS,
+  5_000,
 );
 const STARTUP_PROBE_TIMEOUT_MS = 4_000;
 const STARTUP_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
@@ -21,6 +29,7 @@ let initializing = true;
 let ready = false;
 let busy = false;
 let shuttingDown = false;
+let shutdownExitCode = 0;
 
 function send(response: NativeTesseractWorkerResponse): void {
   if (process.connected && process.send) {
@@ -54,20 +63,22 @@ async function handleRecognize(request: NativeTesseractWorkerRecognizeRequest): 
   } finally {
     busy = false;
     if (shuttingDown) {
-      process.exit(0);
+      process.exit(shutdownExitCode);
     }
   }
 }
 
-function shutdown(): void {
+function shutdown(exitCode = 0): void {
   if (shuttingDown) {
+    shutdownExitCode = Math.max(shutdownExitCode, exitCode);
     return;
   }
+  shutdownExitCode = exitCode;
   shuttingDown = true;
   ready = false;
   activeNativeProcess?.kill('SIGKILL');
   if (!initializing && !busy) {
-    process.exit(0);
+    process.exit(shutdownExitCode);
   }
 }
 
@@ -83,7 +94,7 @@ async function initialize(): Promise<void> {
   });
   initializing = false;
   if (shuttingDown) {
-    process.exit(0);
+    process.exit(shutdownExitCode);
   }
   if (!result.ok) {
     process.exit(1);
@@ -92,21 +103,20 @@ async function initialize(): Promise<void> {
   send({ type: 'ready' });
 }
 
-process.on('message', (request: NativeTesseractWorkerRequest) => {
-  if (!request || typeof request !== 'object') {
+process.on('message', (request: unknown) => {
+  if (!isNativeTesseractWorkerRequest(request, { maxImageBytes, maxTimeoutMs })) {
+    shutdown(1);
     return;
   }
   if (request.type === 'shutdown') {
     shutdown();
     return;
   }
-  if (request.type === 'recognize') {
-    void handleRecognize(request);
-  }
+  void handleRecognize(request);
 });
-process.once('disconnect', shutdown);
-process.once('SIGTERM', shutdown);
-process.once('SIGINT', shutdown);
+process.once('disconnect', () => shutdown());
+process.once('SIGTERM', () => shutdown());
+process.once('SIGINT', () => shutdown());
 
 void initialize().catch(() => process.exit(1));
 

@@ -525,6 +525,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     "Shared API image build or API-related diff detected."
   maxim_topology_refuse_dirty_api_build_inputs
 fi
+if contains_service "$MAXIM_MEDIA_ANALYSIS_SERVICE" "${SERVICES[@]}"; then
+  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
+fi
 
 BUILD_STATIC_IMAGE=0
 for service in "${SERVICES[@]}"; do
@@ -587,7 +590,7 @@ recreate_service_wave "ingress" "api-ingress"
 ensure_requested_services_running
 
 if contains_service "$MAXIM_MEDIA_ANALYSIS_SERVICE" "${SERVICES[@]}"; then
-  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
+  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
 fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180

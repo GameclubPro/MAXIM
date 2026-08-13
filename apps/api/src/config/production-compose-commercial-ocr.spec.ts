@@ -28,9 +28,11 @@ describe('production Compose commercial OCR isolation', () => {
     });
 
     it('keeps the native OCR process single-threaded and resource isolated', () => {
-      expect(readEnvNumber(mediaAnalysis, 'COMMERCIAL_OCR_PROCESSOR_CONCURRENCY')).toBe(1);
       expect(readEnvNumber(mediaAnalysis, 'COMMERCIAL_OCR_TESSERACT_CONCURRENCY')).toBe(1);
       expect(readEnvNumber(mediaAnalysis, 'OMP_THREAD_LIMIT')).toBe(1);
+      expect(mediaAnalysis).not.toMatch(/^\s+COMMERCIAL_OCR_PROCESSOR_CONCURRENCY:/mu);
+      expect(mediaAnalysis).toMatch(/^\s+init:\s+true\s*$/mu);
+      expect(mediaAnalysis).toMatch(/^\s+deploy:\n\s+replicas:\s+1\s*$/mu);
       expect(mediaAnalysis).toMatch(/^\s+cpus:\s+0\.75\s*$/mu);
       expect(mediaAnalysis).toMatch(/^\s+mem_limit:\s+1g\s*$/mu);
     });

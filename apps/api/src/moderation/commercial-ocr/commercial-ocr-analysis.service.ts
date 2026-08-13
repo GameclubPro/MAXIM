@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 
+import { raceWithTimeout } from '../../common/promise-timeout.util';
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { CommercialAdDetector } from '../commercial/commercial-ad.detector';
 import type { LogicalPhotoAlbum } from '../photo-duplicate/photo-attachment-extractor';
@@ -40,9 +41,6 @@ import type {
 } from './native-tesseract-ocr.types';
 
 const DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
-const DEFAULT_SINGLEFLIGHT_TTL_MS = 15_000;
-const SINGLEFLIGHT_REREAD_DELAY_MS = 50;
-const SINGLEFLIGHT_DEFER_MAX_MS = 5_000;
 const GOVERNOR_DEFER_MS = 30_000;
 const MAX_CACHE_WORDS = 1_024;
 const RETRYABLE_DOWNLOAD_ERROR_CODES = new Set([
@@ -71,6 +69,7 @@ export type CommercialOcrAnalysisStage = 'download' | 'ocr';
 
 export type CommercialOcrAnalysisIncompleteReason =
   | 'invalid_album'
+  | 'job_deadline_exceeded'
   | 'missing_download_url'
   | 'download_failed'
   | 'image_rejected'
@@ -90,7 +89,7 @@ export type CommercialOcrAnalysisResult =
     }
   | {
       kind: 'defer';
-      reason: 'governor_pressure' | 'singleflight_busy';
+      reason: 'governor_pressure';
       delayMs: number;
     }
   | {
@@ -114,7 +113,6 @@ type PassResult =
 @Injectable()
 export class CommercialOcrAnalysisService {
   private readonly cacheTtlSeconds: number;
-  private readonly singleflightTtlMs: number;
   private readonly detector: CommercialOcrDetector = new CommercialAdDetector();
 
   constructor(
@@ -128,10 +126,6 @@ export class CommercialOcrAnalysisService {
       configService.get('COMMERCIAL_OCR_CACHE_TTL_SEC'),
       DEFAULT_CACHE_TTL_SECONDS,
     );
-    this.singleflightTtlMs = readPositiveInteger(
-      configService.get('COMMERCIAL_OCR_SINGLEFLIGHT_TTL_MS'),
-      DEFAULT_SINGLEFLIGHT_TTL_MS,
-    );
   }
 
   async analyzeAlbum(params: {
@@ -139,8 +133,12 @@ export class CommercialOcrAnalysisService {
     caption: string;
     settings: ChatSettings;
     ocrVersion: string;
+    deadlineAtMs: number;
     authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
   }): Promise<CommercialOcrAnalysisResult> {
+    if (deadlineExpired(params.deadlineAtMs)) {
+      return deadlineIncomplete();
+    }
     const imageCount = params.album.images.length;
     try {
       validateCommercialOcrImageCount(imageCount);
@@ -179,13 +177,21 @@ export class CommercialOcrAnalysisService {
     for (let imageIndex = 0; imageIndex < imageCount; imageIndex += 1) {
       const image = params.album.images[imageIndex];
       const downloadUrl = image!.downloadUrl!;
+      if (deadlineExpired(params.deadlineAtMs)) {
+        return deadlineIncomplete(imageIndex);
+      }
       if (!(await authorize(params.authorizeStage, 'download'))) {
         return governorDefer();
+      }
+      if (deadlineExpired(params.deadlineAtMs)) {
+        return deadlineIncomplete(imageIndex);
       }
 
       let rawBytes: Buffer;
       try {
-        rawBytes = (await this.downloader.download(downloadUrl)).bytes;
+        rawBytes = (
+          await this.downloader.download(downloadUrl, { deadlineAtMs: params.deadlineAtMs })
+        ).bytes;
       } catch (error: unknown) {
         if (isRetryableDownloadError(error)) {
           return { kind: 'retry', reason: 'download_failed', imageIndex };
@@ -200,6 +206,7 @@ export class CommercialOcrAnalysisService {
         pass: 'primary',
         psm: 11,
         authorizeStage: params.authorizeStage,
+        deadlineAtMs: params.deadlineAtMs,
         imageIndex,
       });
       if (primary.kind !== 'ready') {
@@ -231,6 +238,7 @@ export class CommercialOcrAnalysisService {
         pass: 'confirmation',
         psm: 6,
         authorizeStage: params.authorizeStage,
+        deadlineAtMs: params.deadlineAtMs,
         imageIndex,
       });
       if (confirmation.kind !== 'ready') {
@@ -275,6 +283,7 @@ export class CommercialOcrAnalysisService {
     pass: CommercialOcrPassName;
     psm: NativeTesseractPageSegmentationMode;
     authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
+    deadlineAtMs: number;
     imageIndex: number;
   }): Promise<PassResult> {
     const identity: CommercialOcrCacheIdentity = {
@@ -284,55 +293,35 @@ export class CommercialOcrAnalysisService {
       preprocessProfile: COMMERCIAL_OCR_PREPROCESS_PROFILES[params.pass],
       psm: params.psm,
     };
-    const lookup = await this.cache.read(identity).catch(() => ({ kind: 'unavailable' as const }));
+    const lookup = await this.cache.read(identity);
     if (lookup.kind === 'hit') {
       return { kind: 'ready', pass: toDecisionPass(lookup.value), value: lookup.value };
     }
-    if (lookup.kind === 'unavailable') {
-      return this.runLocalOcr(params);
+    if (deadlineExpired(params.deadlineAtMs)) {
+      return deadlineIncomplete(params.imageIndex, params.pass);
+    }
+    if (!(await authorize(params.authorizeStage, 'ocr'))) {
+      return governorDefer();
+    }
+    if (deadlineExpired(params.deadlineAtMs)) {
+      return deadlineIncomplete(params.imageIndex, params.pass);
     }
 
-    const claim = await this.cache
-      .claimSingleflight(identity, this.singleflightTtlMs)
-      .catch(() => ({ kind: 'unavailable' as const }));
-    if (claim.kind === 'busy') {
-      await wait(SINGLEFLIGHT_REREAD_DELAY_MS);
-      const reread = await this.cache
-        .read(identity)
-        .catch(() => ({ kind: 'unavailable' as const }));
-      if (reread.kind === 'hit') {
-        return { kind: 'ready', pass: toDecisionPass(reread.value), value: reread.value };
-      }
-      return {
-        kind: 'defer',
-        reason: 'singleflight_busy',
-        delayMs: Math.min(this.singleflightTtlMs, SINGLEFLIGHT_DEFER_MAX_MS),
-      };
+    const remainingMs = params.deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+      return deadlineIncomplete(params.imageIndex, params.pass);
     }
-    if (claim.kind === 'unavailable') {
-      return this.runLocalOcr(params);
-    }
-
-    let leaseCommitted = false;
-    try {
-      const result = await this.runLocalOcr(params);
-      if (result.kind !== 'ready') {
-        return result;
-      }
-      leaseCommitted = await this.cache
-        .commitSingleflight({
-          identity,
-          token: claim.token,
-          value: result.value,
-          ttlSeconds: this.cacheTtlSeconds,
-        })
-        .catch(() => false);
-      return result;
-    } finally {
-      if (!leaseCommitted) {
-        await this.cache.releaseSingleflight(identity, claim.token).catch(() => false);
-      }
-    }
+    return raceWithTimeout<PassResult>({
+      operation: this.cache.coalesceLocal(identity, params.deadlineAtMs, async () => {
+        const reread = await this.cache.read(identity);
+        if (reread.kind === 'hit') {
+          return { kind: 'ready', pass: toDecisionPass(reread.value), value: reread.value };
+        }
+        return this.runLocalOcr(params, identity);
+      }),
+      timeoutMs: remainingMs,
+      onTimeout: () => deadlineIncomplete(params.imageIndex, params.pass),
+    });
   }
 
   private async runLocalOcr(params: {
@@ -340,8 +329,12 @@ export class CommercialOcrAnalysisService {
     pass: CommercialOcrPassName;
     psm: NativeTesseractPageSegmentationMode;
     authorizeStage: (stage: CommercialOcrAnalysisStage) => Promise<boolean>;
+    deadlineAtMs: number;
     imageIndex: number;
-  }): Promise<PassResult> {
+  }, identity: CommercialOcrCacheIdentity): Promise<PassResult> {
+    if (deadlineExpired(params.deadlineAtMs)) {
+      return deadlineIncomplete(params.imageIndex, params.pass);
+    }
     let prepared: Buffer;
     try {
       prepared = (await this.preprocessor.prepare(params.rawBytes, params.pass)).bytes;
@@ -353,8 +346,8 @@ export class CommercialOcrAnalysisService {
         pass: params.pass,
       };
     }
-    if (!(await authorize(params.authorizeStage, 'ocr'))) {
-      return governorDefer();
+    if (deadlineExpired(params.deadlineAtMs)) {
+      return deadlineIncomplete(params.imageIndex, params.pass);
     }
 
     let result: Awaited<ReturnType<NativeTesseractOcrAdapter['recognize']>>;
@@ -362,6 +355,7 @@ export class CommercialOcrAnalysisService {
       result = await this.ocr.recognize(prepared, {
         psm: params.psm,
         passLabel: params.pass,
+        deadlineAtMs: params.deadlineAtMs,
       });
     } catch {
       return {
@@ -404,6 +398,7 @@ export class CommercialOcrAnalysisService {
         pass: params.pass,
       };
     }
+    await this.cache.write(identity, value, this.cacheTtlSeconds);
     return { kind: 'ready', pass: toDecisionPass(value), value };
   }
 }
@@ -512,6 +507,22 @@ function governorDefer(): Extract<CommercialOcrAnalysisResult, { kind: 'defer' }
   return { kind: 'defer', reason: 'governor_pressure', delayMs: GOVERNOR_DEFER_MS };
 }
 
+function deadlineIncomplete(
+  imageIndex?: number,
+  pass?: CommercialOcrPassName,
+): Extract<CommercialOcrAnalysisResult, { kind: 'incomplete' }> {
+  return {
+    kind: 'incomplete',
+    reason: 'job_deadline_exceeded',
+    ...(imageIndex === undefined ? {} : { imageIndex }),
+    ...(pass === undefined ? {} : { pass }),
+  };
+}
+
+function deadlineExpired(deadlineAtMs: number): boolean {
+  return !Number.isSafeInteger(deadlineAtMs) || deadlineAtMs <= Date.now();
+}
+
 function toPermille(confidence: number): number {
   return Math.max(0, Math.min(1_000, Math.round(confidence * 10)));
 }
@@ -539,8 +550,4 @@ function isRetryableDownloadError(error: unknown): boolean {
 function readPositiveInteger(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function wait(delayMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }

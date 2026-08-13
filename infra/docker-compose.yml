@@ -451,6 +451,9 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    init: true
+    deploy:
+      replicas: 1
     cpus: 0.75
     mem_limit: 1g
     pids_limit: 128
@@ -473,7 +476,6 @@ services:
       PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000
       MODERATION_ENABLED_QUEUES: none
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
-      COMMERCIAL_OCR_PROCESSOR_CONCURRENCY: 1
       COMMERCIAL_OCR_TESSERACT_CONCURRENCY: 1
       COMMERCIAL_OCR_TESSERACT_MAX_QUEUE: 4
       OMP_THREAD_LIMIT: 1

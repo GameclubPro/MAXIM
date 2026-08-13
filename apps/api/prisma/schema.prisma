@@ -1469,6 +1469,8 @@ model ModerationDeleteIntent {
   messageAuthorKind          String?                       @map("message_author_kind")
   originBotId                String?                       @map("origin_bot_id")
   routingPolicy              String                        @default("origin_only") @map("routing_policy")
+  commercialOcrGuardRequired Boolean                       @default(false) @map("commercial_ocr_guard_required")
+  commercialOcrDeadlineAt    DateTime?                     @map("commercial_ocr_deadline_at")
   status                     ModerationDeleteIntentStatus  @default(PENDING)
   executeAt                  DateTime                      @default(now()) @map("execute_at")
   nextAttemptAt              DateTime                      @default(now()) @map("next_attempt_at")

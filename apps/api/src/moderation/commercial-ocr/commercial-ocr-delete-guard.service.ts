@@ -1,4 +1,3 @@
-import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
@@ -9,7 +8,7 @@ import type { ChatSettings } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ParticipantModerationImmunityService } from '../participant-moderation-immunity.service';
 import {
-  extractLogicalPhotoAlbumResult,
+  extractVisiblePhotoMessageContent,
   MAX_PHOTO_ALBUM_IMAGES,
 } from '../photo-duplicate/photo-attachment-extractor';
 import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decision-policy';
@@ -17,11 +16,12 @@ import {
   COMMERCIAL_OCR_DEFAULT_VERSION,
   validateCommercialOcrVersion,
 } from './commercial-ocr.queue';
-import { resolveCommercialOcrRuntimePolicy } from './commercial-ocr.runtime';
+import { CommercialOcrRuntimePolicyService } from './commercial-ocr-runtime-policy.service';
 
 export const COMMERCIAL_OCR_DELETE_RULE_CODE = 'COMMERCIAL_OCR_DELETE';
+export const COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE = 'COMMERCIAL_OCR_MESSAGE_ACTION';
 export const COMMERCIAL_OCR_PARTICIPANT_IMMUNITY_SCOPE = 'commercial_ocr_delete';
-export const COMMERCIAL_OCR_DELETE_BINDING_VERSION = 2 as const;
+export const COMMERCIAL_OCR_DELETE_BINDING_VERSION = 4 as const;
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
@@ -35,6 +35,9 @@ export type CommercialOcrDeleteBinding = {
   captionDigest: string;
   sourceCreatedAt: string;
   expectedImageCount: number;
+  controlRevision: number;
+  controlExpiresAt: string;
+  ocrDeadlineAt: string;
 };
 
 export type CommercialOcrPolicySettings = Pick<
@@ -74,6 +77,9 @@ export function buildCommercialOcrDeleteBinding(params: {
   caption: string;
   sourceCreatedAt: Date | string;
   expectedImageCount: number;
+  controlRevision: number;
+  controlExpiresAt: Date | string;
+  ocrDeadlineAt: Date | string;
 }): CommercialOcrDeleteBinding {
   const ocrVersion = validateCommercialOcrVersion(params.ocrVersion);
   const senderId = validateIdentifier(params.senderId, 'senderId');
@@ -85,6 +91,18 @@ export function buildCommercialOcrDeleteBinding(params: {
   if (typeof params.caption !== 'string') {
     throw new Error('caption is invalid');
   }
+  if (!Number.isSafeInteger(params.controlRevision) || params.controlRevision < 1) {
+    throw new Error('controlRevision is invalid');
+  }
+  const sourceCreatedAt = canonicalIso(params.sourceCreatedAt, 'sourceCreatedAt');
+  const controlExpiresAt = canonicalIso(params.controlExpiresAt, 'controlExpiresAt');
+  const ocrDeadlineAt = canonicalIso(params.ocrDeadlineAt, 'ocrDeadlineAt');
+  if (
+    Date.parse(controlExpiresAt) <= Date.parse(sourceCreatedAt) ||
+    Date.parse(ocrDeadlineAt) <= Date.parse(sourceCreatedAt)
+  ) {
+    throw new Error('commercial OCR delete authorization has expired');
+  }
 
   return {
     version: COMMERCIAL_OCR_DELETE_BINDING_VERSION,
@@ -94,8 +112,11 @@ export function buildCommercialOcrDeleteBinding(params: {
     senderId,
     orderedPhotoIdDigest: digestJson(orderedPhotoIds),
     captionDigest: digestText(params.caption),
-    sourceCreatedAt: canonicalIso(params.sourceCreatedAt, 'sourceCreatedAt'),
+    sourceCreatedAt,
     expectedImageCount,
+    controlRevision: params.controlRevision,
+    controlExpiresAt,
+    ocrDeadlineAt,
   };
 }
 
@@ -122,7 +143,10 @@ export function parseCommercialOcrDeleteBinding(value: unknown): CommercialOcrDe
     typeof row.orderedPhotoIdDigest !== 'string' ||
     typeof row.captionDigest !== 'string' ||
     typeof row.sourceCreatedAt !== 'string' ||
-    typeof row.expectedImageCount !== 'number'
+    typeof row.expectedImageCount !== 'number' ||
+    typeof row.controlRevision !== 'number' ||
+    typeof row.controlExpiresAt !== 'string' ||
+    typeof row.ocrDeadlineAt !== 'string'
   ) {
     return null;
   }
@@ -132,8 +156,15 @@ export function parseCommercialOcrDeleteBinding(value: unknown): CommercialOcrDe
     const senderId = validateIdentifier(row.senderId, 'senderId');
     const expectedImageCount = validateExpectedImageCount(row.expectedImageCount);
     const sourceCreatedAt = canonicalIso(row.sourceCreatedAt, 'sourceCreatedAt');
+    const controlExpiresAt = canonicalIso(row.controlExpiresAt, 'controlExpiresAt');
+    const ocrDeadlineAt = canonicalIso(row.ocrDeadlineAt, 'ocrDeadlineAt');
     if (
       sourceCreatedAt !== row.sourceCreatedAt ||
+      controlExpiresAt !== row.controlExpiresAt ||
+      ocrDeadlineAt !== row.ocrDeadlineAt ||
+      !Number.isSafeInteger(row.controlRevision) ||
+      row.controlRevision < 1 ||
+      Date.parse(ocrDeadlineAt) <= Date.parse(sourceCreatedAt) ||
       !SHA256_PATTERN.test(row.commercialPolicyDigest) ||
       !SHA256_PATTERN.test(row.orderedPhotoIdDigest) ||
       !SHA256_PATTERN.test(row.captionDigest)
@@ -150,6 +181,9 @@ export function parseCommercialOcrDeleteBinding(value: unknown): CommercialOcrDe
       captionDigest: row.captionDigest,
       sourceCreatedAt,
       expectedImageCount,
+      controlRevision: row.controlRevision,
+      controlExpiresAt,
+      ocrDeadlineAt,
     };
   } catch {
     return null;
@@ -176,24 +210,11 @@ export function extractCommercialOcrDeleteSource(
     return null;
   }
 
-  const caption = extractVisibleCaption(message);
-  const update: MaxUpdate = {
-    updateId: `commercial-ocr-guard:${messageId}`,
-    type: 'message_created',
-    message: {
-      messageId,
-      chatId,
-      senderId,
-      text: caption,
-      createdAt: sourceCreatedAt,
-    },
-    raw: { update_type: 'message_created', message },
-  };
-  const extraction = extractLogicalPhotoAlbumResult(update);
-  if (extraction.kind !== 'complete') {
+  const content = extractVisiblePhotoMessageContent(message);
+  if (content.kind !== 'complete') {
     return null;
   }
-  const orderedPhotoIds = extraction.album.images.map((image) => image.photoId);
+  const orderedPhotoIds = content.content.images.map((image) => image.photoId);
   if (orderedPhotoIds.some((photoId) => !photoId)) {
     return null;
   }
@@ -203,7 +224,7 @@ export function extractCommercialOcrDeleteSource(
     chatId,
     senderId,
     sourceCreatedAt,
-    caption,
+    caption: content.content.caption,
     orderedPhotoIds: orderedPhotoIds as string[],
   };
 }
@@ -216,6 +237,7 @@ export class CommercialOcrDeleteGuardService {
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly configService: ConfigService,
     private readonly participantImmunity: ParticipantModerationImmunityService,
+    private readonly runtimePolicy: CommercialOcrRuntimePolicyService,
   ) {}
 
   async assertIntentStillActionable(params: {
@@ -231,14 +253,14 @@ export class CommercialOcrDeleteGuardService {
       select: { ruleCode: true, metadata: true },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
-    if (reasons.some((reason) => reason.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE)) {
-      return 'not_applicable';
-    }
-    if (reasons.length === 0) {
+    const ocrReasons = reasons.filter(
+      (reason) => reason.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE,
+    );
+    if (ocrReasons.length === 0) {
       throw rejected('commercial_ocr_reason_missing', 'OCR delete intent has no reason metadata');
     }
 
-    const bindings = reasons.map((reason) => parseCommercialOcrDeleteBinding(reason.metadata));
+    const bindings = ocrReasons.map((reason) => parseCommercialOcrDeleteBinding(reason.metadata));
     if (bindings.some((binding) => binding === null)) {
       throw rejected(
         'commercial_ocr_binding_invalid',
@@ -253,14 +275,39 @@ export class CommercialOcrDeleteGuardService {
       );
     }
 
-    const runtime = resolveCommercialOcrRuntimePolicy({
-      chatId: params.chatId,
-      configService: this.configService,
-    });
-    if (!runtime.enforce) {
+    if (Date.parse(binding.ocrDeadlineAt) <= Date.now()) {
       throw rejected(
-        'commercial_ocr_runtime_disabled',
-        'Commercial OCR enforcement is no longer enabled',
+        'commercial_ocr_deadline_expired',
+        'Commercial OCR deletion deadline has expired',
+      );
+    }
+    if (Date.parse(binding.controlExpiresAt) <= Date.now()) {
+      throw rejected(
+        'commercial_ocr_runtime_control_expired',
+        'The runtime control that authorized this OCR decision has expired',
+      );
+    }
+
+    const runtime = await this.runtimePolicy.resolveEffectivePolicy({ chatId: params.chatId });
+    if (!runtime.enforce) {
+      if (runtime.enforcementAuthority === 'unavailable') {
+        throw rejected(
+          'commercial_ocr_runtime_control_unavailable',
+          'Commercial OCR runtime control could not be read before deletion',
+        );
+      }
+      throw rejected(
+        'commercial_ocr_runtime_revoked',
+        'Commercial OCR enforcement authorization is no longer active',
+      );
+    }
+    if (
+      runtime.controlRevision !== binding.controlRevision ||
+      runtime.controlExpiresAt !== binding.controlExpiresAt
+    ) {
+      throw rejected(
+        'commercial_ocr_runtime_control_changed',
+        'Commercial OCR runtime authorization changed after the deletion candidate was recorded',
       );
     }
     const currentOcrVersion = validateCommercialOcrVersion(
@@ -373,6 +420,9 @@ export class CommercialOcrDeleteGuardService {
       caption: source.caption,
       sourceCreatedAt: source.sourceCreatedAt,
       expectedImageCount: source.orderedPhotoIds.length,
+      controlRevision: binding.controlRevision,
+      controlExpiresAt: binding.controlExpiresAt,
+      ocrDeadlineAt: binding.ocrDeadlineAt,
     });
     if (!sameBinding(currentBinding, binding)) {
       throw rejected(
@@ -493,51 +543,6 @@ function extractSourceCreatedAt(message: Record<string, unknown>): string | null
   return null;
 }
 
-function extractVisibleCaption(message: Record<string, unknown>): string {
-  const direct = extractContentText(message);
-  const link = asRecord(message.link);
-  if (readLowerString(link?.type) !== 'forward') {
-    return direct;
-  }
-  const forwarded = asRecord(link?.message) ?? asRecord(link?.body);
-  return mergeText([direct, forwarded ? extractContentText(forwarded) : '']);
-}
-
-function extractContentText(message: Record<string, unknown>): string {
-  const body = asRecord(message.body);
-  const content = asRecord(message.content);
-  const payload = asRecord(message.payload);
-  const nested = asRecord(message.message);
-  const candidates = [
-    message.text,
-    message.caption,
-    message.plain,
-    message.message_text,
-    message.messageText,
-    body?.text,
-    body?.caption,
-    body?.plain,
-    content?.text,
-    content?.caption,
-    content?.plain,
-    payload?.text,
-    payload?.caption,
-    payload?.plain,
-    nested?.text,
-    nested?.caption,
-    nested?.plain,
-  ];
-  const firstNonEmpty = candidates.find(
-    (value): value is string => typeof value === 'string' && value.length > 0,
-  );
-  const firstString = candidates.find((value): value is string => typeof value === 'string');
-  return firstNonEmpty ?? firstString ?? '';
-}
-
-function mergeText(values: readonly string[]): string {
-  return values.filter((value) => value.length > 0).join(' ');
-}
-
 function sameBinding(left: CommercialOcrDeleteBinding, right: CommercialOcrDeleteBinding): boolean {
   return (
     left.version === right.version &&
@@ -548,7 +553,10 @@ function sameBinding(left: CommercialOcrDeleteBinding, right: CommercialOcrDelet
     left.orderedPhotoIdDigest === right.orderedPhotoIdDigest &&
     left.captionDigest === right.captionDigest &&
     left.sourceCreatedAt === right.sourceCreatedAt &&
-    left.expectedImageCount === right.expectedImageCount
+    left.expectedImageCount === right.expectedImageCount &&
+    left.controlRevision === right.controlRevision &&
+    left.controlExpiresAt === right.controlExpiresAt &&
+    left.ocrDeadlineAt === right.ocrDeadlineAt
   );
 }
 
@@ -648,10 +656,6 @@ function firstIdentifier(...values: unknown[]): string | null {
     }
   }
   return null;
-}
-
-function readLowerString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

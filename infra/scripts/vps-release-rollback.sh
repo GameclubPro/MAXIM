@@ -124,6 +124,7 @@ SELECT_ADMIN=0
 SELECTED_COMPONENTS=()
 SERVICES=()
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
 declare -A COMPONENT_SOURCE_SHA=()
 declare -A COMPONENT_IMAGE_REF=()
 declare -A COMPONENT_IMAGE_ID=()
@@ -198,6 +199,9 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   fi
   if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
     TARGET_HAS_MEDIA_ANALYSIS=1
+    if maxim_topology_git_has_commercial_ocr_raster_smoke "$API_SOURCE_SHA"; then
+      TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=1
+    fi
   else
     topology_status=$?
     if [[ "$topology_status" -ne 1 ]]; then
@@ -205,6 +209,9 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     fi
     maxim_topology_remove_service SERVICES "$MAXIM_MEDIA_ANALYSIS_SERVICE"
     echo "API rollback target predates $MAXIM_MEDIA_ANALYSIS_SERVICE; the role will be removed."
+  fi
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+    maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
   fi
 fi
 
@@ -412,8 +419,18 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   wait_for_strict_smoke json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=(api-local-live api-local-ready api-admin-live api-admin-ready api-public-live)
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
-    SMOKE_RESULTS+=(api-media-analysis-tesseract-rus-eng)
+    if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
+      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+    else
+      maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present
+    fi
+    SMOKE_RESULTS+=(api-media-analysis-tesseract-rus-eng api-media-analysis-shadow)
+    if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
+      SMOKE_RESULTS+=(
+        api-media-analysis-native-raster
+        api-media-analysis-internal-ready
+      )
+    fi
   fi
 fi
 if [[ "$SELECT_MINIAPP" -eq 1 ]]; then

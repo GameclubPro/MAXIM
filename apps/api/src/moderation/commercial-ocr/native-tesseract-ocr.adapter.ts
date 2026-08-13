@@ -31,6 +31,7 @@ const DEFAULT_PSM: NativeTesseractPageSegmentationMode = 11;
 const WORKER_RESTART_DELAY_MS = 100;
 const WORKER_RETRY_COOLDOWN_MS = 30_000;
 const WORKER_SHUTDOWN_GRACE_MS = 1_000;
+const WORKER_FORCE_EXIT_GRACE_MS = 250;
 const WORKER_STARTUP_TIMEOUT_MS = 5_000;
 const MAX_WORKER_RESTART_ATTEMPTS = 3;
 const MAX_CONCURRENCY = 8;
@@ -63,6 +64,21 @@ type WorkerSlot = {
   killTimer: NodeJS.Timeout | null;
 };
 
+export type NativeTesseractRuntimeStatus = Readonly<{
+  state: 'starting' | 'ready' | 'degraded' | 'shutting_down';
+  ready: boolean;
+  workers: Readonly<{ configured: number; live: number; ready: number; busy: number }>;
+  queueDepth: number;
+  counters: Readonly<{
+    completed: number;
+    failed: number;
+    restarts: number;
+    recycles: number;
+    failuresByReason: Readonly<Partial<Record<NativeTesseractFailureReason, number>>>;
+  }>;
+  latencyMs: Readonly<{ last: number | null; average: number | null; maximum: number | null }>;
+}>;
+
 @Injectable()
 export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NativeTesseractOcrAdapter.name);
@@ -80,6 +96,14 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
   private readonly queue: OcrJob[] = [];
   private initialized = false;
   private shuttingDown = false;
+  private completedCount = 0;
+  private failedCount = 0;
+  private restartCount = 0;
+  private recycleCount = 0;
+  private totalLatencyMs = 0;
+  private lastLatencyMs: number | null = null;
+  private maxLatencyMs: number | null = null;
+  private readonly failuresByReason = new Map<NativeTesseractFailureReason, number>();
 
   constructor(configService: ConfigService) {
     this.binary = readCommand(
@@ -146,7 +170,8 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       this.finishJob(job, this.failedOpen(job, 'shutting_down'));
     }
 
-    const exitPromises: Promise<void>[] = [];
+    const exitWaiters: ChildExitWaiter[] = [];
+    const children: ChildProcess[] = [];
     for (const slot of this.slots) {
       if (slot.restartTimer) {
         clearTimeout(slot.restartTimer);
@@ -162,26 +187,66 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       if (!child) {
         continue;
       }
-      exitPromises.push(waitForExit(child));
+      children.push(child);
+      exitWaiters.push(createChildExitWaiter(child));
       slot.retiring = true;
       this.sendToWorker(child, { type: 'shutdown' });
       child.kill('SIGTERM');
     }
 
-    await Promise.race([
-      Promise.allSettled(exitPromises),
-      new Promise<void>((resolvePromise) => {
-        const timeout = setTimeout(resolvePromise, WORKER_SHUTDOWN_GRACE_MS);
-        timeout.unref();
-      }),
-    ]);
+    const allExited = Promise.allSettled(exitWaiters.map(({ promise }) => promise));
+    await waitBounded(allExited, WORKER_SHUTDOWN_GRACE_MS);
     for (const slot of this.slots) {
       if (slot.process && slot.process.exitCode === null && slot.process.signalCode === null) {
         slot.process.kill('SIGKILL');
       }
+    }
+    await waitBounded(allExited, WORKER_FORCE_EXIT_GRACE_MS);
+    for (const waiter of exitWaiters) {
+      waiter.cancel();
+    }
+    for (const child of children) {
+      detachWorkerListeners(child);
+    }
+    for (const slot of this.slots) {
       slot.process = null;
       slot.ready = false;
     }
+  }
+
+  getRuntimeStatus(): NativeTesseractRuntimeStatus {
+    const live = this.slots.filter((slot) => isChildLive(slot.process)).length;
+    const readyWorkers = this.slots.filter(
+      (slot) => isChildLive(slot.process) && slot.ready && !slot.retiring,
+    ).length;
+    const busy = this.slots.filter((slot) => slot.current !== null).length;
+    const ready = this.initialized && !this.shuttingDown && readyWorkers > 0;
+    const state = this.shuttingDown
+      ? 'shutting_down'
+      : ready
+        ? 'ready'
+        : this.initialized && this.slots.some((slot) => slot.retryAfter > performance.now())
+          ? 'degraded'
+          : 'starting';
+    const total = this.completedCount + this.failedCount;
+    return {
+      state,
+      ready,
+      workers: { configured: this.concurrency, live, ready: readyWorkers, busy },
+      queueDepth: this.queue.length,
+      counters: {
+        completed: this.completedCount,
+        failed: this.failedCount,
+        restarts: this.restartCount,
+        recycles: this.recycleCount,
+        failuresByReason: Object.fromEntries(this.failuresByReason),
+      },
+      latencyMs: {
+        last: this.lastLatencyMs,
+        average: total > 0 ? roundDuration(this.totalLatencyMs / total) : null,
+        maximum: this.maxLatencyMs,
+      },
+    };
   }
 
   recognize(
@@ -218,9 +283,26 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       });
     }
 
+    const externalRemainingMs =
+      options.deadlineAtMs === undefined
+        ? this.timeoutMs
+        : Number.isSafeInteger(options.deadlineAtMs)
+          ? options.deadlineAtMs - Date.now()
+          : 0;
+    if (externalRemainingMs <= 0) {
+      return Promise.resolve({
+        ok: false,
+        status: 'failed_open',
+        passLabel,
+        psm,
+        reason: 'timeout',
+        durationMs: elapsedMs(startedAt),
+      });
+    }
+
     this.ensureInitialized();
     this.retryUnavailableWorkers();
-    const hasLiveWorker = this.slots.some((slot) => slot.process !== null);
+    const hasLiveWorker = this.slots.some((slot) => isChildLive(slot.process));
     if (!hasLiveWorker) {
       return Promise.resolve({
         ok: false,
@@ -246,7 +328,8 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     }
 
     return new Promise<NativeTesseractOcrResult>((resolvePromise) => {
-      const deadlineAt = performance.now() + this.timeoutMs;
+      const timeoutMs = Math.min(this.timeoutMs, externalRemainingMs);
+      const deadlineAt = performance.now() + timeoutMs;
       const job: OcrJob = {
         id: randomUUID(),
         image: Buffer.from(image),
@@ -256,7 +339,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
         deadlineAt,
         settled: false,
         resolve: resolvePromise,
-        timer: setTimeout(() => this.handleJobTimeout(job), this.timeoutMs),
+        timer: setTimeout(() => this.handleJobTimeout(job), timeoutMs),
       };
       job.timer.unref();
       this.queue.push(job);
@@ -294,6 +377,9 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       return;
     }
     slot.generation += 1;
+    if (slot.generation > 1) {
+      this.restartCount += 1;
+    }
     const generation = slot.generation;
     slot.ready = false;
     slot.retiring = false;
@@ -308,6 +394,8 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
           this.binary,
           this.tessdataPrefix,
           this.maxOutputBytes,
+          this.maxImageBytes,
+          this.timeoutMs,
           this.ompThreadLimit,
         ),
       });
@@ -376,6 +464,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     }
 
     if (slot.jobsProcessed >= this.recycleAfterJobs) {
+      this.recycleCount += 1;
       this.retireWorker(slot);
     }
     this.dispatch();
@@ -386,7 +475,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       return;
     }
     for (const slot of this.slots) {
-      if (!slot.process || !slot.ready || slot.current || slot.retiring) {
+      if (!isChildLive(slot.process) || !slot.ready || slot.current || slot.retiring) {
         continue;
       }
       let job = this.queue.shift();
@@ -396,7 +485,11 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
       if (!job) {
         return;
       }
-      const remainingMs = Math.max(1, Math.floor(job.deadlineAt - performance.now()));
+      const remainingMs = Math.floor(job.deadlineAt - performance.now());
+      if (remainingMs <= 0) {
+        this.finishJob(job, this.failedOpen(job, 'timeout'));
+        continue;
+      }
       slot.current = job;
       this.sendToWorker(
         slot.process,
@@ -522,7 +615,7 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
   }
 
   private failQueuedIfNoWorkers(): void {
-    if (this.slots.some((slot) => slot.process || slot.restartTimer)) {
+    if (this.slots.some((slot) => isChildLive(slot.process) || slot.restartTimer)) {
       return;
     }
     for (const job of this.queue.splice(0)) {
@@ -537,6 +630,16 @@ export class NativeTesseractOcrAdapter implements OnModuleInit, OnModuleDestroy 
     job.settled = true;
     clearTimeout(job.timer);
     job.image = Buffer.alloc(0);
+    const durationMs = result.durationMs;
+    this.lastLatencyMs = durationMs;
+    this.totalLatencyMs += durationMs;
+    this.maxLatencyMs = Math.max(this.maxLatencyMs ?? 0, durationMs);
+    if (result.ok) {
+      this.completedCount += 1;
+    } else {
+      this.failedCount += 1;
+      this.failuresByReason.set(result.reason, (this.failuresByReason.get(result.reason) ?? 0) + 1);
+    }
     job.resolve(result);
   }
 
@@ -586,7 +689,11 @@ function normalizePassLabel(value: string | undefined): string | null {
 }
 
 function elapsedMs(startedAt: number): number {
-  return Math.max(0, Math.round((performance.now() - startedAt) * 100) / 100);
+  return roundDuration(performance.now() - startedAt);
+}
+
+function roundDuration(durationMs: number): number {
+  return Math.max(0, Math.round(durationMs * 100) / 100);
 }
 
 function readBoundedPositiveInteger(
@@ -620,6 +727,8 @@ function workerEnvironment(
   binary: string,
   tessdataPrefix: string | undefined,
   maxOutputBytes: number,
+  maxImageBytes: number,
+  timeoutMs: number,
   ompThreadLimit: number,
 ): NodeJS.ProcessEnv {
   return {
@@ -631,6 +740,8 @@ function workerEnvironment(
     OMP_THREAD_LIMIT: String(ompThreadLimit),
     COMMERCIAL_OCR_TESSERACT_BINARY: binary,
     COMMERCIAL_OCR_TESSERACT_MAX_OUTPUT_BYTES: String(maxOutputBytes),
+    COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: String(maxImageBytes),
+    COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: String(timeoutMs),
     ...(tessdataPrefix ? { COMMERCIAL_OCR_TESSDATA_PREFIX: tessdataPrefix } : {}),
   };
 }
@@ -761,9 +872,71 @@ function clearSlotTimer(slot: WorkerSlot, field: 'startupTimer' | 'killTimer'): 
   }
 }
 
-function waitForExit(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve();
+type ChildExitWaiter = {
+  promise: Promise<void>;
+  cancel: () => void;
+};
+
+function createChildExitWaiter(child: ChildProcess): ChildExitWaiter {
+  if (!isChildLive(child)) {
+    return { promise: Promise.resolve(), cancel: () => undefined };
   }
-  return new Promise((resolvePromise) => child.once('exit', () => resolvePromise()));
+
+  let active = true;
+  let resolveExit!: () => void;
+  const onExit = () => {
+    if (!active) return;
+    active = false;
+    child.removeListener('exit', onExit);
+    resolveExit();
+  };
+  const promise = new Promise<void>((resolvePromise) => {
+    resolveExit = resolvePromise;
+    child.once('exit', onExit);
+  });
+  return {
+    promise,
+    cancel: () => {
+      if (!active) return;
+      active = false;
+      child.removeListener('exit', onExit);
+      resolveExit();
+    },
+  };
+}
+
+function isChildLive(child: ChildProcess | null): child is ChildProcess {
+  return child !== null && child.exitCode === null && child.signalCode === null;
+}
+
+function detachWorkerListeners(child: ChildProcess): void {
+  child.removeAllListeners('message');
+  child.removeAllListeners('error');
+  child.removeAllListeners('exit');
+  if (!isChildLive(child)) {
+    return;
+  }
+
+  const onLateError = () => undefined;
+  const onLateExit = () => {
+    child.removeListener('error', onLateError);
+    child.removeListener('exit', onLateExit);
+  };
+  child.on('error', onLateError);
+  child.once('exit', onLateExit);
+}
+
+function waitBounded(operation: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolvePromise();
+    };
+    const timeout = setTimeout(finish, timeoutMs);
+    timeout.unref();
+    operation.then(finish, finish);
+  });
 }

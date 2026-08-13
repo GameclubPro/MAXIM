@@ -24,6 +24,13 @@ class FakeChildProcess extends EventEmitter {
   }
 }
 
+class StubbornFakeChildProcess extends FakeChildProcess {
+  override kill(signal?: NodeJS.Signals | number): boolean {
+    this.killedWith = signal;
+    return true;
+  }
+}
+
 describe('probeNativeTesseract', () => {
   it('launches a bounded shell-free language probe and requires exact rus and eng lines', async () => {
     const child = new FakeChildProcess();
@@ -106,6 +113,32 @@ describe('probeNativeTesseract', () => {
     oversizedChild.stdout.write(Buffer.alloc(9));
     await expect(oversized).resolves.toEqual({ ok: false, reason: 'output_limit' });
     expect(oversizedChild.killedWith).toBe('SIGKILL');
+  });
+
+  it('settles and detaches every listener when a killed probe never closes', async () => {
+    jest.useFakeTimers();
+    try {
+      const child = new StubbornFakeChildProcess();
+      const processChanges: Array<ChildProcessWithoutNullStreams | null> = [];
+      const result = probeNativeTesseract(
+        {
+          binary: 'tesseract',
+          timeoutMs: 10,
+          maxOutputBytes: 64 * 1024,
+          onProcessChange: (process) => processChanges.push(process),
+        },
+        () => child as unknown as ChildProcessWithoutNullStreams,
+      );
+
+      await jest.advanceTimersByTimeAsync(260);
+
+      await expect(result).resolves.toEqual({ ok: false, reason: 'timeout' });
+      expect(child.killedWith).toBe('SIGKILL');
+      expect(processChanges).toEqual([child, null]);
+      expectLateErrorsGuardedUntilClose(child);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -215,4 +248,54 @@ describe('runNativeTesseract', () => {
     child.emit('close', 0, null);
     await expect(malformed).resolves.toEqual({ ok: false, reason: 'invalid_output' });
   });
+
+  it('settles and detaches every listener when a killed OCR process never closes', async () => {
+    jest.useFakeTimers();
+    try {
+      const child = new StubbornFakeChildProcess();
+      const processChanges: Array<ChildProcessWithoutNullStreams | null> = [];
+      const result = runNativeTesseract(
+        {
+          binary: 'tesseract',
+          image: Buffer.from('image'),
+          psm: 11,
+          timeoutMs: 10,
+          maxOutputBytes: 64 * 1024,
+          onProcessChange: (process) => processChanges.push(process),
+        },
+        () => child as unknown as ChildProcessWithoutNullStreams,
+      );
+
+      await jest.advanceTimersByTimeAsync(260);
+
+      await expect(result).resolves.toEqual({ ok: false, reason: 'timeout' });
+      expect(child.killedWith).toBe('SIGKILL');
+      expect(processChanges).toEqual([child, null]);
+      expectLateErrorsGuardedUntilClose(child);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
+
+function expectLateErrorsGuardedUntilClose(child: FakeChildProcess): void {
+  expect(child.stdout.listenerCount('data')).toBe(0);
+  expect(child.stderr.listenerCount('data')).toBe(0);
+  expect(child.listenerCount('error')).toBe(1);
+  expect(child.listenerCount('close')).toBe(1);
+  expect(child.stdin.listenerCount('error')).toBe(1);
+  expect(child.stdout.listenerCount('error')).toBe(1);
+  expect(child.stderr.listenerCount('error')).toBe(1);
+
+  child.emit('error', new Error('late child error'));
+  child.stdin.emit('error', new Error('late stdin error'));
+  child.stdout.emit('error', new Error('late stdout error'));
+  child.stderr.emit('error', new Error('late stderr error'));
+  child.emit('close', null, 'SIGKILL');
+
+  expect(child.listenerCount('error')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
+  expect(child.stdin.listenerCount('error')).toBe(0);
+  expect(child.stdout.listenerCount('error')).toBe(0);
+  expect(child.stderr.listenerCount('error')).toBe(0);
+}

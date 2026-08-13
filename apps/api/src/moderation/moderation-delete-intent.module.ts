@@ -11,6 +11,7 @@ import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.servi
 import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
 import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
 import { CommercialOcrDeleteGuardService } from './commercial-ocr/commercial-ocr-delete-guard.service';
+import { CommercialOcrRuntimePolicyService } from './commercial-ocr/commercial-ocr-runtime-policy.service';
 
 const actionRoleProviders = roleRunsAction(getAppRole())
   ? [ModerationDeleteIntentProcessor, ModerationDeleteIntentReconcilerService]
@@ -22,6 +23,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     LinkHistoryDeleteGuardService,
     ParticipantModerationImmunityService,
     CommercialOcrDeleteGuardService,
+    CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
     ModerationDeleteIntentService,
     ...actionRoleProviders,
@@ -29,6 +31,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
   exports: [
     ModerationDeleteIntentService,
     ParticipantModerationImmunityService,
+    CommercialOcrRuntimePolicyService,
     PhotoDuplicateRuntimePolicyService,
   ],
 })

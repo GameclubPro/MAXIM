@@ -14,7 +14,7 @@ import {
 } from '../commercial/commercial-safe-context';
 import { resolveCommercialThresholds } from '../rule-engine-commercial-thresholds';
 
-export const COMMERCIAL_OCR_DECISION_POLICY_VERSION = 'commercial-ocr-delete-policy-v1';
+export const COMMERCIAL_OCR_DECISION_POLICY_VERSION = 'commercial-ocr-delete-policy-v2';
 
 export const COMMERCIAL_OCR_DELETE_GATE = {
   minDetectorScore: 90,
@@ -25,6 +25,11 @@ export const COMMERCIAL_OCR_DELETE_GATE = {
   minAggregateConfidencePermille: 900,
   minCriticalConfidencePermille: 850,
 } as const;
+
+const MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS = 4;
+const UNICODE_LETTER_PATTERN = /\p{Letter}/u;
+const CYRILLIC_SCRIPT_PATTERN = /\p{Script=Cyrillic}/u;
+const LATIN_SCRIPT_PATTERN = /\p{Script=Latin}/u;
 
 export type CommercialOcrCriticalEvidenceKind =
   | 'commercial_anchor'
@@ -80,6 +85,9 @@ export type CommercialOcrPassAnalysis = {
   deleteEligible: boolean;
   rejectionReasons: CommercialOcrPassRejectionReason[];
   criticalSignature: string[];
+  letterScript: 'cyrillic_only' | 'latin_only' | 'mixed' | 'unknown';
+  cyrillicLetterCount: number;
+  latinLetterCount: number;
 };
 
 export type CommercialOcrImageRejectionReason =
@@ -291,12 +299,14 @@ function analyzeOcrPass(
     pass.status === 'recognized' && text ? detectCommercialText(text, settings, detector) : null;
   const detectorGate = evaluateDetectorGate(detection);
   rejectionReasons.push(...detectorGate.rejectionReasons);
+  const scriptEvidence = classifyLetterScript(text);
 
   return {
     detection,
     deleteEligible: rejectionReasons.length === 0,
     rejectionReasons: [...new Set(rejectionReasons)],
     criticalSignature,
+    ...scriptEvidence,
   };
 }
 
@@ -439,6 +449,64 @@ export function hasCommercialOcrPrimaryDeleteCandidate(decision: CommercialOcrDe
       image.primary.criticalSignature.length >= 2 &&
       image.primary.detection !== null,
   );
+}
+
+/**
+ * The first enforcement cohort is intentionally narrower than recognition. Tesseract may use
+ * rus+eng for quality, but a DELETE is eligible only when both independent source passes are
+ * unambiguously Cyrillic and no recognized album pass contains Latin letters. Unknown and mixed
+ * results remain report-only.
+ */
+export function isCommercialOcrCyrillicOnlyDeleteDecision(
+  decision: CommercialOcrDecision,
+): boolean {
+  if (decision.action !== 'DELETE' || !decision.deleteSource) {
+    return false;
+  }
+  const candidates = decision.images.filter(
+    (image) =>
+      image.imageIndex === decision.deleteSource?.imageIndex &&
+      image.source === decision.deleteSource.source,
+  );
+  if (candidates.length !== 1) {
+    return false;
+  }
+  const candidate = candidates[0]!;
+  return (
+    candidate.primary.letterScript === 'cyrillic_only' &&
+    candidate.primary.cyrillicLetterCount >= MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS &&
+    candidate.primary.latinLetterCount === 0 &&
+    candidate.verification !== null &&
+    candidate.verification.letterScript === 'cyrillic_only' &&
+    candidate.verification.cyrillicLetterCount >= MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS &&
+    candidate.verification.latinLetterCount === 0 &&
+    decision.images.every((image) =>
+      [image.primary, image.verification].every(
+        (pass) => pass === null || pass.latinLetterCount === 0,
+      ),
+    )
+  );
+}
+
+function classifyLetterScript(
+  text: string,
+): Pick<CommercialOcrPassAnalysis, 'letterScript' | 'cyrillicLetterCount' | 'latinLetterCount'> {
+  let cyrillicLetterCount = 0;
+  let latinLetterCount = 0;
+  for (const character of text.normalize('NFKC')) {
+    if (!UNICODE_LETTER_PATTERN.test(character)) continue;
+    if (LATIN_SCRIPT_PATTERN.test(character)) latinLetterCount += 1;
+    if (CYRILLIC_SCRIPT_PATTERN.test(character)) cyrillicLetterCount += 1;
+  }
+  const letterScript =
+    cyrillicLetterCount > 0 && latinLetterCount > 0
+      ? 'mixed'
+      : cyrillicLetterCount > 0
+        ? 'cyrillic_only'
+        : latinLetterCount > 0
+          ? 'latin_only'
+          : 'unknown';
+  return { letterScript, cyrillicLetterCount, latinLetterCount };
 }
 
 function isPermille(value: number): boolean {

@@ -38,6 +38,7 @@ export type EnsureModerationDeleteIntentInput = {
   routingPolicy?: 'delete_capable' | 'origin_first' | 'origin_only';
   executeAt?: Date | string | null;
   retryUntilAt?: Date | string | null;
+  commercialOcrDeadlineAt?: Date | string | null;
   event?: Omit<ModerationDeleteEventInput, 'reasonKey' | 'ruleCode'>;
 };
 
@@ -66,6 +67,13 @@ export type EnsureModerationDeleteIntentResult = {
   rollout: ModerationDeleteIntentRollout;
   status: ModerationDeleteIntentStatus | null;
 };
+
+export type EnsureClaimedModerationDeleteIntentResult =
+  | {
+      claim: 'claimed' | 'resumed';
+      intent: EnsureModerationDeleteIntentResult;
+    }
+  | { claim: 'blocked'; intent: null };
 
 export type ModerationDeleteAttemptResult =
   | { kind: 'off'; confirmed: false; intentId: null; status: null }

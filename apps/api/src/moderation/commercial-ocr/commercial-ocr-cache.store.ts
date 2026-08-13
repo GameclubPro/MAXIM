@@ -1,12 +1,7 @@
-import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { createHash, randomUUID } from 'node:crypto';
-import Redis from 'ioredis';
-import { raceWithTimeout } from '../../common/promise-timeout.util';
+import { Injectable, type OnModuleDestroy } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { validateCommercialOcrVersion } from './commercial-ocr.queue';
-import { COMMERCIAL_OCR_REDIS_OPTIONS } from './commercial-ocr-redis.options';
 
-const SINGLEFLIGHT_NAMESPACE = 'commercial-ocr:singleflight:v3';
 export const COMMERCIAL_OCR_CACHE_SCHEMA_VERSION = 2 as const;
 const MAX_TEXT_LENGTH = 8_000;
 const MAX_WORDS = 1_024;
@@ -14,24 +9,6 @@ const MAX_WORD_LENGTH = 256;
 const MAX_CACHE_TTL_SECONDS = 31 * 24 * 60 * 60;
 const MAX_LOCAL_CACHE_ENTRIES = 512;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-const MIN_SINGLEFLIGHT_TTL_MS = 1_000;
-const MAX_SINGLEFLIGHT_TTL_MS = 60_000;
-const REDIS_OPERATION_TIMEOUT_MS = 1_000;
-
-const COMMIT_SCRIPT = `
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then
-  return 0
-end
-redis.call('DEL', KEYS[1])
-return 1
-`;
-
-const RELEASE_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-`;
 
 export type CommercialOcrCacheValue = Readonly<{
   schemaVersion: typeof COMMERCIAL_OCR_CACHE_SCHEMA_VERSION;
@@ -58,46 +35,33 @@ export type CommercialOcrCacheIdentity = Readonly<{
 
 export type CommercialOcrCacheLookup =
   | { kind: 'hit'; value: CommercialOcrCacheValue }
-  | { kind: 'miss' }
-  | { kind: 'unavailable' };
-
-export type CommercialOcrSingleflightClaim =
-  | { kind: 'acquired'; token: string }
-  | { kind: 'busy' }
-  | { kind: 'unavailable' };
+  | { kind: 'miss' };
 
 type LocalCacheEntry = {
   expiresAtMs: number;
   value: CommercialOcrCacheValue;
 };
 
+type LocalInFlightEntry = {
+  deadlineAtMs: number;
+  promise: Promise<unknown>;
+};
+
 @Injectable()
 export class CommercialOcrCacheStore implements OnModuleDestroy {
-  private readonly logger = new Logger(CommercialOcrCacheStore.name);
-  private readonly redis: Redis;
   // OCR output can contain personal data. Keep exact results process-local and bounded so Redis
   // persistence never retains recognized text; a restart may lose only this optimization.
   private readonly localEntries = new Map<string, LocalCacheEntry>();
+  private readonly inFlight = new Map<string, LocalInFlightEntry>();
   private expiryTimer: NodeJS.Timeout | null = null;
   private expiryTimerDueAtMs: number | null = null;
   private destroyed = false;
 
-  constructor(configService: ConfigService) {
-    this.redis = new Redis(
-      configService.getOrThrow<string>('REDIS_URL'),
-      COMMERCIAL_OCR_REDIS_OPTIONS,
-    );
-  }
-
-  async onModuleDestroy(): Promise<void> {
+  onModuleDestroy(): void {
     this.destroyed = true;
     this.clearExpiryTimer();
     this.localEntries.clear();
-    if (this.redis.status === 'ready') {
-      await this.redis.quit();
-      return;
-    }
-    this.redis.disconnect();
+    this.inFlight.clear();
   }
 
   async read(identity: CommercialOcrCacheIdentity): Promise<CommercialOcrCacheLookup> {
@@ -121,6 +85,9 @@ export class CommercialOcrCacheStore implements OnModuleDestroy {
     value: CommercialOcrCacheValue,
     ttlSeconds: number,
   ): Promise<boolean> {
+    if (this.destroyed) {
+      return false;
+    }
     const key = buildCacheKey(validateIdentity(identity));
     const normalizedValue = validateValue(value);
     const normalizedTtlSeconds = validateCacheTtl(ttlSeconds);
@@ -128,76 +95,28 @@ export class CommercialOcrCacheStore implements OnModuleDestroy {
     return true;
   }
 
-  async claimSingleflight(
+  async coalesceLocal<T>(
     identity: CommercialOcrCacheIdentity,
-    leaseTtlMs: number,
-  ): Promise<CommercialOcrSingleflightClaim> {
+    deadlineAtMs: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const key = buildCacheKey(validateIdentity(identity));
-    const normalizedLeaseTtlMs = validateSingleflightTtl(leaseTtlMs);
-    const token = randomUUID();
-    try {
-      const acquired = await this.runRedisOperation(
-        this.redis.set(`${SINGLEFLIGHT_NAMESPACE}:${key}`, token, 'PX', normalizedLeaseTtlMs, 'NX'),
-      );
-      return acquired === 'OK' ? { kind: 'acquired', token } : { kind: 'busy' };
-    } catch {
-      this.logger.warn('Commercial OCR singleflight claim unavailable');
-      return { kind: 'unavailable' };
+    const normalizedDeadlineAtMs = validateDeadline(deadlineAtMs);
+    const existing = this.inFlight.get(key);
+    if (existing && existing.deadlineAtMs >= normalizedDeadlineAtMs) {
+      return existing.promise as Promise<T>;
     }
-  }
 
-  async commitSingleflight(params: {
-    identity: CommercialOcrCacheIdentity;
-    token: string;
-    value: CommercialOcrCacheValue;
-    ttlSeconds: number;
-  }): Promise<boolean> {
-    const key = buildCacheKey(validateIdentity(params.identity));
-    const token = validateToken(params.token);
-    const value = validateValue(params.value);
-    const ttlSeconds = validateCacheTtl(params.ttlSeconds);
+    const pending = Promise.resolve().then(operation);
+    const entry: LocalInFlightEntry = { deadlineAtMs: normalizedDeadlineAtMs, promise: pending };
+    this.inFlight.set(key, entry);
     try {
-      const committed =
-        Number(
-          await this.runRedisOperation(
-            this.redis.eval(COMMIT_SCRIPT, 1, `${SINGLEFLIGHT_NAMESPACE}:${key}`, token),
-          ),
-        ) === 1;
-      if (committed) {
-        this.writeLocal(key, value, ttlSeconds);
+      return await pending;
+    } finally {
+      if (this.inFlight.get(key) === entry) {
+        this.inFlight.delete(key);
       }
-      return committed;
-    } catch {
-      this.logger.warn('Commercial OCR singleflight commit unavailable');
-      return false;
     }
-  }
-
-  async releaseSingleflight(identity: CommercialOcrCacheIdentity, token: string): Promise<boolean> {
-    const key = buildCacheKey(validateIdentity(identity));
-    const normalizedToken = validateToken(token);
-    try {
-      return (
-        Number(
-          await this.runRedisOperation(
-            this.redis.eval(RELEASE_SCRIPT, 1, `${SINGLEFLIGHT_NAMESPACE}:${key}`, normalizedToken),
-          ),
-        ) === 1
-      );
-    } catch {
-      this.logger.warn('Commercial OCR singleflight release unavailable');
-      return false;
-    }
-  }
-
-  private runRedisOperation<T>(operation: Promise<T>): Promise<T> {
-    return raceWithTimeout({
-      operation,
-      timeoutMs: REDIS_OPERATION_TIMEOUT_MS,
-      onTimeout: () => {
-        throw new Error('Commercial OCR cache Redis operation timed out');
-      },
-    });
   }
 
   private writeLocal(key: string, value: CommercialOcrCacheValue, ttlSeconds: number): void {
@@ -358,23 +277,11 @@ function validateCacheTtl(value: number): number {
   return value;
 }
 
-function validateSingleflightTtl(value: number): number {
-  if (
-    !Number.isSafeInteger(value) ||
-    value < MIN_SINGLEFLIGHT_TTL_MS ||
-    value > MAX_SINGLEFLIGHT_TTL_MS
-  ) {
-    throw new Error('Commercial OCR singleflight TTL is invalid');
+function validateDeadline(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('Commercial OCR coalescing deadline is invalid');
   }
   return value;
-}
-
-function validateToken(value: string): string {
-  const normalized = value.trim();
-  if (!/^[A-Za-z0-9-]{16,128}$/u.test(normalized)) {
-    throw new Error('Commercial OCR singleflight token is invalid');
-  }
-  return normalized;
 }
 
 function validatePass(value: string): 'primary' | 'confirmation' {

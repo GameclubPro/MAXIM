@@ -24,6 +24,7 @@ RELEASE_MANIFEST_HELPER=""
 SMOKE_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
 ROLLBACK_RUNTIME_STARTED=0
 MANIFEST_RECORDED=0
 
@@ -74,6 +75,9 @@ if ! TARGET_FULL_SHA="$(git rev-parse --verify --end-of-options "${ROLLBACK_REF}
 fi
 if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
   TARGET_HAS_MEDIA_ANALYSIS=1
+  if maxim_topology_git_has_commercial_ocr_raster_smoke "$TARGET_FULL_SHA"; then
+    TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=1
+  fi
 else
   topology_status=$?
   if [[ "$topology_status" -ne 1 ]]; then
@@ -308,7 +312,16 @@ record_runtime_rollback_release() {
     --smoke api-public-live
   )
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-    args+=(--smoke api-media-analysis-tesseract-rus-eng)
+    args+=(
+      --smoke api-media-analysis-tesseract-rus-eng
+      --smoke api-media-analysis-shadow
+    )
+    if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
+      args+=(
+        --smoke api-media-analysis-native-raster
+        --smoke api-media-analysis-internal-ready
+      )
+    fi
   fi
   MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" node "$RELEASE_MANIFEST_HELPER" "${args[@]}" >/dev/null
   MANIFEST_RECORDED=1
@@ -351,6 +364,9 @@ cp infra/scripts/release-manifest.mjs "$RELEASE_MANIFEST_HELPER"
 cp scripts/smoke-http.mjs "$SMOKE_HELPER"
 COMPOSE_FILES=(--env-file "$ROOT_DIR/.env" -p infra -f "$PRESERVED_COMPOSE_FILE")
 MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "$PRESERVED_MIGRATION_COMPOSE_FILE")
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
+fi
 CURRENT_HEAD="$(git rev-parse --short HEAD)"
 TARGET_HEAD="${TARGET_FULL_SHA:0:12}"
 ROLLBACK_API_IMAGE="maxim-api:runtime-rollback-${TARGET_FULL_SHA}"
@@ -392,7 +408,11 @@ strict_smoke_json_ok "http://127.0.0.1:3002/api/health/live"
 strict_smoke_json_ok "http://127.0.0.1:3002/api/health/ready"
 strict_smoke_json_ok "$PUBLIC_HEALTH_URL/api/health/live"
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-  maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
+  else
+    maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES if-present
+  fi
 fi
 record_runtime_rollback_release
 

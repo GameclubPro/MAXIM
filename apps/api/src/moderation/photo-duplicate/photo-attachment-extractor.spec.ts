@@ -2,6 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import {
   extractLogicalPhotoAlbum,
   extractLogicalPhotoAlbumResult,
+  extractVisiblePhotoMessageContent,
 } from './photo-attachment-extractor';
 
 function buildUpdate(message: Record<string, unknown>, type = 'message_created'): MaxUpdate {
@@ -70,6 +71,7 @@ describe('extractLogicalPhotoAlbum', () => {
         messageId: 'message-1',
         senderId: 'user-1',
         createdAtMs: Date.parse('2026-08-05T10:00:00.000Z'),
+        caption: '',
         images: [
           {
             source: 'direct',
@@ -120,6 +122,142 @@ describe('extractLogicalPhotoAlbum', () => {
     );
 
     expect(album?.images).toHaveLength(2);
+  });
+
+  it('extracts one canonical caption and photo order across legacy and nested forwards', () => {
+    const aliasAttachments = [{ type: 'image', payload: { photo_id: 'legacy-photo' } }];
+    const result = extractLogicalPhotoAlbumResult(
+      buildUpdate({
+        body: {
+          text: 'Current\n caption',
+          attachments: [{ type: 'image', payload: { photo_id: 'direct-photo' } }],
+          forwarded_message: {
+            body: {
+              text: 'Legacy caption',
+              attachments: aliasAttachments,
+              forwardedMessage: {
+                content: {
+                  caption: 'Nested caption',
+                  attachments: [{ type: 'image', payload: { photo_id: 'nested-photo' } }],
+                },
+              },
+            },
+            attachments: aliasAttachments,
+          },
+        },
+        link: {
+          type: 'forward',
+          message: {
+            text: 'Modern caption',
+            attachments: [{ type: 'image', payload: { photo_id: 'modern-photo' } }],
+          },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: 'complete',
+      album: {
+        caption: 'Current caption Modern caption Legacy caption Nested caption',
+        images: [
+          { source: 'direct', photoId: 'direct-photo' },
+          { source: 'forward', photoId: 'modern-photo' },
+          { source: 'forward', photoId: 'legacy-photo' },
+          { source: 'forward', photoId: 'nested-photo' },
+        ],
+      },
+    });
+  });
+
+  it('excludes reply and quoted preview captions and photos at every supported holder', () => {
+    const result = extractLogicalPhotoAlbumResult(
+      buildUpdate({
+        body: {
+          text: 'Visible',
+          attachments: [{ type: 'image', payload: { photo_id: 'current-photo' } }],
+          forwarded_message: {
+            type: 'reply',
+            body: {
+              text: 'Hidden legacy reply',
+              attachments: [{ type: 'image', payload: { photo_id: 'legacy-reply-photo' } }],
+            },
+          },
+        },
+        link: {
+          type: 'reply',
+          message: {
+            text: 'Hidden modern reply',
+            attachments: [{ type: 'image', payload: { photo_id: 'modern-reply-photo' } }],
+          },
+        },
+        content: {
+          forwardedMessages: [
+            {
+              kind: 'quoted',
+              text: 'Hidden quoted preview',
+              attachments: [{ type: 'image', payload: { photo_id: 'quoted-photo' } }],
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: 'complete',
+      album: {
+        caption: 'Visible',
+        images: [{ source: 'direct', photoId: 'current-photo' }],
+      },
+    });
+  });
+
+  it('fails open when forward traversal, attachment scanning, or caption size is truncated', () => {
+    const deepRoot: Record<string, unknown> = {
+      attachments: [{ type: 'image', payload: { photo_id: 'photo-1' } }],
+    };
+    let cursor = deepRoot;
+    for (let index = 0; index < 9; index += 1) {
+      const next: Record<string, unknown> = { text: `forward-${index}` };
+      cursor.forwarded_message = next;
+      cursor = next;
+    }
+    expect(extractVisiblePhotoMessageContent(deepRoot)).toEqual({
+      kind: 'incomplete',
+      reason: 'forward_traversal_limit',
+    });
+
+    expect(
+      extractVisiblePhotoMessageContent({
+        attachments: [
+          { type: 'image', payload: { photo_id: 'photo-1' } },
+          ...Array.from({ length: 256 }, () => ({ type: 'file' })),
+        ],
+      }),
+    ).toEqual({ kind: 'incomplete', reason: 'attachment_scan_limit' });
+
+    expect(
+      extractVisiblePhotoMessageContent({
+        text: 'x'.repeat(8_001),
+        attachments: [{ type: 'image', payload: { photo_id: 'photo-1' } }],
+      }),
+    ).toEqual({ kind: 'incomplete', reason: 'caption_too_long' });
+  });
+
+  it('bounds forward arrays even when most entries are malformed or repeated aliases', () => {
+    expect(
+      extractVisiblePhotoMessageContent({
+        attachments: [{ type: 'image', payload: { photo_id: 'photo-1' } }],
+        forwarded_messages: Array.from({ length: 65 }, () => null),
+      }),
+    ).toEqual({ kind: 'incomplete', reason: 'forward_traversal_limit' });
+
+    const shared = { text: 'one shared forward' };
+    expect(
+      extractVisiblePhotoMessageContent({
+        attachments: [{ type: 'image', payload: { photo_id: 'photo-1' } }],
+        forwarded_messages: Array.from({ length: 65 }, () => shared),
+      }),
+    ).toEqual({ kind: 'incomplete', reason: 'forward_traversal_limit' });
   });
 
   it('treats raster images sent as files as photos and excludes stickers', () => {

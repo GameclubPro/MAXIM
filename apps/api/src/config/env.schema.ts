@@ -340,13 +340,6 @@ const envSchema = z.object({
     .min(60)
     .max(31 * 24 * 60 * 60)
     .default(7 * 24 * 60 * 60),
-  COMMERCIAL_OCR_SINGLEFLIGHT_TTL_MS: z.coerce
-    .number()
-    .int()
-    .min(1_000)
-    .max(60_000)
-    .default(15_000),
-  COMMERCIAL_OCR_PROCESSOR_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
   COMMERCIAL_OCR_MAX_INPUT_PIXELS: z.coerce
     .number()
     .int()

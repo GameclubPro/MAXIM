@@ -34,6 +34,7 @@ export type CommercialOcrLineSpan = {
 export type NativeTesseractRecognizeOptions = {
   psm?: NativeTesseractPageSegmentationMode;
   passLabel?: string;
+  deadlineAtMs?: number;
 };
 
 export type NativeTesseractRecognizedResult = {

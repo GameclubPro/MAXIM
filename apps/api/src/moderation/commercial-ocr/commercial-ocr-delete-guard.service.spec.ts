@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { extractLogicalPhotoAlbumResult } from '../photo-duplicate/photo-attachment-extractor';
 
 import {
   buildCommercialOcrDeleteBinding,
@@ -11,6 +12,8 @@ import {
 import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decision-policy';
 
 const sourceCreatedAt = '2026-08-12T08:00:00.000Z';
+const controlExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+const ocrDeadlineAt = new Date(Date.now() + 30 * 60_000).toISOString();
 const commercialPolicySettings: CommercialOcrPolicySettings = {
   commercialAdsFilterEnabled: true,
   commercialAdsSensitivity: 'BALANCED' as const,
@@ -32,7 +35,7 @@ describe('CommercialOcrDeleteGuardService', () => {
 
     expect(parseCommercialOcrDeleteBinding({ commercialOcrBinding: binding })).toEqual(binding);
     expect(binding).toMatchObject({
-      version: 2,
+      version: 4,
       policyVersion: COMMERCIAL_OCR_DECISION_POLICY_VERSION,
       ocrVersion: 'tesseract-rus-eng-v1',
       senderId: 'user-1',
@@ -141,15 +144,32 @@ describe('CommercialOcrDeleteGuardService', () => {
   });
 
   it.each([
-    { label: 'rollout is off', config: { COMMERCIAL_OCR_ROLLOUT_MODE: 'off' } },
+    {
+      label: 'rollout authorization is revoked',
+      config: { COMMERCIAL_OCR_ROLLOUT_MODE: 'off' },
+      code: 'commercial_ocr_runtime_revoked',
+    },
     {
       label: 'OCR behavior version changed',
       config: { COMMERCIAL_OCR_VERSION: 'tesseract-rus-eng-v2' },
+      code: 'commercial_ocr_version_changed',
     },
-  ])('rejects when $label', async ({ config }) => {
+  ])('rejects when $label', async ({ config, code }) => {
     const harness = buildHarness({ config });
 
-    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toBeDefined();
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code,
+    });
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it('keeps a transient runtime-control read failure retryable', async () => {
+    const harness = buildHarness({ runtimeEnforcementAuthority: 'unavailable' });
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code: 'commercial_ocr_runtime_control_unavailable',
+    });
+    expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
     expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
   });
 
@@ -186,13 +206,11 @@ describe('CommercialOcrDeleteGuardService', () => {
     expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
   });
 
-  it('returns not_applicable when an independent reason owns the same deletion', async () => {
+  it('keeps validating its durable OCR binding when an independent reason is attached', async () => {
     const harness = buildHarness({ independentReason: true });
 
-    await expect(harness.service.assertIntentStillActionable(baseInput)).resolves.toBe(
-      'not_applicable',
-    );
-    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    await expect(harness.service.assertIntentStillActionable(baseInput)).resolves.toBe('allowed');
+    expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
   });
 
   it('reports exact message absence without treating arbitrary lookup errors as absence', async () => {
@@ -218,6 +236,87 @@ describe('extractCommercialOcrDeleteSource', () => {
       orderedPhotoIds: ['photo-1', 'photo-2'],
     });
   });
+
+  it('uses canonical legacy and nested forward content while excluding reply previews', () => {
+    const row = messageRow({ caption: 'Current offer', photoIds: ['photo-1'] });
+    Object.assign(row, {
+      link: {
+        type: 'forward',
+        message: {
+          body: {
+            text: 'Modern forward',
+            attachments: [{ type: 'image', payload: { photo_id: 'photo-modern' } }],
+            forwarded_message: {
+              content: {
+                caption: 'Nested forward',
+                attachments: [{ type: 'image', payload: { photo_id: 'photo-nested' } }],
+              },
+            },
+          },
+        },
+      },
+      content: {
+        forwarded_messages: [
+          {
+            body: {
+              text: 'Legacy forward',
+              attachments: [{ type: 'image', payload: { photo_id: 'photo-legacy' } }],
+            },
+          },
+          {
+            type: 'reply',
+            text: 'Hidden reply',
+            attachments: [{ type: 'image', payload: { photo_id: 'photo-reply' } }],
+          },
+        ],
+      },
+    });
+
+    expect(extractCommercialOcrDeleteSource(row)).toEqual({
+      messageId: 'message-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      sourceCreatedAt,
+      caption: 'Current offer Modern forward Nested forward Legacy forward',
+      orderedPhotoIds: ['photo-1', 'photo-modern', 'photo-nested', 'photo-legacy'],
+    });
+  });
+
+  it('matches canonical webhook album content for the same raw message', () => {
+    const row = messageRow({ caption: 'Current offer', photoIds: ['photo-1'] });
+    Object.assign(row.body as Record<string, unknown>, {
+      forwarded_message: {
+        body: {
+          text: 'Legacy forward',
+          attachments: [{ type: 'image', payload: { photo_id: 'photo-forward' } }],
+        },
+      },
+    });
+    const update = {
+      updateId: 'update-parity-1',
+      type: 'message_created',
+      message: {
+        messageId: 'message-1',
+        chatId: 'chat-1',
+        senderId: 'user-1',
+        text: 'Current offer Legacy forward',
+        createdAt: sourceCreatedAt,
+      },
+      raw: { update_type: 'message_created', message: row },
+    } as const;
+    const album = extractLogicalPhotoAlbumResult(update);
+    const source = extractCommercialOcrDeleteSource(row);
+
+    expect(album.kind).toBe('complete');
+    expect(source).not.toBeNull();
+    if (album.kind !== 'complete' || !source) {
+      throw new Error('Canonical extraction fixture is incomplete');
+    }
+    expect({
+      caption: album.album.caption,
+      photoIds: album.album.images.map((image) => image.photoId),
+    }).toEqual({ caption: source.caption, photoIds: source.orderedPhotoIds });
+  });
 });
 
 function buildHarness(
@@ -236,6 +335,7 @@ function buildHarness(
     settingsOverride?: Partial<typeof commercialPolicySettings>;
     immunityResult?: 'granted' | 'not_granted';
     immunityError?: Error;
+    runtimeEnforcementAuthority?: 'authorized' | 'revoked' | 'unavailable';
   } = {},
 ) {
   const exactRow = options.exactRow === undefined ? messageRow() : options.exactRow;
@@ -284,6 +384,22 @@ function buildHarness(
       return options.immunityResult ?? 'not_granted';
     }),
   };
+  const runtimePolicy = {
+    resolveEffectivePolicy: jest.fn().mockImplementation(async () => {
+      const envEnabled = options.config?.COMMERCIAL_OCR_ROLLOUT_MODE !== 'off';
+      const enforcementAuthority =
+        options.runtimeEnforcementAuthority ?? (envEnabled ? 'authorized' : 'revoked');
+      const enforce = envEnabled && enforcementAuthority === 'authorized';
+      return {
+        mode: enforce ? (options.config?.COMMERCIAL_OCR_ROLLOUT_MODE ?? 'on') : 'shadow',
+        process: envEnabled,
+        enforce,
+        controlRevision: enforce ? 1 : null,
+        controlExpiresAt: enforce ? controlExpiresAt : null,
+        enforcementAuthority,
+      };
+    }),
+  };
   const service = new CommercialOcrDeleteGuardService(
     prisma as never,
     maxClient as never,
@@ -294,8 +410,16 @@ function buildHarness(
       ...options.config,
     }),
     participantImmunity as never,
+    runtimePolicy as never,
   );
-  return { service, prisma, maxClient, maxBotLinkService, participantImmunity };
+  return {
+    service,
+    prisma,
+    maxClient,
+    maxBotLinkService,
+    participantImmunity,
+    runtimePolicy,
+  };
 }
 
 function bindingFor(
@@ -314,6 +438,9 @@ function bindingFor(
     caption: source.caption,
     sourceCreatedAt: source.sourceCreatedAt,
     expectedImageCount: source.orderedPhotoIds.length,
+    controlRevision: 1,
+    controlExpiresAt,
+    ocrDeadlineAt,
   });
 }
 

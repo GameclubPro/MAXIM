@@ -2,6 +2,10 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { extractRawMessageNode } from '../moderation-update-extractors';
 
 const MAX_FORWARD_DEPTH = 8;
+const MAX_FORWARD_MESSAGE_NODES = 32;
+const MAX_FORWARD_REFERENCES_SCANNED = 64;
+const MAX_ATTACHMENT_ENTRIES_SCANNED = 256;
+const MAX_VISIBLE_CAPTION_LENGTH = 8_000;
 export const MAX_PHOTO_ALBUM_IMAGES = 10;
 
 const FORWARD_KEYS = [
@@ -24,36 +28,71 @@ export type LogicalPhotoAlbum = {
   messageId: string;
   senderId: string;
   createdAtMs: number;
+  caption: string;
   images: ExtractedPhotoAttachment[];
 };
 
+export type VisiblePhotoMessageContent = {
+  caption: string;
+  images: ExtractedPhotoAttachment[];
+};
+
+export type VisiblePhotoMessageContentExtractionResult =
+  | { kind: 'none' }
+  | {
+      kind: 'incomplete';
+      reason:
+        | 'missing_identity'
+        | 'too_many_images'
+        | 'forward_traversal_limit'
+        | 'attachment_scan_limit'
+        | 'caption_too_long';
+    }
+  | { kind: 'complete'; content: VisiblePhotoMessageContent };
+
 export type LogicalPhotoAlbumExtractionResult =
   | { kind: 'none' }
-  | { kind: 'incomplete'; reason: 'missing_identity' | 'too_many_images' }
+  | Extract<VisiblePhotoMessageContentExtractionResult, { kind: 'incomplete' }>
   | { kind: 'complete'; album: LogicalPhotoAlbum };
 
-export function extractLogicalPhotoAlbumResult(
-  update: MaxUpdate,
-): LogicalPhotoAlbumExtractionResult {
-  if (normalizeString(update.type)?.toLowerCase() !== 'message_created' || !update.message) {
-    return { kind: 'none' };
-  }
-
-  const raw = asRecord(update.raw);
-  if (!raw) {
-    return { kind: 'none' };
-  }
-
-  const messageNode = extractRawMessageNode(raw);
-  if (!messageNode) {
+/**
+ * Canonical visible OCR content for both persisted webhooks and fresh exact-message rows.
+ * Only explicit forward relations are traversed; replies and quoted previews are excluded.
+ */
+export function extractVisiblePhotoMessageContent(
+  messageNode: unknown,
+): VisiblePhotoMessageContentExtractionResult {
+  const root = asRecord(messageNode);
+  if (!root) {
     return { kind: 'none' };
   }
 
   const attachmentArrays = new Set<unknown[]>();
   const images: ExtractedPhotoAttachment[] = [];
+  const captionSnippets: string[] = [];
+  const captionSnippetKeys = new Set<string>();
+  let attachmentEntriesScanned = 0;
   let sawIncompleteImage = false;
+  let captionLength = 0;
+  let captionTooLong = false;
+  let attachmentScanLimitReached = false;
 
-  const appendImages = (node: Record<string, unknown>, source: 'direct' | 'forward') => {
+  const appendContent = (node: Record<string, unknown>, source: 'direct' | 'forward') => {
+    const snippet = normalizeVisibleText(extractContentText(node));
+    if (snippet) {
+      const key = snippet.toLowerCase();
+      if (!captionSnippetKeys.has(key)) {
+        captionSnippetKeys.add(key);
+        const nextLength = captionLength + (captionSnippets.length > 0 ? 1 : 0) + snippet.length;
+        if (nextLength > MAX_VISIBLE_CAPTION_LENGTH) {
+          captionTooLong = true;
+        } else {
+          captionLength = nextLength;
+          captionSnippets.push(snippet);
+        }
+      }
+    }
+
     for (const attachments of collectOwnAttachmentArrays(node)) {
       if (attachmentArrays.has(attachments)) {
         continue;
@@ -61,6 +100,12 @@ export function extractLogicalPhotoAlbumResult(
       attachmentArrays.add(attachments);
 
       for (const value of attachments) {
+        attachmentEntriesScanned += 1;
+        if (attachmentEntriesScanned > MAX_ATTACHMENT_ENTRIES_SCANNED) {
+          attachmentScanLimitReached = true;
+          return;
+        }
+
         const attachment = asRecord(value);
         if (!attachment || !isImageAttachment(attachment)) {
           continue;
@@ -87,20 +132,32 @@ export function extractLogicalPhotoAlbumResult(
           continue;
         }
 
-        images.push({
-          source,
-          photoId,
-          downloadUrl,
-        });
+        images.push({ source, photoId, downloadUrl });
+        if (images.length > MAX_PHOTO_ALBUM_IMAGES) {
+          return;
+        }
       }
     }
   };
 
-  appendImages(messageNode, 'direct');
-  for (const forwardedNode of collectForwardedMessageNodes(messageNode)) {
-    appendImages(forwardedNode, 'forward');
+  appendContent(root, 'direct');
+  const forwardTraversal = collectForwardedMessageNodes(root);
+  for (const forwardedNode of forwardTraversal.nodes) {
+    if (attachmentScanLimitReached || captionTooLong || images.length > MAX_PHOTO_ALBUM_IMAGES) {
+      break;
+    }
+    appendContent(forwardedNode, 'forward');
   }
 
+  if (forwardTraversal.truncated) {
+    return { kind: 'incomplete', reason: 'forward_traversal_limit' };
+  }
+  if (attachmentScanLimitReached) {
+    return { kind: 'incomplete', reason: 'attachment_scan_limit' };
+  }
+  if (captionTooLong) {
+    return { kind: 'incomplete', reason: 'caption_too_long' };
+  }
   if (images.length === 0 && !sawIncompleteImage) {
     return { kind: 'none' };
   }
@@ -109,6 +166,37 @@ export function extractLogicalPhotoAlbumResult(
   }
   if (images.length > MAX_PHOTO_ALBUM_IMAGES) {
     return { kind: 'incomplete', reason: 'too_many_images' };
+  }
+
+  return {
+    kind: 'complete',
+    content: {
+      caption: captionSnippets.join(' '),
+      images,
+    },
+  };
+}
+
+export function extractLogicalPhotoAlbumResult(
+  update: MaxUpdate,
+): LogicalPhotoAlbumExtractionResult {
+  if (normalizeString(update.type)?.toLowerCase() !== 'message_created' || !update.message) {
+    return { kind: 'none' };
+  }
+
+  const raw = asRecord(update.raw);
+  if (!raw) {
+    return { kind: 'none' };
+  }
+
+  const messageNode = extractRawMessageNode(raw);
+  if (!messageNode) {
+    return { kind: 'none' };
+  }
+
+  const content = extractVisiblePhotoMessageContent(messageNode);
+  if (content.kind !== 'complete') {
+    return content;
   }
 
   const createdAtMs = Date.parse(update.message.createdAt);
@@ -123,7 +211,8 @@ export function extractLogicalPhotoAlbumResult(
       messageId: update.message.messageId,
       senderId: update.message.senderId,
       createdAtMs,
-      images,
+      caption: content.content.caption,
+      images: content.content.images,
     },
   };
 }
@@ -137,84 +226,126 @@ function collectOwnAttachmentArrays(node: Record<string, unknown>): unknown[][] 
   const body = asRecord(node.body);
   const content = asRecord(node.content);
   const payload = asRecord(node.payload);
-  const nestedMessage = asRecord(node.message);
   const candidates = [
     node.attachments,
     body?.attachments,
     content?.attachments,
     payload?.attachments,
-    nestedMessage?.attachments,
   ];
 
   return candidates.filter((value): value is unknown[] => Array.isArray(value));
 }
 
-function collectForwardedMessageNodes(root: Record<string, unknown>): Record<string, unknown>[] {
-  const forwarded: Record<string, unknown>[] = [];
+function collectForwardedMessageNodes(root: Record<string, unknown>): {
+  nodes: Record<string, unknown>[];
+  truncated: boolean;
+} {
+  const nodes: Record<string, unknown>[] = [];
   const visited = new Set<Record<string, unknown>>();
+  let referencesScanned = 0;
+  let truncated = false;
 
   const visitContainer = (container: Record<string, unknown>, depth: number) => {
-    if (depth > MAX_FORWARD_DEPTH || visited.has(container)) {
+    if (visited.has(container) || truncated) {
       return;
     }
     visited.add(container);
 
-    const link = asRecord(container.link);
-    const linkType = normalizeString(
-      link?.type ?? link?.link_type ?? link?.linkType,
-    )?.toLowerCase();
-    if (link && linkType === 'forward') {
-      for (const target of readLinkedPayloads(link)) {
-        visitForwardTarget(target, depth + 1);
-      }
-    }
-
-    for (const holder of [container, asRecord(container.body), asRecord(container.content)]) {
+    for (const holder of [
+      container,
+      asRecord(container.body),
+      asRecord(container.content),
+      asRecord(container.payload),
+    ]) {
       if (!holder) {
         continue;
       }
+
+      const link = asRecord(holder.link);
+      const linkType = normalizeString(
+        link?.type ?? link?.link_type ?? link?.linkType,
+      )?.toLowerCase();
+      if (link && linkType === 'forward') {
+        forEachRecord(link.message, (target) => visitForwardTarget(target, depth + 1));
+        forEachRecord(link.body, (target) => visitForwardTarget(target, depth + 1));
+        forEachRecord(link.content, (target) => visitForwardTarget(target, depth + 1));
+        forEachRecord(link.payload, (target) => visitForwardTarget(target, depth + 1));
+      }
+
       for (const key of FORWARD_KEYS) {
-        for (const target of asRecords(holder[key])) {
-          visitForwardTarget(target, depth + 1);
-        }
+        forEachRecord(holder[key], (target) => visitForwardTarget(target, depth + 1));
       }
     }
   };
 
   const visitForwardTarget = (target: Record<string, unknown>, depth: number) => {
-    if (depth > MAX_FORWARD_DEPTH || isReplyNode(target) || visited.has(target)) {
+    if (isReplyNode(target) || visited.has(target)) {
       return;
     }
-    forwarded.push(target);
+    if (depth > MAX_FORWARD_DEPTH || nodes.length >= MAX_FORWARD_MESSAGE_NODES) {
+      truncated = true;
+      return;
+    }
+
+    nodes.push(target);
     visitContainer(target, depth);
 
     const nestedMessage = asRecord(target.message);
     if (nestedMessage && !isReplyNode(nestedMessage)) {
-      forwarded.push(nestedMessage);
-      visitContainer(nestedMessage, depth + 1);
+      forEachRecord(nestedMessage, (nestedTarget) => visitForwardTarget(nestedTarget, depth));
+    }
+  };
+
+  const forEachRecord = (
+    value: unknown,
+    visit: (target: Record<string, unknown>) => void,
+  ): void => {
+    if (truncated) {
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        referencesScanned += 1;
+        if (referencesScanned > MAX_FORWARD_REFERENCES_SCANNED) {
+          truncated = true;
+          return;
+        }
+        const target = asRecord(item);
+        if (target) {
+          visit(target);
+        }
+        if (truncated) {
+          return;
+        }
+      }
+      return;
+    }
+    if (value !== null && value !== undefined) {
+      referencesScanned += 1;
+      if (referencesScanned > MAX_FORWARD_REFERENCES_SCANNED) {
+        truncated = true;
+        return;
+      }
+    }
+    const target = asRecord(value);
+    if (target) {
+      visit(target);
     }
   };
 
   visitContainer(root, 0);
-  return forwarded;
-}
-
-function readLinkedPayloads(link: Record<string, unknown>): Record<string, unknown>[] {
-  return [link.message, link.body, link.content, link.payload]
-    .flatMap((value) => asRecords(value))
-    .filter((value, index, values) => values.indexOf(value) === index);
-}
-
-function asRecords(value: unknown): Record<string, unknown>[] {
-  if (Array.isArray(value)) {
-    return value.map(asRecord).filter((entry): entry is Record<string, unknown> => Boolean(entry));
-  }
-  const record = asRecord(value);
-  return record ? [record] : [];
+  return { nodes, truncated };
 }
 
 function isReplyNode(node: Record<string, unknown>): boolean {
-  const type = normalizeString(node.type ?? node.link_type ?? node.linkType)?.toLowerCase();
+  const type = normalizeString(
+    node.type ??
+      node.kind ??
+      node.link_type ??
+      node.linkType ??
+      node.relation_type ??
+      node.relationType,
+  )?.toLowerCase();
   return (
     type === 'reply' ||
     type === 'reply_message' ||
@@ -222,6 +353,53 @@ function isReplyNode(node: Record<string, unknown>): boolean {
     type === 'quoted' ||
     type === 'quoted_message'
   );
+}
+
+function extractContentText(message: Record<string, unknown>): string {
+  const body = asRecord(message.body);
+  const content = asRecord(message.content);
+  const payload = asRecord(message.payload);
+  const candidates = [
+    message.text,
+    message.caption,
+    message.plain,
+    message.message_text,
+    message.messageText,
+    body?.text,
+    body?.caption,
+    body?.plain,
+    body?.message_text,
+    body?.messageText,
+    content?.text,
+    content?.caption,
+    content?.plain,
+    content?.message_text,
+    content?.messageText,
+    payload?.text,
+    payload?.caption,
+    payload?.plain,
+    payload?.message_text,
+    payload?.messageText,
+  ];
+  const snippets: string[] = [];
+  const seen = new Set<string>();
+  for (const value of candidates) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+    const normalized = normalizeVisibleText(value);
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    snippets.push(normalized);
+  }
+  return snippets.join(' ');
+}
+
+function normalizeVisibleText(value: string): string {
+  return value.replace(/\s+/gu, ' ').trim();
 }
 
 function isImageAttachment(attachment: Record<string, unknown>): boolean {

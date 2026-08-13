@@ -8,6 +8,7 @@ import { parseNativeTesseractTsv, type ParsedNativeTesseractTsv } from './native
 import type { NativeTesseractPageSegmentationMode } from './native-tesseract-ocr.types';
 
 const MAX_STDERR_BYTES = 64 * 1024;
+const POST_KILL_SETTLE_GRACE_MS = 250;
 const REQUIRED_TESSERACT_LANGUAGES = ['rus', 'eng'] as const;
 
 export type NativeTesseractRunFailureReason =
@@ -80,31 +81,10 @@ export async function probeNativeTesseract(
     let stderrBytes = 0;
     let settled = false;
     let forcedReason: NativeTesseractProbeFailureReason | null = null;
+    let forceSettleTimer: NodeJS.Timeout | null = null;
 
-    const finish = (result: NativeTesseractProbeResult) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      options.onProcessChange?.(null);
-      resolve(result);
-    };
-    const stop = (reason: NativeTesseractProbeFailureReason) => {
-      if (settled || forcedReason) {
-        return;
-      }
-      forcedReason = reason;
-      child.kill('SIGKILL');
-    };
-
-    const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
-    timeout.unref();
-
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      if (forcedReason) {
-        return;
-      }
+    const onStdout = (chunk: Buffer | string) => {
+      if (forcedReason) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       stdoutBytes += buffer.byteLength;
       if (stdoutBytes > options.maxOutputBytes) {
@@ -112,24 +92,20 @@ export async function probeNativeTesseract(
         return;
       }
       stdoutChunks.push(buffer);
-    });
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      if (forcedReason) {
-        return;
-      }
+    };
+    const onStderr = (chunk: Buffer | string) => {
+      if (forcedReason) return;
       stderrBytes += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(chunk);
-      if (stderrBytes > options.maxOutputBytes) {
-        stop('output_limit');
-      }
-    });
-    child.once('error', () => finish({ ok: false, reason: forcedReason ?? 'tesseract_failed' }));
-    child.once('close', (code, signal) => {
+      if (stderrBytes > options.maxOutputBytes) stop('output_limit');
+    };
+    const onError = () => finish({ ok: false, reason: forcedReason ?? 'tesseract_failed' });
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
       if (forcedReason) {
-        finish({ ok: false, reason: forcedReason });
+        finish({ ok: false, reason: forcedReason }, true);
         return;
       }
       if (code !== 0 || signal) {
-        finish({ ok: false, reason: 'tesseract_failed' });
+        finish({ ok: false, reason: 'tesseract_failed' }, true);
         return;
       }
       const languages = new Set(
@@ -142,12 +118,57 @@ export async function probeNativeTesseract(
         REQUIRED_TESSERACT_LANGUAGES.every((language) => languages.has(language))
           ? { ok: true }
           : { ok: false, reason: 'missing_languages' },
+        true,
       );
-    });
+    };
+    const onStdinError = () => undefined;
+    const cleanup = (processClosed: boolean) => {
+      child.stdout.removeListener('data', onStdout);
+      child.stderr.removeListener('data', onStderr);
+      child.removeListener('error', onError);
+      child.removeListener('close', onClose);
+      child.stdin.removeListener('error', onStdinError);
+      if (!processClosed) retainLateProcessErrorGuards(child);
+    };
 
-    child.stdin.once('error', () => {
-      // A process exit is authoritative and will settle the probe through error/close.
-    });
+    const finish = (result: NativeTesseractProbeResult, processClosed = false) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      cleanup(processClosed);
+      options.onProcessChange?.(null);
+      resolve(result);
+    };
+    const stop = (reason: NativeTesseractProbeFailureReason) => {
+      if (settled || forcedReason) {
+        return;
+      }
+      forcedReason = reason;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        finish({ ok: false, reason });
+        return;
+      }
+      if (settled) return;
+      forceSettleTimer = setTimeout(
+        () => finish({ ok: false, reason }),
+        POST_KILL_SETTLE_GRACE_MS,
+      );
+      forceSettleTimer.unref();
+    };
+
+    const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
+    timeout.unref();
+
+    child.stdout.on('data', onStdout);
+    child.stderr.on('data', onStderr);
+    child.once('error', onError);
+    child.once('close', onClose);
+    child.stdin.once('error', onStdinError);
     child.stdin.end();
   });
 }
@@ -182,31 +203,10 @@ export async function runNativeTesseract(
     let stderrBytes = 0;
     let settled = false;
     let forcedReason: NativeTesseractRunFailureReason | null = null;
+    let forceSettleTimer: NodeJS.Timeout | null = null;
 
-    const finish = (result: NativeTesseractRunResult) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      options.onProcessChange?.(null);
-      resolve(result);
-    };
-    const stop = (reason: NativeTesseractRunFailureReason) => {
-      if (settled || forcedReason) {
-        return;
-      }
-      forcedReason = reason;
-      child.kill('SIGKILL');
-    };
-
-    const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
-    timeout.unref();
-
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      if (forcedReason) {
-        return;
-      }
+    const onStdout = (chunk: Buffer | string) => {
+      if (forcedReason) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       stdoutBytes += buffer.byteLength;
       if (stdoutBytes > options.maxOutputBytes) {
@@ -214,21 +214,21 @@ export async function runNativeTesseract(
         return;
       }
       stdoutChunks.push(buffer);
-    });
-    child.stderr.on('data', (chunk: Buffer | string) => {
+    };
+    const onStderr = (chunk: Buffer | string) => {
       stderrBytes = Math.min(
         MAX_STDERR_BYTES,
         stderrBytes + (Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(chunk)),
       );
-    });
-    child.once('error', () => finish({ ok: false, reason: forcedReason ?? 'tesseract_failed' }));
-    child.once('close', (code, signal) => {
+    };
+    const onError = () => finish({ ok: false, reason: forcedReason ?? 'tesseract_failed' });
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
       if (forcedReason) {
-        finish({ ok: false, reason: forcedReason });
+        finish({ ok: false, reason: forcedReason }, true);
         return;
       }
       if (code !== 0 || signal) {
-        finish({ ok: false, reason: 'tesseract_failed' });
+        finish({ ok: false, reason: 'tesseract_failed' }, true);
         return;
       }
       try {
@@ -237,15 +237,76 @@ export async function runNativeTesseract(
           payload: parseNativeTesseractTsv(
             Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'),
           ),
-        });
+        }, true);
       } catch {
-        finish({ ok: false, reason: 'invalid_output' });
+        finish({ ok: false, reason: 'invalid_output' }, true);
       }
-    });
+    };
+    const onStdinError = () => undefined;
+    const cleanup = (processClosed: boolean) => {
+      child.stdout.removeListener('data', onStdout);
+      child.stderr.removeListener('data', onStderr);
+      child.removeListener('error', onError);
+      child.removeListener('close', onClose);
+      child.stdin.removeListener('error', onStdinError);
+      if (!processClosed) retainLateProcessErrorGuards(child);
+    };
 
-    child.stdin.once('error', () => {
-      // A process exit is authoritative and will settle the run through error/close.
-    });
+    const finish = (result: NativeTesseractRunResult, processClosed = false) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      cleanup(processClosed);
+      options.onProcessChange?.(null);
+      resolve(result);
+    };
+    const stop = (reason: NativeTesseractRunFailureReason) => {
+      if (settled || forcedReason) {
+        return;
+      }
+      forcedReason = reason;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        finish({ ok: false, reason });
+        return;
+      }
+      if (settled) return;
+      forceSettleTimer = setTimeout(
+        () => finish({ ok: false, reason }),
+        POST_KILL_SETTLE_GRACE_MS,
+      );
+      forceSettleTimer.unref();
+    };
+
+    const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
+    timeout.unref();
+
+    child.stdout.on('data', onStdout);
+    child.stderr.on('data', onStderr);
+    child.once('error', onError);
+    child.once('close', onClose);
+    child.stdin.once('error', onStdinError);
     child.stdin.end(options.image);
   });
+}
+
+function retainLateProcessErrorGuards(child: ChildProcessWithoutNullStreams): void {
+  const onLateError = () => undefined;
+  const onLateClose = () => {
+    child.removeListener('error', onLateError);
+    child.removeListener('close', onLateClose);
+    child.stdin.removeListener('error', onLateError);
+    child.stdout.removeListener('error', onLateError);
+    child.stderr.removeListener('error', onLateError);
+  };
+
+  child.on('error', onLateError);
+  child.once('close', onLateClose);
+  child.stdin.on('error', onLateError);
+  child.stdout.on('error', onLateError);
+  child.stderr.on('error', onLateError);
 }

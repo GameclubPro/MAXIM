@@ -28,6 +28,10 @@ export type DownloadedPhoto = {
   format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif' | 'heif' | 'tiff';
 };
 
+export type SecurePhotoDownloadOptions = Readonly<{
+  deadlineAtMs?: number;
+}>;
+
 export class PhotoDownloadHttpError extends Error {
   constructor(readonly statusCode: number) {
     super(`Photo host returned HTTP ${statusCode}`);
@@ -61,8 +65,15 @@ export class SecurePhotoDownloader {
     this.maxConcurrency = DEFAULT_MAX_CONCURRENCY;
   }
 
-  async download(rawUrl: string): Promise<DownloadedPhoto> {
-    const deadlineAtMs = Date.now() + this.timeoutMs;
+  async download(
+    rawUrl: string,
+    options: SecurePhotoDownloadOptions = {},
+  ): Promise<DownloadedPhoto> {
+    const configuredDeadlineAtMs = Date.now() + this.timeoutMs;
+    const deadlineAtMs =
+      options.deadlineAtMs === undefined
+        ? configuredDeadlineAtMs
+        : Math.min(configuredDeadlineAtMs, validateExternalDeadline(options.deadlineAtMs));
     const release = await this.acquireSlot(deadlineAtMs);
     try {
       return await this.downloadWithin(rawUrl, 0, deadlineAtMs);
@@ -316,6 +327,13 @@ function parsePositiveConfig(value: string | number | undefined, fallback: numbe
   const parsed = typeof value === 'number' ? value : Number.parseInt(value ?? '', 10);
   const normalized = Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
   return normalized;
+}
+
+function validateExternalDeadline(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('Photo download deadline is invalid');
+  }
+  return value;
 }
 
 function readRedirectLocation(statusCode: number, headers: IncomingHttpHeaders): string | null {

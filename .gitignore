@@ -10,6 +10,7 @@ coverage/
 artifacts/miniapp-screenshots/
 artifacts/vps-review/
 artifacts/commercial-audit/
+artifacts/commercial-ocr-private/
 apps/api/src/generated/prisma/
 packages/contracts/src/**/*.js
 

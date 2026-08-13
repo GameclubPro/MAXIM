@@ -17,9 +17,12 @@ jest.mock('ioredis', () => ({
   }),
 }));
 
-function createConfigMock() {
+function createConfigMock(overrides: Record<string, unknown> = {}) {
   return {
-    get: jest.fn((key: string, fallback?: number) => {
+    get: jest.fn((key: string, fallback?: unknown) => {
+      if (key in overrides) {
+        return overrides[key];
+      }
       if (key === 'QUEUE_LAG_DEGRADE_SEC') {
         return 10;
       }
@@ -178,6 +181,125 @@ describe('HealthService', () => {
         breachDurationSec: 0,
       }),
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('requires fresh privacy-safe OCR readiness only for media analysis', async () => {
+    const prisma = {
+      $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
+    };
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue(healthyQueueSnapshot()),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue(healthySystemModeSnapshot()),
+    };
+    const privateStatus = {
+      state: 'ready',
+      ready: true,
+      workers: { configured: 1, live: 1, ready: 1, busy: 0 },
+      queueDepth: 0,
+      counters: {
+        completed: 3,
+        failed: 1,
+        restarts: 1,
+        recycles: 2,
+        failuresByReason: { timeout: 1 },
+      },
+      latencyMs: { last: 12, average: 15, maximum: 20 },
+      text: 'СЕКРЕТНЫЙ OCR ТЕКСТ',
+      image: Buffer.from('private-pixels'),
+      url: 'https://private.example/image',
+      jobId: 'private-job-id',
+    };
+    const ocr = { getRuntimeStatus: jest.fn(() => privateStatus) };
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock({ APP_SERVICE_NAME: 'api-media-analysis' }) as never,
+      undefined,
+      undefined,
+      ocr as never,
+    );
+
+    const ready = await service.ready();
+    expect(ready.ok).toBe(true);
+    expect(ready.checks.ocr).toEqual({
+      state: 'ready',
+      ready: true,
+      workers: { configured: 1, live: 1, ready: 1, busy: 0 },
+      queueDepth: 0,
+      counters: {
+        completed: 3,
+        failed: 1,
+        restarts: 1,
+        recycles: 2,
+        failuresByReason: { timeout: 1 },
+      },
+      latencyMs: { last: 12, average: 15, maximum: 20 },
+    });
+    const serialized = JSON.stringify(ready);
+    expect(serialized).not.toContain('СЕКРЕТНЫЙ OCR ТЕКСТ');
+    expect(serialized).not.toContain('private-pixels');
+    expect(serialized).not.toContain('private.example');
+    expect(serialized).not.toContain('private-job-id');
+
+    privateStatus.state = 'degraded';
+    privateStatus.ready = false;
+    const degraded = await service.ready();
+    expect(degraded.ok).toBe(false);
+    expect(degraded.checks.ocr).toMatchObject({ state: 'degraded', ready: false });
+    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('fails media-analysis readiness when the OCR provider is unavailable', async () => {
+    const service = new HealthService(
+      { $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]) } as never,
+      { getSnapshot: jest.fn().mockResolvedValue(healthyQueueSnapshot()) } as never,
+      { getEffectiveSnapshot: jest.fn().mockResolvedValue(healthySystemModeSnapshot()) } as never,
+      createConfigMock({ APP_SERVICE_NAME: 'api-media-analysis' }) as never,
+    );
+
+    const snapshot = await service.ready();
+    expect(snapshot.ok).toBe(false);
+    expect(snapshot.checks.ocr).toEqual({
+      state: 'unavailable',
+      ready: false,
+      workers: { configured: 0, live: 0, ready: 0, busy: 0 },
+      queueDepth: 0,
+      counters: {
+        completed: 0,
+        failed: 0,
+        restarts: 0,
+        recycles: 0,
+        failuresByReason: {},
+      },
+      latencyMs: { last: null, average: null, maximum: null },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('omits OCR status and keeps other roles ready when the OCR worker is degraded', async () => {
+    const service = new HealthService(
+      { $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]) } as never,
+      { getSnapshot: jest.fn().mockResolvedValue(healthyQueueSnapshot()) } as never,
+      { getEffectiveSnapshot: jest.fn().mockResolvedValue(healthySystemModeSnapshot()) } as never,
+      createConfigMock({ APP_SERVICE_NAME: 'api-ingress' }) as never,
+      undefined,
+      undefined,
+      {
+        getRuntimeStatus: jest.fn().mockReturnValue({ state: 'degraded', ready: false }),
+      } as never,
+    );
+
+    const snapshot = await service.ready();
+    expect(snapshot.ok).toBe(true);
+    expect(snapshot.checks.ocr).toBeUndefined();
 
     await service.onModuleDestroy();
   });
@@ -1745,3 +1867,57 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 });
+
+function healthyQueueSnapshot() {
+  return {
+    moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    webhookEvents: {
+      received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+    },
+    actionHealth: {
+      windowSec: 60,
+      total: 0,
+      success: 0,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    },
+    oldestQueuedEventId: null,
+    oldestQueuedCreatedAt: null,
+    oldestQueuedLagSec: 0,
+    oldestReceivedEventId: null,
+    oldestReceivedCreatedAt: null,
+    oldestReceivedLagSec: 0,
+    effectiveLagSec: 0,
+    generatedAt: '2026-08-13T09:00:00.000Z',
+    bots: {},
+  };
+}
+
+function healthySystemModeSnapshot() {
+  return {
+    mode: 'normal' as const,
+    source: 'auto' as const,
+    reason: 'system healthy',
+    updatedAt: '2026-08-13T09:00:00.000Z',
+    manualMode: null,
+    queueLagSec: 0,
+    action: {
+      windowSec: 60,
+      total: 0,
+      success: 0,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    },
+  };
+}

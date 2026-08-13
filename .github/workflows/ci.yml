@@ -176,6 +176,21 @@ jobs:
             -f "${{ matrix.dockerfile }}" \
             -t "$IMAGE_REF" \
             .
+      - name: Smoke native OCR in API image
+        if: matrix.component == 'api'
+        env:
+          IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
+        run: >-
+          docker run --rm --init --read-only
+          --cap-drop=ALL
+          --security-opt=no-new-privileges
+          --pids-limit=128
+          --memory=1g
+          --cpus=0.75
+          --tmpfs /tmp:rw,nosuid,size=64m,uid=1000,gid=1000
+          --entrypoint=node
+          "$IMAGE_REF"
+          apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js
       - name: Package immutable production image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

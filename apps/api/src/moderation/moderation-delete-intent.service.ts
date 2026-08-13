@@ -17,6 +17,12 @@ import {
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  buildMessageScopedModerationActionClaimKey,
+  claimDurableModerationMessageAction,
+  type ModerationMessageActionClaimData,
+  type ModerationMessageActionClaimModel,
+} from './moderation-message-action-claim';
+import {
   MODERATION_DELETE_INTENT_QUEUE,
   type ModerationDeleteIntentJob,
 } from './moderation-delete-intent.queue';
@@ -27,6 +33,7 @@ import {
 } from './moderation-delete-intent-rollout.util';
 import type {
   EnsureModerationDeleteIntentInput,
+  EnsureClaimedModerationDeleteIntentResult,
   EnsureModerationDeleteIntentResult,
   ModerationDeleteAttemptResult,
   ModerationDeleteIntentMode,
@@ -50,7 +57,10 @@ import {
 import { PhotoDuplicateRuntimePolicyService } from './photo-duplicate/photo-duplicate-runtime-policy.service';
 import {
   COMMERCIAL_OCR_DELETE_RULE_CODE,
+  COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE,
+  CommercialOcrDeleteGuardRejectedError,
   CommercialOcrDeleteGuardService,
+  parseCommercialOcrDeleteBinding,
 } from './commercial-ocr/commercial-ocr-delete-guard.service';
 
 const DEFAULT_RETRY_HORIZON_MS = 24 * 60 * 60_000;
@@ -93,6 +103,8 @@ type IntentRow = {
   messageAuthorKind: string | null;
   originBotId: string | null;
   routingPolicy: string;
+  commercialOcrGuardRequired: boolean;
+  commercialOcrDeadlineAt: Date | null;
   status: ModerationDeleteIntentStatus;
   executeAt: Date;
   nextAttemptAt: Date;
@@ -115,7 +127,6 @@ type IntentRow = {
   botMessageAutoDeleteOnly?: boolean;
   linkFamilyDeleteOnly?: boolean;
   photoDuplicateDeleteOnly?: boolean;
-  commercialOcrDeleteOnly?: boolean;
 };
 
 type PhotoDuplicateDeleteReasonFence = {
@@ -173,6 +184,15 @@ class ModerationDeletePreDispatchGuardError extends Error {
   constructor(readonly guardError: unknown) {
     super('Moderation delete pre-dispatch guard rejected the mutation', { cause: guardError });
     this.name = 'ModerationDeletePreDispatchGuardError';
+  }
+}
+
+class ModerationDeleteReasonMissingError extends Error {
+  readonly code = 'moderation_delete_reason_missing';
+
+  constructor() {
+    super('Moderation delete intent has no durable reason');
+    this.name = 'ModerationDeleteReasonMissingError';
   }
 }
 
@@ -374,6 +394,44 @@ export class ModerationDeleteIntentService {
     return this.persistIntent(input, true);
   }
 
+  async ensureIntentWithMessageActionClaim(params: {
+    claim: ModerationMessageActionClaimData;
+    intent: EnsureModerationDeleteIntentInput;
+  }): Promise<EnsureClaimedModerationDeleteIntentResult> {
+    this.assertClaimMatchesIntent(params.claim, params.intent);
+    if (this.getRolloutForInput(params.intent) === 'off') {
+      return { claim: 'blocked', intent: null };
+    }
+
+    const result = await this.runSerializableTransaction(async (tx) => {
+      const claim = await claimDurableModerationMessageAction({
+        model: tx.moderationViolationMessageClaim as unknown as ModerationMessageActionClaimModel,
+        data: params.claim,
+        resumeKnownOwner: true,
+      });
+      if (claim === 'blocked') {
+        return { claim, intent: null } as const;
+      }
+      const intent = await this.persistIntent(params.intent, false, tx);
+      if (!intent.intentId) {
+        throw new Error('Claimed moderation message action did not materialize a delete intent');
+      }
+      return { claim, intent } as const;
+    });
+
+    if (result.intent?.rollout === 'execute' && result.intent.intentId) {
+      try {
+        await this.enqueueCurrentWakeup(result.intent.intentId, DELETE_QUEUE_PRIORITY_INTERACTIVE);
+      } catch (error: unknown) {
+        this.logger.warn(
+          { intentId: result.intent.intentId, err: this.errorMessage(error) },
+          'Failed to enqueue atomically persisted moderation delete intent; DB sweeper will retry',
+        );
+      }
+    }
+    return result;
+  }
+
   async ensureAndAttempt(
     input: EnsureModerationDeleteIntentInput,
     options?: ModerationDeleteIntentAttemptOptions,
@@ -432,7 +490,7 @@ export class ModerationDeleteIntentService {
 
     const now = new Date();
     const retryUntilAt = new Date(now.getTime() + this.retryHorizonMs);
-    const reopened = await this.prisma.$transaction(async (tx) => {
+    const reopened = await this.runSerializableTransaction(async (tx) => {
       const rows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
         UPDATE "moderation_delete_intents"
         SET
@@ -449,7 +507,38 @@ export class ModerationDeleteIntentService {
           END,
           "execute_at" = LEAST("execute_at", ${now}),
           "next_attempt_at" = ${now},
-          "retry_until_at" = GREATEST("retry_until_at", ${retryUntilAt}),
+          "commercial_ocr_guard_required" = (
+            "commercial_ocr_guard_required"
+            OR EXISTS (
+              SELECT 1
+              FROM "moderation_delete_intent_reasons" existing_ocr_reason
+              WHERE existing_ocr_reason."intent_id" = "moderation_delete_intents"."id"
+                AND existing_ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            )
+          ),
+          "commercial_ocr_deadline_at" = CASE
+            WHEN "commercial_ocr_guard_required" OR EXISTS (
+              SELECT 1
+              FROM "moderation_delete_intent_reasons" existing_ocr_reason
+              WHERE existing_ocr_reason."intent_id" = "moderation_delete_intents"."id"
+                AND existing_ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            )
+            THEN COALESCE("commercial_ocr_deadline_at", "retry_until_at")
+            ELSE "commercial_ocr_deadline_at"
+          END,
+          "retry_until_at" = CASE
+            WHEN "commercial_ocr_guard_required" OR EXISTS (
+              SELECT 1
+              FROM "moderation_delete_intent_reasons" existing_ocr_reason
+              WHERE existing_ocr_reason."intent_id" = "moderation_delete_intents"."id"
+                AND existing_ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            )
+            THEN LEAST(
+              GREATEST("retry_until_at", ${retryUntilAt}),
+              COALESCE("commercial_ocr_deadline_at", "retry_until_at")
+            )
+            ELSE GREATEST("retry_until_at", ${retryUntilAt})
+          END,
           "completed_at" = NULL,
           "lease_token" = NULL,
           "lease_expires_at" = NULL,
@@ -459,6 +548,18 @@ export class ModerationDeleteIntentService {
           AND "status" = CAST(${expectedStatus} AS "ModerationDeleteIntentStatus")
           AND "updated_at" = ${expectedVersion.updatedAt}
           AND "attempt_count" = ${expectedVersion.attemptCount}
+          AND (
+            NOT (
+              "commercial_ocr_guard_required"
+              OR EXISTS (
+                SELECT 1
+                FROM "moderation_delete_intent_reasons" existing_ocr_reason
+                WHERE existing_ocr_reason."intent_id" = "moderation_delete_intents"."id"
+                  AND existing_ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+              )
+            )
+            OR COALESCE("commercial_ocr_deadline_at", "retry_until_at") > ${now}
+          )
         RETURNING ${this.intentReturningSql()}
       `);
       const updated = rows[0] ?? null;
@@ -638,7 +739,7 @@ export class ModerationDeleteIntentService {
             intent.deleteDispatchStartedAt = new Date();
             intent.deleteDispatchStartedBotId = botId;
             unresolvedDeleteDispatch = true;
-            await this.runDeletePreDispatchGuards(intent, botId, options);
+            await this.runDeletePreDispatchGuards(intent, botId, options, leaseToken);
           };
           await this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
             immediate: true,
@@ -684,12 +785,16 @@ export class ModerationDeleteIntentService {
               error.guardError,
               'delete_pre_dispatch_guard_rejected',
             );
-            await this.finishRetryableAttempt(intent, leaseToken, {
+            const terminalGuardRejection = this.isTerminalDeleteGuardRejection(error.guardError);
+            const outcome = await this.finishRetryableAttempt(intent, leaseToken, {
               ...details,
-              status: 'RETRYABLE',
-              errorCode: 'delete_pre_dispatch_guard_rejected',
-              retryDelayMs: this.retryDelayMs(intent.attemptCount),
+              status: terminalGuardRejection ? 'FAILED_TERMINAL' : 'RETRYABLE',
+              errorCode: details.errorCode,
+              retryDelayMs: terminalGuardRejection ? null : this.retryDelayMs(intent.attemptCount),
             });
+            if (terminalGuardRejection) {
+              return outcome;
+            }
             throw error;
           }
           if (error instanceof ModerationDeleteIntentLeaseLostError) {
@@ -1345,12 +1450,16 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     botId: string,
     options?: ModerationDeleteIntentAttemptOptions,
+    finalDispatchLeaseToken?: string,
   ): Promise<void> {
     try {
+      // FLAG: A remote DELETE must always have a durable reason at the exact dispatch boundary.
+      // Derived rule classifiers cannot represent a reasonless intent and therefore cannot fence it.
+      const commercialOcrGuardRequired = await this.resolveDeleteIntentCommercialOcrGuard(intent);
       // FLAG: A durable photo-only retry must regain authorization from current chat settings and
       // a fresh shared runtime control immediately before every remote DELETE mutation.
       await this.assertPhotoDuplicateDeleteIntentStillActionable(intent);
-      if (intent.commercialOcrDeleteOnly === true) {
+      if (commercialOcrGuardRequired) {
         // FLAG: OCR is asynchronous. Bind every OCR-only DELETE to the current exact message,
         // author immunity, filter setting, runtime rollout and behavior versions at dispatch time.
         const result = await this.commercialOcrDeleteGuard.assertIntentStillActionable({
@@ -1366,8 +1475,6 @@ export class ModerationDeleteIntentService {
             'guarded_commercial_ocr_predispatch_exact_absence',
           );
         }
-        // A concurrently attached independent reason owns the same DELETE and must not be
-        // suppressed by OCR-specific rollout controls.
       }
       if (intent.linkFamilyDeleteOnly === true) {
         const result = await this.linkHistoryDeleteGuard.assertIntentStillActionable({
@@ -1387,12 +1494,97 @@ export class ModerationDeleteIntentService {
         }
       }
       await options?.beforeDeleteMutation?.();
+      if (commercialOcrGuardRequired && finalDispatchLeaseToken) {
+        await this.assertCommercialOcrDispatchDeadline(intent.id, finalDispatchLeaseToken, botId);
+      }
     } catch (error: unknown) {
       if (error instanceof ModerationDeleteGuardedMessageAbsentError) {
         throw error;
       }
       throw new ModerationDeletePreDispatchGuardError(error);
     }
+  }
+
+  private async assertCommercialOcrDispatchDeadline(
+    intentId: string,
+    leaseToken: string,
+    botId: string,
+  ): Promise<void> {
+    // FLAG: This database-clock fence is the final await before MAX DELETE. The earlier OCR guard
+    // performs network and immunity checks that may outlive the durable OCR authorization window.
+    const changed = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "moderation_delete_intents" intent
+      SET "updated_at" = CURRENT_TIMESTAMP
+      WHERE intent."id" = ${intentId}
+        AND intent."status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+        AND intent."lease_token" = ${leaseToken}
+        AND intent."lease_expires_at" > CURRENT_TIMESTAMP
+        AND intent."delete_dispatch_started_at" IS NOT NULL
+        AND intent."delete_dispatch_started_bot_id" = ${botId}
+        AND (
+          intent."commercial_ocr_guard_required"
+          OR EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" ocr_reason
+            WHERE ocr_reason."intent_id" = intent."id"
+              AND ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+          )
+        )
+        AND COALESCE(intent."commercial_ocr_deadline_at", intent."retry_until_at")
+          > CURRENT_TIMESTAMP
+    `);
+    if (changed === 0) {
+      throw new CommercialOcrDeleteGuardRejectedError(
+        'commercial_ocr_deadline_expired',
+        'Commercial OCR deletion deadline expired before dispatch',
+      );
+    }
+  }
+
+  private isTerminalDeleteGuardRejection(error: unknown): boolean {
+    const code = this.firstString(this.asRecord(error)?.code);
+    if (code === 'moderation_delete_reason_missing') {
+      return true;
+    }
+    return (
+      code === 'commercial_ocr_runtime_disabled' ||
+      code === 'commercial_ocr_runtime_revoked' ||
+      code === 'commercial_ocr_runtime_control_changed' ||
+      code === 'commercial_ocr_runtime_control_expired' ||
+      code === 'commercial_ocr_deadline_expired' ||
+      code === 'commercial_ocr_version_changed' ||
+      code === 'commercial_ocr_binding_invalid' ||
+      code === 'commercial_ocr_binding_ambiguous' ||
+      code === 'commercial_ocr_reason_missing' ||
+      code === 'commercial_ocr_author_immune' ||
+      code === 'commercial_ocr_source_timestamp_changed' ||
+      code === 'commercial_ocr_filter_disabled' ||
+      code === 'commercial_ocr_policy_changed' ||
+      code === 'commercial_ocr_admin_immune' ||
+      code === 'commercial_ocr_message_changed' ||
+      code === 'commercial_ocr_participant_immune'
+    );
+  }
+
+  private async resolveDeleteIntentCommercialOcrGuard(intent: IntentRow): Promise<boolean> {
+    // An old writer may finish after the additive migration and rely on the column default. The
+    // durable reason remains authoritative, so dispatch must discover it even when the row flag is
+    // false. Invalid legacy bindings then fail closed in the OCR guard.
+    const reason = await this.prisma.moderationDeleteIntentReason.findFirst({
+      where: { intentId: intent.id },
+      select: { id: true },
+    });
+    if (!reason) {
+      throw new ModerationDeleteReasonMissingError();
+    }
+    if (intent.commercialOcrGuardRequired === true) {
+      return true;
+    }
+    const commercialOcrReason = await this.prisma.moderationDeleteIntentReason.findFirst({
+      where: { intentId: intent.id, ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE },
+      select: { id: true },
+    });
+    return commercialOcrReason !== null;
   }
 
   private async assertPhotoDuplicateDeleteIntentStillActionable(intent: IntentRow): Promise<void> {
@@ -1503,6 +1695,7 @@ export class ModerationDeleteIntentService {
   private async persistIntent(
     input: EnsureModerationDeleteIntentInput,
     enqueue: boolean,
+    transactionClient?: Prisma.TransactionClient,
   ): Promise<EnsureModerationDeleteIntentResult> {
     const normalized = this.normalizeInput(input);
     const rollout = this.getRolloutForRule(normalized.chatId, normalized.ruleCode);
@@ -1535,18 +1728,29 @@ export class ModerationDeleteIntentService {
             )
             AND EXCLUDED."status" <> CAST('OBSERVED' AS "ModerationDeleteIntentStatus")
           `;
+    const hasStoredCommercialOcrReason = Prisma.sql`
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" existing_ocr_reason
+        WHERE existing_ocr_reason."intent_id" = "moderation_delete_intents"."id"
+          AND existing_ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+      )
+    `;
 
-    const persisted = await this.prisma.$transaction(async (tx) => {
+    const persist = async (tx: Prisma.TransactionClient) => {
       const rows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
         INSERT INTO "moderation_delete_intents" (
           "id", "chat_id", "message_id", "subject_user_id", "source_message_at",
-          "entity_type", "message_author_kind", "origin_bot_id", "routing_policy", "status",
+          "entity_type", "message_author_kind", "origin_bot_id", "routing_policy",
+          "commercial_ocr_guard_required", "commercial_ocr_deadline_at", "status",
           "execute_at", "next_attempt_at",
           "retry_until_at", "completed_at", "created_at", "updated_at"
         ) VALUES (
           ${intentId}, ${normalized.chatId}, ${normalized.messageId}, ${normalized.subjectUserId},
           ${normalized.sourceMessageAt}, CAST(${normalized.entityType} AS "ChatEntityType"),
           ${normalized.messageAuthorKind}, ${normalized.originBotId}, ${normalized.routingPolicy},
+          ${normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE},
+          ${normalized.commercialOcrDeadlineAt},
           CAST(${initialStatus} AS "ModerationDeleteIntentStatus"), ${normalized.executeAt},
           ${normalized.executeAt}, ${normalized.retryUntilAt},
           ${initialStatus === 'EXPIRED' ? new Date() : null}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -1611,6 +1815,24 @@ export class ModerationDeleteIntentService {
             THEN EXCLUDED."routing_policy"
             ELSE "moderation_delete_intents"."routing_policy"
           END,
+          "commercial_ocr_guard_required" = (
+            "moderation_delete_intents"."commercial_ocr_guard_required"
+            OR EXCLUDED."commercial_ocr_guard_required"
+            OR ${hasStoredCommercialOcrReason}
+          ),
+          "commercial_ocr_deadline_at" = CASE
+            WHEN (
+              "moderation_delete_intents"."commercial_ocr_guard_required"
+              OR EXCLUDED."commercial_ocr_guard_required"
+              OR ${hasStoredCommercialOcrReason}
+            )
+            THEN COALESCE(
+              "moderation_delete_intents"."commercial_ocr_deadline_at",
+              EXCLUDED."commercial_ocr_deadline_at",
+              "moderation_delete_intents"."retry_until_at"
+            )
+            ELSE "moderation_delete_intents"."commercial_ocr_deadline_at"
+          END,
           "execute_at" = CASE
             WHEN ${shouldPromoteObserved}
             THEN EXCLUDED."execute_at"
@@ -1623,11 +1845,47 @@ export class ModerationDeleteIntentService {
           END,
           "retry_until_at" = CASE
             WHEN ${shouldPromoteObserved}
-            THEN EXCLUDED."retry_until_at"
-            ELSE GREATEST(
-              "moderation_delete_intents"."retry_until_at",
-              EXCLUDED."retry_until_at"
-            )
+            THEN CASE
+              WHEN (
+                "moderation_delete_intents"."commercial_ocr_guard_required"
+                OR EXCLUDED."commercial_ocr_guard_required"
+                OR ${hasStoredCommercialOcrReason}
+              )
+              THEN LEAST(
+                EXCLUDED."retry_until_at",
+                COALESCE(
+                  "moderation_delete_intents"."commercial_ocr_deadline_at",
+                  EXCLUDED."commercial_ocr_deadline_at",
+                  EXCLUDED."retry_until_at"
+                )
+              )
+              ELSE EXCLUDED."retry_until_at"
+            END
+            ELSE CASE
+              WHEN (
+                "moderation_delete_intents"."commercial_ocr_guard_required"
+                OR EXCLUDED."commercial_ocr_guard_required"
+                OR ${hasStoredCommercialOcrReason}
+              )
+              THEN LEAST(
+                GREATEST(
+                  "moderation_delete_intents"."retry_until_at",
+                  EXCLUDED."retry_until_at"
+                ),
+                COALESCE(
+                  "moderation_delete_intents"."commercial_ocr_deadline_at",
+                  EXCLUDED."commercial_ocr_deadline_at",
+                  GREATEST(
+                    "moderation_delete_intents"."retry_until_at",
+                    EXCLUDED."retry_until_at"
+                  )
+                )
+              )
+              ELSE GREATEST(
+                "moderation_delete_intents"."retry_until_at",
+                EXCLUDED."retry_until_at"
+              )
+            END
           END,
           "completed_at" = CASE
             WHEN ${shouldPromoteObserved}
@@ -1645,6 +1903,8 @@ export class ModerationDeleteIntentService {
           "message_author_kind" AS "messageAuthorKind",
           "origin_bot_id" AS "originBotId",
           "routing_policy" AS "routingPolicy",
+          "commercial_ocr_guard_required" AS "commercialOcrGuardRequired",
+          "commercial_ocr_deadline_at" AS "commercialOcrDeadlineAt",
           "status",
           "execute_at" AS "executeAt",
           "next_attempt_at" AS "nextAttemptAt",
@@ -1817,7 +2077,10 @@ export class ModerationDeleteIntentService {
         await this.materializeModerationEventsForIntent(tx, effectiveIntent.id);
       }
       return effectiveIntent;
-    });
+    };
+    const persisted = transactionClient
+      ? await persist(transactionClient)
+      : await this.prisma.$transaction(persist);
     persisted.replacementCleanup = this.isReplacementCleanupRuleCode(normalized.ruleCode);
 
     const effectiveRollout =
@@ -2392,10 +2655,13 @@ export class ModerationDeleteIntentService {
     `);
   }
 
-  private async enqueueCurrentWakeup(intentId: string): Promise<void> {
+  private async enqueueCurrentWakeup(
+    intentId: string,
+    priority = DELETE_QUEUE_PRIORITY_BACKGROUND,
+  ): Promise<void> {
     const intent = await this.loadIntent(intentId);
     if (intent) {
-      await this.enqueueWakeup(intent);
+      await this.enqueueWakeup(intent, priority);
     }
   }
 
@@ -3398,6 +3664,13 @@ export class ModerationDeleteIntentService {
     if (retryUntilAt < executeAt) {
       throw new Error('retryUntilAt must not be earlier than executeAt');
     }
+    const commercialOcrDeadlineAt = this.toNullableDate(input.commercialOcrDeadlineAt);
+    if (
+      ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE &&
+      (!commercialOcrDeadlineAt || commercialOcrDeadlineAt.getTime() !== retryUntilAt.getTime())
+    ) {
+      throw new Error('commercial OCR intent deadline must equal retryUntilAt');
+    }
 
     const subjectUserId = this.optionalString(input.subjectUserId);
     const eventUserId = this.optionalString(input.event?.userId) ?? subjectUserId;
@@ -3435,6 +3708,7 @@ export class ModerationDeleteIntentService {
       routingPolicy,
       executeAt,
       retryUntilAt,
+      commercialOcrDeadlineAt,
       event: {
         userId: eventUserId,
         eventType,
@@ -3446,6 +3720,60 @@ export class ModerationDeleteIntentService {
         metadata: input.event?.metadata,
       },
     };
+  }
+
+  private assertClaimMatchesIntent(
+    claim: ModerationMessageActionClaimData,
+    intent: EnsureModerationDeleteIntentInput,
+  ): void {
+    const binding = parseCommercialOcrDeleteBinding(intent.event?.metadata);
+    const retryUntilAt = this.toNullableDate(intent.retryUntilAt);
+    if (
+      claim.updateType !== 'message_action' ||
+      claim.ruleCode !== COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE ||
+      claim.messageActionKey !==
+        buildMessageScopedModerationActionClaimKey(intent.chatId, intent.messageId) ||
+      !claim.dedupeKey.startsWith('commercial-ocr-action:v1:') ||
+      claim.chatId.trim() !== intent.chatId.trim() ||
+      claim.messageId.trim() !== intent.messageId.trim() ||
+      claim.userId.trim() !== this.optionalString(intent.subjectUserId) ||
+      (intent.ruleCode ?? intent.reasonKey).trim() !== COMMERCIAL_OCR_DELETE_RULE_CODE ||
+      !binding ||
+      !retryUntilAt ||
+      retryUntilAt.toISOString() !== binding.ocrDeadlineAt ||
+      this.toNullableDate(intent.sourceMessageAt)?.toISOString() !== binding.sourceCreatedAt
+    ) {
+      throw new Error('Moderation message action claim does not match its OCR delete intent');
+    }
+  }
+
+  private async runSerializableTransaction<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        });
+      } catch (error: unknown) {
+        if (attempt >= maxAttempts || !this.isPrismaSerializationFailure(error)) {
+          throw error;
+        }
+      }
+    }
+    throw new Error('Serializable moderation delete intent transaction did not complete');
+  }
+
+  private isPrismaSerializationFailure(error: unknown): boolean {
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : '';
+    if (code === 'P2034') {
+      return true;
+    }
+    return this.errorMessage(error).toLowerCase().includes('could not serialize access');
   }
 
   private intentReturningSql(alias?: string): Prisma.Sql {
@@ -3517,21 +3845,6 @@ export class ModerationDeleteIntentService {
             )
         )
       ) AS "photoDuplicateDeleteOnly"
-      ,
-      (
-        EXISTS (
-          SELECT 1
-          FROM "moderation_delete_intent_reasons" commercial_ocr_reason
-          WHERE commercial_ocr_reason."intent_id" = ${intentIdColumn}
-            AND commercial_ocr_reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
-        )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "moderation_delete_intent_reasons" independent_reason
-          WHERE independent_reason."intent_id" = ${intentIdColumn}
-            AND independent_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
-        )
-      ) AS "commercialOcrDeleteOnly"
     `;
   }
 
@@ -3548,6 +3861,8 @@ export class ModerationDeleteIntentService {
       ${column('message_author_kind')} AS "messageAuthorKind",
       ${column('origin_bot_id')} AS "originBotId",
       ${column('routing_policy')} AS "routingPolicy",
+      ${column('commercial_ocr_guard_required')} AS "commercialOcrGuardRequired",
+      ${column('commercial_ocr_deadline_at')} AS "commercialOcrDeadlineAt",
       ${column('status')} AS "status",
       ${column('execute_at')} AS "executeAt",
       ${column('next_attempt_at')} AS "nextAttemptAt",

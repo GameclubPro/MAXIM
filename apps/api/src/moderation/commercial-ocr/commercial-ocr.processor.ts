@@ -17,10 +17,10 @@ import {
 } from './commercial-ocr.queue';
 
 const MAX_DEFER_MS = 10 * 60_000;
+const DEFAULT_MAX_JOB_AGE_MS = 5 * 60_000;
 const DEFER_REASONS = new Set([
   'source_not_ready',
   'governor_pressure',
-  'singleflight_busy',
   'admission_pending',
 ] as const);
 const RETRY_REASONS = new Set(['download_failed', 'ocr_failed'] as const);
@@ -33,7 +33,7 @@ type CommercialOcrJobIdentity = {
 type CommercialOcrDeferResult = {
   kind: 'defer';
   delayMs: number;
-  reason: 'source_not_ready' | 'governor_pressure' | 'singleflight_busy' | 'admission_pending';
+  reason: 'source_not_ready' | 'governor_pressure' | 'admission_pending';
 };
 
 type CommercialOcrRetryResult = {
@@ -46,6 +46,7 @@ type CommercialOcrRetryResult = {
 })
 export class CommercialOcrProcessor extends WorkerHost {
   private readonly logger = new Logger(CommercialOcrProcessor.name);
+  private readonly maxJobAgeMs: number;
 
   constructor(
     private readonly moderationService: CommercialOcrModerationService,
@@ -53,6 +54,10 @@ export class CommercialOcrProcessor extends WorkerHost {
     private readonly configService: ConfigService,
   ) {
     super();
+    this.maxJobAgeMs = readPositiveInteger(
+      configService.get('COMMERCIAL_OCR_MAX_JOB_AGE_MS'),
+      DEFAULT_MAX_JOB_AGE_MS,
+    );
   }
 
   async process(job: Job<CommercialOcrJob>, token?: string): Promise<void> {
@@ -72,8 +77,18 @@ export class CommercialOcrProcessor extends WorkerHost {
       throw asUnrecoverableError(error, 'Commercial OCR job envelope is invalid');
     }
 
+    const deadlineAtMs = Date.parse(job.data.sourceCreatedAt) + this.maxJobAgeMs;
+    if (deadlineAtMs <= Date.now()) {
+      await this.releaseAdmission(identity);
+      return;
+    }
+
     try {
-      result = await this.moderationService.processCommercialOcrJob(job.data, identity.jobId);
+      result = await this.moderationService.processCommercialOcrJob(
+        job.data,
+        identity.jobId,
+        deadlineAtMs,
+      );
     } catch (error: unknown) {
       if (error instanceof UnrecoverableError) {
         await this.releaseAdmission(identity);
@@ -91,12 +106,16 @@ export class CommercialOcrProcessor extends WorkerHost {
       await this.releaseAdmission(identity);
       return;
     }
+    if (deadlineAtMs <= Date.now()) {
+      await this.releaseAdmission(identity);
+      return;
+    }
     if (result.kind === 'retry') {
       await this.releaseIfFinalAttempt(job, identity);
       throw new Error(`Commercial OCR transient failure: ${result.reason}`);
     }
 
-    await this.deferWithoutConsumingAttempt(job, token, identity, result);
+    await this.deferWithoutConsumingAttempt(job, token, identity, result, deadlineAtMs);
   }
 
   private validateJobIdentity(job: Job<CommercialOcrJob>): CommercialOcrJobIdentity {
@@ -147,13 +166,19 @@ export class CommercialOcrProcessor extends WorkerHost {
     token: string | undefined,
     identity: CommercialOcrJobIdentity,
     result: CommercialOcrDeferResult,
+    deadlineAtMs: number,
   ): Promise<never> {
     if (!token) {
       await this.releaseIfFinalAttempt(job, identity);
       throw new Error(`Commercial OCR job deferred without a lock token: ${result.reason}`);
     }
+    const deferUntilMs = Date.now() + result.delayMs;
+    if (deferUntilMs >= deadlineAtMs) {
+      await this.releaseAdmission(identity);
+      throw new UnrecoverableError(`Commercial OCR job deadline exhausted: ${result.reason}`);
+    }
     try {
-      await job.moveToDelayed(Date.now() + result.delayMs, token);
+      await job.moveToDelayed(deferUntilMs, token);
     } catch (error: unknown) {
       await this.releaseIfFinalAttempt(job, identity);
       throw new Error(`Commercial OCR job defer failed: ${result.reason}`, { cause: error });
@@ -213,6 +238,11 @@ function isValidTimestamp(value: unknown): boolean {
   }
   const parsed = Date.parse(value);
   return Number.isSafeInteger(parsed) && parsed > 0;
+}
+
+function readPositiveInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function asUnrecoverableError(error: unknown, fallbackMessage: string): UnrecoverableError {

@@ -13,6 +13,7 @@ class FakeWorker extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly requests: NativeTesseractWorkerRequest[] = [];
+  readonly killSignals: NodeJS.Signals[] = [];
   onRequest?: (request: NativeTesseractWorkerRequest) => void;
 
   constructor() {
@@ -32,6 +33,7 @@ class FakeWorker extends EventEmitter {
   }
 
   kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {
+    this.killSignals.push(signal);
     if (this.exitCode !== null || this.signalCode !== null) {
       return false;
     }
@@ -82,6 +84,13 @@ class FakeWorker extends EventEmitter {
   }
 }
 
+class StubbornFakeWorker extends FakeWorker {
+  override kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {
+    this.killSignals.push(signal);
+    return true;
+  }
+}
+
 class TestNativeTesseractOcrAdapter extends NativeTesseractOcrAdapter {
   readonly workers: FakeWorker[] = [];
   readonly workerEnvironments: NodeJS.ProcessEnv[] = [];
@@ -91,6 +100,14 @@ class TestNativeTesseractOcrAdapter extends NativeTesseractOcrAdapter {
     this.workers.push(worker);
     this.workerEnvironments.push(options?.env ?? {});
     return worker as unknown as ChildProcess;
+  }
+}
+
+class TestStubbornNativeTesseractOcrAdapter extends NativeTesseractOcrAdapter {
+  readonly worker = new StubbornFakeWorker();
+
+  protected override forkWorker(): ChildProcess {
+    return this.worker as unknown as ChildProcess;
   }
 }
 
@@ -128,13 +145,52 @@ describe('NativeTesseractOcrAdapter', () => {
     ).resolves.toMatchObject({ ok: false, reason: 'invalid_input' });
   });
 
-  it('propagates the bounded OpenMP thread limit to the native worker', async () => {
-    const service = createService({ OMP_THREAD_LIMIT: 2 });
+  it('propagates all native resource ceilings to the worker environment', async () => {
+    const service = createService({
+      OMP_THREAD_LIMIT: 2,
+      COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: 2_000_000,
+      COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 1_750,
+    });
     services.push(service);
     service.onModuleInit();
     await readyWorker(service, 0);
 
-    expect(service.workerEnvironments[0]).toMatchObject({ OMP_THREAD_LIMIT: '2' });
+    expect(service.workerEnvironments[0]).toMatchObject({
+      OMP_THREAD_LIMIT: '2',
+      COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: '2000000',
+      COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: '1750',
+    });
+  });
+
+  it('rejects an expired absolute deadline before initializing a worker', async () => {
+    const service = createService();
+    services.push(service);
+
+    await expect(
+      service.recognize(Buffer.from('private pixels'), { deadlineAtMs: Date.now() }),
+    ).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+    expect(service.workers).toHaveLength(0);
+    expect(service.getRuntimeStatus()).toMatchObject({
+      state: 'starting',
+      ready: false,
+      workers: { live: 0, ready: 0, busy: 0 },
+      queueDepth: 0,
+    });
+  });
+
+  it('bounds the worker request timeout by the caller absolute deadline', async () => {
+    const service = createService({ COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 2_000 });
+    services.push(service);
+    const recognition = service.recognize(Buffer.from('image'), {
+      deadlineAtMs: Date.now() + 250,
+    });
+    const worker = await readyWorker(service, 0);
+    const request = await recognizeRequest(worker);
+
+    expect(request.timeoutMs).toBeGreaterThan(0);
+    expect(request.timeoutMs).toBeLessThanOrEqual(250);
+    worker.respond(request.jobId);
+    await expect(recognition).resolves.toMatchObject({ ok: true });
   });
 
   it('bounds active work and its waiting queue', async () => {
@@ -172,6 +228,12 @@ describe('NativeTesseractOcrAdapter', () => {
 
     const secondWorker = await readyWorker(service, 1);
     expect(secondWorker).not.toBe(firstWorker);
+    expect(service.getRuntimeStatus().counters).toMatchObject({
+      completed: 1,
+      failed: 0,
+      restarts: 1,
+      recycles: 1,
+    });
     const second = service.recognize(Buffer.from('second'));
     const secondRequest = await recognizeRequest(secondWorker);
     secondWorker.respond(secondRequest.jobId);
@@ -197,6 +259,45 @@ describe('NativeTesseractOcrAdapter', () => {
       reason: 'invalid_output',
     });
     await expect(readyWorker(service, 1)).resolves.not.toBe(worker);
+    expect(service.getRuntimeStatus().counters).toMatchObject({
+      completed: 0,
+      failed: 1,
+      restarts: 1,
+      failuresByReason: { invalid_output: 1 },
+    });
+  });
+
+  it('exposes only aggregate privacy-safe runtime status', async () => {
+    const service = createService();
+    services.push(service);
+    const privateImage = Buffer.from('private-image-pixels');
+    const recognition = service.recognize(privateImage, { passLabel: 'private-pass' });
+    const worker = await readyWorker(service, 0);
+    const request = await recognizeRequest(worker);
+    worker.respond(request.jobId, 'СЕКРЕТНЫЙ OCR ТЕКСТ');
+    await expect(recognition).resolves.toMatchObject({ ok: true });
+
+    const status = service.getRuntimeStatus();
+    expect(status).toMatchObject({
+      state: 'ready',
+      ready: true,
+      workers: { configured: 1, live: 1, ready: 1, busy: 0 },
+      queueDepth: 0,
+      counters: { completed: 1, failed: 0 },
+    });
+    const serialized = JSON.stringify(status);
+    for (const privateValue of [
+      'СЕКРЕТНЫЙ OCR ТЕКСТ',
+      privateImage.toString('base64'),
+      request.jobId,
+      'private-pass',
+      'https://',
+      'image',
+      'text',
+      'jobId',
+    ]) {
+      expect(serialized).not.toContain(privateValue);
+    }
   });
 
   it('fails queued and active work open during shutdown', async () => {
@@ -212,6 +313,42 @@ describe('NativeTesseractOcrAdapter', () => {
       ok: false,
       reason: 'shutting_down',
     });
+  });
+
+  it('quarantines late errors until a stubborn worker exits after shutdown', async () => {
+    jest.useFakeTimers();
+    try {
+      const service = new TestStubbornNativeTesseractOcrAdapter(
+        new ConfigService({ COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: 2_000 }),
+      );
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(service.getRuntimeStatus().ready).toBe(true);
+
+      const shutdown = service.onModuleDestroy();
+      await jest.advanceTimersByTimeAsync(1_249);
+      expect(service.worker.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(shutdown).resolves.toBeUndefined();
+
+      expect(service.getRuntimeStatus()).toMatchObject({
+        state: 'shutting_down',
+        ready: false,
+        workers: { live: 0, ready: 0, busy: 0 },
+      });
+      expect(service.worker.listenerCount('message')).toBe(0);
+      expect(service.worker.listenerCount('error')).toBe(1);
+      expect(service.worker.listenerCount('exit')).toBe(1);
+
+      expect(() => service.worker.emit('error', new Error('late child error'))).not.toThrow();
+      service.worker.exitCode = 1;
+      service.worker.emit('exit', 1, null);
+
+      expect(service.worker.listenerCount('error')).toBe(0);
+      expect(service.worker.listenerCount('exit')).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

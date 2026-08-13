@@ -3,6 +3,7 @@ import type { CommercialDetection } from '../commercial/commercial-ad.detector';
 import {
   evaluateCommercialOcrDecision,
   hasCommercialOcrPrimaryDeleteCandidate,
+  isCommercialOcrCyrillicOnlyDeleteDecision,
   type CommercialOcrCriticalEvidence,
   type CommercialOcrDetector,
   type CommercialOcrImageDecisionInput,
@@ -374,5 +375,105 @@ describe('commercial OCR decision policy', () => {
         })),
       }),
     ).toBe(false);
+  });
+
+  it('allows the first enforcement cohort only for two Cyrillic-only OCR passes', () => {
+    const detector = detectorFor((text) => detection({ rawText: text }));
+    const ruDecision = evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 1,
+      images: [image()],
+      settings: SETTINGS,
+      detector,
+    });
+    const enDecision = evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 1,
+      images: [
+        image({
+          primary: recognizedPass({ text: 'Window repair call +7 999 123 45 67' }),
+          verification: recognizedPass({ text: 'Window repair phone +7 999 123 45 67' }),
+        }),
+      ],
+      settings: SETTINGS,
+      detector,
+    });
+    const mixedDecision = evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 1,
+      images: [
+        image({
+          primary: recognizedPass({ text: 'Ремонт окон call +7 999 123 45 67' }),
+          verification: recognizedPass({ text: 'Ремонт окон телефон +7 999 123 45 67' }),
+        }),
+      ],
+      settings: SETTINGS,
+      detector,
+    });
+
+    expect(ruDecision.action).toBe('DELETE');
+    expect(isCommercialOcrCyrillicOnlyDeleteDecision(ruDecision)).toBe(true);
+    expect(enDecision.action).toBe('DELETE');
+    expect(isCommercialOcrCyrillicOnlyDeleteDecision(enDecision)).toBe(false);
+    expect(mixedDecision.action).toBe('DELETE');
+    expect(isCommercialOcrCyrillicOnlyDeleteDecision(mixedDecision)).toBe(false);
+  });
+
+  it('keeps a Cyrillic delete source report-only when another album pass contains Latin text', () => {
+    const detector = detectorFor((text) => detection({ rawText: text }));
+    const decision = evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 2,
+      images: [
+        image(),
+        image({
+          imageIndex: 1,
+          primary: recognizedPass({ text: 'Window repair call +7 999 123 45 67' }),
+          verification: recognizedPass({ text: 'Window repair phone +7 999 123 45 67' }),
+        }),
+      ],
+      settings: SETTINGS,
+      detector,
+    });
+
+    expect(decision.action).toBe('DELETE');
+    expect(isCommercialOcrCyrillicOnlyDeleteDecision(decision)).toBe(false);
+  });
+
+  it('keeps phone-only OCR evidence report-only when no letter script can be established', () => {
+    const detector = detectorFor((text) => detection({ rawText: text }));
+    const phoneOnly = recognizedPass({ text: '+7 999 123 45 67, 5000' });
+    const decision = evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 1,
+      images: [image({ primary: phoneOnly, verification: phoneOnly })],
+      settings: SETTINGS,
+      detector,
+    });
+
+    expect(decision.action).toBe('DELETE');
+    expect(decision.images[0]?.primary.letterScript).toBe('unknown');
+    expect(decision.images[0]?.verification?.letterScript).toBe('unknown');
+    expect(isCommercialOcrCyrillicOnlyDeleteDecision(decision)).toBe(false);
+  });
+
+  it('rejects a token Cyrillic marker surrounded by numeric commercial evidence', () => {
+    const detector = detectorFor((text) => detection({ rawText: text }));
+    const adversarial = recognizedPass({ text: 'я +7 999 123 45 67, 5000' });
+    const decision = evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 1,
+      images: [image({ primary: adversarial, verification: adversarial })],
+      settings: SETTINGS,
+      detector,
+    });
+
+    expect(decision.action).toBe('DELETE');
+    expect(decision.images[0]?.primary).toMatchObject({
+      letterScript: 'cyrillic_only',
+      cyrillicLetterCount: 1,
+      latinLetterCount: 0,
+    });
+    expect(isCommercialOcrCyrillicOnlyDeleteDecision(decision)).toBe(false);
   });
 });

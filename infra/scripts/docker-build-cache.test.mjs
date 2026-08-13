@@ -178,6 +178,26 @@ test('packages exact-SHA main images for reuse-only production deploys', () => {
   assert.match(workflow, /github\.event_name == 'push'/u);
 });
 
+test('runs the compiled native OCR raster smoke before packaging the API image', () => {
+  const workflow = read('.github/workflows/ci.yml');
+  const smoke = workflow.indexOf('Smoke native OCR in API image');
+  const packaging = workflow.indexOf('Package immutable production image');
+
+  assert.notEqual(smoke, -1);
+  assert.notEqual(packaging, -1);
+  assert.ok(smoke < packaging);
+  assert.match(workflow, /if: matrix\.component == 'api'/u);
+  assert.match(workflow, /docker run --rm --init --read-only/u);
+  assert.match(workflow, /--cap-drop=ALL/u);
+  assert.match(workflow, /--memory=1g/u);
+  assert.match(workflow, /--cpus=0\.75/u);
+  assert.match(workflow, /--tmpfs \/tmp:rw,nosuid,size=64m,uid=1000,gid=1000/u);
+  assert.match(
+    workflow,
+    /apps\/api\/dist\/apps\/api\/src\/scripts\/smoke-commercial-ocr-worker\.js/u,
+  );
+});
+
 test('preloads only checksummed exact-SHA MAXIM images from green CI', () => {
   const connect = read('infra/scripts/vps-connect.sh');
 

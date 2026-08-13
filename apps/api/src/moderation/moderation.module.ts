@@ -203,6 +203,7 @@ const moderationProviders = [
     ModerationService,
     ModerationDeleteIntentModule,
     GlobalSpammerIntelligenceService,
+    ...(commercialOcrWorkerEnabled ? [NativeTesseractOcrAdapter] : []),
   ],
 })
 export class ModerationModule {}

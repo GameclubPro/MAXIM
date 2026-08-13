@@ -1,5 +1,13 @@
 import { ConfigService } from '@nestjs/config';
 
+import { Prisma } from '../prisma/prisma-client';
+import { buildMessageScopedModerationActionClaimKey } from './moderation-message-action-claim';
+import {
+  buildCommercialOcrDeleteBinding,
+  COMMERCIAL_OCR_DELETE_RULE_CODE,
+  COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE,
+  CommercialOcrDeleteGuardRejectedError,
+} from './commercial-ocr/commercial-ocr-delete-guard.service';
 import {
   ModerationDeleteIntentService,
   PhotoDuplicateDeleteIntentGuardRejectedError,
@@ -23,7 +31,7 @@ type ServiceInternals = {
   selectDueIntentIds(): Promise<unknown[]>;
   claimOne(intentId: string): Promise<unknown>;
   enqueueWakeup(intent: Record<string, unknown>): Promise<void>;
-  enqueueCurrentWakeup(intentId: string): Promise<void>;
+  enqueueCurrentWakeup(intentId: string, priority?: number): Promise<void>;
   orderCandidateBotIds(intent: Record<string, unknown>, values: readonly string[]): string[];
   resolveDeleteRouteWithRefresh(
     intent: Record<string, unknown>,
@@ -62,6 +70,8 @@ function createService(
     MODERATION_DELETE_INTENT_MODE: 'on',
     ...overrides,
   };
+  const reasonOverrides =
+    (prismaOverrides.moderationDeleteIntentReason as Record<string, unknown> | undefined) ?? {};
   const prisma = {
     $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -86,13 +96,19 @@ function createService(
     moderationEvent: {
       findFirst: jest.fn().mockResolvedValue(null),
     },
-    moderationDeleteIntentReason: {
-      findMany: jest.fn().mockResolvedValue([]),
-    },
     chatSettings: {
       findUnique: jest.fn().mockResolvedValue(null),
     },
     ...prismaOverrides,
+    moderationDeleteIntentReason: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest
+        .fn()
+        .mockImplementation(async (args: { where?: { ruleCode?: string } }) =>
+          args.where?.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE ? null : { id: 'reason-1' },
+        ),
+      ...reasonOverrides,
+    },
   };
   const queue = { add: jest.fn().mockResolvedValue(undefined) };
   const deleteMessageOverride = maxClientOverrides.deleteMessage;
@@ -172,6 +188,7 @@ const baseIntent = {
   messageAuthorKind: 'user',
   originBotId: 'bot-1',
   routingPolicy: 'delete_capable',
+  commercialOcrGuardRequired: false,
   status: 'IN_PROGRESS',
   executeAt: new Date(Date.now() - 1_000),
   nextAttemptAt: new Date(Date.now() - 1_000),
@@ -217,7 +234,264 @@ const confirmedRoute = {
   })),
 } as const;
 
+function commercialOcrClaimedIntentInput() {
+  const chatId = 'chat-1';
+  const messageId = 'message-1';
+  const userId = 'user-1';
+  const sourceMessageAt = new Date(Date.now() - 60_000);
+  const deadlineAt = new Date(Date.now() + 60_000);
+  const binding = buildCommercialOcrDeleteBinding({
+    ocrVersion: 'tesseract-rus-eng-v1',
+    settings: {
+      commercialAdsFilterEnabled: true,
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+    senderId: userId,
+    orderedPhotoIds: ['photo-1'],
+    caption: 'Ремонт квартир',
+    sourceCreatedAt: sourceMessageAt,
+    expectedImageCount: 1,
+    controlRevision: 1,
+    controlExpiresAt: new Date(Date.now() + 120_000),
+    ocrDeadlineAt: deadlineAt,
+  });
+  return {
+    claim: {
+      dedupeKey: `commercial-ocr-action:v1:${'a'.repeat(64)}`,
+      messageActionKey: buildMessageScopedModerationActionClaimKey(chatId, messageId),
+      chatId,
+      userId,
+      messageId,
+      ruleCode: COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE,
+      updateType: 'message_action' as const,
+    },
+    intent: {
+      chatId,
+      messageId,
+      reasonKey: 'commercial-ocr-delete:job-1',
+      ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE,
+      subjectUserId: userId,
+      sourceMessageAt,
+      entityType: 'CHAT' as const,
+      messageAuthorKind: 'user' as const,
+      originBotId: 'bot-1',
+      routingPolicy: 'delete_capable' as const,
+      retryUntilAt: deadlineAt,
+      commercialOcrDeadlineAt: deadlineAt,
+      event: {
+        userId,
+        eventType: 'MESSAGE' as const,
+        metadata: { commercialOcrBinding: binding },
+      },
+    },
+  };
+}
+
 describe('ModerationDeleteIntentService', () => {
+  it('atomically claims the OCR action, materializes its intent and reason, then enqueues after commit', async () => {
+    const order: string[] = [];
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const claimCreateMany = jest.fn(async () => {
+      order.push('claim');
+      return { count: 1 };
+    });
+    const txQueryRaw = jest.fn(async () => {
+      order.push('intent');
+      return [persisted];
+    });
+    const txExecuteRaw = jest.fn(async () => {
+      order.push('reason');
+      return 1;
+    });
+    const transaction = jest.fn(
+      async (
+        callback: (tx: unknown) => Promise<unknown>,
+        _options: { isolationLevel: Prisma.TransactionIsolationLevel },
+      ) => {
+        order.push('transaction-start');
+        const result = await callback({
+          moderationViolationMessageClaim: { createMany: claimCreateMany },
+          $queryRaw: txQueryRaw,
+          $executeRaw: txExecuteRaw,
+        });
+        order.push('commit');
+        return result;
+      },
+    );
+    const rootQueryRaw = jest.fn(async () => {
+      order.push('post-commit-load');
+      return [persisted];
+    });
+    const { service, prisma, queue } = createService(
+      {},
+      { $transaction: transaction, $queryRaw: rootQueryRaw },
+    );
+    queue.add.mockImplementation(async () => {
+      order.push('enqueue');
+      return undefined;
+    });
+
+    await expect(
+      service.ensureIntentWithMessageActionClaim(commercialOcrClaimedIntentInput()),
+    ).resolves.toEqual({
+      claim: 'claimed',
+      intent: { intentId: 'intent-1', rollout: 'execute', status: 'PENDING' },
+    });
+
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(claimCreateMany).toHaveBeenCalledTimes(1);
+    expect(txQueryRaw).toHaveBeenCalledTimes(1);
+    expect(txExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({ priority: 1 }),
+    );
+    expect(order).toEqual([
+      'transaction-start',
+      'claim',
+      'intent',
+      'reason',
+      'commit',
+      'post-commit-load',
+      'enqueue',
+    ]);
+  });
+
+  it('repairs a missing OCR intent and reason when the exact durable claim owner replays', async () => {
+    const input = commercialOcrClaimedIntentInput();
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const claimCreateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const claimFindUnique = jest.fn().mockResolvedValue(input.claim);
+    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        moderationViolationMessageClaim: {
+          createMany: claimCreateMany,
+          findUnique: claimFindUnique,
+        },
+        $queryRaw: txQueryRaw,
+        $executeRaw: txExecuteRaw,
+      }),
+    );
+    const { service, queue } = createService(
+      {},
+      { $transaction: transaction, $queryRaw: jest.fn().mockResolvedValue([persisted]) },
+    );
+
+    await expect(service.ensureIntentWithMessageActionClaim(input)).resolves.toMatchObject({
+      claim: 'resumed',
+      intent: { intentId: 'intent-1', status: 'PENDING' },
+    });
+
+    expect(claimFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { messageActionKey: input.claim.messageActionKey } }),
+    );
+    expect(txQueryRaw).toHaveBeenCalledTimes(1);
+    expect(txExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks a conflicting OCR action owner without creating an intent, reason or queue job', async () => {
+    const input = commercialOcrClaimedIntentInput();
+    const txQueryRaw = jest.fn();
+    const txExecuteRaw = jest.fn();
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        moderationViolationMessageClaim: {
+          createMany: jest.fn().mockResolvedValue({ count: 0 }),
+          findUnique: jest.fn().mockResolvedValue({
+            ...input.claim,
+            dedupeKey: `commercial-ocr-action:v1:${'b'.repeat(64)}`,
+          }),
+        },
+        $queryRaw: txQueryRaw,
+        $executeRaw: txExecuteRaw,
+      }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(service.ensureIntentWithMessageActionClaim(input)).resolves.toEqual({
+      claim: 'blocked',
+      intent: null,
+    });
+
+    expect(txQueryRaw).not.toHaveBeenCalled();
+    expect(txExecuteRaw).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('retries the entire OCR ownership transaction after a Prisma serialization conflict', async () => {
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const claimCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const serializationFailure = Object.assign(new Error('Transaction write conflict'), {
+      code: 'P2034',
+    });
+    const transaction = jest
+      .fn()
+      .mockImplementationOnce(async (callback: (tx: unknown) => Promise<unknown>) => {
+        await callback({
+          moderationViolationMessageClaim: { createMany: claimCreateMany },
+          $queryRaw: txQueryRaw,
+          $executeRaw: txExecuteRaw,
+        });
+        throw serializationFailure;
+      })
+      .mockImplementationOnce(async (callback: (tx: unknown) => Promise<unknown>) =>
+        callback({
+          moderationViolationMessageClaim: { createMany: claimCreateMany },
+          $queryRaw: txQueryRaw,
+          $executeRaw: txExecuteRaw,
+        }),
+      );
+    const { service, queue } = createService(
+      {},
+      { $transaction: transaction, $queryRaw: jest.fn().mockResolvedValue([persisted]) },
+    );
+
+    await expect(
+      service.ensureIntentWithMessageActionClaim(commercialOcrClaimedIntentInput()),
+    ).resolves.toMatchObject({ claim: 'claimed', intent: { intentId: 'intent-1' } });
+
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(transaction).toHaveBeenNthCalledWith(2, expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(claimCreateMany).toHaveBeenCalledTimes(2);
+    expect(txQueryRaw).toHaveBeenCalledTimes(2);
+    expect(txExecuteRaw).toHaveBeenCalledTimes(2);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
   it('classifies a bare 404 as waiting for verification, never as already absent', () => {
     const { service } = createService();
     const result = (service as unknown as ServiceInternals).classifyDeleteError(
@@ -1743,7 +2017,7 @@ describe('ModerationDeleteIntentService', () => {
   });
 
   it('runs the commercial OCR guard on both sides of the dispatch fence', async () => {
-    const intent = { ...baseIntent, commercialOcrDeleteOnly: true };
+    const intent = { ...baseIntent, commercialOcrGuardRequired: true };
     const completed = {
       ...intent,
       status: 'SUCCEEDED',
@@ -1755,12 +2029,12 @@ describe('ModerationDeleteIntentService', () => {
     };
     const events: string[] = [];
     const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
-      if (
-        (query.strings?.join('?') ?? '').includes(
-          '"delete_dispatch_started_at" = CURRENT_TIMESTAMP',
-        )
-      ) {
+      const sql = query.strings?.join('?') ?? '';
+      if (sql.includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) {
         events.push('dispatch-fence');
+      }
+      if (sql.includes('COALESCE(intent."commercial_ocr_deadline_at"')) {
+        events.push('commercial-ocr-deadline-fence');
       }
       return 1;
     });
@@ -1798,23 +2072,237 @@ describe('ModerationDeleteIntentService', () => {
       'commercial-ocr-guard',
       'dispatch-fence',
       'commercial-ocr-guard',
+      'commercial-ocr-deadline-fence',
       'max-delete',
     ]);
   });
 
-  it('does not run the commercial OCR guard when an independent reason owns the intent', async () => {
-    const intent = { ...baseIntent, commercialOcrDeleteOnly: false };
-    const completed = {
+  it('blocks MAX delete when the OCR deadline expires during the final asynchronous guard', async () => {
+    const intent = {
+      ...baseIntent,
+      commercialOcrGuardRequired: true,
+      commercialOcrDeadlineAt: new Date(Date.now() + 60_000),
+    };
+    const terminal = {
       ...intent,
-      status: 'SUCCEEDED',
-      succeededBotId: 'bot-1',
-      remoteDeleteSucceededAt: new Date(),
-      remoteDeleteSucceededBotId: 'bot-1',
+      status: 'FAILED_TERMINAL' as const,
       leaseToken: null,
       leaseExpiresAt: null,
+      leasedFromStatus: null,
+      deleteDispatchStartedAt: null,
+      deleteDispatchStartedBotId: null,
+      lastErrorCode: 'commercial_ocr_deadline_expired',
+      completedAt: new Date(),
+    };
+    let guardCalls = 0;
+    let deadlineExpired = false;
+    const assertIntentStillActionable = jest.fn().mockImplementation(async () => {
+      guardCalls += 1;
+      if (guardCalls === 2) {
+        deadlineExpired = true;
+      }
+      return 'allowed';
+    });
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      const sql = query.strings?.join('?') ?? '';
+      if (sql.includes('COALESCE(intent."commercial_ocr_deadline_at"')) {
+        return deadlineExpired ? 0 : 1;
+      }
+      return 1;
+    });
+    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([terminal]);
+    const remoteDelete = jest.fn();
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      undefined,
+      { assertIntentStillActionable },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(assertIntentStillActionable).toHaveBeenCalledTimes(2);
+    expect(remoteDelete).not.toHaveBeenCalled();
+    const deadlineFence = executeRaw.mock.calls
+      .map((call) => call[0] as { strings?: readonly string[] })
+      .find((query) =>
+        (query.strings?.join('?') ?? '').includes(
+          'COALESCE(intent."commercial_ocr_deadline_at", intent."retry_until_at")',
+        ),
+      );
+    const deadlineFenceSql = deadlineFence?.strings?.join('?') ?? '';
+    expect(deadlineFenceSql).toContain('intent."lease_expires_at" > CURRENT_TIMESTAMP');
+    expect(deadlineFenceSql).toContain('intent."delete_dispatch_started_at" IS NOT NULL');
+    expect(deadlineFenceSql).toContain('ocr_reason."rule_code" =');
+    expect(deadlineFenceSql).toContain('> CURRENT_TIMESTAMP');
+  });
+
+  it.each(
+    [
+      ['commercial_ocr_runtime_revoked', true],
+      ['commercial_ocr_version_changed', true],
+      ['commercial_ocr_binding_invalid', true],
+      ['commercial_ocr_binding_ambiguous', true],
+      ['commercial_ocr_reason_missing', true],
+      ['commercial_ocr_author_immune', true],
+      ['commercial_ocr_source_timestamp_changed', true],
+      ['commercial_ocr_filter_disabled', true],
+      ['commercial_ocr_policy_changed', true],
+      ['commercial_ocr_admin_immune', true],
+      ['commercial_ocr_message_changed', true],
+      ['commercial_ocr_participant_immune', true],
+      ['commercial_ocr_runtime_control_unavailable', false],
+      ['commercial_ocr_author_access_unknown', false],
+      ['commercial_ocr_message_ambiguous', false],
+      ['commercial_ocr_participant_immunity_unknown', false],
+    ].flatMap(([code, terminal]) =>
+      (['before_fence', 'after_fence'] as const).map((stage) => ({
+        code: code as string,
+        terminal: terminal as boolean,
+        stage,
+      })),
+    ),
+  )(
+    'classifies $code as terminal=$terminal when rejected $stage',
+    async ({ code, terminal, stage }) => {
+      const intent = { ...baseIntent, commercialOcrGuardRequired: true };
+      const guarded = {
+        ...intent,
+        status: terminal ? ('FAILED_TERMINAL' as const) : ('RETRYABLE' as const),
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+        deleteDispatchStartedAt: null,
+        deleteDispatchStartedBotId: null,
+        lastErrorCode: code,
+        lastError: code,
+        completedAt: terminal ? new Date() : null,
+      };
+      const guardError = new CommercialOcrDeleteGuardRejectedError(code, code);
+      const assertIntentStillActionable =
+        stage === 'before_fence'
+          ? jest.fn().mockRejectedValue(guardError)
+          : jest.fn().mockResolvedValueOnce('allowed').mockRejectedValueOnce(guardError);
+      const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([guarded]);
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const remoteDispatch = jest.fn();
+      const { service } = createService(
+        {},
+        { $queryRaw: queryRaw, $executeRaw: executeRaw },
+        { deleteMessage: remoteDispatch },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+        undefined,
+        undefined,
+        { assertIntentStillActionable },
+      );
+
+      const execution = service.executeLeasedIntent('intent-1', 'lease-1');
+      if (terminal) {
+        await expect(execution).resolves.toMatchObject({
+          kind: 'terminal',
+          status: 'FAILED_TERMINAL',
+        });
+      } else {
+        await expect(execution).rejects.toBe(guardError);
+      }
+
+      expect(remoteDispatch).not.toHaveBeenCalled();
+      expect(assertIntentStillActionable).toHaveBeenCalledTimes(stage === 'before_fence' ? 1 : 2);
+      const sqlCalls = executeRaw.mock.calls.map(
+        (call: unknown[]) =>
+          call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+      );
+      const statusUpdate = sqlCalls.find((query) =>
+        (query.strings?.join('?') ?? '').includes(
+          '"status" = CAST(? AS "ModerationDeleteIntentStatus")',
+        ),
+      );
+      expect(statusUpdate?.values).toEqual(
+        expect.arrayContaining([terminal ? 'FAILED_TERMINAL' : 'RETRYABLE', code]),
+      );
+      expect(statusUpdate?.values).not.toContain('delete_pre_dispatch_guard_rejected');
+      const clearedFence = sqlCalls.some((query) =>
+        (query.strings?.join('?') ?? '').includes('AND "delete_dispatch_started_at" IS NOT NULL'),
+      );
+      expect(clearedFence).toBe(stage === 'after_fence');
+      expect(guarded.completedAt === null).toBe(!terminal);
+    },
+  );
+
+  it('terminalizes a reasonless intent at the final dispatch boundary without a MAX delete', async () => {
+    const terminal = {
+      ...baseIntent,
+      status: 'FAILED_TERMINAL' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'moderation_delete_reason_missing',
+      lastError: 'Moderation delete intent has no durable reason',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ ...baseIntent }])
+      .mockResolvedValueOnce([terminal]);
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const reasonFindFirst = jest.fn().mockResolvedValue(null);
+    const remoteDelete = jest.fn();
+    const { service, prisma } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: executeRaw,
+        moderationDeleteIntentReason: { findFirst: reasonFindFirst },
+      },
+      { deleteMessage: remoteDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(reasonFindFirst).toHaveBeenCalledWith({
+      where: { intentId: 'intent-1' },
+      select: { id: true },
+    });
+    expect(remoteDelete).not.toHaveBeenCalled();
+    expect(
+      executeRaw.mock.calls.some((call) =>
+        ((call[0] as { values?: readonly unknown[] }).values ?? []).includes(
+          'moderation_delete_reason_missing',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      executeRaw.mock.calls.some((call) =>
+        ((call[0] as { strings?: readonly string[] }).strings ?? [])
+          .join('?')
+          .includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP'),
+      ),
+    ).toBe(false);
+    expect(prisma.moderationDeleteIntentReason.findMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps the commercial OCR guard when an independent reason is attached later', async () => {
+    const intent = { ...baseIntent, commercialOcrGuardRequired: true };
+    const retryable = {
+      ...intent,
+      status: 'RETRYABLE',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'delete_pre_dispatch_guard_rejected',
     };
     const assertIntentStillActionable = jest.fn().mockRejectedValue(new Error('OCR disabled'));
-    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
+    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([retryable]);
     const deleteMessage = jest.fn();
     const { service } = createService(
       {},
@@ -1826,11 +2314,102 @@ describe('ModerationDeleteIntentService', () => {
       { assertIntentStillActionable },
     );
 
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).rejects.toThrow(
+      'OCR disabled',
+    );
+    expect(assertIntentStillActionable).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('discovers a commercial OCR reason when an old writer left the ownership flag false', async () => {
+    const intent = { ...baseIntent, commercialOcrGuardRequired: false };
+    const completed = {
+      ...intent,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const reasonFindFirst = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'reason-1' })
+      .mockResolvedValueOnce({ id: 'ocr-reason-1' })
+      .mockResolvedValueOnce({ id: 'reason-1' })
+      .mockResolvedValueOnce({ id: 'ocr-reason-1' });
+    const assertIntentStillActionable = jest.fn().mockResolvedValue('allowed');
+    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: queryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationDeleteIntentReason: { findFirst: reasonFindFirst },
+      },
+      {},
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      undefined,
+      undefined,
+      { assertIntentStillActionable },
+    );
+
     await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
       kind: 'confirmed',
     });
-    expect(assertIntentStillActionable).not.toHaveBeenCalled();
-    expect(deleteMessage).toHaveBeenCalledTimes(1);
+
+    expect(assertIntentStillActionable).toHaveBeenCalledTimes(2);
+    expect(reasonFindFirst).toHaveBeenCalledWith({
+      where: { intentId: 'intent-1', ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE },
+      select: { id: true },
+    });
+  });
+
+  it('repairs and caps a late old-writer OCR row when an independent reason is merged', async () => {
+    const ocrDeadline = new Date(Date.now() + 60_000);
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      commercialOcrGuardRequired: true,
+      commercialOcrDeadlineAt: ocrDeadline,
+      retryUntilAt: ocrDeadline,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: txQueryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'independent-delete',
+        ruleCode: 'INDEPENDENT_DELETE',
+        subjectUserId: 'user-1',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        retryUntilAt: new Date(ocrDeadline.getTime() + 60_000),
+      }),
+    ).resolves.toMatchObject({ intentId: 'intent-1', status: 'PENDING' });
+
+    const query = txQueryRaw.mock.calls[0]?.[0];
+    const sql = query?.strings?.join('?') ?? '';
+    expect(sql).toContain('FROM "moderation_delete_intent_reasons" existing_ocr_reason');
+    expect(sql).toContain('existing_ocr_reason."rule_code" =');
+    expect(sql).toContain('"commercial_ocr_guard_required" = (');
+    expect(sql).toContain('"commercial_ocr_deadline_at" = CASE');
+    expect(sql).toContain('LEAST(');
+    expect(sql).toContain('GREATEST(');
+    expect(query?.values).toContain(COMMERCIAL_OCR_DELETE_RULE_CODE);
   });
 
   it.each([
@@ -2187,7 +2766,7 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('AS "photoDuplicateDeleteOnly"');
   });
 
-  it('classifies commercial OCR-only delete intents by their dedicated rule code', () => {
+  it('loads the durable commercial OCR ownership fence directly from the intent', () => {
     const { service } = createService();
     const query = (
       service as unknown as {
@@ -2199,10 +2778,10 @@ describe('ModerationDeleteIntentService', () => {
     ).intentSelectSql('intent');
     const sql = query.strings?.join('?') ?? '';
 
-    expect(sql).toContain('commercial_ocr_reason."rule_code" = ?');
-    expect(sql).toContain('independent_reason."rule_code" <> ?');
-    expect(query.values).toContain('COMMERCIAL_OCR_DELETE');
-    expect(sql).toContain('AS "commercialOcrDeleteOnly"');
+    expect(sql).toContain(
+      '"intent"."commercial_ocr_guard_required" AS "commercialOcrGuardRequired"',
+    );
+    expect(sql).not.toContain('AS "commercialOcrDeleteOnly"');
   });
 
   it('fails closed when a link-only intent loses its required reason before dispatch', async () => {
@@ -3425,12 +4004,104 @@ describe('ModerationDeleteIntentService', () => {
     expect(txQueryRaw.mock.calls[0]?.[0]?.values).toEqual(
       expect.arrayContaining([expectedUpdatedAt, 1]),
     );
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
     expect(queue.add).toHaveBeenCalledWith(
       'execute-moderation-delete-intent',
       { intentId: 'intent-1' },
       expect.objectContaining({ priority: 1 }),
     );
     expect(changePriority).toHaveBeenCalledWith({ priority: 1 });
+  });
+
+  it('does not manually reopen a commercial OCR intent after its absolute deadline', async () => {
+    const deadline = new Date(Date.now() - 1_000);
+    const expired = {
+      ...baseIntent,
+      status: 'EXPIRED' as const,
+      commercialOcrGuardRequired: true,
+      commercialOcrDeadlineAt: deadline,
+      retryUntilAt: deadline,
+      completedAt: new Date(),
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const rootQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([expired])
+      .mockResolvedValueOnce([expired]);
+    const txQueryRaw = jest.fn().mockResolvedValueOnce([]);
+    const auditCreate = jest.fn();
+    const transaction = jest.fn(
+      async (
+        callback: (tx: { $queryRaw: jest.Mock; auditLog: { create: jest.Mock } }) => unknown,
+      ) => callback({ $queryRaw: txQueryRaw, auditLog: { create: auditCreate } }),
+    );
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: rootQueryRaw, $transaction: transaction },
+    );
+
+    await expect(
+      service.retryTerminalIntent(
+        'intent-1',
+        'EXPIRED',
+        { updatedAt: new Date('2026-07-16T12:00:00.000Z'), attemptCount: 1 },
+        { actorUserId: 'owner' },
+      ),
+    ).resolves.toEqual({ reopened: false, intent: expect.objectContaining({ status: 'EXPIRED' }) });
+
+    const sql = txQueryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(sql).toContain('COALESCE("commercial_ocr_deadline_at", "retry_until_at") >');
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not reopen a late old-writer OCR intent after its durable fallback deadline', async () => {
+    const deadline = new Date(Date.now() - 1_000);
+    const expired = {
+      ...baseIntent,
+      status: 'EXPIRED' as const,
+      commercialOcrGuardRequired: false,
+      commercialOcrDeadlineAt: null,
+      retryUntilAt: deadline,
+      completedAt: new Date(),
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const rootQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([expired])
+      .mockResolvedValueOnce([expired]);
+    const txQueryRaw = jest.fn().mockResolvedValueOnce([]);
+    const auditCreate = jest.fn();
+    const transaction = jest.fn(
+      async (
+        callback: (tx: { $queryRaw: jest.Mock; auditLog: { create: jest.Mock } }) => unknown,
+      ) => callback({ $queryRaw: txQueryRaw, auditLog: { create: auditCreate } }),
+    );
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: rootQueryRaw, $transaction: transaction },
+    );
+
+    await expect(
+      service.retryTerminalIntent(
+        'intent-1',
+        'EXPIRED',
+        { updatedAt: new Date('2026-07-16T12:00:00.000Z'), attemptCount: 1 },
+        { actorUserId: 'owner' },
+      ),
+    ).resolves.toEqual({ reopened: false, intent: expect.objectContaining({ status: 'EXPIRED' }) });
+
+    const query = txQueryRaw.mock.calls[0]?.[0];
+    const sql = query?.strings?.join('?') ?? '';
+    expect(sql).toContain('FROM "moderation_delete_intent_reasons" existing_ocr_reason');
+    expect(sql).toContain('COALESCE("commercial_ocr_deadline_at", "retry_until_at") >');
+    expect(query?.values).toContain(COMMERCIAL_OCR_DELETE_RULE_CODE);
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('materializes a late reason attached to an already succeeded intent', async () => {

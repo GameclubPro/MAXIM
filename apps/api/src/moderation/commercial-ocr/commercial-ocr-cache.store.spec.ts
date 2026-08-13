@@ -4,14 +4,6 @@ import {
   type CommercialOcrCacheValue,
 } from './commercial-ocr-cache.store';
 
-type RedisMock = {
-  status: string;
-  disconnect: jest.Mock;
-  set: jest.Mock;
-  eval: jest.Mock;
-  quit: jest.Mock;
-};
-
 const identity = {
   contentSha256: 'a'.repeat(64),
   ocrVersion: 'tesseract-rus-eng-v1',
@@ -32,28 +24,20 @@ const recognized: CommercialOcrCacheValue = {
 };
 
 function createStore() {
-  const redis: RedisMock = {
-    status: 'ready',
-    disconnect: jest.fn(),
-    set: jest.fn(),
-    eval: jest.fn(),
-    quit: jest.fn().mockResolvedValue(undefined),
-  };
   const store = Object.create(CommercialOcrCacheStore.prototype) as CommercialOcrCacheStore;
   Object.defineProperties(store, {
-    redis: { value: redis },
-    logger: { value: { warn: jest.fn() } },
     localEntries: { value: new Map() },
+    inFlight: { value: new Map() },
     expiryTimer: { value: null, writable: true },
     expiryTimerDueAtMs: { value: null, writable: true },
     destroyed: { value: false, writable: true },
   });
-  return { redis, store };
+  return { store };
 }
 
 describe('CommercialOcrCacheStore', () => {
   it('reads a compact exact result from an opaque process-local key', async () => {
-    const { redis, store } = createStore();
+    const { store } = createStore();
 
     await store.write(identity, recognized, 3_600);
 
@@ -65,7 +49,6 @@ describe('CommercialOcrCacheStore', () => {
     expect(key).toMatch(/^[a-f0-9]{64}$/u);
     expect(key).not.toContain(identity.contentSha256);
     expect(key).not.toContain(identity.ocrVersion);
-    expect(redis.set).not.toHaveBeenCalled();
   });
 
   it('isolates cache entries by pass, preprocessing profile, and PSM', async () => {
@@ -118,22 +101,41 @@ describe('CommercialOcrCacheStore', () => {
   it('clears the local expiry timer and OCR text during shutdown', async () => {
     jest.useFakeTimers({ now: new Date('2026-08-12T12:00:00.000Z') });
     try {
-      const { redis, store } = createStore();
+      const { store } = createStore();
       await store.write(identity, recognized, 60);
 
       await store.onModuleDestroy();
 
       expect((store as any).localEntries.size).toBe(0);
       expect(jest.getTimerCount()).toBe(0);
-      expect(redis.quit).toHaveBeenCalledTimes(1);
     } finally {
       jest.useRealTimers();
     }
   });
 
+  it('cannot repopulate OCR text after shutdown, including from pending coalesced work', async () => {
+    const { store } = createStore();
+    let releaseOperation!: () => void;
+    const operationGate = new Promise<void>((resolve) => {
+      releaseOperation = resolve;
+    });
+    const pending = store.coalesceLocal(identity, Date.now() + 60_000, async () => {
+      await operationGate;
+      return store.write(identity, recognized, 60);
+    });
+    await Promise.resolve();
+
+    store.onModuleDestroy();
+    await expect(store.write(identity, recognized, 60)).resolves.toBe(false);
+    releaseOperation();
+    await expect(pending).resolves.toBe(false);
+
+    expect((store as any).localEntries.size).toBe(0);
+    expect((store as any).inFlight.size).toBe(0);
+  });
+
   it('caches recognized and no-text results with an explicit TTL', async () => {
-    const { redis, store } = createStore();
-    redis.set.mockResolvedValue('OK');
+    const { store } = createStore();
 
     await expect(store.write(identity, recognized, 3_600)).resolves.toBe(true);
     await expect(
@@ -151,11 +153,10 @@ describe('CommercialOcrCacheStore', () => {
     ).resolves.toBe(true);
 
     expect((store as any).localEntries.size).toBe(1);
-    expect(redis.set).not.toHaveBeenCalled();
   });
 
   it('rejects inconsistent or oversized cache values before Redis', async () => {
-    const { redis, store } = createStore();
+    const { store } = createStore();
 
     await expect(store.write(identity, { ...recognized, status: 'no_text' }, 60)).rejects.toThrow(
       'does not match',
@@ -179,70 +180,54 @@ describe('CommercialOcrCacheStore', () => {
         60,
       ),
     ).rejects.toThrow('word ordering is invalid');
-    expect(redis.set).not.toHaveBeenCalled();
   });
 
-  it('uses a bounded NX lease for singleflight', async () => {
-    const { redis, store } = createStore();
-    redis.set.mockResolvedValueOnce('OK').mockResolvedValueOnce(null);
-
-    const acquired = await store.claimSingleflight(identity, 15_000);
-    await expect(store.claimSingleflight(identity, 15_000)).resolves.toEqual({ kind: 'busy' });
-
-    expect(acquired).toEqual({ kind: 'acquired', token: expect.any(String) });
-    expect(redis.set.mock.calls[0]!.slice(2)).toEqual(['PX', 15_000, 'NX']);
-    expect(String(redis.set.mock.calls[0]![0])).toMatch(
-      /^commercial-ocr:singleflight:v3:[a-f0-9]{64}$/u,
-    );
-  });
-
-  it('rejects invalid TTLs before Redis instead of disguising configuration errors', async () => {
-    const { redis, store } = createStore();
-
+  it('rejects invalid cache TTLs', async () => {
+    const { store } = createStore();
     await expect(store.write(identity, recognized, 0)).rejects.toThrow('cache TTL is invalid');
-    await expect(store.claimSingleflight(identity, 999)).rejects.toThrow(
-      'singleflight TTL is invalid',
+  });
+
+  it('coalesces matching process-local work and clears the promise after settlement', async () => {
+    const { store } = createStore();
+    let resolveOperation!: (value: string) => void;
+    const operation = jest.fn(
+      () => new Promise<string>((resolvePromise) => (resolveOperation = resolvePromise)),
     );
-    expect(redis.set).not.toHaveBeenCalled();
+
+    const deadlineAtMs = Date.now() + 60_000;
+    const first = store.coalesceLocal(identity, deadlineAtMs, operation);
+    const second = store.coalesceLocal(identity, deadlineAtMs, operation);
+    await Promise.resolve();
+    expect(operation).toHaveBeenCalledTimes(1);
+    resolveOperation('done');
+    await expect(Promise.all([first, second])).resolves.toEqual(['done', 'done']);
+
+    await expect(store.coalesceLocal(identity, deadlineAtMs, async () => 'next')).resolves.toBe(
+      'next',
+    );
   });
 
-  it('commits a cache result only while holding the matching lease', async () => {
-    const { redis, store } = createStore();
-    redis.eval.mockResolvedValue(1);
-    const token = '12345678-1234-1234-1234-123456789abc';
+  it('does not attach a later-deadline caller to work with less remaining budget', async () => {
+    const { store } = createStore();
+    let resolveFirst!: (value: string) => void;
+    let resolveSecond!: (value: string) => void;
+    const firstOperation = jest.fn(
+      () => new Promise<string>((resolvePromise) => (resolveFirst = resolvePromise)),
+    );
+    const secondOperation = jest.fn(
+      () => new Promise<string>((resolvePromise) => (resolveSecond = resolvePromise)),
+    );
+    const now = Date.now();
 
-    await expect(
-      store.commitSingleflight({ identity, token, value: recognized, ttlSeconds: 3_600 }),
-    ).resolves.toBe(true);
+    const first = store.coalesceLocal(identity, now + 1_000, firstOperation);
+    await Promise.resolve();
+    const second = store.coalesceLocal(identity, now + 5_000, secondOperation);
+    await Promise.resolve();
 
-    const call = redis.eval.mock.calls[0] as unknown[];
-    expect(call[1]).toBe(1);
-    expect(call[3]).toBe(token);
-    expect(String(call[0])).toContain("redis.call('GET', KEYS[1]) ~= ARGV[1]");
-    expect(String(call[0])).toContain("redis.call('DEL', KEYS[1])");
-    expect(JSON.stringify(call)).not.toContain(recognized.text);
-    await expect(store.read(identity)).resolves.toEqual({ kind: 'hit', value: recognized });
-  });
-
-  it('releases a lease through a token fence and fails open on Redis errors', async () => {
-    const { redis, store } = createStore();
-    redis.eval.mockResolvedValueOnce(1).mockRejectedValueOnce(new Error('redis unavailable'));
-    const token = '12345678-1234-1234-1234-123456789abc';
-
-    await expect(store.releaseSingleflight(identity, token)).resolves.toBe(true);
-    await expect(store.releaseSingleflight(identity, token)).resolves.toBe(false);
-    expect(String(redis.eval.mock.calls[0]![0])).toContain("redis.call('GET', KEYS[1]) == ARGV[1]");
-  });
-
-  it('keeps exact caching local when Redis is unavailable', async () => {
-    const { redis, store } = createStore();
-    redis.set.mockRejectedValue(new Error('redis unavailable'));
-
-    await expect(store.read(identity)).resolves.toEqual({ kind: 'miss' });
-    await expect(store.write(identity, recognized, 60)).resolves.toBe(true);
-    await expect(store.read(identity)).resolves.toEqual({ kind: 'hit', value: recognized });
-    await expect(store.claimSingleflight(identity, 15_000)).resolves.toEqual({
-      kind: 'unavailable',
-    });
+    expect(firstOperation).toHaveBeenCalledTimes(1);
+    expect(secondOperation).toHaveBeenCalledTimes(1);
+    resolveFirst('short');
+    resolveSecond('long');
+    await expect(Promise.all([first, second])).resolves.toEqual(['short', 'long']);
   });
 });

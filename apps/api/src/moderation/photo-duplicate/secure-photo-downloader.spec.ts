@@ -331,6 +331,33 @@ describe('SecurePhotoDownloader', () => {
     expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
   });
 
+  it('uses a caller absolute deadline as a stricter ceiling than its configured timeout', async () => {
+    const downloader = new TestDownloader({ PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS: '1000' }, [
+      {
+        statusCode: 200,
+        headers: { 'content-type': 'image/png' },
+        chunks: [Buffer.from('slow')],
+        chunkDelayMs: 50,
+      },
+    ]);
+
+    await expect(
+      downloader.download('https://i.oneme.ru/image', { deadlineAtMs: Date.now() + 20 }),
+    ).rejects.toThrow('Photo download timed out');
+    expect(downloader.closes[0]).toHaveBeenCalledTimes(1);
+    expect(downloader.requested[0]?.timeoutMs).toBeLessThanOrEqual(20);
+  });
+
+  it('rejects an invalid caller deadline before acquiring a slot', async () => {
+    const downloader = new TestDownloader({}, []);
+
+    await expect(
+      downloader.download('https://i.oneme.ru/image', { deadlineAtMs: Number.NaN }),
+    ).rejects.toThrow('deadline is invalid');
+    expect(downloader.requested).toHaveLength(0);
+    expect((downloader as any).activeDownloads).toBe(0);
+  });
+
   it('includes concurrency-slot waiting in the same absolute deadline', async () => {
     const responses = Array.from({ length: 5 }, () => ({
       statusCode: 200,

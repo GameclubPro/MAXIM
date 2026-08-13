@@ -18,8 +18,22 @@ export function getAppRole(): AppRole {
   return normalizeAppRole(process.env.APP_ROLE);
 }
 
-export function roleRunsHttp(role: AppRole): boolean {
-  return role === 'all' || role === 'ingress' || role === 'admin';
+export function roleRunsHttp(
+  role: AppRole,
+  serviceName: unknown = process.env.APP_SERVICE_NAME,
+): boolean {
+  return (
+    role === 'all' ||
+    role === 'ingress' ||
+    role === 'admin' ||
+    (role === 'moderation' && serviceName === 'api-media-analysis')
+  );
+}
+
+export function resolveHttpListenHost(
+  serviceName: unknown = process.env.APP_SERVICE_NAME,
+): '0.0.0.0' | '127.0.0.1' {
+  return serviceName === 'api-media-analysis' ? '127.0.0.1' : '0.0.0.0';
 }
 
 export function roleRunsIngress(role: AppRole): boolean {

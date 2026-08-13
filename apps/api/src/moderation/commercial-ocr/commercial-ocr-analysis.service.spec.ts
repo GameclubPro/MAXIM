@@ -48,6 +48,7 @@ function album(urls: Array<string | null>): LogicalPhotoAlbum {
     messageId: 'message-1',
     senderId: 'user-1',
     createdAtMs: Date.parse('2026-08-12T08:00:00.000Z'),
+    caption: '',
     images: urls.map((downloadUrl, index) => ({
       source: index % 2 === 0 ? ('direct' as const) : ('forward' as const),
       photoId: `photo-${index + 1}`,
@@ -136,12 +137,7 @@ function strictDetector(): CommercialOcrDetector {
 
 function harness(
   options: {
-    cacheReads?: Array<
-      { kind: 'hit'; value: CommercialOcrCacheValue } | { kind: 'miss' } | { kind: 'unavailable' }
-    >;
-    claims?: Array<
-      { kind: 'acquired'; token: string } | { kind: 'busy' } | { kind: 'unavailable' }
-    >;
+    cacheReads?: Array<{ kind: 'hit'; value: CommercialOcrCacheValue } | { kind: 'miss' }>;
     ocrResults?: unknown[];
   } = {},
 ) {
@@ -168,26 +164,41 @@ function harness(
     ),
   };
   const cacheReads = [...(options.cacheReads ?? [])];
-  const claims = [...(options.claims ?? [])];
+  const inFlight = new Map<string, { deadlineAtMs: number; promise: Promise<unknown> }>();
   const cache = {
     read: jest.fn(async (identity: CommercialOcrCacheIdentity) => {
       events.push(`cache-read:${identity.pass}:${identity.contentSha256}`);
       return cacheReads.shift() ?? { kind: 'miss' as const };
     }),
-    claimSingleflight: jest.fn(async (identity: CommercialOcrCacheIdentity) => {
-      events.push(`claim:${identity.pass}`);
-      return (
-        claims.shift() ?? {
-          kind: 'acquired' as const,
-          token: `12345678-1234-1234-1234-${identity.pass.padEnd(12, '0').slice(0, 12)}`,
-        }
-      );
-    }),
-    commitSingleflight: jest.fn(async ({ identity }: { identity: CommercialOcrCacheIdentity }) => {
-      events.push(`commit:${identity.pass}`);
+    write: jest.fn(async (identity: CommercialOcrCacheIdentity) => {
+      events.push(`write:${identity.pass}`);
       return true;
     }),
-    releaseSingleflight: jest.fn().mockResolvedValue(true),
+    coalesceLocal: jest.fn(
+      async <T>(
+        identity: CommercialOcrCacheIdentity,
+        deadlineAtMs: number,
+        operation: () => Promise<T>,
+      ): Promise<T> => {
+        const key = JSON.stringify(identity);
+        const existing = inFlight.get(key) as
+          | { deadlineAtMs: number; promise: Promise<T> }
+          | undefined;
+        if (existing && existing.deadlineAtMs >= deadlineAtMs) {
+          return existing.promise;
+        }
+        const pending = Promise.resolve().then(operation);
+        const entry = { deadlineAtMs, promise: pending };
+        inFlight.set(key, entry);
+        try {
+          return await pending;
+        } finally {
+          if (inFlight.get(key) === entry) {
+            inFlight.delete(key);
+          }
+        }
+      },
+    ),
   };
   const service = new CommercialOcrAnalysisService(
     downloader as never,
@@ -196,7 +207,6 @@ function harness(
     cache as never,
     new ConfigService({
       COMMERCIAL_OCR_CACHE_TTL_SEC: 3_600,
-      COMMERCIAL_OCR_SINGLEFLIGHT_TTL_MS: 1_000,
     }),
   );
   Object.defineProperty(service, 'detector', { value: strictDetector() });
@@ -209,6 +219,7 @@ function analyze(
     urls?: Array<string | null>;
     caption?: string;
     authorizeStage?: jest.Mock;
+    deadlineAtMs?: number;
   } = {},
 ) {
   return service.analyzeAlbum({
@@ -216,6 +227,7 @@ function analyze(
     caption: options.caption ?? '',
     settings: SETTINGS,
     ocrVersion: 'tesseract-rus-eng-v1',
+    deadlineAtMs: options.deadlineAtMs ?? Date.now() + 60_000,
     authorizeStage: options.authorizeStage ?? jest.fn().mockResolvedValue(true),
   });
 }
@@ -262,6 +274,9 @@ describe('CommercialOcrAnalysisService', () => {
     ).resolves.toMatchObject({ kind: 'complete', decision: { action: 'DELETE' } });
 
     expect(downloader.download).toHaveBeenCalledTimes(2);
+    expect(downloader.download).toHaveBeenCalledWith('https://i.oneme.ru/1', {
+      deadlineAtMs: expect.any(Number),
+    });
     expect(preprocessor.prepare.mock.calls.map((call) => call[1])).toEqual([
       'primary',
       'confirmation',
@@ -269,10 +284,18 @@ describe('CommercialOcrAnalysisService', () => {
       'confirmation',
     ]);
     expect(ocr.recognize.mock.calls.map((call) => call[1])).toEqual([
-      { psm: 11, passLabel: 'primary' },
-      { psm: 6, passLabel: 'confirmation' },
-      { psm: 11, passLabel: 'primary' },
-      { psm: 6, passLabel: 'confirmation' },
+      expect.objectContaining({ psm: 11, passLabel: 'primary', deadlineAtMs: expect.any(Number) }),
+      expect.objectContaining({
+        psm: 6,
+        passLabel: 'confirmation',
+        deadlineAtMs: expect.any(Number),
+      }),
+      expect.objectContaining({ psm: 11, passLabel: 'primary', deadlineAtMs: expect.any(Number) }),
+      expect.objectContaining({
+        psm: 6,
+        passLabel: 'confirmation',
+        deadlineAtMs: expect.any(Number),
+      }),
     ]);
     expect(events.indexOf('ocr:confirmation:6')).toBeLessThan(
       events.indexOf('download:https://i.oneme.ru/2'),
@@ -291,8 +314,12 @@ describe('CommercialOcrAnalysisService', () => {
       identities.map(({ pass, psm, preprocessProfile }) => ({ pass, psm, preprocessProfile })),
     ).toEqual([
       { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
+      { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
+      { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
       { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
       { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
+      { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
+      { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
       { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
     ]);
     expect(identities[0]?.contentSha256).toBe(
@@ -322,7 +349,7 @@ describe('CommercialOcrAnalysisService', () => {
     });
     expect(downloader.download).toHaveBeenCalledTimes(1);
     expect(ocr.recognize).toHaveBeenCalledTimes(1);
-    expect(cache.commitSingleflight).toHaveBeenCalledTimes(1);
+    expect(cache.write).toHaveBeenCalledTimes(1);
   });
 
   it('uses an exact cache hit without preprocessing or native OCR', async () => {
@@ -340,7 +367,7 @@ describe('CommercialOcrAnalysisService', () => {
     });
     expect(downloader.download).toHaveBeenCalledTimes(1);
     expect(authorizeStage.mock.calls.map((call) => call[0])).toEqual(['download']);
-    expect(cache.claimSingleflight).not.toHaveBeenCalled();
+    expect(cache.coalesceLocal).not.toHaveBeenCalled();
     expect(preprocessor.prepare).not.toHaveBeenCalled();
     expect(ocr.recognize).not.toHaveBeenCalled();
   });
@@ -360,44 +387,83 @@ describe('CommercialOcrAnalysisService', () => {
       'confirmation',
     ]);
     expect(ocr.recognize.mock.calls.map((call) => call[1])).toEqual([
-      { psm: 11, passLabel: 'primary' },
-      { psm: 11, passLabel: 'primary' },
-      { psm: 6, passLabel: 'confirmation' },
+      expect.objectContaining({ psm: 11, passLabel: 'primary', deadlineAtMs: expect.any(Number) }),
+      expect.objectContaining({ psm: 11, passLabel: 'primary', deadlineAtMs: expect.any(Number) }),
+      expect.objectContaining({
+        psm: 6,
+        passLabel: 'confirmation',
+        deadlineAtMs: expect.any(Number),
+      }),
     ]);
   });
 
-  it('runs local OCR when the exact cache or its lease is unavailable', async () => {
-    const first = harness({
-      cacheReads: [{ kind: 'unavailable' }, { kind: 'unavailable' }],
-    });
-    await expect(analyze(first.service)).resolves.toMatchObject({ kind: 'complete' });
-    expect(first.ocr.recognize).toHaveBeenCalledTimes(2);
-    expect(first.cache.claimSingleflight).not.toHaveBeenCalled();
-
-    const second = harness({
-      cacheReads: [{ kind: 'miss' }, { kind: 'miss' }],
-      claims: [{ kind: 'unavailable' }, { kind: 'unavailable' }],
-    });
-    await expect(analyze(second.service)).resolves.toMatchObject({ kind: 'complete' });
-    expect(second.ocr.recognize).toHaveBeenCalledTimes(2);
-    expect(second.cache.commitSingleflight).not.toHaveBeenCalled();
+  it('runs local OCR when the exact process-local cache misses', async () => {
+    const fixture = harness({ cacheReads: [{ kind: 'miss' }, { kind: 'miss' }] });
+    await expect(analyze(fixture.service)).resolves.toMatchObject({ kind: 'complete' });
+    expect(fixture.ocr.recognize).toHaveBeenCalledTimes(2);
+    expect(fixture.cache.write).toHaveBeenCalledTimes(2);
   });
 
-  it('rereads a busy singleflight once and defers without duplicate OCR', async () => {
-    const { service, cache, preprocessor, ocr } = harness({
-      cacheReads: [{ kind: 'miss' }, { kind: 'miss' }],
-      claims: [{ kind: 'busy' }],
+  it('coalesces matching process-local OCR work without deferring the duplicate analysis', async () => {
+    const { service, ocr, cache } = harness();
+    const deadlineAtMs = Date.now() + 60_000;
+    let releaseOcr!: () => void;
+    const ocrGate = new Promise<void>((resolve) => {
+      releaseOcr = resolve;
+    });
+    ocr.recognize.mockImplementationOnce(async (bytes, recognizeOptions) => {
+      await ocrGate;
+      return nativeResult(recognizeOptions);
     });
 
-    await expect(analyze(service)).resolves.toEqual({
-      kind: 'defer',
-      reason: 'singleflight_busy',
-      delayMs: 1_000,
-    });
-    expect(cache.read).toHaveBeenCalledTimes(2);
-    expect(cache.claimSingleflight).toHaveBeenCalledTimes(1);
-    expect(preprocessor.prepare).not.toHaveBeenCalled();
-    expect(ocr.recognize).not.toHaveBeenCalled();
+    const first = analyze(service, { deadlineAtMs });
+    await waitFor(() => ocr.recognize.mock.calls.length === 1);
+    const second = analyze(service, { deadlineAtMs });
+    await waitFor(() => cache.coalesceLocal.mock.calls.length >= 2);
+    expect(ocr.recognize).toHaveBeenCalledTimes(1);
+
+    releaseOcr();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ kind: 'complete' }),
+      expect.objectContaining({ kind: 'complete' }),
+    ]);
+    expect(ocr.recognize).toHaveBeenCalledTimes(2);
+    expect(cache.write).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops a coalesced waiter at its own earlier absolute deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const { service, ocr } = harness();
+      let releaseOcr!: () => void;
+      const ocrGate = new Promise<void>((resolve) => {
+        releaseOcr = resolve;
+      });
+      ocr.recognize.mockImplementationOnce(async (_bytes, recognizeOptions) => {
+        await ocrGate;
+        return nativeResult(recognizeOptions);
+      });
+
+      const first = analyze(service, { deadlineAtMs: Date.now() + 60_000 });
+      await jest.advanceTimersByTimeAsync(1);
+      expect(ocr.recognize).toHaveBeenCalledTimes(1);
+      const second = analyze(service, { deadlineAtMs: Date.now() + 100 });
+
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(second).resolves.toEqual({
+        kind: 'incomplete',
+        reason: 'job_deadline_exceeded',
+        imageIndex: 0,
+        pass: 'primary',
+      });
+      expect(ocr.recognize).toHaveBeenCalledTimes(1);
+
+      releaseOcr();
+      await jest.runAllTimersAsync();
+      await expect(first).resolves.toMatchObject({ kind: 'complete' });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('authorizes immediately before download and every native OCR call', async () => {
@@ -423,9 +489,45 @@ describe('CommercialOcrAnalysisService', () => {
       reason: 'governor_pressure',
       delayMs: 30_000,
     });
-    expect(ocrDenied.preprocessor.prepare).toHaveBeenCalledTimes(1);
+    expect(ocrDenied.preprocessor.prepare).not.toHaveBeenCalled();
     expect(ocrDenied.ocr.recognize).not.toHaveBeenCalled();
-    expect(ocrDenied.cache.releaseSingleflight).toHaveBeenCalledTimes(1);
+    expect(ocrDenied.cache.write).not.toHaveBeenCalled();
+  });
+
+  it('fails open before any I/O when the absolute job deadline has expired', async () => {
+    const { service, downloader, preprocessor, ocr, cache } = harness();
+    const authorizeStage = jest.fn().mockResolvedValue(true);
+
+    await expect(
+      analyze(service, { deadlineAtMs: Date.now() - 1, authorizeStage }),
+    ).resolves.toEqual({ kind: 'incomplete', reason: 'job_deadline_exceeded' });
+    expect(authorizeStage).not.toHaveBeenCalled();
+    expect(downloader.download).not.toHaveBeenCalled();
+    expect(preprocessor.prepare).not.toHaveBeenCalled();
+    expect(ocr.recognize).not.toHaveBeenCalled();
+    expect(cache.read).not.toHaveBeenCalled();
+  });
+
+  it('stops before native OCR when preprocessing consumes the remaining job budget', async () => {
+    const { service, preprocessor, ocr, cache } = harness();
+    const deadlineAtMs = Date.now() + 60_000;
+    preprocessor.prepare.mockImplementationOnce(async () => {
+      jest.spyOn(Date, 'now').mockReturnValue(deadlineAtMs);
+      return { bytes: Buffer.from('prepared'), width: 100, height: 50 };
+    });
+
+    try {
+      await expect(analyze(service, { deadlineAtMs })).resolves.toEqual({
+        kind: 'incomplete',
+        reason: 'job_deadline_exceeded',
+        imageIndex: 0,
+        pass: 'primary',
+      });
+      expect(ocr.recognize).not.toHaveBeenCalled();
+      expect(cache.write).not.toHaveBeenCalled();
+    } finally {
+      jest.restoreAllMocks();
+    }
   });
 
   it('fails open and never caches truncated OCR output', async () => {
@@ -436,8 +538,7 @@ describe('CommercialOcrAnalysisService', () => {
       imageIndex: 0,
       pass: 'primary',
     });
-    expect(cache.commitSingleflight).not.toHaveBeenCalled();
-    expect(cache.releaseSingleflight).toHaveBeenCalledTimes(1);
+    expect(cache.write).not.toHaveBeenCalled();
   });
 
   it.each(['invalid_input', 'invalid_output', 'output_limit'] as const)(
@@ -461,8 +562,7 @@ describe('CommercialOcrAnalysisService', () => {
         imageIndex: 0,
         pass: 'primary',
       });
-      expect(cache.commitSingleflight).not.toHaveBeenCalled();
-      expect(cache.releaseSingleflight).toHaveBeenCalledTimes(1);
+      expect(cache.write).not.toHaveBeenCalled();
     },
   );
 
@@ -492,8 +592,7 @@ describe('CommercialOcrAnalysisService', () => {
       imageIndex: 0,
       pass: 'primary',
     });
-    expect(cache.commitSingleflight).not.toHaveBeenCalled();
-    expect(cache.releaseSingleflight).toHaveBeenCalledTimes(1);
+    expect(cache.write).not.toHaveBeenCalled();
   });
 
   it('returns a retry when the OCR adapter rejects unexpectedly', async () => {
@@ -506,8 +605,7 @@ describe('CommercialOcrAnalysisService', () => {
       imageIndex: 0,
       pass: 'primary',
     });
-    expect(cache.commitSingleflight).not.toHaveBeenCalled();
-    expect(cache.releaseSingleflight).toHaveBeenCalledTimes(1);
+    expect(cache.write).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -559,3 +657,13 @@ describe('CommercialOcrAnalysisService', () => {
     expect(missing.downloader.download).not.toHaveBeenCalled();
   });
 });
+
+async function waitFor(read: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (read()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error('Timed out waiting for test state');
+}

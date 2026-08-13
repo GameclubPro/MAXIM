@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24-alpine AS manifests
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS manifests
 WORKDIR /app
 
 COPY package.json package-lock.json ./
@@ -28,7 +28,7 @@ COPY apps/api apps/api
 
 RUN npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api
 
-FROM node:24-alpine AS runtime
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV HOME=/home/node
@@ -38,9 +38,10 @@ COPY infra/certs/russian-trusted-root-ca.pem /usr/local/share/ca-certificates/ru
 COPY infra/certs/russian-trusted-sub-ca.pem /usr/local/share/ca-certificates/russian-trusted-sub-ca.crt
 RUN apk add --no-cache \
     ca-certificates \
-    tesseract-ocr \
-    tesseract-ocr-data-eng \
-    tesseract-ocr-data-rus \
+    font-dejavu=2.37-r6 \
+    tesseract-ocr=5.5.2-r0 \
+    tesseract-ocr-data-eng=5.5.2-r0 \
+    tesseract-ocr-data-rus=5.5.2-r0 \
   && cat /usr/local/share/ca-certificates/russian-trusted-root-ca.crt \
     > /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \
   && printf '\n' >> /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt \

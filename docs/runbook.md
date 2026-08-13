@@ -135,6 +135,74 @@ sibling application routes may exist there.
 Public `/api/health/ready` is intentionally hidden. During API rollout, ready can recover later than
 live while queues drain; observe it before declaring failure.
 
+## Commercial OCR Rollout
+
+Production must keep `COMMERCIAL_OCR_ROLLOUT_MODE=shadow` until a separately reviewed, manually
+adjudicated Cyrillic-only corpus passes the enforcement gates. Recognition may use the installed
+`rus+eng` Tesseract data, but the first enforcement cohort is runtime-limited to two Cyrillic-only
+OCR passes. Latin, mixed, unknown, phone-only, incomplete, or ambiguous results remain report-only.
+The service does not persist OCR text, source pixels, or MAX image URLs in Redis, Postgres, or
+ordinary logs.
+
+Keep the eval corpus outside Git or under `artifacts/commercial-ocr-private/`. Schema-v1 manifests
+remain readable, but an enforcement run fails closed unless every case has `imageTextScript` and
+`captionLanguage`. `captionLanguage` is a diagnostic slice, not deletion authorization. Every
+required hard-negative category must contain at least 25 cases across at least 10 independent
+clusters: `rules_or_moderation_context`, `spam_complaint_or_fraud_warning`, `news_or_analytics`,
+`brand_mention_only`, `private_one_off_sale`, `ordinary_recruitment`,
+`public_training_or_help`, and `request_or_recommendation`. The hard-negative cohort permits zero
+false deletes.
+
+Run the reviewed gate with `--enforce-cyrillic-gates`. Case-level `--concurrency` defaults to `1`
+and is bounded to `1..4`; images and both OCR passes inside each case remain sequential. Keep it at
+`1` on the resource-capped production role. Higher values are for an isolated eval host only:
+
+```bash
+npm run moderation:run-commercial-ocr-eval --workspace @maxim/api -- \
+  --manifest artifacts/commercial-ocr-private/manifest.json \
+  --enforce-cyrillic-gates --concurrency 1
+```
+
+Changing the environment ceiling alone cannot authorize deletion. An enforcing ceiling also
+requires a fresh shared runtime-control document with exact chat IDs, a compare-and-set revision,
+operator/reason metadata, and an expiry no more than 24 hours away. Missing, invalid, expired, or
+unreadable control downgrades both intent creation and intent execution to shadow. Keep the control
+TTL shorter than the reviewed observation window and renew it with a new revision; do not use a
+wildcard or an unbounded expiry.
+
+An explicit revocation, missing or expired control, policy change, author immunity, or changed
+message terminalizes the old delete intent so it cannot become actionable again later. A transient
+Redis, MAX, or immunity-check failure performs no deletion but remains retryable only within the
+intent's bounded retry horizon.
+
+Run the control command in `api-admin`, which has the compiled operator script and the production
+Redis configuration. Reads are non-mutating. Set and clear are previews unless `--apply` is present:
+
+```bash
+./infra/scripts/vps-connect.sh exec 'docker compose -p infra -f infra/docker-compose.yml exec -T api-admin node apps/api/dist/apps/api/src/scripts/commercial-ocr-runtime-control.js get --json'
+```
+
+For a reviewed change, first read the current revision, prepare the strict JSON document outside
+shell history containing secrets, and preview it. Apply only if the preview reports the expected
+revision. Immediately read it back and confirm the exact chat IDs and expiry. A CAS conflict means
+another operator changed the control; stop, re-read, and review the new state instead of retrying
+blindly. Attach the reviewed JSON and the command's structured before/result output to the external
+change record. Redis stores the active TTL document and revision fence, not an immutable operator
+history; after clear or expiry its actor/reason metadata is no longer recoverable from the service.
+
+Emergency downgrade uses the same CAS discipline. Read the current revision, preview `clear`, then
+apply and read back. Clearing removes the active control and increments its revision; every pending
+OCR deletion then fails its execution-time guard. If Redis is unavailable, enforcement already
+fails closed to shadow, so do not restart or recreate Redis merely to perform the downgrade. Lower
+the environment ceiling to `shadow` in a reviewed follow-up deployment when the downgrade must
+survive Redis recovery.
+
+Every API image build in CI executes the compiled native worker against a generated raster before
+the image can be packaged. API deploy and rollback repeat exact `rus`/`eng` language and raster
+smokes inside `api-media-analysis`. After deployment, confirm that role is live/ready, has one OCR
+processor and one native worker, has not restarted, and still receives the `shadow` ceiling. Do not
+raise rollout during the code deployment.
+
 ## Release Inventory
 
 Active release components are `api-shared`, `miniapp-major-static`, and `admin-static`. Successful

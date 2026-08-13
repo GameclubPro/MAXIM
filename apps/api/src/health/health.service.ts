@@ -1,7 +1,11 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  NativeTesseractOcrAdapter,
+  type NativeTesseractRuntimeStatus,
+} from '../moderation/commercial-ocr/native-tesseract-ocr.adapter';
 import { MaxApiMetricsService } from '../system/max-api-metrics.service';
 import { QueueMetricsService, type QueueMetricsSnapshot } from '../system/queue-metrics.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
@@ -46,6 +50,7 @@ export type ReadinessSnapshot = {
   checks: {
     database: boolean;
     redis: boolean;
+    ocr?: OcrReadinessSnapshot;
     queueLag: {
       ok: boolean;
       rawOk: boolean;
@@ -68,6 +73,23 @@ export type ReadinessSnapshot = {
     };
   };
 };
+
+export type OcrReadinessSnapshot =
+  | NativeTesseractRuntimeStatus
+  | Readonly<{
+      state: 'unavailable';
+      ready: false;
+      workers: Readonly<{ configured: 0; live: 0; ready: 0; busy: 0 }>;
+      queueDepth: 0;
+      counters: Readonly<{
+        completed: 0;
+        failed: 0;
+        restarts: 0;
+        recycles: 0;
+        failuresByReason: Readonly<Record<string, never>>;
+      }>;
+      latencyMs: Readonly<{ last: null; average: null; maximum: null }>;
+    }>;
 
 export type BotLoadSnapshot = {
   ok: boolean;
@@ -101,6 +123,23 @@ type DependencyHealthState = {
   checkedAtMs: number;
 };
 
+function unavailableOcrReadiness(): OcrReadinessSnapshot {
+  return {
+    state: 'unavailable',
+    ready: false,
+    workers: { configured: 0, live: 0, ready: 0, busy: 0 },
+    queueDepth: 0,
+    counters: {
+      completed: 0,
+      failed: 0,
+      restarts: 0,
+      recycles: 0,
+      failuresByReason: {},
+    },
+    latencyMs: { last: null, average: null, maximum: null },
+  };
+}
+
 @Injectable()
 export class HealthService implements OnModuleDestroy {
   private readonly redis: Redis;
@@ -115,6 +154,7 @@ export class HealthService implements OnModuleDestroy {
   private readonly readinessStaleFallbackMaxAgeMs: number;
   private readonly readinessDependencyFallbackMaxAgeMs: number;
   private readonly readinessMaxApiWindowSec: number;
+  private readonly ocrReadinessRequired: boolean;
   private readyCache: ReadinessSnapshot | null = null;
   private readyCacheAtMs = 0;
   private readyPromise: Promise<ReadinessSnapshot> | null = null;
@@ -135,6 +175,8 @@ export class HealthService implements OnModuleDestroy {
     configService: ConfigService,
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
     private readonly maxApiMetricsService?: MaxApiMetricsService,
+    @Optional()
+    private readonly nativeTesseractOcr?: NativeTesseractOcrAdapter,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.queueLagThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
@@ -196,6 +238,8 @@ export class HealthService implements OnModuleDestroy {
         DEFAULT_READINESS_MAX_API_WINDOW_SEC,
       ),
     );
+    this.ocrReadinessRequired =
+      configService.get<string>('APP_SERVICE_NAME') === 'api-media-analysis';
   }
 
   async onModuleDestroy() {
@@ -286,7 +330,7 @@ export class HealthService implements OnModuleDestroy {
   async ready(): Promise<ReadinessSnapshot> {
     const cachedSnapshot = this.getCachedReadySnapshot();
     if (cachedSnapshot) {
-      return cachedSnapshot;
+      return this.withOcrReadiness(cachedSnapshot);
     }
 
     let buildPromise = this.readyPromise;
@@ -307,7 +351,12 @@ export class HealthService implements OnModuleDestroy {
     }
 
     try {
-      return await this.withTimeout(buildPromise, this.readinessBuildTimeoutMs, 'readiness build');
+      const snapshot = await this.withTimeout(
+        buildPromise,
+        this.readinessBuildTimeoutMs,
+        'readiness build',
+      );
+      return this.withOcrReadiness(snapshot);
     } catch (error: unknown) {
       if (this.readyPromise === buildPromise) {
         this.readyPromise = null;
@@ -315,9 +364,8 @@ export class HealthService implements OnModuleDestroy {
 
       const staleSnapshot = this.getStaleReadySnapshot();
       if (staleSnapshot) {
-        return this.decorateStaleReadySnapshot(
-          staleSnapshot,
-          this.describeReadinessFallback(error),
+        return this.withOcrReadiness(
+          this.decorateStaleReadySnapshot(staleSnapshot, this.describeReadinessFallback(error)),
         );
       }
 
@@ -325,10 +373,63 @@ export class HealthService implements OnModuleDestroy {
         this.describeReadinessFallback(error),
       );
       if (bestEffortSnapshot) {
-        return bestEffortSnapshot;
+        return this.withOcrReadiness(bestEffortSnapshot);
       }
 
-      return this.buildUnavailableReadySnapshot(this.describeReadinessFallback(error));
+      return this.withOcrReadiness(
+        this.buildUnavailableReadySnapshot(this.describeReadinessFallback(error)),
+      );
+    }
+  }
+
+  private withOcrReadiness(snapshot: ReadinessSnapshot): ReadinessSnapshot {
+    if (!this.ocrReadinessRequired) {
+      return snapshot;
+    }
+
+    const ocr = this.readOcrReadiness();
+    return {
+      ...snapshot,
+      ok: snapshot.ok && ocr.ready,
+      checks: {
+        ...snapshot.checks,
+        ocr,
+      },
+    };
+  }
+
+  private readOcrReadiness(): OcrReadinessSnapshot {
+    if (!this.nativeTesseractOcr) {
+      return unavailableOcrReadiness();
+    }
+
+    try {
+      const status = this.nativeTesseractOcr.getRuntimeStatus();
+      return {
+        state: status.state,
+        ready: status.ready,
+        workers: {
+          configured: status.workers.configured,
+          live: status.workers.live,
+          ready: status.workers.ready,
+          busy: status.workers.busy,
+        },
+        queueDepth: status.queueDepth,
+        counters: {
+          completed: status.counters.completed,
+          failed: status.counters.failed,
+          restarts: status.counters.restarts,
+          recycles: status.counters.recycles,
+          failuresByReason: { ...status.counters.failuresByReason },
+        },
+        latencyMs: {
+          last: status.latencyMs.last,
+          average: status.latencyMs.average,
+          maximum: status.latencyMs.maximum,
+        },
+      };
+    } catch {
+      return unavailableOcrReadiness();
     }
   }
 

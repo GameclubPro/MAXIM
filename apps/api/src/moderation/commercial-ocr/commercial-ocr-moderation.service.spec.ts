@@ -3,23 +3,26 @@ import { ConfigService } from '@nestjs/config';
 
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
 import {
+  COMMERCIAL_OCR_DECISION_POLICY_VERSION,
+  evaluateCommercialOcrDecision,
+  type CommercialOcrDecision,
+  type CommercialOcrPass,
+} from './commercial-ocr-decision-policy';
+import {
   COMMERCIAL_OCR_DELETE_RULE_CODE,
   parseCommercialOcrDeleteBinding,
 } from './commercial-ocr-delete-guard.service';
-import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decision-policy';
 import { CommercialOcrModerationService } from './commercial-ocr-moderation.service';
 import { COMMERCIAL_OCR_JOB_SCHEMA_VERSION, type CommercialOcrJob } from './commercial-ocr.queue';
 
 const sourceCreatedAt = '2026-08-12T08:00:00.000Z';
 const jobId = 'commercial-image-ocr__fixture';
+const activeDeadlineAtMs = Date.now() + 60_000;
 
 type AnalysisFixture =
   | {
       kind: 'complete';
-      decision: {
-        action: 'DELETE' | 'NO_ACTION';
-        reasonCodes: string[];
-      };
+      decision: CommercialOcrDecision;
     }
   | {
       kind: 'incomplete';
@@ -49,9 +52,28 @@ type HarnessOptions = {
   accessRows?: AccessFixture[];
   immunityResult?: 'granted' | 'not_granted';
   immunityError?: Error;
+  runtimePolicies?: Array<{ enforce: boolean; controlExpiresAt?: string }>;
 };
 
 describe('CommercialOcrModerationService', () => {
+  it('does no work for a job whose absolute deadline already expired', async () => {
+    const harness = buildHarness();
+
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, Date.now() - 1),
+    ).resolves.toEqual({ kind: 'completed' });
+
+    expect(harness.prisma.webhookEvent.findUnique).not.toHaveBeenCalled();
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(harness.runtimePolicy.resolveEffectivePolicy).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       label: 'normalized source identity mismatch',
@@ -66,6 +88,10 @@ describe('CommercialOcrModerationService', () => {
       options: { exactRows: [exactMessage({ photoId: 'other-photo' })] },
     },
     {
+      label: 'exact source caption mismatch',
+      options: { exactRows: [exactMessage({ caption: 'Changed before analysis' })] },
+    },
+    {
       label: 'incomplete exact stable photo identity',
       options: { exactRows: [exactMessage({ photoId: null })] },
     },
@@ -74,12 +100,16 @@ describe('CommercialOcrModerationService', () => {
     async ({ options }) => {
       const harness = buildHarness(options);
 
-      await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toEqual({
         kind: 'completed',
       });
       expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
       expect(harness.prisma.moderationViolationMessageClaim.createMany).not.toHaveBeenCalled();
-      expect(harness.moderationDeleteIntents.ensureIntent).not.toHaveBeenCalled();
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
     },
   );
 
@@ -88,38 +118,78 @@ describe('CommercialOcrModerationService', () => {
       label: 'safe no-action decision',
       analysis: {
         kind: 'complete',
-        decision: { action: 'NO_ACTION', reasonCodes: ['caption-safe-context:job_offer'] },
+        decision: noActionDecision(['caption-safe-context:job_offer']),
       },
     },
     {
       label: 'incomplete OCR analysis',
-      analysis: { kind: 'incomplete', reason: 'ocr_failed' },
+      analysis: { kind: 'incomplete' as const, reason: 'ocr_failed' },
     },
   ] satisfies Array<{ label: string; analysis: AnalysisFixture }>)(
     'does not create an intent for $label',
     async ({ analysis }) => {
       const harness = buildHarness({ analysis });
 
-      await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toEqual({
         kind: 'completed',
       });
       expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
       expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
       expect(harness.prisma.moderationViolationMessageClaim.createMany).not.toHaveBeenCalled();
-      expect(harness.moderationDeleteIntents.ensureIntent).not.toHaveBeenCalled();
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
     },
   );
 
   it('runs shadow analysis without claiming or creating a delete intent', async () => {
     const harness = buildHarness({ mode: 'shadow', admissionStates: ['observation'] });
 
-    await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
       kind: 'completed',
     });
     expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
     expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
     expect(harness.prisma.moderationViolationMessageClaim.createMany).not.toHaveBeenCalled();
-    expect(harness.moderationDeleteIntents.ensureIntent).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('analyzes the canonical webhook caption after exact-source parity succeeds', async () => {
+    const normalizedUpdate = update();
+    const rawMessage = (normalizedUpdate.raw as { message: { body: Record<string, unknown> } })
+      .message;
+    rawMessage.body.forwarded_message = {
+      body: {
+        text: 'Forwarded offer',
+      },
+    };
+    const exact = exactMessage();
+    (exact.body as Record<string, unknown>).forwarded_message = {
+      body: {
+        text: 'Forwarded offer',
+      },
+    };
+    const harness = buildHarness({
+      mode: 'shadow',
+      normalizedUpdate,
+      exactRows: [exact],
+      admissionStates: ['observation'],
+    });
+
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
+      kind: 'completed',
+    });
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ caption: 'Buy now Forwarded offer' }),
+    );
   });
 
   it('logs completed decisions at info level with privacy-safe structured fields only', async () => {
@@ -129,14 +199,15 @@ describe('CommercialOcrModerationService', () => {
       analysis: {
         kind: 'complete',
         decision: {
-          action: 'NO_ACTION',
-          reasonCodes: ['image-safe-context:0:request_or_recommendation'],
+          ...noActionDecision(['image-safe-context:0:request_or_recommendation']),
         },
       },
     });
     const log = jest.spyOn((harness.service as any).logger, 'log').mockImplementation(() => {});
 
-    await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
       kind: 'completed',
     });
 
@@ -159,7 +230,7 @@ describe('CommercialOcrModerationService', () => {
       mode: 'shadow',
       admissionStates: ['observation'],
       analysis: {
-        kind: 'incomplete',
+        kind: 'incomplete' as const,
         reason: 'ocr_truncated',
         imageIndex: 0,
         pass: 'primary',
@@ -167,7 +238,9 @@ describe('CommercialOcrModerationService', () => {
     });
     const log = jest.spyOn((harness.service as any).logger, 'log').mockImplementation(() => {});
 
-    await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
       kind: 'completed',
     });
 
@@ -190,7 +263,9 @@ describe('CommercialOcrModerationService', () => {
   it('defers without loading the source while action admission is pending', async () => {
     const harness = buildHarness({ admissionStates: ['pending'] });
 
-    await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
       kind: 'defer',
       delayMs: 5_000,
       reason: 'admission_pending',
@@ -204,13 +279,17 @@ describe('CommercialOcrModerationService', () => {
     async (reason) => {
       const harness = buildHarness({ analysis: { kind: 'retry', reason } });
 
-      await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toEqual({
         kind: 'retry',
         reason,
       });
       expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
       expect(harness.prisma.moderationViolationMessageClaim.createMany).not.toHaveBeenCalled();
-      expect(harness.moderationDeleteIntents.ensureIntent).not.toHaveBeenCalled();
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
     },
   );
 
@@ -244,13 +323,17 @@ describe('CommercialOcrModerationService', () => {
     async ({ options }) => {
       const harness = buildHarness(options);
 
-      await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toEqual({
         kind: 'completed',
       });
       expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
       expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
       expect(harness.prisma.moderationViolationMessageClaim.createMany).not.toHaveBeenCalled();
-      expect(harness.moderationDeleteIntents.ensureIntent).not.toHaveBeenCalled();
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
     },
   );
 
@@ -263,7 +346,9 @@ describe('CommercialOcrModerationService', () => {
   ])('fails open before action ownership when $label', async ({ options }) => {
     const harness = buildHarness(options);
 
-    await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
       kind: 'completed',
     });
 
@@ -275,37 +360,118 @@ describe('CommercialOcrModerationService', () => {
       nightModeTimezone: 'Europe/Moscow',
     });
     expect(harness.prisma.moderationViolationMessageClaim.createMany).not.toHaveBeenCalled();
-    expect(harness.moderationDeleteIntents.ensureIntent).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
   });
 
-  it('durably claims the message before creating an intent with binding-only metadata', async () => {
+  it.each([
+    ['Latin-only', 'Window repair call +7 999 123 45 67'],
+    ['mixed-script', 'Ремонт окон call +7 999 123 45 67'],
+    ['phone-only', '+7 999 123 45 67'],
+  ])('keeps a %s OCR delete candidate report-only', async (_label, text) => {
+    const harness = buildHarness({ analysis: reportOnlyDeleteAnalysis(text) });
+
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({ kind: 'completed' });
+
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
+    expect(harness.runtimePolicy.resolveEffectivePolicy).not.toHaveBeenCalled();
+    expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+    expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'before final authorization',
+      runtimePolicies: [{ enforce: false }],
+      expectedPolicyReads: 1,
+      expectsImmunity: false,
+    },
+    {
+      label: 'after final authorization',
+      runtimePolicies: [{ enforce: true }, { enforce: false }],
+      expectedPolicyReads: 2,
+      expectsImmunity: false,
+    },
+    {
+      label: 'immediately before intent commit',
+      runtimePolicies: [{ enforce: true }, { enforce: true }, { enforce: false }],
+      expectedPolicyReads: 3,
+      expectsImmunity: true,
+    },
+  ])(
+    'does not create an intent or call MAX delete when runtime control downgrades $label',
+    async ({ runtimePolicies, expectedPolicyReads, expectsImmunity }) => {
+      const harness = buildHarness({ runtimePolicies });
+
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toEqual({ kind: 'completed' });
+
+      expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledTimes(
+        expectedPolicyReads,
+      );
+      expect(harness.participantImmunity.consumeForMessage).toHaveBeenCalledTimes(
+        expectsImmunity ? 1 : 0,
+      );
+      expect(
+        harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+      ).not.toHaveBeenCalled();
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('caps initial and final MAX authorization calls by the remaining absolute deadline', async () => {
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    const deadlineAtMs = now + 1_250;
     const harness = buildHarness();
 
-    await expect(harness.service.processCommercialOcrJob(job(), jobId)).resolves.toEqual({
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, deadlineAtMs),
+    ).resolves.toEqual({ kind: 'completed' });
+
+    expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(2);
+    expect(harness.maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
+    for (const call of harness.maxClient.getExactMessageRow.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ timeoutMs: 1_250 }));
+    }
+    for (const call of harness.maxClient.getChatMemberAccess.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ timeoutMs: 1_250 }));
+    }
+  });
+
+  it('atomically persists action ownership, intent and binding-only reason metadata', async () => {
+    const harness = buildHarness();
+
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
       kind: 'completed',
     });
 
-    expect(harness.prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledWith({
-      data: [
-        expect.objectContaining({
-          chatId: 'chat-1',
-          messageId: 'message-1',
-          userId: 'user-1',
-          ruleCode: 'COMMERCIAL_OCR_MESSAGE_ACTION',
-          updateType: 'message_action',
-        }),
-      ],
-      skipDuplicates: true,
-    });
-    expect(harness.moderationDeleteIntents.ensureIntent).toHaveBeenCalledTimes(1);
-    expect(harness.participantImmunity.consumeForMessage.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.prisma.moderationViolationMessageClaim.createMany.mock.invocationCallOrder[0]!,
-    );
     expect(
-      harness.prisma.moderationViolationMessageClaim.createMany.mock.invocationCallOrder[0],
-    ).toBeLessThan(harness.moderationDeleteIntents.ensureIntent.mock.invocationCallOrder[0]!);
-
-    const intent = harness.moderationDeleteIntents.ensureIntent.mock.calls[0]![0];
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).toHaveBeenCalledTimes(1);
+    expect(harness.participantImmunity.consumeForMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock
+        .invocationCallOrder[0]!,
+    );
+    const persisted =
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
+    expect(persisted.claim).toMatchObject({
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      userId: 'user-1',
+      ruleCode: 'COMMERCIAL_OCR_MESSAGE_ACTION',
+      updateType: 'message_action',
+    });
+    const intent = persisted.intent;
     expect(intent).toMatchObject({
       chatId: 'chat-1',
       messageId: 'message-1',
@@ -320,7 +486,7 @@ describe('CommercialOcrModerationService', () => {
     expect(Object.keys(intent.event.metadata)).toEqual(['commercialOcrBinding']);
     const binding = parseCommercialOcrDeleteBinding(intent.event.metadata);
     expect(binding).toMatchObject({
-      version: 2,
+      version: 4,
       policyVersion: COMMERCIAL_OCR_DECISION_POLICY_VERSION,
       ocrVersion: 'tesseract-rus-eng-v1',
       senderId: 'user-1',
@@ -329,6 +495,30 @@ describe('CommercialOcrModerationService', () => {
     expect(JSON.stringify(intent.event.metadata)).not.toContain('Buy now');
     expect(JSON.stringify(intent.event.metadata)).not.toContain('photo-1');
     expect(JSON.stringify(intent.event.metadata)).not.toContain('BALANCED');
+  });
+
+  it('caps the durable delete deadline at the runtime-control expiry', async () => {
+    const controlExpiresAt = new Date(Date.now() + 30_000).toISOString();
+    const harness = buildHarness({
+      runtimePolicies: [
+        { enforce: true, controlExpiresAt },
+        { enforce: true, controlExpiresAt },
+        { enforce: true, controlExpiresAt },
+      ],
+    });
+
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({ kind: 'completed' });
+
+    const persisted =
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim.mock.calls[0]![0];
+    expect(persisted.intent.retryUntilAt).toEqual(new Date(controlExpiresAt));
+    expect(persisted.intent.commercialOcrDeadlineAt).toEqual(new Date(controlExpiresAt));
+    expect(parseCommercialOcrDeleteBinding(persisted.intent.event.metadata)).toMatchObject({
+      controlExpiresAt,
+      ocrDeadlineAt: controlExpiresAt,
+    });
   });
 });
 
@@ -388,6 +578,7 @@ function buildHarness(options: HarnessOptions = {}) {
   };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
   const maxClient = {
+    deleteMessage: jest.fn(),
     getExactMessageRow: jest.fn().mockImplementation(async () => {
       const row = readSequence(exactRows, exactRowIndex);
       exactRowIndex += 1;
@@ -416,7 +607,28 @@ function buildHarness(options: HarnessOptions = {}) {
   };
   const moderationDeleteIntents = {
     getRolloutForRule: jest.fn().mockReturnValue('execute'),
-    ensureIntent: jest.fn().mockResolvedValue({}),
+    ensureIntentWithMessageActionClaim: jest.fn().mockResolvedValue({
+      claim: 'claimed',
+      intent: { intentId: 'intent-1', rollout: 'execute', status: 'PENDING' },
+    }),
+  };
+  let runtimePolicyIndex = 0;
+  const runtimePolicies = options.runtimePolicies ?? [{ enforce: true }];
+  const runtimePolicy = {
+    resolveEffectivePolicy: jest.fn().mockImplementation(async () => {
+      const policy = readSequence(runtimePolicies, runtimePolicyIndex);
+      runtimePolicyIndex += 1;
+      return {
+        mode: policy.enforce ? 'on' : 'shadow',
+        process: true,
+        enforce: policy.enforce,
+        controlRevision: policy.enforce ? 1 : null,
+        controlExpiresAt: policy.enforce
+          ? (policy.controlExpiresAt ?? new Date(Date.now() + 60_000).toISOString())
+          : null,
+        enforcementAuthority: policy.enforce ? 'authorized' : 'revoked',
+      };
+    }),
   };
   const configService = new ConfigService({
     COMMERCIAL_OCR_ROLLOUT_MODE: options.mode ?? 'on',
@@ -431,6 +643,7 @@ function buildHarness(options: HarnessOptions = {}) {
     maxBotLinkService as never,
     participantImmunity as never,
     moderationDeleteIntents as never,
+    runtimePolicy as never,
     configService,
   );
 
@@ -442,6 +655,7 @@ function buildHarness(options: HarnessOptions = {}) {
     maxClient,
     participantImmunity,
     moderationDeleteIntents,
+    runtimePolicy,
   };
 }
 
@@ -545,10 +759,108 @@ function nonAdminAccess(): AccessFixture {
   };
 }
 
-function deleteAnalysis(): AnalysisFixture {
+function deleteAnalysis(
+  text = 'Ремонт окон, звоните +7 999 123 45 67',
+): Extract<AnalysisFixture, { kind: 'complete' }> {
   return {
     kind: 'complete',
-    decision: { action: 'DELETE', reasonCodes: ['image-independent-two-pass-delete'] },
+    decision: evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 1,
+      images: [
+        {
+          imageIndex: 0,
+          source: 'direct',
+          primary: recognizedPass(text),
+          verification: recognizedPass(text),
+        },
+      ],
+      settings: settings(),
+      detector: {
+        detect: () => deleteDetection(text),
+      },
+    }),
+  };
+}
+
+function reportOnlyDeleteAnalysis(text: string): Extract<AnalysisFixture, { kind: 'complete' }> {
+  const base = deleteAnalysis();
+  const letterScript = /\p{Script=Latin}/u.test(text)
+    ? /\p{Script=Cyrillic}/u.test(text)
+      ? 'mixed'
+      : 'latin_only'
+    : /\p{Script=Cyrillic}/u.test(text)
+      ? 'cyrillic_only'
+      : 'unknown';
+  return {
+    kind: 'complete',
+    decision: {
+      ...base.decision,
+      images: base.decision.images.map((image) => ({
+        ...image,
+        primary: { ...image.primary, letterScript },
+        verification: image.verification
+          ? { ...image.verification, letterScript }
+          : image.verification,
+      })),
+    },
+  };
+}
+
+function noActionDecision(reasonCodes: string[]): CommercialOcrDecision {
+  return {
+    ...deleteAnalysis().decision,
+    action: 'NO_ACTION',
+    deleteSource: null,
+    reasonCodes,
+  };
+}
+
+function recognizedPass(text: string): CommercialOcrPass {
+  return {
+    status: 'recognized',
+    text,
+    confidencePermille: 950,
+    criticalEvidence: [
+      { kind: 'commercial_anchor', semanticKey: 'service:repair', confidencePermille: 950 },
+      { kind: 'contact', semanticKey: 'phone:+79991234567', confidencePermille: 950 },
+    ],
+  };
+}
+
+function deleteDetection(rawText: string) {
+  return {
+    rawText,
+    confidenceScore: 99,
+    decisionBand: 'HIGH' as const,
+    matchedSignals: ['service-specialty:repair', 'contact:phone'],
+    negativeSignals: [],
+    primarySubtype: 'SERVICES' as const,
+    supportingSubtypes: [],
+    evidenceStrength: 'DIRECT' as const,
+    reviewRecommended: false,
+    reviewReasons: [],
+    campaignContext: null,
+    appliedThresholds: {
+      warnThreshold: 45,
+      deleteThreshold: 65,
+      sensitivity: 'BALANCED' as const,
+      strictness: 0.5,
+    },
+    classifierVersion: 'test',
+    commercialProbability: 0.99,
+    reviewProbability: 0,
+    classifierReasons: [],
+    actionScore: 99,
+    policyFpRisk: 0,
+    evidenceTier: 'DIRECT',
+    actionBand: 'DELETE',
+    safeContextBucket: 'none',
+    actionable: true,
+    recordable: true,
+    deleteSuppressed: false,
+    suppressionReasons: [],
+    reasonCodes: [],
   };
 }
 
