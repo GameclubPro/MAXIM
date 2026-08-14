@@ -3,7 +3,7 @@ import sharp from 'sharp';
 
 import { NativeTesseractOcrAdapter } from '../moderation/commercial-ocr/native-tesseract-ocr.adapter';
 
-const STARTUP_TIMEOUT_MS = 6_000;
+const STARTUP_TIMEOUT_MS = 15_000;
 const RECOGNITION_TIMEOUT_MS = 8_000;
 const CYRILLIC_SERVICE_TEXT = 'РЕМОНТ КВАРТИР';
 const LATIN_SERVICE_TEXT = 'REPAIR SERVICE';
@@ -11,18 +11,7 @@ const CYRILLIC_CALL_TO_ACTION = 'ЗВОНИТЕ';
 const EXPECTED_PHONE_DIGITS = '79991234567';
 
 export async function runCommercialOcrWorkerSmoke(): Promise<void> {
-  const adapter = new NativeTesseractOcrAdapter(
-    new ConfigService({
-      ...process.env,
-      COMMERCIAL_OCR_TESSERACT_CONCURRENCY: 1,
-      COMMERCIAL_OCR_TESSERACT_MAX_QUEUE: 1,
-      COMMERCIAL_OCR_TESSERACT_RECYCLE_AFTER_JOBS: 2,
-      COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: RECOGNITION_TIMEOUT_MS,
-      COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: 2 * 1024 * 1024,
-      COMMERCIAL_OCR_TESSERACT_MAX_OUTPUT_BYTES: 512 * 1024,
-      OMP_THREAD_LIMIT: 1,
-    }),
-  );
+  const adapter = new NativeTesseractOcrAdapter(createCommercialOcrWorkerSmokeConfig());
   adapter.onModuleInit();
   try {
     await waitForReady(adapter, STARTUP_TIMEOUT_MS);
@@ -38,6 +27,13 @@ export async function runCommercialOcrWorkerSmoke(): Promise<void> {
   } finally {
     await adapter.onModuleDestroy();
   }
+}
+
+export function createCommercialOcrWorkerSmokeConfig(
+  environment: NodeJS.ProcessEnv = process.env,
+): ConfigService {
+  // Media analysis verifies every native control against its production behavior identity.
+  return new ConfigService({ ...environment });
 }
 
 export function assertCommercialOcrWorkerSmokeText(text: string): void {

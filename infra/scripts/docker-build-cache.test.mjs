@@ -186,14 +186,21 @@ test('runs the compiled native OCR raster smoke before packaging the API image',
   assert.notEqual(smoke, -1);
   assert.notEqual(packaging, -1);
   assert.ok(smoke < packaging);
-  assert.match(workflow, /if: matrix\.component == 'api'/u);
-  assert.match(workflow, /docker run --rm --init --read-only/u);
-  assert.match(workflow, /--cap-drop=ALL/u);
-  assert.match(workflow, /--memory=1g/u);
-  assert.match(workflow, /--cpus=0\.75/u);
-  assert.match(workflow, /--tmpfs \/tmp:rw,nosuid,size=64m,uid=1000,gid=1000/u);
+  const smokeStep = workflow.slice(smoke, packaging);
+  assert.match(smokeStep, /if: matrix\.component == 'api'/u);
+  assert.match(smokeStep, /docker run --rm --init --read-only/u);
+  assert.match(smokeStep, /--cap-drop=ALL/u);
+  assert.match(smokeStep, /--memory=1g/u);
+  assert.match(smokeStep, /--cpus=0\.75/u);
+  assert.match(smokeStep, /--tmpfs \/tmp:rw,nosuid,size=64m,uid=1000,gid=1000/u);
+  assert.match(smokeStep, /--env APP_SERVICE_NAME=api-media-analysis/u);
+  assert.match(smokeStep, /--env APP_ROLE=moderation/u);
+  assert.match(smokeStep, /--env COMMERCIAL_OCR_TESSERACT_CONCURRENCY=1/u);
+  assert.match(smokeStep, /--env COMMERCIAL_OCR_TESSERACT_MAX_QUEUE=4/u);
+  assert.match(smokeStep, /--env COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS=10000/u);
+  assert.match(smokeStep, /--env OMP_THREAD_LIMIT=1/u);
   assert.match(
-    workflow,
+    smokeStep,
     /apps\/api\/dist\/apps\/api\/src\/scripts\/smoke-commercial-ocr-worker\.js/u,
   );
 });

@@ -188,6 +188,12 @@ jobs:
           --memory=1g
           --cpus=0.75
           --tmpfs /tmp:rw,nosuid,size=64m,uid=1000,gid=1000
+          --env APP_SERVICE_NAME=api-media-analysis
+          --env APP_ROLE=moderation
+          --env COMMERCIAL_OCR_TESSERACT_CONCURRENCY=1
+          --env COMMERCIAL_OCR_TESSERACT_MAX_QUEUE=4
+          --env COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS=10000
+          --env OMP_THREAD_LIMIT=1
           --entrypoint=node
           "$IMAGE_REF"
           apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js

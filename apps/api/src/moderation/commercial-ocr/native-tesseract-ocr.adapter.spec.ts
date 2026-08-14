@@ -315,6 +315,43 @@ describe('NativeTesseractOcrAdapter', () => {
     });
   });
 
+  it('rejects verified artifacts whose runtime controls drift from production', async () => {
+    const config = new ConfigService({
+      APP_SERVICE_NAME: 'api-media-analysis',
+      COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: 16 * 1024 * 1024,
+    });
+    const expectedIdentity = completeNativeIdentity(config);
+    const driftedIdentity = completeNativeIdentity(
+      new ConfigService({
+        APP_SERVICE_NAME: 'api-media-analysis',
+        COMMERCIAL_OCR_TESSERACT_MAX_IMAGE_BYTES: 2 * 1024 * 1024,
+      }),
+    );
+    const service = new VerificationGatedNativeTesseractOcrAdapter(
+      config,
+      async () => verifiedNativeIdentity(driftedIdentity),
+      expectedIdentity,
+    );
+    services.push(service);
+
+    service.onModuleInit();
+    await waitFor(() =>
+      service.getRuntimeStatus().behaviorIdentity.state === 'failed' ? true : undefined,
+    );
+
+    expect(service.workers).toHaveLength(0);
+    expect(service.getRuntimeStatus()).toMatchObject({
+      state: 'degraded',
+      ready: false,
+      workers: { live: 0, ready: 0, busy: 0 },
+      behaviorIdentity: {
+        state: 'failed',
+        verified: false,
+        mismatchFields: ['controls.productionProfile'],
+      },
+    });
+  });
+
   it('rejects an expired absolute deadline before initializing a worker', async () => {
     const service = createService();
     services.push(service);
