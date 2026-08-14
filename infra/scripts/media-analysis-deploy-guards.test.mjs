@@ -242,22 +242,32 @@ printf '%s\\n' "\${services[@]}"
 
 test('full OCR smoke requires shadow mode, raster recognition, and internal readiness', () => {
   const passing = runTopologyProbe(`
+order_file="$(mktemp)"
+trap 'rm -f "$order_file"' EXIT
 docker() {
   case "$*" in
     *'COMMERCIAL_OCR_TESSERACT_BINARY'*) printf '%s' '/opt/ocr/tesseract' ;;
     *'--list-langs'*) printf '%s\\n' 'List of available languages (2):' eng rus ;;
     *'if [ -f apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js ]'*) printf '%s' present ;;
     *'COMMERCIAL_OCR_ROLLOUT_MODE'*) return 0 ;;
-    *'smoke-commercial-ocr-worker.js'*) printf '%s\\n' 'Commercial OCR worker smoke passed.' ;;
-    *'health/ready'*) return 0 ;;
+    *'smoke-commercial-ocr-worker.js'*)
+      printf '%s\\n' raster >> "$order_file"
+      printf '%s\\n' 'Commercial OCR worker smoke passed.'
+      ;;
+    *'health/ready'*)
+      printf '%s\\n' internal-ready >> "$order_file"
+      return 0
+      ;;
     *) return 8 ;;
   esac
 }
 compose_args=(-p infra -f infra/docker-compose.yml)
 maxim_topology_smoke_media_analysis_tesseract compose_args required
+cat "$order_file"
 `);
   assert.equal(passing.status, 0, passing.stderr);
   assert.match(passing.stdout, /internal OCR readiness smokes passed/u);
+  assert.match(passing.stdout, /internal-ready\nraster/u);
 
   const missingRussian = runTopologyProbe(`
 docker() {
@@ -280,6 +290,7 @@ docker() {
     *'--list-langs'*) printf '%s\\n' 'List of available languages (2):' eng rus ;;
     *'if [ -f apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js ]'*) printf '%s' present ;;
     *'COMMERCIAL_OCR_ROLLOUT_MODE'*) return 0 ;;
+    *'health/ready'*) return 0 ;;
     *'smoke-commercial-ocr-worker.js'*) return 7 ;;
     *) return 8 ;;
   esac
@@ -297,7 +308,7 @@ docker() {
     *'--list-langs'*) printf '%s\\n' 'List of available languages (2):' eng rus ;;
     *'if [ -f apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js ]'*) printf '%s' present ;;
     *'COMMERCIAL_OCR_ROLLOUT_MODE'*) return 0 ;;
-    *'smoke-commercial-ocr-worker.js'*) printf '%s\\n' 'Commercial OCR worker smoke passed.' ;;
+    *'smoke-commercial-ocr-worker.js'*) return 7 ;;
     *'health/ready'*) return 1 ;;
     *) return 8 ;;
   esac

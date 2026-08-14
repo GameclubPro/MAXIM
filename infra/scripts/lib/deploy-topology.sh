@@ -323,20 +323,6 @@ maxim_topology_smoke_media_analysis_tesseract() {
       ;;
   esac
 
-  if ! output="$(
-    docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
-      node apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js 2>&1
-  )"; then
-    echo "Native OCR worker raster smoke failed in $MAXIM_MEDIA_ANALYSIS_SERVICE." >&2
-    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
-    return 1
-  fi
-  if ! grep -Fxq 'Commercial OCR worker smoke passed.' <<<"$output"; then
-    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE did not complete the native OCR worker raster smoke." >&2
-    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
-    return 1
-  fi
-
   for ((attempt = 1; attempt <= 30; attempt += 1)); do
     if docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
       node -e \
@@ -349,6 +335,20 @@ maxim_topology_smoke_media_analysis_tesseract() {
   done
   if [[ "$ready" -ne 1 ]]; then
     echo "$MAXIM_MEDIA_ANALYSIS_SERVICE did not reach internal OCR readiness." >&2
+    return 1
+  fi
+
+  if ! output="$(
+    docker compose "${compose_args_ref[@]}" exec -T "$MAXIM_MEDIA_ANALYSIS_SERVICE" \
+      node apps/api/dist/apps/api/src/scripts/smoke-commercial-ocr-worker.js 2>&1
+  )"; then
+    echo "Native OCR worker raster smoke failed in $MAXIM_MEDIA_ANALYSIS_SERVICE." >&2
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    return 1
+  fi
+  if ! grep -Fxq 'Commercial OCR worker smoke passed.' <<<"$output"; then
+    echo "$MAXIM_MEDIA_ANALYSIS_SERVICE did not complete the native OCR worker raster smoke." >&2
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
     return 1
   fi
 
