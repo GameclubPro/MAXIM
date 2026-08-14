@@ -19,6 +19,7 @@ const jobId = buildCommercialOcrJobId({
 const limits = {
   maxGlobalImageUnits: 100,
   maxChatImageUnits: 20,
+  reservedActionableImageUnits: 25,
   maxJobAgeMs: 120_000,
   reservationTtlMs: 300_000,
 };
@@ -79,6 +80,7 @@ describe('CommercialOcrAdmissionStore', () => {
     ]);
     expect(call[10]).toBe('3');
     expect(call[15]).toBe('P');
+    expect(call[20]).toBe('25');
     expect(String(call[0])).toContain("redis.call('TIME')");
     expect(String(call[0])).toMatch(/redis\.call\(\s*'ZRANGEBYSCORE'/u);
     expect(String(call[0])).toContain("'LIMIT', 0, tonumber(ARGV[11])");
@@ -98,6 +100,9 @@ describe('CommercialOcrAdmissionStore', () => {
       }),
     ).resolves.toEqual({ kind: 'admitted', state: 'observation' });
     expect(redis.eval.mock.calls[0]![15]).toBe('O');
+    expect(String(redis.eval.mock.calls[0]![0])).toContain(
+      "ARGV[8] == 'O' and\n  global_units + tonumber(ARGV[3]) > tonumber(ARGV[6]) - tonumber(ARGV[13])",
+    );
   });
 
   it('returns bounded capacity and age outcomes without throwing', async () => {
@@ -105,6 +110,7 @@ describe('CommercialOcrAdmissionStore', () => {
       { response: [3, 'O'], kind: 'rejected_global' },
       { response: [4, 'O'], kind: 'rejected_chat' },
       { response: [5, 'O'], kind: 'rejected_age' },
+      { response: [7, 'O'], kind: 'rejected_actionable_reserve' },
     ] as const;
 
     for (const outcome of outcomes) {
@@ -150,7 +156,13 @@ describe('CommercialOcrAdmissionStore', () => {
     ).resolves.toEqual({ kind: 'duplicate', state: 'observation' });
 
     const script = String(redis.eval.mock.calls[0]![0]);
-    expect(script).toContain("ARGV[8] == 'O' and stored_state ~= 'O'");
+    expect(script).toContain(
+      "ARGV[8] == 'O' and (stored_state ~= 'O' or capacity_held == '1')",
+    );
+    expect(script).toContain(
+      'release_capacity(ARGV[1], stored_chat_hash, tonumber(stored_units), ARGV[12])',
+    );
+    expect(script).toContain("capacity_held = '0'");
     expect(script).not.toMatch(/stored_state\s*=\s*'P'/u);
     expect(redis.eval.mock.calls.map((call) => call[15])).toEqual(['O', 'P']);
   });
@@ -233,6 +245,8 @@ describe('CommercialOcrAdmissionStore', () => {
       'release_capacity(expired_job_id, expired_chat_hash, tonumber(expired_units), ARGV[6])',
     );
     expect(script).toContain("stored_chat_hash .. '|' .. stored_units .. '|O|0'");
+    expect(script).toContain("stored_chat_hash ~= ARGV[2]");
+    expect(script).not.toContain('tonumber(stored_units) ~= tonumber(ARGV[3])');
     expect(script).toContain("redis.call('HDEL', KEYS[5], ARGV[1])");
     expect(script).toContain("redis.call('ZREM', KEYS[4], ARGV[1])");
     expect(script).toContain('math.max(current_expiry, expires_at_ms)');
@@ -328,6 +342,16 @@ describe('CommercialOcrAdmissionStore', () => {
         limits: { ...limits, reservationTtlMs: 179_999 },
       }),
     ).rejects.toThrow('reservationTtlMs is invalid');
+    await expect(
+      store.reserve({
+        jobId,
+        chatId: 'chat-secret',
+        sourceCreatedAt,
+        imageCount: 1,
+        actionEligible: false,
+        limits: { ...limits, reservedActionableImageUnits: 101 },
+      }),
+    ).rejects.toThrow('reservedActionableImageUnits is invalid');
     expect(redis.eval).not.toHaveBeenCalled();
   });
 });

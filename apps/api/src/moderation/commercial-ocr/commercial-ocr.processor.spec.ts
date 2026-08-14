@@ -60,6 +60,8 @@ function createHarness(
   };
   const metrics = {
     recordQueueWait: jest.fn(),
+    recordCounter: jest.fn(),
+    recordStageDuration: jest.fn(),
   };
   const effectiveData = { ...jobData, ...options.dataOverrides };
   const job = {
@@ -102,6 +104,13 @@ describe('CommercialOcrProcessor', () => {
     );
     expect(harness.metrics.recordQueueWait).toHaveBeenCalledWith(
       activeNowMs - Date.parse(data.createdAt),
+    );
+    expect(harness.metrics.recordCounter).toHaveBeenCalledWith('bullmq.job.started');
+    expect(harness.metrics.recordCounter).toHaveBeenCalledWith('album.image_count.2_3');
+    expect(harness.metrics.recordCounter).toHaveBeenCalledWith('bullmq.job.completed');
+    expect(harness.metrics.recordStageDuration).toHaveBeenCalledWith(
+      'end_to_end',
+      expect.any(Number),
     );
     expect(harness.admissionStore.release).toHaveBeenCalledWith({ jobId, chatId: 'chat-1' });
   });
@@ -217,12 +226,17 @@ describe('CommercialOcrProcessor', () => {
       { ensureIntentWithMessageActionClaim: jest.fn(), getRolloutForRule: jest.fn() } as never,
       { resolveEffectivePolicy: jest.fn() } as never,
       configService as never,
+      { recordCounter: jest.fn() } as never,
     );
     const processor = new CommercialOcrProcessor(
       moderationService,
       admissionStore as never,
       configService as never,
-      { recordQueueWait: jest.fn() } as never,
+      {
+        recordQueueWait: jest.fn(),
+        recordCounter: jest.fn(),
+        recordStageDuration: jest.fn(),
+      } as never,
     );
     const job = {
       id: jobId,
@@ -307,6 +321,7 @@ describe('CommercialOcrProcessor', () => {
       );
 
       expect(harness.job.moveToDelayed).toHaveBeenCalledWith(activeNowMs + 5_000, 'lock-1');
+      expect(harness.metrics.recordCounter).toHaveBeenCalledWith(`bullmq.job.defer.${reason}`);
       expect(harness.admissionStore.release).not.toHaveBeenCalled();
     },
   );
@@ -353,6 +368,7 @@ describe('CommercialOcrProcessor', () => {
       await expect(harness.processor.process(harness.job, 'lock-1')).rejects.toThrow(
         `Commercial OCR transient failure: ${reason}`,
       );
+      expect(harness.metrics.recordCounter).toHaveBeenCalledWith(`bullmq.job.retry.${reason}`);
       expect(harness.admissionStore.release).not.toHaveBeenCalled();
     },
   );

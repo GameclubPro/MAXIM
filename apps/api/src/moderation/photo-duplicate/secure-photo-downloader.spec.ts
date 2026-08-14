@@ -377,4 +377,36 @@ describe('SecurePhotoDownloader', () => {
     expect((downloader as any).waiters).toHaveLength(0);
     expect((downloader as any).activeDownloads).toBe(0);
   });
+
+  it('never oversubscribes when a new caller takes a released slot before a waiter resumes', async () => {
+    const downloader = new TestDownloader({}, []);
+    const acquireSlot = (deadlineAtMs: number) =>
+      (downloader as any).acquireSlot(deadlineAtMs) as Promise<() => void>;
+    const deadlineAtMs = Date.now() + 10_000;
+    const initialReleases = await Promise.all(
+      Array.from({ length: 4 }, () => acquireSlot(deadlineAtMs)),
+    );
+    const waitingReleasePromise = acquireSlot(deadlineAtMs);
+
+    await Promise.resolve();
+    expect((downloader as any).waiters).toHaveLength(1);
+
+    const competingReleasePromise = Promise.resolve().then(() => acquireSlot(deadlineAtMs));
+    initialReleases[0]!();
+    const competingRelease = await competingReleasePromise;
+
+    expect((downloader as any).activeDownloads).toBe(4);
+    expect((downloader as any).waiters).toHaveLength(1);
+
+    competingRelease();
+    const waitingRelease = await waitingReleasePromise;
+    expect((downloader as any).activeDownloads).toBe(4);
+
+    waitingRelease();
+    for (const release of initialReleases.slice(1)) {
+      release();
+    }
+    expect((downloader as any).activeDownloads).toBe(0);
+    expect((downloader as any).waiters).toHaveLength(0);
+  });
 });

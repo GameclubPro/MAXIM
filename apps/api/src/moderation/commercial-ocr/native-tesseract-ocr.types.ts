@@ -52,6 +52,7 @@ export type NativeTesseractRecognizedResult = {
 
 export type NativeTesseractFailureReason =
   | 'invalid_input'
+  | 'artifact_unverified'
   | 'capacity_exhausted'
   | 'timeout'
   | 'worker_unavailable'

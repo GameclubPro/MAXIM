@@ -60,6 +60,11 @@ COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=prod-deps /app/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=build /app/packages/contracts/package.json ./packages/contracts/package.json
 
+RUN node apps/api/dist/apps/api/src/scripts/commercial-ocr-native-build-manifest.js \
+    --output /app/apps/api/commercial-ocr-native-build-manifest.json \
+  && chown root:root /app/apps/api/commercial-ocr-native-build-manifest.json \
+  && chmod 0444 /app/apps/api/commercial-ocr-native-build-manifest.json
+
 EXPOSE 3001
 USER node
 CMD ["node", "apps/api/dist/apps/api/src/main.js"]

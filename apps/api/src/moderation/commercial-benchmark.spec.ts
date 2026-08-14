@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { ChatSettings } from '../prisma/prisma-client';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import {
@@ -6,8 +8,26 @@ import {
   isCommercialBenchmarkMedianGateEnabled,
   type CommercialBenchmarkPercentiles,
 } from '../scripts/commercial-benchmark-ci.util';
+import {
+  COMMERCIAL_DETECTOR_BENCHMARK_CLOCK,
+  COMMERCIAL_DETECTOR_BENCHMARK_SCHEMA_VERSION,
+  measureCommercialAsync,
+  measureCommercialSync,
+  summarizeCommercialQualityCohorts,
+  summarizeCommercialTimingCohorts,
+  summarizeCommercialTimings,
+  timingSummaryToMilliseconds,
+  type CommercialDetectorBenchmarkEvidence,
+  type CommercialDetectorQualityObservation,
+  type CommercialDetectorTimingObservation,
+  type CommercialDetectorTimingSummary,
+} from '../scripts/commercial-detector-harness.util';
 import { COMMERCIAL_NEGATIVE_CASES } from './commercial-negative.fixture';
 import { COMMERCIAL_POSITIVE_CASES } from './commercial-positive.fixture';
+import {
+  CommercialAdDetector,
+  type CommercialDetection,
+} from './commercial/commercial-ad.detector';
 import {
   auditCommercialRequiredAnchors,
   buildCommercialFeatureVector,
@@ -15,6 +35,7 @@ import {
 import { resolveCommercialSignalEvidence } from './commercial/commercial-evidence';
 import { canCommercialActionDelete } from './commercial/commercial-scorer';
 import { RedisCounterService } from './redis-counter.service';
+import { createRuleDetectionContext } from './rule-engine-detection-context';
 import { RuleEngineService } from './rule-engine.service';
 import type { CommercialSubtype, RuleViolation } from './rule-engine.contract';
 
@@ -56,6 +77,21 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
 
 function createRuleEngine(): RuleEngineService {
   return new RuleEngineService(new NoopRedisCounterService() as unknown as RedisCounterService);
+}
+
+function prepareCommercialDetectorInput(
+  text: string,
+  overrides: Partial<ChatSettings> = {},
+  options: { commercialCampaignContext?: CommercialCampaignContext | null } = {},
+) {
+  const settings = buildSettings(overrides);
+  const context = createRuleDetectionContext({ text, settings });
+  return {
+    normalizedText: context.normalizedText,
+    rawLoweredText: context.rawLoweredText,
+    settings,
+    commercialCampaignContext: options.commercialCampaignContext,
+  };
 }
 
 async function detectCommercialViolation(
@@ -124,22 +160,173 @@ function calculateSubtypeAccuracy(params: {
   return (params.detectedPositiveCases - params.detectedSubtypeMisses) / params.totalPositiveCases;
 }
 
+type CommercialDecisionSignature = {
+  hit: boolean;
+  confidenceScore: number | null;
+  decisionBand: string | null;
+  primarySubtype: string | null;
+  subtype: string | null;
+  supportingSubtypes: string[];
+  reviewRecommended: boolean;
+  actionBand: string | null;
+  evidenceTier: string | null;
+  reviewPriority: string | null;
+  campaignStrength: string | null;
+  safeContextBucket: string | null;
+  actionable: boolean;
+  recordable: boolean;
+  deleteSuppressed: boolean;
+  suppressionReasons: string[];
+};
+
+function decisionSignatureFromDetection(
+  detection: CommercialDetection | null,
+): CommercialDecisionSignature {
+  return {
+    hit: detection !== null,
+    confidenceScore: detection?.confidenceScore ?? null,
+    decisionBand: detection?.decisionBand ?? null,
+    primarySubtype: detection?.primarySubtype ?? null,
+    subtype: detection?.subtype ?? null,
+    supportingSubtypes: detection?.supportingSubtypes ?? [],
+    reviewRecommended: detection?.reviewRecommended === true,
+    actionBand: detection?.actionBand ?? null,
+    evidenceTier: detection?.evidenceTier ?? null,
+    reviewPriority: detection?.reviewPriority ?? null,
+    campaignStrength: detection?.campaignStrength ?? null,
+    safeContextBucket: detection?.safeContextBucket ?? null,
+    actionable: detection?.actionable === true,
+    recordable: detection?.recordable === true,
+    deleteSuppressed: detection?.deleteSuppressed === true,
+    suppressionReasons: detection?.suppressionReasons ?? [],
+  };
+}
+
+function decisionSignatureFromViolation(
+  violation: RuleViolation | undefined,
+): CommercialDecisionSignature {
+  const metadata = readMetadata(violation);
+  return {
+    hit: violation !== undefined,
+    confidenceScore: typeof metadata.confidenceScore === 'number' ? metadata.confidenceScore : null,
+    decisionBand: typeof metadata.decisionBand === 'string' ? metadata.decisionBand : null,
+    primarySubtype: typeof metadata.primarySubtype === 'string' ? metadata.primarySubtype : null,
+    subtype: typeof metadata.subtype === 'string' ? metadata.subtype : null,
+    supportingSubtypes: readStringArray(metadata.supportingSubtypes),
+    reviewRecommended: metadata.reviewRecommended === true,
+    actionBand: typeof metadata.actionBand === 'string' ? metadata.actionBand : null,
+    evidenceTier: typeof metadata.evidenceTier === 'string' ? metadata.evidenceTier : null,
+    reviewPriority: typeof metadata.reviewPriority === 'string' ? metadata.reviewPriority : null,
+    campaignStrength:
+      typeof metadata.campaignStrength === 'string' ? metadata.campaignStrength : null,
+    safeContextBucket:
+      typeof metadata.safeContextBucket === 'string' ? metadata.safeContextBucket : null,
+    actionable: metadata.actionable === true,
+    recordable: metadata.recordable === true,
+    deleteSuppressed: metadata.deleteSuppressed === true,
+    suppressionReasons: readStringArray(metadata.suppressionReasons),
+  };
+}
+
+function campaignCohort(context: CommercialCampaignContext | null | undefined): string {
+  if (!context) {
+    return 'campaign:absent';
+  }
+  return Object.values(context).some((value) => value !== undefined && value > 0)
+    ? 'campaign:nonzero'
+    : 'campaign:zero';
+}
+
+function benchmarkTextCohorts(params: {
+  text: string;
+  overrides?: Partial<ChatSettings>;
+  campaignContext?: CommercialCampaignContext | null;
+}): string[] {
+  const lengthBucket =
+    params.text.length <= 80 ? 'short' : params.text.length <= 400 ? 'medium' : 'long';
+  const hasCyrillic = /\p{Script=Cyrillic}/u.test(params.text);
+  const hasLatin = /\p{Script=Latin}/u.test(params.text);
+  const scriptBucket = hasCyrillic
+    ? hasLatin
+      ? 'mixed'
+      : 'cyrillic'
+    : hasLatin
+      ? 'latin'
+      : 'other';
+  const hasPhone = /(?:\[phone\]|(?:\+?7|8)[\s()-]*\d{3})/iu.test(params.text);
+  const hasLink = /(?:\[url\]|https?:\/\/|max\.ru\/)/iu.test(params.text);
+  const contactBucket = hasPhone
+    ? hasLink
+      ? 'phone-and-link'
+      : 'phone'
+    : hasLink
+      ? 'link'
+      : 'none';
+  const settings = buildSettings(params.overrides);
+  return [
+    `length:${lengthBucket}`,
+    `script:${scriptBucket}`,
+    `contact:${contactBucket}`,
+    campaignCohort(params.campaignContext),
+    `settings:${settings.commercialAdsSensitivity}-${settings.commercialAdsWarnThreshold}-${settings.commercialAdsDeleteThreshold}`,
+  ];
+}
+
 describe('commercial deterministic benchmark', () => {
   const useMedianGate = isCommercialBenchmarkMedianGateEnabled(process.env);
   let hotPathMetrics: CommercialBenchmarkPercentiles | null = null;
   let adversarialMetrics: CommercialBenchmarkPercentiles | null = null;
+  let initializationEvidence: CommercialDetectorBenchmarkEvidence['initialization'] | null = null;
+  let detectorOnlyTiming: CommercialDetectorTimingSummary | null = null;
+  let fullPathTiming: CommercialDetectorTimingSummary | null = null;
+  let adversarialFullPathTiming: CommercialDetectorTimingSummary | null = null;
+  let detectorOnlyTimingCohorts: Record<string, CommercialDetectorTimingSummary> | null = null;
+  let fullPathTimingCohorts: Record<string, CommercialDetectorTimingSummary> | null = null;
+  let qualityCohorts: CommercialDetectorBenchmarkEvidence['qualityCohorts'] | null = null;
+  let pathEquivalence: CommercialDetectorBenchmarkEvidence['detectorToFullPathEquivalence'] | null =
+    null;
 
   afterAll(() => {
     if (!useMedianGate) {
       return;
     }
-    if (!hotPathMetrics || !adversarialMetrics) {
-      throw new Error('Commercial benchmark did not produce both performance reports');
+    if (
+      !hotPathMetrics ||
+      !adversarialMetrics ||
+      !initializationEvidence ||
+      !detectorOnlyTiming ||
+      !fullPathTiming ||
+      !adversarialFullPathTiming ||
+      !detectorOnlyTimingCohorts ||
+      !fullPathTimingCohorts ||
+      !qualityCohorts ||
+      !pathEquivalence
+    ) {
+      throw new Error(
+        'Commercial benchmark did not produce a complete performance evidence report',
+      );
     }
+    const evidence: CommercialDetectorBenchmarkEvidence = {
+      schemaVersion: COMMERCIAL_DETECTOR_BENCHMARK_SCHEMA_VERSION,
+      clock: COMMERCIAL_DETECTOR_BENCHMARK_CLOCK,
+      initialization: initializationEvidence,
+      warm: {
+        detectorOnly: detectorOnlyTiming,
+        fullPath: fullPathTiming,
+        adversarialFullPath: adversarialFullPathTiming,
+      },
+      timingCohorts: {
+        detectorOnly: detectorOnlyTimingCohorts,
+        fullPath: fullPathTimingCohorts,
+      },
+      qualityCohorts,
+      detectorToFullPathEquivalence: pathEquivalence,
+    };
     process.stdout.write(
       `${COMMERCIAL_BENCHMARK_REPORT_PREFIX}${JSON.stringify({
         hotPath: hotPathMetrics,
         adversarial: adversarialMetrics,
+        evidence,
       })}\n`,
     );
   });
@@ -154,23 +341,36 @@ describe('commercial deterministic benchmark', () => {
     ).toBe(0.5);
   });
 
-  it('warms service-phone commercial paths before the first measured detection', async () => {
-    const service = createRuleEngine();
-    const startedAt = performance.now();
-    const violation = await detectCommercialViolation(service, 'ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42', {
+  it('records detector initialization and the first full-path call without hiding warm state', async () => {
+    const text = 'ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42';
+    const overrides = {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 57,
       commercialAdsDeleteThreshold: 77,
+    } as const;
+    const detectorInput = prepareCommercialDetectorInput(text, overrides);
+    const detectorFirstCall = measureCommercialSync(() => {
+      const detector = new CommercialAdDetector();
+      return detector.detect(detectorInput);
     });
-    const elapsedMs = performance.now() - startedAt;
+    const fullPathFirstCall = await measureCommercialAsync(async () => {
+      const service = createRuleEngine();
+      return detectCommercialViolation(service, text, overrides);
+    });
 
-    expect(violation?.metadata).toEqual(
+    expect(fullPathFirstCall.value?.metadata).toEqual(
       expect.objectContaining({
         primarySubtype: 'SERVICES',
         actionBand: 'WARN',
       }),
     );
-    expect(elapsedMs).toBeLessThanOrEqual(150);
+    expect(detectorFirstCall.durationNs).toBeGreaterThan(0);
+    expect(fullPathFirstCall.durationNs).toBeGreaterThan(0);
+    initializationEvidence = {
+      detectorConstructionAndFirstCallNs: detectorFirstCall.durationNs,
+      fullPathConstructionAndFirstCallNs: fullPathFirstCall.durationNs,
+      fullPathPatternState: 'PROCESS_PATTERNS_ALREADY_WARM',
+    };
   });
 
   it('meets recall, false-positive, subtype, and action-policy gates', async () => {
@@ -362,6 +562,144 @@ describe('commercial deterministic benchmark', () => {
     expect(missingRequiredAnchors).toEqual([]);
   });
 
+  it('records stratified warm detector/full-path evidence and exact decision equivalence', async () => {
+    type BenchmarkCase = {
+      text: string;
+      overrides?: Partial<ChatSettings>;
+      campaignContext?: CommercialCampaignContext | null;
+      expected: 'POSITIVE' | 'NEGATIVE';
+      expectedSubtype: string | null;
+      cohorts: string[];
+    };
+    const benchmarkCases: BenchmarkCase[] = [
+      ...COMMERCIAL_POSITIVE_CASES.map((item) => ({
+        text: item.text,
+        overrides: item.overrides as Partial<ChatSettings> | undefined,
+        campaignContext: item.campaignContext ?? null,
+        expected: 'POSITIVE' as const,
+        expectedSubtype: item.expectedSubtype,
+        cohorts: [
+          'class:positive',
+          `positive:${item.reviewRecommended === true || item.requireClassifier === true ? 'gray' : 'hard'}`,
+          `subtype:${item.expectedSubtype}`,
+          ...benchmarkTextCohorts({
+            text: item.text,
+            overrides: item.overrides as Partial<ChatSettings> | undefined,
+            campaignContext: item.campaignContext ?? null,
+          }),
+        ],
+      })),
+      ...COMMERCIAL_NEGATIVE_CASES.map((item) => ({
+        text: item.text,
+        overrides: item.overrides as Partial<ChatSettings> | undefined,
+        campaignContext: item.campaignContext ?? null,
+        expected: 'NEGATIVE' as const,
+        expectedSubtype: null,
+        cohorts: [
+          'class:negative',
+          ...benchmarkTextCohorts({
+            text: item.text,
+            overrides: item.overrides as Partial<ChatSettings> | undefined,
+            campaignContext: item.campaignContext ?? null,
+          }),
+        ],
+      })),
+    ];
+    const detector = new CommercialAdDetector();
+    const service = createRuleEngine();
+    const directTimings: CommercialDetectorTimingObservation[] = [];
+    const fullPathTimings: CommercialDetectorTimingObservation[] = [];
+    const quality: CommercialDetectorQualityObservation[] = [];
+    const equivalenceMismatches: string[] = [];
+    const repetitions = 6;
+
+    // Exclude one shared warm-up call from cohort samples while retaining the separately measured
+    // construction/first-call evidence above.
+    const warmCase = benchmarkCases[0];
+    if (!warmCase) {
+      throw new Error('Commercial benchmark fixture is empty');
+    }
+    detector.detect(
+      prepareCommercialDetectorInput(warmCase.text, warmCase.overrides, {
+        commercialCampaignContext: warmCase.campaignContext,
+      }),
+    );
+    await detectCommercialViolation(service, warmCase.text, warmCase.overrides, {
+      commercialCampaignContext: warmCase.campaignContext,
+    });
+
+    for (let repetition = 0; repetition < repetitions; repetition += 1) {
+      for (let index = 0; index < benchmarkCases.length; index += 1) {
+        const item = benchmarkCases[index];
+        if (!item) {
+          continue;
+        }
+        const detectorInput = prepareCommercialDetectorInput(item.text, item.overrides, {
+          commercialCampaignContext: item.campaignContext,
+        });
+        let direct: { value: CommercialDetection | null; durationNs: number };
+        let fullPath: { value: RuleViolation | undefined; durationNs: number };
+        const measureDirect = () => measureCommercialSync(() => detector.detect(detectorInput));
+        const measureFullPath = () =>
+          measureCommercialAsync(() =>
+            detectCommercialViolation(service, item.text, item.overrides, {
+              commercialCampaignContext: item.campaignContext,
+            }),
+          );
+        if ((repetition + index) % 2 === 0) {
+          direct = measureDirect();
+          fullPath = await measureFullPath();
+        } else {
+          fullPath = await measureFullPath();
+          direct = measureDirect();
+        }
+        directTimings.push({ durationNs: direct.durationNs, cohorts: item.cohorts });
+        fullPathTimings.push({ durationNs: fullPath.durationNs, cohorts: item.cohorts });
+
+        if (repetition !== 0) {
+          continue;
+        }
+        const directSignature = decisionSignatureFromDetection(direct.value);
+        const fullPathSignature = decisionSignatureFromViolation(fullPath.value);
+        if (!isDeepStrictEqual(directSignature, fullPathSignature)) {
+          equivalenceMismatches.push(
+            `${index}: detector=${JSON.stringify(directSignature)} fullPath=${JSON.stringify(fullPathSignature)}`,
+          );
+        }
+        quality.push({
+          cohorts: item.cohorts,
+          expected: item.expected,
+          detected: fullPathSignature.hit,
+          expectedSubtype: item.expectedSubtype,
+          actualSubtype: fullPathSignature.primarySubtype,
+          actionBand: fullPathSignature.actionBand,
+        });
+      }
+    }
+
+    detectorOnlyTiming = summarizeCommercialTimings(
+      directTimings.map((observation) => observation.durationNs),
+    );
+    fullPathTiming = summarizeCommercialTimings(
+      fullPathTimings.map((observation) => observation.durationNs),
+    );
+    detectorOnlyTimingCohorts = summarizeCommercialTimingCohorts(directTimings);
+    fullPathTimingCohorts = summarizeCommercialTimingCohorts(fullPathTimings);
+    qualityCohorts = summarizeCommercialQualityCohorts(quality);
+    pathEquivalence = {
+      samples: benchmarkCases.length,
+      exactMatches: benchmarkCases.length - equivalenceMismatches.length,
+      mismatches: equivalenceMismatches.length,
+    };
+
+    expect(equivalenceMismatches).toEqual([]);
+    expect(qualityCohorts.all?.samples).toBe(benchmarkCases.length);
+    expect(detectorOnlyTimingCohorts.all?.samples).toBe(benchmarkCases.length * repetitions);
+    expect(fullPathTimingCohorts.all?.samples).toBe(benchmarkCases.length * repetitions);
+    expect(detectorOnlyTimingCohorts['campaign:absent']?.samples).toBeGreaterThan(0);
+    expect(detectorOnlyTimingCohorts['campaign:nonzero']?.samples).toBeGreaterThan(0);
+  });
+
   it('keeps campaign-only commercial repeats out of delete actions', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(
@@ -435,18 +773,16 @@ describe('commercial deterministic benchmark', () => {
       ...COMMERCIAL_POSITIVE_CASES.slice(0, 10).map((item) => item.text),
       ...COMMERCIAL_NEGATIVE_CASES.slice(0, 10).map((item) => item.text),
     ];
-    const timings: number[] = [];
+    const timingsNs: number[] = [];
 
     for (let index = 0; index < 10_000; index += 1) {
       const text = samples[index % samples.length] ?? 'обычное сообщение';
-      const startedAt = performance.now();
-      await detectCommercialViolation(service, text);
-      timings.push(performance.now() - startedAt);
+      const measured = await measureCommercialAsync(() => detectCommercialViolation(service, text));
+      timingsNs.push(measured.durationNs);
     }
 
-    timings.sort((left, right) => left - right);
-    const p95 = timings[Math.floor(timings.length * 0.95)] ?? 0;
-    const p99 = timings[Math.floor(timings.length * 0.99)] ?? 0;
+    const timing = summarizeCommercialTimings(timingsNs);
+    const { p95Ms: p95, p99Ms: p99 } = timingSummaryToMilliseconds(timing);
 
     hotPathMetrics = { p95Ms: p95, p99Ms: p99 };
     if (!useMedianGate) {
@@ -483,22 +819,22 @@ describe('commercial deterministic benchmark', () => {
       )}“. Это архив примеров, не предложение.`,
       'Приглашаю на обсуждение салона, окрашивание и цены выросли, телефон администратора не нужен.',
     ];
-    const timings: number[] = [];
+    const timingsNs: number[] = [];
 
     for (let index = 0; index < 500; index += 1) {
       const text = samples[index % samples.length] ?? 'обычное сообщение';
-      const startedAt = performance.now();
-      const violation = await detectCommercialViolation(service, text);
-      timings.push(performance.now() - startedAt);
+      const measured = await measureCommercialAsync(() => detectCommercialViolation(service, text));
+      const violation = measured.value;
+      timingsNs.push(measured.durationNs);
       if (text.includes('новостроек')) {
         expect(violation).toBeUndefined();
       }
     }
 
-    timings.sort((left, right) => left - right);
-    const p95 = timings[Math.floor(timings.length * 0.95)] ?? 0;
-    const p99 = timings[Math.floor(timings.length * 0.99)] ?? 0;
+    const timing = summarizeCommercialTimings(timingsNs);
+    const { p95Ms: p95, p99Ms: p99 } = timingSummaryToMilliseconds(timing);
 
+    adversarialFullPathTiming = timing;
     adversarialMetrics = { p95Ms: p95, p99Ms: p99 };
     if (!useMedianGate) {
       expect(p95).toBeLessThanOrEqual(COMMERCIAL_BENCHMARK_LOCAL_LIMITS.adversarial.p95Ms);

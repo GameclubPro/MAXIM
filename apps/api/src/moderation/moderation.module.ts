@@ -110,7 +110,7 @@ const moderationProviders = [
   PhotoDuplicateEnqueueService,
   ...(moderationRoleEnabled ? [PhotoDuplicateOrderingStore] : []),
   ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
-    ? [CommercialOcrAdmissionStore]
+    ? [CommercialOcrAdmissionStore, CommercialOcrMetricsService]
     : []),
   ...(commercialOcrEnqueueEnabled
     ? [
@@ -169,7 +169,6 @@ const moderationProviders = [
         ...(commercialOcrWorkerEnabled
           ? [
               CommercialOcrCacheStore,
-              CommercialOcrMetricsService,
               CommercialOcrPreprocessor,
               NativeTesseractOcrAdapter,
               CommercialOcrAnalysisService,
@@ -205,7 +204,10 @@ const moderationProviders = [
     ModerationService,
     ModerationDeleteIntentModule,
     GlobalSpammerIntelligenceService,
-    ...(commercialOcrWorkerEnabled ? [NativeTesseractOcrAdapter, CommercialOcrMetricsService] : []),
+    ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
+      ? [CommercialOcrMetricsService]
+      : []),
+    ...(commercialOcrWorkerEnabled ? [NativeTesseractOcrAdapter] : []),
   ],
 })
 export class ModerationModule {}

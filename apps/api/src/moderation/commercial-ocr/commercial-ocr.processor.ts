@@ -1,6 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { performance } from 'node:perf_hooks';
 import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
 
 import { CommercialOcrAdmissionStore } from './commercial-ocr-admission.store';
@@ -69,12 +70,14 @@ export class CommercialOcrProcessor extends WorkerHost {
     try {
       identity = this.validateJobIdentity(job);
     } catch (error: unknown) {
+      this.metrics.recordCounter('bullmq.job.invalid');
       throw asUnrecoverableError(error, 'Commercial OCR job identity is invalid');
     }
 
     try {
       this.validateJobEnvelope(job);
     } catch (error: unknown) {
+      this.metrics.recordCounter('bullmq.job.invalid');
       await this.releaseAdmission(identity);
       throw asUnrecoverableError(error, 'Commercial OCR job envelope is invalid');
     }
@@ -82,14 +85,18 @@ export class CommercialOcrProcessor extends WorkerHost {
     if ((job.attemptsStarted ?? 1) <= 1) {
       const processingStartedAtMs = job.processedOn ?? Date.now();
       this.metrics.recordQueueWait(Math.max(0, processingStartedAtMs - job.timestamp));
+      this.metrics.recordCounter('bullmq.job.started');
+      this.metrics.recordCounter(resolveAlbumImageCountMetric(job.data.imageCount));
     }
 
     const deadlineAtMs = Date.parse(job.data.sourceCreatedAt) + this.maxJobAgeMs;
     if (deadlineAtMs <= Date.now()) {
+      this.metrics.recordCounter('bullmq.job.expired');
       await this.releaseAdmission(identity);
       return;
     }
 
+    const processingStartedAt = performance.now();
     try {
       result = await this.moderationService.processCommercialOcrJob(
         job.data,
@@ -97,31 +104,42 @@ export class CommercialOcrProcessor extends WorkerHost {
         deadlineAtMs,
       );
     } catch (error: unknown) {
+      this.metrics.recordCounter('bullmq.job.failed');
       if (error instanceof UnrecoverableError) {
         await this.releaseAdmission(identity);
       } else {
         await this.releaseIfFinalAttempt(job, identity);
       }
       throw error;
+    } finally {
+      this.metrics.recordStageDuration(
+        'end_to_end',
+        Math.max(0, performance.now() - processingStartedAt),
+      );
     }
     if (!isCommercialOcrProcessResult(result)) {
+      this.metrics.recordCounter('bullmq.job.invalid');
       await this.releaseAdmission(identity);
       throw new UnrecoverableError('Commercial OCR moderation returned an invalid result');
     }
 
     if (result.kind === 'completed') {
+      this.metrics.recordCounter('bullmq.job.completed');
       await this.releaseAdmission(identity);
       return;
     }
     if (deadlineAtMs <= Date.now()) {
+      this.metrics.recordCounter('bullmq.job.expired');
       await this.releaseAdmission(identity);
       return;
     }
     if (result.kind === 'retry') {
+      this.metrics.recordCounter(`bullmq.job.retry.${result.reason}`);
       await this.releaseIfFinalAttempt(job, identity);
       throw new Error(`Commercial OCR transient failure: ${result.reason}`);
     }
 
+    this.metrics.recordCounter(`bullmq.job.defer.${result.reason}`);
     await this.deferWithoutConsumingAttempt(job, token, identity, result, deadlineAtMs);
   }
 
@@ -204,7 +222,6 @@ export class CommercialOcrProcessor extends WorkerHost {
     const released = await this.admissionStore.release(identity).catch(() => false);
     if (!released) {
       this.logger.warn(
-        { jobId: identity.jobId },
         'Commercial OCR admission release failed; expiry cleanup remains authoritative',
       );
     }
@@ -254,4 +271,17 @@ function asUnrecoverableError(error: unknown, fallbackMessage: string): Unrecove
     return error;
   }
   return new UnrecoverableError(error instanceof Error ? error.message : fallbackMessage);
+}
+
+function resolveAlbumImageCountMetric(
+  imageCount: number,
+):
+  | 'album.image_count.1'
+  | 'album.image_count.2_3'
+  | 'album.image_count.4_6'
+  | 'album.image_count.7_10' {
+  if (imageCount === 1) return 'album.image_count.1';
+  if (imageCount <= 3) return 'album.image_count.2_3';
+  if (imageCount <= 6) return 'album.image_count.4_6';
+  return 'album.image_count.7_10';
 }

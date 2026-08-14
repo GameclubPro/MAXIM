@@ -89,7 +89,7 @@ export class CommercialOcrCacheStore implements OnModuleDestroy {
       return false;
     }
     const key = buildCacheKey(validateIdentity(identity));
-    const normalizedValue = validateValue(value);
+    const normalizedValue = validateCommercialOcrCacheValue(value);
     const normalizedTtlSeconds = validateCacheTtl(ttlSeconds);
     this.writeLocal(key, normalizedValue, normalizedTtlSeconds);
     return true;
@@ -99,11 +99,17 @@ export class CommercialOcrCacheStore implements OnModuleDestroy {
     identity: CommercialOcrCacheIdentity,
     deadlineAtMs: number,
     operation: () => Promise<T>,
+    options: Readonly<{ onCoalesced?: () => void }> = {},
   ): Promise<T> {
     const key = buildCacheKey(validateIdentity(identity));
     const normalizedDeadlineAtMs = validateDeadline(deadlineAtMs);
     const existing = this.inFlight.get(key);
     if (existing && existing.deadlineAtMs >= normalizedDeadlineAtMs) {
+      try {
+        options.onCoalesced?.();
+      } catch {
+        // Telemetry observers must not change cache or moderation behavior.
+      }
       return existing.promise as Promise<T>;
     }
 
@@ -211,7 +217,9 @@ function buildCacheKey(identity: CommercialOcrCacheIdentity): string {
     .digest('hex');
 }
 
-function validateValue(value: CommercialOcrCacheValue): CommercialOcrCacheValue {
+export function validateCommercialOcrCacheValue(
+  value: CommercialOcrCacheValue,
+): CommercialOcrCacheValue {
   if (value.schemaVersion !== COMMERCIAL_OCR_CACHE_SCHEMA_VERSION) {
     throw new Error('Commercial OCR cache schema version is invalid');
   }

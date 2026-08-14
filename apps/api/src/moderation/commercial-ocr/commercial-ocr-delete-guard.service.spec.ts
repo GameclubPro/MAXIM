@@ -10,6 +10,7 @@ import {
 } from './commercial-ocr-delete-guard.service';
 import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decision-policy';
 import { COMMERCIAL_OCR_DEFAULT_VERSION } from './commercial-ocr.queue';
+import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
 
 const sourceCreatedAt = '2026-08-12T08:00:00.000Z';
 const controlExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
@@ -93,6 +94,12 @@ describe('CommercialOcrDeleteGuardService', () => {
       scope: 'commercial_ocr_delete',
       nightModeTimezone: 'Europe/Moscow',
     });
+    expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      settingsFingerprint: fingerprintCommercialOcrSettingsProfile(commercialPolicySettings),
+    });
+    expect(harness.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
+    expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -126,6 +133,31 @@ describe('CommercialOcrDeleteGuardService', () => {
         code: 'commercial_ocr_message_changed',
       });
     }
+  });
+
+  it.each([
+    {
+      label: 'bot author',
+      sender: { user_id: 'user-1', is_bot: true },
+      code: 'commercial_ocr_author_immune',
+    },
+    {
+      label: 'service author',
+      sender: { user_id: 'user-1', type: 'service' },
+      code: 'commercial_ocr_author_immune',
+    },
+    {
+      label: 'unknown author kind',
+      sender: { user_id: 'user-1' },
+      code: 'commercial_ocr_message_ambiguous',
+    },
+  ])('rejects an exact MAX row with $label', async ({ sender, code }) => {
+    const harness = buildHarness({ exactRow: messageRow({ sender }) });
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code,
+    });
+    expect(harness.participantImmunity.consumeForMessage).not.toHaveBeenCalled();
   });
 
   it('fails open when the exact message has only URL-derived image identity', async () => {
@@ -173,6 +205,20 @@ describe('CommercialOcrDeleteGuardService', () => {
     expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
   });
 
+  it('terminally revokes a retry when its current settings profile is not certified', async () => {
+    const harness = buildHarness({ certifiedSettingsFingerprints: ['f'.repeat(64)] });
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code: 'commercial_ocr_runtime_revoked',
+    });
+    expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      settingsFingerprint: fingerprintCommercialOcrSettingsProfile(commercialPolicySettings),
+    });
+    expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
   it('rejects after filter disable or a fresh local/remote admin result', async () => {
     const disabled = buildHarness({ filterEnabled: false });
     await expect(disabled.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
@@ -202,9 +248,68 @@ describe('CommercialOcrDeleteGuardService', () => {
     await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
       code: 'commercial_ocr_policy_changed',
     });
+    expect(harness.runtimePolicy.resolveEffectivePolicy).not.toHaveBeenCalled();
     expect(harness.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
     expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: 'commercial policy changes',
+      finalSettings: settingsRow({
+        settingsOverride: { commercialAdsSensitivity: 'STRICT' as const },
+      }),
+      code: 'commercial_ocr_policy_changed',
+    },
+    {
+      label: 'the sender becomes a local administrator',
+      finalSettings: settingsRow({ adminUserIds: ['user-1'] }),
+      code: 'commercial_ocr_admin_immune',
+    },
+    {
+      label: 'the immunity timezone changes',
+      finalSettings: settingsRow({ nightModeTimezone: 'UTC' }),
+      code: 'commercial_ocr_participant_immunity_unknown',
+    },
+  ])('blocks dispatch when $label during final MAX checks', async ({ finalSettings, code }) => {
+    const harness = buildHarness();
+    harness.prisma.chatSettings.findUnique
+      .mockResolvedValueOnce(settingsRow())
+      .mockResolvedValueOnce(finalSettings);
+
+    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code,
+    });
+
+    expect(harness.maxClient.getChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+    expect(harness.participantImmunity.consumeForMessage).toHaveBeenCalledTimes(1);
+    expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { authority: 'revoked' as const, code: 'commercial_ocr_runtime_revoked' },
+    {
+      authority: 'unavailable' as const,
+      code: 'commercial_ocr_runtime_control_unavailable',
+    },
+  ])(
+    'blocks dispatch when final runtime authorization becomes $authority',
+    async ({ authority, code }) => {
+      const harness = buildHarness();
+      harness.runtimePolicy.resolveEffectivePolicy
+        .mockResolvedValueOnce(runtimeResult('authorized'))
+        .mockResolvedValueOnce(runtimeResult(authority));
+
+      await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+        code,
+      });
+
+      expect(harness.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
+      expect(harness.runtimePolicy.resolveEffectivePolicy).toHaveBeenCalledTimes(2);
+      expect(harness.participantImmunity.consumeForMessage).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('keeps validating its durable OCR binding when an independent reason is attached', async () => {
     const harness = buildHarness({ independentReason: true });
@@ -336,6 +441,7 @@ function buildHarness(
     immunityResult?: 'granted' | 'not_granted';
     immunityError?: Error;
     runtimeEnforcementAuthority?: 'authorized' | 'revoked' | 'unavailable';
+    certifiedSettingsFingerprints?: readonly string[];
     bindingOcrVersion?: string;
   } = {},
 ) {
@@ -352,18 +458,13 @@ function buildHarness(
       ]),
     },
     chatSettings: {
-      findUnique: jest.fn().mockResolvedValue({
-        ...commercialPolicySettings,
-        ...options.settingsOverride,
-        commercialAdsFilterEnabled:
-          options.filterEnabled ??
-          options.settingsOverride?.commercialAdsFilterEnabled ??
-          commercialPolicySettings.commercialAdsFilterEnabled,
-        nightModeTimezone: 'Europe/Moscow',
-        chat: {
-          admins: (options.adminUserIds ?? []).map((userId) => ({ userId })),
-        },
-      }),
+      findUnique: jest.fn().mockResolvedValue(
+        settingsRow({
+          settingsOverride: options.settingsOverride,
+          filterEnabled: options.filterEnabled,
+          adminUserIds: options.adminUserIds,
+        }),
+      ),
     },
   };
   const maxClient = {
@@ -386,20 +487,24 @@ function buildHarness(
     }),
   };
   const runtimePolicy = {
-    resolveEffectivePolicy: jest.fn().mockImplementation(async () => {
-      const envEnabled = options.config?.COMMERCIAL_OCR_ROLLOUT_MODE !== 'off';
-      const enforcementAuthority =
-        options.runtimeEnforcementAuthority ?? (envEnabled ? 'authorized' : 'revoked');
-      const enforce = envEnabled && enforcementAuthority === 'authorized';
-      return {
-        mode: enforce ? (options.config?.COMMERCIAL_OCR_ROLLOUT_MODE ?? 'on') : 'shadow',
-        process: envEnabled,
-        enforce,
-        controlRevision: enforce ? 1 : null,
-        controlExpiresAt: enforce ? controlExpiresAt : null,
-        enforcementAuthority,
-      };
-    }),
+    resolveEffectivePolicy: jest
+      .fn()
+      .mockImplementation(async (params: { settingsFingerprint: string }) => {
+        const envEnabled = options.config?.COMMERCIAL_OCR_ROLLOUT_MODE !== 'off';
+        const enforcementAuthority =
+          options.runtimeEnforcementAuthority ?? (envEnabled ? 'authorized' : 'revoked');
+        const settingsCertified =
+          options.certifiedSettingsFingerprints?.includes(params.settingsFingerprint) ?? true;
+        const enforce = envEnabled && enforcementAuthority === 'authorized' && settingsCertified;
+        return {
+          mode: enforce ? (options.config?.COMMERCIAL_OCR_ROLLOUT_MODE ?? 'on') : 'shadow',
+          process: envEnabled,
+          enforce,
+          controlRevision: enforce ? 1 : null,
+          controlExpiresAt: enforce ? controlExpiresAt : null,
+          enforcementAuthority: settingsCertified ? enforcementAuthority : 'revoked',
+        };
+      }),
   };
   const service = new CommercialOcrDeleteGuardService(
     prisma as never,
@@ -415,6 +520,40 @@ function buildHarness(
     maxBotLinkService,
     participantImmunity,
     runtimePolicy,
+  };
+}
+
+function settingsRow(
+  options: {
+    settingsOverride?: Partial<typeof commercialPolicySettings>;
+    filterEnabled?: boolean;
+    adminUserIds?: string[];
+    nightModeTimezone?: string;
+  } = {},
+) {
+  return {
+    ...commercialPolicySettings,
+    ...options.settingsOverride,
+    commercialAdsFilterEnabled:
+      options.filterEnabled ??
+      options.settingsOverride?.commercialAdsFilterEnabled ??
+      commercialPolicySettings.commercialAdsFilterEnabled,
+    nightModeTimezone: options.nightModeTimezone ?? 'Europe/Moscow',
+    chat: {
+      admins: (options.adminUserIds ?? []).map((userId) => ({ userId })),
+    },
+  };
+}
+
+function runtimeResult(authority: 'authorized' | 'revoked' | 'unavailable') {
+  const enforce = authority === 'authorized';
+  return {
+    mode: enforce ? 'on' : 'shadow',
+    process: true,
+    enforce,
+    controlRevision: enforce ? 1 : null,
+    controlExpiresAt: enforce ? controlExpiresAt : null,
+    enforcementAuthority: authority,
   };
 }
 
@@ -446,6 +585,7 @@ function messageRow(
     caption?: string;
     photoIds?: string[];
     senderId?: string;
+    sender?: Record<string, unknown>;
     timestamp?: string;
   } = {},
 ): Record<string, unknown> {
@@ -453,7 +593,7 @@ function messageRow(
     id: 'message-1',
     timestamp: options.timestamp ?? sourceCreatedAt,
     recipient: { chat_id: 'chat-1' },
-    sender: { user_id: options.senderId ?? 'user-1', is_bot: false },
+    sender: options.sender ?? { user_id: options.senderId ?? 'user-1', is_bot: false },
     body: {
       mid: 'message-1',
       text: options.caption ?? 'Buy now',

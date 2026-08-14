@@ -13,6 +13,10 @@ import {
   type CommercialSafeContextBucket,
 } from '../commercial/commercial-safe-context';
 import { resolveCommercialThresholds } from '../rule-engine-commercial-thresholds';
+import {
+  classifyCommercialOcrLetterScript,
+  type CommercialOcrLetterScript,
+} from './commercial-ocr-letter-script';
 
 export const COMMERCIAL_OCR_DECISION_POLICY_VERSION = 'commercial-ocr-delete-policy-v2';
 
@@ -26,10 +30,7 @@ export const COMMERCIAL_OCR_DELETE_GATE = {
   minCriticalConfidencePermille: 850,
 } as const;
 
-const MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS = 4;
-const UNICODE_LETTER_PATTERN = /\p{Letter}/u;
-const CYRILLIC_SCRIPT_PATTERN = /\p{Script=Cyrillic}/u;
-const LATIN_SCRIPT_PATTERN = /\p{Script=Latin}/u;
+export const COMMERCIAL_OCR_MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS = 4;
 
 export type CommercialOcrCriticalEvidenceKind =
   | 'commercial_anchor'
@@ -85,7 +86,7 @@ export type CommercialOcrPassAnalysis = {
   deleteEligible: boolean;
   rejectionReasons: CommercialOcrPassRejectionReason[];
   criticalSignature: string[];
-  letterScript: 'cyrillic_only' | 'latin_only' | 'mixed' | 'unknown';
+  letterScript: CommercialOcrLetterScript;
   cyrillicLetterCount: number;
   latinLetterCount: number;
 };
@@ -299,14 +300,16 @@ function analyzeOcrPass(
     pass.status === 'recognized' && text ? detectCommercialText(text, settings, detector) : null;
   const detectorGate = evaluateDetectorGate(detection);
   rejectionReasons.push(...detectorGate.rejectionReasons);
-  const scriptEvidence = classifyLetterScript(text);
+  const scriptEvidence = classifyCommercialOcrLetterScript(text);
 
   return {
     detection,
     deleteEligible: rejectionReasons.length === 0,
     rejectionReasons: [...new Set(rejectionReasons)],
     criticalSignature,
-    ...scriptEvidence,
+    letterScript: scriptEvidence.letterScript,
+    cyrillicLetterCount: scriptEvidence.cyrillicLetterCount,
+    latinLetterCount: scriptEvidence.latinLetterCount,
   };
 }
 
@@ -474,11 +477,13 @@ export function isCommercialOcrCyrillicOnlyDeleteDecision(
   const candidate = candidates[0]!;
   return (
     candidate.primary.letterScript === 'cyrillic_only' &&
-    candidate.primary.cyrillicLetterCount >= MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS &&
+    candidate.primary.cyrillicLetterCount >=
+      COMMERCIAL_OCR_MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS &&
     candidate.primary.latinLetterCount === 0 &&
     candidate.verification !== null &&
     candidate.verification.letterScript === 'cyrillic_only' &&
-    candidate.verification.cyrillicLetterCount >= MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS &&
+    candidate.verification.cyrillicLetterCount >=
+      COMMERCIAL_OCR_MIN_CYRILLIC_ENFORCEMENT_LETTERS_PER_PASS &&
     candidate.verification.latinLetterCount === 0 &&
     decision.images.every((image) =>
       [image.primary, image.verification].every(
@@ -486,27 +491,6 @@ export function isCommercialOcrCyrillicOnlyDeleteDecision(
       ),
     )
   );
-}
-
-function classifyLetterScript(
-  text: string,
-): Pick<CommercialOcrPassAnalysis, 'letterScript' | 'cyrillicLetterCount' | 'latinLetterCount'> {
-  let cyrillicLetterCount = 0;
-  let latinLetterCount = 0;
-  for (const character of text.normalize('NFKC')) {
-    if (!UNICODE_LETTER_PATTERN.test(character)) continue;
-    if (LATIN_SCRIPT_PATTERN.test(character)) latinLetterCount += 1;
-    if (CYRILLIC_SCRIPT_PATTERN.test(character)) cyrillicLetterCount += 1;
-  }
-  const letterScript =
-    cyrillicLetterCount > 0 && latinLetterCount > 0
-      ? 'mixed'
-      : cyrillicLetterCount > 0
-        ? 'cyrillic_only'
-        : latinLetterCount > 0
-          ? 'latin_only'
-          : 'unknown';
-  return { letterScript, cyrillicLetterCount, latinLetterCount };
 }
 
 function isPermille(value: number): boolean {

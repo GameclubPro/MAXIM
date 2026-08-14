@@ -166,6 +166,7 @@ describe('runNativeTesseract', () => {
         timeoutMs: 1_000,
         maxOutputBytes: 64 * 1024,
         tessdataPrefix: '/models',
+        ompThreadLimit: 2,
       },
       spawnProcess,
     );
@@ -177,7 +178,9 @@ describe('runNativeTesseract', () => {
         options: expect.objectContaining({ shell: false, windowsHide: true }),
       }),
     );
-    expect(captured?.options.env).toEqual(expect.objectContaining({ TESSDATA_PREFIX: '/models' }));
+    expect(captured?.options.env).toEqual(
+      expect.objectContaining({ TESSDATA_PREFIX: '/models', OMP_THREAD_LIMIT: '2' }),
+    );
     expect(result).toMatchObject({
       ok: true,
       payload: { text: 'Реклама', aggregateConfidence: 92 },
@@ -279,6 +282,101 @@ describe('runNativeTesseract', () => {
     }
   });
 });
+
+describe('native Tesseract environment boundary', () => {
+  it('does not expose application secrets to probe or OCR subprocesses', async () => {
+    const originalDatabaseUrl = process.env.DATABASE_URL;
+    const originalBotToken = process.env.MAX_BOT_TOKEN;
+    const originalPath = process.env.PATH;
+    const originalLang = process.env.LANG;
+    process.env.DATABASE_URL = 'postgresql://secret';
+    process.env.MAX_BOT_TOKEN = 'secret-token';
+    process.env.PATH = '/trusted/bin';
+    process.env.LANG = 'C.UTF-8';
+
+    try {
+      const probeChild = new FakeChildProcess();
+      let probeEnvironment: NodeJS.ProcessEnv | undefined;
+      const probe = probeNativeTesseract(
+        {
+          binary: 'tesseract',
+          timeoutMs: 1_000,
+          maxOutputBytes: 64 * 1024,
+          tessdataPrefix: '/models',
+        },
+        (_command, _args, options) => {
+          probeEnvironment = options.env;
+          return probeChild as unknown as ChildProcessWithoutNullStreams;
+        },
+      );
+      probeChild.stdout.end('eng\nrus\n');
+      probeChild.emit('close', 0, null);
+      await expect(probe).resolves.toEqual({ ok: true });
+
+      const runChild = new FakeChildProcess();
+      let runEnvironment: NodeJS.ProcessEnv | undefined;
+      const recognition = runNativeTesseract(
+        {
+          binary: 'tesseract',
+          image: Buffer.from('image'),
+          psm: 11,
+          timeoutMs: 1_000,
+          maxOutputBytes: 64 * 1024,
+          tessdataPrefix: '/models',
+          ompThreadLimit: 2,
+        },
+        (_command, _args, options) => {
+          runEnvironment = options.env;
+          return runChild as unknown as ChildProcessWithoutNullStreams;
+        },
+      );
+      runChild.stdout.end(`${HEADER}\n`);
+      runChild.emit('close', 0, null);
+      await expect(recognition).resolves.toMatchObject({ ok: true });
+
+      const allowedKeys = new Set([
+        'PATH',
+        'LANG',
+        'LC_ALL',
+        'LD_LIBRARY_PATH',
+        'NODE_ENV',
+        'TESSDATA_PREFIX',
+        'OMP_THREAD_LIMIT',
+      ]);
+      for (const environment of [probeEnvironment, runEnvironment]) {
+        expect(environment).toBeDefined();
+        expect(environment).not.toHaveProperty('DATABASE_URL');
+        expect(environment).not.toHaveProperty('MAX_BOT_TOKEN');
+        expect(Object.keys(environment ?? {}).every((key) => allowedKeys.has(key))).toBe(true);
+      }
+      expect(probeEnvironment).toMatchObject({
+        PATH: '/trusted/bin',
+        LANG: 'C.UTF-8',
+        TESSDATA_PREFIX: '/models',
+      });
+      expect(probeEnvironment).not.toHaveProperty('OMP_THREAD_LIMIT');
+      expect(runEnvironment).toMatchObject({
+        PATH: '/trusted/bin',
+        LANG: 'C.UTF-8',
+        TESSDATA_PREFIX: '/models',
+        OMP_THREAD_LIMIT: '2',
+      });
+    } finally {
+      restoreEnvironment('DATABASE_URL', originalDatabaseUrl);
+      restoreEnvironment('MAX_BOT_TOKEN', originalBotToken);
+      restoreEnvironment('PATH', originalPath);
+      restoreEnvironment('LANG', originalLang);
+    }
+  });
+});
+
+function restoreEnvironment(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
 
 function expectLateErrorsGuardedUntilClose(child: FakeChildProcess): void {
   expect(child.stdout.listenerCount('data')).toBe(0);

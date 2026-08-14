@@ -1,3 +1,9 @@
+import {
+  aggregateCommercialDetectorBenchmarkEvidence,
+  parseCommercialDetectorBenchmarkEvidence,
+  type CommercialDetectorBenchmarkEvidence,
+} from './commercial-detector-harness.util';
+
 export const COMMERCIAL_BENCHMARK_ATTEMPT_COUNT = 3;
 export const COMMERCIAL_BENCHMARK_ATTEMPT_TIMEOUT_MS = 240_000;
 export const COMMERCIAL_BENCHMARK_MEDIAN_GATE_ENV = 'COMMERCIAL_BENCHMARK_MEDIAN_GATE';
@@ -36,9 +42,10 @@ export type CommercialBenchmarkPercentiles = {
 export type CommercialBenchmarkReport = {
   hotPath: CommercialBenchmarkPercentiles;
   adversarial: CommercialBenchmarkPercentiles;
+  evidence?: CommercialDetectorBenchmarkEvidence;
 };
 
-export type CommercialBenchmarkLimits = CommercialBenchmarkReport;
+export type CommercialBenchmarkLimits = Pick<CommercialBenchmarkReport, 'hotPath' | 'adversarial'>;
 
 export type CommercialBenchmarkProfile = {
   name: typeof COMMERCIAL_BENCHMARK_GITHUB_HOSTED_PROFILE;
@@ -96,10 +103,21 @@ export function parseCommercialBenchmarkReport(output: string): CommercialBenchm
   }
 
   const report = readRecord(parsed, 'report');
-  return {
+  const parsedReport: CommercialBenchmarkReport = {
     hotPath: readPercentiles(report.hotPath, 'hotPath'),
     adversarial: readPercentiles(report.adversarial, 'adversarial'),
   };
+  if (report.evidence !== undefined) {
+    parsedReport.evidence = parseCommercialDetectorBenchmarkEvidence(report.evidence);
+  }
+  return parsedReport;
+}
+
+export function stripCommercialBenchmarkReports(output: string): string {
+  return output
+    .split(/\r?\n/u)
+    .filter((line) => !line.includes(COMMERCIAL_BENCHMARK_REPORT_PREFIX))
+    .join('\n');
 }
 
 export function median(values: readonly number[]): number {
@@ -125,7 +143,11 @@ export function aggregateCommercialBenchmarkReports(
     throw new Error('Cannot aggregate commercial benchmark reports without attempts');
   }
 
-  return {
+  const evidenceReports = reports.flatMap((report) => (report.evidence ? [report.evidence] : []));
+  if (evidenceReports.length !== 0 && evidenceReports.length !== reports.length) {
+    throw new Error('Commercial benchmark evidence is missing from one or more attempts');
+  }
+  const aggregate: CommercialBenchmarkReport = {
     hotPath: {
       p95Ms: median(reports.map((report) => report.hotPath.p95Ms)),
       p99Ms: median(reports.map((report) => report.hotPath.p99Ms)),
@@ -135,6 +157,10 @@ export function aggregateCommercialBenchmarkReports(
       p99Ms: median(reports.map((report) => report.adversarial.p99Ms)),
     },
   };
+  if (evidenceReports.length > 0) {
+    aggregate.evidence = aggregateCommercialDetectorBenchmarkEvidence(evidenceReports);
+  }
+  return aggregate;
 }
 
 export function evaluateCommercialBenchmarkGate(

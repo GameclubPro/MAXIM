@@ -19,6 +19,7 @@ import {
 } from '../moderation/photo-duplicate/photo-duplicate.runtime';
 import { COMMERCIAL_OCR_ROLLOUT_MODES } from '../moderation/commercial-ocr/commercial-ocr.runtime';
 import { COMMERCIAL_OCR_DEFAULT_VERSION } from '../moderation/commercial-ocr/commercial-ocr.queue';
+import { parseCanonicalCommercialOcrApprovalPublicKeyBase64 } from '../moderation/commercial-ocr/commercial-ocr-approval-key';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -39,6 +40,10 @@ const DISALLOWED_ADMIN_ACCESS_CODES = new Set([
 
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+function isCanonicalEd25519SpkiBase64(value: string): boolean {
+  return value === '' || parseCanonicalCommercialOcrApprovalPublicKeyBase64(value) !== null;
+}
 
 function envBoolean(defaultValue: boolean) {
   return z
@@ -327,6 +332,18 @@ const envSchema = z.object({
     .default(COMMERCIAL_OCR_DEFAULT_VERSION),
   COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS: z.coerce.number().int().min(1).max(10_000).default(16),
   COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS: z.coerce.number().int().min(1).max(1_000).default(10),
+  COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .default(4),
+  COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: z
+    .string()
+    .trim()
+    .max(4_096)
+    .refine(isCanonicalEd25519SpkiBase64, 'must be empty or canonical Ed25519 SPKI DER base64')
+    .default(''),
   COMMERCIAL_OCR_MAX_JOB_AGE_MS: z.coerce.number().int().min(1_000).max(600_000).default(300_000),
   COMMERCIAL_OCR_RESERVATION_TTL_MS: z.coerce
     .number()
@@ -586,6 +603,25 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
   ) {
     throw new Error(
       'Environment validation failed: COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS must not exceed COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS',
+    );
+  }
+  if (
+    (parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'canary' ||
+      parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'on') &&
+    parsed.data.COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS >
+      parsed.data.COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS
+  ) {
+    throw new Error(
+      'Environment validation failed: COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS must not exceed COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS',
+    );
+  }
+  if (
+    (parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'canary' ||
+      parsed.data.COMMERCIAL_OCR_ROLLOUT_MODE === 'on') &&
+    !parsed.data.COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64
+  ) {
+    throw new Error(
+      'Environment validation failed: COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64 is required for canary or on commercial OCR rollout',
     );
   }
   if (

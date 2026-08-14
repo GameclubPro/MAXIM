@@ -42,6 +42,13 @@ Commands:
   health                      Check local-on-VPS and public health endpoints
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
+  commercial-ocr-promote <chat-ids-file> <certification-file> <reviewed-certification-sha256> <none|revision> [--apply]
+                              Guarded OCR canary promotion; uploads private inputs via stdin
+  commercial-ocr-downgrade <revision> [--apply]
+                              Clear OCR runtime authority, then restore shadow ceilings
+  commercial-ocr-status       Read privacy-safe OCR runtime-control status
+  commercial-ocr-recover-shadow [--apply]
+                              Quiesce enforcement and reconcile every API role to shadow
   ps [services...]            Show main production docker compose status
   logs <service> [tail]       Show main production service logs, default tail=200
   yc-shell                    Open a Yandex Cloud CLI SSH shell, if configured
@@ -233,6 +240,105 @@ remote_from_args() {
   else
     remote_exec "$(shell_quote_args "$@")"
   fi
+}
+
+commercial_ocr_promote() {
+  local chat_ids_file="${1:-}"
+  local certification_file="${2:-}"
+  local reviewed_certification_sha256="${3:-}"
+  local expected_revision="${4:-}"
+  local apply="${5:-}"
+  local remote_command
+  local args=()
+  local certification_bytes chat_ids_bytes actual_certification_sha256
+
+  if [[ -z "$chat_ids_file" || ! -f "$chat_ids_file" || \
+    -z "$certification_file" || ! -f "$certification_file" || \
+    -z "$expected_revision" || ! "$reviewed_certification_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+    echo "Usage: $0 commercial-ocr-promote <chat-ids-file> <certification-file> <reviewed-certification-sha256> <none|revision> [--apply]" >&2
+    exit 2
+  fi
+  if [[ -n "$apply" && "$apply" != "--apply" ]] || [[ $# -gt 5 ]]; then
+    echo "Usage: $0 commercial-ocr-promote <chat-ids-file> <certification-file> <reviewed-certification-sha256> <none|revision> [--apply]" >&2
+    exit 2
+  fi
+  certification_bytes="$(wc -c <"$certification_file")"
+  chat_ids_bytes="$(wc -c <"$chat_ids_file")"
+  if [[ ! "$certification_bytes" =~ ^[0-9]+$ || "$certification_bytes" -lt 1 || \
+    "$certification_bytes" -gt 262144 ]]; then
+    echo "Commercial OCR certification input must be between 1 and 262144 bytes." >&2
+    exit 2
+  fi
+  if [[ ! "$chat_ids_bytes" =~ ^[0-9]+$ || "$chat_ids_bytes" -lt 1 || \
+    "$chat_ids_bytes" -gt 1048576 ]]; then
+    echo "Commercial OCR chat-id input must be between 1 and 1048576 bytes." >&2
+    exit 2
+  fi
+  actual_certification_sha256="$(sha256sum -- "$certification_file")"
+  actual_certification_sha256="${actual_certification_sha256%% *}"
+  if [[ ! "$actual_certification_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+    echo "Could not validate the commercial OCR certification SHA-256." >&2
+    exit 2
+  fi
+  if [[ "$actual_certification_sha256" != "$reviewed_certification_sha256" ]]; then
+    echo "Commercial OCR certification does not match the independently reviewed SHA-256." >&2
+    exit 2
+  fi
+
+  maybe_allow_ssh_current_ip
+  mapfile -d '' -t args < <(ssh_args)
+  printf -v remote_command \
+    'cd %q && bundle_dir="$(mktemp -d)" && certification_file="$bundle_dir/certification.json" && cohort_file="$bundle_dir/cohort.txt" && trap '\''rm -f -- "$certification_file" "$cohort_file"; rmdir -- "$bundle_dir"'\'' EXIT && node ./infra/scripts/commercial-ocr-promotion-bundle.mjs unpack "$certification_file" "$cohort_file" && ./infra/scripts/vps-commercial-ocr-rollout.sh promote --chat-ids-file "$cohort_file" --certification-file "$certification_file" --certification-sha256 %q --expected-revision %q' \
+    "$MAXIM_VPS_REPO_DIR" "$reviewed_certification_sha256" "$expected_revision"
+  if [[ "$apply" == "--apply" ]]; then
+    remote_command+=" --apply"
+  fi
+  printf 'Commercial OCR certification selected: sha256=%s\n' "$reviewed_certification_sha256"
+  # Certification and cohort contents travel only over stdin and never appear in SSH arguments.
+  # shellcheck disable=SC2029
+  node "$ROOT_DIR/infra/scripts/commercial-ocr-promotion-bundle.mjs" pack \
+    "$certification_file" "$chat_ids_file" |
+    ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
+}
+
+commercial_ocr_status() {
+  if [[ $# -ne 0 ]]; then
+    echo "Usage: $0 commercial-ocr-status" >&2
+    exit 2
+  fi
+  remote_exec "$(shell_quote_args ./infra/scripts/vps-commercial-ocr-rollout.sh status)"
+}
+
+commercial_ocr_recover_shadow() {
+  local apply="${1:-}"
+  if [[ -n "$apply" && "$apply" != "--apply" ]] || [[ $# -gt 1 ]]; then
+    echo "Usage: $0 commercial-ocr-recover-shadow [--apply]" >&2
+    exit 2
+  fi
+  local remote_args=(./infra/scripts/vps-commercial-ocr-rollout.sh recover-shadow)
+  if [[ "$apply" == "--apply" ]]; then
+    remote_args+=(--apply)
+  fi
+  remote_exec "$(shell_quote_args "${remote_args[@]}")"
+}
+
+commercial_ocr_downgrade() {
+  local expected_revision="${1:-}"
+  local apply="${2:-}"
+  if [[ -z "$expected_revision" || ( -n "$apply" && "$apply" != "--apply" ) || $# -gt 2 ]]; then
+    echo "Usage: $0 commercial-ocr-downgrade <revision> [--apply]" >&2
+    exit 2
+  fi
+  local remote_args=(
+    ./infra/scripts/vps-commercial-ocr-rollout.sh
+    downgrade
+    --expected-revision
+    "$expected_revision"
+  )
+  if [[ "$apply" == "--apply" ]]; then
+    remote_args+=(--apply)
+  fi
+  remote_exec "$(shell_quote_args "${remote_args[@]}")"
 }
 
 open_shell() {
@@ -650,6 +756,18 @@ case "$command" in
     ;;
   monitor-readonly)
     "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" "$@"
+    ;;
+  commercial-ocr-promote)
+    commercial_ocr_promote "$@"
+    ;;
+  commercial-ocr-downgrade)
+    commercial_ocr_downgrade "$@"
+    ;;
+  commercial-ocr-status)
+    commercial_ocr_status "$@"
+    ;;
+  commercial-ocr-recover-shadow)
+    commercial_ocr_recover_shadow "$@"
     ;;
   ps)
     remote_exec "$(shell_quote_args docker compose --env-file .env -p infra -f infra/docker-compose.yml ps "$@")"

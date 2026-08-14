@@ -1,8 +1,12 @@
 import sharp from 'sharp';
 import {
+  COMMERCIAL_OCR_DEFAULT_PREPROCESS_LIMITS,
   COMMERCIAL_OCR_PREPROCESS_PROFILES,
+  COMMERCIAL_OCR_SHARP_CONCURRENCY,
   CommercialOcrImageRejectedError,
   CommercialOcrPreprocessor,
+  resolveCommercialOcrPreprocessCacheProfile,
+  resolveCommercialOcrPreprocessLimits,
 } from './commercial-ocr-preprocessor';
 
 function service(values: Record<string, unknown> = {}) {
@@ -51,6 +55,23 @@ describe('CommercialOcrPreprocessor', () => {
     );
   });
 
+  it('rejects work when less than one whole second remains before the absolute deadline', async () => {
+    const input = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: 'white' },
+    })
+      .png()
+      .toBuffer();
+
+    await expect(
+      service().prepare(input, 'primary', { deadlineAtMs: Date.now() + 999 }),
+    ).rejects.toMatchObject({ reason: 'processing_timeout' });
+  });
+
+  it('keeps libvips at the single-worker production concurrency', () => {
+    service();
+    expect(sharp.concurrency()).toBe(COMMERCIAL_OCR_SHARP_CONCURRENCY);
+  });
+
   it('uses a distinct binary profile for confirmation', async () => {
     const png = await sharp(Buffer.from([0, 127, 255, 0, 127, 255, 0, 127, 255]), {
       raw: { width: 3, height: 1, channels: 3 },
@@ -69,5 +90,25 @@ describe('CommercialOcrPreprocessor', () => {
       primary: 'gray-bounded-v3',
       confirmation: 'normalized-threshold160-v3',
     });
+  });
+
+  it('binds cache profiles to the effective preprocessing ceilings', () => {
+    const defaults = resolveCommercialOcrPreprocessLimits();
+    const tuned = resolveCommercialOcrPreprocessLimits({
+      get: (key: string) =>
+        ({
+          COMMERCIAL_OCR_MAX_INPUT_PIXELS: 20_000_000,
+          COMMERCIAL_OCR_MAX_OUTPUT_PIXELS: 2_000_000,
+          COMMERCIAL_OCR_MAX_SIDE: 1_600,
+        })[key],
+    } as never);
+
+    expect(defaults).toEqual(COMMERCIAL_OCR_DEFAULT_PREPROCESS_LIMITS);
+    expect(resolveCommercialOcrPreprocessCacheProfile('primary', defaults)).toBe(
+      'gray-bounded-v3.i40000000.o3000000.s2000',
+    );
+    expect(resolveCommercialOcrPreprocessCacheProfile('primary', tuned)).toBe(
+      'gray-bounded-v3.i20000000.o2000000.s1600',
+    );
   });
 });

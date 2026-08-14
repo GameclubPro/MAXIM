@@ -9,6 +9,7 @@ import { ParticipantModerationImmunityService } from '../participant-moderation-
 import {
   extractVisiblePhotoMessageContent,
   MAX_PHOTO_ALBUM_IMAGES,
+  type ExtractedPhotoAttachment,
 } from '../photo-duplicate/photo-attachment-extractor';
 import { COMMERCIAL_OCR_DECISION_POLICY_VERSION } from './commercial-ocr-decision-policy';
 import {
@@ -16,6 +17,7 @@ import {
   validateCommercialOcrVersion,
 } from './commercial-ocr.queue';
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr-runtime-policy.service';
+import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
 
 export const COMMERCIAL_OCR_DELETE_RULE_CODE = 'COMMERCIAL_OCR_DELETE';
 export const COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE = 'COMMERCIAL_OCR_MESSAGE_ACTION';
@@ -56,6 +58,12 @@ export type CommercialOcrDeleteSource = {
   sourceCreatedAt: string;
   caption: string;
   orderedPhotoIds: string[];
+};
+
+export type CommercialOcrExactMessageSource = {
+  source: CommercialOcrDeleteSource;
+  images: ExtractedPhotoAttachment[];
+  authorKind: 'user' | 'bot_or_service' | 'unknown';
 };
 
 export class CommercialOcrDeleteGuardRejectedError extends Error {
@@ -196,6 +204,12 @@ export function parseCommercialOcrDeleteBinding(value: unknown): CommercialOcrDe
 export function extractCommercialOcrDeleteSource(
   rawMessage: unknown,
 ): CommercialOcrDeleteSource | null {
+  return extractCommercialOcrExactMessageSource(rawMessage)?.source ?? null;
+}
+
+export function extractCommercialOcrExactMessageSource(
+  rawMessage: unknown,
+): CommercialOcrExactMessageSource | null {
   const message = selectMessageNode(rawMessage);
   if (!message) {
     return null;
@@ -219,12 +233,16 @@ export function extractCommercialOcrDeleteSource(
   }
 
   return {
-    messageId,
-    chatId,
-    senderId,
-    sourceCreatedAt,
-    caption: content.content.caption,
-    orderedPhotoIds: orderedPhotoIds as string[],
+    source: {
+      messageId,
+      chatId,
+      senderId,
+      sourceCreatedAt,
+      caption: content.content.caption,
+      orderedPhotoIds: orderedPhotoIds as string[],
+    },
+    images: content.content.images.map((image) => ({ ...image })),
+    authorKind: extractExactAuthorKind(message),
   };
 }
 
@@ -286,28 +304,15 @@ export class CommercialOcrDeleteGuardService {
       );
     }
 
-    const runtime = await this.runtimePolicy.resolveEffectivePolicy({ chatId: params.chatId });
-    if (!runtime.enforce) {
-      if (runtime.enforcementAuthority === 'unavailable') {
-        throw rejected(
-          'commercial_ocr_runtime_control_unavailable',
-          'Commercial OCR runtime control could not be read before deletion',
-        );
-      }
-      throw rejected(
-        'commercial_ocr_runtime_revoked',
-        'Commercial OCR enforcement authorization is no longer active',
-      );
-    }
-    if (
-      runtime.controlRevision !== binding.controlRevision ||
-      runtime.controlExpiresAt !== binding.controlExpiresAt
-    ) {
-      throw rejected(
-        'commercial_ocr_runtime_control_changed',
-        'Commercial OCR runtime authorization changed after the deletion candidate was recorded',
-      );
-    }
+    // FLAG: Runtime certification is settings-specific. Re-read the current profile inside the
+    // pre-dispatch guard and never authorize a retry from the settings captured by OCR analysis.
+    const authorization = await this.loadCurrentAuthorization(params.chatId, binding);
+    const settings = authorization.settings;
+    await this.assertRuntimeAuthorization(
+      params.chatId,
+      authorization.settingsFingerprint,
+      binding,
+    );
     if (
       binding.policyVersion !== COMMERCIAL_OCR_DECISION_POLICY_VERSION ||
       binding.ocrVersion !== COMMERCIAL_OCR_DEFAULT_VERSION
@@ -338,29 +343,6 @@ export class CommercialOcrDeleteGuardService {
       );
     }
 
-    const settings = await this.prisma.chatSettings.findUnique({
-      where: { chatId: params.chatId },
-      select: {
-        commercialAdsFilterEnabled: true,
-        commercialAdsSensitivity: true,
-        commercialAdsWarnThreshold: true,
-        commercialAdsDeleteThreshold: true,
-        nightModeTimezone: true,
-        chat: { select: { admins: { select: { userId: true } } } },
-      },
-    });
-    if (!settings?.commercialAdsFilterEnabled) {
-      throw rejected(
-        'commercial_ocr_filter_disabled',
-        'Commercial advertisement filtering is no longer enabled for this chat',
-      );
-    }
-    if (digestCommercialOcrPolicy(settings) !== binding.commercialPolicyDigest) {
-      throw rejected(
-        'commercial_ocr_policy_changed',
-        'Commercial advertisement policy changed after the deletion candidate was recorded',
-      );
-    }
     if (settings.chat.admins.some((admin) => admin.userId === binding.senderId)) {
       throw rejected(
         'commercial_ocr_admin_immune',
@@ -399,13 +381,30 @@ export class CommercialOcrDeleteGuardService {
     if (!exactRow) {
       return 'absent';
     }
-    const source = extractCommercialOcrDeleteSource(exactRow);
-    if (!source || source.messageId !== params.messageId || source.chatId !== params.chatId) {
+    const exactSource = extractCommercialOcrExactMessageSource(exactRow);
+    if (
+      !exactSource ||
+      exactSource.source.messageId !== params.messageId ||
+      exactSource.source.chatId !== params.chatId
+    ) {
       throw rejected(
         'commercial_ocr_message_ambiguous',
         'MAX did not return a complete stable identity for the exact OCR message',
       );
     }
+    if (exactSource.authorKind === 'bot_or_service') {
+      throw rejected(
+        'commercial_ocr_author_immune',
+        'The exact OCR message is authored by a bot or service account',
+      );
+    }
+    if (exactSource.authorKind !== 'user') {
+      throw rejected(
+        'commercial_ocr_message_ambiguous',
+        'MAX did not confirm that the exact OCR message has a human author',
+      );
+    }
+    const source = exactSource.source;
 
     const currentBinding = buildCommercialOcrDeleteBinding({
       ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION,
@@ -446,7 +445,104 @@ export class CommercialOcrDeleteGuardService {
         'Current participant moderation immunity prevents OCR deletion',
       );
     }
+
+    // MAX lookups and immunity checks are asynchronous. Re-read both mutable authorization sources
+    // after them so a mid-guard settings or rollout change cannot authorize the remote mutation.
+    const finalAuthorization = await this.loadCurrentAuthorization(params.chatId, binding);
+    if (finalAuthorization.settings.nightModeTimezone !== settings.nightModeTimezone) {
+      throw rejected(
+        'commercial_ocr_participant_immunity_unknown',
+        'Participant moderation immunity was checked with a stale chat timezone',
+      );
+    }
+    this.assertLocalAdminEligible(finalAuthorization.settings, binding.senderId);
+    await this.assertRuntimeAuthorization(
+      params.chatId,
+      finalAuthorization.settingsFingerprint,
+      binding,
+    );
     return 'allowed';
+  }
+
+  private async loadCurrentAuthorization(chatId: string, binding: CommercialOcrDeleteBinding) {
+    const settings = await this.prisma.chatSettings.findUnique({
+      where: { chatId },
+      select: {
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: true,
+        commercialAdsWarnThreshold: true,
+        commercialAdsDeleteThreshold: true,
+        nightModeTimezone: true,
+        chat: { select: { admins: { select: { userId: true } } } },
+      },
+    });
+    if (!settings?.commercialAdsFilterEnabled) {
+      throw rejected(
+        'commercial_ocr_filter_disabled',
+        'Commercial advertisement filtering is no longer enabled for this chat',
+      );
+    }
+    if (digestCommercialOcrPolicy(settings) !== binding.commercialPolicyDigest) {
+      throw rejected(
+        'commercial_ocr_policy_changed',
+        'Commercial advertisement policy changed after the deletion candidate was recorded',
+      );
+    }
+
+    let settingsFingerprint: string;
+    try {
+      settingsFingerprint = fingerprintCommercialOcrSettingsProfile(settings);
+    } catch {
+      throw rejected(
+        'commercial_ocr_policy_changed',
+        'Commercial advertisement policy is no longer a valid certified profile',
+      );
+    }
+    return { settings, settingsFingerprint };
+  }
+
+  private assertLocalAdminEligible(
+    settings: { chat: { admins: Array<{ userId: string }> } },
+    senderId: string,
+  ): void {
+    if (settings.chat.admins.some((admin) => admin.userId === senderId)) {
+      throw rejected(
+        'commercial_ocr_admin_immune',
+        'Current local chat administrators are immune from OCR deletion',
+      );
+    }
+  }
+
+  private async assertRuntimeAuthorization(
+    chatId: string,
+    settingsFingerprint: string,
+    binding: CommercialOcrDeleteBinding,
+  ): Promise<void> {
+    const runtime = await this.runtimePolicy.resolveEffectivePolicy({
+      chatId,
+      settingsFingerprint,
+    });
+    if (!runtime.enforce) {
+      if (runtime.enforcementAuthority === 'unavailable') {
+        throw rejected(
+          'commercial_ocr_runtime_control_unavailable',
+          'Commercial OCR runtime control could not be read before deletion',
+        );
+      }
+      throw rejected(
+        'commercial_ocr_runtime_revoked',
+        'Commercial OCR enforcement authorization is no longer active',
+      );
+    }
+    if (
+      runtime.controlRevision !== binding.controlRevision ||
+      runtime.controlExpiresAt !== binding.controlExpiresAt
+    ) {
+      throw rejected(
+        'commercial_ocr_runtime_control_changed',
+        'Commercial OCR runtime authorization changed after the deletion candidate was recorded',
+      );
+    }
   }
 }
 
@@ -518,6 +614,43 @@ function extractSenderId(message: Record<string, unknown>): string | null {
     user?.userId,
     user?.id,
   );
+}
+
+function extractExactAuthorKind(
+  message: Record<string, unknown>,
+): CommercialOcrExactMessageSource['authorKind'] {
+  const candidates = [
+    asRecord(message.sender),
+    asRecord(message.from),
+    asRecord(message.user),
+    message,
+  ].filter((candidate): candidate is Record<string, unknown> => candidate !== null);
+
+  let explicitlyHuman = false;
+  for (const candidate of candidates) {
+    const type = firstIdentifier(candidate.type, candidate.kind)?.toLowerCase();
+    if (
+      type === 'bot' ||
+      type === 'service' ||
+      candidate.is_bot === true ||
+      candidate.isBot === true ||
+      candidate.bot === true ||
+      candidate.is_service === true ||
+      candidate.isService === true
+    ) {
+      return 'bot_or_service';
+    }
+    if (
+      type === 'user' ||
+      type === 'human' ||
+      candidate.is_bot === false ||
+      candidate.isBot === false ||
+      candidate.bot === false
+    ) {
+      explicitlyHuman = true;
+    }
+  }
+  return explicitlyHuman ? 'user' : 'unknown';
 }
 
 function extractSourceCreatedAt(message: Record<string, unknown>): string | null {

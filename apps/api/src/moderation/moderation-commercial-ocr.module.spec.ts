@@ -118,8 +118,8 @@ describe('ModerationModule commercial OCR runtime boundaries', () => {
       producer: true,
       enqueueService: true,
       cacheStore: false,
-      metricsService: false,
-      metricsExport: false,
+      metricsService: true,
+      metricsExport: true,
       processor: false,
       consumerQueue: false,
     });

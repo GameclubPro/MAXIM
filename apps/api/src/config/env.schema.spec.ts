@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from 'node:crypto';
+
 import { validateEnv } from './env.schema';
 
 function createValidEnv(overrides: Record<string, unknown> = {}) {
@@ -307,14 +309,21 @@ describe('validateEnv boolean parsing', () => {
     expect(defaults.OMP_THREAD_LIMIT).toBe(1);
     expect(defaults.COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS).toBe(16);
     expect(defaults.COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS).toBe(10);
+    expect(defaults.COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS).toBe(4);
+    expect(defaults.COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64).toBe('');
     expect(defaults.COMMERCIAL_OCR_MAX_JOB_AGE_MS).toBe(300_000);
     expect(defaults.COMMERCIAL_OCR_RESERVATION_TTL_MS).toBe(600_000);
     expect(defaults.COMMERCIAL_OCR_MAX_OUTPUT_PIXELS).toBe(3_000_000);
 
+    const approvalPublicKey = generateKeyPairSync('ed25519').publicKey.export({
+      type: 'spki',
+      format: 'der',
+    }).toString('base64');
     const configured = validateEnv(
       createValidEnv({
         COMMERCIAL_OCR_ROLLOUT_MODE: 'canary',
         COMMERCIAL_OCR_CANARY_CHAT_IDS: 'chat-1,chat-2',
+        COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: approvalPublicKey,
         COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS: '7500',
         OMP_THREAD_LIMIT: '2',
       }),
@@ -323,6 +332,42 @@ describe('validateEnv boolean parsing', () => {
     expect(configured.COMMERCIAL_OCR_CANARY_CHAT_IDS).toBe('chat-1,chat-2');
     expect(configured.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS).toBe(7_500);
     expect(configured.OMP_THREAD_LIMIT).toBe(2);
+
+    expect(
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: approvalPublicKey,
+        }),
+      ).COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64,
+    ).toBe(approvalPublicKey);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: Buffer.from('not-a-key')
+            .toString('base64'),
+        }),
+      ),
+    ).toThrow(/Ed25519 SPKI/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: Buffer.concat([
+            Buffer.from(approvalPublicKey, 'base64'),
+            Buffer.from([0]),
+          ]).toString('base64'),
+        }),
+      ),
+    ).toThrow(/Ed25519 SPKI/u);
+    for (const mode of ['canary', 'on']) {
+      expect(() =>
+        validateEnv(
+          createValidEnv({
+            COMMERCIAL_OCR_ROLLOUT_MODE: mode,
+            COMMERCIAL_OCR_CANARY_CHAT_IDS: 'chat-1',
+          }),
+        ),
+      ).toThrow(/APPROVAL_PUBLIC_KEY_BASE64 is required/u);
+    }
 
     expect(() =>
       validateEnv(createValidEnv({ COMMERCIAL_OCR_CANARY_CHAT_IDS: 'chat-1,*' })),
@@ -338,6 +383,29 @@ describe('validateEnv boolean parsing', () => {
         }),
       ),
     ).toThrow(/COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_ROLLOUT_MODE: 'canary',
+          COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS: '5',
+          COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS: '4',
+          COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS: '6',
+        }),
+      ),
+    ).toThrow(/COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS/u);
+    expect(
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
+          COMMERCIAL_OCR_MAX_GLOBAL_IMAGE_UNITS: '3',
+          COMMERCIAL_OCR_MAX_CHAT_IMAGE_UNITS: '3',
+        }),
+      ).COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS,
+    ).toBe(4);
+    expect(
+      validateEnv(createValidEnv({ COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS: '0' }))
+        .COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS,
+    ).toBe(0);
     expect(() =>
       validateEnv(
         createValidEnv({

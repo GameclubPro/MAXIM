@@ -70,6 +70,9 @@ describe('native Tesseract worker lifecycle', () => {
     await flushTasks();
 
     expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ ompThreadLimit: expectedOmpThreadLimit() }),
+    );
     expect(host.responses).toHaveLength(2);
   });
 
@@ -115,4 +118,9 @@ function recognizeRequest(jobId: string) {
 
 async function flushTasks(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+function expectedOmpThreadLimit(): number {
+  const configured = Number(process.env.OMP_THREAD_LIMIT);
+  return Number.isSafeInteger(configured) && configured >= 1 && configured <= 8 ? configured : 1;
 }

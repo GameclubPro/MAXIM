@@ -9,6 +9,17 @@ import {
   resolveCommercialOcrRuntimePolicy,
   type CommercialOcrRuntimePolicy,
 } from './commercial-ocr.runtime';
+import {
+  COMMERCIAL_OCR_MAX_CERTIFIED_SETTINGS_PROFILES,
+  digestCommercialOcrSettingsFingerprintSet,
+  normalizeCommercialOcrSettingsFingerprints,
+} from './commercial-ocr-settings-profile';
+import { resolveCommercialOcrApprovalKeyIdSha256 } from './commercial-ocr-approval-key';
+import {
+  resolveCommercialOcrBehaviorIdentity,
+  resolveCommercialOcrProductionBehaviorDescriptor,
+  resolveExpectedCommercialOcrProductionBehaviorIdentity,
+} from './commercial-ocr-behavior-identity';
 
 export const COMMERCIAL_OCR_RUNTIME_CONTROL_KEY = 'commercial-ocr:runtime-control:v1';
 export const COMMERCIAL_OCR_RUNTIME_CONTROL_REVISION_KEY =
@@ -18,6 +29,8 @@ const CONTROL_READ_TIMEOUT_MS = 750;
 const FAILURE_LOG_INTERVAL_MS = 60_000;
 const MAX_CONTROL_CHAT_IDS = 10_000;
 const MAX_CONTROL_LIFETIME_MS = 24 * 60 * 60_000;
+export const COMMERCIAL_OCR_MAX_PROMOTABLE_EXPECTED_REVISION = Number.MAX_SAFE_INTEGER - 2;
+const COMMERCIAL_OCR_MAX_ACTIVE_CONTROL_REVISION = Number.MAX_SAFE_INTEGER - 1;
 
 export const COMMERCIAL_OCR_RUNTIME_CONTROL_REDIS_OPTIONS = {
   autoResendUnfulfilledCommands: false,
@@ -32,7 +45,8 @@ const SET_RUNTIME_CONTROL_SCRIPT = `
 local current_raw = redis.call('GET', KEYS[1])
 local revision_raw = redis.call('GET', KEYS[2])
 local current_revision = revision_raw and tonumber(revision_raw) or nil
-if revision_raw and (not current_revision or current_revision < 1 or
+if revision_raw and (string.match(revision_raw, '^[1-9][0-9]*$') == nil or
+  not current_revision or current_revision < 1 or
   current_revision > 9007199254740991 or current_revision % 1 ~= 0) then
   return {-1, -1}
 end
@@ -45,7 +59,7 @@ if current_raw then
     return {-1, current_revision or -1}
   end
   local active_revision = tonumber(current.revision)
-  if not active_revision or active_revision < 1 or active_revision > 9007199254740991 or
+  if not active_revision or active_revision < 1 or active_revision > 9007199254740990 or
     active_revision % 1 ~= 0 or (current_revision and current_revision ~= active_revision) then
     return {-1, current_revision or -1}
   end
@@ -55,8 +69,13 @@ end
 local expected_revision = tonumber(ARGV[1])
 local next_revision = tonumber(ARGV[2])
 local ttl_ms = tonumber(ARGV[4])
-if not expected_revision or not next_revision or next_revision > 9007199254740991 or
-  not ttl_ms or ttl_ms < 1 then
+if (ARGV[1] ~= '-1' and string.match(ARGV[1], '^[1-9][0-9]*$') == nil) or
+  string.match(ARGV[2], '^[1-9][0-9]*$') == nil or
+  not expected_revision or expected_revision % 1 ~= 0 or
+  (expected_revision ~= -1 and
+    (expected_revision < 1 or expected_revision > 9007199254740989)) or
+  not next_revision or next_revision < 1 or next_revision > 9007199254740990 or
+  next_revision % 1 ~= 0 or not ttl_ms or ttl_ms < 1 then
   return {-2, current_revision or -1}
 end
 if expected_revision == -1 then
@@ -82,7 +101,7 @@ if not incoming_decoded or type(incoming) ~= 'table' or incoming.version ~= 1 or
 end
 
 redis.call('SET', KEYS[1], ARGV[3], 'PX', ttl_ms)
-redis.call('SET', KEYS[2], tostring(next_revision))
+redis.call('SET', KEYS[2], ARGV[2])
 return {1, next_revision}
 `;
 
@@ -91,7 +110,9 @@ local current_raw = redis.call('GET', KEYS[1])
 local revision_raw = redis.call('GET', KEYS[2])
 local current_revision = revision_raw and tonumber(revision_raw) or nil
 local expected_revision = tonumber(ARGV[1])
-if revision_raw and (not current_revision or current_revision < 1 or
+local next_revision = tonumber(ARGV[2])
+if revision_raw and (string.match(revision_raw, '^[1-9][0-9]*$') == nil or
+  not current_revision or current_revision < 1 or
   current_revision > 9007199254740991 or current_revision % 1 ~= 0) then
   return {-1, -1}
 end
@@ -104,14 +125,18 @@ if current_raw then
     return {-1, current_revision or -1}
   end
   local active_revision = tonumber(current.revision)
-  if not active_revision or active_revision < 1 or active_revision > 9007199254740991 or
+  if not active_revision or active_revision < 1 or active_revision > 9007199254740990 or
     active_revision % 1 ~= 0 or (current_revision and current_revision ~= active_revision) then
     return {-1, current_revision or -1}
   end
   current_revision = active_revision
 end
-if not expected_revision or expected_revision < 1 or expected_revision >= 9007199254740991 or
-  expected_revision % 1 ~= 0 then
+if string.match(ARGV[1], '^[1-9][0-9]*$') == nil or
+  string.match(ARGV[2], '^[1-9][0-9]*$') == nil or
+  not expected_revision or expected_revision < 1 or expected_revision >= 9007199254740991 or
+  expected_revision % 1 ~= 0 or not next_revision or next_revision < 2 or
+  next_revision > 9007199254740991 or next_revision % 1 ~= 0 or
+  next_revision ~= expected_revision + 1 then
   return {-2, current_revision or -1}
 end
 if not current_revision or current_revision ~= expected_revision then
@@ -119,8 +144,8 @@ if not current_revision or current_revision ~= expected_revision then
 end
 
 redis.call('DEL', KEYS[1])
-redis.call('SET', KEYS[2], tostring(current_revision + 1))
-return {1, current_revision, current_revision + 1}
+redis.call('SET', KEYS[2], ARGV[2])
+return {1, current_revision, next_revision}
 `;
 
 const exactChatIdSchema = z
@@ -153,12 +178,23 @@ const isoTimestampSchema = z.string().refine((value) => {
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }, 'timestamp must be a canonical ISO-8601 UTC value');
 
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+
 const runtimeControlSchema = z
   .object({
     version: z.literal(1),
-    revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    revision: z.number().int().positive().max(COMMERCIAL_OCR_MAX_ACTIVE_CONTROL_REVISION),
     mode: z.enum(COMMERCIAL_OCR_ROLLOUT_MODES),
     enforcementChatIds: z.array(exactChatIdSchema).max(MAX_CONTROL_CHAT_IDS),
+    certificationSha256: sha256Schema,
+    certificationExpiresAt: isoTimestampSchema,
+    approvalKeyIdSha256: sha256Schema,
+    behaviorIdentitySha256: sha256Schema,
+    certifiedSettingsFingerprints: z
+      .array(sha256Schema)
+      .min(1)
+      .max(COMMERCIAL_OCR_MAX_CERTIFIED_SETTINGS_PROFILES),
+    certifiedSettingsFingerprintSetSha256: sha256Schema,
     actor: boundedAuditTextSchema(200),
     reason: boundedAuditTextSchema(1_000),
     createdAt: isoTimestampSchema,
@@ -188,10 +224,43 @@ const runtimeControlSchema = z
         message: 'enforcing controls require at least one exact chat id',
       });
     }
+    try {
+      const normalizedFingerprints = normalizeCommercialOcrSettingsFingerprints(
+        value.certifiedSettingsFingerprints,
+      );
+      if (
+        normalizedFingerprints.some(
+          (fingerprint, index) => fingerprint !== value.certifiedSettingsFingerprints[index],
+        )
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['certifiedSettingsFingerprints'],
+          message: 'certified settings fingerprints must be sorted',
+        });
+      }
+      if (
+        value.certifiedSettingsFingerprintSetSha256 !==
+        digestCommercialOcrSettingsFingerprintSet(normalizedFingerprints)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['certifiedSettingsFingerprintSetSha256'],
+          message: 'certified settings fingerprint set digest is inconsistent',
+        });
+      }
+    } catch {
+      context.addIssue({
+        code: 'custom',
+        path: ['certifiedSettingsFingerprints'],
+        message: 'certified settings fingerprints are invalid',
+      });
+    }
 
     const createdAtMs = Date.parse(value.createdAt);
     const updatedAtMs = Date.parse(value.updatedAt);
     const expiresAtMs = Date.parse(value.expiresAt);
+    const certificationExpiresAtMs = Date.parse(value.certificationExpiresAt);
     if (updatedAtMs < createdAtMs) {
       context.addIssue({
         code: 'custom',
@@ -211,6 +280,13 @@ const runtimeControlSchema = z
         code: 'custom',
         path: ['expiresAt'],
         message: 'runtime control lifetime must not exceed 24 hours',
+      });
+    }
+    if (expiresAtMs > certificationExpiresAtMs) {
+      context.addIssue({
+        code: 'custom',
+        path: ['expiresAt'],
+        message: 'runtime control must not outlive its certification',
       });
     }
   });
@@ -263,10 +339,23 @@ export function parseCommercialOcrRuntimeControl(
 export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
   private readonly logger = new Logger(CommercialOcrRuntimePolicyService.name);
   private readonly redis: Redis;
+  private readonly approvalKeyIdSha256: string | null;
+  private readonly behaviorIdentitySha256: string | null;
   private redisConnectionAttempt: Promise<void> | null = null;
   private lastFailureLogAtMs = 0;
 
   constructor(private readonly configService: ConfigService) {
+    this.approvalKeyIdSha256 = resolveCommercialOcrApprovalKeyIdSha256(
+      configService.get<string>('COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64'),
+    );
+    const nativeBehavior = resolveExpectedCommercialOcrProductionBehaviorIdentity(
+      configService,
+    ).identity;
+    this.behaviorIdentitySha256 = nativeBehavior.complete
+      ? resolveCommercialOcrBehaviorIdentity(
+          resolveCommercialOcrProductionBehaviorDescriptor(configService, nativeBehavior),
+        ).fingerprintSha256
+      : null;
     this.redis = new Redis(
       configService.getOrThrow<string>('REDIS_URL'),
       COMMERCIAL_OCR_RUNTIME_CONTROL_REDIS_OPTIONS,
@@ -283,6 +372,7 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
 
   async resolveEffectivePolicy(params: {
     chatId: string;
+    settingsFingerprint: string;
   }): Promise<EffectiveCommercialOcrRuntimePolicy> {
     const envPolicy = resolveCommercialOcrRuntimePolicy({
       chatId: params.chatId,
@@ -314,7 +404,13 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
     if (
       effectiveMode === 'off' ||
       effectiveMode === 'shadow' ||
-      !control.enforcementChatIds.includes(params.chatId)
+      !control.enforcementChatIds.includes(params.chatId) ||
+      this.approvalKeyIdSha256 === null ||
+      control.approvalKeyIdSha256 !== this.approvalKeyIdSha256 ||
+      this.behaviorIdentitySha256 === null ||
+      control.behaviorIdentitySha256 !== this.behaviorIdentitySha256 ||
+      !sha256Schema.safeParse(params.settingsFingerprint).success ||
+      !control.certifiedSettingsFingerprints.includes(params.settingsFingerprint)
     ) {
       return {
         mode: effectiveMode === 'off' ? 'off' : 'shadow',
@@ -387,10 +483,12 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
     const control = parsed.data;
     if (
       params.expectedRevision !== null &&
-      (!Number.isSafeInteger(params.expectedRevision) || params.expectedRevision < 1)
+      (!Number.isSafeInteger(params.expectedRevision) ||
+        params.expectedRevision < 1 ||
+        params.expectedRevision > COMMERCIAL_OCR_MAX_PROMOTABLE_EXPECTED_REVISION)
     ) {
       throw new CommercialOcrRuntimeControlValidationError(
-        'expectedRevision must be null or a positive safe integer',
+        'expectedRevision must leave one increment for set and one for guarded clear',
       );
     }
     const requiredRevision = (params.expectedRevision ?? 0) + 1;
@@ -429,6 +527,7 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
         COMMERCIAL_OCR_RUNTIME_CONTROL_KEY,
         COMMERCIAL_OCR_RUNTIME_CONTROL_REVISION_KEY,
         String(params.expectedRevision),
+        String(params.expectedRevision + 1),
       ),
     );
     if (attempt.kind === 'ambiguous') {
@@ -520,6 +619,22 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
   }
 
   private assertControlWithinEnvCeilings(control: CommercialOcrRuntimeControlV1): void {
+    if (
+      this.approvalKeyIdSha256 === null ||
+      control.approvalKeyIdSha256 !== this.approvalKeyIdSha256
+    ) {
+      throw new CommercialOcrRuntimeControlValidationError(
+        'control approval key does not match the active commercial OCR trust anchor',
+      );
+    }
+    if (
+      this.behaviorIdentitySha256 === null ||
+      control.behaviorIdentitySha256 !== this.behaviorIdentitySha256
+    ) {
+      throw new CommercialOcrRuntimeControlValidationError(
+        'control behavior identity does not match the active commercial OCR release',
+      );
+    }
     const envMode = resolveCommercialOcrRolloutMode(this.configService);
     if (MODE_RANK[control.mode] > MODE_RANK[envMode]) {
       throw new CommercialOcrRuntimeControlValidationError(
@@ -657,7 +772,7 @@ export class CommercialOcrRuntimePolicyService implements OnModuleDestroy {
       {
         reason,
         key: COMMERCIAL_OCR_RUNTIME_CONTROL_KEY,
-        err: error instanceof Error ? error.message : error ? String(error) : undefined,
+        failureKind: error instanceof Error ? 'error' : error ? 'unknown' : undefined,
       },
       'Commercial OCR enforcement downgraded to shadow by runtime control',
     );

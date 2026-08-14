@@ -189,6 +189,7 @@ describe('CommercialOcrCacheStore', () => {
 
   it('coalesces matching process-local work and clears the promise after settlement', async () => {
     const { store } = createStore();
+    const onCoalesced = jest.fn();
     let resolveOperation!: (value: string) => void;
     const operation = jest.fn(
       () => new Promise<string>((resolvePromise) => (resolveOperation = resolvePromise)),
@@ -196,15 +197,37 @@ describe('CommercialOcrCacheStore', () => {
 
     const deadlineAtMs = Date.now() + 60_000;
     const first = store.coalesceLocal(identity, deadlineAtMs, operation);
-    const second = store.coalesceLocal(identity, deadlineAtMs, operation);
+    const second = store.coalesceLocal(identity, deadlineAtMs, operation, { onCoalesced });
     await Promise.resolve();
     expect(operation).toHaveBeenCalledTimes(1);
     resolveOperation('done');
     await expect(Promise.all([first, second])).resolves.toEqual(['done', 'done']);
+    expect(onCoalesced).toHaveBeenCalledTimes(1);
 
     await expect(store.coalesceLocal(identity, deadlineAtMs, async () => 'next')).resolves.toBe(
       'next',
     );
+  });
+
+  it('isolates a throwing coalescing observer from the shared operation', async () => {
+    const { store } = createStore();
+    let resolveOperation!: (value: string) => void;
+    const operation = () =>
+      new Promise<string>((resolvePromise) => {
+        resolveOperation = resolvePromise;
+      });
+    const deadlineAtMs = Date.now() + 60_000;
+
+    const first = store.coalesceLocal(identity, deadlineAtMs, operation);
+    const second = store.coalesceLocal(identity, deadlineAtMs, operation, {
+      onCoalesced: () => {
+        throw new Error('observer failed');
+      },
+    });
+    await Promise.resolve();
+    resolveOperation('done');
+
+    await expect(Promise.all([first, second])).resolves.toEqual(['done', 'done']);
   });
 
   it('does not attach a later-deadline caller to work with less remaining budget', async () => {

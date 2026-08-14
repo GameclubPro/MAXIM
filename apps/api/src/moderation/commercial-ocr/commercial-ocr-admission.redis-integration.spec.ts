@@ -23,18 +23,102 @@ const globalKeys = {
 const limits = {
   maxGlobalImageUnits: 12,
   maxChatImageUnits: 4,
+  reservedActionableImageUnits: 4,
   maxJobAgeMs: 30_000,
   reservationTtlMs: 90_000,
 };
 
 describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
+  it('recovers the durable-webhook crash window through the pending activation CAS', async () => {
+    const context = createContext('worker-crash-window-recovery');
+    try {
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 2)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
+      await expect(context.store.resolveState(context.jobA)).resolves.toEqual({
+        kind: 'available',
+        state: 'pending',
+      });
+
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe('activated');
+      await expect(context.store.resolveState(context.jobA)).resolves.toEqual({
+        kind: 'available',
+        state: 'actionable',
+      });
+    } finally {
+      await context.cleanup();
+    }
+  });
+
+  it('keeps suppression absorbing when it wins before worker reconciliation', async () => {
+    const context = createContext('worker-suppression-race');
+    try {
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 2)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
+      await expect(context.store.suppress(suppression(context.jobA, context.chatA))).resolves.toBe(
+        'suppressed',
+      );
+
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe('suppressed');
+      await expect(context.store.resolveState(context.jobA)).resolves.toEqual({
+        kind: 'available',
+        state: 'observation',
+      });
+    } finally {
+      await context.cleanup();
+    }
+  });
+
+  it('reports a producer-won activation race without changing the actionable state again', async () => {
+    const context = createContext('worker-producer-activation-race');
+    try {
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 2)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe('activated');
+
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe(
+        'already_actionable',
+      );
+      await expect(context.store.resolveState(context.jobA)).resolves.toEqual({
+        kind: 'available',
+        state: 'actionable',
+      });
+    } finally {
+      await context.cleanup();
+    }
+  });
+
+  it('reserves global capacity from observations while admitting actionable work', async () => {
+    const context = createContext('actionable-reserve');
+    try {
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 4, false)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'observation' });
+      await expect(
+        context.store.reserve(reservation(context.jobB, context.chatB, 3, false)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'observation' });
+      await expect(
+        context.store.reserve(reservation(context.jobD, context.chatC, 2, false)),
+      ).resolves.toEqual({ kind: 'rejected_actionable_reserve' });
+
+      await expect(
+        context.store.reserve(reservation(context.jobD, context.chatC, 4, true)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
+      expect(Number(await context.redis.get(globalKeys.units))).toBe(11);
+    } finally {
+      await context.cleanup();
+    }
+  });
+
   it('atomically releases both capacities when pending activation has expired', async () => {
     const context = createContext('activate-expired');
     const chat = chatKeys(context.chatA);
     try {
-      await expect(context.store.reserve(reservation(context.jobA, context.chatA, 3))).resolves.toEqual(
-        { kind: 'admitted', state: 'pending' },
-      );
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 3)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
       const globalUnitsAfterReserve = Number(await context.redis.get(globalKeys.units));
       await expireReservation(context.redis, context.jobA, chat.expiry);
 
@@ -49,12 +133,71 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
       expect(await context.redis.get(chat.units)).toBeNull();
       expect(await context.redis.hget(chat.weights, context.jobA)).toBeNull();
       expect(await context.redis.zscore(chat.expiry, context.jobA)).toBeNull();
-      await expect(context.store.reserve(reservation(context.jobA, context.chatA, 3))).resolves.toEqual(
-        { kind: 'duplicate', state: 'observation' },
-      );
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 3)),
+      ).resolves.toEqual({ kind: 'duplicate', state: 'observation' });
       expect(Number((await context.redis.get(globalKeys.units)) ?? '0')).toBe(
         globalUnitsAfterReserve - 3,
       );
+    } finally {
+      await context.cleanup();
+    }
+  });
+
+  it('absorbs an existing reservation when a replay reports another image count', async () => {
+    const context = createContext('suppress-changed-count');
+    const chat = chatKeys(context.chatA);
+    try {
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 3)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
+
+      await expect(
+        context.store.suppress({
+          jobId: context.jobA,
+          chatId: context.chatA,
+          imageCount: 1,
+          tombstoneTtlMs: limits.reservationTtlMs,
+        }),
+      ).resolves.toBe('suppressed');
+
+      expect(await context.redis.hget(globalKeys.metadata, context.jobA)).toBe(
+        `${chat.hash}|3|O|0`,
+      );
+      expect(await context.redis.get(globalKeys.units)).toBeNull();
+      expect(await context.redis.get(chat.units)).toBeNull();
+      expect(await context.redis.hget(chat.weights, context.jobA)).toBeNull();
+      expect(await context.redis.zscore(chat.expiry, context.jobA)).toBeNull();
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe('suppressed');
+    } finally {
+      await context.cleanup();
+    }
+  });
+
+  it('releases capacity when a shadow replay absorbs an actionable reservation', async () => {
+    const context = createContext('shadow-replay-release');
+    const chat = chatKeys(context.chatA);
+    try {
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 3)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe('activated');
+
+      await expect(
+        context.store.reserve({
+          ...reservation(context.jobA, context.chatA, 3),
+          actionEligible: false,
+        }),
+      ).resolves.toEqual({ kind: 'duplicate', state: 'observation' });
+
+      expect(await context.redis.hget(globalKeys.metadata, context.jobA)).toBe(
+        `${chat.hash}|3|O|0`,
+      );
+      expect(await context.redis.get(globalKeys.units)).toBeNull();
+      expect(await context.redis.get(chat.units)).toBeNull();
+      expect(await context.redis.hget(chat.weights, context.jobA)).toBeNull();
+      expect(await context.redis.zscore(chat.expiry, context.jobA)).toBeNull();
+      await expect(context.store.activate(activation(context.jobA))).resolves.toBe('suppressed');
     } finally {
       await context.cleanup();
     }
@@ -79,9 +222,9 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
       expect(await context.redis.get(chat.units)).toBeNull();
       expect(await context.redis.hget(chat.weights, context.jobA)).toBeNull();
       expect(await context.redis.zscore(chat.expiry, context.jobA)).toBeNull();
-      await expect(context.store.reserve(reservation(context.jobA, context.chatA, 2))).resolves.toEqual(
-        { kind: 'duplicate', state: 'observation' },
-      );
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 2)),
+      ).resolves.toEqual({ kind: 'duplicate', state: 'observation' });
       expect(Number((await context.redis.get(globalKeys.units)) ?? '0')).toBe(
         globalUnitsBeforeReserve,
       );
@@ -94,22 +237,22 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
     const context = createContext('cross-chat-cleanup');
     const chatA = chatKeys(context.chatA);
     try {
-      await expect(context.store.reserve(reservation(context.jobA, context.chatA, 4))).resolves.toEqual(
-        { kind: 'admitted', state: 'pending' },
-      );
+      await expect(
+        context.store.reserve(reservation(context.jobA, context.chatA, 4)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
       await expireReservation(context.redis, context.jobA, chatA.expiry);
 
-      await expect(context.store.reserve(reservation(context.jobB, context.chatB, 4))).resolves.toEqual(
-        { kind: 'admitted', state: 'pending' },
-      );
+      await expect(
+        context.store.reserve(reservation(context.jobB, context.chatB, 4)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
       expect(await context.redis.hget(globalKeys.metadata, context.jobA)).toBeNull();
       expect(await context.redis.get(chatA.units)).toBeNull();
       expect(await context.redis.hget(chatA.weights, context.jobA)).toBeNull();
       expect(await context.redis.zscore(chatA.expiry, context.jobA)).toBeNull();
 
-      await expect(context.store.reserve(reservation(context.jobC, context.chatA, 4))).resolves.toEqual(
-        { kind: 'admitted', state: 'pending' },
-      );
+      await expect(
+        context.store.reserve(reservation(context.jobC, context.chatA, 4)),
+      ).resolves.toEqual({ kind: 'admitted', state: 'pending' });
     } finally {
       await context.cleanup();
     }
@@ -121,7 +264,11 @@ describeLocalRedis('CommercialOcrAdmissionStore Redis integration', () => {
       await expect(context.store.suppress(suppression(context.jobA, context.chatA))).resolves.toBe(
         'suppressed',
       );
-      await context.redis.zadd(globalKeys.expiry, (await redisNowMs(context.redis)) - 1_000, context.jobA);
+      await context.redis.zadd(
+        globalKeys.expiry,
+        (await redisNowMs(context.redis)) - 1_000,
+        context.jobA,
+      );
 
       await expect(context.store.suppress(suppression(context.jobB, context.chatB))).resolves.toBe(
         'suppressed',
@@ -140,9 +287,11 @@ function createContext(label: string) {
   const suffix = `${label}-${randomUUID()}`;
   const chatA = `chat-a-${suffix}`;
   const chatB = `chat-b-${suffix}`;
+  const chatC = `chat-c-${suffix}`;
   const jobA = jobId(`${suffix}-a`);
   const jobB = jobId(`${suffix}-b`);
   const jobC = jobId(`${suffix}-c`);
+  const jobD = jobId(`${suffix}-d`);
   const store = new CommercialOcrAdmissionStore({
     getOrThrow: () => redisIntegrationUrl,
   } as never);
@@ -151,13 +300,16 @@ function createContext(label: string) {
     { jobId: jobA, chatId: chatA },
     { jobId: jobB, chatId: chatB },
     { jobId: jobC, chatId: chatA },
+    { jobId: jobD, chatId: chatC },
   ];
   return {
     chatA,
     chatB,
+    chatC,
     jobA,
     jobB,
     jobC,
+    jobD,
     store,
     redis,
     cleanup: async () => {
@@ -176,13 +328,18 @@ function createContext(label: string) {
   };
 }
 
-function reservation(jobIdValue: string, chatId: string, imageCount: number) {
+function reservation(
+  jobIdValue: string,
+  chatId: string,
+  imageCount: number,
+  actionEligible = true,
+) {
   return {
     jobId: jobIdValue,
     chatId,
     sourceCreatedAt: new Date().toISOString(),
     imageCount,
-    actionEligible: true,
+    actionEligible,
     limits,
   };
 }

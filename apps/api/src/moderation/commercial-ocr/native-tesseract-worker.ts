@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
+import { COMMERCIAL_OCR_NATIVE_ORCHESTRATION } from './commercial-ocr-behavior-identity';
 import { probeNativeTesseract, runNativeTesseract } from './native-tesseract-runner';
 import type {
   NativeTesseractWorkerRecognizeRequest,
@@ -18,8 +19,11 @@ const maxImageBytes = readPositiveInteger(
   16 * 1024 * 1024,
 );
 const maxTimeoutMs = readPositiveInteger(process.env.COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS, 10_000);
-const STARTUP_PROBE_TIMEOUT_MS = 4_000;
-const STARTUP_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
+const ompThreadLimit = readBoundedPositiveInteger(process.env.OMP_THREAD_LIMIT, 1, 8);
+const STARTUP_PROBE_TIMEOUT_MS =
+  COMMERCIAL_OCR_NATIVE_ORCHESTRATION.workerStartupProbeTimeoutMs;
+const STARTUP_PROBE_MAX_OUTPUT_BYTES =
+  COMMERCIAL_OCR_NATIVE_ORCHESTRATION.workerStartupProbeMaxOutputBytes;
 
 export type NativeTesseractWorkerHost = {
   readonly connected: boolean;
@@ -102,6 +106,7 @@ export function startNativeTesseractWorker(
         psm: request.psm,
         timeoutMs: request.timeoutMs,
         maxOutputBytes,
+        ompThreadLimit,
         onProcessChange: (child) => {
           activeNativeProcess = child;
         },
@@ -189,4 +194,13 @@ if (require.main === module) {
 function readPositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readBoundedPositiveInteger(
+  value: string | undefined,
+  fallback: number,
+  maximum: number,
+): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= maximum ? parsed : fallback;
 }

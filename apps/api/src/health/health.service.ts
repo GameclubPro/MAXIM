@@ -4,16 +4,24 @@ import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   NativeTesseractOcrAdapter,
+  type NativeTesseractQueueWaitSnapshot,
   type NativeTesseractRuntimeStatus,
 } from '../moderation/commercial-ocr/native-tesseract-ocr.adapter';
 import {
   CommercialOcrMetricsService,
   type CommercialOcrRolloutMetricsSnapshot,
 } from '../moderation/commercial-ocr/commercial-ocr-metrics.service';
+import { COMMERCIAL_OCR_QUEUE } from '../moderation/commercial-ocr/commercial-ocr.queue';
 import { MaxApiMetricsService } from '../system/max-api-metrics.service';
-import { QueueMetricsService, type QueueMetricsSnapshot } from '../system/queue-metrics.service';
+import {
+  QueueMetricsService,
+  type QueueCounters,
+  type QueueMetricsSnapshot,
+} from '../system/queue-metrics.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
+
+const LOWER_SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
 type ReadinessBotMaxApiSnapshot = {
   windowSec: number;
@@ -80,8 +88,17 @@ export type ReadinessSnapshot = {
 
 export type OcrReadinessSnapshot =
   | Readonly<
-      NativeTesseractRuntimeStatus & {
+      Omit<NativeTesseractRuntimeStatus, 'queueWaitMs'> & {
         rolloutMetrics: CommercialOcrRolloutMetricsSnapshot | null;
+        queues: Readonly<{
+          bullMq: QueueCounters | null;
+          native: Readonly<{
+            depth: number;
+            busy: number;
+            workers: number;
+            waitMs: NativeTesseractQueueWaitSnapshot;
+          }>;
+        }>;
       }
     >
   | Readonly<{
@@ -97,7 +114,26 @@ export type OcrReadinessSnapshot =
         failuresByReason: Readonly<Record<string, never>>;
       }>;
       latencyMs: Readonly<{ last: null; average: null; maximum: null }>;
+      behaviorIdentity: Readonly<{
+        fingerprintSha256: null;
+        runtimeFingerprintSha256: null;
+        buildManifestSha256: null;
+        complete: false;
+        required: true;
+        verified: false;
+        state: 'unavailable';
+        mismatchFields: readonly [];
+      }>;
       rolloutMetrics: null;
+      queues: Readonly<{
+        bullMq: null;
+        native: Readonly<{
+          depth: 0;
+          busy: 0;
+          workers: 0;
+          waitMs: NativeTesseractQueueWaitSnapshot;
+        }>;
+      }>;
     }>;
 
 export type BotLoadSnapshot = {
@@ -146,7 +182,34 @@ function unavailableOcrReadiness(): OcrReadinessSnapshot {
       failuresByReason: {},
     },
     latencyMs: { last: null, average: null, maximum: null },
+    behaviorIdentity: {
+      fingerprintSha256: null,
+      runtimeFingerprintSha256: null,
+      buildManifestSha256: null,
+      complete: false,
+      required: true,
+      verified: false,
+      state: 'unavailable',
+      mismatchFields: [],
+    },
     rolloutMetrics: null,
+    queues: {
+      bullMq: null,
+      native: { depth: 0, busy: 0, workers: 0, waitMs: emptyNativeQueueWaitSnapshot() },
+    },
+  };
+}
+
+function emptyNativeQueueWaitSnapshot(): NativeTesseractQueueWaitSnapshot {
+  return {
+    observed: 0,
+    sampled: 0,
+    capacity: 512,
+    last: null,
+    average: null,
+    p95: null,
+    p99: null,
+    maximum: null,
   };
 }
 
@@ -394,12 +457,12 @@ export class HealthService implements OnModuleDestroy {
     }
   }
 
-  private withOcrReadiness(snapshot: ReadinessSnapshot): ReadinessSnapshot {
+  private async withOcrReadiness(snapshot: ReadinessSnapshot): Promise<ReadinessSnapshot> {
     if (!this.ocrReadinessRequired) {
       return snapshot;
     }
 
-    const ocr = this.readOcrReadiness();
+    const ocr = await this.readOcrReadiness();
     return {
       ...snapshot,
       ok: snapshot.ok && ocr.ready,
@@ -410,16 +473,39 @@ export class HealthService implements OnModuleDestroy {
     };
   }
 
-  private readOcrReadiness(): OcrReadinessSnapshot {
+  private async readOcrReadiness(): Promise<OcrReadinessSnapshot> {
     if (!this.nativeTesseractOcr) {
       return unavailableOcrReadiness();
     }
 
     try {
       const status = this.nativeTesseractOcr.getRuntimeStatus();
+      const rolloutMetrics = this.commercialOcrMetrics
+        ? await this.withTimeout(
+            this.commercialOcrMetrics.getSnapshot(),
+            this.readinessOptionalDiagnosticsTimeoutMs,
+            'commercial OCR metrics snapshot',
+          ).catch(() => null)
+        : null;
+      const queueMetrics = this.queueMetricsService.peekCachedSnapshot?.(
+        this.readinessStaleFallbackMaxAgeMs,
+      );
+      const bullMqQueue = queueMetrics?.auxiliaryQueues?.[COMMERCIAL_OCR_QUEUE];
+      const behaviorIdentityReady =
+        status.behaviorIdentity.required &&
+        status.behaviorIdentity.complete &&
+        status.behaviorIdentity.verified &&
+        status.behaviorIdentity.state === 'verified' &&
+        status.behaviorIdentity.mismatchFields.length === 0 &&
+        LOWER_SHA256_PATTERN.test(status.behaviorIdentity.fingerprintSha256) &&
+        status.behaviorIdentity.runtimeFingerprintSha256 ===
+          status.behaviorIdentity.fingerprintSha256 &&
+        typeof status.behaviorIdentity.buildManifestSha256 === 'string' &&
+        LOWER_SHA256_PATTERN.test(status.behaviorIdentity.buildManifestSha256);
+      const ready = status.ready && behaviorIdentityReady;
       return {
-        state: status.state,
-        ready: status.ready,
+        state: !ready && status.state === 'ready' ? 'degraded' : status.state,
+        ready,
         workers: {
           configured: status.workers.configured,
           live: status.workers.live,
@@ -439,7 +525,26 @@ export class HealthService implements OnModuleDestroy {
           average: status.latencyMs.average,
           maximum: status.latencyMs.maximum,
         },
-        rolloutMetrics: this.commercialOcrMetrics?.getSnapshot() ?? null,
+        behaviorIdentity: {
+          fingerprintSha256: status.behaviorIdentity.fingerprintSha256,
+          runtimeFingerprintSha256: status.behaviorIdentity.runtimeFingerprintSha256,
+          buildManifestSha256: status.behaviorIdentity.buildManifestSha256,
+          complete: status.behaviorIdentity.complete,
+          required: status.behaviorIdentity.required,
+          verified: status.behaviorIdentity.verified,
+          state: status.behaviorIdentity.state,
+          mismatchFields: [...status.behaviorIdentity.mismatchFields],
+        },
+        rolloutMetrics,
+        queues: {
+          bullMq: bullMqQueue ? { ...bullMqQueue } : null,
+          native: {
+            depth: status.queueDepth,
+            busy: status.workers.busy,
+            workers: status.workers.configured,
+            waitMs: { ...(status.queueWaitMs ?? emptyNativeQueueWaitSnapshot()) },
+          },
+        },
       };
     } catch {
       return unavailableOcrReadiness();

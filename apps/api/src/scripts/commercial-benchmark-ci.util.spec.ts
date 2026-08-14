@@ -14,14 +14,60 @@ import {
   median,
   parseCommercialBenchmarkReport,
   resolveCommercialBenchmarkProfile,
+  stripCommercialBenchmarkReports,
   type CommercialBenchmarkReport,
 } from './commercial-benchmark-ci.util';
+import {
+  COMMERCIAL_DETECTOR_BENCHMARK_CLOCK,
+  COMMERCIAL_DETECTOR_BENCHMARK_SCHEMA_VERSION,
+  summarizeCommercialQualityCohorts,
+  type CommercialDetectorBenchmarkEvidence,
+  type CommercialDetectorTimingSummary,
+} from './commercial-detector-harness.util';
+
+function timing(offset = 0): CommercialDetectorTimingSummary {
+  return {
+    samples: 2,
+    minNs: 1 + offset,
+    p50Ns: 2 + offset,
+    p95Ns: 3 + offset,
+    p99Ns: 4 + offset,
+    maxNs: 5 + offset,
+    meanNs: 3 + offset,
+  };
+}
+
+function evidence(offset = 0): CommercialDetectorBenchmarkEvidence {
+  return {
+    schemaVersion: COMMERCIAL_DETECTOR_BENCHMARK_SCHEMA_VERSION,
+    clock: COMMERCIAL_DETECTOR_BENCHMARK_CLOCK,
+    initialization: {
+      detectorConstructionAndFirstCallNs: 10 + offset,
+      fullPathConstructionAndFirstCallNs: 20 + offset,
+      fullPathPatternState: 'PROCESS_PATTERNS_ALREADY_WARM',
+    },
+    warm: {
+      detectorOnly: timing(offset),
+      fullPath: timing(offset),
+      adversarialFullPath: timing(offset),
+    },
+    timingCohorts: {
+      detectorOnly: { all: timing(offset) },
+      fullPath: { all: timing(offset) },
+    },
+    qualityCohorts: summarizeCommercialQualityCohorts([
+      { cohorts: [], expected: 'NEGATIVE', detected: false, actionBand: null },
+    ]),
+    detectorToFullPathEquivalence: { samples: 1, exactMatches: 1, mismatches: 0 },
+  };
+}
 
 function report(values: {
   hotP95: number;
   hotP99: number;
   adversarialP95: number;
   adversarialP99: number;
+  evidence?: CommercialDetectorBenchmarkEvidence;
 }): CommercialBenchmarkReport {
   return {
     hotPath: { p95Ms: values.hotP95, p99Ms: values.hotP99 },
@@ -29,6 +75,7 @@ function report(values: {
       p95Ms: values.adversarialP95,
       p99Ms: values.adversarialP99,
     },
+    ...(values.evidence ? { evidence: values.evidence } : {}),
   };
 }
 
@@ -66,6 +113,14 @@ describe('commercial benchmark CI aggregation', () => {
     expect(() => parseCommercialBenchmarkReport(output)).toThrow();
   });
 
+  it('strips machine reports while preserving human-readable Jest output', () => {
+    expect(
+      stripCommercialBenchmarkReports(
+        `PASS benchmark\n${COMMERCIAL_BENCHMARK_REPORT_PREFIX}{"hotPath":{}}\nTests: 1 passed\n`,
+      ),
+    ).toBe('PASS benchmark\nTests: 1 passed\n');
+  });
+
   it('uses the median so one slow runner attempt cannot move the gate', () => {
     const aggregated = aggregateCommercialBenchmarkReports([
       report({ hotP95: 4, hotP99: 8, adversarialP95: 55, adversarialP99: 82 }),
@@ -77,6 +132,46 @@ describe('commercial benchmark CI aggregation', () => {
       report({ hotP95: 5, hotP99: 9, adversarialP95: 60, adversarialP99: 88 }),
     );
     expect(median([8, 2, 4, 6])).toBe(5);
+  });
+
+  it('parses and median-aggregates detector evidence without widening performance gates', () => {
+    const first = report({
+      hotP95: 4,
+      hotP99: 8,
+      adversarialP95: 55,
+      adversarialP99: 82,
+      evidence: evidence(0),
+    });
+    const second = report({
+      hotP95: 5,
+      hotP99: 9,
+      adversarialP95: 60,
+      adversarialP99: 88,
+      evidence: evidence(10),
+    });
+    const output = `${COMMERCIAL_BENCHMARK_REPORT_PREFIX}${JSON.stringify(first)}`;
+
+    expect(parseCommercialBenchmarkReport(output).evidence).toEqual(first.evidence);
+    const aggregated = aggregateCommercialBenchmarkReports([first, second]);
+    expect(aggregated.evidence?.warm.fullPath.p95Ns).toBe(8);
+    expect(evaluateCommercialBenchmarkGate(aggregated, COMMERCIAL_BENCHMARK_LOCAL_LIMITS)).toEqual(
+      expect.objectContaining({ passed: true }),
+    );
+  });
+
+  it('rejects partial detector evidence across fresh-process attempts', () => {
+    expect(() =>
+      aggregateCommercialBenchmarkReports([
+        report({
+          hotP95: 4,
+          hotP99: 8,
+          adversarialP95: 55,
+          adversarialP99: 82,
+          evidence: evidence(),
+        }),
+        report({ hotP95: 5, hotP99: 9, adversarialP95: 60, adversarialP99: 88 }),
+      ]),
+    ).toThrow('evidence is missing');
   });
 
   it('requires the wrapper nonce handshake before deferring per-attempt assertions', () => {

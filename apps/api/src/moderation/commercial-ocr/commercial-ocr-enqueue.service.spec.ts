@@ -13,6 +13,7 @@ const input = {
 const admissionLimits = {
   maxGlobalImageUnits: 16,
   maxChatImageUnits: 10,
+  reservedActionableImageUnits: 4,
   maxJobAgeMs: 300_000,
   reservationTtlMs: 600_000,
 };
@@ -38,7 +39,205 @@ function admission(overrides: Record<string, jest.Mock> = {}) {
   };
 }
 
+function metrics() {
+  return { recordCounter: jest.fn() };
+}
+
 describe('CommercialOcrEnqueueService', () => {
+  it('uses the configured reservation TTL for producer admission and recovery metadata', async () => {
+    const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    const store = admission();
+    const registerPendingActivation = jest.fn();
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config({ COMMERCIAL_OCR_RESERVATION_TTL_MS: 420_000 }) as never,
+      store as never,
+    );
+
+    await expect(service.enqueue({ ...input, registerPendingActivation })).resolves.toBe('queued');
+
+    expect(store.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limits: expect.objectContaining({ reservationTtlMs: 420_000 }),
+      }),
+    );
+    expect(registerPendingActivation).toHaveBeenCalledWith(
+      expect.objectContaining({ reservationTtlMs: 420_000 }),
+    );
+  });
+
+  it('records fixed admission and enqueue outcomes without identifiers', async () => {
+    const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    const store = admission();
+    const telemetry = metrics();
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config() as never,
+      store as never,
+      telemetry as never,
+    );
+
+    await expect(service.enqueue({ ...input, registerPendingActivation: jest.fn() })).resolves.toBe(
+      'queued',
+    );
+
+    expect(telemetry.recordCounter.mock.calls).toEqual([
+      ['admission.admitted.pending'],
+      ['enqueue.queued'],
+    ]);
+  });
+
+  it.each([
+    ['rejected_global', 'admission.rejected.global'],
+    ['rejected_actionable_reserve', 'admission.rejected.actionable_reserve'],
+    ['rejected_chat', 'admission.rejected.chat'],
+    ['rejected_age', 'admission.rejected.age'],
+  ] as const)('records the %s admission outcome', async (kind, counter) => {
+    const queue = { add: jest.fn() };
+    const store = admission({ reserve: jest.fn().mockResolvedValue({ kind }) });
+    const telemetry = metrics();
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config() as never,
+      store as never,
+      telemetry as never,
+    );
+
+    await service.enqueue(input);
+
+    expect(telemetry.recordCounter).toHaveBeenCalledWith(counter);
+    expect(telemetry.recordCounter).toHaveBeenCalledWith('enqueue.skipped');
+  });
+
+  it('suppresses a reservation that commits after reserve returned unavailable', async () => {
+    const queue = { add: jest.fn() };
+    const telemetry = metrics();
+    const events: string[] = [];
+    let reservedUnits = 0;
+    let tombstoned = false;
+    let commitLateReservation!: () => void;
+    let markSuppressionIssued!: () => void;
+    const lateReservation = new Promise<void>((resolve) => {
+      commitLateReservation = resolve;
+    });
+    const suppressionIssued = new Promise<void>((resolve) => {
+      markSuppressionIssued = resolve;
+    });
+    const store = admission({
+      reserve: jest.fn().mockImplementation(async () => {
+        events.push('reserve-timeout');
+        void lateReservation.then(() => {
+          reservedUnits = input.imageCount;
+          events.push('reserve-commit');
+        });
+        return { kind: 'unavailable' };
+      }),
+      suppress: jest.fn().mockImplementation(async () => {
+        events.push('suppress-issued');
+        markSuppressionIssued();
+        await lateReservation;
+        reservedUnits = 0;
+        tombstoned = true;
+        events.push('suppress-commit');
+        return 'suppressed';
+      }),
+    });
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config() as never,
+      store as never,
+      telemetry as never,
+    );
+
+    const enqueue = service.enqueue(input);
+    await suppressionIssued;
+    expect(queue.add).not.toHaveBeenCalled();
+
+    commitLateReservation();
+
+    await expect(enqueue).resolves.toBe('failed');
+    expect(events).toEqual([
+      'reserve-timeout',
+      'suppress-issued',
+      'reserve-commit',
+      'suppress-commit',
+    ]);
+    expect(reservedUnits).toBe(0);
+    expect(tombstoned).toBe(true);
+    expect(store.suppress).toHaveBeenCalledWith({
+      jobId: expect.stringMatching(/^commercial-image-ocr__[a-f0-9]{64}$/u),
+      chatId: input.chatId,
+      imageCount: input.imageCount,
+      tombstoneTtlMs: admissionLimits.reservationTtlMs,
+    });
+    expect(telemetry.recordCounter.mock.calls).toEqual([
+      ['admission.unavailable'],
+      ['admission.suppression.suppressed'],
+      ['enqueue.failed'],
+    ]);
+  });
+
+  it.each([
+    ['returns unavailable', jest.fn().mockResolvedValue('unavailable')],
+    ['rejects', jest.fn().mockRejectedValue(new Error('suppression timeout'))],
+  ])('fails open and records reconciliation when suppression %s', async (_label, suppress) => {
+    const queue = { add: jest.fn() };
+    const telemetry = metrics();
+    const store = admission({
+      reserve: jest.fn().mockResolvedValue({ kind: 'unavailable' }),
+      suppress,
+    });
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config() as never,
+      store as never,
+      telemetry as never,
+    );
+
+    await expect(service.enqueue(input)).resolves.toBe('failed');
+
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(store.suppress).toHaveBeenCalledWith({
+      jobId: expect.stringMatching(/^commercial-image-ocr__[a-f0-9]{64}$/u),
+      chatId: input.chatId,
+      imageCount: input.imageCount,
+      tombstoneTtlMs: admissionLimits.reservationTtlMs,
+    });
+    expect(telemetry.recordCounter.mock.calls).toEqual([
+      ['admission.unavailable'],
+      ['admission.suppression.unavailable'],
+      ['enqueue.failed'],
+    ]);
+  });
+
+  it('records activation and fail-open suppression outcomes', async () => {
+    const store = admission({
+      activate: jest.fn().mockResolvedValue('expired'),
+      suppress: jest.fn().mockResolvedValue('unavailable'),
+    });
+    const telemetry = metrics();
+    const service = new CommercialOcrEnqueueService(
+      undefined,
+      config() as never,
+      store as never,
+      telemetry as never,
+    );
+
+    await expect(
+      service.activatePending({
+        jobId: `commercial-image-ocr__${'a'.repeat(64)}`,
+        chatId: 'chat-1',
+        imageCount: 2,
+        reservationTtlMs: 600_000,
+      }),
+    ).resolves.toBe(false);
+
+    expect(telemetry.recordCounter.mock.calls).toEqual([
+      ['admission.activation.expired'],
+      ['admission.suppression.unavailable'],
+    ]);
+  });
+
   it('queues enforce work as non-actionable data and registers activation for webhook commit', async () => {
     const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
     const store = admission();
@@ -142,6 +341,11 @@ describe('CommercialOcrEnqueueService', () => {
       'queued',
     );
     expect(store.reserve).toHaveBeenCalledWith(expect.objectContaining({ actionEligible: false }));
+    expect(store.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limits: { ...admissionLimits, reservedActionableImageUnits: 0 },
+      }),
+    );
     expect(queue.add).toHaveBeenCalledTimes(1);
     expect(store.activate).not.toHaveBeenCalled();
   });
@@ -205,6 +409,55 @@ describe('CommercialOcrEnqueueService', () => {
     expect(store.reserve).not.toHaveBeenCalled();
     expect(store.suppress).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('keeps the actionable reserve for canary observations', async () => {
+    const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    const store = admission({
+      reserve: jest.fn().mockResolvedValue({ kind: 'admitted', state: 'observation' }),
+    });
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config({
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'canary',
+        COMMERCIAL_OCR_CANARY_CHAT_IDS: 'another-chat',
+      }) as never,
+      store as never,
+    );
+
+    await expect(service.enqueue(input)).resolves.toBe('queued');
+
+    expect(store.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionEligible: false,
+        limits: admissionLimits,
+      }),
+    );
+  });
+
+  it('allows an explicit zero actionable reserve in canary', async () => {
+    const queue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
+    const store = admission({
+      reserve: jest.fn().mockResolvedValue({ kind: 'admitted', state: 'observation' }),
+    });
+    const service = new CommercialOcrEnqueueService(
+      queue as never,
+      config({
+        COMMERCIAL_OCR_ROLLOUT_MODE: 'canary',
+        COMMERCIAL_OCR_CANARY_CHAT_IDS: 'another-chat',
+        COMMERCIAL_OCR_RESERVED_ACTIONABLE_IMAGE_UNITS: 0,
+      }) as never,
+      store as never,
+    );
+
+    await expect(service.enqueue(input)).resolves.toBe('queued');
+
+    expect(store.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionEligible: false,
+        limits: { ...admissionLimits, reservedActionableImageUnits: 0 },
+      }),
+    );
   });
 
   it('leaves the job pending and fails open when webhook-time activation cannot be confirmed', async () => {

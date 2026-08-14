@@ -137,12 +137,15 @@ live while queues drain; observe it before declaring failure.
 
 ## Commercial OCR Rollout
 
-Production must keep `COMMERCIAL_OCR_ROLLOUT_MODE=shadow` until a separately reviewed, manually
-adjudicated Cyrillic-only corpus passes the enforcement gates. Recognition may use the installed
-`rus+eng` Tesseract data, but the first enforcement cohort is runtime-limited to two Cyrillic-only
-OCR passes. Latin, mixed, unknown, phone-only, incomplete, or ambiguous results remain report-only.
-The service does not persist OCR text, source pixels, or MAX image URLs in Redis, Postgres, or
-ordinary logs.
+Production must keep `COMMERCIAL_OCR_ROLLOUT_MODE=shadow` unless a real, production-temporal,
+independently adjudicated schema-v2 corpus passes the enforcement gates and produces a currently
+valid Ed25519-signed certificate for the exact active source and immutable image. Schema v1,
+synthetic/public data, a locally improvised annotation set, an unsigned certificate, or a signature
+from any key other than the provisioned trust anchor can support diagnostics only and can never
+authorize production deletion. Recognition may use the installed `rus+eng` Tesseract data, but the
+first enforcement cohort is runtime-limited to two Cyrillic-only OCR passes. Latin, mixed, unknown,
+phone-only, incomplete, or ambiguous results remain report-only. The service does not persist OCR
+text, source pixels, or MAX image URLs in Redis, Postgres, or ordinary logs.
 
 Each native OCR pass has one continuous 10-second Tesseract budget. A Tesseract-reported timeout
 is a terminal, fail-open incomplete result: BullMQ must not retry the image, and the native worker
@@ -165,57 +168,266 @@ removes that role instead. Treat any missing or non-literal target version, role
 non-`shadow` effective rollout mode as a failed deployment; do not edit `.env` to bypass the gate.
 
 Keep the eval corpus outside Git or under `artifacts/commercial-ocr-private/`. Schema-v1 manifests
-remain readable, but an enforcement run fails closed unless every case has `imageTextScript` and
-`captionLanguage`. `captionLanguage` is a diagnostic slice, not deletion authorization. Every
-required hard-negative category must contain at least 25 cases across at least 10 independent
-clusters: `rules_or_moderation_context`, `spam_complaint_or_fraud_warning`, `news_or_analytics`,
-`brand_mention_only`, `private_one_off_sale`, `ordinary_recruitment`,
-`public_training_or_help`, and `request_or_recommendation`. The hard-negative cohort permits zero
-false deletes.
+remain readable for diagnostics, but enforcement certification requires schema v2 with temporal
+source provenance, frozen split/cluster membership, image digests, transcripts and script labels,
+two independent reviewers (three for tie-break adjudication), critical evidence tokens, and an
+expectation for every certified settings profile. Holdout representatives are shared across
+profiles but each profile is certified independently; results must never be pooled. An image digest
+may repeat only inside its owning cluster and can never supply evidence to another split or cluster.
+The report records the manifest digest, exact Git/dirty state,
+OCR/preprocess/policy/detector fingerprints, runtime/native dependency versions, traineddata
+digests, and effective OCR resource settings.
 
-Run the reviewed gate with `--enforce-cyrillic-gates`. Case-level `--concurrency` defaults to `1`
-and is bounded to `1..4`; images and both OCR passes inside each case remain sequential. Keep it at
-`1` on the resource-capped production role. Higher values are for an isolated eval host only:
+Each certified profile requires 5,103 independent holdout representatives: at least 500 expected
+enforcement deletes and 4,603 expected no-actions. Every required hard-negative category must
+contain at least 100 cases across at least 60 independent clusters:
+`rules_or_moderation_context`, `spam_complaint_or_fraud_warning`, `news_or_analytics`,
+`brand_mention_only`, `private_one_off_sale`, `ordinary_recruitment`,
+`public_training_or_help`, and `request_or_recommendation`. Each of the nine enforcement-supported
+commercial subtypes requires at least 25 positive clusters. Certification permits zero commercial
+or enforcement false deletes, zero hard-negative false deletes, and zero adversarial mismatches.
+The adversarial split must contain at least 100 cases across at least 60 independent clusters; the
+remaining recall, incompleteness, and one-sided exact confidence-bound gates are enforced by the
+checked-in evaluator. `captionLanguage` remains a diagnostic slice, not deletion authority.
+
+Evaluation and approval are separate trust domains. Run the corpus evaluation in an ephemeral,
+no-secret environment built from the reviewed immutable image; freeze its certification request,
+transfer only that bounded metadata request, and destroy the eval environment before signing. A
+separate trusted host/principal owns the dedicated Ed25519 private key and runs only the sign-only
+CLI. Never copy that private key to the eval host, VPS, repository, container, `.env`, shell
+arguments, report, request, or certification artifact. The signer requires an independently reviewed
+SHA-256 of the exact request bytes before it opens the key. `--approval-private-key-file` accepts only
+a bounded regular owner-only file, opens it with `O_NOFOLLOW`, verifies that it is Ed25519, and clears
+the loaded byte buffer after use. Provision only the corresponding public trust anchor in production as
+`COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64`: it must be the exact canonical base64 of
+the Ed25519 public key in DER SPKI form, with no PEM wrapper, whitespace, or line break. The active
+image verifier rejects an empty, malformed, non-Ed25519, or different public key. Treat trust-anchor
+rotation as a reviewed configuration change and issue a new certificate with the matching private
+key.
+
+Run the reviewed gate with `--enforce-cyrillic-gates`, the exact clean source SHA, and the reviewed
+64-hex immutable API-image digest without the `sha256:` prefix. The evaluator records and validates
+the supplied digest but does not query a registry, so the operator must verify it against the
+immutable artifact before starting the run. Case-level `--concurrency` defaults to `1` and is
+bounded to `1..4`; case workers retain at most one raw image each while OCR pass results are reused
+across settings profiles. Keep concurrency at `1` on the resource-capped production role. Higher
+values are for an isolated eval host only. Before the enforcement run, independently freeze and
+review both the benchmark-environment descriptor from a diagnostic run in that exact environment
+and the SHA-256 key ID of the approved public DER SPKI key. The enforcement run receives only those
+public digests and has no access to the private key:
 
 ```bash
+: "${IMMUTABLE_API_IMAGE_SHA256:?set the reviewed 64-hex digest without the sha256 prefix}"
+: "${BENCHMARK_ENVIRONMENT_SHA256:?set the independently reviewed environment descriptor digest}"
+: "${COMMERCIAL_OCR_APPROVAL_KEY_ID_SHA256:?set the reviewed public-key DER SPKI digest}"
+umask 077
 npm run moderation:run-commercial-ocr-eval --workspace @maxim/api -- \
   --manifest artifacts/commercial-ocr-private/manifest.json \
-  --enforce-cyrillic-gates --concurrency 1
+  --enforce-cyrillic-gates --concurrency 1 \
+  --immutable-image-sha256 "$IMMUTABLE_API_IMAGE_SHA256" \
+  --source-sha "$(git rev-parse HEAD)" \
+  --benchmark-environment-sha256 "$BENCHMARK_ENVIRONMENT_SHA256" \
+  --approval-key-id-sha256 "$COMMERCIAL_OCR_APPROVAL_KEY_ID_SHA256" \
+  > artifacts/commercial-ocr-private/eval-result.json
+
+node -e '
+  const { readFileSync, writeFileSync } = require("node:fs");
+  const result = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  if (result?.gates?.passed !== true || !result?.certificationRequest) process.exit(2);
+  writeFileSync(process.argv[2], `${JSON.stringify(result.certificationRequest)}\n`, { mode: 0o600 });
+' artifacts/commercial-ocr-private/eval-result.json \
+  artifacts/commercial-ocr-private/certification-request.json
 ```
+
+Freeze the exact `certification-request.json` bytes and have a second reviewer independently compute
+and approve their lowercase SHA-256 in the external change record. On the separate trusted signing
+host, use that reviewed digest verbatim; do not derive it inline in the signing invocation:
+
+```bash
+: "${REVIEWED_CERTIFICATION_REQUEST_SHA256:?set the independently reviewed lowercase digest}"
+: "${COMMERCIAL_OCR_APPROVAL_PRIVATE_KEY_FILE:?set the owner-only Ed25519 private-key path}"
+umask 077
+npm run moderation:sign-commercial-ocr-certification --workspace @maxim/api -- \
+  --request-file artifacts/commercial-ocr-private/certification-request.json \
+  --expected-request-sha256 "$REVIEWED_CERTIFICATION_REQUEST_SHA256" \
+  --approval-private-key-file "$COMMERCIAL_OCR_APPROVAL_PRIVATE_KEY_FILE" \
+  > artifacts/commercial-ocr-private/certification.json
+```
+
+The strict certification envelope expires 30 days after the evaluated report and must be issued
+within 24 hours of it, so extracting or copying an old request cannot extend its authority. The
+request and certificate contain only bounded metadata and digests: the passing gate profile, report,
+corpus manifest and provenance, source/image, audit tool, and OCR behavior. Keep the eval result,
+request, and certificate private and attach their SHA-256 digests to the external review record. The
+certificate also binds every independently gated settings profile by its ID, canonical settings
+fingerprint, and metrics digest. The normalized unique
+fingerprints are sorted and bound as `certifiedSettingsFingerprintSetSha256`, calculated as SHA-256
+of `fingerprints.join("\n") + "\n"`. The rollout verifier additionally requires at least 24 hours of
+certificate validity to remain.
+
+After the exact `certification.json` bytes are frozen, a second reviewer must independently compute
+and approve their lowercase SHA-256 through the external change record. Use that reviewed value as
+the promotion argument; do not generate the argument inline from the candidate file during the same
+promotion invocation. The local wrapper recomputes the file digest and stops before SSH if it differs
+from the independently reviewed value.
+
+Passing evaluation and signature checks are necessary but not sufficient for promotion with the
+current native execution boundary. Sharp/libvips and Tesseract still run in the secret-bearing,
+networked `api-media-analysis` container, and terminating the direct Tesseract PID does not prove
+that all descendants have exited. Keep production in `shadow` until native image parsing/OCR runs in
+a no-network, no-secret sandbox or sidecar with bounded IPC, cgroup limits, and verified process-group
+teardown, and the resulting runtime/native identity is evaluated and certified again.
 
 Changing the environment ceiling alone cannot authorize deletion. An enforcing ceiling also
 requires a fresh shared runtime-control document with exact chat IDs, a compare-and-set revision,
-operator/reason metadata, and an expiry no more than 24 hours away. Missing, invalid, expired, or
-unreadable control downgrades both intent creation and intent execution to shadow. Keep the control
-TTL shorter than the reviewed observation window and renew it with a new revision; do not use a
-wildcard or an unbounded expiry.
+operator/reason metadata, the reviewed `certificationSha256`, the exact sorted
+`certifiedSettingsFingerprints`, their `certifiedSettingsFingerprintSetSha256`, the verified
+`certificationExpiresAt`, and an expiry no more than 24 hours away and no later than that certificate
+expiry. The current sensitivity/warn/delete settings are fingerprinted at runtime, while
+the filter-enabled flag is checked separately; enforcement is allowed only when that current
+fingerprint belongs to the certificate-bound set. Legacy controls without these bindings are invalid.
+Missing, invalid, expired, unreadable, uncertified, or settings-mismatched control downgrades intent
+creation and intent execution to shadow. Keep the control TTL shorter than the reviewed observation
+window and renew it with a new revision; do not use a wildcard or an unbounded expiry. The guarded
+rollout requires at least 10 minutes initially and proves that at least 5 minutes of the same logical
+expiry remain after producer restart.
 
 An explicit revocation, missing or expired control, policy change, author immunity, or changed
 message terminalizes the old delete intent so it cannot become actionable again later. A transient
 Redis, MAX, or immunity-check failure performs no deletion but remains retryable only within the
 intent's bounded retry horizon.
 
-Run the control command in `api-admin`, which has the compiled operator script and the production
-Redis configuration. Reads are non-mutating. Set and clear are previews unless `--apply` is present:
+The OCR decision path reloads settings immediately before committing a durable delete intent and
+binds the policy plus control revision/expiry into that intent. Every execution retry runs the OCR
+guard on both sides of the dispatch marker. After its fresh MAX author/content and participant
+immunity checks, the final guard reloads settings, local-admin state, immunity timezone, current
+settings fingerprint, and runtime control again and requires the same bound control revision and
+expiry. A mid-flight change or unknown authorization state therefore performs no MAX delete.
+
+Use the guarded VPS wrapper for the first canary. Put one reviewed exact numeric MAX chat ID per
+line in a local file; blank lines and `#` comments are allowed. Supply the extracted passing
+certification from the same immutable image evaluation plus the independently reviewed certificate
+SHA-256. The normalized comma-separated cohort must also fit below the guarded 96 KiB environment
+entry ceiling, leaving margin below Linux's per-string execution limit. The wrapper transfers both
+bounded files over one framed SSH stdin stream and exposes only their SHA-256/count metadata, never
+their content in process arguments or logs. The verifier runs from the exact active `api-admin`
+image and rejects an expired, failed, unsigned, untrusted, reprofiled, source/image-mismatched,
+behavior-mismatched, malformed, settings-set-mismatched, or digest-mismatched certification before
+any rollout mutation. The wrapper then takes the shared deploy lock and checks the active release
+manifest/image/SHA/version across all 12 API roles.
+Promotion additionally requires an empty OCR queue across waiting, active, delayed, prioritized,
+paused, and waiting-children states, plus zero admission units and no held reservations. The
+read-only preflight checks that state once. An applied promotion checks it again only after all seven
+webhook moderation roles that can produce OCR work have stopped, closing the enqueue-to-control
+race. It scans admission metadata in bounded pages and fails closed on excess size, timeout, concurrent
+mutation, or an incomplete scan; raw reservation identifiers and values never leave Redis. It also
+rejects running orphan, legacy, foreign-project, ambiguous, or duplicate API containers. Recovery
+may stop only an unreviewed container with the exact `infra` Compose project/service identity or an
+unlabelled exact `infra` container name. A foreign or ambiguous container blocks the operation and
+is never stopped or killed; explicit legacy `APP_ROLE=all` containers are included in that
+fail-closed inventory. Exported caller rollout variables are removed before Compose interpolation,
+so the atomically patched production `.env` remains the only source for
+`COMMERCIAL_OCR_ROLLOUT_MODE` and `COMMERCIAL_OCR_CANARY_CHAT_IDS`.
+
+Read the privacy-safe control kind, exact revision, cohort count, logical expiry, and
+remaining lifetime before choosing an operation. This command never prints chat IDs or audit text:
 
 ```bash
-./infra/scripts/vps-connect.sh exec 'docker compose -p infra -f infra/docker-compose.yml exec -T api-admin node apps/api/dist/apps/api/src/scripts/commercial-ocr-runtime-control.js get --json'
+./infra/scripts/vps-connect.sh commercial-ocr-status
 ```
 
-For a reviewed change, first read the current revision, prepare the strict JSON document outside
-shell history containing secrets, and preview it. Apply only if the preview reports the expected
-revision. Immediately read it back and confirm the exact chat IDs and expiry. A CAS conflict means
-another operator changed the control; stop, re-read, and review the new state instead of retrying
-blindly. Attach the reviewed JSON and the command's structured before/result output to the external
-change record. Redis stores the active TTL document and revision fence, not an immutable operator
-history; after clear or expiry its actor/reason metadata is no longer recoverable from the service.
+Promotion and downgrade are read-only preflights without `--apply`:
 
-Emergency downgrade uses the same CAS discipline. Read the current revision, preview `clear`, then
-apply and read back. Clearing removes the active control and increments its revision; every pending
-OCR deletion then fails its execution-time guard. If Redis is unavailable, enforcement already
-fails closed to shadow, so do not restart or recreate Redis merely to perform the downgrade. Lower
-the environment ceiling to `shadow` in a reviewed follow-up deployment when the downgrade must
-survive Redis recovery.
+```bash
+: "${REVIEWED_CERTIFICATION_SHA256:?set the independently reviewed lowercase 64-hex digest}"
+CHAT_IDS_FILE=./reviewed-chat-ids.txt
+CERTIFICATION_FILE=artifacts/commercial-ocr-private/certification.json
+./infra/scripts/vps-connect.sh commercial-ocr-promote \
+  "$CHAT_IDS_FILE" "$CERTIFICATION_FILE" \
+  "$REVIEWED_CERTIFICATION_SHA256" none
+./infra/scripts/vps-connect.sh commercial-ocr-promote \
+  "$CHAT_IDS_FILE" "$CERTIFICATION_FILE" \
+  "$REVIEWED_CERTIFICATION_SHA256" none --apply
+```
+
+If a prior successful clear left the environment in `shadow` with a missing positive revision
+fence, pass the exact revision reported by `commercial-ocr-status` instead of `none`. Expiry does
+not restore the environment ceiling: first run guarded downgrade with the expired/missing revision,
+then read status again and use the incremented missing revision for a later promotion. Promotion
+atomically patches the production environment file with the OCR mode and canary allowlist, then
+recreates and verifies every role; the OCR-specific delete-intent lane derives its authority from
+those same two OCR variables. It recreates the 11 non-media roles in the reviewed
+order, starts `api-media-analysis` last, and verifies readiness and identity/mode/image parity for
+all 12 roles. The HTTP-serving `api-ingress`, `api-admin`, and `api-media-analysis` roles must answer
+their internal ready endpoint twice across a five-second stability window. Every role, including
+the nine headless queue workers, must keep exactly one running container with the same container ID
+and restart count across that window. Every readiness `docker compose ps`, `docker exec`, and
+`docker inspect` call has a host-side timeout
+clamped to the same absolute readiness deadline, including its kill grace. Promotion
+then stops the exact seven OCR producer roles, proves the queue and admission state drained again,
+performs the runtime-control CAS, restarts those producers, and repeats the 12-role
+readiness/parity/stability check. A CAS conflict means another operator changed the control; stop
+and review status instead of retrying blindly. The wrapper also re-reads the control after producer
+restart and refuses to complete if its revision, cohort, logical expiry, or minimum remaining
+lifetime changed. The authoritative drain uses an absolute 180-second wall-clock budget by default;
+each Redis probe is clamped to the remaining budget, so a slow scan cannot multiply that window by
+the retry count. Keep the code deploy and promotion as separate change records. Redis stores the
+active TTL document and revision fence, not immutable operator history.
+
+Emergency downgrade uses the same CAS discipline and clears runtime authority before changing the
+environment or recreating roles. It accepts an active, expired, or already-missing control only when
+the supplied revision exactly matches the persistent fence. An invalid public snapshot may enter
+preflight only when it still exposes that positive fence; the Redis CAS can clear it only when the
+stored low-level v1 document and revision remain parseable and consistent. Malformed JSON, a
+missing or malformed revision, or a document/revision mismatch remains fail-closed and requires the
+recovery and repair flow below. The CAS clear advances the fence even when expiry has already
+removed the TTL document, so expiry never blocks restoration of the environment ceilings:
+
+```bash
+ACTIVE_REVISION=1 # replace with the exact revision reported by commercial-ocr-status
+./infra/scripts/vps-connect.sh commercial-ocr-downgrade "$ACTIVE_REVISION"
+./infra/scripts/vps-connect.sh commercial-ocr-downgrade "$ACTIVE_REVISION" --apply
+```
+
+The applied command proves the revision increment, atomically patches the environment file to
+`COMMERCIAL_OCR_ROLLOUT_MODE=shadow` with an empty `COMMERCIAL_OCR_CANARY_CHAT_IDS`, recreates all
+roles with media analysis last, and verifies readiness/parity/restart stability. If Redis is
+unavailable during preflight, enforcement already fails closed and the wrapper stops before
+environment mutation. Recovery is armed before a clear can be dispatched, so a Redis failure after
+that boundary conservatively patches the environment back to shadow and may recreate API roles even
+when the clear outcome is unknown. The wrapper never restarts or recreates Redis. If a later
+promotion step fails after `.env` mutation, it attempts the same full shadow recovery and reports a
+critical error unless all 12 roles are proven ready and shadowed.
+
+Recovery is armed before either set or clear can be dispatched to Redis. If a mutation outcome is
+ambiguous, the wrapper restores and verifies shadow ceilings across all 12 roles before returning an
+error. Recovery first quiesces `api-action`, all seven OCR producers, and only detected unreviewed API
+containers with proven `infra` ownership. Foreign or ambiguous API-like containers remain untouched
+and prevent quiescence from being proven. Recovery must prove that stopped inventory before patching
+`.env` or recreating anything; after that boundary, it attempts every role even when one recreation
+fails. It reports success only after all 12 roles pass readiness, restart stability, image, identity,
+version, and shadow parity; otherwise it proves the enforcement-capable roles stopped again or
+reports that quiescence could not be established.
+
+If promotion was interrupted before the first control CAS (`missing`, revision `null`), the control
+is invalid, or ordinary automatic recovery could not be proven, use the dedicated environment-only
+reconcile. It never mutates Redis and is a preflight without `--apply`:
+
+```bash
+./infra/scripts/vps-connect.sh commercial-ocr-recover-shadow
+./infra/scripts/vps-connect.sh commercial-ocr-recover-shadow --apply
+./infra/scripts/vps-connect.sh commercial-ocr-status
+```
+
+Applied environment-only recovery attempts enforcement-role quiescence before validating the exact
+release manifest/image/source fence. If that fence is unavailable or invalid, it leaves proven
+quiesced roles stopped and performs no environment patch or recreation; repair the release inventory
+before retrying reconciliation.
+
+After recovery, clear an active, expired, positive missing, or low-level parseable invalid revision
+through guarded downgrade if needed. Any invalid Redis control that the guarded CAS cannot clear
+remains fail-closed and requires a separate reviewed control-store repair before promotion; do not
+delete or rewrite its keys ad hoc.
 
 Every API image build in CI executes the compiled native worker against a generated raster before
 the image can be packaged. API deploy and rollback repeat exact `rus`/`eng` language and raster
@@ -226,9 +438,11 @@ restarts, queue wait p95, OCR duration p95/p99, and CPU seconds per image with t
 not raise rollout during the code deployment.
 
 The internal `api-media-analysis` readiness response exposes privacy-safe `checks.ocr.rolloutMetrics`.
-It keeps the latest 512 first-attempt queue waits, native-pass durations, and attempted-image cgroup
-CPU samples in process memory; it never includes OCR text, pixels, URLs, chat/message identifiers,
-or persistent telemetry. `observed` is cumulative since `processStartedAt`, while `sampled`,
+Process counters and the latest 512 first-attempt queue waits, stage durations, and attempted-image
+cgroup CPU samples remain bounded in process memory. Counters are also durably aggregated in Redis
+under the OCR/preprocess/policy/detector behavior fingerprint, both for the behavior release and
+15-minute buckets over a 24-hour window. They contain no OCR text, pixels, URLs, arbitrary errors,
+or chat/message identifiers. `observed` is cumulative since `processStartedAt`, while `sampled`,
 `oldestSampleAt`, and `newestSampleAt` describe the bounded percentile population. Queue wait is
 recorded only when BullMQ first moves a job to active, so retries and governor deferrals cannot
 inflate it. CPU is the whole isolated container's cgroup CPU delta around an image that reached
@@ -269,7 +483,9 @@ Fail closed and keep `COMMERCIAL_OCR_ROLLOUT_MODE=shadow` if any candidate condi
 Timeouts remain a separate quality/coverage signal because a 10-second timeout is terminal and
 fail-open, not a retryable infrastructure failure. These operational metrics can reject a release;
 they can never authorize deletion. Enforcement remains blocked until the separately reviewed,
-fully labeled corpus gate passes and an operator deliberately changes the rollout control.
+real independently adjudicated schema-v2 corpus gate passes, the exact valid signed certificate is
+verified against its independently reviewed SHA-256 and active trust anchor, and an operator
+deliberately changes the rollout control.
 
 ## Release Inventory
 

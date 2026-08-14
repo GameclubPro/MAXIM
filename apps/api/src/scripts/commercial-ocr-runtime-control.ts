@@ -1,7 +1,9 @@
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 import {
+  COMMERCIAL_OCR_MAX_PROMOTABLE_EXPECTED_REVISION,
   CommercialOcrRuntimePolicyService,
   type CommercialOcrRuntimeControlSnapshot,
   type CommercialOcrRuntimeControlV1,
@@ -12,11 +14,11 @@ const MAX_CONTROL_JSON_BYTES = 32 * 1024;
 export const COMMERCIAL_OCR_RUNTIME_CONTROL_USAGE = [
   'Usage:',
   '  get [--json]',
-  '  set --expected-revision <none|n> --control-json <json> [--apply] [--json]',
+  '  set --expected-revision <none|n> --control-stdin [--apply] [--json]',
   '  clear --expected-revision <n> [--apply] [--json]',
   '',
   'Set and clear are previews unless --apply is present.',
-  'The strict v1 control must use exact chat ids and expire within 24 hours.',
+  'The strict v1 control must bind one certification and approval key, certified settings, exact chat ids, and expire within 24 hours.',
   'Clearing or expiry revokes OCR enforcement and leaves env shadow processing available.',
 ].join('\n');
 
@@ -57,6 +59,7 @@ export type CommercialOcrRuntimeControlCommandResult = {
 
 export function readCommercialOcrRuntimeControlOptions(
   argv: readonly string[],
+  controlStdin?: string,
 ): CommercialOcrRuntimeControlCliOptions {
   const command = argv[0];
   if (command === '--help' || command === '-h') {
@@ -70,27 +73,50 @@ export function readCommercialOcrRuntimeControlOptions(
   let explicitDryRun = false;
   let json = false;
   let expectedRevisionRaw: string | null = null;
-  let controlJson: string | null = null;
+  let controlFromStdin = false;
   const seen = new Set<string>();
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--apply') {
+      if (seen.has(argument)) {
+        throw new Error(`${argument} must be provided exactly once`);
+      }
+      seen.add(argument);
       apply = true;
       continue;
     }
     if (argument === '--dry-run') {
+      if (seen.has(argument)) {
+        throw new Error(`${argument} must be provided exactly once`);
+      }
+      seen.add(argument);
       explicitDryRun = true;
       continue;
     }
     if (argument === '--json') {
+      if (seen.has(argument)) {
+        throw new Error(`${argument} must be provided exactly once`);
+      }
+      seen.add(argument);
       json = true;
+      continue;
+    }
+    if (argument === '--control-stdin') {
+      if (seen.has(argument)) {
+        throw new Error('--control-stdin must be provided exactly once');
+      }
+      seen.add(argument);
+      controlFromStdin = true;
       continue;
     }
     if (argument === '--help' || argument === '-h') {
       throw new Error(COMMERCIAL_OCR_RUNTIME_CONTROL_USAGE);
     }
-    if (argument !== '--expected-revision' && argument !== '--control-json') {
-      throw new Error(`Unknown option: ${argument}`);
+    if (argument === '--control-json') {
+      throw new Error('--control-json is forbidden; pass control JSON via --control-stdin');
+    }
+    if (argument !== '--expected-revision') {
+      throw new Error('Unknown option; see --help for supported arguments');
     }
     if (seen.has(argument)) {
       throw new Error(`${argument} must be provided exactly once`);
@@ -100,11 +126,7 @@ export function readCommercialOcrRuntimeControlOptions(
     if (!value || value.startsWith('--')) {
       throw new Error(`${argument} requires a value`);
     }
-    if (argument === '--expected-revision') {
-      expectedRevisionRaw = value;
-    } else {
-      controlJson = value;
-    }
+    expectedRevisionRaw = value;
     index += 1;
   }
 
@@ -112,7 +134,7 @@ export function readCommercialOcrRuntimeControlOptions(
     throw new Error('--apply cannot be combined with --dry-run');
   }
   if (command === 'get') {
-    if (apply || explicitDryRun || expectedRevisionRaw !== null || controlJson !== null) {
+    if (apply || explicitDryRun || expectedRevisionRaw !== null || controlFromStdin) {
       throw new Error('get accepts only --json');
     }
     return { command, json };
@@ -121,8 +143,8 @@ export function readCommercialOcrRuntimeControlOptions(
     throw new Error(`${command} requires --expected-revision`);
   }
   if (command === 'clear') {
-    if (controlJson !== null) {
-      throw new Error('clear does not accept --control-json');
+    if (controlFromStdin) {
+      throw new Error('clear does not accept control JSON');
     }
     return {
       command,
@@ -131,17 +153,20 @@ export function readCommercialOcrRuntimeControlOptions(
       expectedRevision: parseExpectedRevision(expectedRevisionRaw, false),
     };
   }
-  if (controlJson === null) {
-    throw new Error('set requires --control-json');
+  if (!controlFromStdin) {
+    throw new Error('set requires --control-stdin');
   }
-  if (Buffer.byteLength(controlJson, 'utf8') > MAX_CONTROL_JSON_BYTES) {
-    throw new Error(`--control-json must be at most ${MAX_CONTROL_JSON_BYTES} bytes`);
+  if (controlStdin === undefined) {
+    throw new Error('--control-stdin requires JSON on standard input');
+  }
+  if (Buffer.byteLength(controlStdin, 'utf8') > MAX_CONTROL_JSON_BYTES) {
+    throw new Error(`standard input must be at most ${MAX_CONTROL_JSON_BYTES} bytes`);
   }
   let control: unknown;
   try {
-    control = JSON.parse(controlJson);
+    control = JSON.parse(controlStdin);
   } catch {
-    throw new Error('--control-json must contain valid JSON');
+    throw new Error('standard input must contain valid JSON');
   }
   return {
     command,
@@ -150,6 +175,22 @@ export function readCommercialOcrRuntimeControlOptions(
     expectedRevision: parseExpectedRevision(expectedRevisionRaw, true),
     control,
   };
+}
+
+export async function readCommercialOcrRuntimeControlStdin(
+  input: NodeJS.ReadableStream = process.stdin,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let byteLength = 0;
+  for await (const chunk of input) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    byteLength += buffer.byteLength;
+    if (byteLength > MAX_CONTROL_JSON_BYTES) {
+      throw new Error(`standard input must be at most ${MAX_CONTROL_JSON_BYTES} bytes`);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 export async function runCommercialOcrRuntimeControlCommand(
@@ -324,7 +365,74 @@ export function serializeCommercialOcrRuntimeControlResult(
   result: CommercialOcrRuntimeControlCommandResult,
   pretty: boolean,
 ): string {
-  return `${JSON.stringify(result, null, pretty ? 2 : 0)}\n`;
+  const snapshot =
+    result.command === 'get' || result.after === undefined ? result.before : result.after;
+  const summary = summarizeSnapshotForOutput(snapshot);
+  return `${JSON.stringify(
+    {
+      command: result.command,
+      apply: result.apply,
+      complete: result.complete,
+      resultKind: result.result.kind,
+      beforeKind: result.before.kind,
+      ...summary,
+    },
+    null,
+    pretty ? 2 : 0,
+  )}\n`;
+}
+
+function summarizeSnapshotForOutput(snapshot: CommercialOcrRuntimeControlSnapshot): {
+  kind: CommercialOcrRuntimeControlSnapshot['kind'];
+  revision: number | null;
+  mode: CommercialOcrRuntimeControlV1['mode'] | null;
+  chatCount: number;
+  chatDigest: string | null;
+  expiresAt: string | null;
+} {
+  if (snapshot.control === null) {
+    return {
+      kind: snapshot.kind,
+      revision: snapshot.revision,
+      mode: null,
+      chatCount: 0,
+      chatDigest: null,
+      expiresAt: null,
+    };
+  }
+  const chatIds = [...snapshot.control.enforcementChatIds];
+  const allChatIdsUseRolloutFormat = chatIds.every((chatId) => /^-?[1-9]\d{0,18}$/u.test(chatId));
+  chatIds.sort(allChatIdsUseRolloutFormat ? compareIntegerStrings : compareStrings);
+  return {
+    kind: snapshot.kind,
+    revision: snapshot.revision,
+    mode: snapshot.control.mode,
+    chatCount: chatIds.length,
+    chatDigest: createHash('sha256')
+      .update(`${chatIds.join('\n')}\n`)
+      .digest('hex'),
+    expiresAt: snapshot.control.expiresAt,
+  };
+}
+
+function compareIntegerStrings(left: string, right: string): number {
+  const leftNegative = left.startsWith('-');
+  const rightNegative = right.startsWith('-');
+  if (leftNegative !== rightNegative) {
+    return leftNegative ? -1 : 1;
+  }
+  const leftDigits = leftNegative ? left.slice(1) : left;
+  const rightDigits = rightNegative ? right.slice(1) : right;
+  if (leftDigits.length !== rightDigits.length) {
+    const order = leftDigits.length - rightDigits.length;
+    return leftNegative ? -order : order;
+  }
+  const order = leftDigits.localeCompare(rightDigits);
+  return leftNegative ? -order : order;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function parseExpectedRevision(value: string, allowNone: true): number | null;
@@ -337,14 +445,21 @@ function parseExpectedRevision(value: string, allowNone: boolean): number | null
     throw new Error('--expected-revision must be a positive safe integer');
   }
   const revision = Number(value);
-  if (!Number.isSafeInteger(revision)) {
-    throw new Error('--expected-revision must be a positive safe integer');
+  const maximum = allowNone
+    ? COMMERCIAL_OCR_MAX_PROMOTABLE_EXPECTED_REVISION
+    : Number.MAX_SAFE_INTEGER - 1;
+  if (!Number.isSafeInteger(revision) || revision > maximum) {
+    throw new Error('--expected-revision is outside the supported mutation range');
   }
   return revision;
 }
 
 async function main(): Promise<void> {
-  const options = readCommercialOcrRuntimeControlOptions(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const controlStdin = argv.includes('--control-stdin')
+    ? await readCommercialOcrRuntimeControlStdin()
+    : undefined;
+  const options = readCommercialOcrRuntimeControlOptions(argv, controlStdin);
   const service = new CommercialOcrRuntimePolicyService(new ConfigService(process.env));
   try {
     const result = await runCommercialOcrRuntimeControlCommand(service, options);

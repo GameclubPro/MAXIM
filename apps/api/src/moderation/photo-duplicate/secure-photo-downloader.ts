@@ -5,9 +5,14 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { request as requestHttps } from 'node:https';
 import { isIP } from 'node:net';
 
+import {
+  detectSupportedPhotoImageFormat,
+  type SupportedPhotoImageFormat,
+} from './photo-image-format';
+
 const DEFAULT_ALLOWED_HOSTS = ['i.oneme.ru', 'fd.oneme.ru'];
 const DEFAULT_TIMEOUT_MS = 5_000;
-const DEFAULT_MAX_BYTES = 16_777_216;
+export const DEFAULT_PHOTO_DOWNLOAD_MAX_BYTES = 16_777_216;
 const DEFAULT_MAX_REDIRECTS = 2;
 const DEFAULT_MAX_CONCURRENCY = 4;
 
@@ -25,7 +30,7 @@ type PhotoDownloadResponse = {
 
 export type DownloadedPhoto = {
   bytes: Buffer;
-  format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif' | 'heif' | 'tiff';
+  format: SupportedPhotoImageFormat;
 };
 
 export type SecurePhotoDownloadOptions = Readonly<{
@@ -57,9 +62,8 @@ export class SecurePhotoDownloader {
       configService.get<string | number>('PHOTO_DUPLICATE_DOWNLOAD_TIMEOUT_MS'),
       DEFAULT_TIMEOUT_MS,
     );
-    this.maxBytes = parsePositiveConfig(
+    this.maxBytes = resolvePhotoDownloadMaxBytes(
       configService.get<string | number>('PHOTO_DUPLICATE_MAX_BYTES'),
-      DEFAULT_MAX_BYTES,
     );
     this.maxRedirects = DEFAULT_MAX_REDIRECTS;
     this.maxConcurrency = DEFAULT_MAX_CONCURRENCY;
@@ -183,7 +187,7 @@ export class SecurePhotoDownloader {
       }
 
       const bytes = Buffer.concat(body.chunks, body.byteLength);
-      const magicFormat = detectImageMagic(bytes);
+      const magicFormat = detectSupportedPhotoImageFormat(bytes);
       if (!magicFormat) {
         throw new Error('Photo response has an unsupported image signature');
       }
@@ -233,7 +237,7 @@ export class SecurePhotoDownloader {
   }
 
   private async acquireSlot(deadlineAtMs: number): Promise<() => void> {
-    if (this.activeDownloads >= this.maxConcurrency) {
+    while (this.activeDownloads >= this.maxConcurrency) {
       let waiter: (() => void) | null = null;
       const waitForSlot = new Promise<void>((resolve) => {
         waiter = resolve;
@@ -329,6 +333,13 @@ function parsePositiveConfig(value: string | number | undefined, fallback: numbe
   return normalized;
 }
 
+export function resolvePhotoDownloadMaxBytes(value: unknown): number {
+  return parsePositiveConfig(
+    typeof value === 'string' || typeof value === 'number' ? value : undefined,
+    DEFAULT_PHOTO_DOWNLOAD_MAX_BYTES,
+  );
+}
+
 function validateExternalDeadline(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error('Photo download deadline is invalid');
@@ -410,42 +421,6 @@ function isPublicInternetAddress(address: string): boolean {
     normalized.startsWith('2001:db8:') ||
     !/^[23]/.test(normalized)
   );
-}
-
-function detectImageMagic(bytes: Buffer): DownloadedPhoto['format'] | null {
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return 'jpeg';
-  }
-  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
-    return 'png';
-  }
-  if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) {
-    return 'gif';
-  }
-  if (
-    bytes.length >= 12 &&
-    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
-  ) {
-    return 'webp';
-  }
-  if (
-    bytes.length >= 4 &&
-    (bytes.subarray(0, 4).equals(Buffer.from('49492a00', 'hex')) ||
-      bytes.subarray(0, 4).equals(Buffer.from('4d4d002a', 'hex')))
-  ) {
-    return 'tiff';
-  }
-  if (bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp') {
-    const brand = bytes.subarray(8, 12).toString('ascii').toLowerCase();
-    if (brand === 'avif' || brand === 'avis') {
-      return 'avif';
-    }
-    if (['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(brand)) {
-      return 'heif';
-    }
-  }
-  return null;
 }
 
 async function withDeadline<T>(operation: Promise<T>, deadlineAtMs: number): Promise<T> {

@@ -189,8 +189,10 @@ describe('HealthService', () => {
     const prisma = {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
     };
+    const queueSnapshot = healthyQueueSnapshot();
     const queueMetricsService = {
-      getSnapshot: jest.fn().mockResolvedValue(healthyQueueSnapshot()),
+      getSnapshot: jest.fn().mockResolvedValue(queueSnapshot),
+      peekCachedSnapshot: jest.fn().mockReturnValue(queueSnapshot),
     };
     const systemModeService = {
       getEffectiveSnapshot: jest.fn().mockResolvedValue(healthySystemModeSnapshot()),
@@ -208,6 +210,26 @@ describe('HealthService', () => {
         failuresByReason: { timeout: 1 },
       },
       latencyMs: { last: 12, average: 15, maximum: 20 },
+      queueWaitMs: {
+        observed: 3,
+        sampled: 3,
+        capacity: 512,
+        last: 7,
+        average: 5,
+        p95: 7,
+        p99: 7,
+        maximum: 7,
+      },
+      behaviorIdentity: {
+        fingerprintSha256: 'a'.repeat(64),
+        runtimeFingerprintSha256: 'a'.repeat(64),
+        buildManifestSha256: 'b'.repeat(64),
+        complete: true,
+        required: true,
+        verified: true,
+        state: 'verified',
+        mismatchFields: [] as string[],
+      },
       text: 'СЕКРЕТНЫЙ OCR ТЕКСТ',
       image: Buffer.from('private-pixels'),
       url: 'https://private.example/image',
@@ -255,7 +277,7 @@ describe('HealthService', () => {
         source: 'cgroup' as const,
       },
     };
-    const metrics = { getSnapshot: jest.fn(() => rolloutMetrics) };
+    const metrics = { getSnapshot: jest.fn(async () => rolloutMetrics) };
     const service = new HealthService(
       prisma as never,
       queueMetricsService as never,
@@ -282,7 +304,42 @@ describe('HealthService', () => {
         failuresByReason: { timeout: 1 },
       },
       latencyMs: { last: 12, average: 15, maximum: 20 },
+      behaviorIdentity: {
+        fingerprintSha256: 'a'.repeat(64),
+        runtimeFingerprintSha256: 'a'.repeat(64),
+        buildManifestSha256: 'b'.repeat(64),
+        complete: true,
+        required: true,
+        verified: true,
+        state: 'verified',
+        mismatchFields: [],
+      },
       rolloutMetrics,
+      queues: {
+        bullMq: {
+          waiting: 2,
+          prioritized: 0,
+          active: 1,
+          delayed: 3,
+          failed: 4,
+          completed: 5,
+        },
+        native: {
+          depth: 0,
+          busy: 0,
+          workers: 1,
+          waitMs: {
+            observed: 3,
+            sampled: 3,
+            capacity: 512,
+            last: 7,
+            average: 5,
+            p95: 7,
+            p99: 7,
+            maximum: 7,
+          },
+        },
+      },
     });
     const serialized = JSON.stringify(ready);
     expect(serialized).not.toContain('СЕКРЕТНЫЙ OCR ТЕКСТ');
@@ -292,9 +349,20 @@ describe('HealthService', () => {
 
     privateStatus.state = 'degraded';
     privateStatus.ready = false;
+    privateStatus.behaviorIdentity.verified = false;
+    privateStatus.behaviorIdentity.state = 'failed';
+    privateStatus.behaviorIdentity.mismatchFields = ['tesseract.binarySha256'];
     const degraded = await service.ready();
     expect(degraded.ok).toBe(false);
-    expect(degraded.checks.ocr).toMatchObject({ state: 'degraded', ready: false });
+    expect(degraded.checks.ocr).toMatchObject({
+      state: 'degraded',
+      ready: false,
+      behaviorIdentity: {
+        state: 'failed',
+        verified: false,
+        mismatchFields: ['tesseract.binarySha256'],
+      },
+    });
     expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
@@ -323,7 +391,35 @@ describe('HealthService', () => {
         failuresByReason: {},
       },
       latencyMs: { last: null, average: null, maximum: null },
+      behaviorIdentity: {
+        fingerprintSha256: null,
+        runtimeFingerprintSha256: null,
+        buildManifestSha256: null,
+        complete: false,
+        required: true,
+        verified: false,
+        state: 'unavailable',
+        mismatchFields: [],
+      },
       rolloutMetrics: null,
+      queues: {
+        bullMq: null,
+        native: {
+          depth: 0,
+          busy: 0,
+          workers: 0,
+          waitMs: {
+            observed: 0,
+            sampled: 0,
+            capacity: 512,
+            last: null,
+            average: null,
+            p95: null,
+            p99: null,
+            maximum: null,
+          },
+        },
+      },
     });
 
     await service.onModuleDestroy();
@@ -1921,6 +2017,16 @@ function healthyQueueSnapshot() {
     webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
     webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
     actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    auxiliaryQueues: {
+      'commercial-image-ocr': {
+        waiting: 2,
+        prioritized: 0,
+        active: 1,
+        delayed: 3,
+        failed: 4,
+        completed: 5,
+      },
+    },
     webhookEvents: {
       received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
       queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },

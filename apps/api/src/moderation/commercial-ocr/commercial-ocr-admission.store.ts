@@ -105,7 +105,11 @@ if existing then
   if not stored_chat_hash or stored_chat_hash ~= ARGV[2] or tonumber(stored_units) ~= tonumber(ARGV[3]) then
     return {6, 'O'}
   end
-  if ARGV[8] == 'O' and stored_state ~= 'O' then
+  if ARGV[8] == 'O' and (stored_state ~= 'O' or capacity_held == '1') then
+    if capacity_held == '1' then
+      release_capacity(ARGV[1], stored_chat_hash, tonumber(stored_units), ARGV[12])
+      capacity_held = '0'
+    end
     stored_state = 'O'
     redis.call(
       'HSET',
@@ -120,6 +124,12 @@ end
 local global_units = tonumber(redis.call('GET', KEYS[3]) or '0')
 if global_units + tonumber(ARGV[3]) > tonumber(ARGV[6]) then
   return {3, 'O'}
+end
+-- Observation work may use only the unreserved portion of global capacity. Pending/actionable
+-- work still uses the full ceiling, so new observations cannot consume an enabled reserve.
+if ARGV[8] == 'O' and
+  global_units + tonumber(ARGV[3]) > tonumber(ARGV[6]) - tonumber(ARGV[13]) then
+  return {7, 'O'}
 end
 local chat_units = tonumber(redis.call('GET', KEYS[6]) or '0')
 if chat_units + tonumber(ARGV[3]) > tonumber(ARGV[7]) then
@@ -270,7 +280,7 @@ if existing then
     existing,
     '^([^|]+)|(%d+)|([PAO])|([01])$'
   )
-  if not stored_chat_hash or stored_chat_hash ~= ARGV[2] or tonumber(stored_units) ~= tonumber(ARGV[3]) then
+  if not stored_chat_hash or stored_chat_hash ~= ARGV[2] or tonumber(stored_units) < 1 then
     return -2
   end
   if capacity_held == '1' then
@@ -350,13 +360,16 @@ export type CommercialOcrAdmissionState = 'pending' | 'actionable' | 'observatio
 export type CommercialOcrAdmissionLimits = Readonly<{
   maxGlobalImageUnits: number;
   maxChatImageUnits: number;
+  reservedActionableImageUnits: number;
   maxJobAgeMs: number;
   reservationTtlMs: number;
 }>;
 
 export type CommercialOcrAdmissionResult =
   | { kind: 'admitted' | 'duplicate'; state: CommercialOcrAdmissionState }
-  | { kind: 'rejected_global' | 'rejected_chat' | 'rejected_age' }
+  | {
+      kind: 'rejected_global' | 'rejected_chat' | 'rejected_age' | 'rejected_actionable_reserve';
+    }
   | { kind: 'unavailable' };
 
 export type CommercialOcrAdmissionStateResult =
@@ -428,6 +441,7 @@ export class CommercialOcrAdmissionStore implements OnModuleDestroy {
           String(input.limits.reservationTtlMs),
           String(ADMISSION_CLEANUP_BATCH_SIZE),
           `${ADMISSION_NAMESPACE}:chat:`,
+          String(input.limits.reservedActionableImageUnits),
         ),
       )) as Array<string | number | Buffer>;
       const status = Number(readRedisValue(response[0]));
@@ -437,6 +451,7 @@ export class CommercialOcrAdmissionStore implements OnModuleDestroy {
       if (status === 3) return { kind: 'rejected_global' };
       if (status === 4) return { kind: 'rejected_chat' };
       if (status === 5) return { kind: 'rejected_age' };
+      if (status === 7) return { kind: 'rejected_actionable_reserve' };
       return { kind: 'unavailable' };
     } catch {
       this.logger.warn('Commercial OCR admission unavailable');
@@ -636,6 +651,12 @@ function validateLimits(limits: CommercialOcrAdmissionLimits): CommercialOcrAdmi
     Math.min(maxGlobalImageUnits, MAX_CHAT_IMAGE_UNITS),
     'maxChatImageUnits',
   );
+  const reservedActionableImageUnits = validateBoundedInteger(
+    limits.reservedActionableImageUnits,
+    0,
+    maxGlobalImageUnits,
+    'reservedActionableImageUnits',
+  );
   const maxJobAgeMs = validateBoundedInteger(
     limits.maxJobAgeMs,
     1_000,
@@ -651,7 +672,13 @@ function validateLimits(limits: CommercialOcrAdmissionLimits): CommercialOcrAdmi
   if (reservationTtlMs < maxJobAgeMs + MAX_FUTURE_SKEW_MS) {
     throw new Error('reservationTtlMs is invalid');
   }
-  return { maxGlobalImageUnits, maxChatImageUnits, maxJobAgeMs, reservationTtlMs };
+  return {
+    maxGlobalImageUnits,
+    maxChatImageUnits,
+    reservedActionableImageUnits,
+    maxJobAgeMs,
+    reservationTtlMs,
+  };
 }
 
 function buildAdmissionKeys(chatId: string) {

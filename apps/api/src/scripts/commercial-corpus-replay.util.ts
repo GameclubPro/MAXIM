@@ -40,7 +40,9 @@ import {
   type CommercialRunProvenance,
 } from './commercial-run-provenance.util';
 
-export const COMMERCIAL_CORPUS_REPLAY_SCHEMA_VERSION = 'commercial-corpus-replay/v3';
+export const COMMERCIAL_CORPUS_REPLAY_SCHEMA_VERSION = 'commercial-corpus-replay/v4';
+export const COMMERCIAL_REPLAY_MAX_DECISION_COHORTS = 128;
+export const COMMERCIAL_REPLAY_MAX_DECISION_TRANSITIONS = 64;
 
 const OUTPUT_BUFFER_SIZE = 1024 * 1024;
 const SANITIZED_PLACEHOLDER_PATTERN = /(?:\[(?:phone|url|email|card|account)\]|@\[handle\])/iu;
@@ -179,6 +181,45 @@ export type CommercialCorpusReplayEvaluation = {
   containsSanitizedPlaceholders: boolean;
   trustBucket: CommercialReplayTrustBucket;
   diff: CommercialCorpusReplayDiff | null;
+  equivalence: CommercialReplayDecisionEquivalence;
+};
+
+export type CommercialReplayDecisionSignature = {
+  hit: boolean;
+  decisionBand: string | null;
+  primarySubtype: string | null;
+  subtype: string | null;
+  evidenceTier: string | null;
+  actionBand: string | null;
+  reviewPriority: string | null;
+  safeContextBucket: string | null;
+  reviewRecommended: boolean;
+  actionable: boolean;
+  recordable: boolean;
+  deleteSuppressed: boolean;
+};
+
+export type CommercialReplayDecisionEquivalence = {
+  exact: boolean;
+  stored: CommercialReplayDecisionSignature;
+  replayed: CommercialReplayDecisionSignature;
+  hitTransition: string;
+  actionTransition: string;
+  subtypeTransition: string;
+  cohorts: string[];
+};
+
+export type CommercialReplayDecisionCohortSummary = {
+  recordsCompared: number;
+  exactDecisionRecords: number;
+  decisionTransitionRecords: number;
+  hitTransitions: Record<string, number>;
+  actionTransitions: Record<string, number>;
+  subtypeTransitions: Record<string, number>;
+};
+
+export type CommercialReplayDecisionEquivalenceSummary = CommercialReplayDecisionCohortSummary & {
+  cohorts: Record<string, CommercialReplayDecisionCohortSummary>;
 };
 
 export type CommercialCorpusReplayAggregateSummary = {
@@ -193,6 +234,7 @@ export type CommercialCorpusReplayAggregateSummary = {
   changeKinds: Record<string, number>;
   labelImpacts: Record<string, number>;
   changedFields: Record<string, number>;
+  decisionEquivalence: CommercialReplayDecisionEquivalenceSummary;
 };
 
 export type CommercialCorpusReplaySummary = {
@@ -272,13 +314,32 @@ type EffectiveReplayTarget = {
 
 type CommercialCorpusReplayAggregateState = Omit<
   CommercialCorpusReplayAggregateSummary,
-  'hitTransitions' | 'actionTransitions' | 'changeKinds' | 'labelImpacts' | 'changedFields'
+  | 'hitTransitions'
+  | 'actionTransitions'
+  | 'changeKinds'
+  | 'labelImpacts'
+  | 'changedFields'
+  | 'decisionEquivalence'
 > & {
   hitTransitions: Map<string, number>;
   actionTransitions: Map<string, number>;
   changeKinds: Map<string, number>;
   labelImpacts: Map<string, number>;
   changedFields: Map<string, number>;
+  decisionEquivalence: CommercialReplayDecisionAggregateState;
+};
+
+type CommercialReplayDecisionCohortState = Omit<
+  CommercialReplayDecisionCohortSummary,
+  'hitTransitions' | 'actionTransitions' | 'subtypeTransitions'
+> & {
+  hitTransitions: Map<string, number>;
+  actionTransitions: Map<string, number>;
+  subtypeTransitions: Map<string, number>;
+};
+
+type CommercialReplayDecisionAggregateState = CommercialReplayDecisionCohortState & {
+  cohorts: Map<string, CommercialReplayDecisionCohortState>;
 };
 
 const SNAPSHOT_FIELDS: readonly (keyof CommercialReplaySnapshot)[] = [
@@ -1140,6 +1201,69 @@ function actionName(snapshot: CommercialReplaySnapshot): string {
   return snapshot.actionBand ?? 'NONE';
 }
 
+function subtypeName(snapshot: CommercialReplaySnapshot): string {
+  return snapshot.primarySubtype ?? snapshot.subtype ?? 'NONE';
+}
+
+function decisionSignature(snapshot: CommercialReplaySnapshot): CommercialReplayDecisionSignature {
+  return {
+    hit: snapshot.hit,
+    decisionBand: snapshot.decisionBand,
+    primarySubtype: snapshot.primarySubtype,
+    subtype: snapshot.subtype,
+    evidenceTier: snapshot.evidenceTier,
+    actionBand: snapshot.actionBand,
+    reviewPriority: snapshot.reviewPriority,
+    safeContextBucket: snapshot.safeContextBucket,
+    reviewRecommended: snapshot.reviewRecommended,
+    actionable: snapshot.actionable,
+    recordable: snapshot.recordable,
+    deleteSuppressed: snapshot.deleteSuppressed,
+  };
+}
+
+function cohortName(prefix: string, value: string | null | undefined): string {
+  const normalized = value?.trim() || 'NONE';
+  return `${prefix}:${normalized.slice(0, 120)}`;
+}
+
+function campaignCohort(context: CommercialCampaignContext | null): string {
+  if (!context) {
+    return 'campaign:absent';
+  }
+  return Object.values(context).some((value) => value > 0) ? 'campaign:nonzero' : 'campaign:zero';
+}
+
+function buildDecisionEquivalence(
+  record: ParsedCommercialCorpusRecord,
+  replayed: CommercialReplaySnapshot,
+  effectiveTarget: EffectiveReplayTarget,
+): CommercialReplayDecisionEquivalence {
+  const stored = decisionSignature(record.current);
+  const replayedDecision = decisionSignature(replayed);
+  const cohorts = [
+    cohortName('label', effectiveTarget.label),
+    cohortName('expected-action', effectiveTarget.expectedAction),
+    `target-source:${effectiveTarget.source}`,
+    cohortName('category', record.category),
+    cohortName('policy', record.policyCategory),
+    cohortName('segment', record.segment),
+    `hard-negative:${record.isHardNegative}`,
+    `settings:${record.settings.commercialAdsSensitivity}-${record.settings.commercialAdsWarnThreshold}-${record.settings.commercialAdsDeleteThreshold}`,
+    campaignCohort(record.commercialCampaignContext),
+    cohortName('stored-action', actionName(record.current)),
+  ];
+  return {
+    exact: isDeepStrictEqual(stored, replayedDecision),
+    stored,
+    replayed: replayedDecision,
+    hitTransition: `${record.current.hit}->${replayed.hit}`,
+    actionTransition: `${actionName(record.current)}->${actionName(replayed)}`,
+    subtypeTransition: `${subtypeName(record.current)}->${subtypeName(replayed)}`,
+    cohorts: [...new Set(cohorts)].sort(),
+  };
+}
+
 function actionRank(action: string | null): number {
   switch (action) {
     case 'REVIEW_ONLY':
@@ -1301,6 +1425,7 @@ export function replayCommercialCorpusRecord(params: {
       commercialCampaignContext: record.commercialCampaignContext,
     }),
   );
+  const equivalence = buildDecisionEquivalence(record, replayed, effectiveTarget);
   const changedFields = SNAPSHOT_FIELDS.filter(
     (field) => !isDeepStrictEqual(record.current[field], replayed[field]),
   );
@@ -1313,6 +1438,7 @@ export function replayCommercialCorpusRecord(params: {
       containsSanitizedPlaceholders: record.containsSanitizedPlaceholders,
       trustBucket: record.trustBucket,
       diff: null,
+      equivalence,
     };
   }
 
@@ -1331,6 +1457,7 @@ export function replayCommercialCorpusRecord(params: {
     materialChanged: materialChangedFields.length > 0,
     containsSanitizedPlaceholders: record.containsSanitizedPlaceholders,
     trustBucket: record.trustBucket,
+    equivalence,
     diff: {
       schemaVersion: COMMERCIAL_CORPUS_REPLAY_SCHEMA_VERSION,
       line: params.line,
@@ -1373,6 +1500,13 @@ function increment(map: Map<string, number>, key: string): void {
   map.set(key, (map.get(key) ?? 0) + 1);
 }
 
+function incrementBounded(map: Map<string, number>, key: string, maximumKeys: number): void {
+  const overflowKey = 'overflow:OTHER';
+  const resolvedKey =
+    map.has(key) || map.size < maximumKeys - 1 || key === overflowKey ? key : overflowKey;
+  increment(map, resolvedKey);
+}
+
 function sortedCounts(map: Map<string, number>): Record<string, number> {
   return Object.fromEntries(
     [...map.entries()].sort(([left], [right]) => left.localeCompare(right)),
@@ -1392,6 +1526,96 @@ function createAggregateState(): CommercialCorpusReplayAggregateState {
     changeKinds: new Map(),
     labelImpacts: new Map(),
     changedFields: new Map(),
+    decisionEquivalence: createDecisionAggregateState(),
+  };
+}
+
+function createDecisionCohortState(): CommercialReplayDecisionCohortState {
+  return {
+    recordsCompared: 0,
+    exactDecisionRecords: 0,
+    decisionTransitionRecords: 0,
+    hitTransitions: new Map(),
+    actionTransitions: new Map(),
+    subtypeTransitions: new Map(),
+  };
+}
+
+function createDecisionAggregateState(): CommercialReplayDecisionAggregateState {
+  return {
+    ...createDecisionCohortState(),
+    cohorts: new Map(),
+  };
+}
+
+function recordDecisionCohort(
+  state: CommercialReplayDecisionCohortState,
+  equivalence: CommercialReplayDecisionEquivalence,
+): void {
+  state.recordsCompared += 1;
+  if (equivalence.exact) {
+    state.exactDecisionRecords += 1;
+  } else {
+    state.decisionTransitionRecords += 1;
+  }
+  increment(state.hitTransitions, equivalence.hitTransition);
+  incrementBounded(
+    state.actionTransitions,
+    equivalence.actionTransition,
+    COMMERCIAL_REPLAY_MAX_DECISION_TRANSITIONS,
+  );
+  incrementBounded(
+    state.subtypeTransitions,
+    equivalence.subtypeTransition,
+    COMMERCIAL_REPLAY_MAX_DECISION_TRANSITIONS,
+  );
+}
+
+function recordDecisionEquivalence(
+  state: CommercialReplayDecisionAggregateState,
+  equivalence: CommercialReplayDecisionEquivalence,
+): void {
+  recordDecisionCohort(state, equivalence);
+  const resolvedCohorts = new Set<string>();
+  for (const requestedCohort of equivalence.cohorts) {
+    const overflowCohort = 'overflow:OTHER';
+    const cohort =
+      state.cohorts.has(requestedCohort) ||
+      state.cohorts.size < COMMERCIAL_REPLAY_MAX_DECISION_COHORTS - 1
+        ? requestedCohort
+        : overflowCohort;
+    resolvedCohorts.add(cohort);
+  }
+  for (const cohort of resolvedCohorts) {
+    const cohortState = state.cohorts.get(cohort) ?? createDecisionCohortState();
+    recordDecisionCohort(cohortState, equivalence);
+    state.cohorts.set(cohort, cohortState);
+  }
+}
+
+function summarizeDecisionCohort(
+  state: CommercialReplayDecisionCohortState,
+): CommercialReplayDecisionCohortSummary {
+  return {
+    recordsCompared: state.recordsCompared,
+    exactDecisionRecords: state.exactDecisionRecords,
+    decisionTransitionRecords: state.decisionTransitionRecords,
+    hitTransitions: sortedCounts(state.hitTransitions),
+    actionTransitions: sortedCounts(state.actionTransitions),
+    subtypeTransitions: sortedCounts(state.subtypeTransitions),
+  };
+}
+
+function summarizeDecisionEquivalence(
+  state: CommercialReplayDecisionAggregateState,
+): CommercialReplayDecisionEquivalenceSummary {
+  return {
+    ...summarizeDecisionCohort(state),
+    cohorts: Object.fromEntries(
+      [...state.cohorts.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([cohort, cohortState]) => [cohort, summarizeDecisionCohort(cohortState)]),
+    ),
   };
 }
 
@@ -1401,6 +1625,7 @@ function recordAggregateEvaluation(
   emitted: boolean,
 ): void {
   state.recordsProcessed += 1;
+  recordDecisionEquivalence(state.decisionEquivalence, evaluation.equivalence);
   if (!evaluation.changed || !evaluation.diff) {
     state.unchangedRecords += 1;
     return;
@@ -1439,6 +1664,7 @@ function summarizeAggregate(
     changeKinds: sortedCounts(state.changeKinds),
     labelImpacts: sortedCounts(state.labelImpacts),
     changedFields: sortedCounts(state.changedFields),
+    decisionEquivalence: summarizeDecisionEquivalence(state.decisionEquivalence),
   };
 }
 

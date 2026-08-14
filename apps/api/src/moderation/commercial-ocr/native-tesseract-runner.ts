@@ -4,12 +4,21 @@ import {
   type SpawnOptionsWithoutStdio,
 } from 'node:child_process';
 
+import { COMMERCIAL_OCR_NATIVE_ORCHESTRATION } from './commercial-ocr-behavior-identity';
 import { parseNativeTesseractTsv, type ParsedNativeTesseractTsv } from './native-tesseract-tsv';
 import type { NativeTesseractPageSegmentationMode } from './native-tesseract-ocr.types';
 
-const MAX_STDERR_BYTES = 64 * 1024;
-const POST_KILL_SETTLE_GRACE_MS = 250;
+const MAX_STDERR_BYTES = COMMERCIAL_OCR_NATIVE_ORCHESTRATION.nativeStderrCaptureMaxBytes;
+const POST_KILL_SETTLE_GRACE_MS =
+  COMMERCIAL_OCR_NATIVE_ORCHESTRATION.nativeProcessKillSettleGraceMs;
 const REQUIRED_TESSERACT_LANGUAGES = ['rus', 'eng'] as const;
+const NATIVE_TESSERACT_INHERITED_ENV_KEYS = [
+  'PATH',
+  'LANG',
+  'LC_ALL',
+  'LD_LIBRARY_PATH',
+  'NODE_ENV',
+] as const;
 
 export type NativeTesseractRunFailureReason =
   | 'timeout'
@@ -37,6 +46,7 @@ export type NativeTesseractRunOptions = {
   psm: NativeTesseractPageSegmentationMode;
   timeoutMs: number;
   maxOutputBytes: number;
+  ompThreadLimit?: number;
   tessdataPrefix?: string;
   onProcessChange?: (process: ChildProcessWithoutNullStreams | null) => void;
 };
@@ -65,10 +75,7 @@ export async function probeNativeTesseract(
       child = spawnProcess(options.binary, ['--list-langs'], {
         shell: false,
         windowsHide: true,
-        env: {
-          ...process.env,
-          ...(options.tessdataPrefix ? { TESSDATA_PREFIX: options.tessdataPrefix } : {}),
-        },
+        env: nativeTesseractEnvironment({ tessdataPrefix: options.tessdataPrefix }),
       });
       options.onProcessChange?.(child);
     } catch {
@@ -185,10 +192,10 @@ export async function runNativeTesseract(
         {
           shell: false,
           windowsHide: true,
-          env: {
-            ...process.env,
-            ...(options.tessdataPrefix ? { TESSDATA_PREFIX: options.tessdataPrefix } : {}),
-          },
+          env: nativeTesseractEnvironment({
+            tessdataPrefix: options.tessdataPrefix,
+            ompThreadLimit: options.ompThreadLimit,
+          }),
         },
       );
       options.onProcessChange?.(child);
@@ -293,6 +300,30 @@ export async function runNativeTesseract(
     child.stdin.once('error', onStdinError);
     child.stdin.end(options.image);
   });
+}
+
+function nativeTesseractEnvironment(options: {
+  tessdataPrefix: string | undefined;
+  ompThreadLimit?: number | undefined;
+}): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of NATIVE_TESSERACT_INHERITED_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) {
+      environment[key] = value;
+    }
+  }
+  if (options.tessdataPrefix) {
+    environment.TESSDATA_PREFIX = options.tessdataPrefix;
+  }
+  if (isOmpThreadLimit(options.ompThreadLimit)) {
+    environment.OMP_THREAD_LIMIT = String(options.ompThreadLimit);
+  }
+  return environment;
+}
+
+function isOmpThreadLimit(value: number | undefined): value is number {
+  return Number.isSafeInteger(value) && value !== undefined && value >= 1 && value <= 8;
 }
 
 function retainLateProcessErrorGuards(

@@ -17,6 +17,7 @@ import {
   extractLogicalPhotoAlbumResult,
   type LogicalPhotoAlbum,
 } from '../photo-duplicate/photo-attachment-extractor';
+import { resolveCommercialOcrReservationTtlMs } from './commercial-ocr-admission.config';
 import { CommercialOcrAdmissionStore } from './commercial-ocr-admission.store';
 import {
   CommercialOcrAnalysisService,
@@ -28,13 +29,16 @@ import {
   COMMERCIAL_OCR_DELETE_RULE_CODE,
   COMMERCIAL_OCR_MESSAGE_ACTION_RULE_CODE,
   COMMERCIAL_OCR_PARTICIPANT_IMMUNITY_SCOPE,
-  extractCommercialOcrDeleteSource,
+  extractCommercialOcrExactMessageSource,
   type CommercialOcrDeleteBinding,
   type CommercialOcrDeleteSource,
+  type CommercialOcrExactMessageSource,
 } from './commercial-ocr-delete-guard.service';
 import { COMMERCIAL_OCR_JOB_SCHEMA_VERSION, type CommercialOcrJob } from './commercial-ocr.queue';
+import { CommercialOcrMetricsService } from './commercial-ocr-metrics.service';
 import { CommercialOcrRuntimePolicyService } from './commercial-ocr-runtime-policy.service';
 import { resolveCommercialOcrRuntimePolicy } from './commercial-ocr.runtime';
+import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
 
 const GOVERNOR_COMPONENT = 'commercial-image-ocr';
 const GOVERNOR_SOURCE_TAG = 'commercial_image_ocr';
@@ -60,11 +64,13 @@ type SourceEnvelope = {
   album: LogicalPhotoAlbum;
   originBotId: string;
   exactSource: CommercialOcrDeleteSource;
+  persistedDownloadUrlFallbackIndexes: readonly number[];
 };
 
 @Injectable()
 export class CommercialOcrModerationService {
   private readonly logger = new Logger(CommercialOcrModerationService.name);
+  private readonly admissionTombstoneTtlMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -78,7 +84,10 @@ export class CommercialOcrModerationService {
     private readonly moderationDeleteIntents: ModerationDeleteIntentService,
     private readonly runtimePolicy: CommercialOcrRuntimePolicyService,
     private readonly configService: ConfigService,
-  ) {}
+    private readonly metrics: CommercialOcrMetricsService,
+  ) {
+    this.admissionTombstoneTtlMs = resolveCommercialOcrReservationTtlMs(configService);
+  }
 
   async processCommercialOcrJob(
     job: CommercialOcrJob,
@@ -93,10 +102,8 @@ export class CommercialOcrModerationService {
     }
 
     const initialAdmission = await this.admissionStore.resolveState(jobId);
-    if (initialAdmission.kind !== 'available' || initialAdmission.state === 'pending') {
-      return initialAdmission.kind === 'available'
-        ? { kind: 'defer', delayMs: 5_000, reason: 'admission_pending' }
-        : { kind: 'completed' };
+    if (initialAdmission.kind !== 'available') {
+      return { kind: 'completed' };
     }
     const runtime = resolveCommercialOcrRuntimePolicy({
       chatId: job.chatId,
@@ -108,20 +115,93 @@ export class CommercialOcrModerationService {
 
     const source = await this.loadSource(job, deadlineAtMs);
     if (source.kind !== 'ready') {
+      if (initialAdmission.state === 'pending' && source.kind === 'terminal') {
+        await this.suppressPendingAdmission(job, jobId);
+      }
       return source.kind === 'defer'
         ? { kind: 'defer', delayMs: source.delayMs, reason: 'source_not_ready' }
         : { kind: 'completed' };
     }
 
+    let admissionActionEligible = initialAdmission.state === 'actionable';
+    if (initialAdmission.state === 'pending') {
+      admissionActionEligible = await this.reconcilePendingAdmission(job, jobId, deadlineAtMs);
+      if (!admissionActionEligible) {
+        return { kind: 'completed' };
+      }
+    }
+
     const execute = () =>
-      this.processReadySource(
-        job,
-        jobId,
-        source.value,
-        initialAdmission.state === 'actionable',
-        deadlineAtMs,
-      );
+      this.processReadySource(job, jobId, source.value, admissionActionEligible, deadlineAtMs);
     return this.maxBotContextService.runWithBot(source.value.originBotId, execute);
+  }
+
+  private async reconcilePendingAdmission(
+    job: CommercialOcrJob,
+    jobId: string,
+    deadlineAtMs: number,
+  ): Promise<boolean> {
+    if (deadlineExpired(deadlineAtMs)) {
+      const suppression = await this.suppressPendingAdmission(job, jobId);
+      this.metrics.recordCounter(
+        suppression === 'suppressed'
+          ? 'admission.reconciliation.suppressed'
+          : 'admission.reconciliation.unavailable',
+      );
+      return false;
+    }
+
+    this.metrics.recordCounter('admission.reconciliation.attempted');
+    const activation = await this.admissionStore
+      .activate({ jobId, tombstoneTtlMs: this.admissionTombstoneTtlMs })
+      .catch(() => 'unavailable' as const);
+
+    if (activation === 'unavailable') {
+      this.metrics.recordCounter('admission.reconciliation.unavailable');
+      // The activation EVAL may commit after its local timeout. Suppression on the same store
+      // connection is ordered after it and makes either outcome non-actionable.
+      await this.suppressPendingAdmission(job, jobId);
+      return false;
+    }
+    if (activation === 'suppressed' || activation === 'expired' || activation === 'missing') {
+      this.metrics.recordCounter('admission.reconciliation.suppressed');
+      return false;
+    }
+
+    // A webhook producer may win the race after the initial pending read. Both successful outcomes
+    // confirm actionability without performing any transition other than pending -> actionable.
+    this.metrics.recordCounter('admission.reconciliation.activated');
+    if (!deadlineExpired(deadlineAtMs)) {
+      return true;
+    }
+
+    const suppression = await this.suppressPendingAdmission(job, jobId);
+    this.metrics.recordCounter(
+      suppression === 'suppressed'
+        ? 'admission.reconciliation.suppressed'
+        : 'admission.reconciliation.unavailable',
+    );
+    return false;
+  }
+
+  private async suppressPendingAdmission(
+    job: CommercialOcrJob,
+    jobId: string,
+  ): Promise<'suppressed' | 'unavailable'> {
+    const suppression = await this.admissionStore
+      .suppress({
+        jobId,
+        chatId: job.chatId,
+        imageCount: job.imageCount,
+        tombstoneTtlMs: this.admissionTombstoneTtlMs,
+      })
+      .catch(() => 'unavailable' as const);
+    this.metrics.recordCounter(
+      suppression === 'suppressed'
+        ? 'admission.suppression.suppressed'
+        : 'admission.suppression.unavailable',
+    );
+    return suppression;
   }
 
   private async processReadySource(
@@ -151,6 +231,10 @@ export class CommercialOcrModerationService {
     ) {
       return { kind: 'completed' };
     }
+    const initialSettingsFingerprint = fingerprintSettingsFailOpen(context.settings);
+    if (!initialSettingsFingerprint) {
+      return { kind: 'completed' };
+    }
     if (
       !(await this.isFreshNonAdmin(
         job.chatId,
@@ -171,6 +255,7 @@ export class CommercialOcrModerationService {
       authorizeStage: () => this.authorizeHeavyStage(),
     });
     if (analysis.kind === 'defer') {
+      this.metrics.recordCounter(`analysis.defer.${analysis.reason}`);
       return {
         kind: 'defer',
         delayMs: analysis.delayMs,
@@ -178,13 +263,23 @@ export class CommercialOcrModerationService {
       };
     }
     if (analysis.kind === 'retry') {
+      this.metrics.recordCounter(`analysis.retry.${analysis.reason}`);
       return { kind: 'retry', reason: analysis.reason };
     }
+    if (
+      analysis.kind === 'incomplete' &&
+      analysis.reason === 'download_failed' &&
+      analysis.imageIndex !== undefined &&
+      source.persistedDownloadUrlFallbackIndexes.includes(analysis.imageIndex)
+    ) {
+      this.metrics.recordCounter('analysis.retry.download_failed');
+      return { kind: 'retry', reason: 'download_failed' };
+    }
     if (analysis.kind !== 'complete') {
+      this.metrics.recordCounter(`analysis.incomplete.${analysis.reason}`);
+      this.metrics.recordCounter(`analysis.incomplete.pass.${analysis.pass ?? 'none'}`);
       this.logger.log(
         {
-          chatId: job.chatId,
-          messageId: job.messageId,
           imageCount: job.imageCount,
           rolloutMode: resolveCommercialOcrRuntimePolicy({
             chatId: job.chatId,
@@ -200,10 +295,14 @@ export class CommercialOcrModerationService {
       return { kind: 'completed' };
     }
 
+    this.metrics.recordCounter(
+      analysis.decision.action === 'DELETE'
+        ? 'analysis.complete.delete'
+        : 'analysis.complete.no_action',
+    );
+
     this.logger.log(
       {
-        chatId: job.chatId,
-        messageId: job.messageId,
         imageCount: job.imageCount,
         rolloutMode: resolveCommercialOcrRuntimePolicy({
           chatId: job.chatId,
@@ -214,19 +313,38 @@ export class CommercialOcrModerationService {
       },
       'Commercial OCR decision completed',
     );
-    if (
-      analysis.decision.action !== 'DELETE' ||
-      !admissionActionEligible ||
-      !isCommercialOcrCyrillicOnlyDeleteDecision(analysis.decision) ||
-      deadlineExpired(deadlineAtMs)
-    ) {
+    if (analysis.decision.action !== 'DELETE') {
+      return { kind: 'completed' };
+    }
+    if (source.persistedDownloadUrlFallbackIndexes.length > 0) {
+      this.metrics.recordCounter('enforcement.suppressed.source_url_fallback');
+      return { kind: 'completed' };
+    }
+    if (!admissionActionEligible) {
+      this.metrics.recordCounter('enforcement.suppressed.admission');
+      return { kind: 'completed' };
+    }
+    if (!isCommercialOcrCyrillicOnlyDeleteDecision(analysis.decision)) {
+      this.metrics.recordCounter('enforcement.suppressed.script_guard');
+      return { kind: 'completed' };
+    }
+    if (deadlineExpired(deadlineAtMs)) {
+      this.metrics.recordCounter('enforcement.suppressed.deadline');
       return { kind: 'completed' };
     }
 
     // FLAG: The environment policy is only a processing ceiling. A fresh shared control must
     // authorize enforcement before the final MAX lookups and again immediately before commit.
-    const actionRuntime = await this.runtimePolicy.resolveEffectivePolicy({ chatId: job.chatId });
+    const actionRuntime = await this.runtimePolicy.resolveEffectivePolicy({
+      chatId: job.chatId,
+      settingsFingerprint: initialSettingsFingerprint,
+    });
     if (!actionRuntime.enforce || deadlineExpired(deadlineAtMs)) {
+      this.metrics.recordCounter(
+        deadlineExpired(deadlineAtMs)
+          ? 'enforcement.suppressed.deadline'
+          : 'enforcement.suppressed.runtime_control',
+      );
       return { kind: 'completed' };
     }
 
@@ -238,41 +356,82 @@ export class CommercialOcrModerationService {
       deadlineAtMs,
     });
     if (!authorization) {
+      this.metrics.recordCounter('enforcement.suppressed.authorization');
       return { kind: 'completed' };
     }
 
     const preImmunityRuntime = await this.runtimePolicy.resolveEffectivePolicy({
       chatId: job.chatId,
+      settingsFingerprint: fingerprintCommercialOcrSettingsProfile(authorization.context.settings),
     });
     if (!preImmunityRuntime.enforce || deadlineExpired(deadlineAtMs)) {
-      return { kind: 'completed' };
-    }
-
-    if (
-      deadlineExpired(deadlineAtMs) ||
-      (await this.consumeParticipantImmunityFailOpen({
-        chatId: job.chatId,
-        userId: authorization.exactSource.senderId,
-        messageId: job.messageId,
-        nightModeTimezone: authorization.context.settings.nightModeTimezone,
-      }))
-    ) {
+      this.metrics.recordCounter(
+        deadlineExpired(deadlineAtMs)
+          ? 'enforcement.suppressed.deadline'
+          : 'enforcement.suppressed.runtime_control',
+      );
       return { kind: 'completed' };
     }
 
     if (deadlineExpired(deadlineAtMs)) {
+      this.metrics.recordCounter('enforcement.suppressed.deadline');
       return { kind: 'completed' };
     }
-    const commitRuntime = await this.runtimePolicy.resolveEffectivePolicy({ chatId: job.chatId });
+    if (
+      await this.consumeParticipantImmunityFailOpen({
+        chatId: job.chatId,
+        userId: authorization.exactSource.senderId,
+        messageId: job.messageId,
+        nightModeTimezone: authorization.context.settings.nightModeTimezone,
+      })
+    ) {
+      this.metrics.recordCounter('enforcement.suppressed.immunity');
+      return { kind: 'completed' };
+    }
+
+    if (deadlineExpired(deadlineAtMs)) {
+      this.metrics.recordCounter('enforcement.suppressed.deadline');
+      return { kind: 'completed' };
+    }
+    const commitContext = await this.loadJobContext(job.chatId);
+    if (
+      !commitContext ||
+      commitContext.entityType !== ChatEntityType.CHAT ||
+      !commitContext.settings.commercialAdsFilterEnabled ||
+      !sameCommercialPolicy(commitContext.settings, authorization.context.settings) ||
+      commitContext.localAdminUserIds.includes(authorization.exactSource.senderId)
+    ) {
+      this.metrics.recordCounter('enforcement.suppressed.authorization');
+      return { kind: 'completed' };
+    }
+    const commitSettingsFingerprint = fingerprintSettingsFailOpen(commitContext.settings);
+    if (!commitSettingsFingerprint) {
+      this.metrics.recordCounter('enforcement.suppressed.authorization');
+      return { kind: 'completed' };
+    }
+    const commitRuntime = await this.runtimePolicy.resolveEffectivePolicy({
+      chatId: job.chatId,
+      settingsFingerprint: commitSettingsFingerprint,
+    });
     const controlExpiresAtMs = Date.parse(commitRuntime.controlExpiresAt ?? '');
+    const jobDeadlineExceeded = deadlineExpired(deadlineAtMs);
+    const runtimeControlExpired =
+      Number.isFinite(controlExpiresAtMs) && controlExpiresAtMs <= Date.now();
     if (
       !commitRuntime.enforce ||
       commitRuntime.controlRevision === null ||
       commitRuntime.controlExpiresAt === null ||
       !Number.isFinite(controlExpiresAtMs) ||
-      controlExpiresAtMs <= Date.now() ||
-      deadlineExpired(deadlineAtMs)
+      runtimeControlExpired ||
+      jobDeadlineExceeded
     ) {
+      this.metrics.recordCounter(
+        jobDeadlineExceeded
+          ? 'enforcement.suppressed.deadline'
+          : runtimeControlExpired
+            ? 'enforcement.suppressed.runtime_control_expired'
+            : 'enforcement.suppressed.runtime_control',
+      );
       return { kind: 'completed' };
     }
     const deleteDeadlineAtMs = Math.min(deadlineAtMs, controlExpiresAtMs);
@@ -283,7 +442,7 @@ export class CommercialOcrModerationService {
       caption: authorization.exactSource.caption,
       sourceCreatedAt: authorization.exactSource.sourceCreatedAt,
       expectedImageCount: job.imageCount,
-      settings: authorization.context.settings,
+      settings: commitContext.settings,
       controlRevision: commitRuntime.controlRevision,
       controlExpiresAt: commitRuntime.controlExpiresAt,
       ocrDeadlineAt: new Date(deleteDeadlineAtMs),
@@ -297,6 +456,7 @@ export class CommercialOcrModerationService {
       originBotId: authorization.originBotId,
       deadlineAtMs: deleteDeadlineAtMs,
     });
+    this.metrics.recordCounter('enforcement.intent.requested');
     return { kind: 'completed' };
   }
 
@@ -308,21 +468,28 @@ export class CommercialOcrModerationService {
     | { kind: 'defer'; delayMs: number }
     | { kind: 'terminal' }
   > {
-    const webhookEvent = await this.prisma.webhookEvent.findUnique({
-      where: { id: job.webhookEventId },
-      select: {
-        botId: true,
-        status: true,
-        nextEnqueueAt: true,
-        normalizedPayload: true,
-        executionClaims: {
-          where: { kind: 'EXECUTION' },
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: { executionBotId: true },
+    const webhookEvent = await this.prisma.webhookEvent
+      .findUnique({
+        where: { id: job.webhookEventId },
+        select: {
+          botId: true,
+          status: true,
+          nextEnqueueAt: true,
+          normalizedPayload: true,
+          executionClaims: {
+            where: { kind: 'EXECUTION' },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { executionBotId: true },
+          },
         },
-      },
-    });
+      })
+      .catch(() => {
+        this.logger.warn(
+          'Commercial OCR webhook source lookup failed; enforcement remains fail-open',
+        );
+        return null;
+      });
     if (
       !webhookEvent ||
       webhookEvent.status === WebhookStatus.DUPLICATE ||
@@ -334,7 +501,11 @@ export class CommercialOcrModerationService {
       return { kind: 'defer', delayMs: 5_000 };
     }
 
-    const update = webhookEvent.normalizedPayload as MaxUpdate;
+    const updateRecord = asRecord(webhookEvent.normalizedPayload);
+    if (!updateRecord) {
+      return { kind: 'terminal' };
+    }
+    const update = updateRecord as unknown as MaxUpdate;
     const extraction = extractLogicalPhotoAlbumResult(update);
     if (extraction.kind !== 'complete') {
       return { kind: 'terminal' };
@@ -347,13 +518,11 @@ export class CommercialOcrModerationService {
       album.images.length !== job.imageCount
     ) {
       this.logger.warn(
-        { webhookEventId: job.webhookEventId, jobId: job.idempotencyKey },
         'Skipped commercial OCR job whose source identity does not match the webhook',
       );
       return { kind: 'terminal' };
     }
 
-    const updateRecord = update as unknown as Record<string, unknown>;
     const originBotId =
       readString(webhookEvent.executionClaims[0]?.executionBotId) ??
       readString(webhookEvent.botId) ??
@@ -361,17 +530,30 @@ export class CommercialOcrModerationService {
       readString(update.botId) ??
       this.maxBotLinkService.getDefaultBotId();
     const exact = await this.loadExactSource(job, originBotId, deadlineAtMs);
-    if (!exact || !sameAlbumSource(album, exact, job)) {
+    if (!exact || exact.authorKind !== 'user' || !sameAlbumSource(album, exact.source, job)) {
       return { kind: 'terminal' };
     }
-    return { kind: 'ready', value: { update, album, originBotId, exactSource: exact } };
+    const refreshed = refreshAlbumDownloadUrls(album, exact.images);
+    if (!refreshed) {
+      return { kind: 'terminal' };
+    }
+    return {
+      kind: 'ready',
+      value: {
+        update,
+        album: refreshed.album,
+        originBotId,
+        exactSource: exact.source,
+        persistedDownloadUrlFallbackIndexes: refreshed.persistedDownloadUrlFallbackIndexes,
+      },
+    };
   }
 
   private async loadExactSource(
     job: CommercialOcrJob,
     botId: string,
     deadlineAtMs: number,
-  ): Promise<CommercialOcrDeleteSource | null> {
+  ): Promise<CommercialOcrExactMessageSource | null> {
     const timeoutMs = remainingStageTimeoutMs(deadlineAtMs, ADMIN_LOOKUP_TIMEOUT_MS);
     if (timeoutMs === null) {
       return null;
@@ -384,16 +566,9 @@ export class CommercialOcrModerationService {
         bypassCache: true,
         timeoutMs,
       });
-      return row ? extractCommercialOcrDeleteSource(row) : null;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: job.chatId,
-          messageId: job.messageId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Commercial OCR exact source lookup failed; enforcement remains fail-open',
-      );
+      return row ? extractCommercialOcrExactMessageSource(row) : null;
+    } catch {
+      this.logger.warn('Commercial OCR exact source lookup failed; enforcement remains fail-open');
       return null;
     }
   }
@@ -446,13 +621,15 @@ export class CommercialOcrModerationService {
       return null;
     }
 
-    const exactSource = await this.loadExactSource(
+    const exact = await this.loadExactSource(
       params.job,
       params.initialSource.originBotId,
       params.deadlineAtMs,
     );
+    const exactSource = exact?.source ?? null;
     if (
       !exactSource ||
+      exact?.authorKind !== 'user' ||
       !sameAlbumSource(params.initialSource.album, exactSource, params.job) ||
       !sameExactSource(exactSource, params.initialSource.exactSource)
     ) {
@@ -512,15 +689,8 @@ export class CommercialOcrModerationService {
         !access.isAdmin &&
         !access.isOwner,
       );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Commercial OCR fresh admin check failed; enforcement remains fail-open',
-      );
+    } catch {
+      this.logger.warn('Commercial OCR fresh admin check failed; enforcement remains fail-open');
       return false;
     }
   }
@@ -551,14 +721,8 @@ export class CommercialOcrModerationService {
           scope: COMMERCIAL_OCR_PARTICIPANT_IMMUNITY_SCOPE,
         })) === 'granted'
       );
-    } catch (error: unknown) {
+    } catch {
       this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          messageId: params.messageId,
-          error: error instanceof Error ? error.message : String(error),
-        },
         'Commercial OCR participant immunity check failed; enforcement remains fail-open',
       );
       return true;
@@ -612,11 +776,6 @@ export class CommercialOcrModerationService {
       });
     } catch (error: unknown) {
       this.logger.warn(
-        {
-          chatId: params.job.chatId,
-          messageId: params.job.messageId,
-          error: error instanceof Error ? error.message : String(error),
-        },
         'Failed to atomically persist commercial OCR action ownership and delete intent',
       );
       throw error;
@@ -645,6 +804,45 @@ function sameAlbumSource(
   );
 }
 
+function refreshAlbumDownloadUrls(
+  album: LogicalPhotoAlbum,
+  exactImages: CommercialOcrExactMessageSource['images'],
+): {
+  album: LogicalPhotoAlbum;
+  persistedDownloadUrlFallbackIndexes: readonly number[];
+} | null {
+  if (album.images.length !== exactImages.length) {
+    return null;
+  }
+  const persistedDownloadUrlFallbackIndexes: number[] = [];
+  const images = album.images.map((image, index) => {
+    const exact = exactImages[index];
+    if (
+      !exact ||
+      image.photoId === null ||
+      exact.photoId === null ||
+      image.photoId !== exact.photoId ||
+      image.source !== exact.source
+    ) {
+      return null;
+    }
+    if (exact.downloadUrl === null && image.downloadUrl !== null) {
+      persistedDownloadUrlFallbackIndexes.push(index);
+    }
+    return {
+      ...image,
+      downloadUrl: exact.downloadUrl ?? image.downloadUrl,
+    };
+  });
+  if (images.some((image) => image === null)) {
+    return null;
+  }
+  return {
+    album: { ...album, images: images as LogicalPhotoAlbum['images'] },
+    persistedDownloadUrlFallbackIndexes,
+  };
+}
+
 function sameExactSource(
   left: CommercialOcrDeleteSource,
   right: CommercialOcrDeleteSource,
@@ -658,6 +856,14 @@ function sameExactSource(
     left.orderedPhotoIds.length === right.orderedPhotoIds.length &&
     left.orderedPhotoIds.every((photoId, index) => photoId === right.orderedPhotoIds[index])
   );
+}
+
+function fingerprintSettingsFailOpen(settings: ChatSettings): string | null {
+  try {
+    return fingerprintCommercialOcrSettingsProfile(settings);
+  } catch {
+    return null;
+  }
 }
 
 function sameCommercialPolicy(left: ChatSettings, right: ChatSettings): boolean {

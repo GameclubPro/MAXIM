@@ -6,10 +6,12 @@ import {
   COMMERCIAL_BENCHMARK_ATTEMPT_COUNT,
   COMMERCIAL_BENCHMARK_ATTEMPT_TIMEOUT_MS,
   COMMERCIAL_BENCHMARK_MEDIAN_GATE_ENV,
+  COMMERCIAL_BENCHMARK_REPORT_PREFIX,
   COMMERCIAL_BENCHMARK_WRAPPER_NONCE_ENV,
   evaluateCommercialBenchmarkGate,
   parseCommercialBenchmarkReport,
   resolveCommercialBenchmarkProfile,
+  stripCommercialBenchmarkReports,
   type CommercialBenchmarkReport,
 } from './commercial-benchmark-ci.util';
 
@@ -57,8 +59,8 @@ export function runCommercialBenchmarkCi(): void {
 
     const stdout = result.stdout ?? '';
     const stderr = result.stderr ?? '';
-    process.stdout.write(stdout);
-    process.stderr.write(stderr);
+    writeVisibleOutput(process.stdout, stripCommercialBenchmarkReports(stdout));
+    writeVisibleOutput(process.stderr, stripCommercialBenchmarkReports(stderr));
 
     if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
       throw new Error(
@@ -86,21 +88,40 @@ export function runCommercialBenchmarkCi(): void {
   }
 
   const medianReport = aggregateCommercialBenchmarkReports(reports);
+  if (!medianReport.evidence) {
+    throw new Error('Commercial benchmark attempts did not produce detector evidence');
+  }
   const gate = evaluateCommercialBenchmarkGate(medianReport, profile.limits);
   process.stdout.write(`\nCommercial benchmark median: ${formatReport(medianReport)}\n`);
   if (!gate.passed) {
     throw new Error(`Commercial benchmark median gate failed: ${gate.failures.join('; ')}`);
   }
   process.stdout.write('Commercial benchmark median gate passed\n');
+  process.stdout.write(`${COMMERCIAL_BENCHMARK_REPORT_PREFIX}${JSON.stringify(medianReport)}\n`);
+}
+
+function writeVisibleOutput(stream: NodeJS.WriteStream, output: string): void {
+  if (!output) {
+    return;
+  }
+  stream.write(output.endsWith('\n') ? output : `${output}\n`);
 }
 
 function formatReport(report: CommercialBenchmarkReport): string {
-  return [
+  const fields = [
     `hot p95=${report.hotPath.p95Ms.toFixed(3)}ms`,
     `hot p99=${report.hotPath.p99Ms.toFixed(3)}ms`,
     `adversarial p95=${report.adversarial.p95Ms.toFixed(3)}ms`,
     `adversarial p99=${report.adversarial.p99Ms.toFixed(3)}ms`,
-  ].join(', ');
+  ];
+  if (report.evidence) {
+    fields.push(
+      `detector p95=${(report.evidence.warm.detectorOnly.p95Ns / 1_000_000).toFixed(3)}ms`,
+      `full-path p95=${(report.evidence.warm.fullPath.p95Ns / 1_000_000).toFixed(3)}ms`,
+      `path mismatches=${report.evidence.detectorToFullPathEquivalence.mismatches}`,
+    );
+  }
+  return fields.join(', ');
 }
 
 if (require.main === module) {

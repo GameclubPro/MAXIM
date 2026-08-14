@@ -457,6 +457,28 @@ describe('commercial OCR decision policy', () => {
     expect(isCommercialOcrCyrillicOnlyDeleteDecision(decision)).toBe(false);
   });
 
+  it('does not classify Cyrillic mixed with another non-Latin script as Cyrillic-only', () => {
+    const detector = detectorFor((text) => detection({ rawText: text }));
+    const multilingual = recognizedPass({
+      text: 'Ремонт окон خدمة телефон +7 999 123 45 67',
+    });
+    const decision = evaluateCommercialOcrDecision({
+      caption: '',
+      expectedImageCount: 1,
+      images: [image({ primary: multilingual, verification: multilingual })],
+      settings: SETTINGS,
+      detector,
+    });
+
+    expect(decision.action).toBe('DELETE');
+    expect(decision.images[0]?.primary).toMatchObject({
+      letterScript: 'mixed',
+      cyrillicLetterCount: expect.any(Number),
+      latinLetterCount: 0,
+    });
+    expect(isCommercialOcrCyrillicOnlyDeleteDecision(decision)).toBe(false);
+  });
+
   it('rejects a token Cyrillic marker surrounded by numeric commercial evidence', () => {
     const detector = detectorFor((text) => detection({ rawText: text }));
     const adversarial = recognizedPass({ text: 'я +7 999 123 45 67, 5000' });

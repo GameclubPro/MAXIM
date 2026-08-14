@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import type { CommercialDetection } from '../moderation/commercial/commercial-ad.detector';
 import {
   emptyCommercialReplaySnapshot,
+  COMMERCIAL_REPLAY_MAX_DECISION_COHORTS,
+  COMMERCIAL_REPLAY_MAX_DECISION_TRANSITIONS,
   replayCommercialCorpusFile,
   replayCommercialCorpusRecord,
   snapshotFromCommercialDetection,
@@ -195,6 +197,19 @@ describe('commercial corpus replay', () => {
       expect.objectContaining({
         hit: { stored: false, replayed: true },
         actionBand: { stored: null, replayed: 'WARN' },
+      }),
+    );
+    expect(evaluation.equivalence).toEqual(
+      expect.objectContaining({
+        exact: false,
+        hitTransition: 'false->true',
+        actionTransition: 'NONE->WARN',
+        subtypeTransition: 'NONE->SERVICES',
+        cohorts: expect.arrayContaining([
+          'label:negative_candidate',
+          'segment:OTHER',
+          'settings:BALANCED-45-65',
+        ]),
       }),
     );
   });
@@ -421,6 +436,18 @@ describe('commercial corpus replay', () => {
         sha256: createHash('sha256').update(overlayBody).digest('hex'),
         records: 2,
       });
+      expect(
+        summary.trustBuckets.TRUSTED.decisionEquivalence.cohorts['label:positive_candidate']
+          ?.recordsCompared,
+      ).toBe(1);
+      expect(
+        summary.trustBuckets.TRUSTED.decisionEquivalence.cohorts['label:negative_candidate']
+          ?.recordsCompared,
+      ).toBe(1);
+      expect(
+        summary.trustBuckets.TRUSTED.decisionEquivalence.cohorts['target-source:MANUAL_OVERLAY']
+          ?.recordsCompared,
+      ).toBe(2);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -602,6 +629,22 @@ describe('commercial corpus replay', () => {
           materialChangedRecords: 1,
           explanationOnlyRecords: 1,
           emittedDiffRecords: 1,
+          decisionEquivalence: expect.objectContaining({
+            recordsCompared: 3,
+            exactDecisionRecords: 2,
+            decisionTransitionRecords: 1,
+            hitTransitions: { 'false->false': 2, 'false->true': 1 },
+            actionTransitions: { 'NONE->DELETE': 1, 'NONE->NONE': 2 },
+          }),
+        }),
+      );
+      expect(
+        summary.trustBuckets.TRUSTED.decisionEquivalence.cohorts['label:negative_candidate'],
+      ).toEqual(
+        expect.objectContaining({
+          recordsCompared: 2,
+          exactDecisionRecords: 2,
+          decisionTransitionRecords: 0,
         }),
       );
       expect(summary.trustBuckets.UNTRUSTED_SANITIZED_PLACEHOLDER).toEqual(
@@ -611,6 +654,11 @@ describe('commercial corpus replay', () => {
           materialChangedRecords: 1,
           emittedDiffRecords: 0,
           labelImpacts: { POSSIBLE_FALSE_POSITIVE_REGRESSION: 1 },
+          decisionEquivalence: expect.objectContaining({
+            recordsCompared: 1,
+            exactDecisionRecords: 0,
+            decisionTransitionRecords: 1,
+          }),
         }),
       );
       expect(diffs).toHaveLength(1);
@@ -652,6 +700,91 @@ describe('commercial corpus replay', () => {
       expect(summary.emittedDiffRecords).toBe(1);
       expect(summary.trustBuckets.UNTRUSTED_SANITIZED_PLACEHOLDER.emittedDiffRecords).toBe(1);
       expect(diff.trustBucket).toBe('UNTRUSTED_SANITIZED_PLACEHOLDER');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds untrusted corpus cohort cardinality and records overflow', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-replay-cohorts-'));
+    const inputPath = join(directory, 'corpus.jsonl');
+    const diffPath = join(directory, 'diff.jsonl');
+    const summaryPath = join(directory, 'summary.json');
+    const records = Array.from(
+      { length: COMMERCIAL_REPLAY_MAX_DECISION_COHORTS + 20 },
+      (_, index) => ({
+        ...corpusRecord({ text: `bounded cohort ${index}` }),
+        category: `untrusted-category-${index}`,
+      }),
+    );
+    await writeFile(
+      inputPath,
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf8',
+    );
+
+    try {
+      const summary = await replayCommercialCorpusFile({
+        inputPath,
+        diffOutputPath: diffPath,
+        summaryOutputPath: summaryPath,
+        detector: { detect: () => null },
+        provenance: TEST_PROVENANCE,
+      });
+      const cohorts = summary.trustBuckets.TRUSTED.decisionEquivalence.cohorts;
+
+      expect(Object.keys(cohorts)).toHaveLength(COMMERCIAL_REPLAY_MAX_DECISION_COHORTS);
+      expect(cohorts['overflow:OTHER']?.recordsCompared).toBeGreaterThan(0);
+      expect(cohorts['overflow:OTHER']?.recordsCompared).toBeLessThanOrEqual(records.length);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds untrusted action and subtype transition cardinality', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commercial-replay-transitions-'));
+    const inputPath = join(directory, 'corpus.jsonl');
+    const diffPath = join(directory, 'diff.jsonl');
+    const summaryPath = join(directory, 'summary.json');
+    const records = Array.from(
+      { length: COMMERCIAL_REPLAY_MAX_DECISION_TRANSITIONS + 20 },
+      (_, index) => ({
+        ...corpusRecord({
+          text: `bounded transition ${index}`,
+          current: {
+            ...emptyCommercialReplaySnapshot(),
+            hit: true,
+            actionBand: `untrusted-action-${index}`,
+            primarySubtype: `untrusted-subtype-${index}`,
+          },
+        }),
+        category: 'stable-category',
+      }),
+    );
+    await writeFile(
+      inputPath,
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf8',
+    );
+
+    try {
+      const summary = await replayCommercialCorpusFile({
+        inputPath,
+        diffOutputPath: diffPath,
+        summaryOutputPath: summaryPath,
+        detector: { detect: () => null },
+        provenance: TEST_PROVENANCE,
+      });
+      const equivalence = summary.trustBuckets.TRUSTED.decisionEquivalence;
+
+      expect(Object.keys(equivalence.actionTransitions)).toHaveLength(
+        COMMERCIAL_REPLAY_MAX_DECISION_TRANSITIONS,
+      );
+      expect(Object.keys(equivalence.subtypeTransitions)).toHaveLength(
+        COMMERCIAL_REPLAY_MAX_DECISION_TRANSITIONS,
+      );
+      expect(equivalence.actionTransitions['overflow:OTHER']).toBeGreaterThan(0);
+      expect(equivalence.subtypeTransitions['overflow:OTHER']).toBeGreaterThan(0);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

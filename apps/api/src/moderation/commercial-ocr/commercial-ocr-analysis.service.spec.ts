@@ -11,6 +11,7 @@ import {
 } from './commercial-ocr-cache.store';
 import { CommercialOcrAnalysisService } from './commercial-ocr-analysis.service';
 import type { CommercialOcrDetector } from './commercial-ocr-decision-policy';
+import { CommercialOcrImageRejectedError } from './commercial-ocr-preprocessor';
 
 const SETTINGS = {
   commercialAdsFilterEnabled: true,
@@ -139,6 +140,7 @@ function harness(
   options: {
     cacheReads?: Array<{ kind: 'hit'; value: CommercialOcrCacheValue } | { kind: 'miss' }>;
     ocrResults?: unknown[];
+    config?: Record<string, unknown>;
   } = {},
 ) {
   const events: string[] = [];
@@ -179,12 +181,14 @@ function harness(
         identity: CommercialOcrCacheIdentity,
         deadlineAtMs: number,
         operation: () => Promise<T>,
+        coalesceOptions: Readonly<{ onCoalesced?: () => void }> = {},
       ): Promise<T> => {
         const key = JSON.stringify(identity);
         const existing = inFlight.get(key) as
           | { deadlineAtMs: number; promise: Promise<T> }
           | undefined;
         if (existing && existing.deadlineAtMs >= deadlineAtMs) {
+          coalesceOptions.onCoalesced?.();
           return existing.promise;
         }
         const pending = Promise.resolve().then(operation);
@@ -201,6 +205,8 @@ function harness(
     ),
   };
   const metrics = {
+    recordCounter: jest.fn(),
+    recordStageDuration: jest.fn(),
     startImageCpuSample: jest.fn(() => ({
       startedUsageMicros: 1n,
       nativePasses: 0,
@@ -221,6 +227,7 @@ function harness(
     metrics as never,
     new ConfigService({
       COMMERCIAL_OCR_CACHE_TTL_SEC: 3_600,
+      ...options.config,
     }),
   );
   Object.defineProperty(service, 'detector', { value: strictDetector() });
@@ -327,14 +334,46 @@ describe('CommercialOcrAnalysisService', () => {
     expect(
       identities.map(({ pass, psm, preprocessProfile }) => ({ pass, psm, preprocessProfile })),
     ).toEqual([
-      { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
-      { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
-      { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
-      { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
-      { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
-      { pass: 'primary', psm: 11, preprocessProfile: 'gray-bounded-v3' },
-      { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
-      { pass: 'confirmation', psm: 6, preprocessProfile: 'normalized-threshold160-v3' },
+      {
+        pass: 'primary',
+        psm: 11,
+        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+      },
+      {
+        pass: 'primary',
+        psm: 11,
+        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+      },
+      {
+        pass: 'confirmation',
+        psm: 6,
+        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+      },
+      {
+        pass: 'confirmation',
+        psm: 6,
+        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+      },
+      {
+        pass: 'primary',
+        psm: 11,
+        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+      },
+      {
+        pass: 'primary',
+        psm: 11,
+        preprocessProfile: 'gray-bounded-v3.i40000000.o3000000.s2000',
+      },
+      {
+        pass: 'confirmation',
+        psm: 6,
+        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+      },
+      {
+        pass: 'confirmation',
+        psm: 6,
+        preprocessProfile: 'normalized-threshold160-v3.i40000000.o3000000.s2000',
+      },
     ]);
     expect(identities[0]?.contentSha256).toBe(
       createHash('sha256').update(Buffer.from('raw:https://i.oneme.ru/1')).digest('hex'),
@@ -386,6 +425,26 @@ describe('CommercialOcrAnalysisService', () => {
     expect(ocr.recognize).not.toHaveBeenCalled();
   });
 
+  it('isolates cache identities when an effective preprocessing ceiling changes', async () => {
+    const fixture = harness({
+      config: {
+        COMMERCIAL_OCR_MAX_INPUT_PIXELS: 20_000_000,
+        COMMERCIAL_OCR_MAX_OUTPUT_PIXELS: 2_000_000,
+        COMMERCIAL_OCR_MAX_SIDE: 1_600,
+      },
+    });
+
+    await expect(analyze(fixture.service)).resolves.toMatchObject({ kind: 'complete' });
+
+    const identities = fixture.cache.read.mock.calls.map(
+      (call) => call[0] as CommercialOcrCacheIdentity,
+    );
+    expect(identities[0]?.preprocessProfile).toBe('gray-bounded-v3.i20000000.o2000000.s1600');
+    expect(identities.at(-1)?.preprocessProfile).toBe(
+      'normalized-threshold160-v3.i20000000.o2000000.s1600',
+    );
+  });
+
   it('confirms only images whose primary pass satisfies the strict delete gate', async () => {
     const { service, downloader, preprocessor, ocr } = harness({
       ocrResults: [noTextResult(), nativeResult(), nativeResult({ psm: 6 })],
@@ -418,10 +477,22 @@ describe('CommercialOcrAnalysisService', () => {
     expect(fixture.cache.write).toHaveBeenCalledTimes(2);
     expect(fixture.metrics.recordNativePass).toHaveBeenCalledTimes(2);
     expect(fixture.metrics.finishImageCpuSample).toHaveBeenCalledTimes(1);
+    expect(fixture.metrics.recordCounter).toHaveBeenCalledWith('cache.primary.miss');
+    expect(fixture.metrics.recordCounter).toHaveBeenCalledWith('confirmation.requested');
+    expect(fixture.metrics.recordCounter).toHaveBeenCalledWith('confirmation.completed');
+    expect(fixture.metrics.recordStageDuration).toHaveBeenCalledWith(
+      'download',
+      expect.any(Number),
+    );
+    expect(fixture.metrics.recordStageDuration).toHaveBeenCalledWith(
+      'preprocess',
+      expect.any(Number),
+    );
+    expect(fixture.metrics.recordStageDuration).toHaveBeenCalledWith('policy', expect.any(Number));
   });
 
   it('coalesces matching process-local OCR work without deferring the duplicate analysis', async () => {
-    const { service, ocr, cache } = harness();
+    const { service, ocr, cache, metrics } = harness();
     const deadlineAtMs = Date.now() + 60_000;
     let releaseOcr!: () => void;
     const ocrGate = new Promise<void>((resolve) => {
@@ -445,6 +516,7 @@ describe('CommercialOcrAnalysisService', () => {
     ]);
     expect(ocr.recognize).toHaveBeenCalledTimes(2);
     expect(cache.write).toHaveBeenCalledTimes(2);
+    expect(metrics.recordCounter).toHaveBeenCalledWith('cache.primary.coalesced');
   });
 
   it('stops a coalesced waiter at its own earlier absolute deadline', async () => {
@@ -477,6 +549,42 @@ describe('CommercialOcrAnalysisService', () => {
       releaseOcr();
       await jest.runAllTimersAsync();
       await expect(first).resolves.toMatchObject({ kind: 'complete' });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not release the owning analysis while physical preprocessing is still running', async () => {
+    jest.useFakeTimers();
+    try {
+      const { service, preprocessor, ocr } = harness();
+      let releasePreprocess!: () => void;
+      const preprocessGate = new Promise<void>((resolve) => {
+        releasePreprocess = resolve;
+      });
+      preprocessor.prepare.mockImplementationOnce(async () => {
+        await preprocessGate;
+        return { bytes: Buffer.from('prepared'), width: 100, height: 50 };
+      });
+
+      let settled = false;
+      const analysis = analyze(service, { deadlineAtMs: Date.now() + 100 }).finally(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(1);
+      expect(preprocessor.prepare).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(100);
+      expect(settled).toBe(false);
+      expect(ocr.recognize).not.toHaveBeenCalled();
+
+      releasePreprocess();
+      await expect(analysis).resolves.toEqual({
+        kind: 'incomplete',
+        reason: 'job_deadline_exceeded',
+        imageIndex: 0,
+        pass: 'primary',
+      });
     } finally {
       jest.useRealTimers();
     }
@@ -546,6 +654,27 @@ describe('CommercialOcrAnalysisService', () => {
     }
   });
 
+  it('fails open with an explicit reason when the bounded Sharp operation times out', async () => {
+    const { service, preprocessor, ocr, cache } = harness();
+    preprocessor.prepare.mockRejectedValueOnce(
+      new CommercialOcrImageRejectedError('processing_timeout'),
+    );
+
+    await expect(analyze(service)).resolves.toEqual({
+      kind: 'incomplete',
+      reason: 'preprocess_timeout',
+      imageIndex: 0,
+      pass: 'primary',
+    });
+    expect(preprocessor.prepare).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'primary',
+      expect.objectContaining({ deadlineAtMs: expect.any(Number) }),
+    );
+    expect(ocr.recognize).not.toHaveBeenCalled();
+    expect(cache.write).not.toHaveBeenCalled();
+  });
+
   it('fails open and never caches truncated OCR output', async () => {
     const { service, cache } = harness({ ocrResults: [nativeResult({ truncated: true })] });
     await expect(analyze(service)).resolves.toEqual({
@@ -557,7 +686,7 @@ describe('CommercialOcrAnalysisService', () => {
     expect(cache.write).not.toHaveBeenCalled();
   });
 
-  it.each(['invalid_input', 'invalid_output', 'output_limit'] as const)(
+  it.each(['invalid_input', 'artifact_unverified', 'invalid_output', 'output_limit'] as const)(
     'fails open and never caches terminal OCR failure %s',
     async (reason) => {
       const { service, cache } = harness({
