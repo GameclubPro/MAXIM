@@ -470,7 +470,7 @@ read_running_api_inventory() {
       !Array.isArray(owned) || !Array.isArray(ambiguous) ||
       [...owned, ...ambiguous].some((id) => typeof id !== "string" || !/^[a-f0-9]{12,64}$/u.test(id))
     ) process.exit(2);
-    process.stdout.write(`${ambiguous.length}\n${owned.join("\n")}`);
+    process.stdout.write(String(ambiguous.length) + "\n" + owned.join("\n"));
   ')" || return 1
   RUNTIME_INVENTORY_OWNED_UNREVIEWED_IDS=()
   RUNTIME_INVENTORY_AMBIGUOUS_COUNT="${inventory_summary%%$'\n'*}"

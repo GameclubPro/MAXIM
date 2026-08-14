@@ -287,6 +287,8 @@ commercial_ocr_promote() {
 
   maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
+  # Keep remote temporary paths literal until bash evaluates the command on the VPS.
+  # shellcheck disable=SC2016
   printf -v remote_command \
     'cd %q && bundle_dir="$(mktemp -d)" && certification_file="$bundle_dir/certification.json" && cohort_file="$bundle_dir/cohort.txt" && trap '\''rm -f -- "$certification_file" "$cohort_file"; rmdir -- "$bundle_dir"'\'' EXIT && node ./infra/scripts/commercial-ocr-promotion-bundle.mjs unpack "$certification_file" "$cohort_file" && ./infra/scripts/vps-commercial-ocr-rollout.sh promote --chat-ids-file "$cohort_file" --certification-file "$certification_file" --certification-sha256 %q --expected-revision %q' \
     "$MAXIM_VPS_REPO_DIR" "$reviewed_certification_sha256" "$expected_revision"
