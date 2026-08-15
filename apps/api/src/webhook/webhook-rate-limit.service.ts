@@ -2,6 +2,25 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
+const DEFAULT_WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS = 100;
+
+const WEBHOOK_RATE_LIMIT_SCRIPT = `
+-- MAXIM_WEBHOOK_RATE_LIMIT_V1
+local secondCount = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+if secondCount > tonumber(ARGV[3]) then
+  return {0, secondCount, 0}
+end
+
+local windowCount = redis.call('INCR', KEYS[2])
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[2]))
+if windowCount > tonumber(ARGV[4]) then
+  return {0, secondCount, windowCount}
+end
+
+return {1, secondCount, windowCount}
+`;
+
 @Injectable()
 export class WebhookRateLimitService implements OnModuleDestroy {
   private readonly logger = new Logger(WebhookRateLimitService.name);
@@ -18,7 +37,15 @@ export class WebhookRateLimitService implements OnModuleDestroy {
   private lastFallbackLogAtMs = 0;
 
   constructor(private readonly configService: ConfigService) {
-    this.redis = new Redis(this.configService.getOrThrow<string>('REDIS_URL'));
+    const commandTimeout = this.readPositiveInt(
+      this.configService.get('WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS'),
+      DEFAULT_WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS,
+    );
+    this.redis = new Redis(this.configService.getOrThrow<string>('REDIS_URL'), {
+      commandTimeout,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+    });
     this.globalLimit = this.configService.get<number>('WEBHOOK_GLOBAL_RPS_LIMIT', 300);
     this.burstLimit = this.configService.get<number>('WEBHOOK_BURST_LIMIT', 450);
   }
@@ -32,32 +59,30 @@ export class WebhookRateLimitService implements OnModuleDestroy {
     const secKey = `webhook:rps:global:${nowSec}`;
     const avgWindowKey = `webhook:rps:avg:${Math.floor(nowSec / 20)}`;
 
-    const secCount = await this.incrementCounterWithTtl(secKey, 2);
-    if (secCount > this.burstLimit) {
-      return false;
-    }
-
-    const avgWindowCount = await this.incrementCounterWithTtl(avgWindowKey, 21);
-
-    return avgWindowCount <= this.globalLimit * 20;
-  }
-
-  private async incrementCounterWithTtl(key: string, ttlSec: number): Promise<number> {
     try {
-      const pipeline = this.redis.multi();
-      pipeline.incr(key);
-      pipeline.expire(key, ttlSec);
-      const result = await pipeline.exec();
-      const count = result?.[0]?.[1];
-
-      if (typeof count !== 'number') {
-        throw new Error(`Failed to increment webhook rate limit counter for ${key}`);
+      const result = await this.redis.eval(
+        WEBHOOK_RATE_LIMIT_SCRIPT,
+        2,
+        secKey,
+        avgWindowKey,
+        2,
+        21,
+        this.burstLimit,
+        this.globalLimit * 20,
+      );
+      const allowed = Array.isArray(result) ? Number(result[0]) : Number.NaN;
+      if (allowed !== 0 && allowed !== 1) {
+        throw new Error('Failed to reserve webhook ingress capacity');
       }
-
-      return count;
+      return allowed === 1;
     } catch (error: unknown) {
       this.logRedisFallback(error);
-      return this.incrementFallbackCounterWithTtl(key, ttlSec);
+      const secCount = this.incrementFallbackCounterWithTtl(secKey, 2);
+      if (secCount > this.burstLimit) {
+        return false;
+      }
+      const avgWindowCount = this.incrementFallbackCounterWithTtl(avgWindowKey, 21);
+      return avgWindowCount <= this.globalLimit * 20;
     }
   }
 
@@ -98,5 +123,10 @@ export class WebhookRateLimitService implements OnModuleDestroy {
       },
       'Falling back to in-memory webhook rate limit counters after Redis failure',
     );
+  }
+
+  private readPositiveInt(value: unknown, fallback: number): number {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.trunc(parsed)) : fallback;
   }
 }

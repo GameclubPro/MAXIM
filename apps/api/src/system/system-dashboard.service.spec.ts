@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import {
   MAX_ACTION_BACKGROUND_QUEUE,
   MAX_ACTION_CRITICAL_QUEUE,
@@ -273,6 +274,64 @@ describe('SystemDashboardService', () => {
     });
   });
 
+  it('returns action latency diagnostics fail-soft', async () => {
+    const actionLatency = {
+      generatedAt: '2026-08-15T12:00:00.000Z',
+      basis: 'terminal_outcomes',
+    };
+    const actionLatencyService = {
+      getSnapshot: jest
+        .fn()
+        .mockResolvedValueOnce(actionLatency)
+        .mockRejectedValueOnce(new Error('latency query unavailable')),
+    };
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-08-15T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      actionLatencyService as never,
+    );
+    const loggerWarn = jest
+      .spyOn((service as unknown as { logger: Logger }).logger, 'warn')
+      .mockImplementation();
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({ actionLatency });
+    const fallback = await service.getSnapshot();
+
+    expect(fallback).not.toHaveProperty('actionLatency');
+    expect(actionLatencyService.getSnapshot).toHaveBeenCalledTimes(2);
+    expect(loggerWarn).toHaveBeenCalledWith(
+      { err: 'latency query unavailable' },
+      'Action latency dashboard snapshot is unavailable; response remains fail-soft',
+    );
+  });
+
   it('surfaces VK parsing guard warnings without marking the dashboard critical', async () => {
     const service = new SystemDashboardService(
       {
@@ -342,6 +401,61 @@ describe('SystemDashboardService', () => {
   });
 
   it('surfaces delivery ledger risks as operator warnings without automatic retries', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          activeSources: 12,
+          sourceFailureCount: 0,
+          circuitOpenSources: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          recentMediaChecks: 10,
+          recentMediaFailures: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          publishBacklog: 0,
+          oldestPublishBacklogAgeSec: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          actionAmbiguous: 1,
+          actionStaleInProgress: 29,
+          actionStaleRetryable: 8,
+          actionOldestRiskAgeSec: 86_400,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          broadcastAmbiguous: 3,
+          broadcastStaleSending: 1,
+          broadcastRiskBroadcasts: 2,
+          broadcastOldestRiskAgeSec: 3_600,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          suggestionAmbiguous: 0,
+          suggestionTerminalFailed: 229,
+          suggestionStaleSending: 0,
+          suggestionRiskSuggestions: 12,
+          suggestionOldestRiskAgeSec: 172_800,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          deleteIntentSafelyExpirable: 476,
+          deleteIntentStaleExpiredInProgress: 2,
+          deleteIntentOldestExpiredAgeSec: 259_200,
+          deleteIntentRiskCapped: false,
+          deleteIntentStaleExpiredInProgressCapped: false,
+        },
+      ]);
     const service = new SystemDashboardService(
       {
         getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
@@ -374,52 +488,7 @@ describe('SystemDashboardService', () => {
       undefined,
       undefined,
       {
-        $queryRaw: jest
-          .fn()
-          .mockResolvedValueOnce([
-            {
-              activeSources: 12,
-              sourceFailureCount: 0,
-              circuitOpenSources: 0,
-            },
-          ])
-          .mockResolvedValueOnce([
-            {
-              recentMediaChecks: 10,
-              recentMediaFailures: 0,
-            },
-          ])
-          .mockResolvedValueOnce([
-            {
-              publishBacklog: 0,
-              oldestPublishBacklogAgeSec: 0,
-            },
-          ])
-          .mockResolvedValueOnce([
-            {
-              actionAmbiguous: 1,
-              actionStaleInProgress: 29,
-              actionStaleRetryable: 8,
-              actionOldestRiskAgeSec: 86_400,
-            },
-          ])
-          .mockResolvedValueOnce([
-            {
-              broadcastAmbiguous: 3,
-              broadcastStaleSending: 1,
-              broadcastRiskBroadcasts: 2,
-              broadcastOldestRiskAgeSec: 3_600,
-            },
-          ])
-          .mockResolvedValueOnce([
-            {
-              suggestionAmbiguous: 0,
-              suggestionTerminalFailed: 229,
-              suggestionStaleSending: 0,
-              suggestionRiskSuggestions: 12,
-              suggestionOldestRiskAgeSec: 172_800,
-            },
-          ]),
+        $queryRaw: queryRaw,
       } as never,
     );
 
@@ -433,6 +502,20 @@ describe('SystemDashboardService', () => {
       recommendedAction: expect.stringContaining('не ретрайте автоматически'),
     });
     expect(alert?.detail).toContain('managed broadcast delivery: ambiguous 3');
+    expect(alert?.detail).toContain(
+      'moderation delete intents: safely expirable 476, stale expired in-progress 2',
+    );
+
+    const deleteIntentQuery = queryRaw.mock.calls[6];
+    const deleteIntentSql = (deleteIntentQuery?.[0] as readonly string[] | undefined)?.join('?');
+    expect(deleteIntentSql).toContain('with risk_candidates as');
+    expect(deleteIntentSql).toContain('stale_in_progress_candidates as');
+    expect(deleteIntentSql).toContain('limit ?');
+    expect(deleteIntentSql).toContain('intent.remote_delete_succeeded_at is null');
+    expect(deleteIntentSql).toContain('intent.delete_dispatch_started_at is null');
+    expect(deleteIntentSql).toContain('intent.lease_expires_at is null');
+    expect(deleteIntentSql).toContain('intent.lease_expires_at <= current_timestamp');
+    expect(deleteIntentQuery?.slice(1)).toEqual([1_001, 1_001, 1_000, 1_000, 1_000, 1_000]);
   });
 
   it('keeps a healthy dashboard clean when delivery ledger risk aggregates are empty', async () => {
@@ -512,6 +595,15 @@ describe('SystemDashboardService', () => {
               suggestionStaleSending: 0,
               suggestionRiskSuggestions: 0,
               suggestionOldestRiskAgeSec: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              deleteIntentSafelyExpirable: 0,
+              deleteIntentStaleExpiredInProgress: 0,
+              deleteIntentOldestExpiredAgeSec: 0,
+              deleteIntentRiskCapped: false,
+              deleteIntentStaleExpiredInProgressCapped: false,
             },
           ]),
       } as never,
@@ -1549,11 +1641,26 @@ describe('SystemDashboardService', () => {
         attemptedReceipts: 13,
         persistedReceipts: 12,
         failedReceipts: 1,
+        rejectedReceipts: 0,
         sampledReceipts: 12,
         p95LatencyMs: 1_500,
         p99LatencyMs: 2_000,
         underTargetRatio: 1,
         bots: {},
+        route: {
+          attemptedRequests: 20,
+          outcomes: {
+            accepted: 12,
+            authentication_rejected: 2,
+            admission_rejected: 1,
+            invalid_json: 1,
+            invalid_payload: 1,
+            payload_too_large: 1,
+            timed_out: 1,
+            failed: 1,
+          },
+          bots: {},
+        },
       },
       enqueue: {
         targetMs: 1_000,
@@ -1616,7 +1723,7 @@ describe('SystemDashboardService', () => {
           code: 'webhook-slo',
           level: 'warning',
           detail: expect.stringMatching(
-            /ingress available.*enqueue p95 1800 мс.*receipts\/EXECUTION claims 12\/7/u,
+            /ingress available.*receipt capacity rejects 0; route attempts 20 \[accepted 12, auth rejected 2, admission rejected 1, invalid JSON 1, invalid payload 1, oversized 1, timed out 1, failed 1\].*enqueue p95 1800 мс.*receipts\/EXECUTION claims 12\/7/u,
           ),
         }),
       ]),

@@ -48,8 +48,24 @@ import {
 } from './admin-service-test-support';
 import { moderationReleaseMessageOptions } from './moderation-release-test.util';
 
+const TINY_JPEG_BASE64 =
+  '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const MINIMAL_MP4_HEADER = Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex');
+const MAX_UNSUPPORTED_IMAGE_MESSAGE =
+  'Формат изображения не поддерживается MAX. Используйте JPG, PNG, GIF, TIFF, BMP или HEIC.';
+
 function broadcastRuntime(service: AdminService): any {
   return (service as any).managedBroadcastRuntime;
+}
+
+async function waitForPendingFakeTimer(): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (jest.getTimerCount() > 0) return;
+    await Promise.resolve();
+  }
+  throw new Error('Expected the retry timer to be scheduled.');
 }
 
 function expectImmediateMemberMutationOptions(overrides: Record<string, unknown> = {}) {
@@ -22396,7 +22412,7 @@ describe('AdminService.sendBroadcast', () => {
         buttonUrl: '',
         buttonText: 'Открыть',
         imageEnabled: true,
-        imageBase64: Buffer.from('test-image').toString('base64'),
+        imageBase64: TINY_JPEG_BASE64,
         imageMimeType: 'image/jpeg',
         imageFileName: 'photo.jpg',
         sendAt: '2026-03-03T11:00:00.000Z',
@@ -25261,8 +25277,7 @@ describe('AdminService.sendBroadcast', () => {
         buttonUrl: '',
         buttonText: 'Открыть',
         imageEnabled: true,
-        imageBase64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5lmN4AAAAASUVORK5CYII=',
+        imageBase64: MINIMAL_MP4_HEADER.toString('base64'),
         imageMimeType: 'application/octet-stream',
         imageFileName: 'bad.png',
         scheduleMode: 'legacy',
@@ -25322,6 +25337,7 @@ describe('AdminService.sendBroadcast', () => {
       ['ACTIVE', 'PARTIAL', 'FAILED'],
     );
 
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(result).toEqual(
       expect.objectContaining({
@@ -25335,17 +25351,17 @@ describe('AdminService.sendBroadcast', () => {
         expect.objectContaining({
           occurrenceIndex: 1,
           status: 'FAILED',
-          lastError: 'Поддерживаются только изображения.',
+          lastError: MAX_UNSUPPORTED_IMAGE_MESSAGE,
         }),
         expect.objectContaining({
           occurrenceIndex: 2,
           status: 'CANCELED',
-          lastError: 'Поддерживаются только изображения.',
+          lastError: MAX_UNSUPPORTED_IMAGE_MESSAGE,
         }),
         expect.objectContaining({
           occurrenceIndex: 3,
           status: 'CANCELED',
-          lastError: 'Поддерживаются только изображения.',
+          lastError: MAX_UNSUPPORTED_IMAGE_MESSAGE,
         }),
       ]),
     );
@@ -25355,7 +25371,7 @@ describe('AdminService.sendBroadcast', () => {
       expect.objectContaining({
         status: 'FAILED',
         nextSendAt: null,
-        lastError: 'Поддерживаются только изображения.',
+        lastError: MAX_UNSUPPORTED_IMAGE_MESSAGE,
       }),
     );
   });
@@ -25380,8 +25396,7 @@ describe('AdminService.sendBroadcast', () => {
         buttonUrl: '',
         buttonText: 'Открыть',
         imageEnabled: true,
-        imageBase64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5lmN4AAAAASUVORK5CYII=',
+        imageBase64: TINY_PNG_BASE64,
         imageMimeType: 'image/png',
         imageFileName: 'bad.png',
         scheduleMode: 'legacy',
@@ -25427,10 +25442,12 @@ describe('AdminService.sendBroadcast', () => {
       }),
     );
 
+    const uploadStarted = createDeferred<void>();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      uploadImage: jest.fn().mockRejectedValue({
-        response: { status: 429, data: { message: 'rate limit exceeded' } },
+      uploadImage: jest.fn().mockImplementation(async () => {
+        uploadStarted.resolve();
+        throw { response: { status: 429, data: { message: 'rate limit exceeded' } } };
       }),
       sendMessageImmediateWithId: jest.fn(),
     };
@@ -25451,6 +25468,8 @@ describe('AdminService.sendBroadcast', () => {
       new Date('2026-03-03T09:59:00.000Z'),
       ['ACTIVE', 'PARTIAL', 'FAILED'],
     );
+    await uploadStarted.promise;
+    await waitForPendingFakeTimer();
     await jest.runAllTimersAsync();
     const result = await processPromise;
 
@@ -25938,7 +25957,7 @@ describe('AdminService.sendBroadcast', () => {
         buttonUrl: '',
         buttonText: 'Открыть',
         imageEnabled: true,
-        imageBase64: Buffer.from('image').toString('base64'),
+        imageBase64: TINY_PNG_BASE64,
         imageMimeType: 'image/png',
         imageFileName: 'image.png',
         scheduleMode: 'legacy',
@@ -25964,11 +25983,13 @@ describe('AdminService.sendBroadcast', () => {
       ],
     });
 
+    const uploadStarted = createDeferred<void>();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       uploadImage: jest
         .fn()
         .mockImplementationOnce(async () => {
+          uploadStarted.resolve();
           jest.setSystemTime(new Date(Date.now() + 61_000));
           throw { response: { status: 429, data: { message: 'rate limit exceeded' } } };
         })
@@ -25993,6 +26014,8 @@ describe('AdminService.sendBroadcast', () => {
       new Date('2026-03-03T09:55:00.000Z'),
       ['ACTIVE'],
     );
+    await uploadStarted.promise;
+    await waitForPendingFakeTimer();
     await jest.runOnlyPendingTimersAsync();
     const result = await processPromise;
     const heartbeatInstants = prisma.managedBroadcast.updateMany.mock.calls
@@ -28965,7 +28988,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         buttonUrl: 'https://max.ru/channel/maxim',
         buttonText: 'Открыть выпуск',
         imageEnabled: true,
-        imageBase64: Buffer.from('channel-image').toString('base64'),
+        imageBase64: TINY_JPEG_BASE64,
         imageMimeType: 'image/jpeg',
         imageFileName: 'cover.jpg',
         sendAt: null,
@@ -29184,14 +29207,14 @@ describe('AdminService.sendChannelBroadcast', () => {
         buttonText: 'Открыть',
         images: [
           {
-            base64: Buffer.from('gallery-image-1').toString('base64'),
+            base64: TINY_JPEG_BASE64,
             mimeType: 'image/jpeg',
             fileName: 'gallery-1.jpg',
           },
           {
-            base64: Buffer.from('gallery-image-2').toString('base64'),
-            mimeType: 'image/jpeg',
-            fileName: 'gallery-2.jpg',
+            base64: TINY_PNG_BASE64,
+            mimeType: 'image/png',
+            fileName: 'gallery-2.png',
           },
         ],
         sendAt: null,

@@ -200,6 +200,13 @@ test('rollback shell is syntactically valid and has no build, migration, or Git-
     /if \[\[ "\$SELECT_API" -eq 1 \]\]; then\n {2}if ! docker compose[^\n]+grep -qx postgres; then/u,
   );
   assert.match(script, /if \[\[ "\$SELECT_API" -eq 1 \]\]; then\n {2}require_command git/u);
+  const inheritedApiFenceStart = script.indexOf('verify_inherited_api_component()');
+  const inheritedApiFence = script.slice(
+    inheritedApiFenceStart,
+    script.indexOf('\n}\n', inheritedApiFenceStart) + 2,
+  );
+  assert.doesNotMatch(inheritedApiFence, /\bgit\b|sourceSha|cat-file/u);
+  assert.match(inheritedApiFence, /MAXIM_PRODUCTION_API_SERVICES/u);
   assert.match(
     script,
     /if \[\[ "\$SELECT_API" -eq 1 \]\]; then\n {2}COMMIT_ARGS\+=\(--migrations-file/u,

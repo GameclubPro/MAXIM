@@ -12,7 +12,6 @@ import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type ActiveWebhookQueueName,
   type DefaultWebhookQueueName,
-  extractWebhookBotId,
   extractWebhookChatId,
   extractWebhookType,
   JOIN_WEBHOOK_QUEUE_NAMES,
@@ -22,11 +21,17 @@ import {
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
 } from './webhook-queues';
+import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
 
 type ChatQueueAssignment = {
   queueName: DefaultWebhookQueueName;
   assignedAtMs: number;
   expiresAtMs: number;
+};
+
+type OutstandingMessageQueueWork = {
+  hasPending: boolean;
+  queueName: DefaultWebhookQueueName | null;
 };
 
 type QueuePressure = {
@@ -48,6 +53,13 @@ const ADAPTIVE_TTL_HOT_QUEUE_MS = 30_000;
 const DEFAULT_HOT_WORKER_REBALANCE_MIN_AGE_MS = 12_000;
 const DEFAULT_HOT_WORKER_REBALANCE_PRESSURE_SHARE = 0.7;
 const DEFAULT_HOT_WORKER_REBALANCE_PRESSURE_MIN = 4;
+const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
+const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL = Prisma.raw(
+  String(WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER.length),
+);
+const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL = Prisma.raw(
+  `'${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER.replaceAll("'", "''")}'`,
+);
 
 @Injectable()
 export class WebhookRoutingService {
@@ -94,7 +106,6 @@ export class WebhookRoutingService {
   async resolveQueueName(
     webhookEventId: string,
     payload: unknown,
-    options: { botId?: string | null } = {},
   ): Promise<ActiveWebhookQueueName> {
     switch (extractWebhookType(payload)) {
       case 'message_callback':
@@ -112,25 +123,23 @@ export class WebhookRoutingService {
         if (isManagedEntityHandshakeStartCommand(payload)) {
           return WEBHOOK_QUEUE_CRITICAL;
         }
-        return this.resolveDefaultQueueName(webhookEventId, payload, options);
+        return this.resolveDefaultQueueName(webhookEventId, payload);
       case 'message_edited':
       default:
-        return this.resolveDefaultQueueName(webhookEventId, payload, options);
+        return this.resolveDefaultQueueName(webhookEventId, payload);
     }
   }
 
   private async resolveDefaultQueueName(
     webhookEventId: string,
     payload: unknown,
-    options: { botId?: string | null } = {},
   ): Promise<DefaultWebhookQueueName> {
     const chatId = extractWebhookChatId(payload);
     if (!chatId) {
       return DEFAULT_WEBHOOK_QUEUE_NAMES[0];
     }
 
-    const botId = options.botId?.trim() || extractWebhookBotId(payload) || null;
-    const assignmentKey = this.buildAssignmentKey(chatId, botId);
+    const assignmentKey = this.buildAssignmentKey(chatId);
 
     const now = Date.now();
     const currentAssignment = this.readFreshAssignment(assignmentKey, now);
@@ -151,7 +160,6 @@ export class WebhookRoutingService {
       const refreshPromise = this.refreshChatAssignment(
         assignmentKey,
         chatId,
-        botId,
         webhookEventId,
         now,
         hotAssignmentSnapshot,
@@ -172,7 +180,6 @@ export class WebhookRoutingService {
     const refreshPromise = this.refreshChatAssignment(
       assignmentKey,
       chatId,
-      botId,
       webhookEventId,
       now,
     ).finally(() => {
@@ -187,7 +194,6 @@ export class WebhookRoutingService {
   private async refreshChatAssignment(
     assignmentKey: string,
     chatId: string,
-    botId: string | null,
     webhookEventId: string,
     now: number,
     preloadedSnapshot?: Awaited<ReturnType<QueueMetricsService['getWebhookDefaultShardSnapshot']>>,
@@ -196,13 +202,9 @@ export class WebhookRoutingService {
     const fallbackQueue =
       previousAssignment?.queueName ?? resolveDefaultWebhookQueueNameForChatId(chatId);
 
-    const hasOutstandingWork = await this.hasOutstandingMessageQueueWork(
-      chatId,
-      botId,
-      webhookEventId,
-    );
-    if (hasOutstandingWork) {
-      return this.storeAssignment(assignmentKey, fallbackQueue, now);
+    const outstandingWork = await this.findOutstandingMessageQueueWork(chatId, webhookEventId);
+    if (outstandingWork.hasPending) {
+      return this.storeAssignment(assignmentKey, outstandingWork.queueName ?? fallbackQueue, now);
     }
 
     const snapshot =
@@ -426,19 +428,28 @@ export class WebhookRoutingService {
       : this.chatAssignmentTtlMs;
   }
 
-  private async hasOutstandingMessageQueueWork(
+  private async findOutstandingMessageQueueWork(
     chatId: string,
-    botId: string | null,
     webhookEventId: string,
-  ): Promise<boolean> {
-    const rows = await this.prisma.$queryRaw<Array<{ has_pending?: boolean }>>(
+  ): Promise<OutstandingMessageQueueWork> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ has_pending?: boolean; queue_name?: string | null }>
+    >(
       Prisma.sql`
-        SELECT EXISTS (
-          SELECT 1
+        WITH outstanding AS MATERIALIZED (
+          SELECT queue_name, created_at, id
           FROM webhook_events
           WHERE id <> ${webhookEventId}
-            AND COALESCE(bot_id, '') = ${botId ?? ''}
-            AND status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+            AND (
+              status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+              OR (
+                status = 'FAILED'::"WebhookStatus"
+                AND (
+                  next_enqueue_at IS NOT NULL
+                  OR LEFT(COALESCE(error_message, ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
+                )
+              )
+            )
             AND LOWER(
               COALESCE(
                 NULLIF(BTRIM(normalized_payload->>'type'), ''),
@@ -449,15 +460,31 @@ export class WebhookRoutingService {
               NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
               NULLIF(BTRIM(normalized_payload->>'chatId'), '')
             ) = ${chatId}
-          LIMIT 1
-        ) AS has_pending
+        )
+        SELECT
+          EXISTS (SELECT 1 FROM outstanding LIMIT 1) AS has_pending,
+          (
+            SELECT queue_name
+            FROM outstanding
+            WHERE queue_name IN (${Prisma.join(DEFAULT_WEBHOOK_QUEUE_NAMES)})
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+          ) AS queue_name
       `,
     );
-    return rows[0]?.has_pending === true;
+    const queueName = rows[0]?.queue_name;
+    return {
+      hasPending: rows[0]?.has_pending === true,
+      queueName:
+        typeof queueName === 'string' &&
+        DEFAULT_WEBHOOK_QUEUE_NAMES.some((candidate) => candidate === queueName)
+          ? (queueName as DefaultWebhookQueueName)
+          : null,
+    };
   }
 
-  private buildAssignmentKey(chatId: string, botId: string | null): string {
-    return botId ? `${botId}:${chatId}` : `default:${chatId}`;
+  private buildAssignmentKey(chatId: string): string {
+    return `chat:${chatId}`;
   }
 
   private buildWorkerGroupByQueue(): Record<

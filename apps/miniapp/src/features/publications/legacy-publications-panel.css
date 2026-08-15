@@ -178,7 +178,9 @@
 
   .legacy-publications-row time {
     max-width: 132px;
+    overflow: hidden;
     text-align: right;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 

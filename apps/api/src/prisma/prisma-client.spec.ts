@@ -10,6 +10,7 @@ describe('prisma-client', () => {
         PRISMA_PG_POOL_IDLE_TIMEOUT_MS: '10000',
         PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: '5000',
         PRISMA_PG_POOL_MAX_LIFETIME_SEC: '300',
+        PRISMA_PG_STATEMENT_TIMEOUT_MS: '15000',
       }),
     ).toEqual({
       application_name: 'api-admin',
@@ -17,6 +18,7 @@ describe('prisma-client', () => {
       idleTimeoutMillis: 10000,
       connectionTimeoutMillis: 5000,
       maxLifetimeSeconds: 300,
+      statement_timeout: 15000,
     });
   });
 
@@ -51,6 +53,9 @@ describe('prisma-client', () => {
     );
     expect(() => readPrismaPoolConfig({ PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 'NaN' })).toThrow(
       /PRISMA_PG_POOL_IDLE_TIMEOUT_MS must be a positive integer/u,
+    );
+    expect(() => readPrismaPoolConfig({ PRISMA_PG_STATEMENT_TIMEOUT_MS: '0' })).toThrow(
+      /PRISMA_PG_STATEMENT_TIMEOUT_MS must be a positive integer/u,
     );
   });
 

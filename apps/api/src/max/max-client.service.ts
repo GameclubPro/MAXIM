@@ -28,8 +28,24 @@ import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry
 import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
+import {
+  markMaxMemberMutationAttempted,
+  markMaxMemberMutationConfirmed,
+  wasMaxMemberMutationAttempted,
+} from './max-member-error.util';
 import { isAmbiguousMaxMutationError, isAmbiguousMaxSendError } from './max-send-ambiguity.util';
-import { MAX_VIDEO_UPLOAD_MAX_BYTES } from './max-video-upload.constants';
+import {
+  MAX_AUDIO_UPLOAD_MAX_BYTES,
+  MAX_FILE_UPLOAD_MAX_BYTES,
+  MAX_IMAGE_UPLOAD_MAX_BYTES,
+  MAX_VIDEO_UPLOAD_MAX_BYTES,
+} from './max-video-upload.constants';
+import { MaxMediaUploadValidationCache } from './max-media-upload-validation-cache';
+import type {
+  MaxValidatedImageUpload,
+  MaxValidatedMediaUpload,
+  MaxValidatedVideoUpload,
+} from './max-media-upload-validation';
 import {
   buildMaxApiServiceBotClassMetricKey,
   buildMaxApiServiceStackClassMetricKey,
@@ -147,6 +163,13 @@ export type MaxChatMembersPage = {
 
 export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
 
+type MaxMessageMutationOperation = 'send' | 'edit' | 'delete' | 'answer';
+
+type MaxMessageMutationRateLimitScope = {
+  operation: MaxMessageMutationOperation;
+  entityId: string | null;
+};
+
 export type MaxPublishedMessage = {
   messageId: string;
   url: string | null;
@@ -178,8 +201,6 @@ const MAX_RESUMABLE_VIDEO_UPLOAD_SESSION_ATTEMPTS = 2;
 const MAX_LIST_BOT_CHATS_UNSUPPORTED_IN_PRODUCTION =
   'MAX API GET /chats is not supported in production; use webhook/subscription managed chat catalog instead. See https://dev.max.ru/docs-api/methods/GET/chats';
 const MAX_MESSAGE_SEND_ATTEMPTED = Symbol('max-message-send-attempted');
-const maxMemberMutationAttemptedErrors = new WeakSet<object>();
-const maxMemberMutationConfirmedErrors = new WeakSet<object>();
 
 export function wasMaxMessageSendAttempted(error: unknown): boolean {
   return Boolean(
@@ -204,29 +225,12 @@ function markMaxMessageSendAttempted(error: unknown): unknown {
   return wrapped;
 }
 
-export function wasMaxMemberMutationAttempted(error: unknown): boolean {
-  return Boolean(error && typeof error === 'object' && maxMemberMutationAttemptedErrors.has(error));
-}
-
-export function markMaxMemberMutationAttempted(error: unknown): unknown {
-  if (error && typeof error === 'object') {
-    maxMemberMutationAttemptedErrors.add(error);
-    return error;
-  }
-  const wrapped = new Error(String(error));
-  maxMemberMutationAttemptedErrors.add(wrapped);
-  return wrapped;
-}
-
-export function wasMaxMemberMutationConfirmed(error: unknown): boolean {
-  return Boolean(error && typeof error === 'object' && maxMemberMutationConfirmedErrors.has(error));
-}
-
-export function markMaxMemberMutationConfirmed(error: unknown): unknown {
-  const attemptedError = markMaxMemberMutationAttempted(error);
-  maxMemberMutationConfirmedErrors.add(attemptedError as object);
-  return attemptedError;
-}
+export {
+  markMaxMemberMutationAttempted,
+  markMaxMemberMutationConfirmed,
+  wasMaxMemberMutationAttempted,
+  wasMaxMemberMutationConfirmed,
+} from './max-member-error.util';
 
 export class MaxApiRequestRejectedError extends Error {
   readonly response: {
@@ -442,6 +446,7 @@ export type MaxActionJob = QueueJobEnvelope<
     attempt: number;
     idempotencyKey: string;
     createdAt: string;
+    scheduledFor?: string;
   },
   {
     retryPolicyName?: Extract<QueueRetryPolicyName, 'max-action'>;
@@ -486,6 +491,7 @@ type MaxApiRequestOptions = {
   timeoutMs?: number;
   botId?: string;
   forceUpsert?: boolean;
+  rateLimitEntityId?: string;
 };
 
 export const MAX_API_SOURCE_TAGS = {
@@ -556,6 +562,10 @@ const LIVE_MAX_ACTION_JOB_STATES = new Set([
   'waiting',
   'waiting-children',
 ]);
+type MaxActionQueueJobObservation = {
+  state: 'missing' | 'live' | 'final' | 'unknown';
+  enqueuedAt?: Date;
+};
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
@@ -568,6 +578,7 @@ const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
 const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
 const DEFAULT_MAX_API_MANAGED_REFRESH_RPS = 2;
 const DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS = 2;
+const MAX_MESSAGE_MUTATION_RPS = 2;
 const MAX_API_MESSAGE_IDS_BATCH_SIZE = 50;
 const MAX_API_DIRECT_MESSAGE_LOOKUP_CONCURRENCY = 4;
 const MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP = 10_000;
@@ -609,7 +620,8 @@ local nextTtls = {}
 for index = 1, keyCount do
   local limit = tonumber(ARGV[index])
   local intervalMs = 1000 / limit
-  local burstToleranceMs = (limit - 1) * intervalMs
+  local burstToleranceSlots = tonumber(ARGV[keyCount + index])
+  local burstToleranceMs = burstToleranceSlots * intervalMs
   local storedTat = tonumber(redis.call('GET', KEYS[index]) or tostring(nowMs))
   local tat = math.max(storedTat, nowMs)
   local allowAtMs = tat - burstToleranceMs
@@ -803,6 +815,7 @@ export class MaxClientService implements OnModuleDestroy {
     Promise<Map<string, MaxChatMemberAccess>>
   >();
   private readonly chatAdminIdsInFlight = new Map<string, Promise<string[]>>();
+  private readonly mediaUploadValidationCache = new MaxMediaUploadValidationCache();
 
   constructor(
     private readonly httpService: HttpService,
@@ -941,6 +954,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    this.mediaUploadValidationCache.clear();
     for (const timeout of new Set([
       ...this.pendingTimeouts,
       ...this.keyedActionTimeouts.values(),
@@ -1000,7 +1014,8 @@ export class MaxClientService implements OnModuleDestroy {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
     const timeoutMs = this.normalizeTimeoutMs(requestOptions.timeoutMs);
-    const sendResponse = await this.executeMutation(
+    const sendResponse = await this.executeMessageMutation(
+      'send',
       chatId,
       async () => {
         await options?.beforeSend?.();
@@ -1044,7 +1059,8 @@ export class MaxClientService implements OnModuleDestroy {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
     const timeoutMs = this.normalizeTimeoutMs(requestOptions.timeoutMs);
-    const sendResponse = await this.executeMutation(
+    const sendResponse = await this.executeMessageMutation(
+      'send',
       `user:${userId}`,
       async () => {
         await options?.beforeSend?.();
@@ -1126,7 +1142,8 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('MAX custom message payload is empty');
     }
 
-    return this.executeMutation(
+    return this.executeMessageMutation(
+      'send',
       chatId,
       async () => {
         await beforeSend?.();
@@ -1344,7 +1361,8 @@ export class MaxClientService implements OnModuleDestroy {
 
       await assertOwnership();
 
-      await this.executeMutation(
+      await this.executeMessageMutation(
+        'edit',
         chatId,
         async () => {
           await assertOwnership();
@@ -1388,7 +1406,8 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const timeoutMs = this.normalizeTimeoutMs(normalizedRequestOptions.timeoutMs);
-    const sendResponse = await this.executeMutation(
+    const sendResponse = await this.executeMessageMutation(
+      'send',
       chatId,
       async () => {
         return this.request<Record<string, unknown>>('post', '/messages', {
@@ -2026,18 +2045,23 @@ export class MaxClientService implements OnModuleDestroy {
     return this.uploadBinary('image', data, fileName, mimeType, requestOptions);
   }
 
+  validateMediaUploadPayload(uploadType: 'image', data: Buffer): Promise<MaxValidatedImageUpload>;
+  validateMediaUploadPayload(uploadType: 'video', data: Buffer): Promise<MaxValidatedVideoUpload>;
+  validateMediaUploadPayload(
+    uploadType: 'image' | 'video',
+    data: Buffer,
+  ): Promise<MaxValidatedMediaUpload> {
+    return uploadType === 'image'
+      ? this.mediaUploadValidationCache.validate('image', data)
+      : this.mediaUploadValidationCache.validate('video', data);
+  }
+
   async uploadVideo(
     data: Buffer,
     fileName = 'video.mp4',
     mimeType = 'video/mp4',
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
-    if (data.length === 0) {
-      throw new Error('MAX video upload payload is empty');
-    }
-    if (data.length > MAX_VIDEO_UPLOAD_MAX_BYTES) {
-      throw new Error('MAX video upload exceeds the documented 250 MB limit');
-    }
     return this.uploadBinary('video', data, fileName, mimeType, requestOptions);
   }
 
@@ -2057,16 +2081,30 @@ export class MaxClientService implements OnModuleDestroy {
     mimeType: string,
     requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
+    this.assertUploadPayloadSize(uploadType, data);
+    const validatedMedia =
+      uploadType === 'image'
+        ? await this.validateMediaUploadPayload('image', data)
+        : uploadType === 'video'
+          ? await this.validateMediaUploadPayload('video', data)
+          : null;
+    const safeFileName = validatedMedia
+      ? this.normalizeValidatedMediaUploadFileName(
+          fileName,
+          validatedMedia.uploadType,
+          validatedMedia.extension,
+        )
+      : this.normalizeUploadFileName(fileName, uploadType);
+    const effectiveMimeType = validatedMedia?.mimeType ?? mimeType;
     const bot = this.resolveExecutableBot(requestOptions.botId, {
       explicit: Boolean(requestOptions.botId?.trim()),
     });
     return this.botContext.runWithBot(bot.id, async () => {
-      const safeFileName = this.normalizeUploadFileName(fileName, uploadType);
       if (uploadType === 'video' && this.resumableVideoUploadEnabled && data.length > 0) {
         return this.uploadVideoWithContentRange(
           data,
           safeFileName,
-          mimeType,
+          effectiveMimeType,
           requestOptions,
           bot.id,
         );
@@ -2078,10 +2116,27 @@ export class MaxClientService implements OnModuleDestroy {
         uploadMeta,
         data,
         safeFileName,
-        mimeType,
+        effectiveMimeType,
         requestOptions,
       );
     });
+  }
+
+  private assertUploadPayloadSize(uploadType: MaxMediaAttachmentType, data: Buffer): void {
+    if (data.length === 0) {
+      throw new Error(`MAX ${uploadType} upload payload is empty`);
+    }
+
+    const limits: Record<MaxMediaAttachmentType, { maxBytes: number; label: string }> = {
+      image: { maxBytes: MAX_IMAGE_UPLOAD_MAX_BYTES, label: '50 MB' },
+      video: { maxBytes: MAX_VIDEO_UPLOAD_MAX_BYTES, label: '250 MB' },
+      audio: { maxBytes: MAX_AUDIO_UPLOAD_MAX_BYTES, label: '256 MB' },
+      file: { maxBytes: MAX_FILE_UPLOAD_MAX_BYTES, label: '4 GB' },
+    };
+    const limit = limits[uploadType];
+    if (data.length > limit.maxBytes) {
+      throw new Error(`MAX ${uploadType} upload exceeds the documented ${limit.label} limit`);
+    }
   }
 
   private async createUploadSession(
@@ -2362,6 +2417,22 @@ export class MaxClientService implements OnModuleDestroy {
     return sanitized;
   }
 
+  private normalizeValidatedMediaUploadFileName(
+    fileName: string | null | undefined,
+    uploadType: 'image' | 'video',
+    extension: string,
+  ): string {
+    const normalized = this.normalizeUploadFileName(fileName, uploadType);
+    const rawStem = normalized.replace(/\.[^./\\]+$/u, '');
+    const maxStemLength = Math.max(1, MAX_UPLOAD_FILENAME_MAX_LENGTH - extension.length - 1);
+    const stem =
+      rawStem
+        .slice(0, maxStemLength)
+        .replace(/[. ]+$/u, '')
+        .trim() || 'upload';
+    return `${stem}.${extension}`;
+  }
+
   async kickMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
     this.assertMemberActionTargetIsNotRuntimeBot('KICK_MEMBER', chatId, userId);
     await this.dispatchAction(
@@ -2473,7 +2544,8 @@ export class MaxClientService implements OnModuleDestroy {
           if (!action.messageId) {
             throw new Error('messageId is required for DELETE_MESSAGE');
           }
-          await this.executeMutation(
+          await this.executeMessageMutation(
+            'delete',
             action.chatId,
             async () => {
               await this.runPreDispatchMutationGuard(
@@ -4404,6 +4476,7 @@ export class MaxClientService implements OnModuleDestroy {
       typeof messageEdit?.text === 'string' &&
       messageEdit.text.trim().length > 0;
     const messageId = hasMessageEdit ? this.readTrimmedString(messageEdit?.messageId) : null;
+    const rateLimitEntityId = this.readTrimmedString(requestOptions.rateLimitEntityId);
     const executeAnswer = async (assertOwnership?: () => Promise<void>) => {
       const callbackData: Record<string, unknown> = {};
       if (normalizedNotification) {
@@ -4425,7 +4498,7 @@ export class MaxClientService implements OnModuleDestroy {
       }
 
       await this.executeMutation(
-        null,
+        rateLimitEntityId,
         async () => {
           await assertOwnership?.();
           await this.request('post', '/answers', {
@@ -4445,6 +4518,12 @@ export class MaxClientService implements OnModuleDestroy {
           timeoutMs: requestOptions.timeoutMs,
           botId: requestOptions.botId,
         },
+        {
+          messageMutation: {
+            operation: 'answer',
+            entityId: rateLimitEntityId,
+          },
+        },
       );
     };
 
@@ -4456,7 +4535,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async dispatchAction(
-    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
+    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt' | 'scheduledFor'>,
     options?: MaxActionDispatchOptions,
   ) {
     const beforeImmediateDeleteMutation = options?.beforeImmediateDeleteMutation;
@@ -4554,6 +4633,7 @@ export class MaxClientService implements OnModuleDestroy {
       scheduledJobId ??
       explicitIdempotencyKey ??
       this.buildDefaultActionIdempotencyKey(payload, isRoutedAction ? null : bot.id);
+    const createdAt = new Date();
     const job: MaxActionJob = {
       ...payload,
       botId: bot.id,
@@ -4570,7 +4650,10 @@ export class MaxClientService implements OnModuleDestroy {
       ...(options?.ledgerContext ? { ledgerContext: options.ledgerContext } : {}),
       attempt: 1,
       idempotencyKey: logicalIdempotencyKey ?? randomUUID(),
-      createdAt: new Date().toISOString(),
+      createdAt: createdAt.toISOString(),
+      ...(delayMs > 0
+        ? { scheduledFor: new Date(createdAt.getTime() + delayMs).toISOString() }
+        : {}),
     };
 
     if (immediate && delayMs > 0) {
@@ -4616,25 +4699,32 @@ export class MaxClientService implements OnModuleDestroy {
       const targetActionQueue = actionQueue;
       const addActionJob = () => targetActionQueue.add('execute-max-action', job, queueJobOptions);
       const enqueueAttemptStartedAt = new Date();
+      let bullMqEnqueuedAt: Date | undefined;
       try {
-        await addActionJob();
+        const addedJob = await addActionJob();
+        bullMqEnqueuedAt = this.readBullMqJobEnqueuedAt(addedJob);
       } catch (error: unknown) {
         const queueObservation = await this.observeActionQueueJob(
           targetActionQueue,
           job.idempotencyKey,
         );
         let executionObserved =
-          queueObservation === 'live'
+          queueObservation.state === 'live'
             ? false
             : (await this.actionLedgerService
                 ?.hasExecutionEvidenceSince(job.idempotencyKey, enqueueAttemptStartedAt)
                 .catch(() => false)) === true;
-        let queueAccepted = queueObservation === 'live' || executionObserved;
-        let recoveryEvidence = queueObservation === 'live' ? 'bullmq_job' : 'ledger_execution';
+        let queueAccepted = queueObservation.state === 'live' || executionObserved;
+        let recoveryEvidence =
+          queueObservation.state === 'live' ? 'bullmq_job' : 'ledger_execution';
+        if (queueObservation.state === 'live') {
+          bullMqEnqueuedAt = queueObservation.enqueuedAt;
+        }
 
-        if (!queueAccepted && queueObservation === 'unknown') {
+        if (!queueAccepted && queueObservation.state === 'unknown') {
           try {
-            await addActionJob();
+            const addedJob = await addActionJob();
+            bullMqEnqueuedAt = this.readBullMqJobEnqueuedAt(addedJob);
             queueAccepted = true;
             recoveryEvidence = 'bullmq_retry';
           } catch (retryError: unknown) {
@@ -4711,17 +4801,19 @@ export class MaxClientService implements OnModuleDestroy {
       }
 
       // FLAG: BullMQ must own the action before best-effort ledger bookkeeping.
-      await this.actionLedgerService?.recordEnqueuedIfAbsent(job).catch((ledgerError: unknown) => {
-        this.logger.warn(
-          {
-            actionType: job.actionType,
-            chatId: job.chatId,
-            botId: job.botId,
-            error: this.extractErrorMessage(ledgerError),
-          },
-          'Failed to record queued MAX action after BullMQ accepted it',
-        );
-      });
+      await this.actionLedgerService
+        ?.recordEnqueuedIfAbsent(job, bullMqEnqueuedAt)
+        .catch((ledgerError: unknown) => {
+          this.logger.warn(
+            {
+              actionType: job.actionType,
+              chatId: job.chatId,
+              botId: job.botId,
+              error: this.extractErrorMessage(ledgerError),
+            },
+            'Failed to record queued MAX action after BullMQ accepted it',
+          );
+        });
       return;
     }
 
@@ -4763,7 +4855,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async resolveQueuedActionRoute(
-    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
+    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt' | 'scheduledFor'>,
   ): Promise<MaxBotRoute | null> {
     if (
       !this.maxBotLinkService ||
@@ -4798,7 +4890,7 @@ export class MaxClientService implements OnModuleDestroy {
         },
         'Failed to resolve routed MAX action candidates before enqueue',
       );
-      return null;
+      throw error;
     }
   }
 
@@ -4844,7 +4936,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     await this.actionLedgerService.assertCanEnqueue(job);
-    await this.actionLedgerService.recordStarted(job);
+    await this.actionLedgerService.recordStarted(job, new Date(job.createdAt));
     try {
       await this.executeActionJob(job, { beforeDeleteMutation, beforeMemberMutation });
     } catch (error: unknown) {
@@ -4907,7 +4999,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private buildDefaultActionIdempotencyKey(
-    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
+    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt' | 'scheduledFor'>,
     botId: string | null,
   ): string | null {
     const chatId = this.readTrimmedString(payload.chatId);
@@ -4960,17 +5052,31 @@ export class MaxClientService implements OnModuleDestroy {
   private async observeActionQueueJob(
     queue: Queue<MaxActionJob>,
     jobId: string,
-  ): Promise<'missing' | 'live' | 'final' | 'unknown'> {
+  ): Promise<MaxActionQueueJobObservation> {
     try {
       const retainedJob = await queue.getJob(jobId);
       if (!retainedJob) {
-        return 'missing';
+        return { state: 'missing' };
       }
       const state = await retainedJob.getState();
-      return LIVE_MAX_ACTION_JOB_STATES.has(state) ? 'live' : 'final';
+      return {
+        state: LIVE_MAX_ACTION_JOB_STATES.has(state) ? 'live' : 'final',
+        enqueuedAt: this.readBullMqJobEnqueuedAt(retainedJob),
+      };
     } catch {
-      return 'unknown';
+      return { state: 'unknown' };
     }
+  }
+
+  private readBullMqJobEnqueuedAt(
+    job: Pick<Job<MaxActionJob>, 'timestamp'> | null | undefined,
+  ): Date | undefined {
+    const timestamp = job?.timestamp;
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0) {
+      return undefined;
+    }
+    const enqueuedAt = new Date(timestamp);
+    return Number.isFinite(enqueuedAt.getTime()) ? enqueuedAt : undefined;
   }
 
   private async removeRetainedFailedActionJob(
@@ -6122,6 +6228,7 @@ export class MaxClientService implements OnModuleDestroy {
       ignoreFailureMetricStatuses?: readonly number[];
       timeoutMs?: number;
       botId?: string;
+      messageMutation?: MaxMessageMutationRateLimitScope;
     } = {},
   ): Promise<T> {
     const bot = this.resolveBot(options.botId);
@@ -6136,6 +6243,7 @@ export class MaxClientService implements OnModuleDestroy {
         trafficClass,
         sourceTag,
         options.timeoutMs,
+        options.messageMutation,
       );
     } catch (error: unknown) {
       await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
@@ -6210,11 +6318,14 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string | null,
     operation: () => Promise<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
-    guard: { requireExecutableBot?: boolean } = {},
+    executionOptions: {
+      requireExecutableBot?: boolean;
+      messageMutation?: MaxMessageMutationRateLimitScope;
+    } = {},
   ): Promise<T> {
     const normalizedOptions = this.normalizeReadRequestOptions(options);
     const executableBot =
-      guard.requireExecutableBot === false
+      executionOptions.requireExecutableBot === false
         ? null
         : this.resolveExecutableBot(normalizedOptions.botId, {
             explicit: Boolean(normalizedOptions.botId),
@@ -6227,6 +6338,21 @@ export class MaxClientService implements OnModuleDestroy {
       ignoreFailureMetricStatuses: normalizedOptions.ignoreFailureMetricStatuses,
       timeoutMs: normalizedOptions.timeoutMs,
       botId: executableBot?.id ?? normalizedOptions.botId,
+      messageMutation: executionOptions.messageMutation,
+    });
+  }
+
+  private async executeMessageMutation<T>(
+    operationType: MaxMessageMutationOperation,
+    entityId: string | null,
+    operation: () => Promise<T>,
+    options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+  ): Promise<T> {
+    return this.executeMutation(entityId, operation, options, {
+      messageMutation: {
+        operation: operationType,
+        entityId,
+      },
     });
   }
 
@@ -6351,7 +6477,12 @@ export class MaxClientService implements OnModuleDestroy {
 
     if (!this.actionLedgerService) {
       try {
-        return await this.executeMutation(action.chatId, sendRequest, mutationOptions);
+        return await this.executeMessageMutation(
+          'send',
+          action.chatId,
+          sendRequest,
+          mutationOptions,
+        );
       } catch (error: unknown) {
         if (isAmbiguousMaxSendError(error)) {
           throw this.createAmbiguousQueuedMutationError(
@@ -6365,7 +6496,8 @@ export class MaxClientService implements OnModuleDestroy {
 
     let dispatchToken: string | null = null;
     try {
-      return await this.executeMutation(
+      return await this.executeMessageMutation(
+        'send',
         action.chatId,
         async () => {
           const botId = this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id;
@@ -6687,6 +6819,7 @@ export class MaxClientService implements OnModuleDestroy {
     trafficClass: MaxApiTrafficClass,
     sourceTag?: string | null,
     maxWaitMsOverride?: number,
+    messageMutation?: MaxMessageMutationRateLimitScope,
   ) {
     const configuredMaxWaitMs = this.resolveTrafficClassRateLimitWaitMs(trafficClass);
     const maxWaitMs =
@@ -6701,6 +6834,7 @@ export class MaxClientService implements OnModuleDestroy {
         chatId,
         trafficClass,
         sourceTag,
+        messageMutation,
       );
       if (reservation.ok) {
         await this.recordRateLimitUsage(botId, trafficClass, sourceTag);
@@ -6744,6 +6878,7 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string | null,
     trafficClass: MaxApiTrafficClass,
     sourceTag?: string | null,
+    messageMutation?: MaxMessageMutationRateLimitScope,
   ): Promise<
     | { ok: true }
     | {
@@ -6752,6 +6887,11 @@ export class MaxClientService implements OnModuleDestroy {
         reason: string;
       }
   > {
+    const messageMutationScope = messageMutation
+      ? messageMutation.entityId
+        ? `target:${encodeURIComponent(messageMutation.entityId)}`
+        : `unknown-target:bot:${encodeURIComponent(botId)}`
+      : null;
     const dimensions = [
       {
         key: `maxapi:gcra:v1:bot:${botId}:all`,
@@ -6782,6 +6922,18 @@ export class MaxClientService implements OnModuleDestroy {
         limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),
         reason: `MAX API ${trafficClass} rate limit exceeded across all bots`,
       },
+      ...(messageMutation
+        ? [
+            {
+              key: `maxapi:gcra:v1:message-mutation:operation:${messageMutation.operation}:scope:${messageMutationScope}`,
+              limit: MAX_MESSAGE_MUTATION_RPS,
+              burstToleranceSlots: 0,
+              reason: messageMutation.entityId
+                ? `MAX API ${messageMutation.operation} message rate limit exceeded for target ${messageMutation.entityId}`
+                : `MAX API ${messageMutation.operation} message rate limit exceeded for unknown target on bot ${botId}`,
+            },
+          ]
+        : []),
     ];
     if (this.shouldApplyManagedRefreshSourceLimit(trafficClass, sourceTag)) {
       if (this.managedRefreshRpsLimit > 0) {
@@ -6805,6 +6957,13 @@ export class MaxClientService implements OnModuleDestroy {
       dimensions.length,
       ...dimensions.map((dimension) => dimension.key),
       ...dimensions.map((dimension) => String(dimension.limit)),
+      ...dimensions.map((dimension) =>
+        String(
+          'burstToleranceSlots' in dimension
+            ? dimension.burstToleranceSlots
+            : Math.max(0, dimension.limit - 1),
+        ),
+      ),
       String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
     );
     const result = Array.isArray(raw) ? raw : null;
@@ -7308,7 +7467,10 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private isAmbiguousQueuedMutationTransportError(error: unknown): boolean {
-    return isAmbiguousMaxMutationError(error);
+    const status = this.extractStatusCode(error);
+    return (
+      (status !== null && status >= 500 && status <= 599) || isAmbiguousMaxMutationError(error)
+    );
   }
 
   private isCriticalNetworkFailure(error: unknown): boolean {

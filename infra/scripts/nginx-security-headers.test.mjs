@@ -85,6 +85,19 @@ test('major locations with local headers preserve the public security header set
   assertLocalHeadersPreserveSecuritySet(majorConfig, MAJOR_SECURITY_HEADERS);
 });
 
+test('MAX webhook streams request bodies into the bounded ingress route', () => {
+  const webhookLocation = readLocationBlocks(majorConfig).find((block) =>
+    /^\s*location\s+\^~\s+\/api\/webhook\/\s*\{/u.test(block),
+  );
+
+  assert.ok(webhookLocation, 'Expected the dedicated MAX webhook location');
+  assert.match(webhookLocation, /^\s*client_max_body_size\s+4m\s*;\s*$/mu);
+  assert.match(webhookLocation, /^\s*client_body_timeout\s+5s\s*;\s*$/mu);
+  assert.match(webhookLocation, /^\s*proxy_request_buffering\s+off\s*;\s*$/mu);
+  assert.match(webhookLocation, /^\s*proxy_http_version\s+1\.1\s*;\s*$/mu);
+  assert.match(webhookLocation, /^\s*proxy_read_timeout\s+20s\s*;\s*$/mu);
+});
+
 test('Safety Desk locations with local headers preserve the complete closed-site header set', () => {
   assertLocalHeadersPreserveSecuritySet(adminConfig, ADMIN_SECURITY_HEADERS);
 });

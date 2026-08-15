@@ -133,6 +133,7 @@ export const safetyDeskDeleteCapabilityReasonSchema = z.enum([
   'access_state_unconfirmed',
   'bot_not_actionable',
   'not_admin_or_owner',
+  'entity_type_unknown',
   'missing_chat_delete_permission',
   'missing_channel_delete_permission',
 ]);

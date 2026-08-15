@@ -1612,6 +1612,9 @@ export class SafetyDeskService {
 
     const permissionFailure = resolveDeleteMessageAccessFailure(snapshot, entityType);
     if (permissionFailure) {
+      if (permissionFailure === 'entity_type_unknown') {
+        return result('stale_or_unknown', permissionFailure);
+      }
       return result('explicitly_incapable', permissionFailure);
     }
     if (

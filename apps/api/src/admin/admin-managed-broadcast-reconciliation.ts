@@ -8,6 +8,10 @@ import {
   type ManagedBroadcastDelivery as PersistedManagedBroadcastDelivery,
 } from '../prisma/prisma-client';
 import { extractMaxApiErrorMessage } from './admin-chat-rules';
+import {
+  isMaxMediaUploadValidationPublicMessage,
+  MaxMediaUploadValidationError,
+} from '../max/max-media-upload-validation';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import { isPrivateDialogChatUnavailableError } from './admin-legacy-utils';
 import { ManagedBroadcastTransientUploadError } from './admin-managed-broadcast-media-runtime';
@@ -165,6 +169,7 @@ export function isManagedBroadcastPermanentTargetDeliveryFailure(
 
 export function resolveManagedBroadcastFatalProcessingErrorMessage(error: unknown): string | null {
   if (error instanceof ManagedBroadcastTransientUploadError) return null;
+  if (error instanceof MaxMediaUploadValidationError) return error.publicMessage;
   if (!(error instanceof BadRequestException)) return null;
   const response = error.getResponse();
   if (typeof response === 'string' && response.trim()) return response.trim();
@@ -183,7 +188,9 @@ export function resolveManagedBroadcastFatalProcessingFailureMessage(
   failureMessage: string | null | undefined,
 ): string | null {
   const normalized = failureMessage?.trim();
-  return normalized === 'Поддерживаются только изображения.' ||
+  if (!normalized) return null;
+  return isMaxMediaUploadValidationPublicMessage(normalized) ||
+    normalized === 'Поддерживаются только изображения.' ||
     normalized === 'Фото слишком большое. Попробуйте другое изображение.'
     ? normalized
     : null;

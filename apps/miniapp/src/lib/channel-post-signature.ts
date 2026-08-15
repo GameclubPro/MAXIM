@@ -1,4 +1,4 @@
-import { channelPostSignatureUrlSchema } from '@maxim/contracts';
+import { channelPostSignatureUrlSchema } from '@maxim/contracts/channel-post-signature';
 
 export type ParsedChannelPostSignatureUrl = {
   error: string | null;

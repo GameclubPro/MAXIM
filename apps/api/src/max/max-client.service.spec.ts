@@ -18,11 +18,35 @@ import {
   MAX_ACTION_INTERACTIVE_QUEUE,
 } from './max-action.queue';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
-import { MAX_VIDEO_UPLOAD_MAX_BYTES } from './max-video-upload.constants';
+import {
+  MAX_FILE_UPLOAD_MAX_BYTES,
+  MAX_IMAGE_UPLOAD_MAX_BYTES,
+  MAX_VIDEO_UPLOAD_MAX_BYTES,
+} from './max-video-upload.constants';
 import {
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
 } from './max-action-pre-dispatch-guard';
+import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from './max-media-upload-validation';
+import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
+
+const TINY_JPEG_BASE64 =
+  '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
+const TINY_JPEG = Buffer.from(TINY_JPEG_BASE64, 'base64');
+function createMp4Fixture(size = TINY_VALID_MP4.length, fill = 0): Buffer {
+  const targetSize = Math.max(size, TINY_VALID_MP4.length);
+  const paddingSize = targetSize - TINY_VALID_MP4.length;
+  if (paddingSize < 8) {
+    return Buffer.from(TINY_VALID_MP4);
+  }
+  const free = Buffer.alloc(paddingSize, fill);
+  free.writeUInt32BE(paddingSize, 0);
+  free.write('free', 4, 4, 'latin1');
+  return Buffer.concat([TINY_VALID_MP4, free]);
+}
 
 jest.mock('ioredis', () => {
   const store = new Map<string, { value: string; expiresAtMs: number | null }>();
@@ -121,7 +145,8 @@ jest.mock('ioredis', () => {
                 for (let index = 0; index < numKeys; index += 1) {
                   const limit = Number(argValues[index] ?? 0);
                   const intervalMs = 1_000 / limit;
-                  const burstToleranceMs = (limit - 1) * intervalMs;
+                  const burstToleranceSlots = Number(argValues[numKeys + index] ?? 0);
+                  const burstToleranceMs = burstToleranceSlots * intervalMs;
                   const storedTat = Number(readEntry(keys[index])?.value ?? nowMs);
                   const tat = Math.max(storedTat, nowMs);
                   const allowAtMs = tat - burstToleranceMs;
@@ -677,7 +702,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
       idempotencyKey: 'delete-timeout',
       createdAt: new Date().toISOString(),
     });
-
     expect(httpService.request).toHaveBeenCalledWith({
       method: 'delete',
       url: 'https://platform-api2.max.ru/messages',
@@ -1637,6 +1661,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         idempotencyKey: expect.stringMatching(/^max-action__logical__/),
       }),
     );
+    expect(actionLedgerService.recordStarted).toHaveBeenCalledWith(job, new Date(job.createdAt));
     expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledWith(job);
     expect(actionLedgerService.recordSucceeded).toHaveBeenCalledWith(job);
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
@@ -1848,7 +1873,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   );
 
   it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
-    'keeps queued %s HTTP failures retryable',
+    'marks queued %s HTTP 5xx responses as ambiguous and unrecoverable',
     async (actionType) => {
       const statusError = {
         response: {
@@ -1863,16 +1888,60 @@ describe('MaxClientService inline keyboard guardrails', () => {
       };
       const service = createService(httpService);
 
-      await expect(
-        service.executeActionJob({
+      const error = await service
+        .executeActionJob({
           actionType,
           chatId: 'chat-1',
           userId: 'user-1',
           attempt: 1,
           idempotencyKey: `${actionType.toLowerCase()}-http-500`,
           createdAt: new Date().toISOString(),
-        }),
-      ).rejects.toBe(statusError);
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      expect(error).toMatchObject({
+        response: statusError.response,
+      });
+      expect(wasMaxMemberMutationAttempted(error)).toBe(true);
+      expect(httpService.request).toHaveBeenCalledTimes(1);
+
+      await service.onModuleDestroy();
+    },
+  );
+
+  it.each(['BAN_MEMBER', 'KICK_MEMBER'] as const)(
+    'keeps queued %s HTTP 429 responses retryable',
+    async (actionType) => {
+      const rateLimitError = {
+        response: {
+          status: 429,
+          data: {
+            code: 'too.many.requests',
+            message: 'too many requests',
+          },
+        },
+      };
+      const httpService = {
+        request: jest.fn(() => throwError(() => rateLimitError)),
+      };
+      const service = createService(httpService);
+
+      const error = await service
+        .executeActionJob({
+          actionType,
+          chatId: 'chat-1',
+          userId: 'user-1',
+          attempt: 1,
+          idempotencyKey: `${actionType.toLowerCase()}-http-429`,
+          createdAt: new Date().toISOString(),
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBe(rateLimitError);
+      expect(error).not.toBeInstanceOf(UnrecoverableError);
+      expect(wasMaxMemberMutationAttempted(error)).toBe(true);
+      expect(httpService.request).toHaveBeenCalledTimes(1);
 
       await service.onModuleDestroy();
     },
@@ -2249,7 +2318,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ),
     };
     const service = createService(httpService);
-    const limiterRedis = (service as unknown as { limiterRedis: { get: jest.Mock } }).limiterRedis;
+    const limiterRedis = (
+      service as unknown as { limiterRedis: { eval: jest.Mock; get: jest.Mock } }
+    ).limiterRedis;
     const nowSec = Math.floor(Date.now() / 1_000);
 
     await service.answerCallback('callback-1', 'Действие выполнено', {
@@ -2288,6 +2359,17 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await expect(
       limiterRedis.get(`maxapi:rps:source:v1:777000_bot:critical:callback_answer:${nowSec}`),
     ).resolves.toBe('1');
+    const answerRateLimitKeys = limiterRedis.eval.mock.calls.flatMap((call) => {
+      const keyCount = Number(call[1]);
+      return call
+        .slice(2, 2 + keyCount)
+        .map(String)
+        .filter((key: string) => key.includes('message-mutation:operation:answer:'));
+    });
+    expect(answerRateLimitKeys).toContain(
+      'maxapi:gcra:v1:message-mutation:operation:answer:scope:unknown-target:bot:777000_bot',
+    );
+    expect(answerRateLimitKeys.join(' ')).not.toContain('callback-1');
 
     await service.onModuleDestroy();
   });
@@ -5277,7 +5359,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const result = await service.uploadVideo(
-      Buffer.from('video-binary'),
+      TINY_VALID_MP4,
       'channel-suggestion-video.mp4',
       'video/mp4',
     );
@@ -5326,7 +5408,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     await expect(
-      service.uploadVideo(Buffer.from('video-binary'), 'publication.mp4', 'video/mp4'),
+      service.uploadVideo(TINY_VALID_MP4, 'publication.mp4', 'video/mp4'),
     ).resolves.toEqual({ token: 'video-session-token' });
 
     await service.onModuleDestroy();
@@ -5334,7 +5416,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
   it('uploads video in bounded Content-Range chunks by default', async () => {
     const chunkBytes = 4 * 1_024 * 1_024;
-    const video = Buffer.alloc(chunkBytes + 3, 7);
+    const video = createMp4Fixture(chunkBytes + 3, 7);
     const httpService = {
       request: jest
         .fn()
@@ -5420,9 +5502,94 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('rejects empty and oversized image or file payloads before creating an upload session', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+
+    await expect(service.uploadImage(Buffer.alloc(0), 'empty.jpg', 'image/jpeg')).rejects.toThrow(
+      'MAX image upload payload is empty',
+    );
+    await expect(
+      service.uploadImage(
+        { length: MAX_IMAGE_UPLOAD_MAX_BYTES + 1 } as Buffer,
+        'oversized.jpg',
+        'image/jpeg',
+      ),
+    ).rejects.toThrow('MAX image upload exceeds the documented 50 MB limit');
+    await expect(service.uploadFile(Buffer.alloc(0), 'empty.txt', 'text/plain')).rejects.toThrow(
+      'MAX file upload payload is empty',
+    );
+    await expect(
+      service.uploadFile(
+        { length: MAX_FILE_UPLOAD_MAX_BYTES + 1 } as Buffer,
+        'oversized.bin',
+        'application/octet-stream',
+      ),
+    ).rejects.toThrow('MAX file upload exceeds the documented 4 GB limit');
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects invalid media bytes before bot resolution or upload HTTP', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    const resolveExecutableBot = jest.spyOn(service as any, 'resolveExecutableBot');
+
+    let error: unknown;
+    try {
+      await service.uploadImage(Buffer.from('not-an-image'), 'spoofed.jpg', 'image/jpeg', {
+        botId: 'unknown-bot',
+      });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(MaxMediaUploadValidationError);
+    expect(error).toMatchObject({
+      code: MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.INVALID_PAYLOAD,
+      retryable: false,
+    });
+    expect(resolveExecutableBot).not.toHaveBeenCalled();
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('canonicalizes image MIME and filename from the uploaded bytes', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/image-canonical',
+              token: 'image-canonical-session-token',
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data: { token: 'image-canonical-token' } })),
+    };
+    const service = createService(httpService);
+
+    await expect(service.uploadImage(TINY_JPEG, '../spoofed.png', 'image/png')).resolves.toEqual({
+      token: 'image-canonical-token',
+    });
+
+    const uploadRequest = httpService.request.mock.calls[1]?.[0] as {
+      data?: { getBuffer?: () => Buffer };
+    };
+    const multipartBody = uploadRequest.data?.getBuffer?.().toString('latin1') ?? '';
+    expect(multipartBody).toContain('filename="spoofed.jpg"');
+    expect(multipartBody).toContain('Content-Type: image/jpeg');
+    expect(multipartBody).not.toContain('filename="spoofed.png"');
+
+    await service.onModuleDestroy();
+  });
+
   it('uses one decreasing timeout budget across upload sessions and range chunks', async () => {
     const chunkBytes = 4 * 1_024 * 1_024;
-    const video = Buffer.alloc(chunkBytes + 1, 7);
+    const video = createMp4Fixture(chunkBytes + 1, 7);
     let now = 1_000;
     const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
     const httpService = {
@@ -5483,7 +5650,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     try {
       await expect(
-        service.uploadVideo(Buffer.from('video'), 'rate-limit.mp4', 'video/mp4', {
+        service.uploadVideo(TINY_VALID_MP4, 'rate-limit.mp4', 'video/mp4', {
           timeoutMs: 10_000,
         }),
       ).resolves.toEqual({ token: 'video-rate-limit-token' });
@@ -5524,7 +5691,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     try {
       await expect(
-        service.uploadVideo(Buffer.from('video'), 'expired.mp4', 'video/mp4', {
+        service.uploadVideo(TINY_VALID_MP4, 'expired.mp4', 'video/mp4', {
           timeoutMs: 10_000,
         }),
       ).rejects.toMatchObject({ name: 'MaxMediaUploadError' });
@@ -5553,7 +5720,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
     });
 
-    await service.uploadVideo(Buffer.from('video'), 'видео.mp4', 'video/mp4');
+    await service.uploadVideo(TINY_VALID_MP4, 'видео.mp4', 'video/mp4');
 
     expect(httpService.request.mock.calls[1]?.[0].headers).toEqual(
       expect.objectContaining({
@@ -5587,7 +5754,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
     });
 
-    const result = await service.uploadVideo(Buffer.from('video-binary'), 'видео.mp4', 'video/mp4');
+    const result = await service.uploadVideo(TINY_VALID_MP4, 'видео.mp4', 'video/mp4');
 
     expect(result).toEqual({ token: 'video-multipart-token-1' });
     const uploadRequest = httpService.request.mock.calls[1]?.[0] as {
@@ -5624,11 +5791,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: true,
     });
 
-    const result = await service.uploadVideo(
-      Buffer.from('video-binary'),
-      'retry-video.mp4',
-      'video/mp4',
-    );
+    const result = await service.uploadVideo(TINY_VALID_MP4, 'retry-video.mp4', 'video/mp4');
 
     expect(result).toEqual({ token: 'video-range-token-second' });
     expect(httpService.request).toHaveBeenCalledTimes(4);
@@ -5671,7 +5834,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     let uploadError: unknown;
     try {
-      await service.uploadVideo(Buffer.from('video-binary'), 'failed-video.mp4', 'video/mp4');
+      await service.uploadVideo(TINY_VALID_MP4, 'failed-video.mp4', 'video/mp4');
     } catch (error: unknown) {
       uploadError = error;
     }
@@ -5708,7 +5871,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const service = createService(httpService);
 
     await service.uploadImage(
-      Buffer.from('image-binary'),
+      TINY_JPEG,
       '../evil\r\nContent-Disposition: form-data; name="x".jpg',
       'image/jpeg',
     );
@@ -5759,12 +5922,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
       return !botId || botId === defaultBot.id ? defaultBot : null;
     });
 
-    const result = await service.uploadImage(
-      Buffer.from('image-binary'),
-      'private-control-image.jpg',
-      'image/jpeg',
-      { botId: '888000_bot' },
-    );
+    const result = await service.uploadImage(TINY_JPEG, 'private-control-image.jpg', 'image/jpeg', {
+      botId: '888000_bot',
+    });
 
     expect(result).toEqual({ token: 'image-binary-token-1' });
     expect(httpService.request).toHaveBeenNthCalledWith(
@@ -7815,6 +7975,153 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await secondService.onModuleDestroy();
   });
 
+  it('adds operation, bot, and entity GCRA dimensions to message mutations', async () => {
+    const httpService = {
+      request: jest.fn((request: { method?: string }) => {
+        if (request.method === 'post') {
+          return of({ status: 200, data: { message_id: 'mid-send-1' } });
+        }
+        if (request.method === 'get') {
+          return of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-edit-1',
+                    text: 'Before',
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          });
+        }
+        if (request.method === 'put' || request.method === 'delete') {
+          return of({ status: 200, data: { success: true } });
+        }
+        throw new Error(`Unexpected MAX request method ${String(request.method)}`);
+      }),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '100',
+      MAX_API_GLOBAL_RPS_CRITICAL: '100',
+      MAX_API_CHAT_RPS: '100',
+    });
+
+    await service.sendMessageImmediateWithId('chat-send', 'Hello');
+    await service.sendMessageImmediateToUser('user-send', 'Direct hello');
+    await service.executeActionJob({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-queued-send',
+      text: 'Queued hello',
+      attempt: 1,
+      idempotencyKey: 'send-rate-limit-key',
+      createdAt: new Date().toISOString(),
+    });
+    await service.editMessageInlineKeyboard('chat-edit', 'mid-edit-1', 'After');
+    await service.executeActionJob({
+      actionType: 'DELETE_MESSAGE',
+      chatId: 'chat-delete',
+      messageId: 'mid-delete-1',
+      attempt: 1,
+      idempotencyKey: 'delete-rate-limit-key',
+      createdAt: new Date().toISOString(),
+    });
+    await service.answerCallback('callback-rate-limit', 'Done', undefined, {
+      rateLimitEntityId: 'chat-answer',
+    });
+
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    const messageMutationKeys = limiterRedis.eval.mock.calls.flatMap((call) => {
+      if (!String(call[0]).includes('MAX_API_GCRA_RESERVE_V1')) {
+        return [];
+      }
+      const keyCount = Number(call[1]);
+      return call
+        .slice(2, 2 + keyCount)
+        .map((key: unknown) => String(key))
+        .filter((key: string) => key.startsWith('maxapi:gcra:v1:message-mutation:'));
+    });
+
+    expect(messageMutationKeys).toEqual([
+      'maxapi:gcra:v1:message-mutation:operation:send:scope:target:chat-send',
+      'maxapi:gcra:v1:message-mutation:operation:send:scope:target:user%3Auser-send',
+      'maxapi:gcra:v1:message-mutation:operation:send:scope:target:chat-queued-send',
+      'maxapi:gcra:v1:message-mutation:operation:edit:scope:target:chat-edit',
+      'maxapi:gcra:v1:message-mutation:operation:delete:scope:target:chat-delete',
+      'maxapi:gcra:v1:message-mutation:operation:answer:scope:target:chat-answer',
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
+  it('shares a smoothed two-per-second message mutation quota while isolating dimensions', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:02:00.000Z'));
+    const config = {
+      MAX_API_GLOBAL_RPS: '100',
+      MAX_API_GLOBAL_RPS_CRITICAL: '100',
+      MAX_API_CHAT_RPS: '100',
+    };
+    const firstService = createService({}, config);
+    const secondService = createService({}, config);
+    const reserve = (
+      service: MaxClientService,
+      operation: 'send' | 'edit' | 'delete' | 'answer',
+      botId: string,
+      entityId: string,
+    ) =>
+      (service as any).tryReserveRateLimitSlot(botId, entityId, 'critical', undefined, {
+        operation,
+        entityId,
+      });
+
+    await expect(reserve(firstService, 'send', 'bot-a', 'chat-a')).resolves.toEqual({
+      ok: true,
+    });
+    await expect(reserve(secondService, 'send', 'bot-a', 'chat-a')).resolves.toEqual({
+      ok: false,
+      retryAfterMs: 500,
+      reason: 'MAX API send message rate limit exceeded for target chat-a',
+    });
+
+    jest.advanceTimersByTime(500);
+    await expect(reserve(secondService, 'send', 'bot-a', 'chat-a')).resolves.toEqual({
+      ok: true,
+    });
+    await expect(reserve(firstService, 'send', 'bot-a', 'chat-a')).resolves.toEqual({
+      ok: false,
+      retryAfterMs: 500,
+      reason: 'MAX API send message rate limit exceeded for target chat-a',
+    });
+
+    await expect(reserve(secondService, 'edit', 'bot-a', 'chat-a')).resolves.toEqual({
+      ok: true,
+    });
+    await expect(reserve(secondService, 'delete', 'bot-a', 'chat-a')).resolves.toEqual({
+      ok: true,
+    });
+    await expect(reserve(secondService, 'send', 'bot-a', 'chat-b')).resolves.toEqual({
+      ok: true,
+    });
+    await expect(reserve(secondService, 'send', 'bot-b', 'chat-a')).resolves.toEqual({
+      ok: false,
+      retryAfterMs: 500,
+      reason: 'MAX API send message rate limit exceeded for target chat-a',
+    });
+    await expect(reserve(firstService, 'answer', 'bot-a', 'chat-answer')).resolves.toEqual({
+      ok: true,
+    });
+    await expect(reserve(secondService, 'answer', 'bot-a', 'chat-answer')).resolves.toEqual({
+      ok: false,
+      retryAfterMs: 500,
+      reason: 'MAX API answer message rate limit exceeded for target chat-answer',
+    });
+
+    await firstService.onModuleDestroy();
+    await secondService.onModuleDestroy();
+  });
+
   it('shares an open circuit across instances before dispatch', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:05:00.000Z'));
     const upstreamFailure = Object.assign(new Error('MAX unavailable'), {
@@ -9236,6 +9543,30 @@ describe('MaxClientService delayed member actions', () => {
     await service.onModuleDestroy();
   });
 
+  it('fails closed without default-bot fallback when managed route resolution throws', async () => {
+    const routeError = new Error('managed route lookup timed out');
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockRejectedValue(routeError),
+    };
+    const service = createServiceWithQueue(queue, undefined, maxBotLinkService);
+    const getDefaultBot = (service as any).botRegistry.getDefaultBot as jest.Mock;
+    getDefaultBot.mockClear();
+
+    await expect(service.sendMessage('-100-route-error', 'must retry routing')).rejects.toBe(
+      routeError,
+    );
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledTimes(1);
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(getDefaultBot).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('keeps private dialog sends on their explicit bot context instead of managed routing', async () => {
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
@@ -9288,8 +9619,9 @@ describe('MaxClientService delayed member actions', () => {
   });
 
   it('records queued actions only after BullMQ accepts the job', async () => {
+    const bullMqCreatedAt = Date.parse('2026-07-16T12:00:00.000Z');
     const queue = {
-      add: jest.fn().mockResolvedValue(undefined),
+      add: jest.fn().mockResolvedValue({ timestamp: bullMqCreatedAt }),
       getJob: jest.fn().mockResolvedValue(null),
     };
     const actionLedgerService = {
@@ -9307,7 +9639,10 @@ describe('MaxClientService delayed member actions', () => {
 
     const job = queue.add.mock.calls[0][1];
     expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledWith(job);
-    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(
+      job,
+      new Date(bullMqCreatedAt),
+    );
     expect(queue.add).toHaveBeenCalledTimes(1);
     expect(queue.add.mock.invocationCallOrder[0]).toBeLessThan(
       actionLedgerService.recordEnqueuedIfAbsent.mock.invocationCallOrder[0],
@@ -9335,6 +9670,7 @@ describe('MaxClientService delayed member actions', () => {
     expect(queue.add).toHaveBeenCalledTimes(1);
     expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(
       queue.add.mock.calls[0][1],
+      undefined,
     );
     expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
 
@@ -9389,8 +9725,10 @@ describe('MaxClientService delayed member actions', () => {
 
   it('recovers an ambiguous BullMQ add when the deterministic job is retained', async () => {
     const error = new Error('redis reply lost');
+    const bullMqCreatedAt = Date.parse('2026-07-16T12:00:00.000Z');
     const retainedJob = {
       id: 'retained-job',
+      timestamp: bullMqCreatedAt,
       getState: jest.fn().mockResolvedValue('waiting'),
     };
     const queue = {
@@ -9411,7 +9749,10 @@ describe('MaxClientService delayed member actions', () => {
     expect(queue.getJob).toHaveBeenLastCalledWith(job.idempotencyKey);
     expect(actionLedgerService.hasExecutionEvidenceSince).not.toHaveBeenCalled();
     expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
-    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(
+      job,
+      new Date(bullMqCreatedAt),
+    );
 
     await service.onModuleDestroy();
   });
@@ -9438,7 +9779,7 @@ describe('MaxClientService delayed member actions', () => {
       expect.any(Date),
     );
     expect(actionLedgerService.recordEnqueueFailedIfAbsent).not.toHaveBeenCalled();
-    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(job);
+    expect(actionLedgerService.recordEnqueuedIfAbsent).toHaveBeenCalledWith(job, undefined);
 
     await service.onModuleDestroy();
   });
@@ -9610,6 +9951,7 @@ describe('MaxClientService delayed member actions', () => {
   });
 
   it('uses deterministic queue job id for delayed unban', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-16T12:00:00.000Z'));
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),
       getJob: jest.fn().mockResolvedValue(null),
@@ -9630,6 +9972,8 @@ describe('MaxClientService delayed member actions', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         idempotencyKey: expectedJobId,
+        createdAt: '2026-07-16T12:00:00.000Z',
+        scheduledFor: '2026-07-16T12:01:00.000Z',
       }),
       expect.objectContaining({
         jobId: expectedJobId,

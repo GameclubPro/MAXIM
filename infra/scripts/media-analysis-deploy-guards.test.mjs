@@ -393,7 +393,7 @@ if maxim_topology_require_media_analysis_shadow_config compose_args; then exit 9
   assert.doesNotMatch(`${enforcing.stdout}${enforcing.stderr}`, /canary-sensitive-value/u);
 });
 
-test('deploy and rollback pin OCR identity, retire the old worker, and start it last', () => {
+test('deploy and rollback pin OCR identity and order media before webhook roles', () => {
   const topology = read('infra/scripts/lib/deploy-topology.sh');
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   const scaleDeploy = read('infra/scripts/vps-pull-build-up-scale.sh');
@@ -414,7 +414,7 @@ test('deploy and rollback pin OCR identity, retire the old worker, and start it 
   );
   assert.ok(
     deploy.lastIndexOf('maxim_topology_stop_media_analysis_before_api_transition') <
-      deploy.lastIndexOf('recreate_service_wave "worker"'),
+      deploy.lastIndexOf('recreate_service_wave "action"'),
   );
   assert.ok(
     deploy.lastIndexOf('recreate_service_wave "ingress"') <
@@ -422,6 +422,14 @@ test('deploy and rollback pin OCR identity, retire the old worker, and start it 
   );
   assert.ok(
     deploy.lastIndexOf('recreate_service_wave "media analysis"') <
+      deploy.lastIndexOf('recreate_service_wave "moderation"'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('recreate_service_wave "moderation"') <
+      deploy.lastIndexOf('recreate_service_wave "enqueue"'),
+  );
+  assert.ok(
+    deploy.lastIndexOf('recreate_service_wave "enqueue"') <
       deploy.lastIndexOf('maxim_topology_verify_api_commercial_ocr_version'),
   );
   assert.ok(
@@ -497,6 +505,14 @@ test('deploy and rollback pin OCR identity, retire the old worker, and start it 
   );
   assert.ok(
     immutableRollback.lastIndexOf('recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"') <
+      immutableRollback.lastIndexOf('recreate_service "$service"'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('recreate_service "$service"') <
+      immutableRollback.lastIndexOf('recreate_service api-enqueue'),
+  );
+  assert.ok(
+    immutableRollback.lastIndexOf('recreate_service api-enqueue') <
       immutableRollback.lastIndexOf('maxim_topology_verify_api_commercial_ocr_version'),
   );
   assert.ok(
@@ -535,7 +551,19 @@ test('deploy and rollback pin OCR identity, retire the old worker, and start it 
   assert.match(refRollback, /docker rm -f "\$\{container_ids\[@\]\}"/u);
   assert.ok(
     refRollback.lastIndexOf('maxim_topology_stop_media_analysis_before_api_transition') <
-      refRollback.lastIndexOf('API_SERVICES_WITHOUT_MEDIA_ANALYSIS'),
+      refRollback.lastIndexOf('recreate_runtime_api_wave non-webhook'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('recreate_runtime_api_wave non-webhook') <
+      refRollback.lastIndexOf('recreate_runtime_api_wave media-analysis'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('recreate_runtime_api_wave media-analysis') <
+      refRollback.lastIndexOf('recreate_runtime_api_wave moderation'),
+  );
+  assert.ok(
+    refRollback.lastIndexOf('recreate_runtime_api_wave moderation') <
+      refRollback.lastIndexOf('recreate_runtime_api_wave enqueue'),
   );
   assert.ok(
     refRollback.lastIndexOf('wait_for_service_running "$service" 180') <

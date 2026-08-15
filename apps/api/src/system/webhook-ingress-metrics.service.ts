@@ -1,11 +1,17 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import {
+  MAX_WEBHOOK_ROUTE_OUTCOMES,
+  type MaxWebhookRouteOutcome,
+  type MaxWebhookRouteOutcomeMetric,
+} from '../webhook/webhook-route-outcome';
 
 export type WebhookIngressBotMetrics = {
   attemptedReceipts: number;
   persistedReceipts: number;
   failedReceipts: number;
+  rejectedReceipts: number;
 };
 
 export type WebhookIngressMetricsSnapshot = {
@@ -14,16 +20,31 @@ export type WebhookIngressMetricsSnapshot = {
   attemptedReceipts: number;
   persistedReceipts: number;
   failedReceipts: number;
+  rejectedReceipts: number;
   sampledReceipts: number;
   p95LatencyMs: number | null;
   p99LatencyMs: number | null;
   underTargetRatio: number | null;
   bots: Record<string, WebhookIngressBotMetrics>;
+  route: WebhookRouteMetrics;
+};
+
+export type WebhookRouteOutcomeCounts = Record<MaxWebhookRouteOutcome, number>;
+
+export type WebhookRouteBotMetrics = {
+  attemptedRequests: number;
+  outcomes: WebhookRouteOutcomeCounts;
+};
+
+export type WebhookRouteMetrics = {
+  attemptedRequests: number;
+  outcomes: WebhookRouteOutcomeCounts;
+  bots: Record<string, WebhookRouteBotMetrics>;
 };
 
 export type WebhookReceiptPersistenceMetric = {
   botId: string;
-  outcome: 'persisted' | 'failed';
+  outcome: 'persisted' | 'failed' | 'rejected';
   latencyMs: number;
 };
 
@@ -31,6 +52,9 @@ const METRICS_KEY_PREFIX = 'system:webhook-ingress:metrics:v1';
 const METRICS_BUCKET_SEC = 10;
 const DEFAULT_INGRESS_TARGET_MS = 2_000;
 const DEFAULT_SLO_WINDOW_SEC = 15 * 60;
+const MAX_SLO_WINDOW_SEC = 24 * 60 * 60;
+const REDIS_COMMAND_TIMEOUT_MS = 1_000;
+const ROUTE_METRICS_FLUSH_INTERVAL_MS = 1_000;
 const MIN_RETENTION_SEC = 60 * 60;
 const MAX_RETENTION_SEC = 24 * 60 * 60;
 const METRICS_FAILURE_LOG_INTERVAL_MS = 30_000;
@@ -61,11 +85,29 @@ if outcome == 'persisted' then
   if latencyMs > currentMax then
     redis.call('HSET', key, 'max_latency_ms', tostring(latencyMs))
   end
-else
+elseif outcome == 'failed' then
   redis.call('HINCRBY', key, 'failed', 1)
   redis.call('HINCRBY', key, 'bot:' .. bot .. ':failed', 1)
+else
+  redis.call('HINCRBY', key, 'rejected', 1)
+  redis.call('HINCRBY', key, 'bot:' .. bot .. ':rejected', 1)
 end
 
+redis.call('EXPIRE', key, ttlSec)
+return 1
+`;
+
+const RECORD_ROUTE_OUTCOMES_LUA = `
+-- MAXIM_WEBHOOK_ROUTE_OUTCOMES_V1
+local key = KEYS[1]
+local ttlSec = tonumber(ARGV[1]) or 3600
+for index = 2, #ARGV, 2 do
+  local field = ARGV[index]
+  local count = tonumber(ARGV[index + 1]) or 0
+  if count > 0 then
+    redis.call('HINCRBY', key, field, count)
+  end
+end
 redis.call('EXPIRE', key, ttlSec)
 return 1
 `;
@@ -76,16 +118,24 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
   private readonly redis: Redis;
   private readonly targetMs: number;
   private readonly retentionSec: number;
+  private readonly pendingRouteFieldsByKey = new Map<string, Map<string, number>>();
+  private routeFlushTimer: NodeJS.Timeout | null = null;
+  private routeFlushInFlight: Promise<void> | null = null;
+  private destroying = false;
   private lastWriteFailureLogAtMs = 0;
   private lastReadFailureLogAtMs = 0;
 
   constructor(configService: ConfigService) {
-    this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'), {
+      commandTimeout: REDIS_COMMAND_TIMEOUT_MS,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+    });
     this.targetMs = this.readPositiveInt(
       configService.get('SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS'),
       DEFAULT_INGRESS_TARGET_MS,
     );
-    const sloWindowSec = this.readPositiveInt(
+    const sloWindowSec = this.normalizeWindowSec(
       configService.get('SYSTEM_WEBHOOK_SLO_WINDOW_SEC'),
       DEFAULT_SLO_WINDOW_SEC,
     );
@@ -93,6 +143,13 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.destroying = true;
+    if (this.routeFlushTimer) {
+      clearTimeout(this.routeFlushTimer);
+      this.routeFlushTimer = null;
+    }
+    await this.routeFlushInFlight;
+    await this.flushRouteOutcomes();
     await this.redis.quit();
   }
 
@@ -123,8 +180,26 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
     }
   }
 
+  recordRouteOutcome(metric: MaxWebhookRouteOutcomeMetric): void {
+    if (this.destroying || !this.isRouteOutcome(metric.outcome)) {
+      return;
+    }
+
+    const key = this.buildBucketKey(Date.now());
+    this.incrementPendingRouteField(key, 'route:attempted');
+    this.incrementPendingRouteField(key, `route:outcome:${metric.outcome}`);
+    const botId = metric.botId?.trim() ?? '';
+    if (botId) {
+      const encodedBotId = Buffer.from(botId, 'utf8').toString('base64url');
+      this.incrementPendingRouteField(key, `route:bot:${encodedBotId}:attempted`);
+      this.incrementPendingRouteField(key, `route:bot:${encodedBotId}:outcome:${metric.outcome}`);
+    }
+    this.scheduleRouteOutcomeFlush();
+  }
+
   async getSnapshot(options: { windowSec: number }): Promise<WebhookIngressMetricsSnapshot> {
-    const windowSec = this.readPositiveInt(options.windowSec, DEFAULT_SLO_WINDOW_SEC);
+    await this.flushRouteOutcomes();
+    const windowSec = this.normalizeWindowSec(options.windowSec, DEFAULT_SLO_WINDOW_SEC);
     const nowMs = Date.now();
     const keys = this.buildWindowKeys(nowMs, windowSec);
     try {
@@ -156,17 +231,25 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
     let attemptedReceipts = 0;
     let persistedReceipts = 0;
     let failedReceipts = 0;
+    let rejectedReceipts = 0;
     let underTargetReceipts = 0;
     let maxLatencyMs = 0;
     const latencyBuckets = LATENCY_BUCKET_UPPER_BOUNDS_MS.map(() => 0).concat(0);
     const bots = new Map<string, WebhookIngressBotMetrics>();
+    const route = this.emptyRouteMetrics();
+    const routeBots = new Map<string, WebhookRouteBotMetrics>();
 
     for (const row of rows) {
       attemptedReceipts += this.readCounter(row.attempted);
       persistedReceipts += this.readCounter(row.persisted);
       failedReceipts += this.readCounter(row.failed);
+      rejectedReceipts += this.readCounter(row.rejected);
       underTargetReceipts += this.readCounter(row.under_target);
       maxLatencyMs = Math.max(maxLatencyMs, this.readCounter(row.max_latency_ms));
+      route.attemptedRequests += this.readCounter(row['route:attempted']);
+      for (const outcome of MAX_WEBHOOK_ROUTE_OUTCOMES) {
+        route.outcomes[outcome] += this.readCounter(row[`route:outcome:${outcome}`]);
+      }
 
       for (let index = 0; index < latencyBuckets.length; index += 1) {
         latencyBuckets[index] =
@@ -174,7 +257,7 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       }
 
       for (const [field, rawCount] of Object.entries(row)) {
-        const match = /^bot:([^:]+):(attempted|persisted|failed)$/u.exec(field);
+        const match = /^bot:([^:]+):(attempted|persisted|failed|rejected)$/u.exec(field);
         if (!match) {
           continue;
         }
@@ -186,18 +269,50 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
           attemptedReceipts: 0,
           persistedReceipts: 0,
           failedReceipts: 0,
+          rejectedReceipts: 0,
         };
         const count = this.readCounter(rawCount);
         if (match[2] === 'attempted') {
           counters.attemptedReceipts += count;
         } else if (match[2] === 'persisted') {
           counters.persistedReceipts += count;
-        } else {
+        } else if (match[2] === 'failed') {
           counters.failedReceipts += count;
+        } else {
+          counters.rejectedReceipts += count;
         }
         bots.set(botId, counters);
       }
+
+      for (const [field, rawCount] of Object.entries(row)) {
+        const match = /^route:bot:([^:]+):(attempted|outcome:([a-z_]+))$/u.exec(field);
+        if (!match) {
+          continue;
+        }
+        const botId = this.decodeBotId(match[1] ?? '');
+        if (!botId) {
+          continue;
+        }
+        const counters = routeBots.get(botId) ?? {
+          attemptedRequests: 0,
+          outcomes: this.emptyRouteOutcomeCounts(),
+        };
+        const count = this.readCounter(rawCount);
+        if (match[2] === 'attempted') {
+          counters.attemptedRequests += count;
+        } else {
+          const outcome = match[3];
+          if (this.isRouteOutcome(outcome)) {
+            counters.outcomes[outcome] += count;
+          }
+        }
+        routeBots.set(botId, counters);
+      }
     }
+
+    route.bots = Object.fromEntries(
+      [...routeBots.entries()].sort(([left], [right]) => left.localeCompare(right)),
+    );
 
     const sampledReceipts = latencyBuckets.reduce((sum, count) => sum + count, 0);
     return {
@@ -206,6 +321,7 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       attemptedReceipts,
       persistedReceipts,
       failedReceipts,
+      rejectedReceipts,
       sampledReceipts,
       p95LatencyMs: this.percentile(latencyBuckets, sampledReceipts, 0.95, maxLatencyMs),
       p99LatencyMs: this.percentile(latencyBuckets, sampledReceipts, 0.99, maxLatencyMs),
@@ -216,7 +332,60 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       bots: Object.fromEntries(
         [...bots.entries()].sort(([left], [right]) => left.localeCompare(right)),
       ),
+      route,
     };
+  }
+
+  private incrementPendingRouteField(key: string, field: string): void {
+    const fields = this.pendingRouteFieldsByKey.get(key) ?? new Map<string, number>();
+    fields.set(field, (fields.get(field) ?? 0) + 1);
+    this.pendingRouteFieldsByKey.set(key, fields);
+  }
+
+  private scheduleRouteOutcomeFlush(): void {
+    if (this.routeFlushTimer || this.destroying) {
+      return;
+    }
+    this.routeFlushTimer = setTimeout(() => {
+      this.routeFlushTimer = null;
+      void this.flushRouteOutcomes();
+    }, ROUTE_METRICS_FLUSH_INTERVAL_MS);
+    this.routeFlushTimer.unref();
+  }
+
+  private flushRouteOutcomes(): Promise<void> {
+    if (this.routeFlushInFlight) {
+      return this.routeFlushInFlight;
+    }
+    if (this.pendingRouteFieldsByKey.size === 0) {
+      return Promise.resolve();
+    }
+
+    const batches = [...this.pendingRouteFieldsByKey.entries()];
+    this.pendingRouteFieldsByKey.clear();
+    const flush = Promise.all(
+      batches.map(([key, fields]) =>
+        this.redis.eval(
+          RECORD_ROUTE_OUTCOMES_LUA,
+          1,
+          key,
+          String(this.retentionSec),
+          ...[...fields.entries()].flatMap(([field, count]) => [field, String(count)]),
+        ),
+      ),
+    )
+      .then(() => undefined)
+      .catch(() => {
+        this.logWriteFailure();
+      })
+      .finally(() => {
+        this.routeFlushInFlight = null;
+        if (this.pendingRouteFieldsByKey.size > 0 && !this.destroying) {
+          this.scheduleRouteOutcomeFlush();
+        }
+      });
+    this.routeFlushInFlight = flush;
+    return flush;
   }
 
   private percentile(
@@ -289,6 +458,35 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
     return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.trunc(parsed)) : fallback;
   }
 
+  private normalizeWindowSec(value: unknown, fallback: number): number {
+    return Math.min(MAX_SLO_WINDOW_SEC, this.readPositiveInt(value, fallback));
+  }
+
+  private isRouteOutcome(value: unknown): value is MaxWebhookRouteOutcome {
+    return MAX_WEBHOOK_ROUTE_OUTCOMES.some((outcome) => outcome === value);
+  }
+
+  private emptyRouteOutcomeCounts(): WebhookRouteOutcomeCounts {
+    return {
+      accepted: 0,
+      authentication_rejected: 0,
+      admission_rejected: 0,
+      invalid_json: 0,
+      invalid_payload: 0,
+      payload_too_large: 0,
+      timed_out: 0,
+      failed: 0,
+    };
+  }
+
+  private emptyRouteMetrics(): WebhookRouteMetrics {
+    return {
+      attemptedRequests: 0,
+      outcomes: this.emptyRouteOutcomeCounts(),
+      bots: {},
+    };
+  }
+
   private isStringRecord(value: unknown): value is Record<string, string> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
@@ -300,11 +498,13 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
       attemptedReceipts: 0,
       persistedReceipts: 0,
       failedReceipts: 0,
+      rejectedReceipts: 0,
       sampledReceipts: 0,
       p95LatencyMs: null,
       p99LatencyMs: null,
       underTargetRatio: null,
       bots: {},
+      route: this.emptyRouteMetrics(),
     };
   }
 

@@ -284,6 +284,12 @@ describe('WebhookService', () => {
       expect.objectContaining({ executionOwnerBotId: ownerBotId }),
     );
     expect(events.get('evt-owner-late')?.status).toBe('DUPLICATE');
+    expect(events.get('evt-owner-late')).toEqual(
+      expect.objectContaining({
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      }),
+    );
     expect(maxBotLinkService.observeStoredChatBotWebhook).toHaveBeenCalledTimes(2);
   });
 

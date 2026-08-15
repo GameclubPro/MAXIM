@@ -894,7 +894,7 @@ export class ManagedPollService {
     const chatId = update.message?.chatId?.trim() ?? '';
     const messageId = update.message?.messageId?.trim() ?? '';
     if (!callbackUser || !chatId || !messageId) {
-      await this.answerCallback(callbackId, 'Опрос уже недоступен', update.botId);
+      await this.answerCallback(callbackId, 'Опрос уже недоступен', update.botId, chatId || null);
       return true;
     }
 
@@ -911,11 +911,11 @@ export class ManagedPollService {
     const serialized = await this.runPollRenderSerialized(parsed.pollId, async () => {
       const outcome = await this.recordVote(voteParams);
       if (outcome.kind === 'stale') {
-        await this.answerCallback(callbackId, 'Опрос уже неактуален', update.botId);
+        await this.answerCallback(callbackId, 'Опрос уже неактуален', update.botId, chatId);
         return;
       }
       if (outcome.kind === 'closed') {
-        await this.answerCallback(callbackId, 'Опрос закрыт', update.botId);
+        await this.answerCallback(callbackId, 'Опрос закрыт', update.botId, chatId);
         if (outcome.needsRender) {
           await this.renderPollPublication(chatId, outcome.pollId, 'closed-callback');
         }
@@ -932,7 +932,12 @@ export class ManagedPollService {
         return;
       }
       if (poll.imageCount > 0) {
-        await this.answerCallback(callbackId, notification, poll.publicationBotId ?? update.botId);
+        await this.answerCallback(
+          callbackId,
+          notification,
+          poll.publicationBotId ?? update.botId,
+          chatId,
+        );
         if (outcome.needsRender) {
           await this.renderPollPublication(chatId, poll.id, 'vote-media');
         }
@@ -955,6 +960,7 @@ export class ManagedPollService {
             MANAGED_POLL_EDIT_TIMEOUT_MS,
           ),
           trafficClass: 'critical',
+          rateLimitEntityId: chatId,
         });
         if (
           engagement.state === 'resolved' &&
@@ -1013,7 +1019,7 @@ export class ManagedPollService {
             : outcome.replayed || outcome.changed
               ? 'Голос учтён'
               : 'Вы уже выбрали этот вариант';
-      await this.answerCallback(callbackId, notification, update.botId);
+      await this.answerCallback(callbackId, notification, update.botId, chatId);
       if (
         (outcome.kind === 'recorded' && outcome.needsRender) ||
         (outcome.kind === 'closed' && outcome.needsRender)
@@ -2290,6 +2296,7 @@ export class ManagedPollService {
     callbackId: string | null,
     notification: string,
     botId?: string | null,
+    rateLimitEntityId?: string | null,
   ): Promise<void> {
     if (!callbackId) {
       return;
@@ -2298,6 +2305,7 @@ export class ManagedPollService {
       await this.maxClient.answerCallback(callbackId, notification, undefined, {
         ...this.buildMaxOptions(botId, MANAGED_POLL_EDIT_TIMEOUT_MS),
         trafficClass: 'critical',
+        ...(rateLimitEntityId?.trim() ? { rateLimitEntityId: rateLimitEntityId.trim() } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(

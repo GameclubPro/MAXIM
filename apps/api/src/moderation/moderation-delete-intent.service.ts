@@ -526,13 +526,10 @@ export class ModerationDeleteIntentService {
         UPDATE "moderation_delete_intents"
         SET
           "status" = CASE
-            WHEN (
-              "remote_delete_succeeded_at" IS NOT NULL
-              AND "remote_delete_succeeded_bot_id" IS NOT NULL
-            ) OR (
-              "delete_dispatch_started_at" IS NOT NULL
-              AND "delete_dispatch_started_bot_id" IS NOT NULL
-            )
+            WHEN "remote_delete_succeeded_at" IS NOT NULL
+              OR "remote_delete_succeeded_bot_id" IS NOT NULL
+              OR "delete_dispatch_started_at" IS NOT NULL
+              OR "delete_dispatch_started_bot_id" IS NOT NULL
             THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
             ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
           END,
@@ -662,7 +659,7 @@ export class ModerationDeleteIntentService {
         );
       }
 
-      if (!this.hasDeleteDispatchMarker(intent)) {
+      if (!this.hasDeleteMutationEvidence(intent)) {
         await this.assertLeaseForExternalCall(heartbeat);
         const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
           intent,
@@ -701,7 +698,7 @@ export class ModerationDeleteIntentService {
 
       const attemptedBotIds = new Set<string>();
       let lastAccessFailure: DeleteErrorDetails | null = null;
-      let unresolvedDeleteDispatch = this.hasDeleteDispatchMarker(intent);
+      let unresolvedDeleteDispatch = this.hasDeleteMutationEvidence(intent);
       while (candidateBotIds.length > 0) {
         const botId = candidateBotIds.shift()!;
         if (attemptedBotIds.has(botId)) {
@@ -971,11 +968,11 @@ export class ModerationDeleteIntentService {
   }
 
   async sweepDueIntents(): Promise<number> {
+    await this.expireDueIntents();
     if (!this.hasAnyExecutionScope()) {
       return 0;
     }
 
-    await this.expireDueIntents();
     const dueIntents = await this.selectDueIntentIds();
     await Promise.all(
       dueIntents.map(async (intent) => {
@@ -2022,13 +2019,10 @@ export class ModerationDeleteIntentService {
           UPDATE "moderation_delete_intents"
           SET
             "status" = CASE
-              WHEN (
-                "remote_delete_succeeded_at" IS NOT NULL
-                AND "remote_delete_succeeded_bot_id" IS NOT NULL
-              ) OR (
-                "delete_dispatch_started_at" IS NOT NULL
-                AND "delete_dispatch_started_bot_id" IS NOT NULL
-              )
+              WHEN "remote_delete_succeeded_at" IS NOT NULL
+                OR "remote_delete_succeeded_bot_id" IS NOT NULL
+                OR "delete_dispatch_started_at" IS NOT NULL
+                OR "delete_dispatch_started_bot_id" IS NOT NULL
               THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
               ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
             END,
@@ -2063,17 +2057,17 @@ export class ModerationDeleteIntentService {
           UPDATE "moderation_delete_intents"
           SET
             "status" = CASE
-              WHEN (
-                "remote_delete_succeeded_at" IS NOT NULL
-                AND "remote_delete_succeeded_bot_id" IS NOT NULL
-              ) OR (
-                "delete_dispatch_started_at" IS NOT NULL
-                AND "delete_dispatch_started_bot_id" IS NOT NULL
-              )
+              WHEN "remote_delete_succeeded_at" IS NOT NULL
+                OR "remote_delete_succeeded_bot_id" IS NOT NULL
+                OR "delete_dispatch_started_at" IS NOT NULL
+                OR "delete_dispatch_started_bot_id" IS NOT NULL
               THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
               ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
             END,
             "source_message_at" = ${normalized.sourceMessageAt},
+            "attempt_count" = 0,
+            "first_attempt_at" = NULL,
+            "last_attempt_at" = NULL,
             "execute_at" = LEAST("execute_at", ${normalized.executeAt}),
             "next_attempt_at" = ${normalized.executeAt},
             "retry_until_at" = GREATEST("retry_until_at", ${normalized.retryUntilAt}),
@@ -2110,13 +2104,10 @@ export class ModerationDeleteIntentService {
           UPDATE "moderation_delete_intents"
           SET
             "status" = CASE
-              WHEN (
-                "remote_delete_succeeded_at" IS NOT NULL
-                AND "remote_delete_succeeded_bot_id" IS NOT NULL
-              ) OR (
-                "delete_dispatch_started_at" IS NOT NULL
-                AND "delete_dispatch_started_bot_id" IS NOT NULL
-              )
+              WHEN "remote_delete_succeeded_at" IS NOT NULL
+                OR "remote_delete_succeeded_bot_id" IS NOT NULL
+                OR "delete_dispatch_started_at" IS NOT NULL
+                OR "delete_dispatch_started_bot_id" IS NOT NULL
               THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
               ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
             END,
@@ -2149,13 +2140,10 @@ export class ModerationDeleteIntentService {
           UPDATE "moderation_delete_intents"
           SET
             "status" = CASE
-              WHEN (
-                "remote_delete_succeeded_at" IS NOT NULL
-                AND "remote_delete_succeeded_bot_id" IS NOT NULL
-              ) OR (
-                "delete_dispatch_started_at" IS NOT NULL
-                AND "delete_dispatch_started_bot_id" IS NOT NULL
-              )
+              WHEN "remote_delete_succeeded_at" IS NOT NULL
+                OR "remote_delete_succeeded_bot_id" IS NOT NULL
+                OR "delete_dispatch_started_at" IS NOT NULL
+                OR "delete_dispatch_started_bot_id" IS NOT NULL
               THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
               ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
             END,
@@ -2258,14 +2246,10 @@ export class ModerationDeleteIntentService {
         AND "next_attempt_at" <= ${now}
         AND (
           "retry_until_at" > ${now}
-          OR (
-            "remote_delete_succeeded_at" IS NOT NULL
-            AND "remote_delete_succeeded_bot_id" IS NOT NULL
-          )
-          OR (
-            "delete_dispatch_started_at" IS NOT NULL
-            AND "delete_dispatch_started_bot_id" IS NOT NULL
-          )
+          OR "remote_delete_succeeded_at" IS NOT NULL
+          OR "remote_delete_succeeded_bot_id" IS NOT NULL
+          OR "delete_dispatch_started_at" IS NOT NULL
+          OR "delete_dispatch_started_bot_id" IS NOT NULL
         )
         AND (
           "status" IN (
@@ -2295,14 +2279,10 @@ export class ModerationDeleteIntentService {
           AND intent."next_attempt_at" <= ${now}
           AND (
             intent."retry_until_at" > ${now}
-            OR (
-              intent."remote_delete_succeeded_at" IS NOT NULL
-              AND intent."remote_delete_succeeded_bot_id" IS NOT NULL
-            )
-            OR (
-              intent."delete_dispatch_started_at" IS NOT NULL
-              AND intent."delete_dispatch_started_bot_id" IS NOT NULL
-            )
+            OR intent."remote_delete_succeeded_at" IS NOT NULL
+            OR intent."remote_delete_succeeded_bot_id" IS NOT NULL
+            OR intent."delete_dispatch_started_at" IS NOT NULL
+            OR intent."delete_dispatch_started_bot_id" IS NOT NULL
           )
           AND ${rolloutFilter}
           AND (
@@ -2827,9 +2807,32 @@ export class ModerationDeleteIntentService {
     `);
   }
 
-  private async expireDueIntents(): Promise<void> {
-    const rolloutFilter = this.buildSweepRolloutFilter();
-    await this.prisma.$executeRaw(Prisma.sql`
+  private async expireDueIntents(): Promise<number> {
+    return this.prisma.$executeRaw(Prisma.sql`
+      WITH candidates AS (
+        SELECT intent."id"
+        FROM "moderation_delete_intents" intent
+        WHERE intent."retry_until_at" <= CURRENT_TIMESTAMP
+          AND intent."remote_delete_succeeded_at" IS NULL
+          AND intent."remote_delete_succeeded_bot_id" IS NULL
+          AND intent."delete_dispatch_started_at" IS NULL
+          AND intent."delete_dispatch_started_bot_id" IS NULL
+          AND intent."status" IN (
+            CAST('PENDING' AS "ModerationDeleteIntentStatus"),
+            CAST('RETRYABLE' AS "ModerationDeleteIntentStatus"),
+            CAST('WAITING_CAPABILITY' AS "ModerationDeleteIntentStatus"),
+            CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus"),
+            CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+          )
+          AND (
+            intent."status" <> CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+            OR intent."lease_expires_at" IS NULL
+            OR intent."lease_expires_at" <= CURRENT_TIMESTAMP
+          )
+        ORDER BY intent."retry_until_at" ASC, intent."created_at" ASC, intent."id" ASC
+        LIMIT ${this.sweepBatchSize}
+        FOR UPDATE SKIP LOCKED
+      )
       UPDATE "moderation_delete_intents" intent
       SET
         "status" = CAST('EXPIRED' AS "ModerationDeleteIntentStatus"),
@@ -2838,27 +2841,8 @@ export class ModerationDeleteIntentService {
         "lease_expires_at" = NULL,
         "leased_from_status" = NULL,
         "updated_at" = CURRENT_TIMESTAMP
-      WHERE intent."retry_until_at" <= CURRENT_TIMESTAMP
-        AND NOT (
-          intent."remote_delete_succeeded_at" IS NOT NULL
-          AND intent."remote_delete_succeeded_bot_id" IS NOT NULL
-        )
-        AND NOT (
-          intent."delete_dispatch_started_at" IS NOT NULL
-          AND intent."delete_dispatch_started_bot_id" IS NOT NULL
-        )
-        AND ${rolloutFilter}
-        AND intent."status" IN (
-          CAST('PENDING' AS "ModerationDeleteIntentStatus"),
-          CAST('RETRYABLE' AS "ModerationDeleteIntentStatus"),
-          CAST('WAITING_CAPABILITY' AS "ModerationDeleteIntentStatus"),
-          CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus"),
-          CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
-        )
-        AND (
-          intent."status" <> CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
-          OR intent."lease_expires_at" < CURRENT_TIMESTAMP
-        )
+      FROM candidates
+      WHERE intent."id" = candidates."id"
     `);
   }
 
@@ -2874,14 +2858,10 @@ export class ModerationDeleteIntentService {
         "updated_at" = CURRENT_TIMESTAMP
       WHERE "id" = ${intentId}
         AND "retry_until_at" <= CURRENT_TIMESTAMP
-        AND NOT (
-          "remote_delete_succeeded_at" IS NOT NULL
-          AND "remote_delete_succeeded_bot_id" IS NOT NULL
-        )
-        AND NOT (
-          "delete_dispatch_started_at" IS NOT NULL
-          AND "delete_dispatch_started_bot_id" IS NOT NULL
-        )
+        AND "remote_delete_succeeded_at" IS NULL
+        AND "remote_delete_succeeded_bot_id" IS NULL
+        AND "delete_dispatch_started_at" IS NULL
+        AND "delete_dispatch_started_bot_id" IS NULL
         AND "status" IN (
           CAST('PENDING' AS "ModerationDeleteIntentStatus"),
           CAST('RETRYABLE' AS "ModerationDeleteIntentStatus"),
@@ -3888,13 +3868,25 @@ export class ModerationDeleteIntentService {
   private hasRemoteSuccessMarker(
     intent: Pick<IntentRow, 'remoteDeleteSucceededAt' | 'remoteDeleteSucceededBotId'>,
   ): boolean {
-    return Boolean(intent.remoteDeleteSucceededAt && intent.remoteDeleteSucceededBotId);
+    return Boolean(intent.remoteDeleteSucceededAt || intent.remoteDeleteSucceededBotId);
   }
 
   private hasDeleteDispatchMarker(
     intent: Pick<IntentRow, 'deleteDispatchStartedAt' | 'deleteDispatchStartedBotId'>,
   ): boolean {
-    return Boolean(intent.deleteDispatchStartedAt && intent.deleteDispatchStartedBotId);
+    return Boolean(intent.deleteDispatchStartedAt || intent.deleteDispatchStartedBotId);
+  }
+
+  private hasDeleteMutationEvidence(
+    intent: Pick<
+      IntentRow,
+      | 'remoteDeleteSucceededAt'
+      | 'remoteDeleteSucceededBotId'
+      | 'deleteDispatchStartedAt'
+      | 'deleteDispatchStartedBotId'
+    >,
+  ): boolean {
+    return this.hasRemoteSuccessMarker(intent) || this.hasDeleteDispatchMarker(intent);
   }
 
   private toSnapshot(intent: IntentRow): ModerationDeleteIntentSnapshot {

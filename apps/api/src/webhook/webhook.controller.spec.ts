@@ -1,4 +1,8 @@
 import { ForbiddenException } from '@nestjs/common';
+import {
+  applyMaxWebhookAckDeadline,
+  MAX_WEBHOOK_ROUTE_CONFIG_KEY,
+} from './webhook-http-route-limit';
 import { WebhookController } from './webhook.controller';
 
 describe('WebhookController', () => {
@@ -26,12 +30,15 @@ describe('WebhookController', () => {
       }),
     };
     const controller = new WebhookController(webhookIngestionService as never);
+    const request = {
+      headers: { 'x-max-bot-api-secret': 'secret-header' },
+      ip: '127.0.0.1',
+      routeOptions: { config: { [MAX_WEBHOOK_ROUTE_CONFIG_KEY]: true } },
+    };
+    applyMaxWebhookAckDeadline(request, 18_000, 1_000);
 
     await expect(
-      controller.receive({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
-        headers: { 'x-max-bot-api-secret': 'secret-header' },
-        ip: '127.0.0.1',
-      } as never),
+      controller.receive({ botId: 'bot-1', secretPath: 'secret-path' }, {}, request as never),
     ).resolves.toEqual(
       expect.objectContaining({
         ok: true,
@@ -42,6 +49,7 @@ describe('WebhookController', () => {
       { botId: 'bot-1', secretPath: 'secret-path' },
       {},
       expect.objectContaining({ ip: '127.0.0.1' }),
+      19_000,
     );
   });
 
@@ -72,6 +80,7 @@ describe('WebhookController', () => {
       expect.objectContaining({
         headers: { 'x-max-bot-api-secret': 'secret-header-prev' },
       }),
+      null,
     );
   });
 });

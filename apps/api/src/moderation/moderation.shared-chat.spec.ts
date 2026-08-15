@@ -1,5 +1,6 @@
 import { ChatBotMembershipStatus, WebhookStatus } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
+import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from '../webhook/webhook-timeout-quarantine';
 import { ModerationService } from './moderation.service';
 import {
   SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS,
@@ -148,7 +149,17 @@ describe('ModerationService shared chat ownership', () => {
           {
             status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
           },
-          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+          {
+            status: WebhookStatus.FAILED,
+            OR: [
+              { nextEnqueueAt: { not: null } },
+              {
+                errorMessage: {
+                  startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`,
+                },
+              },
+            ],
+          },
         ],
       },
       select: {
@@ -219,7 +230,17 @@ describe('ModerationService shared chat ownership', () => {
           {
             status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
           },
-          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+          {
+            status: WebhookStatus.FAILED,
+            OR: [
+              { nextEnqueueAt: { not: null } },
+              {
+                errorMessage: {
+                  startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`,
+                },
+              },
+            ],
+          },
         ],
       },
       select: {
@@ -350,7 +371,17 @@ describe('ModerationService shared chat ownership', () => {
           {
             status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
           },
-          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+          {
+            status: WebhookStatus.FAILED,
+            OR: [
+              { nextEnqueueAt: { not: null } },
+              {
+                errorMessage: {
+                  startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`,
+                },
+              },
+            ],
+          },
         ],
       },
       select: {

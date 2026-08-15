@@ -23,6 +23,14 @@ function read(path) {
   return readFileSync(resolve(root, path), 'utf8');
 }
 
+function functionBlock(script, name) {
+  const start = script.indexOf(`${name}() {`);
+  assert.notEqual(start, -1, `Missing shell function: ${name}`);
+  const end = script.indexOf('\n}\n', start);
+  assert.notEqual(end, -1, `Unterminated shell function: ${name}`);
+  return script.slice(start, end + 2);
+}
+
 function callIndex(script, call) {
   const indexes = callIndexes(script, call);
   return indexes.at(-1);
@@ -127,6 +135,54 @@ test('re-executes deploy entrypoints when the loaded disk-capacity library chang
     );
 
     assert.match(reexecBlock, /infra\/scripts\/lib\/deploy-disk-capacity\.sh/u, path);
+    if (path.endsWith('vps-pull-build-up.sh')) {
+      assert.match(reexecBlock, /infra\/scripts\/lib\/webhook-rollout-quiescence\.sh/u, path);
+    }
+  }
+});
+
+test('forwards explicit webhook pause recovery only through guarded rollout entrypoints', () => {
+  const connect = read('infra/scripts/vps-connect.sh');
+  const recoveryHelper = functionBlock(connect, 'prepend_webhook_rollout_recovery_env');
+
+  assert.match(recoveryHelper, /MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE:-0/u);
+  assert.match(recoveryHelper, /MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1/u);
+  assert.match(recoveryHelper, /must be 0 or 1/u);
+  for (const name of ['deploy_main', 'rollback_runtime', 'rollback_release']) {
+    assert.match(
+      functionBlock(connect, name),
+      /prepend_webhook_rollout_recovery_env remote_command/u,
+      name,
+    );
+  }
+});
+
+test('synchronizes rollback entrypoints to reviewed main under the shared deploy lock', () => {
+  const connect = read('infra/scripts/vps-connect.sh');
+  const bootstrapStart = connect.indexOf('rollback_entrypoint_bootstrap_source()');
+  const bootstrap = connect.slice(
+    bootstrapStart,
+    connect.indexOf('\nBOOTSTRAP\n}', bootstrapStart) + '\nBOOTSTRAP\n}'.length,
+  );
+  const builder = functionBlock(connect, 'build_guarded_rollback_command');
+
+  assert.match(bootstrap, /lock_dir=\/tmp\/maxim-main-deploy\.lock/u);
+  assert.ok(
+    bootstrap.indexOf('grep -Fq -- "$capability_marker" "$entrypoint"') <
+      bootstrap.indexOf('git status --porcelain --untracked-files=no'),
+  );
+  assert.match(bootstrap, /git status --porcelain --untracked-files=no/u);
+  assert.doesNotMatch(bootstrap, /git fetch|git pull/u);
+  assert.match(bootstrap, /git cat-file -e "\$\{expected_tooling_sha\}\^\{commit\}"/u);
+  assert.match(bootstrap, /git rev-parse --verify refs\/heads\/main/u);
+  assert.match(bootstrap, /source "\$entrypoint" "\$@"/u);
+  assert.match(builder, /git rev-parse --verify --end-of-options 'main\^\{commit\}'/u);
+  for (const name of ['rollback_runtime', 'rollback_release']) {
+    assert.match(
+      functionBlock(connect, name),
+      /build_guarded_rollback_command[\s\\]+remote_command/u,
+      name,
+    );
   }
 });
 
@@ -157,6 +213,34 @@ test('uses component manifests, immutable refs, conditional migrations, and stri
   assert.match(compose, /image: \$\{MAXIM_API_IMAGE:-maxim-api:local\}/u);
   assert.match(compose, /NODE_ENV: production/u);
   assert.match(compose, /com\.maxim\.release-protected: 'true'/u);
+});
+
+test('journals release inventory before mutation and fences inherited components', () => {
+  const deploy = read('infra/scripts/vps-pull-build-up.sh');
+  const immutableRollback = read('infra/scripts/vps-release-rollback.sh');
+  const runtimeRollback = read('infra/scripts/vps-runtime-rollback.sh');
+
+  assert.ok(
+    callIndexes(deploy, 'begin_release_runtime_transition')[0] <
+      deploy.indexOf('if ! run_migrations'),
+  );
+  assert.match(deploy, /Interrupted release recovery selected every active component/u);
+  assert.match(deploy, /verify_inherited_release_components/u);
+
+  assert.ok(
+    callIndex(immutableRollback, 'begin_release_runtime_transition') <
+      callIndex(immutableRollback, 'maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES'),
+  );
+  assert.match(immutableRollback, /verify_inherited_release_components/u);
+  assert.match(immutableRollback, /release-rollback-api/u);
+  assert.match(immutableRollback, /release-rollback-static/u);
+  assert.match(immutableRollback, /requires selecting api-shared for queue fencing/u);
+
+  assert.ok(
+    callIndex(runtimeRollback, 'begin_runtime_rollback_transition') <
+      runtimeRollback.indexOf('./node_modules/.bin/prisma migrate deploy'),
+  );
+  assert.match(runtimeRollback, /verify_inherited_static_components/u);
 });
 
 test('keeps backup preflight read-only and reclaims only manifest-aware release images', () => {

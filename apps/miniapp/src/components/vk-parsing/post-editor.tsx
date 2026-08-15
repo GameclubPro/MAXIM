@@ -1,5 +1,8 @@
 import { Link as IconoirLink, SendDiagonal, Xmark } from 'iconoir-react';
-import { VK_PARSING_MAX_PUBLISH_TEXT_LENGTH, type VkParsingPost } from '@maxim/contracts';
+import {
+  VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
+  type VkParsingPost,
+} from '@maxim/contracts/vk-parsing';
 import { useRef, useState } from 'react';
 import { cn } from '../../lib/cn';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from '../max-markdown-editor';

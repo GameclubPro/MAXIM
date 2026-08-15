@@ -43,7 +43,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
@@ -94,6 +94,7 @@ import {
   type BackgroundRuntimeGovernorDecision,
 } from '../system/background-runtime-governor.service';
 import { AdminService } from './admin.service';
+import { shouldRecreateEditableMessage } from './admin-editable-message';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { isPrismaKnownError } from './admin-legacy-utils';
 import { MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS } from './admin.service.support';
@@ -119,6 +120,8 @@ const GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT = 4;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_MS = 30 * 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_TERMINAL_DEFER_MS = 2 * 60 * 60_000;
 const GIVEAWAY_RUNNER_THROTTLE_LOG_INTERVAL_MS = 60_000;
+const GIVEAWAY_RESULTS_REPLACEMENT_DIGEST_HEX_LENGTH = 24;
+const GIVEAWAY_RESULTS_REPLACEMENT_DIGEST_PATTERN = /^[0-9a-f]{24}$/u;
 const MANAGED_GIVEAWAY_METADATA_TIMEOUT_MS = 2_500;
 const MANAGED_GIVEAWAY_SEND_TIMEOUT_MS = 12_000;
 const MANAGED_GIVEAWAY_UPLOAD_TIMEOUT_MS = 30_000;
@@ -3045,6 +3048,43 @@ export class ManagedGiveawayService {
     return `managed-giveaway:${phase}:${giveawayId}`;
   }
 
+  private buildGiveawayResultsReplacementSendLockKey(
+    giveawayId: string,
+    replacedMessageId: string,
+  ): string {
+    const digest = createHash('sha256')
+      .update(giveawayId)
+      .update('\0')
+      .update(replacedMessageId)
+      .digest('hex')
+      .slice(0, GIVEAWAY_RESULTS_REPLACEMENT_DIGEST_HEX_LENGTH);
+    return `managed-giveaway:results-replacement:${giveawayId}:${digest}`;
+  }
+
+  private resolveGiveawaySendLockKey(
+    giveaway: PersistedGiveawayWithRelations,
+    phase: GiveawayRoutedSendPhase,
+  ): string {
+    const storedLockKey = this.normalizeNonEmptyString(giveaway.sendLockKey);
+    if (
+      phase === 'results' &&
+      !giveaway.resultsMessageId &&
+      storedLockKey &&
+      this.isGiveawayResultsReplacementSendLockKey(giveaway.id, storedLockKey)
+    ) {
+      return storedLockKey;
+    }
+    return this.buildGiveawaySendLockKey(giveaway.id, phase);
+  }
+
+  private isGiveawayResultsReplacementSendLockKey(giveawayId: string, lockKey: string): boolean {
+    const replacementPrefix = `managed-giveaway:results-replacement:${giveawayId}:`;
+    return (
+      lockKey.startsWith(replacementPrefix) &&
+      GIVEAWAY_RESULTS_REPLACEMENT_DIGEST_PATTERN.test(lockKey.slice(replacementPrefix.length))
+    );
+  }
+
   private assertProductionRoutedPublicationAvailable(): void {
     if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
       throw new ServiceUnavailableException(
@@ -3068,7 +3108,7 @@ export class ManagedGiveawayService {
       timeoutMs: sendOptions.timeoutMs,
       text: ' ',
       attempt: 1,
-      idempotencyKey: this.buildGiveawaySendLockKey(giveaway.id, phase),
+      idempotencyKey: this.resolveGiveawaySendLockKey(giveaway, phase),
       createdAt: new Date().toISOString(),
     };
   }
@@ -3079,7 +3119,7 @@ export class ManagedGiveawayService {
     source: GiveawayActionSource,
   ): Promise<GiveawaySendLockReconciliation> {
     const lockedAt = giveaway.lockedAt;
-    const expectedLockKey = this.buildGiveawaySendLockKey(giveaway.id, phase);
+    const expectedLockKey = this.resolveGiveawaySendLockKey(giveaway, phase);
     if (
       !lockedAt ||
       lockedAt.getTime() > Date.now() - GIVEAWAY_LOCK_STALE_MS ||
@@ -3173,7 +3213,11 @@ export class ManagedGiveawayService {
       },
       data: {
         lockedAt: null,
-        sendLockKey: null,
+        sendLockKey:
+          phase === 'results' &&
+          this.isGiveawayResultsReplacementSendLockKey(giveaway.id, expectedLockKey)
+            ? expectedLockKey
+            : null,
       },
     });
     if (released.count === 0) {
@@ -3207,7 +3251,7 @@ export class ManagedGiveawayService {
           },
         )
       : baseResultsTextPayload;
-    const resultsSendLockKey = this.buildGiveawaySendLockKey(giveaway.id, 'results');
+    const resultsSendLockKey = this.resolveGiveawaySendLockKey(giveaway, 'results');
     if (!giveaway.resultsMessageId?.trim()) {
       this.assertProductionRoutedPublicationAvailable();
       if (giveaway.lockedAt) {
@@ -3349,7 +3393,7 @@ export class ManagedGiveawayService {
             sendLockKey: null,
           },
         });
-        if (this.maxRoutedPublicationService) {
+        if (this.maxRoutedPublicationService && !maxSendAttempted) {
           return this.editGiveawayResultsMessage(
             {
               ...giveaway,
@@ -3385,7 +3429,15 @@ export class ManagedGiveawayService {
               lockedAt: resultLockAt,
               sendLockKey: this.maxRoutedPublicationService ? resultsSendLockKey : null,
             },
-            data: { lockedAt: null, sendLockKey: null },
+            data: {
+              lockedAt: null,
+              sendLockKey: this.isGiveawayResultsReplacementSendLockKey(
+                giveaway.id,
+                resultsSendLockKey,
+              )
+                ? resultsSendLockKey
+                : null,
+            },
           });
           if (!this.maxRoutedPublicationService) {
             await this.recordManagedGiveawayMaxAccessLoss({
@@ -3445,6 +3497,17 @@ export class ManagedGiveawayService {
       }
       return true;
     } catch (error: unknown) {
+      if (
+        await this.replaceDefinitivelyUneditableGiveawayResultsMessage({
+          giveaway,
+          resultsMessageId,
+          resultsBotId: resultsBotId ?? null,
+          source,
+          error,
+        })
+      ) {
+        return true;
+      }
       this.logger.warn(
         {
           giveawayId: giveaway.id,
@@ -3461,6 +3524,112 @@ export class ManagedGiveawayService {
       });
       return false;
     }
+  }
+
+  private async replaceDefinitivelyUneditableGiveawayResultsMessage(params: {
+    giveaway: PersistedGiveawayWithRelations;
+    resultsMessageId: string;
+    resultsBotId: string | null;
+    source: GiveawayActionSource;
+    error: unknown;
+  }): Promise<boolean> {
+    if (!this.isDefinitiveGiveawayResultsEditFailure(params.error)) {
+      return false;
+    }
+
+    let presence: 'present' | 'absent';
+    try {
+      presence = await this.maxClient.getExactMessagePresence(
+        params.giveaway.sourceChatId,
+        params.resultsMessageId,
+        {
+          ...buildManagedGiveawayMaxApiOptions(params.source, 'send', params.resultsBotId),
+          bypassCache: true,
+          ignoreFailureMetricStatuses: [404],
+        },
+      );
+    } catch (lookupError: unknown) {
+      this.logger.warn(
+        {
+          giveawayId: params.giveaway.id,
+          messageId: params.resultsMessageId,
+          botId: params.resultsBotId,
+          err: lookupError instanceof Error ? lookupError.message : String(lookupError),
+        },
+        'Could not verify uneditable giveaway results message before replacement',
+      );
+      return false;
+    }
+    if (presence !== 'present' && presence !== 'absent') {
+      return false;
+    }
+
+    const replacementSendLockKey = this.buildGiveawayResultsReplacementSendLockKey(
+      params.giveaway.id,
+      params.resultsMessageId,
+    );
+    const replaced = await this.prisma.managedGiveaway.updateMany({
+      where: {
+        id: params.giveaway.id,
+        status: ManagedGiveawayStatus.COMPLETED,
+        resultsMessageId: params.resultsMessageId,
+        lockedAt: params.giveaway.lockedAt,
+        sendLockKey: params.giveaway.sendLockKey,
+      },
+      data: {
+        resultsMessageId: null,
+        resultsBotId: null,
+        resultsUrl: null,
+        lockedAt: null,
+        sendLockKey: replacementSendLockKey,
+      },
+    });
+    if (replaced.count === 0) {
+      return false;
+    }
+
+    this.logger.warn(
+      {
+        giveawayId: params.giveaway.id,
+        replacedMessageId: params.resultsMessageId,
+        verifiedPresence: presence,
+      },
+      'Fenced an uneditable giveaway results message for deterministic replacement',
+    );
+    return this.republishGiveawayResults(
+      {
+        ...params.giveaway,
+        resultsMessageId: null,
+        resultsBotId: null,
+        resultsUrl: null,
+        lockedAt: null,
+        sendLockKey: replacementSendLockKey,
+      },
+      params.source,
+    );
+  }
+
+  private isDefinitiveGiveawayResultsEditFailure(error: unknown): boolean {
+    if (shouldRecreateEditableMessage(error)) {
+      return true;
+    }
+
+    const response = (error as { response?: { status?: unknown; data?: unknown } } | null)
+      ?.response;
+    if (response?.status === 404) {
+      return true;
+    }
+    if (
+      response?.status !== 200 ||
+      !response.data ||
+      typeof response.data !== 'object' ||
+      Array.isArray(response.data)
+    ) {
+      return false;
+    }
+
+    const payload = response.data as Record<string, unknown>;
+    return payload.success === false && payload.message === 'Error on message edit';
   }
 
   private async recordManagedGiveawayMaxAccessLoss(params: {

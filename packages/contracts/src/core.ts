@@ -55,7 +55,6 @@ import {
 } from './settings-utils.js';
 export * from './navigation-allowlist.js';
 export * from './settings-utils.js';
-export * from './system-core.js';
 export * from './vk-parsing.js';
 
 export const sanctionActionSchema = z.enum([

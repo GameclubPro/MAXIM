@@ -20,6 +20,7 @@ import type {
   MaxActionLedgerContext,
   MaxActionRoutingMetadata,
 } from '../max/max-client.service';
+import { hasMaxInsufficientRightsMessage } from '../max/max-member-error.util';
 
 const WATCHDOG_LOCK_KEY = 'system:max-action-ledger:watchdog:lock:v1';
 const WATCHDOG_STATUS_KEY = 'system:max-action-ledger:watchdog:status:v1';
@@ -597,7 +598,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       row.lastStatusCode === 200 &&
       (error.includes('already deleted') ||
         error.includes('already been deleted') ||
-        error.includes('sufficient rights'))
+        hasMaxInsufficientRightsMessage(error))
     ) {
       return true;
     }
@@ -701,6 +702,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       metadata?.ignoreFailureMetricStatuses,
     );
     const createdAt = this.readString(metadata?.createdAt) ?? row.createdAt.toISOString();
+    const scheduledFor = this.readString(metadata?.scheduledFor);
 
     return {
       actionType: row.actionType,
@@ -720,6 +722,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       attempt: Math.max(1, row.attemptCount + 1),
       idempotencyKey: row.jobId,
       createdAt,
+      ...(scheduledFor ? { scheduledFor } : {}),
     };
   }
 

@@ -6,6 +6,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { buildMaxActionNoExecutableRouteMessage } from './max-action-dispatch-error';
 import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
 import type { MaxActionJob, MaxActionType } from './max-client.service';
+import {
+  hasMaxInsufficientRightsMessage,
+  wasMaxMemberMutationAttempted,
+} from './max-member-error.util';
 
 const IRREVERSIBLE_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
   'SEND_MESSAGE',
@@ -24,6 +28,7 @@ const CRASH_FENCED_MEMBER_ACTION_TYPES: ReadonlySet<MaxActionType> = new Set([
 export const MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES = [
   'max_api_circuit_open',
   'max_api_internal_rate_limit',
+  'max_api_external_rate_limit',
   'moderation_sanction_state_lock_lease_lost',
   'moderation_sanction_state_lock_unavailable',
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
@@ -37,6 +42,13 @@ const LEGACY_PRE_DISPATCH_WATCHDOG_ERROR =
   'Pre-dispatch MAX SEND_MESSAGE ledger entry has no retained dispatch fence; BullMQ states missing. The action was not requeued.';
 const LEGACY_MANAGED_BROADCAST_UPLOAD_ERROR =
   'не удалось загрузить видео: max upload payload is missing';
+const MAX_MEMBER_ACTION_FAILURE_ERROR_CODES = {
+  ALREADY_DELETED: 'max_member_already_deleted',
+  ALREADY_DELETED_OR_INSUFFICIENT_RIGHTS: 'max_member_already_deleted_or_insufficient_rights',
+  INSUFFICIENT_RIGHTS: 'max_member_insufficient_rights',
+  KICK_FAILED: 'max_kick_member_failed',
+  BAN_FAILED: 'max_ban_member_failed',
+} as const;
 
 type MaxActionLedgerMutation = {
   status: MaxActionLedgerStatus;
@@ -323,12 +335,13 @@ export class MaxActionLedgerService {
     );
   }
 
-  async recordEnqueuedIfAbsent(job: MaxActionJob): Promise<void> {
+  async recordEnqueuedIfAbsent(job: MaxActionJob, enqueuedAt?: Date): Promise<void> {
+    const recordedAt = new Date();
     const mutation: MaxActionLedgerMutation = {
       status: MaxActionLedgerStatus.ENQUEUED,
       ambiguous: false,
       terminal: false,
-      enqueuedAt: new Date(),
+      enqueuedAt: this.normalizeEnqueuedAt(enqueuedAt, recordedAt) ?? recordedAt,
       completedAt: null,
       lastStatusCode: null,
       lastErrorCode: null,
@@ -353,7 +366,7 @@ export class MaxActionLedgerService {
       terminal: false,
       completedAt: null,
       lastStatusCode: this.extractStatusCode(error),
-      lastErrorCode: this.extractErrorCode(error),
+      lastErrorCode: this.extractPersistedFailureErrorCode(job, error),
       lastError: this.extractErrorMessage(error),
     };
     await this.createLedgerIfAbsent(job, mutation);
@@ -403,12 +416,14 @@ export class MaxActionLedgerService {
     return Boolean(row);
   }
 
-  async recordStarted(job: MaxActionJob): Promise<void> {
+  async recordStarted(job: MaxActionJob, enqueuedAt?: Date): Promise<void> {
     const now = new Date();
+    const normalizedEnqueuedAt = this.normalizeEnqueuedAt(enqueuedAt, now);
     const mutation: MaxActionLedgerMutation = {
       status: MaxActionLedgerStatus.IN_PROGRESS,
       ambiguous: false,
       terminal: false,
+      ...(normalizedEnqueuedAt ? { enqueuedAt: normalizedEnqueuedAt } : {}),
       firstAttemptAt: now,
       lastAttemptAt: now,
       completedAt: null,
@@ -680,7 +695,7 @@ export class MaxActionLedgerService {
     if (this.isSendDispatchLedgerFinalizedError(error)) {
       return;
     }
-    const ambiguous = this.isAmbiguousFailure(error);
+    const ambiguous = this.isAmbiguousFailure(job, error);
     const intrinsicallyTerminal = !ambiguous && this.isIntrinsicallyTerminalFailure(job, error);
     const terminal =
       ambiguous ||
@@ -701,7 +716,7 @@ export class MaxActionLedgerService {
       terminal,
       completedAt: terminal ? new Date() : null,
       lastStatusCode: this.extractStatusCode(error),
-      lastErrorCode: this.extractErrorCode(error),
+      lastErrorCode: this.extractPersistedFailureErrorCode(job, error),
       lastError: this.extractErrorMessage(error),
     };
     if (job.actionType === 'SEND_MESSAGE') {
@@ -763,53 +778,46 @@ export class MaxActionLedgerService {
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
   ): Promise<boolean> {
-    const result = await this.prisma.maxActionLedgerEntry.updateMany({
-      where: {
-        jobId: job.idempotencyKey,
-        ...(this.isCrashFencedMemberAction(job.actionType)
-          ? {
-              OR: [
-                { status: MaxActionLedgerStatus.ENQUEUED },
-                {
-                  status: MaxActionLedgerStatus.FAILED_RETRYABLE,
-                  OR: [
-                    {
-                      lastErrorCode: {
-                        in: [...MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES],
-                      },
+    const where: Prisma.MaxActionLedgerEntryWhereInput = {
+      jobId: job.idempotencyKey,
+      ...(this.isCrashFencedMemberAction(job.actionType)
+        ? {
+            OR: [
+              { status: MaxActionLedgerStatus.ENQUEUED },
+              {
+                status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+                OR: [
+                  {
+                    lastErrorCode: {
+                      in: [...MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES],
                     },
-                    {
-                      attemptCount: 0,
-                      firstAttemptAt: null,
-                      lastAttemptAt: null,
-                      dispatchToken: null,
-                      dispatchStartedAt: null,
-                      dispatchBotId: null,
-                      remoteMessageId: null,
-                    },
-                  ],
-                },
-              ],
-            }
-          : {
-              status: {
-                in: [
-                  MaxActionLedgerStatus.ENQUEUED,
-                  MaxActionLedgerStatus.IN_PROGRESS,
-                  MaxActionLedgerStatus.FAILED_RETRYABLE,
+                  },
+                  {
+                    attemptCount: 0,
+                    firstAttemptAt: null,
+                    lastAttemptAt: null,
+                    dispatchToken: null,
+                    dispatchStartedAt: null,
+                    dispatchBotId: null,
+                    remoteMessageId: null,
+                  },
                 ],
               },
-            }),
-        ambiguous: false,
-        terminal: false,
-      },
-      data: {
-        ...this.buildUpdateInput(job),
-        ...this.buildPlainMutationInput(mutation),
-        attemptCount: { increment: 1 },
-      },
-    });
-    return result.count === 1;
+            ],
+          }
+        : {
+            status: {
+              in: [
+                MaxActionLedgerStatus.ENQUEUED,
+                MaxActionLedgerStatus.IN_PROGRESS,
+                MaxActionLedgerStatus.FAILED_RETRYABLE,
+              ],
+            },
+          }),
+      ambiguous: false,
+      terminal: false,
+    };
+    return this.updateStartedRowPreservingFirstAttempt(job, mutation, where);
   }
 
   private isCrashFencedMemberAction(actionType: MaxActionType): boolean {
@@ -950,24 +958,17 @@ export class MaxActionLedgerService {
     job: MaxActionJob,
     mutation: MaxActionLedgerMutation,
   ): Promise<void> {
-    await this.createLedgerIfAbsent(job);
-    const updated = await this.prisma.maxActionLedgerEntry.updateMany({
-      where: {
-        jobId: job.idempotencyKey,
-        dispatchToken: null,
-        dispatchStartedAt: null,
-        dispatchBotId: null,
-        remoteMessageId: null,
-        ambiguous: false,
-        terminal: false,
-      },
-      data: {
-        ...this.buildUpdateInput(job),
-        ...this.buildPlainMutationInput(mutation),
-        ...(mutation.incrementAttempt ? { attemptCount: { increment: 1 } } : {}),
-      },
+    await this.createLedgerIfAbsent(job, mutation);
+    const updated = await this.updateStartedRowPreservingFirstAttempt(job, mutation, {
+      jobId: job.idempotencyKey,
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: null,
+      ambiguous: false,
+      terminal: false,
     });
-    if (updated.count === 1) {
+    if (updated) {
       return;
     }
 
@@ -1090,6 +1091,7 @@ export class MaxActionLedgerService {
   private buildMetadata(job: MaxActionJob): Prisma.InputJsonObject {
     return {
       createdAt: job.createdAt,
+      scheduledFor: job.scheduledFor ?? null,
       hasText: typeof job.text === 'string',
       textLength: typeof job.text === 'string' ? job.text.length : 0,
       hasOptions: Boolean(job.options),
@@ -1120,8 +1122,63 @@ export class MaxActionLedgerService {
     };
   }
 
-  private isAmbiguousFailure(error: unknown): boolean {
-    return this.extractErrorMessage(error).includes('ambiguous max');
+  private async updateStartedRowPreservingFirstAttempt(
+    job: MaxActionJob,
+    mutation: MaxActionLedgerMutation,
+    where: Prisma.MaxActionLedgerEntryWhereInput,
+  ): Promise<boolean> {
+    const firstAttempt = await this.prisma.maxActionLedgerEntry.updateMany({
+      where: {
+        ...where,
+        firstAttemptAt: null,
+      },
+      data: {
+        ...this.buildUpdateInput(job),
+        ...this.buildPlainMutationInput(mutation),
+        ...(mutation.incrementAttempt ? { attemptCount: { increment: 1 } } : {}),
+      },
+    });
+    if (firstAttempt.count === 1) {
+      return true;
+    }
+
+    const retryMutation = { ...mutation };
+    delete retryMutation.firstAttemptAt;
+    const retry = await this.prisma.maxActionLedgerEntry.updateMany({
+      where: {
+        ...where,
+        firstAttemptAt: { not: null },
+      },
+      data: {
+        ...this.buildUpdateInput(job),
+        ...this.buildPlainMutationInput(retryMutation),
+        ...(mutation.incrementAttempt ? { attemptCount: { increment: 1 } } : {}),
+      },
+    });
+    return retry.count === 1;
+  }
+
+  private normalizeEnqueuedAt(value: Date | undefined, upperBound: Date): Date | undefined {
+    if (!(value instanceof Date)) {
+      return undefined;
+    }
+    const timestamp = value.getTime();
+    if (!Number.isFinite(timestamp)) {
+      return undefined;
+    }
+    return new Date(Math.min(timestamp, upperBound.getTime()));
+  }
+
+  private isAmbiguousFailure(job: MaxActionJob, error: unknown): boolean {
+    const statusCode = this.extractStatusCode(error);
+    return (
+      this.extractErrorMessage(error).includes('ambiguous max') ||
+      (this.isCrashFencedMemberAction(job.actionType) &&
+        wasMaxMemberMutationAttempted(error) &&
+        statusCode !== null &&
+        statusCode >= 500 &&
+        statusCode <= 599)
+    );
   }
 
   private isIntrinsicallyTerminalFailure(job: MaxActionJob, error: unknown): boolean {
@@ -1138,7 +1195,7 @@ export class MaxActionLedgerService {
       statusCode === 200 &&
       (message.includes('already deleted') ||
         message.includes('already been deleted') ||
-        message.includes('sufficient rights'))
+        hasMaxInsufficientRightsMessage(message))
     ) {
       return true;
     }
@@ -1258,6 +1315,40 @@ export class MaxActionLedgerService {
     return typeof directCode === 'string' && directCode.trim().length > 0
       ? this.truncate(directCode.trim().toLowerCase(), 128)
       : null;
+  }
+
+  private extractPersistedFailureErrorCode(job: MaxActionJob, error: unknown): string | null {
+    if (this.isCrashFencedMemberAction(job.actionType) && this.extractStatusCode(error) === 429) {
+      return 'max_api_external_rate_limit';
+    }
+    const structuredCode = this.extractErrorCode(error);
+    if (structuredCode) {
+      return structuredCode;
+    }
+    if (!this.isCrashFencedMemberAction(job.actionType)) {
+      return null;
+    }
+
+    const message = this.extractErrorMessage(error);
+    const alreadyDeleted =
+      message.includes('already deleted') || message.includes('already been deleted');
+    const insufficientRights = hasMaxInsufficientRightsMessage(message);
+    if (alreadyDeleted && insufficientRights) {
+      return MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.ALREADY_DELETED_OR_INSUFFICIENT_RIGHTS;
+    }
+    if (alreadyDeleted) {
+      return MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.ALREADY_DELETED;
+    }
+    if (insufficientRights) {
+      return MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.INSUFFICIENT_RIGHTS;
+    }
+    const statusCode = this.extractStatusCode(error);
+    if (statusCode !== null) {
+      return this.truncate(`max_http_${statusCode}`, 128);
+    }
+    return job.actionType === 'KICK_MEMBER'
+      ? MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.KICK_FAILED
+      : MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.BAN_FAILED;
   }
 
   private extractErrorMessage(error: unknown): string {

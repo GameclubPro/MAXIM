@@ -5,6 +5,8 @@ import {
 } from '@maxim/contracts/publication';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { MaxClientService } from '../max/max-client.service';
+import { MaxMediaUploadValidationError } from '../max/max-media-upload-validation';
 import { Prisma, PublicationContentFormat } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -17,6 +19,7 @@ import {
   PUBLICATION_MAX_IMAGE_BYTES,
   PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
 } from './publication-media-limits';
+import { canonicalizeAdminMaxMediaFileName } from './admin-max-media-file-name';
 
 const PUBLICATION_VIDEO_MIME_TYPE_FALLBACK = 'application/octet-stream';
 
@@ -31,18 +34,47 @@ type PersistedAssetInput = {
   existingAssetId?: string;
 };
 
+type PreparedAssetInput =
+  | {
+      kind: 'reference';
+      assetId: string;
+      expectedType: 'image' | 'video';
+    }
+  | ({ kind: 'prepared' } & Omit<PersistedAssetInput, 'existingAssetId'>);
+
+export type PreparedPublicationContentRevision = {
+  text: string;
+  textFormat: PublicationContentInput['textFormat'];
+  buttons: PublicationContentInput['buttons'];
+  assets: PreparedAssetInput[];
+};
+
 @Injectable()
 export class PublicationContentService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly maxClient: MaxClientService,
+  ) {}
 
-  async persistContentRevision(
+  async prepareContentRevision(
+    content: PublicationContentInput,
+  ): Promise<PreparedPublicationContentRevision> {
+    return {
+      text: content.text,
+      textFormat: content.textFormat,
+      buttons: content.buttons,
+      assets: await this.prepareAssetInputs(content.media),
+    };
+  }
+
+  async persistPreparedContentRevision(
     tx: any,
     publicationId: string,
     revision: number,
-    content: PublicationContentInput,
+    content: PreparedPublicationContentRevision,
     actorUserId: string,
   ): Promise<{ id: string }> {
-    const assets = await this.prepareAssetInputs(tx, content.media, actorUserId);
+    const assets = await this.resolvePersistedAssetInputs(tx, content.assets, actorUserId);
     const contentRevision = await tx.publicationContentRevision.create({
       data: {
         publicationId,
@@ -103,11 +135,18 @@ export class PublicationContentService {
         images.push({ base64: media.base64, mimeType: media.mimeType, fileName: media.fileName });
       } else if (media.type === 'video') {
         if (media.base64) {
-          const bytes = this.decodeAndValidateVideo(media.base64, media.mimeType);
+          const bytes = this.decodeAndValidateVideo(media.base64);
+          const validated = await this.mapMaxMediaValidation(
+            this.maxClient.validateMediaUploadPayload('video', bytes),
+          );
           video = {
             payload: { [PUBLICATION_VIDEO_INLINE_BASE64_FIELD]: bytes.toString('base64') },
-            mimeType: media.mimeType,
-            fileName: media.fileName,
+            mimeType: validated.mimeType,
+            fileName: canonicalizeAdminMaxMediaFileName(
+              media.fileName,
+              validated.extension,
+              'publication-video',
+            ),
           };
         }
         if (media.payload) {
@@ -178,15 +217,95 @@ export class PublicationContentService {
     };
   }
 
-  private async prepareAssetInputs(
-    tx: any,
-    media: PublicationMediaInput[],
-    actorUserId: string,
-  ): Promise<PersistedAssetInput[]> {
-    const prepared: PersistedAssetInput[] = [];
+  private async prepareAssetInputs(media: PublicationMediaInput[]): Promise<PreparedAssetInput[]> {
+    const prepared: PreparedAssetInput[] = [];
     let totalImageBytes = 0;
     for (const item of media) {
       if (item.type === 'image-ref' || item.type === 'video-ref') {
+        prepared.push({
+          kind: 'reference',
+          assetId: item.assetId,
+          expectedType: item.type === 'video-ref' ? 'video' : 'image',
+        });
+        continue;
+      }
+      if (item.type === 'image') {
+        const bytes = this.decodeImageBase64(item.base64);
+        if (bytes.length > PUBLICATION_MAX_IMAGE_BYTES) {
+          throw new BadRequestException('Фото слишком большое. Максимум 8 МБ.');
+        }
+        const validated = await this.mapMaxMediaValidation(
+          this.maxClient.validateMediaUploadPayload('image', bytes),
+        );
+        totalImageBytes += bytes.length;
+        prepared.push({
+          kind: 'prepared',
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+          mimeType: validated.mimeType,
+          fileName: canonicalizeAdminMaxMediaFileName(
+            item.fileName,
+            validated.extension,
+            'publication-image',
+          ),
+          sizeBytes: bytes.length,
+          bytes,
+          durablePayload: null,
+          expectedType: 'image',
+        });
+        continue;
+      }
+      if (item.base64) {
+        const bytes = this.decodeAndValidateVideo(item.base64);
+        const validated = await this.mapMaxMediaValidation(
+          this.maxClient.validateMediaUploadPayload('video', bytes),
+        );
+        prepared.push({
+          kind: 'prepared',
+          sha256: createHash('sha256').update('video-bytes:').update(bytes).digest('hex'),
+          mimeType: validated.mimeType,
+          fileName: canonicalizeAdminMaxMediaFileName(
+            item.fileName,
+            validated.extension,
+            'publication-video',
+          ),
+          sizeBytes: bytes.length,
+          bytes,
+          durablePayload: null,
+          expectedType: 'video',
+        });
+        continue;
+      }
+      if (!item.payload) {
+        throw new BadRequestException('Добавьте видеофайл или сохранённое видео.');
+      }
+      this.assertPublicVideoPayload(item.payload);
+      const stablePayload = this.stableStringify(item.payload);
+      prepared.push({
+        kind: 'prepared',
+        sha256: createHash('sha256').update(`video:${stablePayload}`).digest('hex'),
+        mimeType: item.mimeType || PUBLICATION_VIDEO_MIME_TYPE_FALLBACK,
+        fileName: item.fileName,
+        sizeBytes: Buffer.byteLength(stablePayload),
+        bytes: null,
+        durablePayload: item.payload as Prisma.InputJsonValue,
+        expectedType: 'video',
+      });
+    }
+    if (totalImageBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
+      throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
+    }
+    return prepared;
+  }
+
+  private async resolvePersistedAssetInputs(
+    tx: any,
+    prepared: PreparedAssetInput[],
+    actorUserId: string,
+  ): Promise<PersistedAssetInput[]> {
+    const resolved: PersistedAssetInput[] = [];
+    let totalImageBytes = 0;
+    for (const item of prepared) {
+      if (item.kind === 'reference') {
         const asset = await tx.publicationAsset.findFirst({
           where: {
             id: item.assetId,
@@ -203,75 +322,42 @@ export class PublicationContentService {
           asset.durablePayload || asset.mimeType.toLowerCase().startsWith('video/')
             ? 'video'
             : 'image';
-        const expectedType = item.type === 'video-ref' ? 'video' : 'image';
-        if (actualType !== expectedType) {
+        if (actualType !== item.expectedType) {
           throw new BadRequestException('Тип сохранённого медиа не совпадает.');
         }
         if (actualType === 'image') {
           totalImageBytes += asset.sizeBytes;
         }
-        prepared.push({
+        resolved.push({
           sha256: asset.sha256,
           mimeType: asset.mimeType,
           fileName: asset.fileName,
           sizeBytes: asset.sizeBytes,
           bytes: null,
           durablePayload: null,
-          expectedType,
+          expectedType: item.expectedType,
           existingAssetId: asset.id,
         });
         continue;
       }
-      if (item.type === 'image') {
-        const bytes = this.decodeImageBase64(item.base64);
-        if (bytes.length > PUBLICATION_MAX_IMAGE_BYTES) {
-          throw new BadRequestException('Фото слишком большое. Максимум 8 МБ.');
-        }
-        totalImageBytes += bytes.length;
-        prepared.push({
-          sha256: createHash('sha256').update(bytes).digest('hex'),
-          mimeType: item.mimeType,
-          fileName: item.fileName,
-          sizeBytes: bytes.length,
-          bytes,
-          durablePayload: null,
-          expectedType: 'image',
-        });
-        continue;
+
+      if (item.expectedType === 'image') {
+        totalImageBytes += item.sizeBytes;
       }
-      if (item.base64) {
-        const mimeType = item.mimeType.trim().toLowerCase();
-        const bytes = this.decodeAndValidateVideo(item.base64, mimeType);
-        prepared.push({
-          sha256: createHash('sha256').update('video-bytes:').update(bytes).digest('hex'),
-          mimeType,
-          fileName: item.fileName,
-          sizeBytes: bytes.length,
-          bytes,
-          durablePayload: null,
-          expectedType: 'video',
-        });
-        continue;
-      }
-      if (!item.payload) {
-        throw new BadRequestException('Добавьте видеофайл или сохранённое видео.');
-      }
-      this.assertPublicVideoPayload(item.payload);
-      const stablePayload = this.stableStringify(item.payload);
-      prepared.push({
-        sha256: createHash('sha256').update(`video:${stablePayload}`).digest('hex'),
-        mimeType: item.mimeType || PUBLICATION_VIDEO_MIME_TYPE_FALLBACK,
+      resolved.push({
+        sha256: item.sha256,
+        mimeType: item.mimeType,
         fileName: item.fileName,
-        sizeBytes: Buffer.byteLength(stablePayload),
-        bytes: null,
-        durablePayload: item.payload as Prisma.InputJsonValue,
-        expectedType: 'video',
+        sizeBytes: item.sizeBytes,
+        bytes: item.bytes,
+        durablePayload: item.durablePayload,
+        expectedType: item.expectedType,
       });
     }
     if (totalImageBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
       throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
     }
-    return prepared;
+    return resolved;
   }
 
   private decodeImageBase64(value: string): Buffer {
@@ -286,6 +372,17 @@ export class PublicationContentService {
     return bytes;
   }
 
+  private async mapMaxMediaValidation<T>(validation: Promise<T>): Promise<T> {
+    try {
+      return await validation;
+    } catch (error: unknown) {
+      if (error instanceof MaxMediaUploadValidationError) {
+        throw new BadRequestException(error.publicMessage);
+      }
+      throw error;
+    }
+  }
+
   private decodeVideoBase64(value: string): Buffer {
     const normalized = value.trim().replace(/^data:[^;]+;base64,/u, '');
     if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized) || normalized.length % 4 !== 0) {
@@ -298,11 +395,7 @@ export class PublicationContentService {
     return bytes;
   }
 
-  private decodeAndValidateVideo(value: string, mimeTypeValue: string): Buffer {
-    const mimeType = mimeTypeValue.trim().toLowerCase();
-    if (!mimeType.startsWith('video/')) {
-      throw new BadRequestException('Неверный формат видео.');
-    }
+  private decodeAndValidateVideo(value: string): Buffer {
     const bytes = this.decodeVideoBase64(value);
     if (bytes.length > PUBLICATION_MAX_VIDEO_BYTES) {
       throw new BadRequestException('Видео слишком большое. Максимум 24 МБ.');

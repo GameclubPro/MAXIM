@@ -2581,7 +2581,7 @@ export class AdminManagedBroadcastRuntime {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    this.mediaRuntime.validateManagedBroadcastMediaPayload(parsed.data, {
+    await this.mediaRuntime.validateManagedBroadcastMediaPayload(parsed.data, {
       trustedPublicationTestPayload: options.trustedPublicationTestPayload,
     });
 

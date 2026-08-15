@@ -45,6 +45,7 @@ export type MaxActionDispatchResult = MaxPublishedMessage & {
 
 export type MaxActionDispatchExecutionOptions = {
   finalAttempt?: boolean;
+  enqueuedAt?: Date;
   prepareAttempt?: (params: { botId: string | null; job: MaxActionJob }) => Promise<{
     text?: string;
     options?: MaxSendMessageOptions;
@@ -154,7 +155,11 @@ export class MaxActionDispatchService {
         throw new MaxActionNoExecutableRouteError(job.actionType, job.chatId);
       }
     }
-    await this.actionLedgerService?.recordStarted(job);
+    if (options.enqueuedAt) {
+      await this.actionLedgerService?.recordStarted(job, options.enqueuedAt);
+    } else {
+      await this.actionLedgerService?.recordStarted(job);
+    }
     const attemptedBotIds: string[] = [];
     let lastAccessError: UnrecoverableError | null = null;
     let lastPreDispatchError: Error | null = null;

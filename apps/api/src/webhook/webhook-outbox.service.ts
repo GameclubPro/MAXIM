@@ -2,7 +2,7 @@ import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
-import { Prisma, WebhookStatus } from '../prisma/prisma-client';
+import { Prisma, WebhookExecutionClaimStatus, WebhookStatus } from '../prisma/prisma-client';
 import type { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
@@ -24,6 +24,10 @@ import {
 } from './webhook-queues';
 import { WebhookRoutingService } from './webhook-routing.service';
 import { WebhookService } from './webhook.service';
+import {
+  isPendingWebhookTimeoutQuarantineMessage,
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+} from './webhook-timeout-quarantine';
 
 const ANY_WEBHOOK_QUEUE_NAMES = new Set<string>(ALL_WEBHOOK_QUEUE_NAMES);
 const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
@@ -43,6 +47,13 @@ const RETENTION_CLEANUP_BATCH_SIZE = 500;
 const RETENTION_CLEANUP_BATCH_DELAY_MS = 500;
 const WEBHOOK_RETENTION_MAX_BATCHES = 80;
 const DEFAULT_RETENTION_MAX_BATCHES = 10;
+const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
+const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL = Prisma.raw(
+  String(WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER.length),
+);
+const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL = Prisma.raw(
+  `'${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER.replaceAll("'", "''")}'`,
+);
 
 type RetentionCleanupPhase = {
   name: string;
@@ -65,17 +76,57 @@ type WebhookEnqueueCandidate = {
   enqueueAttempts: number;
   createdAt: Date;
   queuedAt: Date | null;
+  nextEnqueueAt: Date | null;
+  timeoutQuarantineExpiresAt: Date | null;
+  errorMessage: string | null;
   normalizedPayload: unknown;
   isRecentReceipt?: boolean;
 };
+
+type WebhookEnqueueStateSnapshot = Pick<
+  WebhookEnqueueCandidate,
+  | 'id'
+  | 'status'
+  | 'queueName'
+  | 'enqueueAttempts'
+  | 'queuedAt'
+  | 'nextEnqueueAt'
+  | 'timeoutQuarantineExpiresAt'
+  | 'errorMessage'
+>;
 
 type PrioritizedWebhookEnqueueCandidate = WebhookEnqueueCandidate & {
   priority: number;
 };
 
+type OrderedWebhookHead = Pick<WebhookEnqueueCandidate, 'id' | 'createdAt'>;
+type OrderedWebhookHeadByChat = OrderedWebhookHead & { chatId: string };
+
+type WebhookEnqueueWorkUnit = {
+  chatId: string | null;
+  candidates: PrioritizedWebhookEnqueueCandidate[];
+};
+
+type CandidatePreparationOutcome = 'ready' | 'advance' | 'block';
+type CandidateEnqueueOutcome = 'terminal' | 'outstanding' | 'block';
+
 type ManualClosePriorityCacheEntry = {
   prioritized: boolean;
   expiresAtMs: number;
+};
+
+type TimeoutExecutionClaim = {
+  status?: string;
+  completedAt?: Date | null;
+};
+
+type WebhookOutboxPersistenceClient = {
+  webhookEvent: {
+    updateMany: (args: unknown) => Promise<{ count: number }>;
+  };
+  webhookExecutionClaim?: {
+    findFirst?: (args: unknown) => Promise<TimeoutExecutionClaim | null>;
+  };
 };
 
 @Injectable()
@@ -118,9 +169,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     private readonly legacyQueue: Queue<ProcessWebhookJob>,
   ) {
     this.enabled = roleRunsEnqueue(getAppRole());
-    this.pollIntervalMs = this.configService.get<number>('ENQUEUE_POLL_INTERVAL_MS', 500);
-    this.batchSize = this.configService.get<number>('ENQUEUE_BATCH_SIZE', 200);
-    this.enqueueConcurrency = this.configService.get<number>('ENQUEUE_CONCURRENCY', 25);
+    this.pollIntervalMs = this.configService.get<number>('ENQUEUE_POLL_INTERVAL_MS', 200);
+    this.batchSize = this.configService.get<number>('ENQUEUE_BATCH_SIZE', 400);
+    this.enqueueConcurrency = this.configService.get<number>('ENQUEUE_CONCURRENCY', 32);
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
     this.webhookFailedRetentionHours = this.configService.get<number>(
@@ -245,17 +296,27 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
             },
           ],
         },
+        {
+          OR: [{ nextEnqueueAt: null }, { nextEnqueueAt: { lte: now } }],
+        },
       ],
     };
     const staleBackgroundQueuedWhere: Prisma.WebhookEventWhereInput = {
       status: WebhookStatus.QUEUED,
       processedAt: null,
       queueName: WEBHOOK_QUEUE_BACKGROUND,
-      OR: [
-        { queuedAt: { lte: staleBackgroundQueuedBefore } },
+      AND: [
         {
-          queuedAt: null,
-          createdAt: { lte: staleBackgroundQueuedBefore },
+          OR: [
+            { queuedAt: { lte: staleBackgroundQueuedBefore } },
+            {
+              queuedAt: null,
+              createdAt: { lte: staleBackgroundQueuedBefore },
+            },
+          ],
+        },
+        {
+          OR: [{ nextEnqueueAt: null }, { nextEnqueueAt: { lte: now } }],
         },
       ],
     };
@@ -280,7 +341,19 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       this.findEnqueueCandidates(
         {
           status: WebhookStatus.FAILED,
-          nextEnqueueAt: { lte: now },
+          OR: [
+            { nextEnqueueAt: { lte: now } },
+            {
+              nextEnqueueAt: null,
+              errorMessage: { startsWith: WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER },
+              executionClaims: {
+                some: {
+                  kind: 'EXECUTION',
+                  status: WebhookExecutionClaimStatus.COMPLETED,
+                },
+              },
+            },
+          ],
         },
         selectionWindowSize,
       ),
@@ -307,7 +380,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   ): Promise<WebhookEnqueueCandidate[]> {
     return this.prisma.webhookEvent.findMany({
       where,
-      orderBy: { createdAt: orderDirection },
+      orderBy: [{ createdAt: orderDirection }, { id: orderDirection }],
       take,
       select: {
         id: true,
@@ -317,6 +390,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         enqueueAttempts: true,
         createdAt: true,
         queuedAt: true,
+        nextEnqueueAt: true,
+        timeoutQuarantineExpiresAt: true,
+        errorMessage: true,
         normalizedPayload: true,
       },
     });
@@ -335,7 +411,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     return this.selectCandidatesWithReceiptReserve(Array.from(uniqueById.values()), take)
-      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .sort((left, right) => this.compareCandidateSequence(left, right))
       .slice(0, take);
   }
 
@@ -433,7 +509,19 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return priorityDiff;
     }
 
-    return left.createdAt.getTime() - right.createdAt.getTime();
+    return this.compareCandidateSequence(left, right);
+  }
+
+  private compareCandidateSequence(
+    left: Pick<WebhookEnqueueCandidate, 'id' | 'createdAt'>,
+    right: Pick<WebhookEnqueueCandidate, 'id' | 'createdAt'>,
+  ): number {
+    const createdAtDiff = left.createdAt.getTime() - right.createdAt.getTime();
+    if (createdAtDiff !== 0) {
+      return createdAtDiff;
+    }
+
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
   }
 
   private resolveReceivedTake(receivedCount: number, take: number): number {
@@ -541,6 +629,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
+    if (candidate.nextEnqueueAt && candidate.nextEnqueueAt > now) {
+      return false;
+    }
+
     const thresholdMs = this.resolveStaleQueuedRepairThresholdMs(candidate.queueName);
     const referenceMs = candidate.queuedAt?.getTime() ?? candidate.createdAt.getTime();
     return now.getTime() - referenceMs >= thresholdMs;
@@ -559,7 +651,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const workerCount = Math.max(1, Math.min(this.enqueueConcurrency, candidates.length));
+    const workUnits = this.buildEnqueueWorkUnits(candidates);
+    const orderedHeadsByChatId = await this.findOrderedWebhookHeadsForChats(
+      workUnits.flatMap((workUnit) => (workUnit.chatId ? [workUnit.chatId] : [])),
+    );
+    const workerCount = Math.max(1, Math.min(this.enqueueConcurrency, workUnits.length));
     let nextIndex = 0;
 
     const runWorker = async () => {
@@ -567,52 +663,209 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         const currentIndex = nextIndex;
         nextIndex += 1;
 
-        const event = candidates[currentIndex];
-        if (!event) {
+        const workUnit = workUnits[currentIndex];
+        if (!workUnit) {
           return;
         }
 
-        if (!(await this.prepareCandidateForCanonicalExecution(event))) {
-          continue;
-        }
-
-        const queueName = await this.webhookRoutingService.resolveQueueName(
-          event.id,
-          event.normalizedPayload,
-          { botId: event.botId },
+        await this.enqueueCandidateSequence(
+          workUnit,
+          workUnit.chatId ? (orderedHeadsByChatId.get(workUnit.chatId) ?? null) : null,
         );
-        const isManualCloseMessage = event.priority === WEBHOOK_JOB_PRIORITY.manualCloseMessage;
-        const targetQueueName = isManualCloseMessage
-          ? WEBHOOK_QUEUE_CRITICAL
-          : event.status === WebhookStatus.QUEUED &&
-              typeof event.queueName === 'string' &&
-              ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
-            ? (event.queueName as AnyWebhookQueueName)
-            : queueName;
-        await this.enqueueOne(event, event.priority, targetQueueName);
       }
     };
 
     await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
   }
 
+  private buildEnqueueWorkUnits(
+    candidates: PrioritizedWebhookEnqueueCandidate[],
+  ): WebhookEnqueueWorkUnit[] {
+    const workUnitsByKey = new Map<string, WebhookEnqueueWorkUnit>();
+
+    for (const candidate of candidates) {
+      const chatId = this.extractPriorityChatId(candidate.normalizedPayload);
+      const key = chatId === null ? `event:${candidate.id}` : `chat:${chatId}`;
+      const existing = workUnitsByKey.get(key);
+      if (existing) {
+        existing.candidates.push(candidate);
+        continue;
+      }
+
+      workUnitsByKey.set(key, {
+        chatId,
+        candidates: [candidate],
+      });
+    }
+
+    for (const workUnit of workUnitsByKey.values()) {
+      workUnit.candidates.sort((left, right) => this.compareCandidateSequence(left, right));
+    }
+
+    return Array.from(workUnitsByKey.values());
+  }
+
+  private async enqueueCandidateSequence(
+    workUnit: WebhookEnqueueWorkUnit,
+    initialOrderedHead: OrderedWebhookHead | null,
+  ): Promise<void> {
+    let orderedHead = initialOrderedHead;
+
+    for (const event of workUnit.candidates) {
+      if (workUnit.chatId) {
+        if (!orderedHead) {
+          return;
+        }
+        const headOrder = this.compareCandidateSequence(orderedHead, event);
+        if (headOrder < 0) {
+          return;
+        }
+        if (headOrder > 0) {
+          continue;
+        }
+      }
+
+      const preparationOutcome = await this.prepareCandidateForCanonicalExecution(event);
+      if (preparationOutcome === 'block') {
+        return;
+      }
+      if (preparationOutcome === 'advance') {
+        if (workUnit.chatId) {
+          orderedHead = await this.findOrderedWebhookHeadForChat(workUnit.chatId, event);
+        }
+        continue;
+      }
+
+      const queueName = await this.webhookRoutingService.resolveQueueName(
+        event.id,
+        event.normalizedPayload,
+      );
+      const isManualCloseMessage = event.priority === WEBHOOK_JOB_PRIORITY.manualCloseMessage;
+      const targetQueueName = isManualCloseMessage
+        ? WEBHOOK_QUEUE_CRITICAL
+        : event.status === WebhookStatus.QUEUED &&
+            typeof event.queueName === 'string' &&
+            ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
+          ? (event.queueName as AnyWebhookQueueName)
+          : queueName;
+      const enqueueOutcome = await this.enqueueOne(event, event.priority, targetQueueName);
+      if (enqueueOutcome === 'block') {
+        return;
+      }
+      if (enqueueOutcome === 'outstanding') {
+        return;
+      }
+      if (workUnit.chatId) {
+        orderedHead = await this.findOrderedWebhookHeadForChat(workUnit.chatId, event);
+      }
+    }
+  }
+
+  private async findOrderedWebhookHeadsForChats(
+    chatIds: readonly string[],
+  ): Promise<Map<string, OrderedWebhookHead>> {
+    if (chatIds.length === 0) {
+      return new Map();
+    }
+
+    const requestedChats = Prisma.join(chatIds.map((chatId) => Prisma.sql`(${chatId})`));
+    const rows = await this.prisma.$queryRaw<OrderedWebhookHeadByChat[]>(Prisma.sql`
+      WITH requested_chats("chatId") AS (
+        VALUES ${requestedChats}
+      )
+      SELECT requested_chats."chatId", head."id", head."createdAt"
+      FROM requested_chats
+      CROSS JOIN LATERAL (
+        SELECT "id", "created_at" AS "createdAt"
+        FROM "webhook_events"
+        WHERE (
+            "status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+            OR (
+              "status" = 'FAILED'::"WebhookStatus"
+              AND (
+                "next_enqueue_at" IS NOT NULL
+                OR LEFT(COALESCE("error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
+              )
+            )
+          )
+          AND LOWER(
+            COALESCE(
+              NULLIF(BTRIM("normalized_payload"->>'type'), ''),
+              NULLIF(BTRIM("normalized_payload"->>'update_type'), '')
+            )
+          ) = ANY(ARRAY['message_created', 'message_edited'])
+          AND COALESCE(
+            NULLIF(BTRIM("normalized_payload"->'message'->>'chatId'), ''),
+            NULLIF(BTRIM("normalized_payload"->>'chatId'), '')
+          ) = requested_chats."chatId"
+        ORDER BY "created_at" ASC, "id" ASC
+        LIMIT 1
+      ) head ON TRUE
+    `);
+
+    return new Map(rows.map(({ chatId, id, createdAt }) => [chatId, { id, createdAt }]));
+  }
+
+  private async findOrderedWebhookHeadForChat(
+    chatId: string,
+    after?: OrderedWebhookHead,
+  ): Promise<OrderedWebhookHead | null> {
+    const cursor = after
+      ? Prisma.sql`
+          AND (
+            "created_at" > ${after.createdAt}
+            OR ("created_at" = ${after.createdAt} AND "id" > ${after.id})
+          )
+        `
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<OrderedWebhookHead[]>(Prisma.sql`
+      SELECT "id", "created_at" AS "createdAt"
+      FROM "webhook_events"
+      WHERE (
+          "status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+          OR (
+            "status" = 'FAILED'::"WebhookStatus"
+            AND (
+              "next_enqueue_at" IS NOT NULL
+              OR LEFT(COALESCE("error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
+            )
+          )
+        )
+        AND LOWER(
+          COALESCE(
+            NULLIF(BTRIM("normalized_payload"->>'type'), ''),
+            NULLIF(BTRIM("normalized_payload"->>'update_type'), '')
+          )
+        ) = ANY(ARRAY['message_created', 'message_edited'])
+        AND COALESCE(
+          NULLIF(BTRIM("normalized_payload"->'message'->>'chatId'), ''),
+          NULLIF(BTRIM("normalized_payload"->>'chatId'), '')
+        ) = ${chatId}
+        ${cursor}
+      ORDER BY "created_at" ASC, "id" ASC
+      LIMIT 1
+    `);
+
+    return rows[0] ?? null;
+  }
+
   private async enqueueOne(
     event: WebhookEnqueueCandidate,
     priority: number,
     queueName: AnyWebhookQueueName,
-  ) {
+  ): Promise<CandidateEnqueueOutcome> {
     const { id: webhookEventId, enqueueAttempts } = event;
-    if (enqueueAttempts >= this.maxEnqueueAttempts) {
-      await this.markExhausted(webhookEventId, enqueueAttempts);
-      return;
-    }
-
     const existingJob = await this.findExistingJob(webhookEventId, queueName);
     if (existingJob) {
-      await this.handleExistingJob(event, existingJob.job);
-      return;
+      return this.handleExistingJob(event, existingJob.job, {
+        queueName: existingJob.queueName,
+      });
+    }
+    if (enqueueAttempts >= this.maxEnqueueAttempts) {
+      return this.markExhausted(event);
     }
 
+    let claimedEvent: WebhookEnqueueCandidate | null = null;
     try {
       if (event.status === WebhookStatus.QUEUED) {
         this.logger.warn(
@@ -626,6 +879,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           'Repairing stale queued webhook event without a live BullMQ job',
         );
       }
+      const activationClaim = await this.claimQueueActivation(event, queueName);
+      if (!activationClaim.event) {
+        return activationClaim.outcome;
+      }
+      claimedEvent = activationClaim.event;
       await this.queuesByName[queueName].add(
         'process-webhook-event',
         { webhookEventId },
@@ -638,41 +896,46 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         },
       );
 
-      await this.markQueued(webhookEventId, true, true, queueName, {
-        allowFailed: event.status === WebhookStatus.FAILED,
-      });
+      return 'outstanding';
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.isAlreadyExistsError(message)) {
-        await this.handleAlreadyExists(event, queueName);
-        return;
+        return this.handleAlreadyExists(claimedEvent ?? event, queueName, {
+          activationClaimed: claimedEvent !== null,
+        });
       }
 
-      await this.markFailedWithBackoff(webhookEventId, enqueueAttempts, message);
+      return claimedEvent
+        ? this.markClaimedQueueActivationFailed(claimedEvent, message)
+        : this.markFailedWithBackoff(event, message);
     }
   }
 
   private async prepareCandidateForCanonicalExecution(
     event: WebhookEnqueueCandidate,
-  ): Promise<boolean> {
+  ): Promise<CandidatePreparationOutcome> {
+    if (isPendingWebhookTimeoutQuarantineMessage(event.errorMessage)) {
+      const timeoutOutcome = await this.settlePendingTimeoutQuarantine(event);
+      return timeoutOutcome === 'terminal' ? 'advance' : 'block';
+    }
+
     try {
       const prepared = await this.webhookService.preparePersistedWebhookEvent(event.id);
       if (!prepared.canonical) {
         await this.removeNonCanonicalQueuedJob(event);
-        return false;
+        return 'advance';
       }
       if (!prepared.prepared) {
-        return false;
+        return 'block';
       }
       event.normalizedPayload = prepared.normalizedPayload;
-      return true;
+      return 'ready';
     } catch (error: unknown) {
-      await this.markFailedWithBackoff(
-        event.id,
-        event.enqueueAttempts,
+      const failureOutcome = await this.markFailedWithBackoff(
+        event,
         `Webhook preparation failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return false;
+      return failureOutcome === 'terminal' ? 'advance' : 'block';
     }
   }
 
@@ -704,32 +967,35 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async handleAlreadyExists(
     event: WebhookEnqueueCandidate,
     queueName: AnyWebhookQueueName,
-  ) {
-    const { id: webhookEventId, enqueueAttempts } = event;
+    options?: { activationClaimed?: boolean },
+  ): Promise<CandidateEnqueueOutcome> {
+    const { id: webhookEventId } = event;
     const existingJob = await this.findExistingJob(webhookEventId, queueName);
     if (!existingJob) {
-      await this.markFailedWithBackoff(
-        webhookEventId,
-        enqueueAttempts,
-        'Moderation job already exists but cannot be loaded',
-      );
-      return;
+      const message = 'Moderation job already exists but cannot be loaded';
+      return options?.activationClaimed
+        ? this.markClaimedQueueActivationFailed(event, message)
+        : this.markFailedWithBackoff(event, message);
     }
 
-    await this.handleExistingJob(event, existingJob.job);
+    return this.handleExistingJob(event, existingJob.job, {
+      ...options,
+      queueName: existingJob.queueName,
+    });
   }
 
-  private async handleExistingJob(event: WebhookEnqueueCandidate, job: Job<ProcessWebhookJob>) {
-    const { id: webhookEventId, enqueueAttempts } = event;
+  private async handleExistingJob(
+    event: WebhookEnqueueCandidate,
+    job: Job<ProcessWebhookJob>,
+    options?: { activationClaimed?: boolean; queueName?: AnyWebhookQueueName },
+  ): Promise<CandidateEnqueueOutcome> {
     const state = await job.getState();
     if (state === 'failed') {
-      await this.retryFailedJob(webhookEventId, enqueueAttempts, job);
-      return;
+      return this.retryFailedJob(event, job, options);
     }
 
     if (state === 'completed') {
-      await this.markProcessedFromCompletedJob(webhookEventId);
-      return;
+      return this.markProcessedFromCompletedJob(event);
     }
 
     if (
@@ -739,60 +1005,114 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       state === 'prioritized' ||
       state === 'waiting-children'
     ) {
-      await this.markQueued(
-        webhookEventId,
+      if (options?.activationClaimed) {
+        return 'outstanding';
+      }
+      return this.markQueued(
+        event,
         false,
         event.status !== WebhookStatus.QUEUED,
-        job.queueName,
-        { allowFailed: event.status === WebhookStatus.FAILED },
+        options?.queueName ?? job.queueName,
+        state === 'delayed'
+          ? new Date(Date.now() + this.resolveStaleQueuedRepairThresholdMs(event.queueName))
+          : null,
       );
-      return;
     }
 
-    await this.markFailedWithBackoff(
-      webhookEventId,
-      enqueueAttempts,
-      `Moderation job exists in unsupported state: ${state}`,
-    );
+    const message = `Moderation job exists in unsupported state: ${state}`;
+    return options?.activationClaimed
+      ? this.markClaimedQueueActivationFailed(event, message)
+      : this.markFailedWithBackoff(event, message);
   }
 
   private async retryFailedJob(
-    webhookEventId: string,
-    enqueueAttempts: number,
+    event: WebhookEnqueueCandidate,
     job: Job<ProcessWebhookJob>,
-  ) {
-    if (enqueueAttempts >= this.maxEnqueueAttempts) {
-      await this.markExhausted(webhookEventId, enqueueAttempts, job);
-      return;
+    options?: { activationClaimed?: boolean; queueName?: AnyWebhookQueueName },
+  ): Promise<CandidateEnqueueOutcome> {
+    if (!options?.activationClaimed && event.enqueueAttempts >= this.maxEnqueueAttempts) {
+      return this.markExhausted(event, job);
+    }
+
+    let claimedEvent = event;
+    if (!options?.activationClaimed) {
+      const activationClaim = await this.claimQueueActivation(
+        event,
+        options?.queueName ?? (job.queueName as AnyWebhookQueueName),
+      );
+      if (!activationClaim.event) {
+        return activationClaim.outcome;
+      }
+      claimedEvent = activationClaim.event;
     }
 
     try {
       await job.retry();
-      await this.markQueued(webhookEventId, true, true, job.queueName, { allowFailed: true });
+      return 'outstanding';
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.markFailedWithBackoff(
-        webhookEventId,
-        enqueueAttempts,
+      return this.markClaimedQueueActivationFailed(
+        claimedEvent,
         `Failed to retry existing failed job: ${message}`,
       );
     }
   }
 
+  private async claimQueueActivation(
+    event: WebhookEnqueueCandidate,
+    queueName: AnyWebhookQueueName,
+  ): Promise<{
+    event: WebhookEnqueueCandidate | null;
+    outcome: CandidateEnqueueOutcome;
+  }> {
+    const queuedAt = new Date();
+    const enqueueAttempts = event.enqueueAttempts + 1;
+    const result = await this.prisma.webhookEvent.updateMany({
+      where: this.buildEnqueueStateWhere(event),
+      data: {
+        status: WebhookStatus.QUEUED,
+        queueName,
+        queuedAt,
+        enqueueAttempts: { increment: 1 },
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+      },
+    });
+    if (result.count !== 1) {
+      return {
+        event: null,
+        outcome: await this.resolveCurrentCandidateOutcome(event.id),
+      };
+    }
+
+    return {
+      event: {
+        ...event,
+        status: WebhookStatus.QUEUED,
+        queueName,
+        queuedAt,
+        enqueueAttempts,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+      },
+      outcome: 'outstanding',
+    };
+  }
+
   private async markQueued(
-    webhookEventId: string,
+    event: WebhookEnqueueStateSnapshot,
     incrementAttempts: boolean,
     touchQueuedAt: boolean,
     queueName?: string | null,
-    options?: { allowFailed?: boolean },
-  ) {
-    const enqueueableStatuses = options?.allowFailed
-      ? [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED]
-      : [WebhookStatus.RECEIVED, WebhookStatus.QUEUED];
+    nextEnqueueAt: Date | null = null,
+  ): Promise<CandidateEnqueueOutcome> {
     const data: {
       status: WebhookStatus;
       queuedAt?: Date;
       nextEnqueueAt: Date | null;
+      timeoutQuarantineExpiresAt: null;
       errorMessage: string | null;
       queueName?: string | null;
       enqueueAttempts?: {
@@ -800,7 +1120,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       };
     } = {
       status: WebhookStatus.QUEUED,
-      nextEnqueueAt: null,
+      nextEnqueueAt,
+      timeoutQuarantineExpiresAt: null,
       errorMessage: null,
       ...(queueName ? { queueName } : {}),
       ...(touchQueuedAt ? { queuedAt: new Date() } : {}),
@@ -813,62 +1134,83 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         : {}),
     };
 
-    await this.prisma.webhookEvent.updateMany({
-      where: {
-        id: webhookEventId,
-        status: { in: enqueueableStatuses },
-      },
+    const result = await this.prisma.webhookEvent.updateMany({
+      where: this.buildEnqueueStateWhere(event),
       data,
     });
+    return result.count === 1 ? 'outstanding' : this.resolveCurrentCandidateOutcome(event.id);
   }
 
   private async markFailedWithBackoff(
-    webhookEventId: string,
-    enqueueAttempts: number,
+    event: WebhookEnqueueStateSnapshot,
     message: string,
-  ) {
-    const nextAttempts = enqueueAttempts + 1;
+  ): Promise<CandidateEnqueueOutcome> {
+    const nextAttempts = event.enqueueAttempts + 1;
     const exhausted = nextAttempts >= this.maxEnqueueAttempts;
     const nextDelaySec = Math.min(300, 2 ** Math.min(nextAttempts, 8));
 
-    await this.prisma.webhookEvent.updateMany({
-      where: {
-        id: webhookEventId,
-        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-      },
+    const result = await this.prisma.webhookEvent.updateMany({
+      where: this.buildEnqueueStateWhere(event),
       data: {
         status: WebhookStatus.FAILED,
         errorMessage: message.slice(0, 500),
         queueName: null,
         nextEnqueueAt: exhausted ? null : new Date(Date.now() + nextDelaySec * 1_000),
+        timeoutQuarantineExpiresAt: null,
         enqueueAttempts: {
           increment: 1,
         },
       },
     });
+    return result.count === 1
+      ? exhausted
+        ? 'terminal'
+        : 'block'
+      : this.resolveCurrentCandidateOutcome(event.id);
+  }
+
+  private async markClaimedQueueActivationFailed(
+    event: WebhookEnqueueStateSnapshot,
+    message: string,
+  ): Promise<CandidateEnqueueOutcome> {
+    const exhausted = event.enqueueAttempts >= this.maxEnqueueAttempts;
+    const nextDelaySec = Math.min(300, 2 ** Math.min(event.enqueueAttempts, 8));
+    const result = await this.prisma.webhookEvent.updateMany({
+      where: this.buildEnqueueStateWhere(event),
+      data: {
+        status: WebhookStatus.FAILED,
+        errorMessage: message.slice(0, 500),
+        queueName: null,
+        nextEnqueueAt: exhausted ? null : new Date(Date.now() + nextDelaySec * 1_000),
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+    return result.count === 1
+      ? exhausted
+        ? 'terminal'
+        : 'block'
+      : this.resolveCurrentCandidateOutcome(event.id);
   }
 
   private async markExhausted(
-    webhookEventId: string,
-    enqueueAttempts: number,
+    event: WebhookEnqueueStateSnapshot,
     job?: Pick<Job<ProcessWebhookJob>, 'failedReason'> | null,
-  ) {
+  ): Promise<CandidateEnqueueOutcome> {
     const failedReason = this.readFailedJobReason(job);
     const message = failedReason
-      ? `Enqueue attempts exhausted (${enqueueAttempts}/${this.maxEnqueueAttempts}); terminal BullMQ failure: ${failedReason}`
-      : `Enqueue attempts exhausted (${enqueueAttempts}/${this.maxEnqueueAttempts})`;
-    await this.prisma.webhookEvent.updateMany({
-      where: {
-        id: webhookEventId,
-        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-      },
+      ? `Enqueue attempts exhausted (${event.enqueueAttempts}/${this.maxEnqueueAttempts}); terminal BullMQ failure: ${failedReason}`
+      : `Enqueue attempts exhausted (${event.enqueueAttempts}/${this.maxEnqueueAttempts})`;
+    const result = await this.prisma.webhookEvent.updateMany({
+      where: this.buildEnqueueStateWhere(event),
       data: {
         status: WebhookStatus.FAILED,
         errorMessage: message.slice(0, 500),
         queueName: null,
         nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
       },
     });
+    return result.count === 1 ? 'terminal' : this.resolveCurrentCandidateOutcome(event.id);
   }
 
   private readFailedJobReason(job?: Pick<Job<ProcessWebhookJob>, 'failedReason'> | null): string {
@@ -879,20 +1221,104 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     return job.failedReason.trim().replace(/\s+/gu, ' ').slice(0, 300);
   }
 
-  private async markProcessedFromCompletedJob(webhookEventId: string) {
-    await this.prisma.webhookEvent.updateMany({
-      where: {
-        id: webhookEventId,
-        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
-      },
+  private async markProcessedFromCompletedJob(
+    event: WebhookEnqueueStateSnapshot,
+  ): Promise<CandidateEnqueueOutcome> {
+    const result = await this.prisma.webhookEvent.updateMany({
+      where: this.buildEnqueueStateWhere(event),
       data: {
         status: WebhookStatus.PROCESSED,
         processedAt: new Date(),
         queueName: null,
         nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
         errorMessage: null,
       },
     });
+    return result.count === 1 ? 'terminal' : this.resolveCurrentCandidateOutcome(event.id);
+  }
+
+  private buildEnqueueStateWhere(
+    event: WebhookEnqueueStateSnapshot,
+  ): Prisma.WebhookEventWhereInput {
+    return {
+      id: event.id,
+      status: event.status,
+      queueName: event.queueName,
+      enqueueAttempts: event.enqueueAttempts,
+      queuedAt: event.queuedAt,
+      nextEnqueueAt: event.nextEnqueueAt,
+      timeoutQuarantineExpiresAt: event.timeoutQuarantineExpiresAt,
+      errorMessage: event.errorMessage,
+    };
+  }
+
+  private async settlePendingTimeoutQuarantine(
+    event: WebhookEnqueueCandidate,
+  ): Promise<CandidateEnqueueOutcome> {
+    const now = new Date();
+    const transition = await this.runInTransaction(async (client) => {
+      const claim =
+        typeof client.webhookExecutionClaim?.findFirst === 'function'
+          ? await client.webhookExecutionClaim.findFirst({
+              where: {
+                webhookEventId: event.id,
+                kind: 'EXECUTION',
+              },
+              orderBy: { createdAt: 'desc' },
+              select: {
+                status: true,
+                completedAt: true,
+              },
+            })
+          : null;
+
+      if (claim?.status === 'COMPLETED') {
+        const repaired = await client.webhookEvent.updateMany({
+          where: this.buildEnqueueStateWhere(event),
+          data: {
+            status: WebhookStatus.PROCESSED,
+            processedAt: claim.completedAt ?? now,
+            queueName: null,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+            errorMessage: null,
+          },
+        });
+        return repaired.count === 1 ? 'terminal' : null;
+      }
+
+      // FLAG: A lease deadline cannot prove that detached work stopped. Only the worker that
+      // observed settlement, or a durably COMPLETED claim, may release this ordered chat head.
+      return 'outstanding';
+    });
+
+    return transition ?? this.resolveCurrentCandidateOutcome(event.id);
+  }
+
+  private async resolveCurrentCandidateOutcome(
+    webhookEventId: string,
+  ): Promise<CandidateEnqueueOutcome> {
+    const current = await this.prisma.webhookEvent.findUnique({
+      where: { id: webhookEventId },
+      select: {
+        status: true,
+        nextEnqueueAt: true,
+        errorMessage: true,
+      },
+    });
+    if (
+      !current ||
+      current.status === WebhookStatus.PROCESSED ||
+      current.status === WebhookStatus.DUPLICATE ||
+      (current.status === WebhookStatus.FAILED &&
+        current.nextEnqueueAt === null &&
+        !isPendingWebhookTimeoutQuarantineMessage(current.errorMessage))
+    ) {
+      return 'terminal';
+    }
+
+    return 'outstanding';
   }
 
   private isAlreadyExistsError(message: string): boolean {
@@ -1115,6 +1541,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         FROM "webhook_events"
         WHERE "status" = CAST(${WebhookStatus.FAILED} AS "WebhookStatus")
           AND "next_enqueue_at" IS NULL
+          AND LEFT(COALESCE("error_message", ''), ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}) <> ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
           AND "created_at" < ${cutoff}
         ORDER BY "created_at" ASC, "id" ASC
         LIMIT ${RETENTION_CLEANUP_BATCH_SIZE}
@@ -1124,6 +1551,22 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       USING expired
       WHERE target."id" = expired."id"
     `);
+  }
+
+  private async runInTransaction<T>(
+    operation: (client: WebhookOutboxPersistenceClient) => Promise<T>,
+  ): Promise<T> {
+    const transaction = (
+      this.prisma as PrismaService & {
+        $transaction?: <R>(
+          callback: (client: WebhookOutboxPersistenceClient) => Promise<R>,
+        ) => Promise<R>;
+      }
+    ).$transaction;
+    if (typeof transaction !== 'function') {
+      return operation(this.prisma as unknown as WebhookOutboxPersistenceClient);
+    }
+    return transaction.call(this.prisma, operation) as Promise<T>;
   }
 
   private async deleteModerationEventBatch(cutoff: Date): Promise<number> {

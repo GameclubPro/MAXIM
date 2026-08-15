@@ -34,6 +34,7 @@ import {
 } from './bot-access-snapshot.util';
 import {
   hasConfirmedDeleteMessageAccess,
+  hasConfirmedEditMessageAccess,
   resolveDeleteMessageAccessFailure,
   type MaxDeleteMessageAccessFailureReason,
 } from './max-delete-message-access.util';
@@ -46,17 +47,6 @@ const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
 const SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD = 2;
 const SEND_ROUTE_OPEN_CIRCUIT_RECHECK_MS = 15 * 60_000;
-const EDIT_MESSAGE_PERMISSION_ALIASES = new Set([
-  'edit',
-  'edit_message',
-  'edit_messages',
-  'can_edit_message',
-  'can_edit_messages',
-  'post_edit_delete_message',
-  'post_edit_delete_messages',
-  'can_post_edit_delete_message',
-  'can_post_edit_delete_messages',
-]);
 const WRITE_MESSAGE_PERMISSION_ALIASES = new Set(['write', 'can_write']);
 const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'add_remove_members',
@@ -2739,6 +2729,10 @@ export class MaxBotLinkService {
       return hasConfirmedDeleteMessageAccess(snapshot, entityType);
     }
 
+    if (action === 'edit_message') {
+      return hasConfirmedEditMessageAccess(snapshot, entityType);
+    }
+
     if (snapshot.isOwner) {
       return true;
     }
@@ -2802,6 +2796,9 @@ export class MaxBotLinkService {
 
     const permissionFailure = resolveDeleteMessageAccessFailure(snapshot, entityType);
     if (permissionFailure) {
+      if (permissionFailure === 'entity_type_unknown') {
+        return result('stale_or_unknown', permissionFailure);
+      }
       return result('explicitly_incapable', permissionFailure);
     }
     if (
@@ -2886,21 +2883,7 @@ export class MaxBotLinkService {
       return false;
     }
 
-    if (action === 'delete_message') {
-      return !hasConfirmedDeleteMessageAccess(snapshot, entityType);
-    }
-
-    if (snapshot.isOwner) {
-      return false;
-    }
-
-    if (snapshot.permissions.length === 0) {
-      return !snapshot.isAdmin;
-    }
-
-    return !snapshot.permissions.some((permission) =>
-      this.isModerationActionPermission(permission, action, entityType),
-    );
+    return !this.hasModerationActionPermission(snapshot, action, entityType);
   }
 
   private membershipSnapshotMarksActionLimited(
@@ -2931,12 +2914,8 @@ export class MaxBotLinkService {
       return false;
     }
 
-    if (action === 'delete_message') {
+    if (action === 'delete_message' || action === 'edit_message') {
       return false;
-    }
-
-    if (action === 'edit_message') {
-      return EDIT_MESSAGE_PERMISSION_ALIASES.has(normalized);
     }
 
     return MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);

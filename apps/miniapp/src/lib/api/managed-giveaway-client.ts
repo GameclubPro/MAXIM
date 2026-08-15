@@ -1,17 +1,19 @@
+import { broadcastHandoffResponseSchema } from '@maxim/contracts/broadcast';
 import {
-  broadcastHandoffResponseSchema,
   managedGiveawayDetailsSchema,
   managedGiveawayHandoffRequestSchema,
   managedGiveawaySummarySchema,
   markManagedGiveawayWinnerDeliveredRequestSchema,
-  resolveRequiredSubscriptionChannelRequestSchema,
-  resolveRequiredSubscriptionChannelResponseSchema,
   rerollManagedGiveawayWinnerRequestSchema,
   updateManagedGiveawayRequestSchema,
   type ManagedGiveawayDetails,
   type ManagedGiveawaySummary,
+} from '@maxim/contracts/giveaway';
+import {
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
   type ResolveRequiredSubscriptionChannelResponse,
-} from '@maxim/contracts';
+} from '@maxim/contracts/settings';
 import type { ManagedGiveawayHandoffPayload, UpdateManagedGiveawayPayload } from './shared-types';
 import type { ApiTransport } from './transport';
 

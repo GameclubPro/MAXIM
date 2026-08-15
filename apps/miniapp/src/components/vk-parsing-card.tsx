@@ -1,9 +1,8 @@
 import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   type ChannelPostSignatureSettings,
-  type VkParsingSettings,
-  type VkParsingSource,
-} from '@maxim/contracts';
+} from '@maxim/contracts/channel-post-signature';
+import { type VkParsingSettings, type VkParsingSource } from '@maxim/contracts/vk-parsing';
 import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { Pagination } from './vk-parsing/pagination';

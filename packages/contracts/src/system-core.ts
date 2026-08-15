@@ -987,6 +987,8 @@ export type SystemDashboardWebhookSloStatus = z.infer<typeof systemDashboardWebh
 export const systemDashboardWebhookEnqueueSloSchema = z.object({
   targetMs: z.number().int().positive(),
   sampledEvents: z.number().int().min(0),
+  sampleTruncated: z.boolean().optional(),
+  sampledFrom: z.string().datetime().nullable().optional(),
   p95LatencyMs: z.number().min(0).nullable(),
   p99LatencyMs: z.number().min(0).nullable(),
   underTargetRatio: z.number().min(0).max(1).nullable(),
@@ -1002,10 +1004,80 @@ export const systemDashboardWebhookIngressBotMetricsSchema = z.object({
   attemptedReceipts: z.number().int().min(0),
   persistedReceipts: z.number().int().min(0),
   failedReceipts: z.number().int().min(0),
+  rejectedReceipts: z.number().int().min(0).default(0),
 });
 export type SystemDashboardWebhookIngressBotMetrics = z.infer<
   typeof systemDashboardWebhookIngressBotMetricsSchema
 >;
+
+export const systemDashboardWebhookRouteOutcomeCountsSchema = z.object({
+  accepted: z.number().int().min(0),
+  authentication_rejected: z.number().int().min(0),
+  admission_rejected: z.number().int().min(0),
+  invalid_json: z.number().int().min(0),
+  invalid_payload: z.number().int().min(0),
+  payload_too_large: z.number().int().min(0),
+  timed_out: z.number().int().min(0),
+  failed: z.number().int().min(0),
+});
+export type SystemDashboardWebhookRouteOutcomeCounts = z.infer<
+  typeof systemDashboardWebhookRouteOutcomeCountsSchema
+>;
+
+function validateWebhookRouteOutcomeTotal(
+  value: {
+    attemptedRequests: number;
+    outcomes: SystemDashboardWebhookRouteOutcomeCounts;
+  },
+  context: z.RefinementCtx,
+): void {
+  const outcomeTotal = Object.values(value.outcomes).reduce((total, count) => total + count, 0);
+  if (outcomeTotal !== value.attemptedRequests) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Webhook route outcome counts must equal attempted requests',
+      path: ['attemptedRequests'],
+    });
+  }
+}
+
+export const systemDashboardWebhookRouteBotMetricsSchema = z
+  .object({
+    attemptedRequests: z.number().int().min(0),
+    outcomes: systemDashboardWebhookRouteOutcomeCountsSchema,
+  })
+  .superRefine(validateWebhookRouteOutcomeTotal);
+export type SystemDashboardWebhookRouteBotMetrics = z.infer<
+  typeof systemDashboardWebhookRouteBotMetricsSchema
+>;
+
+export const systemDashboardWebhookRouteMetricsSchema = z
+  .object({
+    attemptedRequests: z.number().int().min(0),
+    outcomes: systemDashboardWebhookRouteOutcomeCountsSchema,
+    bots: z.record(z.string().min(1), systemDashboardWebhookRouteBotMetricsSchema),
+  })
+  .superRefine(validateWebhookRouteOutcomeTotal);
+export type SystemDashboardWebhookRouteMetrics = z.infer<
+  typeof systemDashboardWebhookRouteMetricsSchema
+>;
+
+function createEmptyWebhookRouteMetrics(): SystemDashboardWebhookRouteMetrics {
+  return {
+    attemptedRequests: 0,
+    outcomes: {
+      accepted: 0,
+      authentication_rejected: 0,
+      admission_rejected: 0,
+      invalid_json: 0,
+      invalid_payload: 0,
+      payload_too_large: 0,
+      timed_out: 0,
+      failed: 0,
+    },
+    bots: {},
+  };
+}
 
 export const systemDashboardWebhookIngressSloSchema = z.object({
   available: z.boolean(),
@@ -1013,11 +1085,13 @@ export const systemDashboardWebhookIngressSloSchema = z.object({
   attemptedReceipts: z.number().int().min(0),
   persistedReceipts: z.number().int().min(0),
   failedReceipts: z.number().int().min(0),
+  rejectedReceipts: z.number().int().min(0).default(0),
   sampledReceipts: z.number().int().min(0),
   p95LatencyMs: z.number().min(0).nullable(),
   p99LatencyMs: z.number().min(0).nullable(),
   underTargetRatio: z.number().min(0).max(1).nullable(),
   bots: z.record(z.string(), systemDashboardWebhookIngressBotMetricsSchema),
+  route: systemDashboardWebhookRouteMetricsSchema.default(createEmptyWebhookRouteMetrics),
 });
 export type SystemDashboardWebhookIngressSlo = z.infer<
   typeof systemDashboardWebhookIngressSloSchema
@@ -1032,26 +1106,416 @@ export type SystemDashboardWebhookCanonicalExecutionSlo = z.infer<
   typeof systemDashboardWebhookCanonicalExecutionSloSchema
 >;
 
-export const systemDashboardWebhookSloSchema = z.object({
-  status: systemDashboardWebhookSloStatusSchema,
-  windowSec: z.number().int().positive(),
-  targetProcessingMs: z.number().int().positive(),
-  totalEvents: z.number().int().min(0),
-  processedEvents: z.number().int().min(0),
-  failedEvents: z.number().int().min(0),
-  sampledProcessedEvents: z.number().int().min(0),
-  p95ProcessingMs: z.number().min(0).nullable(),
-  p99ProcessingMs: z.number().min(0).nullable(),
-  underTargetRatio: z.number().min(0).max(1).nullable(),
-  oldestUnprocessedLagSec: z.number().min(0),
-  oldestUnprocessedEventId: z.string().nullable(),
-  lastProcessedAt: z.string().datetime().nullable(),
-  ingress: systemDashboardWebhookIngressSloSchema.optional(),
-  enqueue: systemDashboardWebhookEnqueueSloSchema.optional(),
-  canonicalExecution: systemDashboardWebhookCanonicalExecutionSloSchema.optional(),
-  generatedAt: z.string().datetime(),
-});
+function validateWebhookSloSampleMetadata(
+  context: z.RefinementCtx,
+  input: {
+    sampleCount: number;
+    sampleLimit: number | undefined;
+    sampleTruncated: boolean | undefined;
+    sampledFrom: string | null | undefined;
+    countPath: readonly (string | number)[];
+    truncatedPath: readonly (string | number)[];
+    sampledFromPath: readonly (string | number)[];
+  },
+): void {
+  if (input.sampleLimit !== undefined && input.sampleCount > input.sampleLimit) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Webhook SLO sample count cannot exceed the configured sample limit',
+      path: [...input.countPath],
+    });
+  }
+  if (
+    input.sampleTruncated === true &&
+    (input.sampleLimit === undefined || input.sampleCount !== input.sampleLimit)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'A truncated webhook SLO sample must fill the configured sample limit',
+      path: [...input.truncatedPath],
+    });
+  }
+  if (
+    input.sampledFrom !== undefined &&
+    (input.sampleCount === 0) !== (input.sampledFrom === null)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Webhook SLO sampled-from timestamp must match sample availability',
+      path: [...input.sampledFromPath],
+    });
+  }
+}
+
+export const systemDashboardWebhookSloSchema = z
+  .object({
+    status: systemDashboardWebhookSloStatusSchema,
+    windowSec: z.number().int().positive(),
+    targetProcessingMs: z.number().int().positive(),
+    totalEvents: z.number().int().min(0),
+    processedEvents: z.number().int().min(0),
+    failedEvents: z.number().int().min(0),
+    sampleLimit: z.number().int().positive().optional(),
+    sampledProcessedEvents: z.number().int().min(0),
+    processedSampleTruncated: z.boolean().optional(),
+    processedSampledFrom: z.string().datetime().nullable().optional(),
+    p95ProcessingMs: z.number().min(0).nullable(),
+    p99ProcessingMs: z.number().min(0).nullable(),
+    underTargetRatio: z.number().min(0).max(1).nullable(),
+    oldestUnprocessedLagSec: z.number().min(0),
+    oldestUnprocessedEventId: z.string().nullable(),
+    lastProcessedAt: z.string().datetime().nullable(),
+    ingress: systemDashboardWebhookIngressSloSchema.optional(),
+    enqueue: systemDashboardWebhookEnqueueSloSchema.optional(),
+    canonicalExecution: systemDashboardWebhookCanonicalExecutionSloSchema.optional(),
+    generatedAt: z.string().datetime(),
+  })
+  .superRefine((value, context) => {
+    validateWebhookSloSampleMetadata(context, {
+      sampleCount: value.sampledProcessedEvents,
+      sampleLimit: value.sampleLimit,
+      sampleTruncated: value.processedSampleTruncated,
+      sampledFrom: value.processedSampledFrom,
+      countPath: ['sampledProcessedEvents'],
+      truncatedPath: ['processedSampleTruncated'],
+      sampledFromPath: ['processedSampledFrom'],
+    });
+    if (value.enqueue) {
+      validateWebhookSloSampleMetadata(context, {
+        sampleCount: value.enqueue.sampledEvents,
+        sampleLimit: value.sampleLimit,
+        sampleTruncated: value.enqueue.sampleTruncated,
+        sampledFrom: value.enqueue.sampledFrom,
+        countPath: ['enqueue', 'sampledEvents'],
+        truncatedPath: ['enqueue', 'sampleTruncated'],
+        sampledFromPath: ['enqueue', 'sampledFrom'],
+      });
+    }
+  });
 export type SystemDashboardWebhookSlo = z.infer<typeof systemDashboardWebhookSloSchema>;
+
+export const systemDashboardLatencyPercentilesSchema = z
+  .object({
+    sampleCount: z.number().int().min(0).max(5_000),
+    p50Ms: z.number().int().min(0).nullable(),
+    p95Ms: z.number().int().min(0).nullable(),
+    p99Ms: z.number().int().min(0).nullable(),
+  })
+  .superRefine((value, context) => {
+    const percentiles = [value.p50Ms, value.p95Ms, value.p99Ms];
+    if (value.sampleCount === 0 && percentiles.some((item) => item !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Empty latency samples must have null percentiles',
+      });
+      return;
+    }
+    if (value.sampleCount > 0 && percentiles.some((item) => item === null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Non-empty latency samples must have populated percentiles',
+      });
+      return;
+    }
+    if (
+      value.p50Ms !== null &&
+      value.p95Ms !== null &&
+      value.p99Ms !== null &&
+      (value.p50Ms > value.p95Ms || value.p95Ms > value.p99Ms)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Latency percentiles must be monotonic',
+      });
+    }
+  });
+export type SystemDashboardLatencyPercentiles = z.infer<
+  typeof systemDashboardLatencyPercentilesSchema
+>;
+
+export const systemDashboardActionLatencyMetricsSchema = z.object({
+  effectiveReadyToLastAttempt: systemDashboardLatencyPercentilesSchema,
+  lastAttemptToTerminal: systemDashboardLatencyPercentilesSchema,
+  effectiveReadyToTerminal: systemDashboardLatencyPercentilesSchema,
+});
+export type SystemDashboardActionLatencyMetrics = z.infer<
+  typeof systemDashboardActionLatencyMetricsSchema
+>;
+
+export const systemDashboardActionLatencyGroupSchema = systemDashboardActionLatencyMetricsSchema
+  .extend({
+    key: z.string().trim().min(1).max(256),
+    rowCount: z.number().int().min(1).max(5_000),
+  })
+  .superRefine((value, context) => {
+    for (const metric of [
+      'effectiveReadyToLastAttempt',
+      'lastAttemptToTerminal',
+      'effectiveReadyToTerminal',
+    ] as const) {
+      if (value[metric].sampleCount > value.rowCount) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Latency sample count cannot exceed its group row count',
+          path: [metric, 'sampleCount'],
+        });
+      }
+    }
+  });
+export type SystemDashboardActionLatencyGroup = z.infer<
+  typeof systemDashboardActionLatencyGroupSchema
+>;
+
+export const systemDashboardDeleteLatencyMetricsSchema = z.object({
+  messageToFirstAttempt: systemDashboardLatencyPercentilesSchema,
+  firstAttemptToTerminal: systemDashboardLatencyPercentilesSchema,
+  messageToTerminal: systemDashboardLatencyPercentilesSchema,
+});
+export type SystemDashboardDeleteLatencyMetrics = z.infer<
+  typeof systemDashboardDeleteLatencyMetricsSchema
+>;
+
+export const systemDashboardDeleteLatencyGroupSchema = systemDashboardDeleteLatencyMetricsSchema
+  .extend({
+    key: z.string().trim().min(1).max(256),
+    rowCount: z.number().int().min(1).max(5_000),
+  })
+  .superRefine((value, context) => {
+    for (const metric of [
+      'messageToFirstAttempt',
+      'firstAttemptToTerminal',
+      'messageToTerminal',
+    ] as const) {
+      if (value[metric].sampleCount > value.rowCount) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Latency sample count cannot exceed its group row count',
+          path: [metric, 'sampleCount'],
+        });
+      }
+    }
+  });
+export type SystemDashboardDeleteLatencyGroup = z.infer<
+  typeof systemDashboardDeleteLatencyGroupSchema
+>;
+
+function validateLatencyGroupRows(
+  context: z.RefinementCtx,
+  path: readonly string[],
+  groups: ReadonlyArray<{ key: string; rowCount: number }>,
+  expectedRowCount: number,
+): void {
+  const keys = new Set<string>();
+  let rowCount = 0;
+  for (const [index, group] of groups.entries()) {
+    rowCount += group.rowCount;
+    if (keys.has(group.key)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Latency group keys must be unique within a dimension',
+        path: [...path, index, 'key'],
+      });
+    }
+    keys.add(group.key);
+  }
+  if (rowCount !== expectedRowCount) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Latency group row counts must cover the complete sample',
+      path: [...path],
+    });
+  }
+}
+
+export const systemDashboardActionLatencySchema = z
+  .object({
+    basis: z.literal('terminal_outcomes'),
+    windowBasis: z.literal('completed_at'),
+    actionStartBasis: z.literal('max_enqueued_at_scheduled_for'),
+    windowSec: z.number().int().positive(),
+    windowStartedAt: z.string().datetime(),
+    sampleLimit: z.number().int().positive().max(5_000),
+    actionSampleCount: z.number().int().min(0).max(5_000),
+    actionSampleTruncated: z.boolean(),
+    actionSampledFrom: z.string().datetime().nullable(),
+    overall: systemDashboardActionLatencyMetricsSchema,
+    byAction: z.array(systemDashboardActionLatencyGroupSchema).max(5_000),
+    byOutcome: z.array(systemDashboardActionLatencyGroupSchema).max(5_000),
+    bySource: z.array(systemDashboardActionLatencyGroupSchema).max(5_000),
+    byBot: z.array(systemDashboardActionLatencyGroupSchema).max(5_000),
+    byTrafficClass: z.array(systemDashboardActionLatencyGroupSchema).max(5_000),
+    moderationDelete: z.object({
+      sampleCount: z.number().int().min(0).max(5_000),
+      sampleTruncated: z.boolean(),
+      sampledFrom: z.string().datetime().nullable(),
+      overall: systemDashboardDeleteLatencyMetricsSchema,
+      byOutcome: z.array(systemDashboardDeleteLatencyGroupSchema).max(5_000),
+    }),
+    generatedAt: z.string().datetime(),
+  })
+  .superRefine((value, context) => {
+    if (value.actionSampleCount > value.sampleLimit) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Action sample count cannot exceed the configured sample limit',
+        path: ['actionSampleCount'],
+      });
+    }
+    if (value.moderationDelete.sampleCount > value.sampleLimit) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Delete sample count cannot exceed the configured sample limit',
+        path: ['moderationDelete', 'sampleCount'],
+      });
+    }
+    if (value.actionSampleTruncated && value.actionSampleCount !== value.sampleLimit) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A truncated action sample must fill the configured sample limit',
+        path: ['actionSampleTruncated'],
+      });
+    }
+    if (
+      value.moderationDelete.sampleTruncated &&
+      value.moderationDelete.sampleCount !== value.sampleLimit
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A truncated delete sample must fill the configured sample limit',
+        path: ['moderationDelete', 'sampleTruncated'],
+      });
+    }
+    if ((value.actionSampleCount === 0) !== (value.actionSampledFrom === null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Action sampled-from timestamp must match sample availability',
+        path: ['actionSampledFrom'],
+      });
+    }
+    if (
+      (value.moderationDelete.sampleCount === 0) !==
+      (value.moderationDelete.sampledFrom === null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Delete sampled-from timestamp must match sample availability',
+        path: ['moderationDelete', 'sampledFrom'],
+      });
+    }
+    for (const metric of [
+      'effectiveReadyToLastAttempt',
+      'lastAttemptToTerminal',
+      'effectiveReadyToTerminal',
+    ] as const) {
+      if (value.overall[metric].sampleCount > value.actionSampleCount) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Latency sample count cannot exceed the action row count',
+          path: ['overall', metric, 'sampleCount'],
+        });
+      }
+    }
+    for (const metric of [
+      'messageToFirstAttempt',
+      'firstAttemptToTerminal',
+      'messageToTerminal',
+    ] as const) {
+      if (value.moderationDelete.overall[metric].sampleCount > value.moderationDelete.sampleCount) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Latency sample count cannot exceed the delete row count',
+          path: ['moderationDelete', 'overall', metric, 'sampleCount'],
+        });
+      }
+    }
+
+    const generatedAtMs = Date.parse(value.generatedAt);
+    const windowStartedAtMs = Date.parse(value.windowStartedAt);
+    if (windowStartedAtMs > generatedAtMs) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Latency window cannot start after the snapshot was generated',
+        path: ['windowStartedAt'],
+      });
+    }
+    if (generatedAtMs - windowStartedAtMs !== value.windowSec * 1_000) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Latency window timestamps must match the declared window length',
+        path: ['windowSec'],
+      });
+    }
+    for (const [sampledFrom, path] of [
+      [value.actionSampledFrom, ['actionSampledFrom']],
+      [value.moderationDelete.sampledFrom, ['moderationDelete', 'sampledFrom']],
+    ] as const) {
+      if (sampledFrom === null) {
+        continue;
+      }
+      const sampledFromMs = Date.parse(sampledFrom);
+      if (sampledFromMs < windowStartedAtMs || sampledFromMs > generatedAtMs) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Sampled-from timestamp must fall inside the latency window',
+          path: [...path],
+        });
+      }
+    }
+
+    const actionDimensions = [
+      ['byAction', value.byAction],
+      ['byOutcome', value.byOutcome],
+      ['bySource', value.bySource],
+      ['byBot', value.byBot],
+      ['byTrafficClass', value.byTrafficClass],
+    ] as const;
+    const actionMetrics = [
+      'effectiveReadyToLastAttempt',
+      'lastAttemptToTerminal',
+      'effectiveReadyToTerminal',
+    ] as const;
+    for (const [dimension, groups] of actionDimensions) {
+      validateLatencyGroupRows(context, [dimension], groups, value.actionSampleCount);
+      for (const metric of actionMetrics) {
+        const groupedSampleCount = groups.reduce(
+          (total, group) => total + group[metric].sampleCount,
+          0,
+        );
+        if (groupedSampleCount !== value.overall[metric].sampleCount) {
+          context.addIssue({
+            code: 'custom',
+            message: 'Grouped latency sample counts must match the overall metric sample',
+            path: [dimension],
+          });
+        }
+      }
+    }
+
+    validateLatencyGroupRows(
+      context,
+      ['moderationDelete', 'byOutcome'],
+      value.moderationDelete.byOutcome,
+      value.moderationDelete.sampleCount,
+    );
+    for (const metric of [
+      'messageToFirstAttempt',
+      'firstAttemptToTerminal',
+      'messageToTerminal',
+    ] as const) {
+      const groupedSampleCount = value.moderationDelete.byOutcome.reduce(
+        (total, group) => total + group[metric].sampleCount,
+        0,
+      );
+      if (groupedSampleCount !== value.moderationDelete.overall[metric].sampleCount) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Grouped delete latency sample counts must match the overall metric sample',
+          path: ['moderationDelete', 'byOutcome'],
+        });
+      }
+    }
+  });
+export type SystemDashboardActionLatency = z.infer<typeof systemDashboardActionLatencySchema>;
 
 export const systemRuntimeRoleSchema = z.enum([
   'all',
@@ -1194,6 +1658,7 @@ export const systemDashboardResponseSchema = z.object({
   spammerReadModel: systemDashboardSpammerReadModelSchema.optional(),
   webhookSlo: systemDashboardWebhookSloSchema.optional(),
   slo: systemDashboardWebhookSloSchema.optional(),
+  actionLatency: systemDashboardActionLatencySchema.optional(),
   runtimeProfile: systemRuntimeProfileSchema.optional(),
   canaryState: systemCanaryStateSchema.optional(),
   rollbackReadiness: systemRollbackReadinessSchema.optional(),

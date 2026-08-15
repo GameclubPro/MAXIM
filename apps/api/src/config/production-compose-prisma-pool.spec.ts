@@ -54,6 +54,16 @@ describe('production compose Prisma pool caps', () => {
       expect(readEnvNumber(adminBlock, 'MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX')).toBe(6);
     });
 
+    it('bounds long statements on the webhook ingress role only', () => {
+      for (const service of Object.keys(API_SERVICE_POOL_CAPS)) {
+        const block = readServiceBlock(compose, service);
+
+        expect(readOptionalEnvNumber(block, 'PRISMA_PG_STATEMENT_TIMEOUT_MS')).toBe(
+          service === 'api-ingress' ? 15_000 : null,
+        );
+      }
+    });
+
     it('keeps webhook outbox enqueue work owned by the enqueue role only', () => {
       for (const service of Object.keys(API_SERVICE_POOL_CAPS)) {
         const block = readServiceBlock(compose, service);
@@ -100,12 +110,21 @@ function readTopLevelVolumesBlock(compose: string): string {
 }
 
 function readEnvNumber(serviceBlock: string, key: string): number {
+  const value = readOptionalEnvNumber(serviceBlock, key);
+  if (value === null) {
+    throw new Error(`Missing compose env ${key}`);
+  }
+
+  return value;
+}
+
+function readOptionalEnvNumber(serviceBlock: string, key: string): number | null {
   const match = serviceBlock.match(
     new RegExp(`^\\s{6}${escapeRegExp(key)}:\\s*'?([0-9]+)'?\\s*$`, 'mu'),
   );
 
   if (!match?.[1]) {
-    throw new Error(`Missing compose env ${key}`);
+    return null;
   }
 
   return Number(match[1]);

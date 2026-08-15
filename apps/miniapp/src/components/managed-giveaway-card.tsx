@@ -1,5 +1,4 @@
 import {
-  type ChatSummary,
   MANAGED_GIVEAWAY_MAX_PRIZES,
   MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS,
   MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH,
@@ -7,7 +6,8 @@ import {
   type ManagedGiveawayDetails,
   type ManagedGiveawaySummary,
   type ManagedGiveawayWinner,
-} from '@maxim/contracts';
+} from '@maxim/contracts/giveaway';
+import type { ChatSummary } from '@maxim/contracts/managed-entities';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   forwardRef,

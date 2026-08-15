@@ -1,6 +1,6 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { WebhookStatus } from '../prisma/prisma-client';
+import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   WebhookIngressMetricsService,
@@ -14,7 +14,10 @@ export type WebhookSloSnapshot = {
   totalEvents: number;
   processedEvents: number;
   failedEvents: number;
+  sampleLimit: number;
   sampledProcessedEvents: number;
+  processedSampleTruncated: boolean;
+  processedSampledFrom: string | null;
   p95ProcessingMs: number | null;
   p99ProcessingMs: number | null;
   underTargetRatio: number | null;
@@ -36,6 +39,8 @@ export type WebhookCanonicalExecutionSloSnapshot = {
 export type WebhookEnqueueSloSnapshot = {
   targetMs: number;
   sampledEvents: number;
+  sampleTruncated: boolean;
+  sampledFrom: string | null;
   p95LatencyMs: number | null;
   p99LatencyMs: number | null;
   underTargetRatio: number | null;
@@ -48,12 +53,21 @@ const DEFAULT_WEBHOOK_SLO_WINDOW_SEC = 15 * 60;
 const DEFAULT_WEBHOOK_SLO_TARGET_MS = 400;
 const DEFAULT_WEBHOOK_ENQUEUE_SLO_TARGET_MS = 1_000;
 const DEFAULT_WEBHOOK_SLO_SAMPLE_LIMIT = 5_000;
+const MAX_WEBHOOK_SLO_SAMPLE_LIMIT = 5_000;
 const WARNING_UNDER_TARGET_RATIO = 0.95;
 const CRITICAL_UNDER_TARGET_RATIO = 0.85;
 const WARNING_UNPROCESSED_LAG_SEC = 5;
 const CRITICAL_UNPROCESSED_LAG_SEC = 15;
 const WARNING_INGRESS_UNDER_TARGET_RATIO = 0.99;
 const CRITICAL_INGRESS_FAILURE_COUNT = 5;
+const SERVICE_ROUTE_FAILURE_OUTCOMES = [
+  'admission_rejected',
+  'invalid_json',
+  'invalid_payload',
+  'payload_too_large',
+  'timed_out',
+  'failed',
+] as const;
 
 @Injectable()
 export class WebhookSloService {
@@ -79,139 +93,155 @@ export class WebhookSloService {
       configService.get('SYSTEM_WEBHOOK_ENQUEUE_SLO_TARGET_MS'),
       DEFAULT_WEBHOOK_ENQUEUE_SLO_TARGET_MS,
     );
-    this.sampleLimit = this.readPositiveInt(
-      configService.get('SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT'),
-      DEFAULT_WEBHOOK_SLO_SAMPLE_LIMIT,
+    this.sampleLimit = Math.min(
+      MAX_WEBHOOK_SLO_SAMPLE_LIMIT,
+      this.readPositiveInt(
+        configService.get('SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT'),
+        DEFAULT_WEBHOOK_SLO_SAMPLE_LIMIT,
+      ),
     );
   }
 
   async getSnapshot(): Promise<WebhookSloSnapshot> {
     const nowMs = Date.now();
+    const generatedAt = new Date(nowMs);
     const from = new Date(nowMs - this.windowSec * 1_000);
-    const [
-      totalEvents,
-      processedEvents,
-      failedEvents,
-      processedSample,
-      enqueueSample,
-      oldestUnprocessed,
-      oldestPendingEnqueue,
-      lastProcessed,
-      lastQueued,
-      executionClaims,
-      ingress,
-    ] = await Promise.all([
-      this.prisma.webhookEvent.count({
-        where: {
-          createdAt: { gte: from },
-        },
-      }),
-      this.prisma.webhookEvent.count({
-        where: {
-          createdAt: { gte: from },
-          status: WebhookStatus.PROCESSED,
-        },
-      }),
-      this.prisma.webhookEvent.count({
-        where: {
-          createdAt: { gte: from },
-          status: WebhookStatus.FAILED,
-        },
-      }),
-      this.prisma.webhookEvent.findMany({
-        where: {
-          createdAt: { gte: from },
-          status: WebhookStatus.PROCESSED,
-          processedAt: { not: null },
-        },
-        select: {
-          createdAt: true,
-          processedAt: true,
-        },
-        orderBy: {
-          processedAt: 'desc',
-        },
-        take: this.sampleLimit,
-      }),
-      this.prisma.webhookEvent.findMany({
-        where: {
-          createdAt: { gte: from },
-          queuedAt: { not: null },
-        },
-        select: {
-          createdAt: true,
-          queuedAt: true,
-        },
-        orderBy: {
-          queuedAt: 'desc',
-        },
-        take: this.sampleLimit,
-      }),
-      this.prisma.webhookEvent.findFirst({
-        where: {
-          createdAt: { gte: from },
-          status: {
-            in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED],
+    const createdAtWindow = { gte: from, lte: generatedAt };
+    const ingressPromise = this.webhookIngressMetricsService
+      ? this.webhookIngressMetricsService.getSnapshot({ windowSec: this.windowSec })
+      : Promise.resolve(this.emptyIngressSnapshot());
+    const databaseSnapshotPromise = this.prisma.$transaction(
+      [
+        this.prisma.webhookEvent.count({
+          where: {
+            createdAt: createdAtWindow,
           },
-        },
-        select: {
-          id: true,
-          createdAt: true,
-        },
-        orderBy: {
-          createdAt: 'asc',
-        },
-      }),
-      this.prisma.webhookEvent.findFirst({
-        where: {
-          createdAt: { gte: from },
-          status: WebhookStatus.RECEIVED,
-          queuedAt: null,
-        },
-        select: {
-          id: true,
-          createdAt: true,
-        },
-        orderBy: {
-          createdAt: 'asc',
-        },
-      }),
-      this.prisma.webhookEvent.findFirst({
-        where: {
-          createdAt: { gte: from },
-          status: WebhookStatus.PROCESSED,
-          processedAt: { not: null },
-        },
-        select: {
-          processedAt: true,
-        },
-        orderBy: {
-          processedAt: 'desc',
-        },
-      }),
-      this.prisma.webhookEvent.findFirst({
-        where: {
-          createdAt: { gte: from },
-          queuedAt: { not: null },
-        },
-        select: {
-          queuedAt: true,
-        },
-        orderBy: {
-          queuedAt: 'desc',
-        },
-      }),
-      this.prisma.webhookExecutionClaim.count({
-        where: {
-          kind: 'EXECUTION',
-          createdAt: { gte: from },
-        },
-      }),
-      this.webhookIngressMetricsService
-        ? this.webhookIngressMetricsService.getSnapshot({ windowSec: this.windowSec })
-        : Promise.resolve(this.emptyIngressSnapshot()),
-    ]);
+        }),
+        this.prisma.webhookEvent.count({
+          where: {
+            createdAt: createdAtWindow,
+            status: WebhookStatus.PROCESSED,
+            processedAt: { not: null, lte: generatedAt },
+          },
+        }),
+        this.prisma.webhookEvent.count({
+          where: {
+            createdAt: createdAtWindow,
+            status: WebhookStatus.FAILED,
+          },
+        }),
+        this.prisma.webhookEvent.findMany({
+          where: {
+            createdAt: createdAtWindow,
+            status: WebhookStatus.PROCESSED,
+            processedAt: { not: null, lte: generatedAt },
+          },
+          select: {
+            createdAt: true,
+            processedAt: true,
+          },
+          orderBy: {
+            processedAt: 'desc',
+          },
+          take: this.sampleLimit + 1,
+        }),
+        this.prisma.webhookEvent.findMany({
+          where: {
+            createdAt: createdAtWindow,
+            queuedAt: { not: null, lte: generatedAt },
+          },
+          select: {
+            createdAt: true,
+            queuedAt: true,
+          },
+          orderBy: {
+            queuedAt: 'desc',
+          },
+          take: this.sampleLimit + 1,
+        }),
+        this.prisma.webhookEvent.findFirst({
+          where: {
+            createdAt: createdAtWindow,
+            status: {
+              in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED],
+            },
+          },
+          select: {
+            id: true,
+            createdAt: true,
+          },
+          orderBy: {
+            createdAt: 'asc',
+          },
+        }),
+        this.prisma.webhookEvent.findFirst({
+          where: {
+            createdAt: createdAtWindow,
+            status: WebhookStatus.RECEIVED,
+            queuedAt: null,
+          },
+          select: {
+            id: true,
+            createdAt: true,
+          },
+          orderBy: {
+            createdAt: 'asc',
+          },
+        }),
+        this.prisma.webhookEvent.findFirst({
+          where: {
+            createdAt: createdAtWindow,
+            status: WebhookStatus.PROCESSED,
+            processedAt: { not: null, lte: generatedAt },
+          },
+          select: {
+            processedAt: true,
+          },
+          orderBy: {
+            processedAt: 'desc',
+          },
+        }),
+        this.prisma.webhookEvent.findFirst({
+          where: {
+            createdAt: createdAtWindow,
+            queuedAt: { not: null, lte: generatedAt },
+          },
+          select: {
+            queuedAt: true,
+          },
+          orderBy: {
+            queuedAt: 'desc',
+          },
+        }),
+        this.prisma.webhookExecutionClaim.count({
+          where: {
+            kind: 'EXECUTION',
+            createdAt: createdAtWindow,
+          },
+        }),
+      ],
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    const [
+      [
+        totalEvents,
+        processedEvents,
+        failedEvents,
+        loadedProcessedSample,
+        loadedEnqueueSample,
+        oldestUnprocessed,
+        oldestPendingEnqueue,
+        lastProcessed,
+        lastQueued,
+        executionClaims,
+      ],
+      ingress,
+    ] = await Promise.all([databaseSnapshotPromise, ingressPromise]);
 
+    const processedSampleTruncated = loadedProcessedSample.length > this.sampleLimit;
+    const enqueueSampleTruncated = loadedEnqueueSample.length > this.sampleLimit;
+    const processedSample = loadedProcessedSample.slice(0, this.sampleLimit);
+    const enqueueSample = loadedEnqueueSample.slice(0, this.sampleLimit);
     const durations = processedSample
       .map((event) => {
         if (!event.processedAt) {
@@ -272,7 +302,13 @@ export class WebhookSloService {
       totalEvents,
       processedEvents,
       failedEvents,
+      sampleLimit: this.sampleLimit,
       sampledProcessedEvents: durations.length,
+      processedSampleTruncated,
+      processedSampledFrom: this.readOldestSampleTimestamp(
+        processedSample,
+        (event) => event.processedAt,
+      ),
       p95ProcessingMs,
       p99ProcessingMs,
       underTargetRatio,
@@ -283,6 +319,8 @@ export class WebhookSloService {
       enqueue: {
         targetMs: this.targetEnqueueMs,
         sampledEvents: enqueueDurations.length,
+        sampleTruncated: enqueueSampleTruncated,
+        sampledFrom: this.readOldestSampleTimestamp(enqueueSample, (event) => event.queuedAt),
         p95LatencyMs: this.percentile(enqueueDurations, 0.95),
         p99LatencyMs: this.percentile(enqueueDurations, 0.99),
         underTargetRatio: enqueueUnderTargetRatio,
@@ -296,7 +334,7 @@ export class WebhookSloService {
         claimsPerReceiptRatio:
           totalEvents > 0 ? Number((executionClaims / totalEvents).toFixed(3)) : null,
       },
-      generatedAt: new Date(nowMs).toISOString(),
+      generatedAt: generatedAt.toISOString(),
     };
   }
 
@@ -308,11 +346,14 @@ export class WebhookSloService {
     p99ProcessingMs: number | null;
     ingress: WebhookIngressMetricsSnapshot;
   }): WebhookSloSnapshot['status'] {
+    const receiptFailureCount = params.ingress.failedReceipts + params.ingress.rejectedReceipts;
+    const routeFailureCount = this.countServiceRouteFailures(params.ingress);
     if (
       params.oldestUnprocessedLagSec >= CRITICAL_UNPROCESSED_LAG_SEC ||
       (params.underTargetRatio !== null && params.underTargetRatio < CRITICAL_UNDER_TARGET_RATIO) ||
       (params.p99ProcessingMs !== null && params.p99ProcessingMs > 1_000) ||
-      params.ingress.failedReceipts >= CRITICAL_INGRESS_FAILURE_COUNT ||
+      receiptFailureCount >= CRITICAL_INGRESS_FAILURE_COUNT ||
+      routeFailureCount >= CRITICAL_INGRESS_FAILURE_COUNT ||
       (params.ingress.p99LatencyMs !== null &&
         params.ingress.p99LatencyMs > params.ingress.targetMs)
     ) {
@@ -326,6 +367,8 @@ export class WebhookSloService {
       (params.p95ProcessingMs !== null && params.p95ProcessingMs > this.targetProcessingMs) ||
       !params.ingress.available ||
       params.ingress.failedReceipts > 0 ||
+      params.ingress.rejectedReceipts > 0 ||
+      routeFailureCount > 0 ||
       (params.ingress.underTargetRatio !== null &&
         params.ingress.underTargetRatio < WARNING_INGRESS_UNDER_TARGET_RATIO) ||
       (params.ingress.p95LatencyMs !== null &&
@@ -337,6 +380,14 @@ export class WebhookSloService {
     return 'healthy';
   }
 
+  private countServiceRouteFailures(ingress: WebhookIngressMetricsSnapshot): number {
+    const outcomes = ingress.route?.outcomes;
+    if (!outcomes) {
+      return 0;
+    }
+    return SERVICE_ROUTE_FAILURE_OUTCOMES.reduce((total, outcome) => total + outcomes[outcome], 0);
+  }
+
   private percentile(values: readonly number[], percentile: number): number | null {
     if (values.length === 0) {
       return null;
@@ -346,6 +397,20 @@ export class WebhookSloService {
       Math.max(0, Math.ceil(values.length * percentile) - 1),
     );
     return Math.trunc(values[index] ?? 0);
+  }
+
+  private readOldestSampleTimestamp<Row>(
+    rows: readonly Row[],
+    readTimestamp: (row: Row) => Date | null,
+  ): string | null {
+    let oldest: Date | null = null;
+    for (const row of rows) {
+      const timestamp = readTimestamp(row);
+      if (timestamp && Number.isFinite(timestamp.getTime()) && (!oldest || timestamp < oldest)) {
+        oldest = timestamp;
+      }
+    }
+    return oldest?.toISOString() ?? null;
   }
 
   private readPositiveInt(value: unknown, fallback: number): number {
@@ -363,11 +428,26 @@ export class WebhookSloService {
       attemptedReceipts: 0,
       persistedReceipts: 0,
       failedReceipts: 0,
+      rejectedReceipts: 0,
       sampledReceipts: 0,
       p95LatencyMs: null,
       p99LatencyMs: null,
       underTargetRatio: null,
       bots: {},
+      route: {
+        attemptedRequests: 0,
+        outcomes: {
+          accepted: 0,
+          authentication_rejected: 0,
+          admission_rejected: 0,
+          invalid_json: 0,
+          invalid_payload: 0,
+          payload_too_large: 0,
+          timed_out: 0,
+          failed: 0,
+        },
+        bots: {},
+      },
     };
   }
 }

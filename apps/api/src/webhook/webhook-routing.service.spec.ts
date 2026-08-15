@@ -1,8 +1,10 @@
 import { WebhookRoutingService } from './webhook-routing.service';
 import {
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
   resolveDefaultWebhookQueueNameForChatId,
   resolveJoinWebhookQueueNameForChatId,
 } from './webhook-queues';
+import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
 
 function createConfigMock(overrides: Partial<Record<string, number>> = {}) {
   return {
@@ -185,15 +187,27 @@ describe('WebhookRoutingService', () => {
 
   it('checks outstanding chat work with an existence query instead of a full count', async () => {
     const { service, prisma } = createService();
+    const webhookEventId = 'evt-exists-shape';
+    const chatId = 'chat-exists-shape';
 
-    await service.resolveQueueName('evt-exists-shape', {
+    await service.resolveQueueName(webhookEventId, {
       type: 'message_created',
-      message: { chatId: 'chat-exists-shape' },
+      message: { chatId },
     });
 
-    const sqlText = readSqlText(prisma.$queryRaw.mock.calls[0]?.[0]).replace(/\s+/gu, ' ');
+    const query = prisma.$queryRaw.mock.calls[0]?.[0] as
+      | { values?: readonly unknown[] }
+      | undefined;
+    const sqlText = readSqlText(query).replace(/\s+/gu, ' ');
+    const quarantineMarker = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
     expect(sqlText).toContain('SELECT EXISTS');
     expect(sqlText).toContain('LIMIT 1');
+    expect(sqlText).toContain('status = \'FAILED\'::"WebhookStatus"');
+    expect(sqlText).toContain('next_enqueue_at IS NOT NULL');
+    expect(sqlText).toContain(`LEFT(COALESCE(error_message, ''), 37) = '${quarantineMarker}'`);
+    expect(query?.values).not.toContain(37);
+    expect(query?.values).not.toContain(quarantineMarker);
+    expect(query?.values).toEqual(expect.arrayContaining([webhookEventId, chatId]));
     expect(sqlText).not.toMatch(/COUNT\s*\(\s*\*\s*\)/iu);
   });
 
@@ -366,6 +380,116 @@ describe('WebhookRoutingService', () => {
       }),
     ).resolves.toBe('moderation-default-7');
 
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores the persisted outstanding shard after the in-memory chat assignment expires', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-15T11:00:00.000Z'));
+
+    const chatId = 'chat-persisted-shard';
+    const firstQueue = 'moderation-default-7';
+    const persistedQueue = 'moderation-default-2';
+    const firstSnapshot = buildDefaultShardSnapshot();
+    firstSnapshot[firstQueue] = {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    };
+    const { service, prisma, queueMetricsService } = createService({
+      queueSnapshot: {
+        webhookDefaultShards: firstSnapshot,
+        webhookDefaultWorkerGroups: buildWorkerGroupSnapshot(),
+      },
+      config: {
+        WEBHOOK_ROUTING_CHAT_ASSIGNMENT_TTL_SEC: 5,
+      },
+    });
+
+    await expect(
+      service.resolveQueueName('evt-persisted-shard-1', {
+        type: 'message_created',
+        message: { chatId },
+      }),
+    ).resolves.toBe(firstQueue);
+
+    prisma.$queryRaw.mockResolvedValueOnce([{ has_pending: true, queue_name: persistedQueue }]);
+    jest.advanceTimersByTime(5_001);
+
+    await expect(
+      service.resolveQueueName('evt-persisted-shard-2', {
+        type: 'message_created',
+        message: { chatId },
+      }),
+    ).resolves.toBe(persistedQueue);
+
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps distinct cross-bot chat messages on one ordered shard while work is outstanding', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-15T12:00:00.000Z'));
+
+    const chatId = 'shared-chat-cross-bot-order';
+    const hashedQueue = resolveDefaultWebhookQueueNameForChatId(chatId);
+    const candidateQueues = DEFAULT_WEBHOOK_QUEUE_NAMES.filter(
+      (queueName) => queueName !== hashedQueue,
+    );
+    const firstQueue = candidateQueues[0]!;
+    const pressurePreferredQueue = candidateQueues[1]!;
+    const firstSnapshot = buildDefaultShardSnapshot();
+    firstSnapshot[firstQueue] = {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    };
+    const pressureSnapshot = buildDefaultShardSnapshot();
+    pressureSnapshot[pressurePreferredQueue] = {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    };
+    const { service, prisma, queueMetricsService } = createService({
+      queueSnapshot: {
+        webhookDefaultShards: firstSnapshot,
+        webhookDefaultWorkerGroups: buildWorkerGroupSnapshot(),
+      },
+      config: {
+        WEBHOOK_ROUTING_CHAT_ASSIGNMENT_TTL_SEC: 5,
+      },
+    });
+
+    await expect(
+      service.resolveQueueName('evt-cross-bot-1', {
+        updateId: 'update-cross-bot-1',
+        botId: 'bot-1',
+        type: 'message_created',
+        message: { chatId, messageId: 'message-cross-bot-1' },
+      }),
+    ).resolves.toBe(firstQueue);
+
+    prisma.$queryRaw.mockResolvedValueOnce([{ has_pending: true }]);
+    queueMetricsService.getWebhookDefaultShardSnapshot.mockResolvedValueOnce({
+      webhookDefaultShards: pressureSnapshot,
+      webhookDefaultWorkerGroups: buildWorkerGroupSnapshot(),
+    });
+    jest.advanceTimersByTime(5_001);
+
+    await expect(
+      service.resolveQueueName('evt-cross-bot-2', {
+        updateId: 'update-cross-bot-2',
+        botId: 'bot-2',
+        type: 'message_created',
+        message: { chatId, messageId: 'message-cross-bot-2' },
+      }),
+    ).resolves.toBe(firstQueue);
+
+    const secondSqlText = readSqlText(prisma.$queryRaw.mock.calls[1]?.[0]).replace(/\s+/gu, ' ');
+    expect(secondSqlText).not.toContain('bot_id');
     expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(1);
   });
 

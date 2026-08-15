@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   BotOwnershipFoundationSnapshot,
@@ -14,6 +14,7 @@ import {
   MAX_ACTION_INTERACTIVE_QUEUE,
   MAX_ACTION_LEGACY_QUEUE,
 } from '../max/max-action.queue';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   DEFAULT_WEBHOOK_P95_TARGET_MS,
   buildSystemCanaryState,
@@ -21,13 +22,13 @@ import {
   buildSystemRollbackReadiness,
   buildSystemRuntimeProfile,
 } from '../runtime/runtime-reliability-profile';
+import { ActionLatencyService } from './action-latency.service';
 import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
 import { QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 import { SystemModeService } from './system-mode.service';
 import { WebhookSloService, type WebhookSloSnapshot } from './webhook-slo.service';
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
-import { PrismaService } from '../prisma/prisma.service';
 
 const QUEUE_LAG_WARNING_SEC = 5;
 const FAILED_EVENTS_CRITICAL_COUNT = 100;
@@ -47,6 +48,7 @@ const VK_PARSING_PUBLISH_BACKLOG_WARNING_SEC = 10 * 60;
 const DELIVERY_LEDGER_STALE_ACTION_MS = 15 * 60_000;
 const DELIVERY_LEDGER_STALE_BROADCAST_SENDING_MS = 5 * 60_000;
 const DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS = 2 * 60_000;
+const DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT = 1_000;
 const HOT_PATH_SLOW_WARNING_COUNT = 3;
 const HOT_PATH_SLOW_WARNING_MAX_MS = 5_000;
 
@@ -78,10 +80,16 @@ type DeliveryLedgerRiskSnapshot = {
   suggestionStaleSending: number;
   suggestionRiskSuggestions: number;
   suggestionOldestRiskAgeSec: number;
+  deleteIntentSafelyExpirable: number;
+  deleteIntentStaleExpiredInProgress: number;
+  deleteIntentOldestExpiredAgeSec: number;
+  deleteIntentRiskCapped: boolean;
+  deleteIntentStaleExpiredInProgressCapped: boolean;
 };
 
 @Injectable()
 export class SystemDashboardService {
+  private readonly logger = new Logger(SystemDashboardService.name);
   private readonly queueLagCriticalThresholdSec: number;
   private readonly webhookSloTargetMs: number;
   private readonly actionCriticalBacklogThreshold: number;
@@ -102,6 +110,8 @@ export class SystemDashboardService {
     private readonly webhookSloService?: WebhookSloService,
     @Optional()
     private readonly prisma?: PrismaService,
+    @Optional()
+    private readonly actionLatencyService?: ActionLatencyService,
   ) {
     this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
     this.webhookSloTargetMs = configService.get<number>(
@@ -129,10 +139,17 @@ export class SystemDashboardService {
       queues,
       mode,
     });
-    const [runtimeDiagnostics, backgroundBudget, webhookSlo] = await Promise.all([
+    const [runtimeDiagnostics, backgroundBudget, webhookSlo, actionLatency] = await Promise.all([
       this.runtimeDiagnosticsService?.getDashboardSnapshot(),
       this.backgroundRuntimeGovernorService?.getDashboardBudgetSummary(),
       this.webhookSloService?.getSnapshot(),
+      this.actionLatencyService?.getSnapshot().catch((error: unknown) => {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'Action latency dashboard snapshot is unavailable; response remains fail-soft',
+        );
+        return undefined;
+      }),
     ]);
     const [vkParsingGuard, deliveryLedgerRisk] = await Promise.all([
       this.loadVkParsingGuardSnapshot(),
@@ -402,6 +419,7 @@ export class SystemDashboardService {
         : {}),
       ...(backgroundBudget ? { backgroundBudget } : {}),
       ...(webhookSlo ? { webhookSlo, slo: webhookSlo } : {}),
+      ...(actionLatency ? { actionLatency } : {}),
     };
   }
 
@@ -759,6 +777,14 @@ export class SystemDashboardService {
       snapshot.canonicalExecution.claimsPerReceiptRatio === null
         ? 'n/a'
         : snapshot.canonicalExecution.claimsPerReceiptRatio.toFixed(3);
+    const route = snapshot.ingress.route;
+    const routeOutcomes = route?.outcomes;
+    const routeOutcomeDetail =
+      `route attempts ${route?.attemptedRequests ?? 0}` +
+      ` [accepted ${routeOutcomes?.accepted ?? 0}, auth rejected ${routeOutcomes?.authentication_rejected ?? 0},` +
+      ` admission rejected ${routeOutcomes?.admission_rejected ?? 0}, invalid JSON ${routeOutcomes?.invalid_json ?? 0},` +
+      ` invalid payload ${routeOutcomes?.invalid_payload ?? 0}, oversized ${routeOutcomes?.payload_too_large ?? 0},` +
+      ` timed out ${routeOutcomes?.timed_out ?? 0}, failed ${routeOutcomes?.failed ?? 0}]`;
     return {
       code: 'webhook-slo',
       level: snapshot.status === 'critical' ? 'critical' : 'warning',
@@ -766,9 +792,9 @@ export class SystemDashboardService {
         snapshot.status === 'critical'
           ? 'Webhook SLO просел критично'
           : 'Webhook SLO требует внимания',
-      detail: `ingress ${snapshot.ingress.available ? 'available' : 'unavailable'}, p95 ${snapshot.ingress.p95LatencyMs ?? 0} мс, p99 ${snapshot.ingress.p99LatencyMs ?? 0} мс, under target ${ingressUnderTarget}, persistence failures ${snapshot.ingress.failedReceipts}; processing p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек; enqueue p95 ${snapshot.enqueue?.p95LatencyMs ?? 0} мс, enqueue under target ${enqueueUnderTarget}, oldest pending enqueue ${snapshot.enqueue?.oldestPendingLagSec.toFixed(1) ?? '0.0'} сек; receipts/EXECUTION claims ${snapshot.canonicalExecution.receipts}/${snapshot.canonicalExecution.executionClaims}, claims per receipt ${claimsPerReceipt}.`,
+      detail: `ingress ${snapshot.ingress.available ? 'available' : 'unavailable'}, p95 ${snapshot.ingress.p95LatencyMs ?? 0} мс, p99 ${snapshot.ingress.p99LatencyMs ?? 0} мс, under target ${ingressUnderTarget}, persistence failures ${snapshot.ingress.failedReceipts}, receipt capacity rejects ${snapshot.ingress.rejectedReceipts}; ${routeOutcomeDetail}; processing p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек; enqueue p95 ${snapshot.enqueue?.p95LatencyMs ?? 0} мс, enqueue under target ${enqueueUnderTarget}, oldest pending enqueue ${snapshot.enqueue?.oldestPendingLagSec.toFixed(1) ?? '0.0'} сек; receipts/EXECUTION claims ${snapshot.canonicalExecution.receipts}/${snapshot.canonicalExecution.executionClaims}, claims per receipt ${claimsPerReceipt}.`,
       recommendedAction:
-        'Проверьте PostgreSQL receipt latency/failures, canonical claim preparation, backlog и MAX API rate limit до расширения фоновых задач.',
+        'Сверьте route outcomes с body/schema limits и Redis admission, затем проверьте PostgreSQL receipt latency/failures, canonical claim preparation, backlog и MAX API rate limit.',
     };
   }
 
@@ -900,7 +926,7 @@ export class SystemDashboardService {
       checkedAt.getTime() - DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS,
     );
     try {
-      const [actionRows, broadcastRows, suggestionRows] = await Promise.all([
+      const [actionRows, broadcastRows, suggestionRows, deleteIntentRows] = await Promise.all([
         this.prisma.$queryRaw<Array<Record<string, unknown>>>`
           select
             count(*) filter (where status = 'AMBIGUOUS')::int as "actionAmbiguous",
@@ -969,10 +995,70 @@ export class SystemDashboardService {
               or (d.status = 'SENDING' and d.locked_at < ${staleSuggestionSendingSince})
             )
         `,
+        this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+          with risk_candidates as (
+            select
+              intent.status,
+              intent.retry_until_at
+            from moderation_delete_intents intent
+            where intent.retry_until_at <= current_timestamp
+              and intent.status in (
+                'PENDING',
+                'RETRYABLE',
+                'WAITING_CAPABILITY',
+                'AMBIGUOUS',
+                'IN_PROGRESS'
+              )
+              and intent.remote_delete_succeeded_at is null
+              and intent.remote_delete_succeeded_bot_id is null
+              and intent.delete_dispatch_started_at is null
+              and intent.delete_dispatch_started_bot_id is null
+              and (
+                intent.status <> 'IN_PROGRESS'
+                or intent.lease_expires_at is null
+                or intent.lease_expires_at <= current_timestamp
+              )
+            order by intent.retry_until_at asc, intent.created_at asc, intent.id asc
+            limit ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT + 1}
+          ),
+          stale_in_progress_candidates as (
+            select intent.retry_until_at
+            from moderation_delete_intents intent
+            where intent.retry_until_at <= current_timestamp
+              and intent.status = 'IN_PROGRESS'
+              and intent.remote_delete_succeeded_at is null
+              and intent.remote_delete_succeeded_bot_id is null
+              and intent.delete_dispatch_started_at is null
+              and intent.delete_dispatch_started_bot_id is null
+              and (
+                intent.lease_expires_at is null
+                or intent.lease_expires_at <= current_timestamp
+              )
+            order by intent.retry_until_at asc, intent.created_at asc, intent.id asc
+            limit ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT + 1}
+          )
+          select
+            least(count(*), ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT})::int
+              as "deleteIntentSafelyExpirable",
+            (
+              select least(count(*), ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT})::int
+              from stale_in_progress_candidates
+            ) as "deleteIntentStaleExpiredInProgress",
+            extract(epoch from (now() - min(retry_until_at)))::int
+              as "deleteIntentOldestExpiredAgeSec",
+            count(*) > ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT}
+              as "deleteIntentRiskCapped",
+            (
+              select count(*) > ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT}
+              from stale_in_progress_candidates
+            ) as "deleteIntentStaleExpiredInProgressCapped"
+          from risk_candidates
+        `,
       ]);
       const action = actionRows[0] ?? {};
       const broadcast = broadcastRows[0] ?? {};
       const suggestion = suggestionRows[0] ?? {};
+      const deleteIntent = deleteIntentRows[0] ?? {};
 
       return {
         checkedAt: checkedAt.toISOString(),
@@ -989,6 +1075,16 @@ export class SystemDashboardService {
         suggestionStaleSending: this.readNumber(suggestion.suggestionStaleSending),
         suggestionRiskSuggestions: this.readNumber(suggestion.suggestionRiskSuggestions),
         suggestionOldestRiskAgeSec: this.readNumber(suggestion.suggestionOldestRiskAgeSec),
+        deleteIntentSafelyExpirable: this.readNumber(deleteIntent.deleteIntentSafelyExpirable),
+        deleteIntentStaleExpiredInProgress: this.readNumber(
+          deleteIntent.deleteIntentStaleExpiredInProgress,
+        ),
+        deleteIntentOldestExpiredAgeSec: this.readNumber(
+          deleteIntent.deleteIntentOldestExpiredAgeSec,
+        ),
+        deleteIntentRiskCapped: deleteIntent.deleteIntentRiskCapped === true,
+        deleteIntentStaleExpiredInProgressCapped:
+          deleteIntent.deleteIntentStaleExpiredInProgressCapped === true,
       };
     } catch {
       return null;
@@ -1009,7 +1105,8 @@ export class SystemDashboardService {
       snapshot.suggestionAmbiguous +
       snapshot.suggestionTerminalFailed +
       snapshot.suggestionStaleSending;
-    if (actionRisk === 0 && broadcastRisk === 0 && suggestionRisk === 0) {
+    const deleteIntentRisk = snapshot.deleteIntentSafelyExpirable;
+    if (actionRisk === 0 && broadcastRisk === 0 && suggestionRisk === 0 && deleteIntentRisk === 0) {
       return null;
     }
 
@@ -1023,6 +1120,9 @@ export class SystemDashboardService {
       suggestionRisk > 0
         ? `suggestion delivery: ambiguous ${snapshot.suggestionAmbiguous}, terminal failed ${snapshot.suggestionTerminalFailed}, stale sending ${snapshot.suggestionStaleSending}, suggestions ${snapshot.suggestionRiskSuggestions}, oldest ${snapshot.suggestionOldestRiskAgeSec} сек`
         : null,
+      deleteIntentRisk > 0
+        ? `moderation delete intents: safely expirable ${snapshot.deleteIntentRiskCapped ? '>=' : ''}${deleteIntentRisk}, stale expired in-progress ${snapshot.deleteIntentStaleExpiredInProgressCapped ? '>=' : ''}${snapshot.deleteIntentStaleExpiredInProgress}, oldest ${snapshot.deleteIntentOldestExpiredAgeSec} сек`
+        : null,
     ].filter((item): item is string => item !== null);
 
     return {
@@ -1031,7 +1131,7 @@ export class SystemDashboardService {
       title: 'Есть хвост доставок, требующий ручной сверки',
       detail: details.join('; '),
       recommendedAction:
-        'Сверьте MAX/логи/remoteMessageId перед любыми повторами. Ambiguous send/delete/member actions и managed broadcast deliveries не ретрайте автоматически.',
+        'Для safely expirable delete-intent дождитесь reconciler и проверьте снижение счётчика. Сверьте MAX/логи/remoteMessageId перед любыми повторами; ambiguous send/delete/member actions и managed broadcast deliveries не ретрайте автоматически.',
     };
   }
 

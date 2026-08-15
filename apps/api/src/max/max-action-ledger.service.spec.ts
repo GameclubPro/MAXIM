@@ -7,6 +7,11 @@ import {
 import { MaxActionLedgerStatus } from '../prisma/prisma-client';
 import type { MaxActionJob } from './max-client.service';
 import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
+import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from './max-media-upload-validation';
+import { markMaxMemberMutationAttempted } from './max-member-error.util';
 
 function createJob(overrides: Partial<MaxActionJob> = {}): MaxActionJob {
   return {
@@ -356,6 +361,7 @@ describe('MaxActionLedgerService', () => {
   it.each([
     ['BAN_MEMBER', 'max_api_internal_rate_limit'],
     ['KICK_MEMBER', 'max_api_circuit_open'],
+    ['BAN_MEMBER', 'max_api_external_rate_limit'],
     ['BAN_MEMBER', 'moderation_sanction_state_lock_lease_lost'],
     ['KICK_MEMBER', 'moderation_sanction_state_lock_unavailable'],
     ['BAN_MEMBER', MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE],
@@ -479,6 +485,7 @@ describe('MaxActionLedgerService', () => {
 
   it('records enqueue metadata without storing message text', async () => {
     const { service, prisma } = createService();
+    const bullMqEnqueuedAt = new Date('2026-07-06T20:00:01.000Z');
     const job = createJob({
       sourceTag: 'interactive',
       trafficClass: 'critical',
@@ -495,7 +502,7 @@ describe('MaxActionLedgerService', () => {
       },
     });
 
-    await service.recordEnqueuedIfAbsent(job);
+    await service.recordEnqueuedIfAbsent(job, bullMqEnqueuedAt);
 
     expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith({
       data: [
@@ -528,7 +535,7 @@ describe('MaxActionLedgerService', () => {
         status: MaxActionLedgerStatus.ENQUEUED,
         ambiguous: false,
         terminal: false,
-        enqueuedAt: expect.any(Date),
+        enqueuedAt: bullMqEnqueuedAt,
       }),
     );
     expect(JSON.stringify(create.metadata)).not.toContain('hello');
@@ -580,6 +587,26 @@ describe('MaxActionLedgerService', () => {
             terminal: false,
             lastErrorCode: 'econnreset',
             lastError: 'redis unavailable',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('records a stable fallback code for a member action enqueue failure without a code', async () => {
+    const { service, prisma } = createService();
+
+    await service.recordEnqueueFailedIfAbsent(
+      createJob({ actionType: 'BAN_MEMBER', userId: 'user-1', text: undefined }),
+      new Error('queue connection ended while publishing a sensitive member action'),
+    );
+
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            lastErrorCode: 'max_ban_member_failed',
+            lastError: 'queue connection ended while publishing a sensitive member action',
           }),
         ],
       }),
@@ -689,6 +716,104 @@ describe('MaxActionLedgerService', () => {
     );
   });
 
+  it('keeps the BullMQ creation timestamp when a fast worker creates and starts the ledger first', async () => {
+    const attemptedAt = new Date('2026-07-06T20:00:05.000Z');
+    const bullMqEnqueuedAt = new Date('2026-07-06T20:00:01.000Z');
+    jest.useFakeTimers().setSystemTime(attemptedAt);
+    const { service, prisma } = createService();
+    prisma.maxActionLedgerEntry.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+
+    await service.recordStarted(createJob(), bullMqEnqueuedAt);
+
+    const created = prisma.maxActionLedgerEntry.createMany.mock.calls[0]?.[0]?.data?.[0];
+    expect(created).toEqual(
+      expect.objectContaining({
+        enqueuedAt: bullMqEnqueuedAt,
+        firstAttemptAt: attemptedAt,
+      }),
+    );
+    const startMutation = prisma.maxActionLedgerEntry.updateMany.mock.calls.at(-1)?.[0]?.data;
+    expect(startMutation).toEqual(
+      expect.objectContaining({
+        enqueuedAt: bullMqEnqueuedAt,
+        lastAttemptAt: attemptedAt,
+      }),
+    );
+    expect(startMutation).not.toHaveProperty('firstAttemptAt');
+    expect(startMutation.enqueuedAt.getTime()).toBeLessThanOrEqual(
+      created.firstAttemptAt.getTime(),
+    );
+  });
+
+  it.each([
+    ['send', createJob({ attempt: 2 })],
+    [
+      'delete',
+      createJob({
+        actionType: 'DELETE_MESSAGE',
+        messageId: 'message-1',
+        text: undefined,
+        attempt: 2,
+      }),
+    ],
+  ] as const)('keeps firstAttemptAt immutable on a %s retry', async (_label, job) => {
+    const retriedAt = new Date('2026-07-06T20:00:10.000Z');
+    jest.useFakeTimers().setSystemTime(retriedAt);
+    const { service, prisma } = createService();
+    prisma.maxActionLedgerEntry.createMany.mockResolvedValue({ count: 0 });
+    prisma.maxActionLedgerEntry.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+
+    await service.recordStarted(job);
+
+    const [firstAttemptClaim, retryClaim] = prisma.maxActionLedgerEntry.updateMany.mock.calls;
+    expect(firstAttemptClaim?.[0]).toEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({ firstAttemptAt: null }),
+        data: expect.objectContaining({
+          firstAttemptAt: retriedAt,
+          lastAttemptAt: retriedAt,
+        }),
+      }),
+    );
+    expect(retryClaim?.[0]).toEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({ firstAttemptAt: { not: null } }),
+        data: expect.objectContaining({ lastAttemptAt: retriedAt }),
+      }),
+    );
+    expect(retryClaim?.[0]?.data).not.toHaveProperty('firstAttemptAt');
+  });
+
+  it('persists the BullMQ creation timestamp when the worker wins the member-ledger insert race', async () => {
+    const attemptedAt = new Date('2026-07-06T20:00:05.000Z');
+    const bullMqEnqueuedAt = new Date('2026-07-06T20:00:01.000Z');
+    jest.useFakeTimers().setSystemTime(attemptedAt);
+    const { service, prisma } = createService();
+    prisma.maxActionLedgerEntry.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 });
+
+    await service.recordStarted(
+      createJob({ actionType: 'BAN_MEMBER', userId: 'user-1', text: undefined }),
+      bullMqEnqueuedAt,
+    );
+
+    const created = prisma.maxActionLedgerEntry.createMany.mock.calls[0]?.[0]?.data?.[0];
+    expect(created).toEqual(
+      expect.objectContaining({
+        status: MaxActionLedgerStatus.IN_PROGRESS,
+        enqueuedAt: bullMqEnqueuedAt,
+        firstAttemptAt: attemptedAt,
+        lastAttemptAt: attemptedAt,
+      }),
+    );
+    expect(created.enqueuedAt.getTime()).toBeLessThanOrEqual(created.firstAttemptAt.getTime());
+  });
+
   it.each([
     ['stalled', MaxActionLedgerStatus.IN_PROGRESS, null],
     ['terminal', MaxActionLedgerStatus.FAILED_TERMINAL, null],
@@ -765,6 +890,7 @@ describe('MaxActionLedgerService', () => {
                     in: [
                       'max_api_circuit_open',
                       'max_api_internal_rate_limit',
+                      'max_api_external_rate_limit',
                       'moderation_sanction_state_lock_lease_lost',
                       'moderation_sanction_state_lock_unavailable',
                       'max_member_pre_dispatch_guard_rejected',
@@ -1184,6 +1310,170 @@ describe('MaxActionLedgerService', () => {
     );
   });
 
+  it('persists member HTTP 429 as a retryable external rate-limit rejection', async () => {
+    const job = createJob({
+      actionType: 'KICK_MEMBER',
+      userId: 'user-1',
+      text: undefined,
+    });
+    const { service, prisma } = createService();
+    const error = markMaxMemberMutationAttempted({
+      response: {
+        status: 429,
+        data: { code: 'too.many.requests', message: 'Too many requests' },
+      },
+    });
+
+    await service.recordFailed(job, error);
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+          ambiguous: false,
+          terminal: false,
+          completedAt: null,
+          lastStatusCode: 429,
+          lastErrorCode: 'max_api_external_rate_limit',
+        }),
+      }),
+    );
+
+    const { service: retryService } = createService({
+      status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+      ambiguous: false,
+      terminal: false,
+      attemptCount: 1,
+      firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastAttemptAt: new Date('2026-07-06T20:00:01.000Z'),
+      lastStatusCode: 429,
+      lastErrorCode: 'max_api_external_rate_limit',
+      lastError: 'too many requests',
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: null,
+    });
+    await expect(retryService.assertCanExecute(job)).resolves.toBeUndefined();
+  });
+
+  it('quarantines an attempted member HTTP 5xx response as ambiguous', async () => {
+    const job = createJob({
+      actionType: 'BAN_MEMBER',
+      userId: 'user-1',
+      text: undefined,
+    });
+    const { service, prisma } = createService();
+    const error = markMaxMemberMutationAttempted({
+      response: {
+        status: 503,
+        data: { code: 'server.failure', message: 'Server failure' },
+      },
+    });
+
+    await service.recordFailed(job, error);
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          status: MaxActionLedgerStatus.AMBIGUOUS,
+          ambiguous: true,
+          terminal: true,
+          completedAt: expect.any(Date),
+          lastStatusCode: 503,
+          lastErrorCode: 'server.failure',
+        }),
+      }),
+    );
+
+    const { service: retryService } = createService({
+      status: MaxActionLedgerStatus.AMBIGUOUS,
+      ambiguous: true,
+      terminal: true,
+      attemptCount: 1,
+      firstAttemptAt: new Date('2026-07-06T20:00:00.000Z'),
+      lastAttemptAt: new Date('2026-07-06T20:00:01.000Z'),
+      lastStatusCode: 503,
+      lastErrorCode: 'server.failure',
+      lastError: 'server failure',
+      dispatchToken: null,
+      dispatchStartedAt: null,
+      dispatchBotId: null,
+      remoteMessageId: null,
+    });
+    await expect(retryService.assertCanExecute(job)).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it.each([
+    {
+      label: 'structured MAX code',
+      actionType: 'BAN_MEMBER' as const,
+      error: {
+        response: {
+          status: 403,
+          data: { code: 'CHAT.DENIED', message: 'Forbidden' },
+        },
+      },
+      expectedCode: 'chat.denied',
+      expectedStatus: 403,
+    },
+    {
+      label: 'known definitive MAX message',
+      actionType: 'KICK_MEMBER' as const,
+      error: {
+        response: {
+          status: 200,
+          data: { message: 'User already deleted or bot has insufficient rights' },
+        },
+      },
+      expectedCode: 'max_member_already_deleted_or_insufficient_rights',
+      expectedStatus: 200,
+    },
+    {
+      label: 'HTTP status',
+      actionType: 'BAN_MEMBER' as const,
+      error: {
+        response: {
+          status: 503,
+          data: { message: 'Upstream transport details that must not become a code' },
+        },
+      },
+      expectedCode: 'max_http_503',
+      expectedStatus: 503,
+    },
+    {
+      label: 'bounded action fallback',
+      actionType: 'KICK_MEMBER' as const,
+      error: new Error('Raw transport details that must not become a code'),
+      expectedCode: 'max_kick_member_failed',
+      expectedStatus: null,
+    },
+  ])(
+    'persists a stable non-null member failure code from $label',
+    async ({ actionType, error, expectedCode, expectedStatus }) => {
+      const { service, prisma } = createService();
+
+      await service.recordFailed(
+        createJob({ actionType, userId: 'user-1', text: undefined }),
+        error,
+      );
+
+      expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            lastStatusCode: expectedStatus,
+            lastErrorCode: expectedCode,
+          }),
+        }),
+      );
+      const persistedCode = prisma.maxActionLedgerEntry.upsert.mock.calls[0]?.[0]?.update
+        ?.lastErrorCode as string;
+      expect(persistedCode).toBe(expectedCode);
+      expect(persistedCode).not.toMatch(/\s/u);
+      expect(persistedCode.length).toBeLessThanOrEqual(128);
+    },
+  );
+
   it('classifies ambiguous and retryable failures', async () => {
     const { service, prisma } = createService();
 
@@ -1312,5 +1602,59 @@ describe('MaxActionLedgerService', () => {
         }),
       );
     }
+  });
+
+  it('terminally classifies deterministic media validation failures', async () => {
+    const { service, prisma } = createService();
+    const error = new MaxMediaUploadValidationError(
+      MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.INVALID_PAYLOAD,
+      'image',
+    );
+
+    await service.recordFailed(createJob({ idempotencyKey: 'job-invalid-media' }), error);
+
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            status: MaxActionLedgerStatus.FAILED_TERMINAL,
+            ambiguous: false,
+            terminal: true,
+            completedAt: expect.any(Date),
+            lastErrorCode: 'max_media_upload_invalid_payload',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('does not treat an affirmative rights message as a terminal member failure', async () => {
+    const { service, prisma } = createService();
+
+    await service.recordFailed(
+      createJob({
+        actionType: 'KICK_MEMBER',
+        userId: 'user-1',
+        text: undefined,
+      }),
+      {
+        response: {
+          status: 200,
+          data: { message: 'Bot has sufficient rights' },
+        },
+      },
+    );
+
+    expect(prisma.maxActionLedgerEntry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+          ambiguous: false,
+          terminal: false,
+          completedAt: null,
+          lastErrorCode: 'max_http_200',
+        }),
+      }),
+    );
   });
 });

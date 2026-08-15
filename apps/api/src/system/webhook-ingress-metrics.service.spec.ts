@@ -23,44 +23,49 @@ jest.mock('ioredis', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => {
     const instance = {
-      eval: jest.fn(
-        async (
-          _script: string,
-          _keyCount: number,
-          key: string,
-          outcome: 'persisted' | 'failed',
-          encodedBotId: string,
-          latencyBucket: string,
-          rawLatencyMs: string,
-          underTarget: string,
-        ) => {
-          if (redisState.failWrites) {
-            throw new Error('redis write unavailable');
-          }
-          const hash = { ...(redisState.hashes.get(key) ?? {}) };
-          const increment = (field: string) => {
-            hash[field] = String(Number(hash[field] ?? 0) + 1);
-          };
-          increment('attempted');
-          increment(`bot:${encodedBotId}:attempted`);
-          if (outcome === 'persisted') {
-            increment('persisted');
-            increment(`latency:${latencyBucket}`);
-            increment(`bot:${encodedBotId}:persisted`);
-            if (underTarget === '1') {
-              increment('under_target');
+      eval: jest.fn(async (script: string, _keyCount: number, key: string, ...args: string[]) => {
+        if (redisState.failWrites) {
+          throw new Error('redis write unavailable');
+        }
+        const hash = { ...(redisState.hashes.get(key) ?? {}) };
+        const increment = (field: string) => {
+          hash[field] = String(Number(hash[field] ?? 0) + 1);
+        };
+        if (script.includes('MAXIM_WEBHOOK_ROUTE_OUTCOMES_V1')) {
+          for (let index = 1; index < args.length; index += 2) {
+            const field = args[index];
+            const count = Number(args[index + 1] ?? 0);
+            if (field && count > 0) {
+              hash[field] = String(Number(hash[field] ?? 0) + count);
             }
-            hash.max_latency_ms = String(
-              Math.max(Number(hash.max_latency_ms ?? 0), Number(rawLatencyMs)),
-            );
-          } else {
-            increment('failed');
-            increment(`bot:${encodedBotId}:failed`);
           }
           redisState.hashes.set(key, hash);
           return 1;
-        },
-      ),
+        }
+
+        const [outcome, encodedBotId, latencyBucket, rawLatencyMs, underTarget] = args;
+        increment('attempted');
+        increment(`bot:${encodedBotId}:attempted`);
+        if (outcome === 'persisted') {
+          increment('persisted');
+          increment(`latency:${latencyBucket}`);
+          increment(`bot:${encodedBotId}:persisted`);
+          if (underTarget === '1') {
+            increment('under_target');
+          }
+          hash.max_latency_ms = String(
+            Math.max(Number(hash.max_latency_ms ?? 0), Number(rawLatencyMs)),
+          );
+        } else if (outcome === 'failed') {
+          increment('failed');
+          increment(`bot:${encodedBotId}:failed`);
+        } else {
+          increment('rejected');
+          increment(`bot:${encodedBotId}:rejected`);
+        }
+        redisState.hashes.set(key, hash);
+        return 1;
+      }),
       pipeline: jest.fn(() => {
         const keys: string[] = [];
         return {
@@ -129,13 +134,18 @@ describe('WebhookIngressMetricsService', () => {
       latencyMs: 9_000,
     });
     await service.recordReceiptPersistence({ botId: 'bot-2', outcome: 'failed', latencyMs: 300 });
+    await service.recordReceiptPersistence({ botId: 'bot-2', outcome: 'rejected', latencyMs: 0 });
+    service.recordRouteOutcome({ botId: 'bot-1', outcome: 'accepted' });
+    service.recordRouteOutcome({ botId: 'bot-2', outcome: 'invalid_payload' });
+    service.recordRouteOutcome({ botId: null, outcome: 'authentication_rejected' });
 
     await expect(service.getSnapshot({ windowSec: 900 })).resolves.toEqual({
       available: true,
       targetMs: 2_000,
-      attemptedReceipts: 5,
+      attemptedReceipts: 6,
       persistedReceipts: 4,
       failedReceipts: 1,
+      rejectedReceipts: 1,
       sampledReceipts: 4,
       p95LatencyMs: 10_000,
       p99LatencyMs: 10_000,
@@ -145,11 +155,54 @@ describe('WebhookIngressMetricsService', () => {
           attemptedReceipts: 3,
           persistedReceipts: 3,
           failedReceipts: 0,
+          rejectedReceipts: 0,
         },
         'bot-2': {
-          attemptedReceipts: 2,
+          attemptedReceipts: 3,
           persistedReceipts: 1,
           failedReceipts: 1,
+          rejectedReceipts: 1,
+        },
+      },
+      route: {
+        attemptedRequests: 3,
+        outcomes: {
+          accepted: 1,
+          authentication_rejected: 1,
+          admission_rejected: 0,
+          invalid_json: 0,
+          invalid_payload: 1,
+          payload_too_large: 0,
+          timed_out: 0,
+          failed: 0,
+        },
+        bots: {
+          'bot-1': {
+            attemptedRequests: 1,
+            outcomes: {
+              accepted: 1,
+              authentication_rejected: 0,
+              admission_rejected: 0,
+              invalid_json: 0,
+              invalid_payload: 0,
+              payload_too_large: 0,
+              timed_out: 0,
+              failed: 0,
+            },
+          },
+          'bot-2': {
+            attemptedRequests: 1,
+            outcomes: {
+              accepted: 0,
+              authentication_rejected: 0,
+              admission_rejected: 0,
+              invalid_json: 0,
+              invalid_payload: 1,
+              payload_too_large: 0,
+              timed_out: 0,
+              failed: 0,
+            },
+          },
         },
       },
     });
@@ -169,8 +222,30 @@ describe('WebhookIngressMetricsService', () => {
       targetMs: 2_000,
       attemptedReceipts: 0,
       failedReceipts: 0,
+      rejectedReceipts: 0,
       p99LatencyMs: null,
+      route: { attemptedRequests: 0 },
     });
+    await service.onModuleDestroy();
+  });
+
+  it('bounds Redis commands and the number of metric buckets read', async () => {
+    const service = createService({ SYSTEM_WEBHOOK_SLO_WINDOW_SEC: Number.MAX_SAFE_INTEGER });
+
+    await expect(
+      service.getSnapshot({ windowSec: Number.MAX_SAFE_INTEGER }),
+    ).resolves.toMatchObject({ available: true });
+
+    const redis = Redis as unknown as jest.Mock;
+    expect(redis).toHaveBeenCalledWith('redis://localhost:6379/0', {
+      commandTimeout: 1_000,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+    });
+    const pipeline = redisInstances[0]?.pipeline.mock.results[0]?.value as {
+      hgetall: jest.Mock;
+    };
+    expect(pipeline.hgetall).toHaveBeenCalledTimes(8_641);
     await service.onModuleDestroy();
   });
 
@@ -185,6 +260,11 @@ describe('WebhookIngressMetricsService', () => {
         latencyMs: 120,
       }),
     ).resolves.toBeUndefined();
+    service.recordRouteOutcome({ botId: null, outcome: 'authentication_rejected' });
+    await expect(service.getSnapshot({ windowSec: 900 })).resolves.toMatchObject({
+      available: true,
+      route: { attemptedRequests: 0 },
+    });
     expect(redisState.hashes.size).toBe(0);
     await service.onModuleDestroy();
   });
@@ -198,7 +278,11 @@ describe('WebhookIngressMetricsService', () => {
     });
 
     const redis = Redis as unknown as jest.Mock;
-    expect(redis).toHaveBeenCalledWith('redis://localhost:6379/0');
+    expect(redis).toHaveBeenCalledWith('redis://localhost:6379/0', {
+      commandTimeout: 1_000,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+    });
     const key = redisInstances[0]?.eval.mock.calls[0]?.[2] as string;
     expect(key).toBe('system:webhook-ingress:metrics:v1:2000:178376400');
     expect(key).not.toContain('public-bot-id');

@@ -25,6 +25,14 @@ abstract class MaxActionWorkerHost extends WorkerHost {
       typeof job.opts.attempts === 'number' && Number.isFinite(job.opts.attempts)
         ? Math.max(1, Math.trunc(job.opts.attempts))
         : 1;
+    const enqueuedAtCandidate =
+      typeof job.timestamp === 'number' && Number.isFinite(job.timestamp) && job.timestamp > 0
+        ? new Date(job.timestamp)
+        : undefined;
+    const enqueuedAt =
+      enqueuedAtCandidate && Number.isFinite(enqueuedAtCandidate.getTime())
+        ? enqueuedAtCandidate
+        : undefined;
 
     await this.maxActionDispatchService.execute(
       {
@@ -33,6 +41,7 @@ abstract class MaxActionWorkerHost extends WorkerHost {
       },
       {
         finalAttempt: attempt >= maxAttempts,
+        ...(enqueuedAt ? { enqueuedAt } : {}),
       },
     );
   }

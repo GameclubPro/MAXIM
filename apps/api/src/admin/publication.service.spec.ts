@@ -12,7 +12,11 @@ import {
 } from '../prisma/prisma-client';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { buildMaxActionNoExecutableRouteMessage } from '../max/max-action-dispatch-error';
-import { PublicationContentService } from './publication-content.service';
+import { validateMaxMediaUploadPayload } from '../max/max-media-upload-validation';
+import {
+  type PreparedPublicationContentRevision,
+  PublicationContentService,
+} from './publication-content.service';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationService } from './publication.service';
 import {
@@ -20,6 +24,7 @@ import {
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
 } from './publication-video-media';
+import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
 
 function createService(prismaOverrides: Record<string, unknown> = {}) {
   const prisma = {
@@ -28,7 +33,12 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     $queryRaw: jest.fn().mockResolvedValue([]),
     ...prismaOverrides,
   };
-  const contentService = new PublicationContentService(prisma as never);
+  const contentService = new PublicationContentService(
+    prisma as never,
+    {
+      validateMediaUploadPayload: validateMaxMediaUploadPayload,
+    } as never,
+  );
   const presenter = new PublicationPresenterService(prisma as never);
   const managedEntitiesService = {
     listChats: jest.fn().mockResolvedValue([
@@ -60,6 +70,16 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     {} as never,
   );
   return { contentService, presenter, service, prisma };
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 function extractSqlText(query: unknown): string {
@@ -644,6 +664,119 @@ describe('PublicationService', () => {
     ).toEqual(new Date(firstSlot.getTime() - 14 * 24 * 60 * 60_000));
   });
 
+  it('finishes content preparation before opening a create transaction', async () => {
+    const tx = {
+      publication: {
+        create: jest.fn().mockResolvedValue({ id: 'publication-create' }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      publicationMutationRecord: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
+    const { service, contentService } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      $transaction: transaction,
+    });
+    const preparationStarted = createDeferred<void>();
+    const preparation = createDeferred<PreparedPublicationContentRevision>();
+    const prepareSpy = jest
+      .spyOn(contentService, 'prepareContentRevision')
+      .mockImplementation(() => {
+        preparationStarted.resolve(undefined);
+        return preparation.promise;
+      });
+    jest
+      .spyOn(contentService, 'persistPreparedContentRevision')
+      .mockResolvedValue({ id: 'content-create' } as never);
+    jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-create' } as never);
+
+    const createPromise = service.create(
+      { userId: 'user-1', username: null, displayName: null },
+      {
+        requestId: 'create_prepare_001',
+        title: 'Черновик',
+        content: { text: 'Текст', textFormat: 'plain', buttons: [], media: [] },
+        audience: {
+          selection: 'SELECTED',
+          mode: 'SNAPSHOT',
+          targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+        },
+        schedule: null,
+        intent: 'draft',
+      },
+    );
+
+    await preparationStarted.promise;
+    expect(transaction).not.toHaveBeenCalled();
+    expect(tx.publication.create).not.toHaveBeenCalled();
+
+    preparation.resolve({ text: 'Текст', textFormat: 'plain', buttons: [], assets: [] });
+    await expect(createPromise).resolves.toEqual({ id: 'publication-create' });
+    expect(prepareSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      transaction.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('finishes content preparation before the update transaction takes the calendar lock', async () => {
+    const tx = createPublicationUpdateTransaction();
+    const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
+    const { service, contentService } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-prepare-update',
+          actorUserId: 'user-1',
+          version: 2,
+          lifecycle: PublicationLifecycle.DRAFT,
+          title: 'Черновик',
+          audienceSelection: 'SELECTED',
+          audienceMode: 'SNAPSHOT',
+          canonicalContentRevisionId: 'content-old',
+          canonicalContentRevision: { id: 'content-old' },
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+          schedule: null,
+        }),
+      },
+      $transaction: transaction,
+    });
+    const preparationStarted = createDeferred<void>();
+    const preparation = createDeferred<PreparedPublicationContentRevision>();
+    const prepareSpy = jest
+      .spyOn(contentService, 'prepareContentRevision')
+      .mockImplementation(() => {
+        preparationStarted.resolve(undefined);
+        return preparation.promise;
+      });
+    jest
+      .spyOn(contentService, 'persistPreparedContentRevision')
+      .mockResolvedValue({ id: 'content-new' } as never);
+    jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-prepare-update' } as never);
+
+    const updatePromise = service.update(
+      'publication-prepare-update',
+      { userId: 'user-1', username: null, displayName: null },
+      {
+        requestId: 'update_prepare_001',
+        expectedRevision: 2,
+        content: { text: 'Новый текст', textFormat: 'plain', buttons: [], media: [] },
+        intent: 'draft',
+      },
+    );
+
+    await preparationStarted.promise;
+    expect(transaction).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+
+    preparation.resolve({ text: 'Новый текст', textFormat: 'plain', buttons: [], assets: [] });
+    await expect(updatePromise).resolves.toEqual({ id: 'publication-prepare-update' });
+    expect(prepareSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      transaction.mock.invocationCallOrder[0],
+    );
+    expect(transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.$executeRaw.mock.invocationCallOrder[0],
+    );
+  });
+
   it('updates an already materialized NOW occurrence without rebuilding its schedule', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:05.000Z'));
     try {
@@ -672,7 +805,7 @@ describe('PublicationService', () => {
         $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
       });
       jest
-        .spyOn(contentService, 'persistContentRevision')
+        .spyOn(contentService, 'persistPreparedContentRevision')
         .mockResolvedValue({ id: 'content-new' } as never);
       jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-now' } as never);
 
@@ -870,7 +1003,7 @@ describe('PublicationService', () => {
         $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
       });
       jest
-        .spyOn(contentService, 'persistContentRevision')
+        .spyOn(contentService, 'persistPreparedContentRevision')
         .mockResolvedValue({ id: 'content-7' } as never);
       jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-recurrence' } as never);
 
@@ -1775,26 +1908,21 @@ describe('PublicationService', () => {
     };
     const { contentService } = createService();
 
-    await contentService.persistContentRevision(
-      tx,
-      'publication-1',
-      2,
-      {
-        text: '',
-        textFormat: 'plain',
-        buttons: [],
-        media: [
-          {
-            type: 'video',
-            payload: { token: 'video-1' },
-            base64: '',
-            mimeType: '',
-            fileName: '',
-          },
-        ],
-      },
-      'user-1',
-    );
+    const prepared = await contentService.prepareContentRevision({
+      text: '',
+      textFormat: 'plain',
+      buttons: [],
+      media: [
+        {
+          type: 'video',
+          payload: { token: 'video-1' },
+          base64: '',
+          mimeType: '',
+          fileName: '',
+        },
+      ],
+    });
+    await contentService.persistPreparedContentRevision(tx, 'publication-1', 2, prepared, 'user-1');
 
     expect(assetUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1809,7 +1937,7 @@ describe('PublicationService', () => {
   });
 
   it('stores an uploaded video as bounded bytes and builds a trusted test upload marker', async () => {
-    const videoBytes = Buffer.from('uploaded-video');
+    const videoBytes = TINY_VALID_MP4;
     const assetUpsert = jest.fn().mockResolvedValue({ id: 'asset-video' });
     const tx = {
       publicationContentRevision: {
@@ -1834,7 +1962,8 @@ describe('PublicationService', () => {
       ],
     };
 
-    await contentService.persistContentRevision(tx, 'publication-1', 3, content, 'user-1');
+    const prepared = await contentService.prepareContentRevision(content);
+    await contentService.persistPreparedContentRevision(tx, 'publication-1', 3, prepared, 'user-1');
 
     expect(assetUpsert).toHaveBeenCalledWith(
       expect.objectContaining({

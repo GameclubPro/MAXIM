@@ -45,6 +45,7 @@ import {
 } from '../prisma/prisma-client';
 import { UnrecoverableError, type Job } from 'bullmq';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -80,6 +81,7 @@ import {
 } from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
+import { hasMaxInsufficientRightsMessage } from '../max/max-member-error.util';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
@@ -104,6 +106,11 @@ import { QueueMetricsService } from '../system/queue-metrics.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
+import {
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MAX_LIFETIME_MS,
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PERSIST_RETRY_MS,
+  WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
+} from '../webhook/webhook-timeout-quarantine';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -461,7 +468,12 @@ import {
 import {
   WebhookCanonicalExecutionService,
   type WebhookCanonicalExecutionContext,
+  type WebhookTimeoutQuarantineLease,
 } from './webhook-canonical-execution.service';
+import {
+  deferWebhookOrderedPredecessorJob,
+  WebhookOrderedPredecessorPendingError,
+} from './webhook-ordered-predecessor-fence';
 import { ModerationDisplayNameResolver } from './moderation-display-name-resolver';
 import {
   persistModerationDecisionWithoutAppliedSanction,
@@ -519,6 +531,12 @@ type WebhookUpdateGuardResult =
       timeoutError: Error;
     };
 
+type WebhookTimeoutSettlementWatchdog = {
+  deadlineAtMs: number;
+  isExpired: () => boolean;
+  stop: () => void;
+};
+
 type RequiredSubscriptionMembershipLookupResult = {
   membership: boolean | null;
   terminal: boolean;
@@ -536,6 +554,8 @@ const SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS = 30_000;
 const GREETING_MESSAGE_DEDUPE_WINDOW_MS = 10 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_WINDOW_MS = 15 * 60_000;
 const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
+const WEBHOOK_TIMEOUT_SETTLEMENT_PERSIST_RETRY_MAX_MS = 30_000;
+const WEBHOOK_TIMEOUT_PERSISTENCE_LOG_INTERVAL_MS = 30_000;
 const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
 
 type ModerationDeleteExecutionResult = {
@@ -1096,26 +1116,46 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const timeoutErrorMessage = this.formatWebhookProcessingErrorMessage(
           guardResult.timeoutError,
         );
-        const quarantinePromise = this.webhookCanonicalExecutionService.quarantineTimedOutExecution(
-          execution,
-          {
-            errorMessage: timeoutErrorMessage,
-          },
+        const settlementWatchdog = this.startWebhookTimeoutSettlementWatchdog(
+          execution.webhookEvent.id,
         );
+        let quarantineLease: WebhookTimeoutQuarantineLease;
         try {
-          await quarantinePromise;
-        } catch (error: unknown) {
-          await this.persistTimedOutWebhookFallback({
+          quarantineLease = await this.webhookCanonicalExecutionService.quarantineTimedOutExecution(
             execution,
-            timeoutError: guardResult.timeoutError,
-            timeoutErrorMessage,
-            persistenceError: error,
-          });
+            {
+              errorMessage: timeoutErrorMessage,
+            },
+          );
+        } catch (error: unknown) {
+          try {
+            quarantineLease = await this.persistTimedOutWebhookFallback({
+              execution,
+              timeoutError: guardResult.timeoutError,
+              timeoutErrorMessage,
+              persistenceError: error,
+            });
+          } catch (fallbackError: unknown) {
+            const recoveredLease = await this.recoverTimedOutWebhookWithoutDurableQuarantine({
+              execution,
+              detachedTask: guardResult.detachedTask,
+              timeoutErrorMessage,
+              persistenceError: fallbackError,
+              commercialOcrPendingActivations,
+              settlementWatchdog,
+            });
+            if (!recoveredLease) {
+              return;
+            }
+            quarantineLease = recoveredLease;
+          }
         }
         this.observeTimedOutWebhookExecution({
           execution,
           detachedTask: guardResult.detachedTask,
+          quarantineLease,
           commercialOcrPendingActivations,
+          settlementWatchdog,
         });
         return;
       }
@@ -1124,11 +1164,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.commercialOcrEnqueueService?.activatePendingBatch(commercialOcrPendingActivations);
     } catch (error: unknown) {
       await this.commercialOcrEnqueueService?.suppressPendingBatch(commercialOcrPendingActivations);
-      if (this.isWebhookHotPathTimeoutError(error)) {
-        await this.webhookCanonicalExecutionService.failTimedOutExecution(execution, {
-          errorMessage: this.formatWebhookProcessingErrorMessage(error),
-        });
-      } else {
+      if (!this.isWebhookHotPathTimeoutError(error)) {
         await this.webhookCanonicalExecutionService.failExecution(execution, {
           errorMessage: this.formatWebhookProcessingErrorMessage(error),
           terminal: this.isTerminalWebhookProcessingError(error),
@@ -1315,6 +1351,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.answerCallbackSafe(
           callbackId,
           delivered ? 'Бот написал в личку' : 'Не удалось открыть личку бота',
+          chatId,
         );
         return;
       }
@@ -1351,6 +1388,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             userId: senderId,
             messageId,
             text,
+            createdAt,
             settings: chat.settings,
             raw: update.raw,
           });
@@ -1403,6 +1441,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId: senderId,
           messageId,
           text,
+          createdAt,
           settings,
           raw: update.raw,
         });
@@ -1453,6 +1492,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             userId: senderId,
             messageId,
             text,
+            createdAt,
           });
         } else if (senderUsesOwnBotCleanup) {
           await this.handleOwnBotMessageAutoDelete({
@@ -1460,6 +1500,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             userId: senderId,
             messageId,
             text,
+            createdAt,
             settings,
             raw: update.raw,
           });
@@ -1555,6 +1596,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId: senderId,
           messageId,
           text,
+          createdAt,
           reason: 'Developer-forced global blacklist',
         });
         return;
@@ -1744,6 +1786,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId: senderId,
           messageId,
           text,
+          createdAt,
         });
         if (handled) {
           await suppressDeferredPhotoAnalysisActions();
@@ -1759,6 +1802,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId: senderId,
           messageId,
           text,
+          createdAt,
           deleteSpammersEnabled: settings.deleteSpammersEnabled,
           exemptFromEnforcement: isGlobalSpammerExempt,
         });
@@ -1775,6 +1819,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId: senderId,
           messageId,
           text,
+          createdAt,
         });
         this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
         if (handled) {
@@ -6594,7 +6639,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'group_command',
         );
 
-        await this.deleteAdminCommandMessage(chatId, messageId);
+        await this.deleteAdminCommandMessage(chatId, messageId, update.message?.createdAt ?? null);
         await this.sendGroupAdminCommandNotice({
           chatId,
           botId: commandBotId,
@@ -6639,7 +6684,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               )
             : await manualBridge.applyManualOpenChatCommand(chatId, actor, 'group_command');
 
-        await this.deleteAdminCommandMessage(chatId, messageId);
+        await this.deleteAdminCommandMessage(chatId, messageId, update.message?.createdAt ?? null);
         await this.sendGroupAdminCommandNotice({
           chatId,
           botId: commandBotId,
@@ -6809,13 +6854,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private async deleteAdminCommandMessage(chatId: string, messageId: string): Promise<void> {
+  private async deleteAdminCommandMessage(
+    chatId: string,
+    messageId: string,
+    sourceMessageAt: string | null,
+  ): Promise<void> {
     try {
       await this.executeModerationDelete({
         chatId,
         messageId,
         reasonKey: 'ADMIN_COMMAND_CLEANUP',
         ruleCode: 'ADMIN_COMMAND_CLEANUP',
+        sourceMessageAt,
         entityType: 'CHAT',
         messageAuthorKind: 'user',
       });
@@ -6967,8 +7017,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
   }) {
-    const { chatId, userId, messageId, text } = params;
+    const { chatId, userId, messageId, text, createdAt } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       this.logger.debug(
         {
@@ -6986,6 +7037,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       reasonKey: 'BOT_ACCOUNT_MESSAGE_DELETE',
       ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE',
+      sourceMessageAt: createdAt,
       entityType: 'CHAT',
       messageAuthorKind: 'bot',
       originBotId:
@@ -7057,9 +7109,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
     delayMinutes: number;
   }) {
-    const { chatId, userId, messageId, text, delayMinutes } = params;
+    const { chatId, userId, messageId, text, createdAt, delayMinutes } = params;
     const safeDelayMinutes = normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
     const delayMs = safeDelayMinutes * 60 * 1000;
     const deleteOptions = { delayMs };
@@ -7069,6 +7122,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reasonKey: 'BOT_MESSAGE_AUTO_DELETE',
       ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
       subjectUserId: userId,
+      sourceMessageAt: createdAt,
       entityType: 'CHAT',
       messageAuthorKind: 'bot',
       originBotId:
@@ -7143,10 +7197,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
     settings: ChatSettings;
     raw?: unknown;
   }) {
-    const { chatId, userId, messageId, text, settings, raw } = params;
+    const { chatId, userId, messageId, text, createdAt, settings, raw } = params;
 
     if (!settings.deleteBotMessagesEnabled) {
       return;
@@ -7187,6 +7242,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       messageId,
       text,
+      createdAt,
       delayMinutes: settings.deleteBotMessagesDelayMinutes,
     });
   }
@@ -7844,8 +7900,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
   }): Promise<boolean> {
-    const { chatId, userId, messageId, text } = params;
+    const { chatId, userId, messageId, text, createdAt } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
     }
@@ -7865,6 +7922,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reasonKey: 'GLOBAL_SPAMMER:known-message-delete',
       ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE',
       subjectUserId: userId,
+      sourceMessageAt: createdAt,
       entityType: 'CHAT',
       messageAuthorKind: 'user',
       event: {
@@ -7915,8 +7973,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
   }): Promise<boolean> {
-    const { chatId, userId, messageId, text } = params;
+    const { chatId, userId, messageId, text, createdAt } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
     }
@@ -7927,6 +7986,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reasonKey: 'LOCAL_ADMIN_BLOCK:message-delete',
       ruleCode: 'LOCAL_ADMIN_BLOCK_MESSAGE_DELETE',
       subjectUserId: userId,
+      sourceMessageAt: createdAt,
       entityType: 'CHAT',
       messageAuthorKind: 'user',
       event: {
@@ -8165,6 +8225,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
     deleteSpammersEnabled: boolean;
     exemptFromEnforcement: boolean;
     allowDestructiveSideEffects?: () => boolean;
@@ -8182,6 +8243,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       messageId,
       text,
+      createdAt,
       deleteSpammersEnabled,
       exemptFromEnforcement,
       allowDestructiveSideEffects,
@@ -8276,6 +8338,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 userId,
                 messageId,
                 text,
+                createdAt,
                 reason: 'Detected in 6 unique chats within 2 minutes',
               }),
           );
@@ -8313,6 +8376,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
     deleteSpammersEnabled: boolean;
     exemptFromEnforcement: boolean;
   }): Promise<GlobalSpammerTrackingResult> {
@@ -8452,9 +8516,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     messageId: string;
     text: string;
+    createdAt: string;
     reason: string;
   }): Promise<void> {
-    const { chatId, userId, messageId, text, reason } = params;
+    const { chatId, userId, messageId, text, createdAt, reason } = params;
     if (this.isKnownRuntimeBotUserId(userId)) {
       return;
     }
@@ -8465,6 +8530,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reasonKey: 'GLOBAL_SPAMMER:detected-message-delete',
       ruleCode: 'GLOBAL_SPAMMER_MESSAGE_DELETE',
       subjectUserId: userId,
+      sourceMessageAt: createdAt,
       entityType: 'CHAT',
       messageAuthorKind: 'user',
       event: {
@@ -12041,7 +12107,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           {
             status: { in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED] },
           },
-          { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+          {
+            status: WebhookStatus.FAILED,
+            OR: [
+              { nextEnqueueAt: { not: null } },
+              {
+                errorMessage: {
+                  startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`,
+                },
+              },
+            ],
+          },
         ],
       },
       select: {
@@ -12080,7 +12156,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED, WebhookStatus.PROCESSED],
               },
             },
-            { status: WebhookStatus.FAILED, nextEnqueueAt: { not: null } },
+            {
+              status: WebhookStatus.FAILED,
+              OR: [
+                { nextEnqueueAt: { not: null } },
+                {
+                  errorMessage: {
+                    startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`,
+                  },
+                },
+              ],
+            },
           ],
         },
         orderBy: { createdAt: 'desc' },
@@ -12398,6 +12484,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.answerCallbackSafe(
         callbackId,
         this.buildPrivateCallbackNotification(callbackCommand),
+        update.message.chatId,
       );
     }
 
@@ -12439,10 +12526,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return 'Открываю меню';
   }
 
-  private async answerCallbackSafe(callbackId: string, notification: string): Promise<void> {
+  private async answerCallbackSafe(
+    callbackId: string,
+    notification: string,
+    rateLimitEntityId?: string,
+  ): Promise<void> {
     try {
       await this.maxClient.answerCallback(callbackId, notification, undefined, {
         ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+        ...(rateLimitEntityId?.trim() ? { rateLimitEntityId: rateLimitEntityId.trim() } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -12477,7 +12569,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     if (!resolvedUrl) {
       if (callbackId) {
-        await this.answerCallbackSafe(callbackId, 'Ссылка на правила пока недоступна');
+        await this.answerCallbackSafe(callbackId, 'Ссылка на правила пока недоступна', chatId);
       }
       return;
     }
@@ -12509,7 +12601,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (callbackId) {
-      await this.answerCallbackSafe(callbackId, 'Кнопка обновлена. Нажмите ещё раз');
+      await this.answerCallbackSafe(callbackId, 'Кнопка обновлена. Нажмите ещё раз', chatId);
     }
   }
 
@@ -13755,7 +13847,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       message.includes('not accessible') ||
       message.includes('chat not found') ||
       message.includes('message not found') ||
-      message.includes('sufficient rights') ||
+      hasMaxInsufficientRightsMessage(message) ||
       message.includes('already been deleted') ||
       message.includes('already deleted')
     );
@@ -13777,7 +13869,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       message.includes('bot is not a chat member') ||
       message.includes('not accessible') ||
       message.includes('chat not found') ||
-      message.includes('sufficient rights')
+      hasMaxInsufficientRightsMessage(message)
     );
   }
 
@@ -14466,7 +14558,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const { chatId, senderId, messageId, text } = update.message;
+    const { chatId, senderId, messageId, text, createdAt } = update.message;
     if (!messageId) {
       return;
     }
@@ -14518,6 +14610,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       managedChannel,
       source: 'webhook',
       senderId,
+      sourceMessageAt: createdAt,
     });
     if (outcome !== 'in_progress') {
       this.channelAutoPostScanManager.markWebhookSeen(chatId, messageId, eventTimestampMs);
@@ -14890,9 +14983,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     managedChannel: ManagedChannelContext;
     source: 'webhook' | 'poll';
     senderId: string | null;
+    sourceMessageAt?: string | null;
   }): Promise<ChannelAutoPostAttachOutcome> {
-    const { chatId, messageId, text, textFormat, linkType, managedChannel, source, senderId } =
-      params;
+    const {
+      chatId,
+      messageId,
+      text,
+      textFormat,
+      linkType,
+      managedChannel,
+      source,
+      senderId,
+      sourceMessageAt,
+    } = params;
     const buttonVisibility = resolveChannelAutoPostButtonVisibility(managedChannel.channelSettings);
     const existingButtonKinds = new Set(params.existingDialogButtonKinds ?? []);
     const includeCommentsButton =
@@ -15042,6 +15145,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             reasonKey: 'channel_auto_post_forward_replacement_cleanup',
             ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
             subjectUserId: senderId,
+            ...(sourceMessageAt ? { sourceMessageAt } : {}),
             entityType: 'CHANNEL',
             messageAuthorKind: 'user',
             originBotId: autoAttachBotId,
@@ -15635,6 +15739,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
           ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
           subjectUserId: senderId,
+          ...(update.message?.createdAt ? { sourceMessageAt: update.message.createdAt } : {}),
           entityType: 'CHAT',
           messageAuthorKind: 'user',
           originBotId: autoAttachBotId,
@@ -16730,7 +16835,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
           stage: latestStage,
           outcome: 'timeout',
-          failOpen: true,
+          failOpen: false,
         });
         const successBoundaryReached = timeoutContext?.successBoundaryReached === true;
         this.logger.warn(
@@ -16759,77 +16864,115 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private startWebhookTimeoutSettlementWatchdog(
+    webhookEventId: string,
+  ): WebhookTimeoutSettlementWatchdog {
+    const deadlineAtMs = Date.now() + WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MAX_LIFETIME_MS;
+    let expired = false;
+    let stopped = false;
+    const timer = setTimeout(() => {
+      if (stopped) {
+        return;
+      }
+      expired = true;
+      this.logger.error(
+        { webhookEventId },
+        'Terminating a worker process whose webhook timeout did not settle durably',
+      );
+      process.exit(1);
+    }, WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MAX_LIFETIME_MS);
+
+    return {
+      deadlineAtMs,
+      isExpired: () => expired,
+      stop: () => {
+        if (stopped) {
+          return;
+        }
+        stopped = true;
+        clearTimeout(timer);
+      },
+    };
+  }
+
   private observeTimedOutWebhookExecution(params: {
     execution: WebhookCanonicalExecutionContext;
     detachedTask: Promise<void>;
+    quarantineLease: WebhookTimeoutQuarantineLease;
     commercialOcrPendingActivations: CommercialOcrPendingActivation[];
+    settlementWatchdog: WebhookTimeoutSettlementWatchdog;
   }): void {
-    const pendingActivations = params.commercialOcrPendingActivations;
+    const heartbeat = this.webhookCanonicalExecutionService.startTimedOutExecutionHeartbeat(
+      params.execution,
+      params.quarantineLease,
+    );
     void (async () => {
+      let outcome: { kind: 'completed' } | { kind: 'failed'; error: unknown };
       try {
         await params.detachedTask;
+        outcome = { kind: 'completed' };
       } catch (error: unknown) {
-        await this.commercialOcrEnqueueService?.suppressPendingBatch(pendingActivations);
-        await this.webhookCanonicalExecutionService
-          .failTimedOutExecution(params.execution, {
-            errorMessage: this.formatWebhookProcessingErrorMessage(error),
-          })
-          .catch((persistenceError: unknown) => {
-            this.logger.error(
-              {
-                webhookEventId: params.execution.webhookEvent.id,
-                err:
-                  persistenceError instanceof Error
-                    ? persistenceError.message
-                    : String(persistenceError),
-              },
-              'Could not persist detached webhook execution failure after timeout',
-            );
-          });
+        outcome = { kind: 'failed', error };
+      }
+
+      const durableSettlement = await this.persistWebhookTimeoutSettlementWithRetry({
+        webhookEventId: params.execution.webhookEvent.id,
+        outcome: outcome.kind,
+        settlementWatchdog: params.settlementWatchdog,
+        persist: async () => {
+          const quarantineLease = await heartbeat.stop();
+          return outcome.kind === 'completed'
+            ? this.webhookCanonicalExecutionService.completeTimedOutExecution(
+                params.execution,
+                quarantineLease,
+              )
+            : this.webhookCanonicalExecutionService.failTimedOutExecution(
+                params.execution,
+                quarantineLease,
+                {
+                  errorMessage: this.formatWebhookProcessingErrorMessage(outcome.error),
+                },
+              );
+        },
+        isDurable: (settled) => settled,
+        logMessage: 'Could not persist detached webhook settlement; the hard fence remains active',
+      });
+      if (durableSettlement !== true) {
+        return;
+      }
+
+      params.settlementWatchdog.stop();
+      if (outcome.kind === 'failed') {
+        await this.commercialOcrEnqueueService?.suppressPendingBatch(
+          params.commercialOcrPendingActivations,
+        );
         this.logger.warn(
           {
             webhookEventId: params.execution.webhookEvent.id,
-            err: error instanceof Error ? error.message : String(error),
+            err: this.formatWebhookProcessingErrorMessage(outcome.error),
+            terminalized: true,
           },
-          'Detached webhook execution failed after timeout and remains quarantined',
+          'Detached webhook execution failed after timeout',
         );
         return;
       }
 
-      try {
-        await this.webhookCanonicalExecutionService.completeExecution(params.execution);
-        await this.commercialOcrEnqueueService?.activatePendingBatch(pendingActivations);
-        this.logger.log(
-          { webhookEventId: params.execution.webhookEvent.id },
-          'Detached webhook execution completed after timeout quarantine',
-        );
-      } catch (error: unknown) {
-        await this.commercialOcrEnqueueService?.suppressPendingBatch(pendingActivations);
-        await this.webhookCanonicalExecutionService
-          .failTimedOutExecution(params.execution, {
-            errorMessage: this.formatWebhookProcessingErrorMessage(error),
-          })
-          .catch((persistenceError: unknown) => {
-            this.logger.error(
-              {
-                webhookEventId: params.execution.webhookEvent.id,
-                err:
-                  persistenceError instanceof Error
-                    ? persistenceError.message
-                    : String(persistenceError),
-              },
-              'Could not preserve a failed detached webhook completion after timeout',
-            );
-          });
-        this.logger.error(
-          {
-            webhookEventId: params.execution.webhookEvent.id,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Detached webhook execution could not complete after timeout and remains quarantined',
-        );
-      }
-    })();
+      await this.commercialOcrEnqueueService?.activatePendingBatch(
+        params.commercialOcrPendingActivations,
+      );
+      this.logger.log(
+        { webhookEventId: params.execution.webhookEvent.id },
+        'Detached webhook execution completed after timeout quarantine',
+      );
+    })().catch((error: unknown) => {
+      this.logger.error(
+        {
+          webhookEventId: params.execution.webhookEvent.id,
+          err: this.formatWebhookProcessingErrorMessage(error),
+        },
+        'Detached webhook timeout observer failed before durable settlement',
+      );
+    });
   }
 
   private async persistTimedOutWebhookFallback(params: {
@@ -16837,11 +16980,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     timeoutError: Error;
     timeoutErrorMessage: string;
     persistenceError: unknown;
-  }): Promise<void> {
+  }): Promise<WebhookTimeoutQuarantineLease> {
+    let quarantineLease: WebhookTimeoutQuarantineLease;
     try {
-      await this.webhookCanonicalExecutionService.quarantineTimedOutExecution(params.execution, {
-        errorMessage: `${params.timeoutErrorMessage}; initial timeout quarantine persistence failed: ${this.formatWebhookProcessingErrorMessage(params.persistenceError)}`,
-      });
+      quarantineLease = await this.webhookCanonicalExecutionService.quarantineTimedOutExecution(
+        params.execution,
+        {
+          errorMessage: `${params.timeoutErrorMessage}; initial timeout quarantine persistence failed: ${this.formatWebhookProcessingErrorMessage(params.persistenceError)}`,
+        },
+      );
     } catch (fallbackError: unknown) {
       throw this.createWebhookHotPathTimeoutPersistenceError({
         timeoutError: params.timeoutError,
@@ -16857,8 +17004,181 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ? params.persistenceError.message
             : String(params.persistenceError),
       },
-      'Initial webhook timeout quarantine write failed; persisted terminal fallback quarantine',
+      'Initial webhook timeout quarantine write failed; persisted fenced fallback quarantine',
     );
+    return quarantineLease;
+  }
+
+  // FLAG: Without a durable timeout marker, returning from the BullMQ processor would permit a
+  // retry while the original task is live or its settlement is not persisted. Keep the job lock,
+  // retry quarantine or settlement persistence, and terminate at the maximum orphan lifetime.
+  private async recoverTimedOutWebhookWithoutDurableQuarantine(params: {
+    execution: WebhookCanonicalExecutionContext;
+    detachedTask: Promise<void>;
+    timeoutErrorMessage: string;
+    persistenceError: unknown;
+    commercialOcrPendingActivations: CommercialOcrPendingActivation[];
+    settlementWatchdog: WebhookTimeoutSettlementWatchdog;
+  }): Promise<WebhookTimeoutQuarantineLease | null> {
+    type DetachedOutcome = { kind: 'completed' } | { kind: 'failed'; error: unknown };
+
+    let lastPersistenceLogAtMs = Date.now();
+    let outcome: DetachedOutcome | null = null;
+    const settlement = params.detachedTask.then(
+      () => {
+        outcome = { kind: 'completed' };
+      },
+      (error: unknown) => {
+        outcome = { kind: 'failed', error };
+      },
+    );
+    this.logger.error(
+      {
+        webhookEventId: params.execution.webhookEvent.id,
+        err:
+          params.persistenceError instanceof Error
+            ? params.persistenceError.message
+            : String(params.persistenceError),
+      },
+      'Webhook timeout quarantine is unavailable; retaining the BullMQ job until fenced or settled',
+    );
+
+    while (outcome === null && !params.settlementWatchdog.isExpired()) {
+      await Promise.race([
+        settlement,
+        this.waitForWebhookTimeoutPersistenceRetry(
+          WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PERSIST_RETRY_MS,
+        ),
+      ]);
+      if (outcome !== null) {
+        break;
+      }
+
+      try {
+        const lease = await this.webhookCanonicalExecutionService.quarantineTimedOutExecution(
+          params.execution,
+          {
+            errorMessage: `${params.timeoutErrorMessage}; recovered after repeated timeout quarantine persistence failures`,
+          },
+        );
+        this.logger.error(
+          { webhookEventId: params.execution.webhookEvent.id },
+          'Recovered durable webhook timeout quarantine while retaining the BullMQ job',
+        );
+        return lease;
+      } catch (error: unknown) {
+        const nowMs = Date.now();
+        if (nowMs - lastPersistenceLogAtMs >= WEBHOOK_TIMEOUT_PERSISTENCE_LOG_INTERVAL_MS) {
+          lastPersistenceLogAtMs = nowMs;
+          this.logger.error(
+            {
+              webhookEventId: params.execution.webhookEvent.id,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Could not recover durable webhook timeout quarantine; the BullMQ job remains active',
+          );
+        }
+      }
+    }
+
+    if (outcome === null) {
+      return null;
+    }
+
+    const settledOutcome = outcome as DetachedOutcome;
+    const durableSettlement = await this.persistWebhookTimeoutSettlementWithRetry({
+      webhookEventId: params.execution.webhookEvent.id,
+      outcome: settledOutcome.kind,
+      settlementWatchdog: params.settlementWatchdog,
+      persist: () =>
+        this.webhookCanonicalExecutionService.settleUnquarantinedTimedOutExecution(
+          params.execution,
+          settledOutcome.kind === 'failed'
+            ? {
+                kind: 'failed',
+                error: this.formatWebhookProcessingErrorMessage(settledOutcome.error),
+              }
+            : {
+                kind: 'completed',
+                timeoutErrorMessage: params.timeoutErrorMessage,
+              },
+        ),
+      isDurable: () => true,
+      logMessage: 'Could not persist unfenced webhook settlement; the BullMQ job remains active',
+    });
+    if (durableSettlement === null) {
+      return null;
+    }
+
+    params.settlementWatchdog.stop();
+    if (settledOutcome.kind === 'failed' || durableSettlement === 'quarantined') {
+      await this.commercialOcrEnqueueService?.suppressPendingBatch(
+        params.commercialOcrPendingActivations,
+      );
+    } else {
+      await this.commercialOcrEnqueueService?.activatePendingBatch(
+        params.commercialOcrPendingActivations,
+      );
+    }
+    return null;
+  }
+
+  private async persistWebhookTimeoutSettlementWithRetry<T>(params: {
+    webhookEventId: string;
+    outcome: 'completed' | 'failed';
+    settlementWatchdog: WebhookTimeoutSettlementWatchdog;
+    persist: () => Promise<T>;
+    isDurable: (result: T) => boolean;
+    logMessage: string;
+  }): Promise<T | null> {
+    let persistenceAttempt = 0;
+    let lastPersistenceLogAtMs = 0;
+
+    while (!params.settlementWatchdog.isExpired()) {
+      let persistenceError: unknown;
+      try {
+        const result = await params.persist();
+        if (params.isDurable(result)) {
+          return result;
+        }
+        persistenceError = new Error('Webhook timeout settlement CAS was not owned');
+      } catch (error: unknown) {
+        persistenceError = error;
+      }
+
+      persistenceAttempt += 1;
+      const nowMs = Date.now();
+      const retryDelayMs = Math.min(
+        WEBHOOK_TIMEOUT_SETTLEMENT_PERSIST_RETRY_MAX_MS,
+        WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PERSIST_RETRY_MS *
+          2 ** Math.min(persistenceAttempt - 1, 10),
+      );
+      if (
+        persistenceAttempt === 1 ||
+        nowMs - lastPersistenceLogAtMs >= WEBHOOK_TIMEOUT_PERSISTENCE_LOG_INTERVAL_MS
+      ) {
+        lastPersistenceLogAtMs = nowMs;
+        this.logger.error(
+          {
+            webhookEventId: params.webhookEventId,
+            outcome: params.outcome,
+            persistenceAttempt,
+            retryDelayMs,
+            err: this.formatWebhookProcessingErrorMessage(persistenceError),
+          },
+          params.logMessage,
+        );
+      }
+
+      const remainingLifetimeMs = Math.max(1, params.settlementWatchdog.deadlineAtMs - nowMs);
+      await this.waitForWebhookTimeoutPersistenceRetry(Math.min(retryDelayMs, remainingLifetimeMs));
+    }
+
+    return null;
+  }
+
+  private waitForWebhookTimeoutPersistenceRetry(delayMs: number): Promise<void> {
+    return delay(delayMs, undefined, { ref: false });
   }
 
   private resolveWebhookHotPathTimeoutMs(update: MaxUpdate): number | null {
@@ -18405,11 +18725,18 @@ function createWebhookProcessor(
       super();
     }
 
-    async process(job: Job<ProcessWebhookJob>) {
+    async process(job: Job<ProcessWebhookJob>, token?: string) {
       if (!roleRunsModeration(getAppRole())) {
         return;
       }
-      await this.moderationExecutionService.processWebhookEvent(job.data.webhookEventId);
+      try {
+        await this.moderationExecutionService.processWebhookEvent(job.data.webhookEventId);
+      } catch (error: unknown) {
+        if (error instanceof WebhookOrderedPredecessorPendingError) {
+          await deferWebhookOrderedPredecessorJob(job, token, error);
+        }
+        throw error;
+      }
     }
   }
   Object.defineProperty(QueueWebhookProcessor, 'name', {

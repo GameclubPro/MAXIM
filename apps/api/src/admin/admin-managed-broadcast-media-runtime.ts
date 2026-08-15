@@ -5,6 +5,10 @@ import {
   type SendBroadcastRequest,
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
+import {
+  MaxMediaUploadValidationError,
+  validateMaxMediaUploadPayload,
+} from '../max/max-media-upload-validation';
 import { type ManagedBroadcast as PersistedManagedBroadcast } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS, type MaxAttachmentPayload } from '../max/max-client.service';
 import { extractMaxApiErrorMessage as extractMaxApiErrorMessageValue } from './admin-chat-rules';
@@ -34,6 +38,7 @@ import {
   type ManagedBroadcastMaxApiOptions,
   type ManagedBroadcastResolvedMedia,
 } from './admin.service.support';
+import { canonicalizeAdminMaxMediaFileName } from './admin-max-media-file-name';
 
 export type ManagedBroadcastProgressCallback = () => Promise<void>;
 
@@ -385,10 +390,10 @@ export class AdminManagedBroadcastMediaRuntime {
     };
   }
 
-  validateManagedBroadcastMediaPayload(
+  async validateManagedBroadcastMediaPayload(
     payload: SendBroadcastRequest,
     options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
-  ): void {
+  ): Promise<void> {
     const images = this.resolveManagedBroadcastRequestImages(payload);
     if (images.length === 0) {
       return;
@@ -401,8 +406,26 @@ export class AdminManagedBroadcastMediaRuntime {
     }
 
     let totalBytes = 0;
-    for (const image of images) {
-      totalBytes += this.validateManagedBroadcastImagePayload(image, options).length;
+    const canonicalImages: BroadcastImage[] = [];
+    try {
+      for (const image of images) {
+        const validated = await this.validateManagedBroadcastImagePayload(image, options);
+        totalBytes += validated.buffer.length;
+        canonicalImages.push({
+          base64: image.base64,
+          mimeType: validated.mimeType,
+          fileName: canonicalizeAdminMaxMediaFileName(
+            image.fileName,
+            validated.extension,
+            'broadcast-image',
+          ),
+        });
+      }
+    } catch (error: unknown) {
+      if (error instanceof MaxMediaUploadValidationError) {
+        throw new BadRequestException(error.publicMessage);
+      }
+      throw error;
     }
 
     const maxTotalBytes = options.trustedPublicationTestPayload
@@ -411,17 +434,22 @@ export class AdminManagedBroadcastMediaRuntime {
     if (totalBytes > maxTotalBytes) {
       throw new BadRequestException('Суммарный размер фото слишком большой.');
     }
+
+    const firstImage = canonicalImages[0];
+    payload.images = canonicalImages;
+    payload.imageEnabled = true;
+    payload.imageBase64 = firstImage.base64;
+    payload.imageMimeType = firstImage.mimeType;
+    payload.imageFileName = firstImage.fileName;
+    if (payload.mediaType === 'image') {
+      payload.mediaPayload = { images: canonicalImages };
+    }
   }
 
-  private validateManagedBroadcastImagePayload(
+  private async validateManagedBroadcastImagePayload(
     image: BroadcastImage,
     options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
-  ): Buffer {
-    const imageMimeType = image.mimeType.trim().toLowerCase();
-    if (!imageMimeType.startsWith('image/')) {
-      throw new BadRequestException('Поддерживаются только изображения.');
-    }
-
+  ): Promise<{ buffer: Buffer; mimeType: string; extension: string }> {
     const imageBuffer = this.decodeBroadcastImageBase64(image.base64);
     const maxBytes = options.trustedPublicationTestPayload
       ? PUBLICATION_MAX_IMAGE_BYTES
@@ -430,7 +458,15 @@ export class AdminManagedBroadcastMediaRuntime {
       throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
     }
 
-    return imageBuffer;
+    const validated =
+      typeof this.maxClient.validateMediaUploadPayload === 'function'
+        ? await this.maxClient.validateMediaUploadPayload('image', imageBuffer)
+        : await validateMaxMediaUploadPayload('image', imageBuffer);
+    return {
+      buffer: imageBuffer,
+      mimeType: validated.mimeType,
+      extension: validated.extension,
+    };
   }
 
   private async uploadManagedBroadcastImage(
@@ -443,8 +479,14 @@ export class AdminManagedBroadcastMediaRuntime {
     onProgress?: ManagedBroadcastProgressCallback,
     options: Pick<ManagedBroadcastTestOptions, 'trustedPublicationTestPayload'> = {},
   ): Promise<Record<string, unknown> | undefined> {
-    const imageMimeType = image.mimeType.trim().toLowerCase();
-    const imageBuffer = this.validateManagedBroadcastImagePayload(image, options);
+    const validated = await this.validateManagedBroadcastImagePayload(image, options);
+    const imageBuffer = validated.buffer;
+    const imageMimeType = validated.mimeType;
+    const imageFileName = canonicalizeAdminMaxMediaFileName(
+      image.fileName,
+      validated.extension,
+      'broadcast-image',
+    );
 
     let lastError: unknown = null;
     const attempts =
@@ -459,7 +501,7 @@ export class AdminManagedBroadcastMediaRuntime {
           const uploaded = botId
             ? await this.maxClient.uploadImage(
                 imageBuffer,
-                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
+                this.resolveBroadcastImageFileName(imageFileName, imageMimeType),
                 imageMimeType,
                 {
                   ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
@@ -468,7 +510,7 @@ export class AdminManagedBroadcastMediaRuntime {
               )
             : await this.maxClient.uploadImage(
                 imageBuffer,
-                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
+                this.resolveBroadcastImageFileName(imageFileName, imageMimeType),
                 imageMimeType,
                 this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
               );
@@ -491,6 +533,9 @@ export class AdminManagedBroadcastMediaRuntime {
 
       throw new Error('Managed broadcast image upload did not return a result.');
     } catch (error: unknown) {
+      if (error instanceof MaxMediaUploadValidationError) {
+        throw error;
+      }
       this.logger.warn(
         {
           entityType,
@@ -636,6 +681,9 @@ export class AdminManagedBroadcastMediaRuntime {
 
       throw lastError ?? new Error('Managed broadcast video upload did not return a result.');
     } catch (error: unknown) {
+      if (error instanceof MaxMediaUploadValidationError) {
+        throw error;
+      }
       this.logger.warn(
         {
           entityType,

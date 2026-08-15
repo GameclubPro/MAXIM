@@ -728,6 +728,15 @@ test('infers safe video MIME types when Android omits file.type', () => {
   assert.equal(inferPublicationVideoMimeType('clip.MOV', ''), 'video/quicktime');
   assert.equal(inferPublicationVideoMimeType('clip.webm', ''), 'video/webm');
   assert.equal(inferPublicationVideoMimeType('clip.mkv', ''), 'video/x-matroska');
+  assert.equal(inferPublicationVideoMimeType('clip.mkv', 'video/matroska'), 'video/x-matroska');
+  assert.equal(
+    inferPublicationVideoMimeType('clip.MKV', 'application/octet-stream'),
+    'video/x-matroska',
+  );
+  assert.equal(inferPublicationVideoMimeType('clip.mp4', 'video/mp4'), 'video/mp4');
+  assert.equal(inferPublicationVideoMimeType('clip.m4v', ''), null);
+  assert.equal(inferPublicationVideoMimeType('clip.avi', 'video/x-msvideo'), null);
+  assert.equal(inferPublicationVideoMimeType('clip.qt', 'video/quicktime'), 'video/quicktime');
   assert.equal(inferPublicationVideoMimeType('clip.bin', ''), null);
   assert.equal(inferPublicationVideoMimeType('clip.mp4', 'application/octet-stream'), null);
 });

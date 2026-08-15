@@ -1,8 +1,8 @@
+import { channelPostSignatureUrlSchema } from '@maxim/contracts/channel-post-signature';
 import {
   VK_PARSING_MAX_CHANNEL_LINK_URL_LENGTH,
-  channelPostSignatureUrlSchema,
   type VkParsingPost,
-} from '@maxim/contracts';
+} from '@maxim/contracts/vk-parsing';
 import {
   containsSupportedMarkdownUrl,
   renderSupportedMarkdownAsHtml,

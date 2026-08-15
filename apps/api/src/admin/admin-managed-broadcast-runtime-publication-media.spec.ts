@@ -1,23 +1,32 @@
+import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from '../max/max-media-upload-validation';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import {
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
   PUBLICATION_VIDEO_INLINE_BASE64_FIELD,
 } from './publication-video-media';
 
+const TINY_JPEG_BASE64 =
+  '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
+
 function createRuntime() {
   const findUnique = jest.fn();
   const assetFindFirst = jest.fn();
+  const uploadImage = jest.fn().mockResolvedValue({ token: 'uploaded-image-token' });
   const uploadVideo = jest.fn().mockResolvedValue({ token: 'uploaded-video-token' });
+  const warn = jest.fn();
   const runtime = new AdminManagedBroadcastRuntime({
     prisma: {
       publicationContentRevision: { findUnique },
       publicationAsset: { findFirst: assetFindFirst },
     },
-    maxClient: { uploadVideo },
-    logger: { warn: jest.fn() },
+    maxClient: { uploadImage, uploadVideo },
+    logger: { warn },
   } as never);
 
-  return { runtime, findUnique, assetFindFirst, uploadVideo };
+  return { runtime, findUnique, assetFindFirst, uploadImage, uploadVideo, warn };
 }
 
 function createBroadcastRow(overrides: Record<string, unknown> = {}) {
@@ -50,6 +59,128 @@ function createVideoRequestPayload(mediaPayload: Record<string, unknown>) {
 }
 
 describe('AdminManagedBroadcastRuntime publication media', () => {
+  it('canonicalizes a valid image even when its declared MIME type is not media', async () => {
+    const { runtime } = createRuntime();
+    const payload = {
+      imageEnabled: true,
+      imageBase64: TINY_JPEG_BASE64,
+      imageMimeType: 'application/octet-stream',
+      imageFileName: '../photo.bin',
+      images: [
+        {
+          base64: TINY_JPEG_BASE64,
+          mimeType: 'application/octet-stream',
+          fileName: '../photo.bin',
+        },
+      ],
+      mediaType: null,
+      mediaPayload: null,
+    };
+
+    await (runtime as any).mediaRuntime.validateManagedBroadcastMediaPayload(payload);
+
+    expect(payload).toEqual(
+      expect.objectContaining({
+        imageMimeType: 'image/jpeg',
+        imageFileName: 'photo.jpg',
+        images: [expect.objectContaining({ mimeType: 'image/jpeg', fileName: 'photo.jpg' })],
+      }),
+    );
+  });
+
+  it('revalidates an image at send time before delegating upload to MaxClient', async () => {
+    const { runtime, uploadImage } = createRuntime();
+    const mediaRuntime = (runtime as any).mediaRuntime;
+    const validateImage = jest.spyOn(mediaRuntime as any, 'validateManagedBroadcastImagePayload');
+    const payload = {
+      imageEnabled: true,
+      imageBase64: TINY_JPEG_BASE64,
+      imageMimeType: 'application/octet-stream',
+      imageFileName: 'photo.bin',
+      images: [
+        {
+          base64: TINY_JPEG_BASE64,
+          mimeType: 'application/octet-stream',
+          fileName: 'photo.bin',
+        },
+      ],
+      mediaType: null,
+      mediaPayload: null,
+    };
+
+    await mediaRuntime.validateManagedBroadcastMediaPayload(payload);
+    expect(validateImage).toHaveBeenCalledTimes(1);
+    validateImage.mockClear();
+
+    await mediaRuntime.resolveManagedBroadcastMedia(payload, 'chat', 'chat-1', 'user-1');
+
+    expect(validateImage).toHaveBeenCalledTimes(1);
+    expect(uploadImage).toHaveBeenCalledWith(
+      Buffer.from(TINY_JPEG_BASE64, 'base64'),
+      'photo.jpg',
+      'image/jpeg',
+      expect.objectContaining({ trafficClass: 'interactive' }),
+    );
+  });
+
+  it('does not reclassify deterministic image upload validation as transient', async () => {
+    const { runtime, uploadImage, warn } = createRuntime();
+    const validationError = new MaxMediaUploadValidationError(
+      MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.INVALID_PAYLOAD,
+      'image',
+    );
+    uploadImage.mockRejectedValue(validationError);
+
+    await expect(
+      (runtime as any).mediaRuntime.resolveManagedBroadcastMedia(
+        {
+          imageEnabled: true,
+          imageBase64: TINY_JPEG_BASE64,
+          imageMimeType: 'image/jpeg',
+          imageFileName: 'photo.jpg',
+          images: [
+            {
+              base64: TINY_JPEG_BASE64,
+              mimeType: 'image/jpeg',
+              fileName: 'photo.jpg',
+            },
+          ],
+          mediaType: null,
+          mediaPayload: null,
+        },
+        'chat',
+        'chat-1',
+        'user-1',
+      ),
+    ).rejects.toBe(validationError);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not reclassify deterministic video upload validation as transient', async () => {
+    const { runtime, uploadVideo, warn } = createRuntime();
+    const validationError = new MaxMediaUploadValidationError(
+      MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.UNSUPPORTED_FORMAT,
+      'video',
+    );
+    uploadVideo.mockRejectedValue(validationError);
+
+    await expect(
+      (runtime as any).mediaRuntime.resolveManagedBroadcastMedia(
+        createVideoRequestPayload({
+          [PUBLICATION_VIDEO_INLINE_BASE64_FIELD]: Buffer.from('legacy-video').toString('base64'),
+        }),
+        'chat',
+        'chat-1',
+        'user-1',
+        undefined,
+        undefined,
+        undefined,
+        { trustedPublicationVideoMarkers: true },
+      ),
+    ).rejects.toBe(validationError);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('loads publication images in revision order and converts stored bytes to base64', async () => {
     const { runtime, findUnique } = createRuntime();
     findUnique.mockResolvedValue({

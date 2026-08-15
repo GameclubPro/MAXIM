@@ -1068,6 +1068,7 @@
     color: var(--text-secondary);
   }
 
+  .settings-drilldown .managed-poll-workspace .managed-poll-workspace__create,
   .settings-drilldown .managed-poll-editor .managed-poll-editor__publish {
     color: var(--publication-on-accent);
   }
@@ -1090,8 +1091,10 @@
 
   html[data-max-theme='dark']
     .settings-drilldown
-    .managed-poll-editor
-    .managed-poll-editor__publish {
+    :is(
+      .managed-poll-workspace .managed-poll-workspace__create,
+      .managed-poll-editor .managed-poll-editor__publish
+    ) {
     color: var(--app-page-background);
   }
 

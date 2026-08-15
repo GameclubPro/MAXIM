@@ -6,6 +6,7 @@ import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.service';
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-timeout-quarantine';
 import {
   duplicateFlowConfigsEqual,
   resolveDuplicateFlowConfig,
@@ -123,6 +124,7 @@ export class PhotoDuplicateModerationService {
         botId: true,
         status: true,
         nextEnqueueAt: true,
+        errorMessage: true,
         normalizedPayload: true,
         executionClaims: {
           where: { kind: 'EXECUTION' },
@@ -136,7 +138,9 @@ export class PhotoDuplicateModerationService {
     if (
       !webhookEvent ||
       webhookEvent.status === WebhookStatus.DUPLICATE ||
-      (webhookEvent.status === WebhookStatus.FAILED && webhookEvent.nextEnqueueAt === null)
+      (webhookEvent.status === WebhookStatus.FAILED &&
+        webhookEvent.nextEnqueueAt === null &&
+        !isPendingWebhookTimeoutQuarantineMessage(webhookEvent.errorMessage))
     ) {
       return;
     }

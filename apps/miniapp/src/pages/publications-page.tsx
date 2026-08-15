@@ -2631,7 +2631,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
               </span>
               <input
                 type="file"
-                accept="video/*"
+                accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.mov,.mkv,.webm"
                 aria-label="Выбрать видео для публикации"
                 aria-invalid={videoNeedsReselection || undefined}
                 disabled={isBusy || videoPreparing}

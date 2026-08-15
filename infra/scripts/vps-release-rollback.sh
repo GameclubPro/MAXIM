@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+# shellcheck source=infra/scripts/lib/webhook-rollout-quiescence.sh
+source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 
@@ -36,6 +38,18 @@ if [[ -z "$SOURCE_RELEASE_ID" ]]; then
 fi
 shift || true
 REQUESTED_COMPONENTS=("$@")
+
+contains_service() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    if [[ "$item" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -83,6 +97,8 @@ SOURCE_MIGRATIONS_FILE="$(mktemp)"
 APPLIED_MIGRATIONS_FILE="$(mktemp)"
 ROLLBACK_RUNTIME_STARTED=0
 ROLLBACK_MANIFEST_RECORDED=0
+RECOVERY_BASE_MANIFEST=""
+RECOVERY_REQUIRES_API_FENCE=0
 
 invalidate_stale_release_inventory() {
   local current_manifest="$RELEASE_STATE_DIR/current.json"
@@ -99,11 +115,88 @@ invalidate_stale_release_inventory() {
 }
 
 cleanup() {
+  maxim_webhook_rollout_warn_if_paused
   invalidate_stale_release_inventory
   rm -f "$PLAN_FILE" "$SOURCE_MIGRATIONS_FILE" "$APPLIED_MIGRATIONS_FILE"
   release_deploy_lock
 }
 trap cleanup EXIT
+
+select_release_recovery_base() {
+  local recovery_status
+
+  if MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+    node infra/scripts/release-manifest.mjs validate-current >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -e "$RELEASE_STATE_DIR/current.json" ]]; then
+    echo "Current release manifest exists but is invalid; refusing immutable rollback." >&2
+    return 1
+  fi
+  if RECOVERY_BASE_MANIFEST="$(
+    MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+      node infra/scripts/release-manifest.mjs recovery-base
+  )"; then
+    if [[ "$MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE" != "1" ]]; then
+      echo "An interrupted release manifest requires explicit recovery adoption." >&2
+      echo "Set MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1 for this reviewed retry." >&2
+      RECOVERY_BASE_MANIFEST=""
+      return 1
+    fi
+    case "$(basename "$RECOVERY_BASE_MANIFEST")" in
+      current.invalid-release-rollback-static-*)
+        RECOVERY_REQUIRES_API_FENCE=0
+        ;;
+      *)
+        RECOVERY_REQUIRES_API_FENCE=1
+        ;;
+    esac
+    echo "Adopting the single validated interrupted release manifest."
+    return 0
+  else
+    recovery_status=$?
+  fi
+  RECOVERY_BASE_MANIFEST=""
+  if [[ "$recovery_status" -eq 3 ]]; then
+    echo "A valid current or interrupted release manifest is required for rollback." >&2
+    return 1
+  fi
+  return "$recovery_status"
+}
+
+begin_release_runtime_transition() {
+  local transition_kind=release-rollback-static
+
+  if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+    return 0
+  fi
+  if [[ "$SELECT_API" -eq 1 ]]; then
+    transition_kind=release-rollback-api
+  fi
+  if ! RECOVERY_BASE_MANIFEST="$(
+    MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+      node infra/scripts/release-manifest.mjs begin-transition --kind "$transition_kind"
+  )"; then
+    RECOVERY_BASE_MANIFEST=""
+    echo "Could not journal the current release before immutable rollback mutation." >&2
+    return 1
+  fi
+  echo "Current release inventory journaled before immutable rollback mutation."
+}
+
+archive_recovery_base_manifest() {
+  [[ -n "$RECOVERY_BASE_MANIFEST" ]] || return 0
+  if ! MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+    node infra/scripts/release-manifest.mjs archive-transition \
+      --current-manifest-file "$RECOVERY_BASE_MANIFEST" \
+      --disposition recovered >/dev/null; then
+    echo "CRITICAL: could not archive the consumed release recovery manifest." >&2
+    return 1
+  fi
+  RECOVERY_BASE_MANIFEST=""
+}
+
+select_release_recovery_base
 
 running_scale_services="$(docker compose "${SCALE_COMPOSE_FILES[@]}" ps --status running --services 2>/dev/null || true)"
 if [[ -n "$running_scale_services" ]]; then
@@ -187,6 +280,11 @@ if [[ -z "$TARGET_SHA" || -z "$ROLLBACK_RELEASE_ID" || -z "$SOURCE_MANIFEST_RELE
 fi
 if [[ "${#SELECTED_COMPONENTS[@]}" -eq 0 || "${#SERVICES[@]}" -eq 0 ]]; then
   echo "Rollback plan selected no components or services." >&2
+  exit 1
+fi
+if [[ -n "$RECOVERY_BASE_MANIFEST" && "$RECOVERY_REQUIRES_API_FENCE" -eq 1 && \
+      "$SELECT_API" -ne 1 ]]; then
+  echo "Interrupted API release recovery requires selecting api-shared for queue fencing." >&2
   exit 1
 fi
 
@@ -301,6 +399,27 @@ wait_for_service_running() {
   return 1
 }
 
+wait_for_strict_smoke() {
+  local mode="$1"
+  local url="$2"
+  local marker="${3:-}"
+  local attempt
+  local output=""
+  local args=(scripts/smoke-http.mjs "$mode" "$url")
+  [[ -z "$marker" ]] || args+=("$marker")
+
+  for ((attempt = 1; attempt <= SMOKE_ATTEMPTS; attempt += 1)); do
+    if output="$(MAXIM_SMOKE_TIMEOUT_MS="$SMOKE_TIMEOUT_MS" node "${args[@]}" 2>&1)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Strict smoke did not recover: $url" >&2
+  [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+  return 1
+}
+
 recreate_service() {
   local service="$1"
   ROLLBACK_RUNTIME_STARTED=1
@@ -331,40 +450,6 @@ remove_incompatible_media_analysis_container() {
   docker rm -f "${container_ids[@]}" >/dev/null
 }
 
-if [[ "$SELECT_API" -eq 1 ]]; then
-  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
-    remove_incompatible_media_analysis_container
-  else
-    ROLLBACK_RUNTIME_STARTED=1
-    maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
-  fi
-  for service in \
-    api-enqueue \
-    api-action \
-    api-moderation \
-    api-moderation-critical \
-    api-moderation-join \
-    api-moderation-realtime-b \
-    api-moderation-realtime-c \
-    api-moderation-realtime-d \
-    api-moderation-background; do
-    recreate_service "$service"
-  done
-  recreate_service api-admin
-fi
-if [[ "$SELECT_MINIAPP" -eq 1 ]]; then
-  recreate_service miniapp-major-static
-fi
-if [[ "$SELECT_ADMIN" -eq 1 ]]; then
-  recreate_service admin-static
-fi
-if [[ "$SELECT_API" -eq 1 ]]; then
-  recreate_service api-ingress
-fi
-if [[ "$SELECT_API" -eq 1 && "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-  recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"
-fi
-
 verify_service_image_id() {
   local service="$1"
   local expected_image_id="$2"
@@ -382,16 +467,90 @@ verify_service_image_id() {
   fi
 }
 
+recovery_base_field() {
+  MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+    node infra/scripts/release-manifest.mjs field current "$1" "$2" \
+      --current-manifest-file "$RECOVERY_BASE_MANIFEST"
+}
+
+verify_inherited_api_component() {
+  local expected_image_id="$1"
+  local service
+
+  # Static-only rollback must remain image-only. The active production topology is fixed here and
+  # every inherited role must already be running on the manifest image before static mutation.
+  for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
+    verify_service_image_id "$service" "$expected_image_id"
+  done
+}
+
+verify_inherited_release_components() {
+  local component
+  local expected_image_id
+
+  for component in api-shared miniapp-major-static admin-static; do
+    if contains_service "$component" "${SELECTED_COMPONENTS[@]}"; then
+      continue
+    fi
+    expected_image_id="$(recovery_base_field "$component" imageId)"
+    case "$component" in
+      api-shared)
+        verify_inherited_api_component "$expected_image_id"
+        ;;
+      miniapp-major-static)
+        verify_service_image_id miniapp-major-static "$expected_image_id"
+        ;;
+      admin-static)
+        verify_service_image_id admin-static "$expected_image_id"
+        ;;
+    esac
+  done
+}
+
+begin_release_runtime_transition
+ROLLBACK_RUNTIME_STARTED=1
+verify_inherited_release_components
+
+SMOKE_RESULTS=()
+if [[ "$SELECT_API" -eq 1 ]]; then
+  maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
+    remove_incompatible_media_analysis_container
+  else
+    maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
+  fi
+
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service api-action
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service api-admin
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service api-ingress
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+    maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    recreate_service "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+  fi
+
+  # FLAG: Keep every webhook consumer and producer stopped until non-webhook API roles are fenced.
+  for service in \
+    api-moderation \
+    api-moderation-critical \
+    api-moderation-join \
+    api-moderation-realtime-b \
+    api-moderation-realtime-c \
+    api-moderation-realtime-d \
+    api-moderation-background; do
+    maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    recreate_service "$service"
+  done
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service api-enqueue
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+fi
+
 for service in "${SERVICES[@]}"; do
   if maxim_topology_is_api_service "$service"; then
     verify_service_image_id "$service" "${COMPONENT_IMAGE_ID[api-shared]}"
-  elif [[ "$service" == "miniapp-major-static" ]]; then
-    verify_service_image_id "$service" "${COMPONENT_IMAGE_ID[miniapp-major-static]}"
-  elif [[ "$service" == "admin-static" ]]; then
-    verify_service_image_id "$service" "${COMPONENT_IMAGE_ID[admin-static]}"
-  else
-    echo "Cannot verify unknown rollback service: $service" >&2
-    exit 1
   fi
 done
 if [[ "$SELECT_API" -eq 1 && "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
@@ -399,36 +558,26 @@ if [[ "$SELECT_API" -eq 1 && "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     COMPOSE_FILES \
     "$TARGET_COMMERCIAL_OCR_VERSION"
 fi
-
-wait_for_strict_smoke() {
-  local mode="$1"
-  local url="$2"
-  local marker="${3:-}"
-  local attempt
-  local output=""
-  local args=(scripts/smoke-http.mjs "$mode" "$url")
-  [[ -z "$marker" ]] || args+=("$marker")
-
-  for ((attempt = 1; attempt <= SMOKE_ATTEMPTS; attempt += 1)); do
-    if output="$(MAXIM_SMOKE_TIMEOUT_MS="$SMOKE_TIMEOUT_MS" node "${args[@]}" 2>&1)"; then
-      printf '%s\n' "$output"
-      return 0
-    fi
-    sleep 2
-  done
-  echo "Strict smoke did not recover: $url" >&2
-  [[ -z "$output" ]] || printf '%s\n' "$output" >&2
-  return 1
-}
-
-SMOKE_RESULTS=()
 if [[ "$SELECT_API" -eq 1 ]]; then
   wait_for_strict_smoke json-ok http://127.0.0.1:3001/api/health/live
-  wait_for_strict_smoke json-ok http://127.0.0.1:3001/api/health/ready
   wait_for_strict_smoke json-ok http://127.0.0.1:3002/api/health/live
+  SMOKE_RESULTS+=(api-local-live api-admin-live)
+  maxim_webhook_resume_after_api_fence COMPOSE_FILES
+fi
+if [[ "$SELECT_MINIAPP" -eq 1 ]]; then
+  recreate_service miniapp-major-static
+  verify_service_image_id miniapp-major-static "${COMPONENT_IMAGE_ID[miniapp-major-static]}"
+fi
+if [[ "$SELECT_ADMIN" -eq 1 ]]; then
+  recreate_service admin-static
+  verify_service_image_id admin-static "${COMPONENT_IMAGE_ID[admin-static]}"
+fi
+
+if [[ "$SELECT_API" -eq 1 ]]; then
+  wait_for_strict_smoke json-ok http://127.0.0.1:3001/api/health/ready
   wait_for_strict_smoke json-ok http://127.0.0.1:3002/api/health/ready
   wait_for_strict_smoke json-ok "$PUBLIC_HEALTH_URL/api/health/live"
-  SMOKE_RESULTS+=(api-local-live api-local-ready api-admin-live api-admin-ready api-public-live)
+  SMOKE_RESULTS+=(api-local-ready api-admin-ready api-public-live)
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     if [[ "$TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE" -eq 1 ]]; then
       maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required
@@ -457,6 +606,8 @@ if [[ "$SELECT_ADMIN" -eq 1 ]]; then
   SMOKE_RESULTS+=(admin-static)
 fi
 
+verify_inherited_release_components
+
 COMMIT_ARGS=(
   commit
   --release-id "$ROLLBACK_RELEASE_ID"
@@ -466,6 +617,9 @@ COMMIT_ARGS=(
 )
 if [[ "$SELECT_API" -eq 1 ]]; then
   COMMIT_ARGS+=(--migrations-file "$APPLIED_MIGRATIONS_FILE")
+fi
+if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+  COMMIT_ARGS+=(--current-manifest-file "$RECOVERY_BASE_MANIFEST")
 fi
 for component in "${SELECTED_COMPONENTS[@]}"; do
   COMMIT_ARGS+=(
@@ -480,5 +634,6 @@ done
 MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
   node infra/scripts/release-manifest.mjs "${COMMIT_ARGS[@]}" >/dev/null
 ROLLBACK_MANIFEST_RECORDED=1
+archive_recovery_base_manifest
 
 echo "Done: immutable rollback release=$ROLLBACK_RELEASE_ID source=$SOURCE_MANIFEST_RELEASE_ID components=${SELECTED_COMPONENTS[*]}"

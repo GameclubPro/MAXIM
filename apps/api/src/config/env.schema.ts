@@ -171,6 +171,7 @@ const envSchema = z.object({
   PRISMA_PG_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   PRISMA_PG_POOL_MAX_LIFETIME_SEC: z.coerce.number().int().positive().optional(),
+  PRISMA_PG_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   PRISMA_POOL_MAX: z.coerce.number().int().positive().optional(),
   PRISMA_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   PRISMA_POOL_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
@@ -192,6 +193,10 @@ const envSchema = z.object({
 
   WEBHOOK_GLOBAL_RPS_LIMIT: z.coerce.number().int().positive().default(300),
   WEBHOOK_BURST_LIMIT: z.coerce.number().int().positive().default(450),
+  WEBHOOK_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576),
+  WEBHOOK_ACK_DEADLINE_MS: z.coerce.number().int().min(1_000).max(18_000).default(18_000),
+  WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS: z.coerce.number().int().min(10).max(5_000).default(100),
+  WEBHOOK_RECEIPT_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(1_024).default(64),
   ENQUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(200),
   ENQUEUE_BATCH_SIZE: z.coerce.number().int().positive().default(400),
   ENQUEUE_CONCURRENCY: z.coerce.number().int().positive().default(32),
@@ -414,7 +419,7 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(3600),
-  SYSTEM_WEBHOOK_SLO_WINDOW_SEC: z.coerce.number().int().positive().default(900),
+  SYSTEM_WEBHOOK_SLO_WINDOW_SEC: z.coerce.number().int().positive().max(86_400).default(900),
   SYSTEM_WEBHOOK_SLO_TARGET_MS: z.coerce.number().int().positive().default(400),
   SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS: z.coerce.number().int().positive().default(2_000),
   SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: z.coerce.number().int().positive().default(5000),

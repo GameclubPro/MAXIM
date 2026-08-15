@@ -1,4 +1,8 @@
 import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from '../max/max-media-upload-validation';
+import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   type ManagedBroadcast,
@@ -10,11 +14,26 @@ import {
   isAmbiguousManagedBroadcastSendError,
   isManagedBroadcastAutoRetryableDeliveryFailureMessage,
   markManagedBroadcastSendPhase,
+  resolveManagedBroadcastFatalProcessingErrorMessage,
+  resolveManagedBroadcastFatalProcessingFailureMessage,
   isManagedBroadcastTransientDeliveryFailureMessage,
 } from './admin-managed-broadcast-reconciliation';
 import { MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX } from './admin.service.support';
 
 describe('admin managed broadcast reconciliation', () => {
+  it('keeps deterministic media validation failures fatal across processing and restart', () => {
+    const error = new MaxMediaUploadValidationError(
+      MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.UNSUPPORTED_FORMAT,
+      'video',
+    );
+
+    expect(resolveManagedBroadcastFatalProcessingErrorMessage(error)).toBe(error.publicMessage);
+    expect(resolveManagedBroadcastFatalProcessingFailureMessage(error.publicMessage)).toBe(
+      error.publicMessage,
+    );
+    expect(isManagedBroadcastAutoRetryableDeliveryFailureMessage(error.publicMessage)).toBe(false);
+  });
+
   it('keeps ambiguous send markers out of ordinary automatic retries', () => {
     const ambiguous = 'Прошлая попытка была прервана после старта отправки. Проверьте чат.';
     expect(isManagedBroadcastTransientDeliveryFailureMessage(ambiguous)).toBe(true);

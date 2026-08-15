@@ -72,7 +72,7 @@ export class ModerationReleaseCallbackService {
     const botId = readString(update.botId) ?? undefined;
     const acknowledgeSilently = async () => {
       if (callbackId) {
-        await this.answerCallbackSafe(callbackId, undefined, botId);
+        await this.answerCallbackSafe(callbackId, undefined, botId, messageChatId);
       }
     };
 
@@ -116,13 +116,23 @@ export class ModerationReleaseCallbackService {
 
     const sanctionEvent = await this.loadSanctionEvent(release, messageChatId);
     if (!sanctionEvent) {
-      await this.answerCallbackSafe(callbackId, 'Санкция уже снята или изменилась', botId);
+      await this.answerCallbackSafe(
+        callbackId,
+        'Санкция уже снята или изменилась',
+        botId,
+        messageChatId,
+      );
       return;
     }
 
     try {
       if (!(await this.hasMatchingActiveSanction(release, sanctionEvent))) {
-        await this.answerCallbackSafe(callbackId, 'Санкция уже снята или изменилась', botId);
+        await this.answerCallbackSafe(
+          callbackId,
+          'Санкция уже снята или изменилась',
+          botId,
+          messageChatId,
+        );
         return;
       }
 
@@ -146,10 +156,15 @@ export class ModerationReleaseCallbackService {
           expectedSanctionEventId: sanctionEvent.id,
         },
       );
-      await this.answerCallbackSafe(callbackId, result.message, botId);
+      await this.answerCallbackSafe(callbackId, result.message, botId, messageChatId);
     } catch (error: unknown) {
       if (error instanceof ModerationSanctionStateChangedError) {
-        await this.answerCallbackSafe(callbackId, 'Санкция уже снята или изменилась', botId);
+        await this.answerCallbackSafe(
+          callbackId,
+          'Санкция уже снята или изменилась',
+          botId,
+          messageChatId,
+        );
         return;
       }
       if (
@@ -171,7 +186,12 @@ export class ModerationReleaseCallbackService {
         },
         'Failed to apply moderation release callback action',
       );
-      await this.answerCallbackSafe(callbackId, 'Не удалось выполнить действие', botId);
+      await this.answerCallbackSafe(
+        callbackId,
+        'Не удалось выполнить действие',
+        botId,
+        messageChatId,
+      );
     }
   }
 
@@ -252,11 +272,13 @@ export class ModerationReleaseCallbackService {
     callbackId: string,
     notification?: string,
     botId?: string,
+    rateLimitEntityId?: string,
   ): Promise<void> {
     try {
       await this.maxClient.answerCallback(callbackId, notification, undefined, {
         ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
         ...(botId ? { botId } : {}),
+        ...(rateLimitEntityId?.trim() ? { rateLimitEntityId: rateLimitEntityId.trim() } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(

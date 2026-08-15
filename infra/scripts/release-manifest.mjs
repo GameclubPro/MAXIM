@@ -2,15 +2,18 @@
 
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const ACTIVE_RELEASE_COMPONENTS = Object.freeze([
@@ -21,6 +24,8 @@ export const ACTIVE_RELEASE_COMPONENTS = Object.freeze([
 const activeComponentSet = new Set(ACTIVE_RELEASE_COMPONENTS);
 const releaseIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const fullShaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|unknown)$/u;
+const recoveryBaseNamePattern =
+  /^current\.invalid-(?:deploy|release-rollback(?:-(?:api|static))?|runtime-rollback)-\d{8}T\d{6}Z-\d+\.json$/u;
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -38,6 +43,169 @@ export function readReleaseManifest(stateDir, releaseId) {
     throw new Error(`Release manifest not found: ${releaseId}`);
   }
   return readJson(path);
+}
+
+export function readManifestFile(path) {
+  const manifest = readJson(resolve(path));
+  validateManifest(manifest);
+  return manifest;
+}
+
+export function readTransitionBaseManifest(path) {
+  const manifest = readManifestFile(path);
+  validateCompleteReleaseManifest(manifest, { allowUnknown: true });
+  return manifest;
+}
+
+export function readRecoveryBaseManifest(path) {
+  const manifest = readManifestFile(path);
+  validateCompleteReleaseManifest(manifest);
+  return manifest;
+}
+
+export function validateCompleteReleaseManifest(manifest, { allowUnknown = false } = {}) {
+  validateManifest(manifest);
+  const knownFullShaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+  if (!allowUnknown && !knownFullShaPattern.test(manifest.targetSha)) {
+    throw new Error('Complete release targetSha must be known.');
+  }
+  for (const id of ACTIVE_RELEASE_COMPONENTS) {
+    const component = manifest.components?.[id];
+    if (!component) {
+      throw new Error(`Release manifest is missing active component: ${id}`);
+    }
+    if (!allowUnknown && !knownFullShaPattern.test(component.sourceSha)) {
+      throw new Error(`Complete release ${id} sourceSha must be known.`);
+    }
+    if (!allowUnknown && !/^sha256:[0-9a-f]{64}$/u.test(component.imageId)) {
+      throw new Error(`Complete release ${id} imageId must be known.`);
+    }
+  }
+  return manifest;
+}
+
+export function beginReleaseTransition({ stateDir, kind, now = new Date(), pid = process.pid }) {
+  if (
+    ![
+      'deploy',
+      'release-rollback',
+      'release-rollback-api',
+      'release-rollback-static',
+      'runtime-rollback',
+    ].includes(kind)
+  ) {
+    throw new Error(`Unknown release transition kind: ${kind}`);
+  }
+  const currentPath = resolve(stateDir, 'current.json');
+  if (!existsSync(currentPath)) {
+    throw new Error('Current release manifest is missing before runtime mutation.');
+  }
+  readTransitionBaseManifest(currentPath);
+  const unresolvedRecoveryBases = listRecoveryBaseManifestPaths(stateDir);
+  if (unresolvedRecoveryBases.length > 0) {
+    throw new Error(
+      `Current release coexists with ${unresolvedRecoveryBases.length} unresolved transition journal(s).`,
+    );
+  }
+  const timestamp = now
+    .toISOString()
+    .replace(/[-:]/gu, '')
+    .replace(/\.\d{3}Z$/u, 'Z');
+  const normalizedPid = Number.isSafeInteger(Number(pid)) && Number(pid) >= 0 ? Number(pid) : 0;
+  const recoveryPath = resolve(
+    stateDir,
+    `current.invalid-${kind}-${timestamp}-${normalizedPid}.json`,
+  );
+  if (existsSync(recoveryPath)) {
+    throw new Error(`Release transition journal already exists: ${basename(recoveryPath)}`);
+  }
+  syncPath(currentPath);
+  renameSync(currentPath, recoveryPath);
+  syncDirectory(stateDir);
+  return recoveryPath;
+}
+
+export function archiveReleaseTransition({
+  stateDir,
+  recoveryPath,
+  disposition = 'recovered',
+  now = new Date(),
+  pid = process.pid,
+}) {
+  const resolvedStateDir = resolve(stateDir);
+  const resolvedRecoveryPath = resolve(recoveryPath);
+  if (
+    dirname(resolvedRecoveryPath) !== resolvedStateDir ||
+    !recoveryBaseNamePattern.test(basename(resolvedRecoveryPath))
+  ) {
+    throw new Error(
+      'Release transition archive requires a typed journal in the release state dir.',
+    );
+  }
+  if (!['recovered', 'superseded'].includes(disposition)) {
+    throw new Error(`Unknown release transition archive disposition: ${disposition}`);
+  }
+
+  const recoveryManifest = readTransitionBaseManifest(resolvedRecoveryPath);
+  const currentManifest = readCurrentManifest(resolvedStateDir);
+  if (!currentManifest) {
+    throw new Error(
+      'A completed current release is required before archiving a transition journal.',
+    );
+  }
+  validateCompleteReleaseManifest(currentManifest);
+  const currentCreatedAtMs = Date.parse(currentManifest.createdAt);
+  const recoveryCreatedAtMs = Date.parse(recoveryManifest.createdAt);
+  if (
+    !Number.isFinite(currentCreatedAtMs) ||
+    !Number.isFinite(recoveryCreatedAtMs) ||
+    currentManifest.releaseId === recoveryManifest.releaseId ||
+    currentCreatedAtMs < recoveryCreatedAtMs
+  ) {
+    throw new Error('Current release does not supersede the transition journal.');
+  }
+
+  const timestamp = now
+    .toISOString()
+    .replace(/[-:]/gu, '')
+    .replace(/\.\d{3}Z$/u, 'Z');
+  const normalizedPid = Number.isSafeInteger(Number(pid)) && Number(pid) >= 0 ? Number(pid) : 0;
+  const archivedPath = `${resolvedRecoveryPath}.${disposition}-${timestamp}-${normalizedPid}`;
+  if (existsSync(archivedPath)) {
+    throw new Error(`Release transition archive already exists: ${basename(archivedPath)}`);
+  }
+
+  syncPath(resolvedRecoveryPath);
+  renameSync(resolvedRecoveryPath, archivedPath);
+  syncDirectory(resolvedStateDir);
+  return archivedPath;
+}
+
+export function listRecoveryBaseManifestPaths(stateDir) {
+  if (!existsSync(stateDir)) {
+    return [];
+  }
+  return readdirSync(stateDir)
+    .filter((name) => recoveryBaseNamePattern.test(name))
+    .map((name) => resolve(stateDir, name));
+}
+
+export function findRecoveryBaseManifest(stateDir, { allowUnknown = false } = {}) {
+  const candidates = listRecoveryBaseManifestPaths(stateDir);
+  if (candidates.length === 0) {
+    return null;
+  }
+  if (candidates.length !== 1) {
+    throw new Error(
+      `Explicit release recovery requires exactly one invalid current manifest; found ${candidates.length}.`,
+    );
+  }
+  if (allowUnknown) {
+    readTransitionBaseManifest(candidates[0]);
+  } else {
+    readRecoveryBaseManifest(candidates[0]);
+  }
+  return candidates[0];
 }
 
 export function buildReleaseManifest({
@@ -172,13 +340,36 @@ function assertReleaseId(releaseId) {
 }
 
 function writeAtomic(path, contents) {
-  const tempPath = resolve(
-    resolve(path, '..'),
-    `.${basename(path)}.${process.pid}.${Date.now()}.tmp`,
-  );
-  writeFileSync(tempPath, contents, { mode: 0o640 });
-  chmodSync(tempPath, 0o640);
-  renameSync(tempPath, path);
+  const parentDir = dirname(resolve(path));
+  const tempPath = resolve(parentDir, `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    writeFileSync(tempPath, contents, { mode: 0o640 });
+    chmodSync(tempPath, 0o640);
+    syncPath(tempPath);
+    renameSync(tempPath, path);
+    syncDirectory(parentDir);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
+}
+
+function syncPath(path) {
+  const file = openSync(path, 'r');
+  try {
+    fsyncSync(file);
+  } finally {
+    closeSync(file);
+  }
+}
+
+function syncDirectory(path) {
+  const directory = openSync(resolve(path), 'r');
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
+  }
 }
 
 function parseCli(argv) {
@@ -234,7 +425,9 @@ function runCli(argv) {
   );
 
   if (command === 'commit' || command === 'inventory') {
-    const current = readCurrentManifest(stateDir);
+    const current = options.currentManifestFile
+      ? readTransitionBaseManifest(options.currentManifestFile)
+      : readCurrentManifest(stateDir);
     const manifest = buildReleaseManifest({
       releaseId: options.releaseId,
       targetSha: options.targetSha || (command === 'inventory' ? 'unknown' : null),
@@ -245,6 +438,9 @@ function runCli(argv) {
       emergencyReason: options.emergencyReason,
       createdAt: options.createdAt,
     });
+    if (command === 'commit') {
+      validateCompleteReleaseManifest(manifest);
+    }
     commitReleaseManifest({
       stateDir,
       manifest,
@@ -258,7 +454,9 @@ function runCli(argv) {
     const releaseId = options.arguments?.[0] || 'current';
     const manifest =
       releaseId === 'current'
-        ? readCurrentManifest(stateDir)
+        ? options.currentManifestFile
+          ? readTransitionBaseManifest(options.currentManifestFile)
+          : readCurrentManifest(stateDir)
         : readReleaseManifest(stateDir, releaseId);
     if (!manifest) {
       process.exitCode = 3;
@@ -273,7 +471,9 @@ function runCli(argv) {
     const [releaseId = 'current', componentId, field] = options.arguments ?? [];
     const manifest =
       releaseId === 'current'
-        ? readCurrentManifest(stateDir)
+        ? options.currentManifestFile
+          ? readTransitionBaseManifest(options.currentManifestFile)
+          : readCurrentManifest(stateDir)
         : readReleaseManifest(stateDir, releaseId);
     const value = manifest?.components?.[componentId]?.[field];
     if (typeof value !== 'string') {
@@ -284,7 +484,57 @@ function runCli(argv) {
     return;
   }
 
-  throw new Error('Usage: release-manifest.mjs commit|inventory|show|field [options]');
+  if (command === 'recovery-base') {
+    const recoveryBase = findRecoveryBaseManifest(stateDir, {
+      allowUnknown: options.allowUnknown === '1',
+    });
+    if (!recoveryBase) {
+      process.exitCode = 3;
+      return;
+    }
+    process.stdout.write(`${recoveryBase}\n`);
+    return;
+  }
+
+  if (command === 'validate-current') {
+    const current = readCurrentManifest(stateDir);
+    if (!current) {
+      process.exitCode = 3;
+      return;
+    }
+    validateCompleteReleaseManifest(current, { allowUnknown: options.allowUnknown === '1' });
+    const unresolvedRecoveryBases = listRecoveryBaseManifestPaths(stateDir);
+    if (unresolvedRecoveryBases.length > 0) {
+      throw new Error(
+        `Current release coexists with ${unresolvedRecoveryBases.length} unresolved transition journal(s).`,
+      );
+    }
+    process.stdout.write(`${JSON.stringify(current, null, 2)}\n`);
+    return;
+  }
+
+  if (command === 'begin-transition') {
+    const recoveryPath = beginReleaseTransition({
+      stateDir,
+      kind: options.kind,
+    });
+    process.stdout.write(`${recoveryPath}\n`);
+    return;
+  }
+
+  if (command === 'archive-transition') {
+    const archivedPath = archiveReleaseTransition({
+      stateDir,
+      recoveryPath: options.currentManifestFile,
+      disposition: options.disposition,
+    });
+    process.stdout.write(`${archivedPath}\n`);
+    return;
+  }
+
+  throw new Error(
+    'Usage: release-manifest.mjs commit|inventory|show|field|recovery-base|validate-current|begin-transition|archive-transition [options]',
+  );
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

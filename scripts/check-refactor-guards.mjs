@@ -42,17 +42,17 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/moderation/moderation.service.legacy.ts',
-    maxLines: 18456,
+    maxLines: 18782,
     targetLines: 17000,
     reason:
-      'ModerationService remains a legacy hotspot; this ceiling includes photo-duplicate enqueue/action bridging across early competing-action returns and lease/message-action fences at existing delete, sanction, and notice boundaries, while unrelated helpers should keep moving to focused modules.',
+      'ModerationService remains a legacy hotspot; this ceiling includes crash-fenced webhook timeout settlement across the BullMQ lock, quarantine lease, and pending OCR boundary plus ordered predecessor deferral at the existing processor boundary, while unrelated helpers should keep moving to focused modules.',
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',
-    maxLines: 9379,
+    maxLines: 9382,
     targetLines: 9000,
     reason:
-      'PrivateControlService is a legacy hotspot; session, draft normalization, and render builders should keep moving to focused modules.',
+      'PrivateControlService is a legacy hotspot; this ceiling includes per-target callback rate-limit identity at the existing delivery boundary, while session, draft normalization, and render builders should keep moving to focused modules.',
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.legacy.tsx',

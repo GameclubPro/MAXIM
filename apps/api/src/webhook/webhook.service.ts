@@ -800,6 +800,7 @@ export class WebhookService {
         processedAt: new Date(),
         queueName: null,
         nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
         errorMessage: null,
       },
     });

@@ -189,6 +189,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });
@@ -208,6 +209,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });
@@ -234,6 +236,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });
@@ -254,6 +257,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });
@@ -294,6 +298,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });
@@ -313,6 +318,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });
@@ -336,6 +342,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });
@@ -381,6 +388,7 @@ describe('ModerationReleaseCallbackService', () => {
       {
         ignoreFailureMetricStatuses: [400, 404],
         botId: 'bot-1',
+        rateLimitEntityId: 'chat-1',
       },
     );
   });

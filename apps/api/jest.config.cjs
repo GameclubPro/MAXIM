@@ -28,8 +28,13 @@ module.exports = {
   },
   moduleFileExtensions: ['ts', 'js', 'json', 'node'],
   transform: {
-    '^.+\\.ts$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],
+    '^.+\\.ts$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.jest.json' }],
+    'node_modules/(?:file-type|strtok3|token-types|uint8array-extras|@tokenizer/inflate|@borewit/text-codec)/.+\\.js$':
+      '<rootDir>/test/jest-esm-to-cjs-transformer.cjs',
   },
+  transformIgnorePatterns: [
+    '/node_modules/(?!(?:file-type|strtok3|token-types|uint8array-extras|@tokenizer/inflate|@borewit/text-codec)/)',
+  ],
   setupFilesAfterEnv: ['<rootDir>/test/setup-silent-logs.ts'],
   collectCoverageFrom: ['src/**/*.ts'],
   coverageDirectory: '<rootDir>/coverage',

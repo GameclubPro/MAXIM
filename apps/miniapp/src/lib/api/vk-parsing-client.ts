@@ -27,7 +27,7 @@ import {
   type VkParsingFeed,
   type VkParsingFeedQuery,
   type VkParsingRefreshResult,
-} from '@maxim/contracts';
+} from '@maxim/contracts/vk-parsing';
 import type { ApiTransport } from './transport';
 
 export type VkParsingEntityType = 'chat' | 'channel';

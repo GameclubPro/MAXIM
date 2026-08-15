@@ -3,6 +3,7 @@ import {
   systemBotRoutePreviewResponseSchema,
   systemBotsSnapshotSchema,
   systemCanaryStateSchema,
+  systemDashboardActionLatencySchema,
   systemDashboardWebhookSloSchema,
   systemQueueGroupHealthSchema,
   systemRollbackReadinessSchema,
@@ -1281,6 +1282,15 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
       : {}),
     ...(value.webhookSlo ? { webhookSlo: parseSystemDashboardWebhookSlo(value.webhookSlo) } : {}),
     ...(value.slo ? { slo: parseSystemDashboardWebhookSlo(value.slo) } : {}),
+    ...(value.actionLatency !== undefined
+      ? {
+          actionLatency: parseContractValue(
+            systemDashboardActionLatencySchema,
+            value.actionLatency,
+            'system dashboard action latency',
+          ),
+        }
+      : {}),
   };
 }
 

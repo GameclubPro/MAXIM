@@ -2,16 +2,20 @@ import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH,
   CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH,
-  type BroadcastImage,
-  type BroadcastLinkButton,
   type ChannelPostSignatureSettings,
-  type ChannelSettings,
-  type ChannelSettingsScreenResponse,
-  type ChannelSuggestionEntryMode,
-  type ManagedAutopostRuleDetails,
-  type ManagedAutopostRuleSummary,
-  type ManagedBroadcastDetails,
-} from '@maxim/contracts';
+} from '@maxim/contracts/channel-post-signature';
+import type {
+  BroadcastImage,
+  BroadcastLinkButton,
+  ManagedAutopostRuleDetails,
+  ManagedAutopostRuleSummary,
+  ManagedBroadcastDetails,
+} from '@maxim/contracts/broadcast';
+import type {
+  ChannelSettings,
+  ChannelSettingsScreenResponse,
+  ChannelSuggestionEntryMode,
+} from '@maxim/contracts/settings';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Link as IconoirLink,

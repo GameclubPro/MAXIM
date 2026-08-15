@@ -36,6 +36,7 @@ export function readPrismaPoolConfig(env: Record<string, unknown> = process.env)
       'PRISMA_POOL_CONNECTION_TIMEOUT_MS',
     ),
     ...readOptionalPositiveInt(env, 'PRISMA_PG_POOL_MAX_LIFETIME_SEC', 'maxLifetimeSeconds'),
+    ...readOptionalPositiveInt(env, 'PRISMA_PG_STATEMENT_TIMEOUT_MS', 'statement_timeout'),
   };
 }
 

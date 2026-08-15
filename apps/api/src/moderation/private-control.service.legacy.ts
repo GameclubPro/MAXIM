@@ -370,6 +370,7 @@ export class PrivateControlService {
           DEFERRED_PRIVATE_CALLBACK_NOTIFICATION,
           this.privateCallbackAckTimeoutMs,
           this.resolvePrivateDeliveryBotId(context),
+          context.chatId,
         );
       }
 
@@ -3478,6 +3479,7 @@ export class PrivateControlService {
                 'Черновик сохранён',
                 undefined,
                 this.resolvePrivateDeliveryBotId(context, session),
+                context.chatId,
               );
             }
             return;
@@ -7772,6 +7774,7 @@ export class PrivateControlService {
         options,
         this.privateCallbackEditTimeoutMs,
         botId,
+        context.chatId,
       );
       if (edited) {
         return;
@@ -7782,6 +7785,7 @@ export class PrivateControlService {
         callback.notification ?? 'Готово',
         this.privateCallbackAckTimeoutMs,
         botId,
+        context.chatId,
       );
     }
 
@@ -7801,6 +7805,7 @@ export class PrivateControlService {
         callback.notification ?? 'Готово',
         this.privateCallbackAckTimeoutMs,
         botId,
+        context.chatId,
       );
     }
 
@@ -8288,6 +8293,7 @@ export class PrivateControlService {
     options?: MaxSendMessageOptions,
     timeoutMs?: number,
     botId?: string,
+    rateLimitEntityId?: string,
   ): Promise<boolean> {
     try {
       await this.maxClient.answerCallback(
@@ -8301,6 +8307,7 @@ export class PrivateControlService {
           ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
           ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
           ...(botId ? { botId } : {}),
+          ...(rateLimitEntityId ? { rateLimitEntityId } : {}),
         },
       );
       return true;
@@ -8321,12 +8328,14 @@ export class PrivateControlService {
     notification: string,
     timeoutMs?: number,
     botId?: string,
+    rateLimitEntityId?: string,
   ): Promise<void> {
     try {
       await this.maxClient.answerCallback(callbackId, notification, undefined, {
         ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
         ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
         ...(botId ? { botId } : {}),
+        ...(rateLimitEntityId ? { rateLimitEntityId } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(

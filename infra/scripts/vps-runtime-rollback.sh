@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+# shellcheck source=infra/scripts/lib/webhook-rollout-quiescence.sh
+source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 # shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
@@ -22,7 +24,9 @@ PRESERVED_COMPOSE_FILE=""
 PRESERVED_MIGRATION_COMPOSE_FILE=""
 RELEASE_MANIFEST_HELPER=""
 SMOKE_HELPER=""
+WEBHOOK_ROLLOUT_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
+RECOVERY_BASE_MANIFEST=""
 TARGET_HAS_MEDIA_ANALYSIS=0
 TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
 TARGET_COMMERCIAL_OCR_VERSION=""
@@ -109,12 +113,42 @@ invalidate_stale_release_inventory() {
   fi
 }
 
+select_runtime_rollback_recovery_base() {
+  local recovery_status
+
+  if [[ "$MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE" != "1" ]]; then
+    echo "A valid current release manifest is required before ref-based rollback." >&2
+    return 1
+  fi
+  if [[ -e "$RELEASE_STATE_DIR/current.json" ]]; then
+    echo "Current release manifest exists but is invalid; refusing ref-based rollback." >&2
+    return 1
+  fi
+  if RECOVERY_BASE_MANIFEST="$(
+    MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+      node "$ROOT_DIR/infra/scripts/release-manifest.mjs" recovery-base
+  )"; then
+    echo "Adopting the single validated interrupted release manifest."
+    return 0
+  else
+    recovery_status=$?
+  fi
+  RECOVERY_BASE_MANIFEST=""
+  if [[ "$recovery_status" -eq 3 ]]; then
+    echo "Explicit runtime rollback recovery requires one invalid release manifest." >&2
+    return 1
+  fi
+  return "$recovery_status"
+}
+
 cleanup() {
+  maxim_webhook_rollout_warn_if_paused
   invalidate_stale_release_inventory
   [[ -z "$PRESERVED_COMPOSE_FILE" ]] || rm -f "$PRESERVED_COMPOSE_FILE"
   [[ -z "$PRESERVED_MIGRATION_COMPOSE_FILE" ]] || rm -f "$PRESERVED_MIGRATION_COMPOSE_FILE"
   [[ -z "$RELEASE_MANIFEST_HELPER" ]] || rm -f "$RELEASE_MANIFEST_HELPER"
   [[ -z "$SMOKE_HELPER" ]] || rm -f "$SMOKE_HELPER"
+  [[ -z "$WEBHOOK_ROLLOUT_HELPER" ]] || rm -f "$WEBHOOK_ROLLOUT_HELPER"
   [[ -z "$APPLIED_MIGRATIONS_FILE" ]] || rm -f "$APPLIED_MIGRATIONS_FILE"
   release_deploy_lock
 }
@@ -265,6 +299,36 @@ verify_service_image_id() {
   fi
 }
 
+begin_runtime_rollback_transition() {
+  if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+    return 0
+  fi
+  if ! RECOVERY_BASE_MANIFEST="$(
+    MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+      node "$RELEASE_MANIFEST_HELPER" begin-transition --kind runtime-rollback
+  )"; then
+    RECOVERY_BASE_MANIFEST=""
+    echo "Could not journal the current release before runtime rollback mutation." >&2
+    return 1
+  fi
+  echo "Current release inventory journaled before runtime rollback mutation."
+}
+
+runtime_recovery_base_field() {
+  MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+    node "$RELEASE_MANIFEST_HELPER" field current "$1" "$2" \
+      --current-manifest-file "$RECOVERY_BASE_MANIFEST"
+}
+
+verify_inherited_static_components() {
+  local expected_image_id
+
+  expected_image_id="$(runtime_recovery_base_field miniapp-major-static imageId)"
+  verify_service_image_id miniapp-major-static "$expected_image_id"
+  expected_image_id="$(runtime_recovery_base_field admin-static imageId)"
+  verify_service_image_id admin-static "$expected_image_id"
+}
+
 strict_smoke_json_ok() {
   MAXIM_SMOKE_TIMEOUT_MS="${MAXIM_ROLLBACK_SMOKE_TIMEOUT_MS:-3000}" \
     node "$SMOKE_HELPER" json-ok "$1"
@@ -296,6 +360,7 @@ record_runtime_rollback_release() {
   local release_id
   local args=()
 
+  verify_inherited_static_components
   read_applied_prisma_migrations >"$APPLIED_MIGRATIONS_FILE"
   release_id="runtime-rollback-$(date -u +%Y%m%dT%H%M%S%NZ)-${TARGET_FULL_SHA:0:12}-$$"
   args=(
@@ -325,8 +390,21 @@ record_runtime_rollback_release() {
       )
     fi
   fi
+  if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+    args+=(--current-manifest-file "$RECOVERY_BASE_MANIFEST")
+  fi
   MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" node "$RELEASE_MANIFEST_HELPER" "${args[@]}" >/dev/null
   MANIFEST_RECORDED=1
+  if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+    if ! MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+      node "$RELEASE_MANIFEST_HELPER" archive-transition \
+        --current-manifest-file "$RECOVERY_BASE_MANIFEST" \
+        --disposition recovered >/dev/null; then
+      echo "CRITICAL: could not archive the consumed runtime rollback recovery manifest." >&2
+      return 1
+    fi
+    RECOVERY_BASE_MANIFEST=""
+  fi
   echo "Release manifest committed: $release_id"
 }
 
@@ -344,14 +422,12 @@ if [[ ! -s infra/scripts/release-manifest.mjs || ! -s scripts/smoke-http.mjs ]];
   echo "Current checkout is missing release manifest or strict smoke tooling." >&2
   exit 1
 fi
-if ! MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
-  node infra/scripts/release-manifest.mjs show current >/dev/null; then
-  echo "A valid current release manifest is required before ref-based rollback." >&2
-  exit 1
-fi
-
 acquire_deploy_lock
 trap cleanup EXIT
+if ! MAXIM_RELEASE_STATE_DIR="$RELEASE_STATE_DIR" \
+  node infra/scripts/release-manifest.mjs validate-current >/dev/null; then
+  select_runtime_rollback_recovery_base
+fi
 ensure_compose_env
 refuse_conflicting_scale_stack
 ensure_stateful_services_ready
@@ -359,11 +435,14 @@ PRESERVED_COMPOSE_FILE="$(mktemp "$ROOT_DIR/infra/.runtime-rollback-compose.XXXX
 PRESERVED_MIGRATION_COMPOSE_FILE="$(mktemp "$ROOT_DIR/infra/.runtime-rollback-no-build.XXXXXX.yml")"
 RELEASE_MANIFEST_HELPER="$(mktemp --suffix=.mjs)"
 SMOKE_HELPER="$(mktemp --suffix=.mjs)"
+WEBHOOK_ROLLOUT_HELPER="$(mktemp --suffix=.cjs)"
 APPLIED_MIGRATIONS_FILE="$(mktemp)"
 cp infra/docker-compose.yml "$PRESERVED_COMPOSE_FILE"
 cp infra/docker-compose.runtime-no-build.yml "$PRESERVED_MIGRATION_COMPOSE_FILE"
 cp infra/scripts/release-manifest.mjs "$RELEASE_MANIFEST_HELPER"
 cp scripts/smoke-http.mjs "$SMOKE_HELPER"
+cp "$MAXIM_WEBHOOK_ROLLOUT_CONTROL_HELPER" "$WEBHOOK_ROLLOUT_HELPER"
+MAXIM_WEBHOOK_ROLLOUT_CONTROL_HELPER="$WEBHOOK_ROLLOUT_HELPER"
 COMPOSE_FILES=(--env-file "$ROOT_DIR/.env" -p infra -f "$PRESERVED_COMPOSE_FILE")
 MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f "$PRESERVED_MIGRATION_COMPOSE_FILE")
 maxim_topology_prepare_commercial_ocr_target \
@@ -385,31 +464,44 @@ maxim_topology_refuse_dirty_api_build_inputs
 export MAXIM_API_IMAGE="$ROLLBACK_API_IMAGE"
 maxim_topology_build_shared_api_image "$ROLLBACK_API_IMAGE" "$TARGET_FULL_SHA"
 ROLLBACK_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_API_IMAGE")"
+begin_runtime_rollback_transition
 ROLLBACK_RUNTIME_STARTED=1
+verify_inherited_static_components
 MAXIM_MIGRATION_API_IMAGE="$ROLLBACK_API_IMAGE" \
   docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
   ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
+maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
   remove_incompatible_media_analysis_container
 else
   ROLLBACK_RUNTIME_STARTED=1
   maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
 fi
-API_SERVICES_WITHOUT_MEDIA_ANALYSIS=()
-for service in "${SERVICES[@]}"; do
-  if [[ "$service" != "$MAXIM_MEDIA_ANALYSIS_SERVICE" ]]; then
-    API_SERVICES_WITHOUT_MEDIA_ANALYSIS+=("$service")
-  fi
-done
-docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate \
-  "${API_SERVICES_WITHOUT_MEDIA_ANALYSIS[@]}"
-for service in "${API_SERVICES_WITHOUT_MEDIA_ANALYSIS[@]}"; do
-  wait_for_service_running "$service" 180
-done
-if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+
+recreate_runtime_api_wave() {
+  local label="$1"
+  shift
+  local wave_services=("$@")
+  local wave_service
+
+  [[ "${#wave_services[@]}" -gt 0 ]] || return 0
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  ROLLBACK_RUNTIME_STARTED=1
+  echo "Recreating runtime rollback $label services: ${wave_services[*]}"
   docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --no-build --force-recreate \
-    "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+    "${wave_services[@]}"
+  for wave_service in "${wave_services[@]}"; do
+    wait_for_service_running "$wave_service" 180
+  done
+}
+
+recreate_runtime_api_wave non-webhook api-action api-admin api-ingress
+if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  recreate_runtime_api_wave media-analysis "$MAXIM_MEDIA_ANALYSIS_SERVICE"
 fi
+recreate_runtime_api_wave moderation "${MAXIM_WEBHOOK_MODERATION_SERVICES[@]}"
+recreate_runtime_api_wave enqueue api-enqueue
+maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
 
 for service in "${SERVICES[@]}"; do
   wait_for_service_running "$service" 180
@@ -422,9 +514,12 @@ if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
 fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
-wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
 if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
+fi
+maxim_webhook_resume_after_api_fence COMPOSE_FILES
+wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
+if contains_service "api-admin" "${SERVICES[@]}"; then
   wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
 fi
 wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180

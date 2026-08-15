@@ -113,7 +113,7 @@ function createServiceFixture() {
           return null;
         }
         return {
-          entityType: chat.entityType ?? null,
+          entityType: chat.entityType ?? ChatEntityType.CHAT,
           catalogKind: chat.catalogKind ?? null,
           routingState: chat.routingState ?? ChatRoutingState.READY,
           routingVersion: chat.routingVersion ?? 0,
@@ -3078,6 +3078,91 @@ describe('MaxBotLinkService', () => {
         fallbackToPrimary: false,
       }),
     ).resolves.toBeNull();
+  });
+
+  it.each([
+    {
+      label: 'accepts current chat write permission',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      expected: true,
+    },
+    {
+      label: 'accepts legacy chat post-edit-delete permission',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: false,
+      isOwner: true,
+      permissions: ['post_edit_delete_message'],
+      expected: true,
+    },
+    {
+      label: 'rejects channel edit permission in a chat',
+      entityType: ChatEntityType.CHAT,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['edit_message'],
+      expected: false,
+    },
+    {
+      label: 'accepts legacy channel edit-message permission',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: false,
+      isOwner: true,
+      permissions: ['edit_message'],
+      expected: true,
+    },
+    {
+      label: 'rejects chat post-edit-delete permission in a channel',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['post_edit_delete_message'],
+      expected: false,
+    },
+    {
+      label: 'rejects a channel owner without explicit edit permission',
+      entityType: ChatEntityType.CHANNEL,
+      isAdmin: false,
+      isOwner: true,
+      permissions: [],
+      expected: false,
+    },
+  ])('$label', async ({ entityType, isAdmin, isOwner, permissions, expected }) => {
+    const fixture = createServiceFixture();
+    const chatId = `edit-matrix-${entityType}-${permissions.join('-') || 'none'}-${String(isOwner)}`;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Edit capability matrix',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType,
+    });
+    fixture.memberships.push({
+      chatId,
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-08-15T10:00:00.000Z',
+        isAdmin,
+        isOwner,
+        permissions,
+      },
+      createdAt: new Date('2026-08-15T10:00:00.000Z'),
+      updatedAt: new Date('2026-08-15T10:00:00.000Z'),
+      lastSeenAt: new Date('2026-08-15T10:00:00.000Z'),
+      lastWebhookAt: new Date('2026-08-15T10:00:00.000Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId,
+        action: 'edit_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBe(expected ? 'id613002203036_bot' : null);
   });
 
   it('does not treat non-empty admin permissions as delete-capable without a delete alias', async () => {

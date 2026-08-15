@@ -352,6 +352,7 @@ export function deleteCapabilityReasonLabel(
     access_state_unconfirmed: 'Статус администратора не подтвержден',
     bot_not_actionable: 'Бот не исполняет действия',
     not_admin_or_owner: 'Бот не администратор',
+    entity_type_unknown: 'Тип сущности не определен',
     missing_chat_delete_permission: 'Нет write для чата',
     missing_channel_delete_permission: 'Нет delete для канала',
   };

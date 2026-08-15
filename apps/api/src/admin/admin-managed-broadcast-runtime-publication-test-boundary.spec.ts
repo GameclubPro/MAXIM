@@ -1,4 +1,5 @@
 import { sendBroadcastRequestSchema } from '@maxim/contracts';
+import { validateMaxMediaUploadPayload } from '../max/max-media-upload-validation';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import {
   PUBLICATION_VIDEO_ASSET_ID_FIELD,
@@ -6,9 +7,13 @@ import {
 } from './publication-video-media';
 
 const user = { userId: 'user-1', username: null, displayName: null };
+const TINY_JPEG_BASE64 =
+  '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
 
 function createRuntime() {
-  const runtime = new AdminManagedBroadcastRuntime({} as never);
+  const runtime = new AdminManagedBroadcastRuntime({
+    maxClient: { validateMediaUploadPayload: validateMaxMediaUploadPayload },
+  } as never);
   const assertAdminAccess = jest
     .spyOn(runtime as any, 'assertManagedEntityAdminAccess')
     .mockResolvedValue(undefined);
@@ -92,8 +97,39 @@ describe('AdminManagedBroadcastRuntime publication test request boundary', () =>
     expect(assertAdminAccess).toHaveBeenLastCalledWith('chat-1', 'user-1', 'chat');
   });
 
+  it('canonicalizes managed broadcast image metadata from validated bytes', async () => {
+    const { runtime } = createRuntime();
+    const body = createPayload({
+      text: '',
+      imageEnabled: true,
+      imageBase64: TINY_JPEG_BASE64,
+      imageMimeType: 'image/png',
+      imageFileName: '../cover\u0000.png',
+      images: [
+        {
+          base64: TINY_JPEG_BASE64,
+          mimeType: 'image/png',
+          fileName: '../cover\u0000.png',
+        },
+      ],
+    });
+
+    const prepared = await preparePublicationTest(runtime, body);
+
+    expect(prepared.payload).toEqual(
+      expect.objectContaining({
+        imageMimeType: 'image/jpeg',
+        imageFileName: 'cover_.jpg',
+        images: [expect.objectContaining({ mimeType: 'image/jpeg', fileName: 'cover_.jpg' })],
+      }),
+    );
+  });
+
   it('accepts one publication image above the legacy 8,000,000-character limit', async () => {
     const { runtime } = createRuntime();
+    jest
+      .spyOn((runtime as any).mediaRuntime, 'validateManagedBroadcastMediaPayload')
+      .mockResolvedValue(undefined);
     const base64 = createBase64(8_000_004);
     const body = createPayload({
       requestId: undefined,
@@ -116,6 +152,9 @@ describe('AdminManagedBroadcastRuntime publication test request boundary', () =>
 
   it('accepts a publication gallery above the legacy 24,000,000-character total limit', async () => {
     const { runtime } = createRuntime();
+    jest
+      .spyOn((runtime as any).mediaRuntime, 'validateManagedBroadcastMediaPayload')
+      .mockResolvedValue(undefined);
     const images = ['AAAA', 'AAAB', 'AAAC'].map((suffix, index) => ({
       base64: createBase64(8_000_004, suffix),
       mimeType: 'image/jpeg',
@@ -145,6 +184,23 @@ describe('AdminManagedBroadcastRuntime publication test request boundary', () =>
     ).toBe(24_000_012);
     expect(prepared.payload.mediaType).toBe('image');
     expect((prepared.payload.mediaPayload as { images: unknown[] }).images).toHaveLength(3);
+  });
+
+  it('rejects malformed image bytes before returning a request that can be persisted', async () => {
+    const { runtime } = createRuntime();
+    const base64 = Buffer.from('not-an-image').toString('base64');
+    const body = createPayload({
+      text: '',
+      imageEnabled: true,
+      imageBase64: base64,
+      imageMimeType: 'image/png',
+      imageFileName: 'broken.png',
+      images: [{ base64, mimeType: 'image/png', fileName: 'broken.png' }],
+    });
+
+    await expect(preparePublicationTest(runtime, body)).rejects.toThrow(
+      'Не удалось распознать файл. Выберите исправный файл поддерживаемого формата.',
+    );
   });
 
   it.each([

@@ -21,9 +21,34 @@ const NORMALIZED_IMAGE_MIME_TYPES: Record<string, string> = {
   'image/jpg': 'image/jpeg',
   'image/pjpeg': 'image/jpeg',
 };
+const IMAGE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  'image/bmp': '.bmp',
+  'image/gif': '.gif',
+  'image/heic': '.heic',
+  'image/heif': '.heic',
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/tiff': '.tiff',
+};
+const MAX_DIRECT_UPLOAD_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/tiff',
+  'image/bmp',
+  'image/heic',
+]);
 
 export function resolveMaxUploadImageTargetMimeTypes(inputMimeType: string): string[] {
   return inputMimeType === 'image/png' ? ['image/png', 'image/jpeg'] : ['image/jpeg', 'image/png'];
+}
+
+export function canUploadOriginalImageToMax(inputMimeType: string, fileName: string): boolean {
+  if (MAX_DIRECT_UPLOAD_IMAGE_MIME_TYPES.has(inputMimeType)) {
+    return true;
+  }
+
+  return inputMimeType === 'image/heif' && /\.heic$/iu.test(fileName.trim());
 }
 
 export type PreparedBroadcastImage = {
@@ -187,21 +212,10 @@ function ensureTypedImageBlob(file: File, mimeType: string): Blob {
   return new Blob([file], { type: mimeType });
 }
 
-function resolveOutputExtension(mimeType: string): string {
-  if (mimeType === 'image/png') {
-    return '.png';
-  }
-  if (mimeType === 'image/gif') {
-    return '.gif';
-  }
-
-  return '.jpg';
-}
-
-function resolveOutputFileName(fileName: string, mimeType: string): string {
+export function resolveOutputFileName(fileName: string, mimeType: string): string {
   const normalized = fileName.trim() || 'broadcast-image';
   const baseName = normalized.replace(/\.[^./\\]+$/u, '') || 'broadcast-image';
-  return `${baseName}${resolveOutputExtension(mimeType)}`;
+  return `${baseName}${IMAGE_EXTENSION_BY_MIME_TYPE[mimeType] ?? '.jpg'}`;
 }
 
 function scaleImageSize(
@@ -362,7 +376,7 @@ export async function prepareBroadcastImage(
         }
       }
 
-      if (inputMimeType && file.size <= maxImageBytes) {
+      if (canUploadOriginalImageToMax(inputMimeType, file.name) && file.size <= maxImageBytes) {
         return readOriginalImage(sourceBlob, inputMimeType, file.name, {
           width: sourceWidth,
           height: sourceHeight,
@@ -386,7 +400,7 @@ export async function prepareBroadcastImage(
       throw new Error('Нужен файл изображения.');
     }
 
-    if (file.size <= maxImageBytes) {
+    if (canUploadOriginalImageToMax(inputMimeType, file.name) && file.size <= maxImageBytes) {
       return readOriginalImage(sourceBlob, inputMimeType, file.name);
     }
 

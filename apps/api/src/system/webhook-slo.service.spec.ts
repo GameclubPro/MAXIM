@@ -1,4 +1,59 @@
 import { WebhookSloService } from './webhook-slo.service';
+import type {
+  WebhookIngressMetricsSnapshot,
+  WebhookRouteMetrics,
+  WebhookRouteOutcomeCounts,
+} from './webhook-ingress-metrics.service';
+
+const SERVICE_ROUTE_FAILURE_OUTCOMES = [
+  'admission_rejected',
+  'invalid_json',
+  'invalid_payload',
+  'payload_too_large',
+  'timed_out',
+  'failed',
+] as const;
+
+function createRouteMetrics(
+  outcomeOverrides: Partial<WebhookRouteOutcomeCounts> = {},
+): WebhookRouteMetrics {
+  const outcomes: WebhookRouteOutcomeCounts = {
+    accepted: 0,
+    authentication_rejected: 0,
+    admission_rejected: 0,
+    invalid_json: 0,
+    invalid_payload: 0,
+    payload_too_large: 0,
+    timed_out: 0,
+    failed: 0,
+    ...outcomeOverrides,
+  };
+  return {
+    attemptedRequests: Object.values(outcomes).reduce((sum, count) => sum + count, 0),
+    outcomes,
+    bots: {},
+  };
+}
+
+function createHealthyIngress(
+  overrides: Partial<WebhookIngressMetricsSnapshot> = {},
+): WebhookIngressMetricsSnapshot {
+  return {
+    available: true,
+    targetMs: 2_000,
+    attemptedReceipts: 0,
+    persistedReceipts: 0,
+    failedReceipts: 0,
+    rejectedReceipts: 0,
+    sampledReceipts: 0,
+    p95LatencyMs: null,
+    p99LatencyMs: null,
+    underTargetRatio: null,
+    bots: {},
+    route: createRouteMetrics(),
+    ...overrides,
+  };
+}
 
 function createConfig(overrides: Record<string, unknown> = {}) {
   return {
@@ -15,6 +70,7 @@ describe('WebhookSloService', () => {
     const now = new Date('2026-04-29T12:00:00.000Z');
     jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
     const prisma = {
+      $transaction: jest.fn((queries: Array<Promise<unknown>>) => Promise.all(queries)),
       webhookEvent: {
         count: jest
           .fn()
@@ -78,6 +134,7 @@ describe('WebhookSloService', () => {
       attemptedReceipts: 11,
       persistedReceipts: 10,
       failedReceipts: 1,
+      rejectedReceipts: 0,
       sampledReceipts: 10,
       p95LatencyMs: 1_500,
       p99LatencyMs: 2_000,
@@ -87,6 +144,7 @@ describe('WebhookSloService', () => {
           attemptedReceipts: 11,
           persistedReceipts: 10,
           failedReceipts: 1,
+          rejectedReceipts: 0,
         },
       },
     };
@@ -107,7 +165,10 @@ describe('WebhookSloService', () => {
       totalEvents: 10,
       processedEvents: 8,
       failedEvents: 1,
+      sampleLimit: 5_000,
       sampledProcessedEvents: 3,
+      processedSampleTruncated: false,
+      processedSampledFrom: '2026-04-29T11:59:56.800Z',
       p95ProcessingMs: 2400,
       underTargetRatio: 0.667,
       oldestUnprocessedLagSec: 10,
@@ -117,6 +178,8 @@ describe('WebhookSloService', () => {
       enqueue: {
         targetMs: 500,
         sampledEvents: 3,
+        sampleTruncated: false,
+        sampledFrom: '2026-04-29T11:59:55.900Z',
         p95LatencyMs: 1600,
         p99LatencyMs: 1600,
         underTargetRatio: 0.667,
@@ -129,6 +192,121 @@ describe('WebhookSloService', () => {
         executionClaims: 4,
         claimsPerReceiptRatio: 0.4,
       },
+      generatedAt: '2026-04-29T12:00:00.000Z',
+    });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Array), {
+      isolationLevel: 'RepeatableRead',
+    });
+    expect(prisma.webhookEvent.count).toHaveBeenNthCalledWith(1, {
+      where: {
+        createdAt: {
+          gte: new Date('2026-04-29T11:45:00.000Z'),
+          lte: now,
+        },
+      },
+    });
+    expect(prisma.webhookEvent.count).toHaveBeenNthCalledWith(2, {
+      where: {
+        createdAt: {
+          gte: new Date('2026-04-29T11:45:00.000Z'),
+          lte: now,
+        },
+        status: 'PROCESSED',
+        processedAt: { not: null, lte: now },
+      },
+    });
+    expect(prisma.webhookEvent.count).toHaveBeenNthCalledWith(3, {
+      where: {
+        createdAt: {
+          gte: new Date('2026-04-29T11:45:00.000Z'),
+          lte: now,
+        },
+        status: 'FAILED',
+      },
+    });
+    expect(prisma.webhookEvent.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: {
+          createdAt: {
+            gte: new Date('2026-04-29T11:45:00.000Z'),
+            lte: now,
+          },
+          status: 'PROCESSED',
+          processedAt: { not: null, lte: now },
+        },
+      }),
+    );
+    expect(prisma.webhookEvent.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          createdAt: {
+            gte: new Date('2026-04-29T11:45:00.000Z'),
+            lte: now,
+          },
+          queuedAt: { not: null, lte: now },
+        },
+      }),
+    );
+    expect(prisma.webhookEvent.findFirst).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: {
+          createdAt: {
+            gte: new Date('2026-04-29T11:45:00.000Z'),
+            lte: now,
+          },
+          status: { in: ['RECEIVED', 'QUEUED'] },
+        },
+      }),
+    );
+    expect(prisma.webhookEvent.findFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          createdAt: {
+            gte: new Date('2026-04-29T11:45:00.000Z'),
+            lte: now,
+          },
+          status: 'RECEIVED',
+          queuedAt: null,
+        },
+      }),
+    );
+    expect(prisma.webhookEvent.findFirst).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        where: {
+          createdAt: {
+            gte: new Date('2026-04-29T11:45:00.000Z'),
+            lte: now,
+          },
+          status: 'PROCESSED',
+          processedAt: { not: null, lte: now },
+        },
+      }),
+    );
+    expect(prisma.webhookEvent.findFirst).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        where: {
+          createdAt: {
+            gte: new Date('2026-04-29T11:45:00.000Z'),
+            lte: now,
+          },
+          queuedAt: { not: null, lte: now },
+        },
+      }),
+    );
+    expect(prisma.webhookExecutionClaim.count).toHaveBeenCalledWith({
+      where: {
+        kind: 'EXECUTION',
+        createdAt: {
+          gte: new Date('2026-04-29T11:45:00.000Z'),
+          lte: now,
+        },
+      },
     });
   });
 
@@ -136,6 +314,7 @@ describe('WebhookSloService', () => {
     const now = new Date('2026-04-29T12:00:00.000Z');
     jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
     const prisma = {
+      $transaction: jest.fn((queries: Array<Promise<unknown>>) => Promise.all(queries)),
       webhookEvent: {
         count: jest.fn().mockResolvedValueOnce(0).mockResolvedValueOnce(0).mockResolvedValueOnce(0),
         findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),
@@ -159,11 +338,16 @@ describe('WebhookSloService', () => {
 
     await expect(service.getSnapshot()).resolves.toMatchObject({
       status: 'healthy',
+      sampleLimit: 5_000,
       sampledProcessedEvents: 0,
+      processedSampleTruncated: false,
+      processedSampledFrom: null,
       p95ProcessingMs: null,
       underTargetRatio: null,
       enqueue: {
         sampledEvents: 0,
+        sampleTruncated: false,
+        sampledFrom: null,
         p95LatencyMs: null,
         p99LatencyMs: null,
         underTargetRatio: null,
@@ -175,6 +359,7 @@ describe('WebhookSloService', () => {
         targetMs: 2_000,
         sampledReceipts: 0,
         failedReceipts: 0,
+        rejectedReceipts: 0,
       },
       canonicalExecution: {
         receipts: 0,
@@ -184,10 +369,125 @@ describe('WebhookSloService', () => {
     });
   });
 
+  it('caps the configured sample size before issuing database reads', async () => {
+    const now = new Date('2026-04-29T12:00:00.000Z');
+    jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
+    const prisma = {
+      $transaction: jest.fn((queries: Array<Promise<unknown>>) => Promise.all(queries)),
+      webhookEvent: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      webhookExecutionClaim: {
+        count: jest.fn().mockResolvedValue(0),
+      },
+    };
+    const service = new WebhookSloService(
+      prisma as never,
+      createConfig({
+        SYSTEM_WEBHOOK_SLO_WINDOW_SEC: 900,
+        SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: 50_000,
+      }) as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      sampleLimit: 5_000,
+    });
+    expect(prisma.webhookEvent.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ take: 5_001 }),
+    );
+    expect(prisma.webhookEvent.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ take: 5_001 }),
+    );
+  });
+
+  it('reports independently truncated processing and enqueue samples', async () => {
+    const now = new Date('2026-04-29T12:00:00.000Z');
+    jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
+    const prisma = {
+      $transaction: jest.fn((queries: Array<Promise<unknown>>) => Promise.all(queries)),
+      webhookEvent: {
+        count: jest.fn().mockResolvedValueOnce(3).mockResolvedValueOnce(3).mockResolvedValueOnce(0),
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([
+            {
+              createdAt: new Date('2026-04-29T11:59:59.800Z'),
+              processedAt: new Date('2026-04-29T11:59:59.900Z'),
+            },
+            {
+              createdAt: new Date('2026-04-29T11:59:59.500Z'),
+              processedAt: new Date('2026-04-29T11:59:59.700Z'),
+            },
+            {
+              createdAt: new Date('2026-04-29T11:59:50.000Z'),
+              processedAt: new Date('2026-04-29T11:59:59.600Z'),
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              createdAt: new Date('2026-04-29T11:59:59.900Z'),
+              queuedAt: new Date('2026-04-29T11:59:59.950Z'),
+            },
+            {
+              createdAt: new Date('2026-04-29T11:59:59.600Z'),
+              queuedAt: new Date('2026-04-29T11:59:59.750Z'),
+            },
+            {
+              createdAt: new Date('2026-04-29T11:59:50.000Z'),
+              queuedAt: new Date('2026-04-29T11:59:59.650Z'),
+            },
+          ]),
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null),
+      },
+      webhookExecutionClaim: {
+        count: jest.fn().mockResolvedValue(0),
+      },
+    };
+    const service = new WebhookSloService(
+      prisma as never,
+      createConfig({
+        SYSTEM_WEBHOOK_SLO_WINDOW_SEC: 900,
+        SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: 2,
+      }) as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      sampleLimit: 2,
+      sampledProcessedEvents: 2,
+      processedSampleTruncated: true,
+      processedSampledFrom: '2026-04-29T11:59:59.700Z',
+      p95ProcessingMs: 200,
+      enqueue: {
+        sampledEvents: 2,
+        sampleTruncated: true,
+        sampledFrom: '2026-04-29T11:59:59.750Z',
+        p95LatencyMs: 150,
+      },
+    });
+    expect(prisma.webhookEvent.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ take: 3 }),
+    );
+    expect(prisma.webhookEvent.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ take: 3 }),
+    );
+  });
+
   it('makes a slow ingress p99 critical even when downstream processing is empty', async () => {
     const now = new Date('2026-04-29T12:00:00.000Z');
     jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
     const prisma = {
+      $transaction: jest.fn((queries: Array<Promise<unknown>>) => Promise.all(queries)),
       webhookEvent: {
         count: jest.fn().mockResolvedValueOnce(6).mockResolvedValueOnce(6).mockResolvedValueOnce(0),
         findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),
@@ -212,6 +512,7 @@ describe('WebhookSloService', () => {
           attemptedReceipts: 6,
           persistedReceipts: 6,
           failedReceipts: 0,
+          rejectedReceipts: 0,
           sampledReceipts: 6,
           p95LatencyMs: 2_000,
           p99LatencyMs: 3_000,
@@ -233,5 +534,98 @@ describe('WebhookSloService', () => {
         claimsPerReceiptRatio: 0.5,
       },
     });
+  });
+
+  it.each(SERVICE_ROUTE_FAILURE_OUTCOMES)(
+    'marks the service-owned route outcome %s as warning',
+    (outcome) => {
+      const service = new WebhookSloService({} as never, createConfig() as never);
+      const subject = service as unknown as {
+        resolveStatus: (params: {
+          failedEvents: number;
+          underTargetRatio: number | null;
+          oldestUnprocessedLagSec: number;
+          p95ProcessingMs: number | null;
+          p99ProcessingMs: number | null;
+          ingress: WebhookIngressMetricsSnapshot;
+        }) => string;
+      };
+
+      expect(
+        subject.resolveStatus({
+          failedEvents: 0,
+          underTargetRatio: null,
+          oldestUnprocessedLagSec: 0,
+          p95ProcessingMs: null,
+          p99ProcessingMs: null,
+          ingress: createHealthyIngress({ route: createRouteMetrics({ [outcome]: 1 }) }),
+        }),
+      ).toBe('warning');
+    },
+  );
+
+  it('makes sustained route failures critical without double-counting receipt failures', () => {
+    const service = new WebhookSloService({} as never, createConfig() as never);
+    const subject = service as unknown as {
+      resolveStatus: (params: {
+        failedEvents: number;
+        underTargetRatio: number | null;
+        oldestUnprocessedLagSec: number;
+        p95ProcessingMs: number | null;
+        p99ProcessingMs: number | null;
+        ingress: WebhookIngressMetricsSnapshot;
+      }) => string;
+    };
+    const resolveStatus = (ingress: WebhookIngressMetricsSnapshot) =>
+      subject.resolveStatus({
+        failedEvents: 0,
+        underTargetRatio: null,
+        oldestUnprocessedLagSec: 0,
+        p95ProcessingMs: null,
+        p99ProcessingMs: null,
+        ingress,
+      });
+
+    expect(
+      resolveStatus(
+        createHealthyIngress({
+          failedReceipts: 2,
+          rejectedReceipts: 1,
+          route: createRouteMetrics({ failed: 3 }),
+        }),
+      ),
+    ).toBe('warning');
+    expect(
+      resolveStatus(
+        createHealthyIngress({ route: createRouteMetrics({ timed_out: 3, failed: 2 }) }),
+      ),
+    ).toBe('critical');
+  });
+
+  it('keeps credential-scanning noise out of webhook health status', () => {
+    const service = new WebhookSloService({} as never, createConfig() as never);
+    const subject = service as unknown as {
+      resolveStatus: (params: {
+        failedEvents: number;
+        underTargetRatio: number | null;
+        oldestUnprocessedLagSec: number;
+        p95ProcessingMs: number | null;
+        p99ProcessingMs: number | null;
+        ingress: WebhookIngressMetricsSnapshot;
+      }) => string;
+    };
+
+    expect(
+      subject.resolveStatus({
+        failedEvents: 0,
+        underTargetRatio: null,
+        oldestUnprocessedLagSec: 0,
+        p95ProcessingMs: null,
+        p99ProcessingMs: null,
+        ingress: createHealthyIngress({
+          route: createRouteMetrics({ authentication_rejected: 10_000 }),
+        }),
+      }),
+    ).toBe('healthy');
   });
 });

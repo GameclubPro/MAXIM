@@ -53,14 +53,60 @@ describe('validateEnv boolean parsing', () => {
   });
 
   it('defaults durable webhook ingress persistence target to two seconds', () => {
-    expect(validateEnv(createValidEnv()).SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS).toBe(2_000);
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS).toBe(2_000);
+    expect(defaults.SYSTEM_WEBHOOK_SLO_WINDOW_SEC).toBe(900);
     expect(
-      validateEnv(createValidEnv({ SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS: '1500' }))
-        .SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS,
-    ).toBe(1_500);
+      validateEnv(
+        createValidEnv({
+          SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS: '1500',
+          SYSTEM_WEBHOOK_SLO_WINDOW_SEC: '86400',
+        }),
+      ),
+    ).toMatchObject({
+      SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS: 1_500,
+      SYSTEM_WEBHOOK_SLO_WINDOW_SEC: 86_400,
+    });
     expect(() =>
       validateEnv(createValidEnv({ SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS: '0' })),
     ).toThrow(/SYSTEM_WEBHOOK_INGRESS_SLO_TARGET_MS/u);
+    expect(() => validateEnv(createValidEnv({ SYSTEM_WEBHOOK_SLO_WINDOW_SEC: '86401' }))).toThrow(
+      /SYSTEM_WEBHOOK_SLO_WINDOW_SEC/u,
+    );
+  });
+
+  it('keeps webhook admission and ACK work within bounded defaults', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.WEBHOOK_BODY_LIMIT_BYTES).toBe(1_048_576);
+    expect(defaults.WEBHOOK_ACK_DEADLINE_MS).toBe(18_000);
+    expect(defaults.WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS).toBe(100);
+    expect(defaults.WEBHOOK_RECEIPT_MAX_IN_FLIGHT).toBe(64);
+
+    const configured = validateEnv(
+      createValidEnv({
+        WEBHOOK_BODY_LIMIT_BYTES: '2097152',
+        WEBHOOK_ACK_DEADLINE_MS: '15000',
+        WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS: '250',
+        WEBHOOK_RECEIPT_MAX_IN_FLIGHT: '32',
+      }),
+    );
+    expect(configured.WEBHOOK_BODY_LIMIT_BYTES).toBe(2_097_152);
+    expect(configured.WEBHOOK_ACK_DEADLINE_MS).toBe(15_000);
+    expect(configured.WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS).toBe(250);
+    expect(configured.WEBHOOK_RECEIPT_MAX_IN_FLIGHT).toBe(32);
+
+    expect(() => validateEnv(createValidEnv({ WEBHOOK_BODY_LIMIT_BYTES: '4194305' }))).toThrow(
+      /WEBHOOK_BODY_LIMIT_BYTES/u,
+    );
+    expect(() => validateEnv(createValidEnv({ WEBHOOK_ACK_DEADLINE_MS: '18001' }))).toThrow(
+      /WEBHOOK_ACK_DEADLINE_MS/u,
+    );
+    expect(() => validateEnv(createValidEnv({ WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS: '5' }))).toThrow(
+      /WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS/u,
+    );
+    expect(() => validateEnv(createValidEnv({ WEBHOOK_RECEIPT_MAX_IN_FLIGHT: '1025' }))).toThrow(
+      /WEBHOOK_RECEIPT_MAX_IN_FLIGHT/u,
+    );
   });
 
   it('defaults canonical webhook execution to shadow with a one-percent canary', () => {
@@ -315,10 +361,12 @@ describe('validateEnv boolean parsing', () => {
     expect(defaults.COMMERCIAL_OCR_RESERVATION_TTL_MS).toBe(600_000);
     expect(defaults.COMMERCIAL_OCR_MAX_OUTPUT_PIXELS).toBe(3_000_000);
 
-    const approvalPublicKey = generateKeyPairSync('ed25519').publicKey.export({
-      type: 'spki',
-      format: 'der',
-    }).toString('base64');
+    const approvalPublicKey = generateKeyPairSync('ed25519')
+      .publicKey.export({
+        type: 'spki',
+        format: 'der',
+      })
+      .toString('base64');
     const configured = validateEnv(
       createValidEnv({
         COMMERCIAL_OCR_ROLLOUT_MODE: 'canary',
@@ -343,8 +391,8 @@ describe('validateEnv boolean parsing', () => {
     expect(() =>
       validateEnv(
         createValidEnv({
-          COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64: Buffer.from('not-a-key')
-            .toString('base64'),
+          COMMERCIAL_OCR_CERTIFICATION_APPROVAL_PUBLIC_KEY_BASE64:
+            Buffer.from('not-a-key').toString('base64'),
         }),
       ),
     ).toThrow(/Ed25519 SPKI/u);
@@ -638,6 +686,7 @@ describe('validateEnv boolean parsing', () => {
         PRISMA_PG_POOL_IDLE_TIMEOUT_MS: '10000',
         PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: '5000',
         PRISMA_PG_POOL_MAX_LIFETIME_SEC: '300',
+        PRISMA_PG_STATEMENT_TIMEOUT_MS: '15000',
         MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX: '2',
       }),
     );
@@ -646,10 +695,14 @@ describe('validateEnv boolean parsing', () => {
     expect(env.PRISMA_PG_POOL_IDLE_TIMEOUT_MS).toBe(10000);
     expect(env.PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS).toBe(5000);
     expect(env.PRISMA_PG_POOL_MAX_LIFETIME_SEC).toBe(300);
+    expect(env.PRISMA_PG_STATEMENT_TIMEOUT_MS).toBe(15000);
     expect(env.MANAGED_ENTITIES_READ_PRISMA_PG_POOL_MAX).toBe(2);
 
     expect(() => validateEnv(createValidEnv({ PRISMA_PG_POOL_MAX: '0' }))).toThrow(
       /PRISMA_PG_POOL_MAX/u,
+    );
+    expect(() => validateEnv(createValidEnv({ PRISMA_PG_STATEMENT_TIMEOUT_MS: '0' }))).toThrow(
+      /PRISMA_PG_STATEMENT_TIMEOUT_MS/u,
     );
   });
 

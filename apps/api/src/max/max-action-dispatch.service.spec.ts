@@ -8,6 +8,10 @@ import {
 } from './max-action-dispatch.service';
 import { MaxApiCircuitOpenError, type MaxActionJob } from './max-client.service';
 import type { RecordManagedEntityAccessLostFromErrorResult } from './managed-entity-access-loss.service';
+import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from './max-media-upload-validation';
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
   return Object.assign(new Error(message), {
@@ -74,6 +78,35 @@ describe('MaxActionDispatchService', () => {
     expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
   });
 
+  it('forwards the BullMQ enqueue baseline to the ledger start transition', async () => {
+    const maxClient = {
+      executeActionJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'BAN_MEMBER',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      userId: 'user-1',
+      attempt: 1,
+      idempotencyKey: 'job-ban-with-baseline',
+      createdAt: '2026-07-06T20:00:00.000Z',
+    } as MaxActionJob;
+    const enqueuedAt = new Date('2026-07-06T20:00:01.000Z');
+
+    await service.execute(job, { enqueuedAt });
+
+    expect(actionLedgerService.recordStarted).toHaveBeenCalledWith(job, enqueuedAt);
+  });
+
   it('does not reach MAX when ledger execution guard rejects a terminal race', async () => {
     const maxClient = {
       executeActionJob: jest.fn(),
@@ -107,6 +140,89 @@ describe('MaxActionDispatchService', () => {
     expect(actionLedgerService.assertCanExecute).toHaveBeenCalledWith(job);
     expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
     expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps an ambiguous member mutation quarantined before a second MAX dispatch', async () => {
+    const ambiguousError = new UnrecoverableError(
+      'Ambiguous MAX BAN_MEMBER transport failure for chat chat-1 user user-1',
+    );
+    let quarantined = false;
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(ambiguousError),
+    };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      assertCanExecute: jest.fn().mockImplementation(async () => {
+        if (quarantined) {
+          throw new UnrecoverableError('ledger outcome requires manual review');
+        }
+      }),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockImplementation(async () => {
+        quarantined = true;
+      }),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'BAN_MEMBER',
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      userId: 'user-1',
+      attempt: 1,
+      idempotencyKey: 'job-ban-http-500',
+      createdAt: '2026-07-06T20:00:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job)).rejects.toBe(ambiguousError);
+    await expect(service.execute({ ...job, attempt: 2 })).rejects.toThrow(
+      'ledger outcome requires manual review',
+    );
+
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns deterministic media preparation failures as terminal BullMQ errors', async () => {
+    const validationError = new MaxMediaUploadValidationError(
+      MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.INVALID_PAYLOAD,
+      'image',
+    );
+    const maxClient = {
+      executeActionJob: jest.fn(),
+    };
+    const actionLedgerService = {
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      text: 'hello',
+      attempt: 1,
+      idempotencyKey: 'job-invalid-media',
+      createdAt: '2026-07-06T20:00:00.000Z',
+    } as MaxActionJob;
+
+    await expect(
+      service.execute(job, {
+        prepareAttempt: jest.fn().mockRejectedValue(validationError),
+      }),
+    ).rejects.toBe(validationError);
+
+    expect(validationError).toBeInstanceOf(UnrecoverableError);
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(job, validationError, {
+      exhausted: false,
+    });
   });
 
   it('does not retry an already executed action when success ledger recording fails', async () => {

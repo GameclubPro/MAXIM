@@ -9,6 +9,8 @@ ORIGINAL_ARGS=("$@")
 
 # shellcheck source=infra/scripts/lib/deploy-topology.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
+# shellcheck source=infra/scripts/lib/webhook-rollout-quiescence.sh
+source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 # shellcheck source=infra/scripts/lib/deploy-disk-capacity.sh
@@ -28,6 +30,7 @@ RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
 DEPLOY_MODE="manual"
 DEPLOY_RUNTIME_STARTED=0
 DEPLOY_MANIFEST_RECORDED=0
+RECOVERY_BASE_MANIFEST=""
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 
@@ -115,7 +118,11 @@ release_manifest() {
 }
 
 release_field() {
-  release_manifest field current "$1" "$2" 2>/dev/null
+  local args=(field current "$1" "$2")
+  if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+    args+=(--current-manifest-file "$RECOVERY_BASE_MANIFEST")
+  fi
+  release_manifest "${args[@]}" 2>/dev/null
 }
 
 invalidate_stale_release_inventory() {
@@ -133,6 +140,7 @@ invalidate_stale_release_inventory() {
 }
 
 cleanup() {
+  maxim_webhook_rollout_warn_if_paused
   invalidate_stale_release_inventory
   release_deploy_lock
 }
@@ -154,10 +162,32 @@ inspect_container_component() {
 }
 
 initialize_release_inventory() {
+  local recovery_status
   local release_id
 
-  if release_manifest show current >/dev/null 2>&1; then
+  if release_manifest validate-current --allow-unknown 1 >/dev/null 2>&1; then
     return 0
+  fi
+  if [[ -e "$RELEASE_STATE_DIR/current.json" ]]; then
+    echo "Current release manifest exists but is invalid; refusing to overwrite it." >&2
+    return 1
+  fi
+
+  if RECOVERY_BASE_MANIFEST="$(release_manifest recovery-base --allow-unknown 1)"; then
+    if [[ "$MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE" != "1" ]]; then
+      echo "An interrupted release manifest requires explicit recovery adoption." >&2
+      echo "Set MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1 for this reviewed retry." >&2
+      RECOVERY_BASE_MANIFEST=""
+      return 1
+    fi
+    echo "Adopting the single validated interrupted release manifest."
+    return 0
+  else
+    recovery_status=$?
+  fi
+  if [[ "$recovery_status" -ne 3 ]]; then
+    RECOVERY_BASE_MANIFEST=""
+    return "$recovery_status"
   fi
 
   release_id="inventory-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -169,6 +199,29 @@ initialize_release_inventory() {
     --component "$(inspect_container_component miniapp-major-static miniapp-major-static maxim-miniapp-major:unknown)" \
     --component "$(inspect_container_component admin-static admin-static maxim-admin:unknown)" \
     --smoke inventory-only >/dev/null
+}
+
+begin_release_runtime_transition() {
+  if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+    return 0
+  fi
+  if ! RECOVERY_BASE_MANIFEST="$(release_manifest begin-transition --kind deploy)"; then
+    RECOVERY_BASE_MANIFEST=""
+    echo "Could not journal the current release before runtime mutation." >&2
+    return 1
+  fi
+  echo "Current release inventory journaled before runtime mutation."
+}
+
+archive_recovery_base_manifest() {
+  [[ -n "$RECOVERY_BASE_MANIFEST" ]] || return 0
+  if ! release_manifest archive-transition \
+    --current-manifest-file "$RECOVERY_BASE_MANIFEST" \
+    --disposition recovered >/dev/null; then
+    echo "CRITICAL: could not archive the consumed release recovery manifest." >&2
+    return 1
+  fi
+  RECOVERY_BASE_MANIFEST=""
 }
 
 load_current_component_images() {
@@ -580,6 +633,7 @@ reexec_if_current_script_changed() {
     "infra/scripts/lib/deploy-disk-capacity.sh" \
     "infra/scripts/lib/deploy-lock.sh" \
     "infra/scripts/lib/deploy-topology.sh" \
+    "infra/scripts/lib/webhook-rollout-quiescence.sh" \
     "infra/scripts/lib/change-impact-components.generated.sh"; then
     return 0
   fi
@@ -749,6 +803,72 @@ verify_service_image_id() {
   fi
 }
 
+verify_inherited_api_component() {
+  local expected_image_id="$1"
+  local source_sha
+  local topology_status
+  local service
+  local media_container_ids
+  local inherited_api_services=("${API_SERVICES[@]}")
+
+  source_sha="$(release_field api-shared sourceSha)"
+  if ! git cat-file -e "${source_sha}^{commit}" 2>/dev/null; then
+    echo "Cannot verify inherited API topology at source $source_sha." >&2
+    return 1
+  fi
+  if maxim_topology_git_compose_has_service "$source_sha" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
+    :
+  else
+    topology_status=$?
+    if [[ "$topology_status" -ne 1 ]]; then
+      return "$topology_status"
+    fi
+    maxim_topology_remove_service inherited_api_services "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+    if ! media_container_ids="$(
+      docker ps -a -q \
+        --filter "label=com.docker.compose.project=$MAIN_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=$MAXIM_MEDIA_ANALYSIS_SERVICE"
+    )"; then
+      echo "Could not inspect inherited media-analysis container state." >&2
+      return 1
+    fi
+    if [[ -n "$media_container_ids" ]]; then
+      echo "Inherited API runtime contains media analysis absent from its source topology." >&2
+      return 1
+    fi
+  fi
+  for service in "${inherited_api_services[@]}"; do
+    verify_service_image_id "$service" "$expected_image_id"
+  done
+}
+
+verify_inherited_release_components() {
+  local component
+  local expected_image_id
+
+  for component in api-shared miniapp-major-static admin-static; do
+    if contains_service "$component" "${DEPLOYED_COMPONENTS[@]}"; then
+      continue
+    fi
+    expected_image_id="$(release_field "$component" imageId || true)"
+    if [[ ! "$expected_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "Inherited release component lacks a known image id: $component" >&2
+      return 1
+    fi
+    case "$component" in
+      api-shared)
+        verify_inherited_api_component "$expected_image_id"
+        ;;
+      miniapp-major-static)
+        verify_service_image_id miniapp-major-static "$expected_image_id"
+        ;;
+      admin-static)
+        verify_service_image_id admin-static "$expected_image_id"
+        ;;
+    esac
+  done
+}
+
 record_successful_release() {
   local migrations_file=""
   local component
@@ -790,6 +910,7 @@ record_successful_release() {
     fi
     args+=(--component "${component}|${TARGET_SHA}|${image_ref}|${image_id}")
   done
+  verify_inherited_release_components
 
   if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     migrations_file="$(mktemp)"
@@ -804,6 +925,9 @@ record_successful_release() {
   if [[ -n "${MAXIM_DEPLOY_EMERGENCY_REASON:-}" ]]; then
     args+=(--emergency-reason "$MAXIM_DEPLOY_EMERGENCY_REASON")
   fi
+  if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+    args+=(--current-manifest-file "$RECOVERY_BASE_MANIFEST")
+  fi
 
   if ! release_manifest "${args[@]}" >/dev/null; then
     [[ -z "$migrations_file" ]] || rm -f "$migrations_file"
@@ -811,6 +935,7 @@ record_successful_release() {
   fi
   [[ -z "$migrations_file" ]] || rm -f "$migrations_file"
   DEPLOY_MANIFEST_RECORDED=1
+  archive_recovery_base_manifest
   echo "Release manifest committed: $RELEASE_ID"
 }
 
@@ -901,13 +1026,15 @@ recreate_service_wave() {
   local batch_delay_name="MAXIM_DEPLOY_RECREATE_BATCH_DELAY_SEC"
   local batch_size="${MAXIM_DEPLOY_RECREATE_BATCH_SIZE:-0}"
   local batch_delay_sec="${MAXIM_DEPLOY_RECREATE_BATCH_DELAY_SEC:-0}"
-  if [[ "$label" == "worker" || "$label" == "admin" || "$label" == "ingress" ]]; then
+  if [[ "$label" == "worker" || "$label" == "action" || "$label" == "moderation" || \
+        "$label" == "enqueue" || "$label" == "admin" || "$label" == "ingress" ]]; then
     batch_size_name="MAXIM_DEPLOY_API_RECREATE_BATCH_SIZE"
     batch_delay_name="MAXIM_DEPLOY_API_RECREATE_BATCH_DELAY_SEC"
     batch_size="${MAXIM_DEPLOY_API_RECREATE_BATCH_SIZE:-1}"
     batch_delay_sec="${MAXIM_DEPLOY_API_RECREATE_BATCH_DELAY_SEC:-5}"
   fi
-  if [[ "$label" == "worker" ]]; then
+  if [[ "$label" == "worker" || "$label" == "action" || "$label" == "moderation" || \
+        "$label" == "enqueue" ]]; then
     batch_size_name="MAXIM_DEPLOY_WORKER_RECREATE_BATCH_SIZE"
     batch_delay_name="MAXIM_DEPLOY_WORKER_RECREATE_BATCH_DELAY_SEC"
     batch_size="${MAXIM_DEPLOY_WORKER_RECREATE_BATCH_SIZE:-$batch_size}"
@@ -1039,10 +1166,18 @@ load_current_component_images
 if [[ "$DEPLOY_MODE" == "auto" ]]; then
   derive_auto_services
   validate_requested_services
-  if [[ "${#SERVICES[@]}" -eq 0 ]]; then
+  if [[ "${#SERVICES[@]}" -eq 0 && -z "$RECOVERY_BASE_MANIFEST" ]]; then
     echo "No production components require deployment."
     exit 0
   fi
+fi
+if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
+  for recovery_service in api-ingress miniapp-major-static admin-static; do
+    if ! contains_service "$recovery_service" "${SERVICES[@]}"; then
+      SERVICES+=("$recovery_service")
+    fi
+  done
+  echo "Interrupted release recovery selected every active component for full reconciliation."
 fi
 validate_admin_access_code
 warn_postgres_password_fallback
@@ -1125,6 +1260,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     fi
     maxim_topology_build_shared_api_image "$MAXIM_API_IMAGE" "$TARGET_SHA"
   fi
+  begin_release_runtime_transition
+  DEPLOY_RUNTIME_STARTED=1
+  verify_inherited_release_components
   if ! run_migrations; then
     echo "First migration attempt failed. Retrying once in 5 seconds..."
     sleep 5
@@ -1165,34 +1303,60 @@ done
 
 ensure_compose_env
 if [[ "${#DEPLOYED_COMPONENTS[@]}" -gt 0 ]]; then
+  begin_release_runtime_transition
   DEPLOY_RUNTIME_STARTED=1
+  verify_inherited_release_components
 fi
 remove_stale_service_containers "${SERVICES[@]}"
-if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
-  maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
+  if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+    maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
+  fi
+
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service_wave "action" "api-action"
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service_wave "admin" "api-admin"
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service_wave "ingress" "api-ingress"
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service_wave "media analysis" "$MAXIM_MEDIA_ANALYSIS_SERVICE"
+
+  # FLAG: Webhook consumers and the enqueue producer start only after every non-webhook API role
+  # is already on the target image and the owned global pause has been re-proven.
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service_wave "moderation" \
+    "api-moderation" \
+    "api-moderation-critical" \
+    "api-moderation-join" \
+    "api-moderation-realtime-b" \
+    "api-moderation-realtime-c" \
+    "api-moderation-realtime-d" \
+    "api-moderation-background"
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+  recreate_service_wave "enqueue" "api-enqueue"
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
 fi
-recreate_service_wave "worker" \
-  "api-enqueue" \
-  "api-action" \
-  "api-moderation" \
-  "api-moderation-critical" \
-  "api-moderation-join" \
-  "api-moderation-realtime-b" \
-  "api-moderation-realtime-c" \
-  "api-moderation-realtime-d" \
-  "api-moderation-background"
-recreate_service_wave "admin" "api-admin"
-recreate_service_wave "support static" "miniapp-static"
-recreate_service_wave "major static" "miniapp-major-static"
-recreate_service_wave "admin static" "admin-static"
-recreate_service_wave "ingress" "api-ingress"
 ensure_requested_services_running "$MAXIM_MEDIA_ANALYSIS_SERVICE"
-recreate_service_wave "media analysis" "$MAXIM_MEDIA_ANALYSIS_SERVICE"
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
   maxim_topology_verify_api_commercial_ocr_version \
     COMPOSE_FILES \
     "$TARGET_COMMERCIAL_OCR_VERSION"
 fi
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  expected_api_image_id="$(docker image inspect --format '{{.Id}}' "$MAXIM_API_IMAGE")"
+  for service in "${API_SERVICES[@]}"; do
+    verify_service_image_id "$service" "$expected_api_image_id"
+  done
+  wait_for_url "http://127.0.0.1:3001/api/health/live" 180
+  wait_for_url "http://127.0.0.1:3002/api/health/live" 180
+  maxim_webhook_resume_after_api_fence COMPOSE_FILES
+fi
+recreate_service_wave "support static" "miniapp-static"
+recreate_service_wave "major static" "miniapp-major-static"
+recreate_service_wave "admin static" "admin-static"
 
 SMOKE_RESULTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then

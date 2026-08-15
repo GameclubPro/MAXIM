@@ -3,8 +3,10 @@ import { Buffer } from 'node:buffer';
 import test from 'node:test';
 import {
   MAX_PREPARED_IMAGE_BYTES,
+  canUploadOriginalImageToMax,
   readBlobAsBase64,
   resolveMaxUploadImageTargetMimeTypes,
+  resolveOutputFileName,
   resolvePreparedImageMaxBytes,
 } from '../src/lib/broadcast-image';
 
@@ -15,6 +17,31 @@ test('prefers MAX-supported lossy output for gallery photos', () => {
 
 test('keeps png as the first choice for images that may need transparency', () => {
   assert.deepEqual(resolveMaxUploadImageTargetMimeTypes('image/png'), ['image/png', 'image/jpeg']);
+});
+
+test('falls back to original bytes only for MAX-supported image formats', () => {
+  for (const mimeType of [
+    'image/jpeg',
+    'image/png',
+    'image/gif',
+    'image/tiff',
+    'image/bmp',
+    'image/heic',
+  ]) {
+    assert.equal(canUploadOriginalImageToMax(mimeType, 'photo.bin'), true);
+  }
+  assert.equal(canUploadOriginalImageToMax('image/heif', 'photo.heic'), true);
+  assert.equal(canUploadOriginalImageToMax('image/heif', 'photo.heif'), false);
+  assert.equal(canUploadOriginalImageToMax('image/webp', 'photo.webp'), false);
+  assert.equal(canUploadOriginalImageToMax('image/avif', 'photo.avif'), false);
+});
+
+test('keeps the file name extension aligned with the prepared image MIME type', () => {
+  assert.equal(resolveOutputFileName('photo.jpg', 'image/tiff'), 'photo.tiff');
+  assert.equal(resolveOutputFileName('photo.jpg', 'image/bmp'), 'photo.bmp');
+  assert.equal(resolveOutputFileName('photo.jpg', 'image/heic'), 'photo.heic');
+  assert.equal(resolveOutputFileName('photo.jpg', 'image/heif'), 'photo.heic');
+  assert.equal(resolveOutputFileName('photo.tiff', 'image/jpeg'), 'photo.jpg');
 });
 
 test('allows prepared images above the old 3 MB ceiling', () => {

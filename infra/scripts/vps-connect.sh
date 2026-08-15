@@ -242,6 +242,111 @@ remote_from_args() {
   fi
 }
 
+prepend_webhook_rollout_recovery_env() {
+  local command_var="$1"
+  local -n command_ref="$command_var"
+
+  case "${MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE:-0}" in
+    0|'')
+      ;;
+    1)
+      command_ref="MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1 $command_ref"
+      ;;
+    *)
+      echo "MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE must be 0 or 1." >&2
+      return 2
+      ;;
+  esac
+}
+
+rollback_entrypoint_bootstrap_source() {
+  cat <<'BOOTSTRAP'
+set -euo pipefail
+
+expected_tooling_sha="$1"
+entrypoint="$2"
+capability_marker="$3"
+shift 3
+lock_dir=/tmp/maxim-main-deploy.lock
+
+release_bootstrap_lock() {
+  local owner_pid
+  owner_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  if [[ "$owner_pid" == "$$" ]]; then
+    rm -rf -- "$lock_dir"
+  fi
+}
+
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  existing_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    echo "Another runtime deploy or rollback is already running (pid=$existing_pid)." >&2
+    exit 1
+  fi
+  rm -rf -- "$lock_dir"
+  mkdir "$lock_dir"
+fi
+printf '%s\n' "$$" >"$lock_dir/pid"
+trap release_bootstrap_lock EXIT
+export MAXIM_DEPLOY_LOCK_DIR="$lock_dir"
+
+# Routine immutable rollback stays image-only and offline when the checked-out entrypoint is current.
+if [[ -x "$entrypoint" ]] && grep -Fq -- "$capability_marker" "$entrypoint"; then
+  source "$entrypoint" "$@"
+  exit $?
+fi
+
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "VPS worktree has tracked changes; refusing rollback tooling synchronization." >&2
+  exit 1
+fi
+if ! git cat-file -e "${expected_tooling_sha}^{commit}" 2>/dev/null; then
+  echo "Reviewed rollback tooling commit is not retained on the VPS." >&2
+  exit 1
+fi
+if [[ "$(git rev-parse --verify refs/heads/main 2>/dev/null || true)" != "$expected_tooling_sha" ]]; then
+  echo "Retained VPS main does not match the reviewed rollback tooling SHA." >&2
+  exit 1
+fi
+git checkout main
+if [[ "$(git rev-parse HEAD)" != "$expected_tooling_sha" ]]; then
+  echo "Synchronized rollback tooling does not match the reviewed SHA." >&2
+  exit 1
+fi
+if [[ ! -x "$entrypoint" ]] || ! grep -Fq -- "$capability_marker" "$entrypoint"; then
+  echo "Synchronized rollback entrypoint is unavailable: $entrypoint" >&2
+  exit 1
+fi
+
+# Source in the bootstrap shell so its EXIT lock cleanup also covers entrypoint preflight failures.
+# Once the rollback acquires the same PID-owned lock, its stricter cleanup trap takes ownership.
+source "$entrypoint" "$@"
+BOOTSTRAP
+}
+
+build_guarded_rollback_command() {
+  local command_var="$1"
+  local entrypoint="$2"
+  local capability_marker="$3"
+  shift 3
+  local -n command_ref="$command_var"
+  local bootstrap
+  local tooling_sha
+
+  if ! tooling_sha="$(git rev-parse --verify --end-of-options 'main^{commit}' 2>/dev/null)"; then
+    echo "Cannot resolve local main to the reviewed rollback tooling SHA." >&2
+    return 2
+  fi
+  bootstrap="$(rollback_entrypoint_bootstrap_source)"
+  printf -v command_ref 'bash -c %q %q %q %q %q %s' \
+    "$bootstrap" \
+    maxim-rollback-bootstrap \
+    "$tooling_sha" \
+    "$entrypoint" \
+    "$capability_marker" \
+    "$(shell_quote_args "$@")"
+}
+
 commercial_ocr_promote() {
   local chat_ids_file="${1:-}"
   local certification_file="${2:-}"
@@ -391,6 +496,7 @@ deploy_main() {
         ;;
     esac
   fi
+  prepend_webhook_rollout_recovery_env remote_command
 
   remote_exec "$remote_command"
 }
@@ -640,7 +746,14 @@ rollback_runtime() {
     exit 1
   fi
 
-  remote_exec "$(shell_quote_args ./infra/scripts/vps-runtime-rollback.sh "$@")"
+  local remote_command
+  build_guarded_rollback_command \
+    remote_command \
+    ./infra/scripts/vps-runtime-rollback.sh \
+    select_runtime_rollback_recovery_base \
+    "$@"
+  prepend_webhook_rollout_recovery_env remote_command
+  remote_exec "$remote_command"
 }
 
 rollback_release() {
@@ -649,7 +762,14 @@ rollback_release() {
     exit 1
   fi
 
-  remote_exec "$(shell_quote_args ./infra/scripts/vps-release-rollback.sh "$@")"
+  local remote_command
+  build_guarded_rollback_command \
+    remote_command \
+    ./infra/scripts/vps-release-rollback.sh \
+    select_release_recovery_base \
+    "$@"
+  prepend_webhook_rollout_recovery_env remote_command
+  remote_exec "$remote_command"
 }
 
 health() {

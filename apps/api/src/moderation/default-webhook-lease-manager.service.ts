@@ -32,6 +32,10 @@ import {
   type ProcessWebhookJob,
 } from '../webhook/webhook-queues';
 import { ModerationExecutionService } from './moderation-execution.service';
+import {
+  deferWebhookOrderedPredecessorJob,
+  WebhookOrderedPredecessorPendingError,
+} from './webhook-ordered-predecessor-fence';
 import type { QueueCounters } from '../system/queue-metrics.service';
 
 type WorkerHeartbeat = {
@@ -804,18 +808,12 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       void existingWorker.close(true).catch(() => undefined);
     }
 
-    const worker = new BullWorker<ProcessWebhookJob>(
-      queueName,
-      async (job: Job<ProcessWebhookJob>) => {
-        await this.moderationExecutionService.processWebhookEvent(job.data.webhookEventId);
+    const worker = new BullWorker<ProcessWebhookJob>(queueName, this.createWebhookJobProcessor(), {
+      connection: {
+        url: this.redisUrl,
       },
-      {
-        connection: {
-          url: this.redisUrl,
-        },
-        concurrency: this.shardConcurrencies[queueName] ?? 1,
-      },
-    );
+      concurrency: this.shardConcurrencies[queueName] ?? 1,
+    });
     worker.on('error', (error) => {
       this.logger.warn(
         { queueName, err: error instanceof Error ? error.message : String(error) },
@@ -823,6 +821,22 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       );
     });
     this.workers.set(queueName, worker);
+  }
+
+  private createWebhookJobProcessor(): (
+    job: Job<ProcessWebhookJob>,
+    token?: string,
+  ) => Promise<void> {
+    return async (job, token) => {
+      try {
+        await this.moderationExecutionService.processWebhookEvent(job.data.webhookEventId);
+      } catch (error: unknown) {
+        if (error instanceof WebhookOrderedPredecessorPendingError) {
+          await deferWebhookOrderedPredecessorJob(job, token, error);
+        }
+        throw error;
+      }
+    };
   }
 
   private shouldRecycleStaleWorker(

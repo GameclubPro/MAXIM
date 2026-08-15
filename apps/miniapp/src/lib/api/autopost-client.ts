@@ -12,7 +12,7 @@ import {
   type ManagedAutopostHubRuleSummary,
   type SendBroadcastTestResult,
   type UpdateManagedAutopostRuleRequest,
-} from '@maxim/contracts';
+} from '@maxim/contracts/broadcast';
 import type { SendBroadcastPayload } from './shared-types';
 import type { ApiTransport } from './transport';
 

@@ -7,6 +7,7 @@ import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm
 import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { ALL_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { ActionHealthService } from './action-health.service';
+import { ActionLatencyService } from './action-latency.service';
 import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
 import { MaxApiMetricsService } from './max-api-metrics.service';
 import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
@@ -38,6 +39,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
   providers: [
     QueueMetricsService,
     ActionHealthService,
+    ActionLatencyService,
     MaxApiMetricsService,
     MaxActionLedgerWatchdogService,
     MiniappBootTraceService,
@@ -54,6 +56,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
   exports: [
     QueueMetricsService,
     ActionHealthService,
+    ActionLatencyService,
     MaxApiMetricsService,
     RuntimeDiagnosticsService,
     BackgroundRuntimeGovernorService,

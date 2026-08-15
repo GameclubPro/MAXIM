@@ -51,6 +51,51 @@ function ownershipCoverage() {
   };
 }
 
+function emptyLatencyPercentiles() {
+  return {
+    sampleCount: 0,
+    p50Ms: null,
+    p95Ms: null,
+    p99Ms: null,
+  };
+}
+
+function actionLatencySnapshot() {
+  return {
+    basis: 'terminal_outcomes',
+    windowBasis: 'completed_at',
+    actionStartBasis: 'max_enqueued_at_scheduled_for',
+    windowSec: 900,
+    windowStartedAt: '2026-07-06T09:45:00.000Z',
+    sampleLimit: 5_000,
+    actionSampleCount: 0,
+    actionSampleTruncated: false,
+    actionSampledFrom: null,
+    overall: {
+      effectiveReadyToLastAttempt: emptyLatencyPercentiles(),
+      lastAttemptToTerminal: emptyLatencyPercentiles(),
+      effectiveReadyToTerminal: emptyLatencyPercentiles(),
+    },
+    byAction: [],
+    byOutcome: [],
+    bySource: [],
+    byBot: [],
+    byTrafficClass: [],
+    moderationDelete: {
+      sampleCount: 0,
+      sampleTruncated: false,
+      sampledFrom: null,
+      overall: {
+        messageToFirstAttempt: emptyLatencyPercentiles(),
+        firstAttemptToTerminal: emptyLatencyPercentiles(),
+        messageToTerminal: emptyLatencyPercentiles(),
+      },
+      byOutcome: [],
+    },
+    generatedAt,
+  };
+}
+
 function createDashboardResponse(overrides: Record<string, unknown> = {}) {
   return {
     summary: {
@@ -188,6 +233,7 @@ function createDashboardResponse(overrides: Record<string, unknown> = {}) {
         totalAppliedChanges: 0,
       },
     },
+    actionLatency: actionLatencySnapshot(),
     runtimeProfile: {
       appRole: 'ingress',
       serviceName: 'api-ingress',
@@ -411,6 +457,104 @@ test('parses runtime dashboard fields through contract schemas', async () => {
   assert.equal(dashboard.queueGroupHealth?.status, 'healthy');
   assert.equal(dashboard.queues.actionQueues['max-actions-critical']?.waiting, 2);
   assert.equal(dashboard.queues.actionLedgerWatchdog?.lastQuarantinedCount, 1);
+  assert.equal(dashboard.actionLatency?.actionStartBasis, 'max_enqueued_at_scheduled_for');
+  assert.equal(dashboard.actionLatency?.overall.effectiveReadyToLastAttempt.sampleCount, 0);
+});
+
+test('parses webhook sample metadata with a pre-rejected-counter ingress payload', async () => {
+  const dashboard = await getSystemDashboard(
+    createApi(
+      createDashboardResponse({
+        webhookSlo: {
+          status: 'healthy',
+          windowSec: 300,
+          targetProcessingMs: 1_000,
+          totalEvents: 1,
+          processedEvents: 1,
+          failedEvents: 0,
+          sampleLimit: 1,
+          sampledProcessedEvents: 1,
+          processedSampleTruncated: false,
+          processedSampledFrom: generatedAt,
+          p95ProcessingMs: 100,
+          p99ProcessingMs: 100,
+          underTargetRatio: 1,
+          oldestUnprocessedLagSec: 0,
+          oldestUnprocessedEventId: null,
+          lastProcessedAt: generatedAt,
+          ingress: {
+            available: true,
+            targetMs: 1_000,
+            attemptedReceipts: 1,
+            persistedReceipts: 1,
+            failedReceipts: 0,
+            sampledReceipts: 1,
+            p95LatencyMs: 50,
+            p99LatencyMs: 50,
+            underTargetRatio: 1,
+            bots: {
+              'bot-1': {
+                attemptedReceipts: 1,
+                persistedReceipts: 1,
+                failedReceipts: 0,
+              },
+            },
+            route: {
+              attemptedRequests: 2,
+              outcomes: {
+                accepted: 1,
+                authentication_rejected: 0,
+                admission_rejected: 0,
+                invalid_json: 0,
+                invalid_payload: 1,
+                payload_too_large: 0,
+                timed_out: 0,
+                failed: 0,
+              },
+              bots: {
+                'bot-1': {
+                  attemptedRequests: 2,
+                  outcomes: {
+                    accepted: 1,
+                    authentication_rejected: 0,
+                    admission_rejected: 0,
+                    invalid_json: 0,
+                    invalid_payload: 1,
+                    payload_too_large: 0,
+                    timed_out: 0,
+                    failed: 0,
+                  },
+                },
+              },
+            },
+          },
+          enqueue: {
+            targetMs: 1_000,
+            sampledEvents: 1,
+            sampleTruncated: false,
+            sampledFrom: generatedAt,
+            p95LatencyMs: 50,
+            p99LatencyMs: 50,
+            underTargetRatio: 1,
+            oldestPendingLagSec: 0,
+            oldestPendingEventId: null,
+            lastQueuedAt: generatedAt,
+          },
+          generatedAt,
+        },
+      }),
+    ),
+  );
+
+  assert.equal(dashboard.webhookSlo?.ingress?.rejectedReceipts, 0);
+  assert.equal(dashboard.webhookSlo?.ingress?.bots['bot-1']?.rejectedReceipts, 0);
+  assert.equal(dashboard.webhookSlo?.ingress?.route.attemptedRequests, 2);
+  assert.equal(dashboard.webhookSlo?.ingress?.route.outcomes.invalid_payload, 1);
+  assert.equal(dashboard.webhookSlo?.ingress?.route.bots['bot-1']?.outcomes.invalid_payload, 1);
+  assert.equal(dashboard.webhookSlo?.processedSampleTruncated, false);
+  assert.equal(dashboard.webhookSlo?.processedSampledFrom, generatedAt);
+  assert.equal(dashboard.webhookSlo?.enqueue?.sampleTruncated, false);
+  assert.equal(dashboard.webhookSlo?.enqueue?.sampledFrom, generatedAt);
 });
 
 test('preserves failed webhook active and stale metrics from the API', async () => {
@@ -489,6 +633,15 @@ test('rejects invalid runtime dashboard enum values', async () => {
     () => getSystemDashboard(createApi(payload)),
     /Invalid system runtime profile/u,
   );
+});
+
+test('rejects present falsy action latency payloads instead of treating them as absent', async () => {
+  for (const actionLatency of [null, false, 0, '']) {
+    await assert.rejects(
+      () => getSystemDashboard(createApi(createDashboardResponse({ actionLatency }))),
+      /Invalid system dashboard action latency/u,
+    );
+  }
 });
 
 test('parses system bots snapshot through contract schema', async () => {

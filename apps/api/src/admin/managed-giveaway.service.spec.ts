@@ -99,11 +99,24 @@ function createMaxApiError(status: number, message: string, code?: string): Erro
   });
 }
 
+function createMaxEditRejectedError(): Error {
+  return Object.assign(new Error('Error on message edit'), {
+    response: {
+      status: 200,
+      data: {
+        success: false,
+        message: 'Error on message edit',
+      },
+    },
+  });
+}
+
 function createMaxClientMock() {
   return {
     hasChatMember: jest.fn(),
     getChatTitle: jest.fn(),
     getChatSnapshot: jest.fn(),
+    getExactMessagePresence: jest.fn().mockResolvedValue('present'),
     resolveMessageLink: jest.fn(),
     uploadImage: jest.fn(),
     sendMessageImmediateWithResolvedLink: jest.fn(),
@@ -2489,6 +2502,312 @@ describe('ManagedGiveawayService', () => {
       }),
       expectManagedGiveawaySendOptions({ botId: 'results-author-bot' }),
     );
+  });
+
+  it('safely replaces a verified-absent giveaway results post with a fenced routed send', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        await request.prepareAttempt({ botId: 'replacement-bot', job: {} });
+        request.onDispatchAttempt({ botId: 'replacement-bot', job: {} });
+        return {
+          messageId: 'results-replacement-1',
+          url: 'https://max.ru/channels/source-1/messages/results-replacement-1',
+          botId: 'replacement-bot',
+          candidateBotIds: ['replacement-bot'],
+          routingVersion: 1,
+        };
+      }),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      createMaxBotLinkMock() as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      publicationBotId: 'publication-author-bot',
+      resultsMessageId: 'results-old-1',
+      resultsBotId: 'results-author-bot',
+      resultsUrl: 'https://max.ru/channels/source-1/messages/results-old-1',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+    maxClient.editMessageInlineKeyboard.mockRejectedValue(
+      createMaxApiError(404, 'Message not found', 'message.not.found'),
+    );
+    maxClient.getExactMessagePresence.mockResolvedValue('absent');
+
+    await expect((service as any).republishGiveawayResults(giveaway)).resolves.toBe(true);
+
+    expect(maxClient.getExactMessagePresence).toHaveBeenCalledWith(
+      'source-1',
+      'results-old-1',
+      expect.objectContaining({
+        botId: 'results-author-bot',
+        bypassCache: true,
+        ignoreFailureMetricStatuses: [404],
+      }),
+    );
+    const replacementCas = prisma.managedGiveaway.updateMany.mock.calls.find(
+      ([query]) => query.where?.resultsMessageId === 'results-old-1',
+    )?.[0];
+    const replacementSendLockKey = replacementCas?.data?.sendLockKey;
+    expect(replacementCas).toEqual({
+      where: {
+        id: 'giveaway-1',
+        status: ManagedGiveawayStatus.COMPLETED,
+        resultsMessageId: 'results-old-1',
+        lockedAt: null,
+        sendLockKey: null,
+      },
+      data: {
+        resultsMessageId: null,
+        resultsBotId: null,
+        resultsUrl: null,
+        lockedAt: null,
+        sendLockKey: replacementSendLockKey,
+      },
+    });
+    expect(replacementSendLockKey).toMatch(
+      /^managed-giveaway:results-replacement:giveaway-1:[0-9a-f]{24}$/u,
+    );
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ logicalIdempotencyKey: replacementSendLockKey }),
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(prisma.managedGiveaway.update).toHaveBeenCalledWith({
+      where: { id: 'giveaway-1' },
+      data: {
+        resultsMessageId: 'results-replacement-1',
+        resultsBotId: 'replacement-bot',
+        resultsUrl: 'https://max.ru/channels/source-1/messages/results-replacement-1',
+        lockedAt: null,
+        sendLockKey: null,
+      },
+    });
+  });
+
+  it('uses a new deterministic key when MAX rejects editing a verified-present results post', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        request.onDispatchAttempt({ botId: 'replacement-bot', job: {} });
+        return {
+          messageId: 'results-replacement-2',
+          url: null,
+          botId: 'replacement-bot',
+        };
+      }),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      createMaxBotLinkMock() as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      resultsMessageId: 'results-present-1',
+      resultsBotId: 'results-author-bot',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+    maxClient.editMessageInlineKeyboard.mockRejectedValue(createMaxEditRejectedError());
+
+    await expect((service as any).republishGiveawayResults(giveaway)).resolves.toBe(true);
+
+    const replacementSendLockKey =
+      maxRoutedPublicationService.publish.mock.calls[0]?.[0]?.logicalIdempotencyKey;
+    expect(maxClient.getExactMessagePresence).toHaveBeenCalledWith(
+      'source-1',
+      'results-present-1',
+      expect.objectContaining({ botId: 'results-author-bot', bypassCache: true }),
+    );
+    expect(replacementSendLockKey).toMatch(
+      /^managed-giveaway:results-replacement:giveaway-1:[0-9a-f]{24}$/u,
+    );
+    expect(replacementSendLockKey).not.toBe('managed-giveaway:results:giveaway-1');
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['rate limit', createMaxApiError(429, 'Too many requests')],
+    ['server failure', createMaxApiError(500, 'MAX upstream failure')],
+    ['timeout', new Error('request timed out before response body arrived')],
+  ])('does not replace giveaway results after a transient %s', async (_label, error) => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxRoutedPublicationService = { publish: jest.fn() };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      createMaxBotLinkMock() as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      resultsMessageId: 'results-1',
+      resultsBotId: 'results-author-bot',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+    maxClient.editMessageInlineKeyboard.mockRejectedValue(error);
+
+    await expect((service as any).republishGiveawayResults(giveaway)).resolves.toBe(false);
+
+    expect(maxClient.getExactMessagePresence).not.toHaveBeenCalled();
+    expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
+    expect(prisma.managedGiveaway.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('preserves the replacement key after a definitive replacement send failure', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockRejectedValue(createMaxApiError(500, 'Pre-dispatch failure')),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      createMaxBotLinkMock() as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      resultsMessageId: 'results-uneditable-1',
+      resultsBotId: 'results-author-bot',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+    maxClient.editMessageInlineKeyboard.mockRejectedValue(createMaxEditRejectedError());
+
+    await expect((service as any).republishGiveawayResults(giveaway)).resolves.toBe(false);
+
+    const replacementSendLockKey =
+      prisma.managedGiveaway.updateMany.mock.calls[0]?.[0]?.data?.sendLockKey;
+    expect(replacementSendLockKey).toMatch(
+      /^managed-giveaway:results-replacement:giveaway-1:[0-9a-f]{24}$/u,
+    );
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: 'giveaway-1',
+        resultsMessageId: null,
+        lockedAt: expect.any(Date),
+        sendLockKey: replacementSendLockKey,
+      },
+      data: {
+        lockedAt: null,
+        sendLockKey: replacementSendLockKey,
+      },
+    });
+  });
+
+  it('retries a stale replacement lock with the same deterministic key', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        request.onDispatchAttempt({ botId: 'replacement-bot', job: {} });
+        return {
+          messageId: 'results-recovered-replacement-1',
+          url: null,
+          botId: 'replacement-bot',
+        };
+      }),
+    };
+    const maxActionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      createMaxBotLinkMock() as never,
+      undefined,
+      undefined,
+      maxRoutedPublicationService as never,
+      maxActionLedgerService as never,
+    );
+    const replacementSendLockKey = (service as any).buildGiveawayResultsReplacementSendLockKey(
+      'giveaway-1',
+      'results-uneditable-1',
+    );
+    const staleLockAt = new Date('2026-03-21T12:58:00.000Z');
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      resultsMessageId: null,
+      lockedAt: staleLockAt,
+      sendLockKey: replacementSendLockKey,
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+
+    await expect((service as any).republishGiveawayResults(giveaway)).resolves.toBe(true);
+
+    expect(maxActionLedgerService.assertCanEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: replacementSendLockKey }),
+    );
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: 'giveaway-1',
+        lockedAt: staleLockAt,
+        sendLockKey: replacementSendLockKey,
+        resultsMessageId: null,
+      },
+      data: {
+        lockedAt: null,
+        sendLockKey: replacementSendLockKey,
+      },
+    });
+    expect(prisma.managedGiveaway.updateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: 'giveaway-1',
+        resultsMessageId: null,
+        lockedAt: null,
+      },
+      data: {
+        lockedAt: new Date('2026-03-21T13:00:00.000Z'),
+        sendLockKey: replacementSendLockKey,
+      },
+    });
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ logicalIdempotencyKey: replacementSendLockKey }),
+    );
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
   });
 
   it('stores the remote message id after a durable winner notification send', async () => {

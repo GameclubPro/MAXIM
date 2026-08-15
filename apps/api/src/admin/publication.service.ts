@@ -642,6 +642,9 @@ export class PublicationService {
             now,
           )
         : null;
+    const preparedContent = await this.publicationContentService.prepareContentRevision(
+      request.content,
+    );
 
     let publicationId: string;
     try {
@@ -666,11 +669,11 @@ export class PublicationService {
           select: { id: true },
         });
 
-        const contentRevision = await this.publicationContentService.persistContentRevision(
+        const contentRevision = await this.publicationContentService.persistPreparedContentRevision(
           tx,
           publication.id,
           1,
-          request.content,
+          preparedContent,
           user.userId,
         );
         await tx.publication.update({
@@ -841,11 +844,14 @@ export class PublicationService {
             now,
           )
         : null;
+    const preparedContent = request.content
+      ? await this.publicationContentService.prepareContentRevision(request.content)
+      : null;
 
     const nextVersion = existing.version + 1;
     try {
       await this.prisma.$transaction(async (tx: any) => {
-        const calendarAlreadyLocked = shouldRebuildSchedule || request.content !== undefined;
+        const calendarAlreadyLocked = shouldRebuildSchedule || preparedContent !== null;
         if (calendarAlreadyLocked) {
           await this.lockPublicationCalendar(tx);
         }
@@ -881,14 +887,15 @@ export class PublicationService {
         }
 
         let contentRevisionId = existing.canonicalContentRevisionId;
-        if (request.content) {
-          const contentRevision = await this.publicationContentService.persistContentRevision(
-            tx,
-            publicationId,
-            nextVersion,
-            request.content,
-            user.userId,
-          );
+        if (preparedContent) {
+          const contentRevision =
+            await this.publicationContentService.persistPreparedContentRevision(
+              tx,
+              publicationId,
+              nextVersion,
+              preparedContent,
+              user.userId,
+            );
           contentRevisionId = contentRevision.id;
           await tx.publication.update({
             where: { id: publicationId },

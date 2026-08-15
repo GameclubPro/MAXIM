@@ -159,12 +159,14 @@ const PUBLICATION_STATUS_FILTERS_BY_VIEW: Record<
 };
 
 const PUBLICATION_VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
-  m4v: 'video/mp4',
   mkv: 'video/x-matroska',
   mov: 'video/quicktime',
   mp4: 'video/mp4',
-  qt: 'video/quicktime',
   webm: 'video/webm',
+};
+const PUBLICATION_VIDEO_MIME_TYPES = new Set(Object.values(PUBLICATION_VIDEO_MIME_BY_EXTENSION));
+const PUBLICATION_VIDEO_MIME_ALIASES: Record<string, string> = {
+  'video/matroska': 'video/x-matroska',
 };
 
 export function isIsolatedPublicationEditor(kind: PublicationEditorKind | null): boolean {
@@ -468,18 +470,23 @@ export function shouldReviewPublicationScheduleConflict(
 
 export function inferPublicationVideoMimeType(fileName: string, mimeType: string): string | null {
   const normalizedMimeType = mimeType.trim().toLowerCase();
-  if (normalizedMimeType.startsWith('video/')) {
-    return normalizedMimeType;
-  }
-  if (normalizedMimeType) {
-    return null;
-  }
-
   const extension =
     fileName
       .trim()
       .toLowerCase()
       .match(/\.([a-z0-9]+)$/u)?.[1] ?? '';
+  if (normalizedMimeType) {
+    const canonicalMimeType =
+      PUBLICATION_VIDEO_MIME_ALIASES[normalizedMimeType] ?? normalizedMimeType;
+    if (PUBLICATION_VIDEO_MIME_TYPES.has(canonicalMimeType)) {
+      return canonicalMimeType;
+    }
+    if (normalizedMimeType === 'application/octet-stream' && extension === 'mkv') {
+      return PUBLICATION_VIDEO_MIME_BY_EXTENSION.mkv;
+    }
+    return null;
+  }
+
   return PUBLICATION_VIDEO_MIME_BY_EXTENSION[extension] ?? null;
 }
 

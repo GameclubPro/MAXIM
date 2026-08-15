@@ -78,6 +78,24 @@ describe('MaxActionProcessor', () => {
     );
   });
 
+  it('passes the trusted BullMQ creation timestamp into ledger-backed dispatch', async () => {
+    const dispatch = {
+      execute: jest.fn().mockResolvedValue(undefined),
+    };
+    const processor = new MaxActionProcessor(dispatch as never);
+    const timestamp = Date.parse('2026-07-08T20:00:01.000Z');
+
+    await processor.process(createJob({ timestamp }));
+
+    expect(dispatch.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'job-1' }),
+      {
+        finalAttempt: false,
+        enqueuedAt: new Date(timestamp),
+      },
+    );
+  });
+
   it.each([
     MaxActionProcessor,
     MaxActionCriticalProcessor,

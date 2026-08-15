@@ -1508,6 +1508,7 @@ model ModerationDeleteIntent {
   @@index([status, nextAttemptAt, executeAt], map: "moderation_delete_intents_due_idx")
   @@index([status, leaseExpiresAt], map: "moderation_delete_intents_lease_idx")
   @@index([status, updatedAt], map: "moderation_delete_intents_retention_idx")
+  @@index([completedAt(sort: Desc), id(sort: Desc)], map: "moderation_delete_intents_completed_id_idx")
   @@index([chatId, status, createdAt], map: "moderation_delete_intents_chat_status_created_idx")
   @@map("moderation_delete_intents")
 }
@@ -1546,6 +1547,7 @@ model WebhookEvent {
   queuedAt          DateTime?     @map("queued_at")
   enqueueAttempts   Int           @default(0) @map("enqueue_attempts")
   nextEnqueueAt     DateTime?     @map("next_enqueue_at")
+  timeoutQuarantineExpiresAt DateTime? @map("timeout_quarantine_expires_at")
   createdAt         DateTime      @default(now()) @map("created_at")
   processedAt       DateTime?     @map("processed_at")
 
@@ -1891,6 +1893,7 @@ model MaxActionLedgerEntry {
   updatedAt         DateTime              @updatedAt @map("updated_at")
 
   @@index([status, terminal, updatedAt], map: "max_action_ledger_status_terminal_updated_idx")
+  @@index([terminal, completedAt(sort: Desc), id(sort: Desc)], map: "max_action_ledger_terminal_completed_id_idx")
   @@index([chatId, actionType, updatedAt], map: "max_action_ledger_chat_action_updated_idx")
   @@index([chatId, actionType, messageId, status], map: "max_action_ledger_delete_owner_lookup_idx")
   @@index([botId, status, updatedAt], map: "max_action_ledger_bot_status_updated_idx")

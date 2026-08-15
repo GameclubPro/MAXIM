@@ -1,3 +1,4 @@
+import { DelayedError } from 'bullmq';
 import * as leasePlanModule from '../runtime/default-webhook-lease-plan';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import {
@@ -5,6 +6,7 @@ import {
   buildDefaultWebhookWorkerHeartbeatKey,
 } from '../runtime/default-webhook-dynamic-leases';
 import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
+import { WebhookOrderedPredecessorPendingError } from './webhook-ordered-predecessor-fence';
 
 type RedisMockInstance = {
   store: Map<string, string>;
@@ -251,8 +253,40 @@ describe('DefaultWebhookLeaseManagerService', () => {
   });
 
   afterEach(async () => {
-    process.env.APP_ROLE = originalRole;
+    if (originalRole === undefined) {
+      delete process.env.APP_ROLE;
+    } else {
+      process.env.APP_ROLE = originalRole;
+    }
     jest.useRealTimers();
+  });
+
+  it('defers a dynamically leased worker job behind its committed predecessor', async () => {
+    const predecessorError = new WebhookOrderedPredecessorPendingError('event-b', 'event-a');
+    const moderationExecutionService = {
+      processWebhookEvent: jest.fn().mockRejectedValue(predecessorError),
+    };
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      moderationExecutionService as never,
+      createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
+    );
+    const processor = (service as any).createWebhookJobProcessor();
+    const job = {
+      id: 'event-b',
+      data: { webhookEventId: 'event-b' },
+      moveToDelayed: jest.fn().mockResolvedValue(undefined),
+    };
+
+    try {
+      await expect(processor(job, 'dynamic-job-token')).rejects.toBeInstanceOf(DelayedError);
+
+      expect(moderationExecutionService.processWebhookEvent).toHaveBeenCalledWith('event-b');
+      expect(job.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'dynamic-job-token');
+    } finally {
+      await service.onModuleDestroy();
+    }
   });
 
   it('publishes heartbeat and renews claims for locally running workers', async () => {

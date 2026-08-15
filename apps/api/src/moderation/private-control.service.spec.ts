@@ -1846,6 +1846,7 @@ describe('PrivateControlService', () => {
         ignoreFailureMetricStatuses: [400, 404],
         timeoutMs: 800,
         botId: '888000_bot',
+        rateLimitEntityId: '152517912',
       },
     );
   });
@@ -1902,6 +1903,7 @@ describe('PrivateControlService', () => {
     expect(maxClient.answerCallback.mock.calls.at(-1)?.[3]).toEqual({
       ignoreFailureMetricStatuses: [400, 404],
       timeoutMs: 800,
+      rateLimitEntityId: '152517912',
     });
 
     expect(getLastUiText(maxClient)).toContain('Правила');

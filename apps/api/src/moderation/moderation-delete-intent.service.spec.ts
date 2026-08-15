@@ -29,6 +29,7 @@ type ServiceInternals = {
     event: { eventType: string | null };
   };
   selectDueIntentIds(): Promise<unknown[]>;
+  expireDueIntents(): Promise<number>;
   claimOne(intentId: string): Promise<unknown>;
   enqueueWakeup(intent: Record<string, unknown>): Promise<void>;
   enqueueCurrentWakeup(intentId: string, priority?: number): Promise<void>;
@@ -50,6 +51,9 @@ type ServiceInternals = {
     },
   ): Promise<void>;
   isExecutionEnabledForIntent(intent: Record<string, unknown>): boolean;
+  hasRemoteSuccessMarker(intent: Record<string, unknown>): boolean;
+  hasDeleteDispatchMarker(intent: Record<string, unknown>): boolean;
+  hasDeleteMutationEvidence(intent: Record<string, unknown>): boolean;
 };
 
 const ownedHeartbeat = {
@@ -1872,6 +1876,45 @@ describe('ModerationDeleteIntentService', () => {
     const result = await service.executeLeasedIntent('intent-1', 'lease-1');
 
     expect(result).toMatchObject({ kind: 'already_absent', confirmed: true });
+    expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['remote timestamp only', { remoteDeleteSucceededAt: new Date() }],
+    ['remote bot only', { remoteDeleteSucceededBotId: 'bot-1' }],
+    ['dispatch timestamp only', { deleteDispatchStartedAt: new Date() }],
+    ['dispatch bot only', { deleteDispatchStartedBotId: 'bot-1' }],
+  ])('reconciles partial %s mutation evidence before another DELETE', async (_label, marker) => {
+    const partialIntent = {
+      ...baseIntent,
+      ...marker,
+      attemptCount: 2,
+      leasedFromStatus: 'AMBIGUOUS',
+    };
+    const completed = {
+      ...partialIntent,
+      status: 'ALREADY_ABSENT',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([partialIntent])
+      .mockResolvedValueOnce([completed]);
+    const deleteMessage = jest.fn();
+    const getExactMessagePresence = jest.fn().mockResolvedValue('absent');
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      { deleteMessage, getExactMessagePresence },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'already_absent',
+      confirmed: true,
+    });
     expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
     expect(deleteMessage).not.toHaveBeenCalled();
   });
@@ -3917,10 +3960,109 @@ describe('ModerationDeleteIntentService', () => {
     expect(selectionSql).toContain('intent."remote_delete_succeeded_at" IS NOT NULL');
 
     const expirySql = executeRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
-    expect(expirySql).toContain('intent."remote_delete_succeeded_at" IS NOT NULL');
-    expect(expirySql).toContain('intent."remote_delete_succeeded_bot_id" IS NOT NULL');
-    expect(expirySql).toContain('intent."delete_dispatch_started_at" IS NOT NULL');
-    expect(expirySql).toContain('intent."delete_dispatch_started_bot_id" IS NOT NULL');
+    expect(expirySql).toContain('intent."remote_delete_succeeded_at" IS NULL');
+    expect(expirySql).toContain('intent."remote_delete_succeeded_bot_id" IS NULL');
+    expect(expirySql).toContain('intent."delete_dispatch_started_at" IS NULL');
+    expect(expirySql).toContain('intent."delete_dispatch_started_bot_id" IS NULL');
+  });
+
+  it('bounds expiry of a 474-row capability backlog and fails closed around mutation evidence', async () => {
+    const executeRaw = jest.fn().mockResolvedValue(100);
+    const { service } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'canary',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'canary-chat',
+        MODERATION_DELETE_INTENT_SWEEP_BATCH_SIZE: 100,
+      },
+      { $executeRaw: executeRaw },
+    );
+
+    await expect((service as unknown as ServiceInternals).expireDueIntents()).resolves.toBe(100);
+
+    const query = executeRaw.mock.calls[0]?.[0];
+    const sql = query?.strings?.join('?') ?? '';
+    expect(sql).toContain('WITH candidates AS');
+    expect(sql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(sql).toContain('LIMIT');
+    expect(sql).toContain("CAST('WAITING_CAPABILITY' AS");
+    expect(sql).toContain("CAST('IN_PROGRESS' AS");
+    expect(sql).toContain('intent."lease_expires_at" IS NULL');
+    expect(sql).toContain('intent."lease_expires_at" <= CURRENT_TIMESTAMP');
+    expect(sql).toMatch(
+      /intent\."status" <> CAST\('IN_PROGRESS'[\s\S]*?OR intent\."lease_expires_at" IS NULL[\s\S]*?OR intent\."lease_expires_at" <= CURRENT_TIMESTAMP/u,
+    );
+    expect(sql).toContain('intent."remote_delete_succeeded_at" IS NULL');
+    expect(sql).toContain('intent."remote_delete_succeeded_bot_id" IS NULL');
+    expect(sql).toContain('intent."delete_dispatch_started_at" IS NULL');
+    expect(sql).toContain('intent."delete_dispatch_started_bot_id" IS NULL');
+    expect(sql).toContain('SET\n        "status" = CAST(\'EXPIRED\'');
+    expect(sql).not.toContain('base_reason');
+    expect(sql).not.toContain('ocr_reason');
+    expect(sql).not.toContain('execution_reason');
+    expect(query?.values).toEqual([100]);
+  });
+
+  it('treats complete and partial dispatch or success markers as mutation evidence', () => {
+    const { service } = createService();
+    const internals = service as unknown as ServiceInternals;
+
+    expect(
+      internals.hasRemoteSuccessMarker({
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: 'bot-1',
+      }),
+    ).toBe(true);
+    expect(
+      internals.hasRemoteSuccessMarker({
+        remoteDeleteSucceededAt: new Date(),
+        remoteDeleteSucceededBotId: null,
+      }),
+    ).toBe(true);
+    expect(
+      internals.hasRemoteSuccessMarker({
+        remoteDeleteSucceededAt: null,
+        remoteDeleteSucceededBotId: 'bot-1',
+      }),
+    ).toBe(true);
+    expect(
+      internals.hasDeleteDispatchMarker({
+        deleteDispatchStartedAt: new Date(),
+        deleteDispatchStartedBotId: 'bot-1',
+      }),
+    ).toBe(true);
+    expect(
+      internals.hasDeleteDispatchMarker({
+        deleteDispatchStartedAt: new Date(),
+        deleteDispatchStartedBotId: null,
+      }),
+    ).toBe(true);
+    expect(
+      internals.hasDeleteDispatchMarker({
+        deleteDispatchStartedAt: null,
+        deleteDispatchStartedBotId: 'bot-1',
+      }),
+    ).toBe(true);
+    expect(
+      internals.hasDeleteMutationEvidence({
+        remoteDeleteSucceededAt: null,
+        remoteDeleteSucceededBotId: 'bot-1',
+        deleteDispatchStartedAt: null,
+        deleteDispatchStartedBotId: null,
+      }),
+    ).toBe(true);
+  });
+
+  it('runs expiry housekeeping even when no intent is eligible for execution', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const executeRaw = jest.fn().mockResolvedValue(0);
+    const { service } = createService({}, { $queryRaw: queryRaw, $executeRaw: executeRaw });
+    (service as unknown as { hasAnyExecutionScope: () => boolean }).hasAnyExecutionScope = () =>
+      false;
+
+    await expect(service.sweepDueIntents()).resolves.toBe(0);
+
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(queryRaw).not.toHaveBeenCalled();
   });
 
   it('uses SKIP LOCKED to select a bounded unleased DB recovery batch', async () => {
@@ -3976,11 +4118,9 @@ describe('ModerationDeleteIntentService', () => {
     await (service as unknown as ServiceInternals).claimOne('intent-1');
 
     const sql = queryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
-    expect(sql).toContain('"retry_until_at" >');
-    expect(sql).toContain('"remote_delete_succeeded_at" IS NOT NULL');
-    expect(sql).toContain('"remote_delete_succeeded_bot_id" IS NOT NULL');
-    expect(sql).toContain('"delete_dispatch_started_at" IS NOT NULL');
-    expect(sql).toContain('"delete_dispatch_started_bot_id" IS NOT NULL');
+    expect(sql).toMatch(
+      /"retry_until_at" >[\s\S]*?OR "remote_delete_succeeded_at" IS NOT NULL[\s\S]*?OR "remote_delete_succeeded_bot_id" IS NOT NULL[\s\S]*?OR "delete_dispatch_started_at" IS NOT NULL[\s\S]*?OR "delete_dispatch_started_bot_id" IS NOT NULL/u,
+    );
   });
 
   it('links a replacement marker in the intent transaction before enqueueing execution', async () => {
@@ -4224,6 +4364,9 @@ describe('ModerationDeleteIntentService', () => {
         ...baseIntent,
         status,
         sourceMessageAt: previousEventAt,
+        attemptCount: 3,
+        firstAttemptAt: new Date('2026-08-11T02:56:10.000Z'),
+        lastAttemptAt: new Date('2026-08-11T02:56:30.000Z'),
         completedAt: new Date(),
         leaseToken: null,
         leaseExpiresAt: null,
@@ -4273,6 +4416,9 @@ describe('ModerationDeleteIntentService', () => {
       );
       expect(reopenSql).toContain('"source_message_at" < ?');
       expect(reopenSql).toContain("CAST('FAILED_TERMINAL' AS");
+      expect(reopenSql).toContain('"attempt_count" = 0');
+      expect(reopenSql).toContain('"first_attempt_at" = NULL');
+      expect(reopenSql).toContain('"last_attempt_at" = NULL');
       expect(queue.add).toHaveBeenCalledWith(
         'execute-moderation-delete-intent',
         { intentId: 'intent-1' },
@@ -4499,6 +4645,10 @@ describe('ModerationDeleteIntentService', () => {
     });
     expect(txQueryRaw.mock.calls[0]?.[0]?.values).toEqual(
       expect.arrayContaining([expectedUpdatedAt, 1]),
+    );
+    const reopenSql = txQueryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(reopenSql).toMatch(
+      /WHEN "remote_delete_succeeded_at" IS NOT NULL\s+OR "remote_delete_succeeded_bot_id" IS NOT NULL\s+OR "delete_dispatch_started_at" IS NOT NULL\s+OR "delete_dispatch_started_bot_id" IS NOT NULL/u,
     );
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
