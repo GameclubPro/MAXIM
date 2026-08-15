@@ -1927,6 +1927,8 @@ describe('WebhookOutboxService', () => {
     const orderedHeadsSql = extractSql(orderedHeadsQuery);
     const quarantineMarker = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
     expect(orderedHeadsSql).toContain('requested_chats');
+    expect(orderedHeadsSql).toContain('JOIN LATERAL');
+    expect(orderedHeadsSql).not.toContain('CROSS JOIN LATERAL');
     expect(orderedHeadsSql).toContain(
       `LEFT(COALESCE("error_message", ''), 37) = '${quarantineMarker}'`,
     );

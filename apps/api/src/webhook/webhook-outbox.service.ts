@@ -775,7 +775,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       )
       SELECT requested_chats."chatId", head."id", head."createdAt"
       FROM requested_chats
-      CROSS JOIN LATERAL (
+      JOIN LATERAL (
         SELECT "id", "created_at" AS "createdAt"
         FROM "webhook_events"
         WHERE (

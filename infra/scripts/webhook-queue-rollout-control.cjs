@@ -307,7 +307,7 @@ async function controlWebhookQueues(action, options) {
     }
 
     if (action === 'wait-drained') {
-      return waitForDrain(
+      return await waitForDrain(
         queues,
         options.drainTimeoutMs,
         options.now ?? Date.now,

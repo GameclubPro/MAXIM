@@ -273,6 +273,47 @@ test('wait-drained fences queue reads and sleeps with ownership checks', async (
   assert.equal(ownership.backend.owner, OWNER_TOKEN);
 });
 
+test('wait-drained keeps queue and ownership resources open until reads settle', async () => {
+  let markReadStarted;
+  let releaseRead;
+  let readStarted = false;
+  const readStartedPromise = new Promise((resolve) => {
+    markReadStarted = resolve;
+  });
+  const readGate = new Promise((resolve) => {
+    releaseRead = resolve;
+  });
+  const harness = makeQueues({
+    hooks: {
+      onIsPaused: async () => {
+        if (!readStarted) {
+          readStarted = true;
+          markReadStarted();
+        }
+        await readGate;
+      },
+    },
+    paused: true,
+  });
+  const ownership = makeOwnershipStore(OWNER_TOKEN);
+
+  const operation = controlWebhookQueues(
+    'wait-drained',
+    controlOptions(harness, ownership),
+  );
+  await readStartedPromise;
+  const closedBeforeReadSettled =
+    ownership.calls.close !== 0 ||
+    [...harness.states.values()].some(({ closeCalls }) => closeCalls !== 0);
+  releaseRead();
+
+  const summary = await operation;
+  assert.equal(closedBeforeReadSettled, false);
+  assert.deepEqual(summary, { queueCount: 24, pausedCount: 24, activeCount: 0 });
+  assert.equal(ownership.calls.close, 1);
+  assert.ok([...harness.states.values()].every(({ closeCalls }) => closeCalls === 1));
+});
+
 test('wait-drained fails closed when ownership is replaced during a queue read', async () => {
   const ownership = makeOwnershipStore(OWNER_TOKEN);
   let replaced = false;
