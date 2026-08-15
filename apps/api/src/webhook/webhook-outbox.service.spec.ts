@@ -13,6 +13,7 @@ import {
   resolveDefaultWebhookQueueNameForChatId,
   resolveJoinWebhookQueueNameForChatId,
   resolveWebhookQueueName,
+  WEBHOOK_QUEUE_BACKGROUND,
 } from './webhook-queues';
 
 type JobMock = {
@@ -314,6 +315,133 @@ function createWebhookEventUpdateManyMock(rows: MockWebhookEventRow[]) {
   };
 }
 
+function compareMockWebhookRows(
+  left: MockWebhookEventRow,
+  right: MockWebhookEventRow,
+  direction: 'asc' | 'desc' = 'asc',
+): number {
+  const createdAtDiff = left.createdAt.getTime() - right.createdAt.getTime();
+  const idDiff = left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+  const comparison = createdAtDiff !== 0 ? createdAtDiff : idDiff;
+  return direction === 'desc' ? -comparison : comparison;
+}
+
+function isOrderedMessageRow(row: MockWebhookEventRow): boolean {
+  return (
+    ['message_created', 'message_edited'].includes(extractWebhookType(row.normalizedPayload)) &&
+    extractOrderedWebhookChatId(row.normalizedPayload).length > 0
+  );
+}
+
+function isOrderedHeadStatus(row: MockWebhookEventRow): boolean {
+  return (
+    row.status === WebhookStatus.RECEIVED ||
+    row.status === WebhookStatus.QUEUED ||
+    (row.status === WebhookStatus.FAILED &&
+      (row.nextEnqueueAt !== null || isPendingWebhookTimeoutQuarantineMessage(row.errorMessage)))
+  );
+}
+
+function isMockEnqueueCandidateEligible(
+  row: MockWebhookEventRow,
+  now: Date,
+  timeoutExecutionClaimCompleted: boolean,
+): boolean {
+  const isDue = (value: Date | null) => value === null || value <= now;
+  if (row.status === WebhookStatus.RECEIVED) {
+    return isDue(row.nextEnqueueAt);
+  }
+  if (row.status === WebhookStatus.FAILED) {
+    return (
+      (row.nextEnqueueAt !== null && row.nextEnqueueAt <= now) ||
+      (row.nextEnqueueAt === null &&
+        isPendingWebhookTimeoutQuarantineMessage(row.errorMessage) &&
+        timeoutExecutionClaimCompleted)
+    );
+  }
+  if (row.status !== WebhookStatus.QUEUED || row.processedAt !== null) {
+    return false;
+  }
+
+  const background = row.queueName === WEBHOOK_QUEUE_BACKGROUND;
+  const staleBefore = new Date(now.getTime() - (background ? 120_000 : 20_000));
+  return (row.queuedAt ?? row.createdAt) <= staleBefore && isDue(row.nextEnqueueAt);
+}
+
+function selectFairEnqueueCandidatesForTest(
+  rows: MockWebhookEventRow[],
+  query: SqlQuery,
+  timeoutExecutionClaimCompleted: boolean,
+): Array<MockWebhookEventRow & { isRecentReceipt: boolean }> {
+  const values = query.values ?? [];
+  const now = values
+    .filter((value): value is Date => value instanceof Date)
+    .sort((left, right) => right.getTime() - left.getTime())[0];
+  const limits = values.filter((value): value is number => typeof value === 'number');
+  const selectionWindowSize = Math.max(0, ...limits);
+  if (!now || selectionWindowSize === 0) {
+    return [];
+  }
+
+  const recentReceiptTake = Math.min(
+    selectionWindowSize,
+    Math.max(1, Math.ceil(selectionWindowSize * 0.25)),
+  );
+  const backlogReceiptTake = selectionWindowSize - recentReceiptTake;
+  const staleUserFacingQueuedBefore = new Date(now.getTime() - 20_000);
+  const staleBackgroundQueuedBefore = new Date(now.getTime() - 120_000);
+  const orderedHeadByChat = new Map<string, MockWebhookEventRow>();
+  for (const row of rows
+    .filter((candidate) => isOrderedMessageRow(candidate) && isOrderedHeadStatus(candidate))
+    .sort((left, right) => compareMockWebhookRows(left, right))) {
+    const chatId = extractOrderedWebhookChatId(row.normalizedPayload);
+    if (!orderedHeadByChat.has(chatId)) {
+      orderedHeadByChat.set(chatId, row);
+    }
+  }
+
+  const orderedHeads = Array.from(orderedHeadByChat.values());
+  const independentRows = rows.filter((row) => !isOrderedMessageRow(row));
+  const fairRows = [...orderedHeads, ...independentRows];
+  const isDue = (value: Date | null) => value === null || value <= now;
+  const isReceived = (row: MockWebhookEventRow) =>
+    row.status === WebhookStatus.RECEIVED && isDue(row.nextEnqueueAt);
+  const isFailed = (row: MockWebhookEventRow) =>
+    row.status === WebhookStatus.FAILED &&
+    isMockEnqueueCandidateEligible(row, now, timeoutExecutionClaimCompleted);
+  const isStaleQueued = (row: MockWebhookEventRow, queueKind: 'user-facing' | 'background') => {
+    const background = row.queueName === WEBHOOK_QUEUE_BACKGROUND;
+    const cutoff = background ? staleBackgroundQueuedBefore : staleUserFacingQueuedBefore;
+    const staleReference = row.queuedAt ?? row.createdAt;
+    return (
+      row.status === WebhookStatus.QUEUED &&
+      row.processedAt === null &&
+      background === (queueKind === 'background') &&
+      staleReference <= cutoff &&
+      isDue(row.nextEnqueueAt)
+    );
+  };
+  const select = (
+    predicate: (row: MockWebhookEventRow) => boolean,
+    take: number,
+    direction: 'asc' | 'desc' = 'asc',
+    isRecentReceipt = false,
+  ) =>
+    fairRows
+      .filter(predicate)
+      .sort((left, right) => compareMockWebhookRows(left, right, direction))
+      .slice(0, take)
+      .map((row) => ({ ...row, isRecentReceipt }));
+
+  return [
+    ...select(isReceived, backlogReceiptTake),
+    ...select(isReceived, recentReceiptTake, 'desc', true),
+    ...select(isFailed, selectionWindowSize),
+    ...select((row) => isStaleQueued(row, 'user-facing'), selectionWindowSize),
+    ...select((row) => isStaleQueued(row, 'background'), selectionWindowSize),
+  ];
+}
+
 function createService(params?: {
   findManyResult?: Array<{
     id: string;
@@ -343,6 +471,7 @@ function createService(params?: {
     status: string;
     completedAt?: Date | null;
   } | null;
+  selectedChatQueryError?: Error;
   prepareResult?: {
     canonical: boolean;
     prepared: boolean;
@@ -372,6 +501,45 @@ function createService(params?: {
     $executeRaw: jest.fn().mockResolvedValue(0),
     $queryRaw: jest.fn().mockImplementation(async (query: SqlQuery) => {
       const values = query.values ?? [];
+      if (extractSql(query).includes('fair_enqueue_candidates')) {
+        return selectFairEnqueueCandidatesForTest(
+          webhookRows,
+          query,
+          params?.timeoutExecutionClaim?.status === 'COMPLETED',
+        );
+      }
+      if (extractSql(query).includes('selected_chat_candidates')) {
+        if (params?.selectedChatQueryError) {
+          throw params.selectedChatQueryError;
+        }
+        const now = values
+          .filter((value): value is Date => value instanceof Date)
+          .sort((left, right) => right.getTime() - left.getTime())[0];
+        const take = Math.max(
+          0,
+          ...values.filter((value): value is number => typeof value === 'number'),
+        );
+        if (!now || take === 0) {
+          return [];
+        }
+        return webhookRows
+          .filter((row) => {
+            const chatId = extractOrderedWebhookChatId(row.normalizedPayload);
+            return (
+              isOrderedMessageRow(row) &&
+              isOrderedHeadStatus(row) &&
+              values.includes(chatId) &&
+              isMockEnqueueCandidateEligible(
+                row,
+                now,
+                params?.timeoutExecutionClaim?.status === 'COMPLETED',
+              )
+            );
+          })
+          .sort((left, right) => compareMockWebhookRows(left, right))
+          .slice(0, take)
+          .map((row) => ({ ...row, isRecentReceipt: false }));
+      }
       const findHead = (chatId: string, afterCreatedAt: Date | null, afterId: string | null) => {
         const rows = webhookRows
           .filter(
@@ -630,32 +798,23 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(prisma.webhookEvent.findMany.mock.calls).toEqual(
-      expect.arrayContaining([
-        [
-          expect.objectContaining({
-            where: expect.objectContaining({
-              status: WebhookStatus.FAILED,
-              OR: [
-                { nextEnqueueAt: { lte: expect.any(Date) } },
-                {
-                  nextEnqueueAt: null,
-                  errorMessage: {
-                    startsWith: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`,
-                  },
-                  executionClaims: {
-                    some: {
-                      kind: 'EXECUTION',
-                      status: 'COMPLETED',
-                    },
-                  },
-                },
-              ],
-            }),
-          }),
-        ],
-      ]),
+    const selectionSql = extractSql(prisma.$queryRaw.mock.calls[0]![0] as SqlQuery);
+    const headIdCteStart = selectionSql.indexOf('WITH ordered_message_head_ids AS MATERIALIZED');
+    const fullHeadCteStart = selectionSql.indexOf('ordered_message_heads AS MATERIALIZED');
+    expect(headIdCteStart).toBeGreaterThanOrEqual(0);
+    expect(fullHeadCteStart).toBeGreaterThan(headIdCteStart);
+    expect(selectionSql.slice(headIdCteStart, fullHeadCteStart)).toContain(
+      `"id" AS "webhook_event_id"`,
     );
+    expect(selectionSql.slice(headIdCteStart, fullHeadCteStart)).not.toContain(`"processed_at"`);
+    expect(selectionSql).toContain(
+      `ON "webhook_events"."id" = ordered_message_head_ids."webhook_event_id"`,
+    );
+    expect(selectionSql).toContain(`"status" = 'FAILED'::"WebhookStatus"`);
+    expect(selectionSql).toContain(`"next_enqueue_at" <= ?`);
+    expect(selectionSql).toContain(`FROM "webhook_execution_claims"`);
+    expect(selectionSql).toContain(`"kind" = 'EXECUTION'`);
+    expect(selectionSql).toContain(`"status" = 'COMPLETED'::"WebhookExecutionClaimStatus"`);
   });
 
   it('uses queuedAt as the stale reference and falls back to createdAt only when it is missing', async () => {
@@ -663,28 +822,11 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(prisma.webhookEvent.findMany.mock.calls).toEqual(
-      expect.arrayContaining([
-        [
-          expect.objectContaining({
-            where: expect.objectContaining({
-              status: WebhookStatus.QUEUED,
-              processedAt: null,
-              AND: expect.arrayContaining([
-                expect.objectContaining({
-                  OR: expect.arrayContaining([
-                    expect.objectContaining({ queuedAt: { lte: expect.any(Date) } }),
-                    expect.objectContaining({
-                      queuedAt: null,
-                      createdAt: { lte: expect.any(Date) },
-                    }),
-                  ]),
-                }),
-              ]),
-            }),
-          }),
-        ],
-      ]),
+    const selectionSql = extractSql(prisma.$queryRaw.mock.calls[0]![0] as SqlQuery);
+    expect(selectionSql).toContain(`"status" = 'QUEUED'::"WebhookStatus"`);
+    expect(selectionSql).toContain(`"processed_at" IS NULL`);
+    expect(selectionSql).toContain(
+      `"queued_at" <= ? OR ("queued_at" IS NULL AND "created_at" <= ?)`,
     );
   });
 
@@ -748,6 +890,129 @@ describe('WebhookOutboxService', () => {
     expect(enqueuedIds.filter((id) => id.startsWith('evt-stale-'))).toHaveLength(1);
     expect(enqueuedIds).toContain('evt-received-0');
     expect(enqueuedIds).toContain('evt-received-9');
+  });
+
+  it('does not let one ordered chat consume the raw window ahead of lifecycle events', async () => {
+    const poisonChatId = 'chat-poison-window';
+    const poisonQueueName = resolveDefaultWebhookQueueNameForChatId(poisonChatId);
+    const baseCreatedAt = new Date('2026-03-24T00:00:00.000Z');
+    const poisonRows = Array.from({ length: 400 }, (_, index) => ({
+      id: `evt-poison-${String(index).padStart(3, '0')}`,
+      enqueueAttempts: 0,
+      createdAt: new Date(baseCreatedAt.getTime() + index * 1_000),
+      normalizedPayload: {
+        updateId: `update-poison-${index}`,
+        type: 'message_created',
+        message: { chatId: poisonChatId, messageId: `message-poison-${index}` },
+      },
+    }));
+    const { service, queues, webhookService } = createService({
+      configOverrides: { ENQUEUE_BATCH_SIZE: 100 },
+      findManyResult: [
+        ...poisonRows,
+        {
+          id: 'evt-user-removed-middle',
+          enqueueAttempts: 0,
+          createdAt: new Date(baseCreatedAt.getTime() + 250_500),
+          normalizedPayload: {
+            updateId: 'update-user-removed-middle',
+            type: 'user_removed',
+            chatId: 'lifecycle-chat',
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues[poisonQueueName].add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
+      'evt-poison-000',
+    ]);
+    expect(queues.backgroundQueue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
+      'evt-user-removed-middle',
+    ]);
+    expect(
+      webhookService.preparePersistedWebhookEvent.mock.calls.filter(([eventId]) =>
+        eventId.startsWith('evt-poison-'),
+      ),
+    ).toEqual([['evt-poison-000']]);
+  });
+
+  it('reserves one bounded slot for membership-leave lifecycle work under distinct-chat load', async () => {
+    const baseCreatedAt = new Date('2026-03-24T00:00:00.000Z');
+    const messageRows = Array.from({ length: 8 }, (_, index) => ({
+      id: `evt-distinct-chat-${index}`,
+      enqueueAttempts: 0,
+      createdAt: new Date(baseCreatedAt.getTime() + index * 1_000),
+      normalizedPayload: {
+        updateId: `update-distinct-chat-${index}`,
+        type: 'message_created',
+        message: { chatId: `distinct-chat-${index}`, messageId: `message-${index}` },
+      },
+    }));
+    const { service, queues } = createService({
+      configOverrides: { ENQUEUE_BATCH_SIZE: 4 },
+      findManyResult: [
+        ...messageRows,
+        {
+          id: 'evt-user-removed-reserved',
+          enqueueAttempts: 0,
+          createdAt: new Date(baseCreatedAt.getTime() + 30_000),
+          normalizedPayload: {
+            updateId: 'update-user-removed-reserved',
+            type: 'user_removed',
+            chatId: 'lifecycle-reserved-chat',
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const enqueuedIds = Object.values(queues).flatMap((queue) =>
+      queue.add.mock.calls.map((call) => call[1].webhookEventId),
+    );
+    expect(enqueuedIds).toHaveLength(4);
+    expect(enqueuedIds).toContain('evt-user-removed-reserved');
+    expect(enqueuedIds.filter((id) => id.startsWith('evt-distinct-chat-'))).toHaveLength(3);
+  });
+
+  it('falls back to selected heads when optional chat expansion fails', async () => {
+    const { service, queues } = createService({
+      selectedChatQueryError: new Error('selected chat expansion timed out'),
+      findManyResult: [
+        {
+          id: 'evt-expansion-fallback-head',
+          enqueueAttempts: 0,
+          normalizedPayload: {
+            updateId: 'update-expansion-fallback-head',
+            type: 'message_created',
+            message: { chatId: 'expansion-fallback-chat', messageId: 'message-1' },
+          },
+        },
+      ],
+    });
+    const warning = jest.spyOn((service as any).logger, 'warn').mockImplementation();
+
+    try {
+      await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+      expect(
+        Object.values(queues).flatMap((queue) =>
+          queue.add.mock.calls.map((call) => call[1].webhookEventId),
+        ),
+      ).toEqual(['evt-expansion-fallback-head']);
+      expect(warning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: 'selected chat expansion timed out',
+          selectedCandidateCount: 1,
+          selectedChatCount: 1,
+        }),
+        'Failed to expand selected webhook chats; enqueueing the selected heads only',
+      );
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it('repairs stale queued user-facing rows after the fast repair window', async () => {
@@ -1601,9 +1866,9 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(prisma.webhookEvent.findMany.mock.calls).toEqual(
-      expect.arrayContaining([[expect.objectContaining({ take: 6 })]]),
-    );
+    const selectionQuery = prisma.$queryRaw.mock.calls[0]![0] as SqlQuery;
+    expect(extractSql(selectionQuery)).toContain('fair_enqueue_candidates');
+    expect(selectionQuery.values).toContain(6);
   });
 
   it('enqueues high-priority membership joins before older message_created events', async () => {
@@ -1922,8 +2187,10 @@ describe('WebhookOutboxService', () => {
 
     expect(startedEventIds).toHaveLength(3);
     expect(maxActivePreparations).toBe(2);
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    const orderedHeadsQuery = prisma.$queryRaw.mock.calls[0]![0] as SqlQuery;
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    const orderedHeadsQuery = prisma.$queryRaw.mock.calls
+      .map(([query]) => query as SqlQuery)
+      .find((query) => extractSql(query).includes('requested_chats'))!;
     const orderedHeadsSql = extractSql(orderedHeadsQuery);
     const quarantineMarker = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
     expect(orderedHeadsSql).toContain('requested_chats');
@@ -2398,9 +2665,10 @@ describe('WebhookOutboxService', () => {
     ).toEqual([{ webhookEventId: 'evt-priority-older', priority: 5 }]);
   });
 
-  it('blocks a selected recent receipt behind an older same-chat receipt omitted from the batch', async () => {
+  it('selects the ordered chat head before applying the recent-receipt reserve', async () => {
     const chatId = 'chat-omitted-head';
-    const { service, prisma, queues, webhookService, webhookRows } = createService({
+    const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
+    const { service, queues, webhookService } = createService({
       findManyResult: [
         {
           id: 'evt-omitted-older',
@@ -2424,15 +2692,14 @@ describe('WebhookOutboxService', () => {
         },
       ],
     });
-    const selectedNewer = webhookRows.find((row) => row.id === 'evt-selected-newer')!;
-    prisma.webhookEvent.findMany.mockResolvedValue([selectedNewer]);
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
-    for (const queueName of DEFAULT_WEBHOOK_QUEUE_NAMES) {
-      expect(queues[queueName].add).not.toHaveBeenCalled();
-    }
+    expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledTimes(1);
+    expect(webhookService.preparePersistedWebhookEvent).toHaveBeenCalledWith('evt-omitted-older');
+    expect(queues[queueName].add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
+      'evt-omitted-older',
+    ]);
   });
 
   it('keeps a newer manual-close receipt behind an older queued event from a prior poll', async () => {

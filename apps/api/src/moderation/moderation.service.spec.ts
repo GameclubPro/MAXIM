@@ -22,6 +22,7 @@ import {
   installImmediateTimeoutForDelay,
   createPrivateCallbackUpdate,
 } from './moderation.service.spec-support';
+import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 
 describe('ModerationService', () => {
   it('delivers an official pure forward from the persisted worker to private control', async () => {
@@ -740,7 +741,7 @@ describe('ModerationService', () => {
           deadlineAt: new Date(Date.now() - 1_000),
         },
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBe('retry');
     expect(executionClaimUpdateMany).not.toHaveBeenCalled();
   });
 
@@ -771,7 +772,7 @@ describe('ModerationService', () => {
           deadlineAt: new Date(Date.now() + 30_000),
         },
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe('settled');
 
     expect(executionClaimUpdateMany).toHaveBeenCalledWith({
       where: {
@@ -792,7 +793,8 @@ describe('ModerationService', () => {
     });
   });
 
-  it('does not count timeout completion as durable after an exact shadow claim CAS miss', async () => {
+  it('retains a durable timeout fence after an exact shadow claim CAS miss', async () => {
+    const pendingErrorMessage = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-shadow-foreign: pending`;
     const webhookEventUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const executionClaimUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
     const prisma: {
@@ -815,11 +817,11 @@ describe('ModerationService', () => {
           businessLeaseToken: null,
         },
         {
-          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-shadow-foreign: pending`,
+          errorMessage: pendingErrorMessage,
           deadlineAt: new Date(Date.now() + 30_000),
         },
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBe('quarantined');
 
     expect(executionClaimUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -833,6 +835,563 @@ describe('ModerationService', () => {
         },
       }),
     );
+    expect(webhookEventUpdateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: 'event-timeout-shadow-foreign-lease-1',
+        status: 'PROCESSED',
+        processedAt: expect.any(Date),
+        errorMessage: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+      data: {
+        status: 'FAILED',
+        processedAt: null,
+        errorMessage: pendingErrorMessage,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+  });
+
+  it('converges a timed-out shadow mirror on its completed semantic owner', async () => {
+    const update = createUpdate();
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    if (!semanticKey) {
+      throw new Error('Expected the test webhook to have a semantic key');
+    }
+    const ownerPreparedAt = new Date('2026-08-15T12:00:00.000Z');
+    const ownerCompletedAt = new Date('2026-08-15T12:00:01.000Z');
+    const ownerProcessedAt = new Date('2026-08-15T12:00:01.100Z');
+    const webhookEventUpdateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    const executionClaimUpdateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const prisma: {
+      webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
+      webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
+      $transaction?: jest.Mock;
+    } = {
+      webhookEvent: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'event-timeout-shadow-mirror-1',
+            status: 'PROCESSED',
+            normalizedPayload: update,
+            errorMessage: null,
+            processedAt: ownerProcessedAt,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          })
+          .mockResolvedValue({
+            id: 'event-timeout-shadow-owner-1',
+            status: 'PROCESSED',
+            normalizedPayload: update,
+            errorMessage: null,
+            processedAt: ownerProcessedAt,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          }),
+        updateMany: webhookEventUpdateMany,
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-timeout-shadow-owner-1',
+          semanticKey,
+          webhookEventId: 'event-timeout-shadow-owner-1',
+          executionBotId: 'bot-1',
+          enforced: false,
+          status: 'COMPLETED',
+          preparedAt: ownerPreparedAt,
+          completedAt: ownerCompletedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: executionClaimUpdateMany,
+      },
+    };
+    prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    await expect(
+      service.completeTimedOutExecution(
+        {
+          webhookEvent: { id: 'event-timeout-shadow-mirror-1' } as never,
+          update,
+          activeBotId: 'bot-1',
+          businessLeaseToken: null,
+        },
+        {
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-shadow-mirror: pending`,
+          deadlineAt: new Date('2026-08-15T12:05:00.000Z'),
+        },
+      ),
+    ).resolves.toBe('duplicate');
+
+    expect(executionClaimUpdateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: 'claim-timeout-shadow-owner-1',
+        kind: 'EXECUTION',
+        semanticKey,
+        webhookEventId: 'event-timeout-shadow-owner-1',
+        enforced: false,
+        status: 'COMPLETED',
+        preparedAt: ownerPreparedAt,
+        completedAt: ownerCompletedAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },
+      data: {
+        enforced: true,
+        status: 'COMPLETED',
+        completedAt: ownerCompletedAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },
+    });
+    expect(webhookEventUpdateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: 'event-timeout-shadow-mirror-1',
+        status: 'PROCESSED',
+        processedAt: expect.any(Date),
+        errorMessage: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        normalizedPayload: { equals: update },
+      },
+      data: {
+        status: 'DUPLICATE',
+        processedAt: ownerCompletedAt,
+        errorMessage: null,
+        queueName: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+  });
+
+  it('converges multiple timed-out mirrors after the semantic owner is already enforced', async () => {
+    const update = createUpdate();
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    if (!semanticKey) {
+      throw new Error('Expected the test webhook to have a semantic key');
+    }
+    const ownerPreparedAt = new Date('2026-08-15T12:00:00.000Z');
+    const ownerCompletedAt = new Date('2026-08-15T12:00:01.000Z');
+    const ownerProcessedAt = new Date('2026-08-15T12:00:01.100Z');
+    let ownerEnforced = false;
+    const webhookEventUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const executionClaimUpdateMany = jest.fn().mockImplementation(async ({ where }) => {
+      if (!where.id) {
+        return { count: 0 };
+      }
+      if (where.enforced !== ownerEnforced) {
+        return { count: 0 };
+      }
+      ownerEnforced = true;
+      return { count: 1 };
+    });
+    const prisma: {
+      webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
+      webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
+      $transaction?: jest.Mock;
+    } = {
+      webhookEvent: {
+        findUnique: jest.fn().mockImplementation(async ({ where }) => ({
+          id: where.id,
+          status: 'PROCESSED',
+          normalizedPayload: update,
+          errorMessage: null,
+          processedAt: ownerProcessedAt,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        })),
+        updateMany: webhookEventUpdateMany,
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockImplementation(async () => ({
+          id: 'claim-timeout-shadow-owner-multiple-1',
+          semanticKey,
+          webhookEventId: 'event-timeout-shadow-owner-multiple-1',
+          executionBotId: 'bot-1',
+          enforced: ownerEnforced,
+          status: 'COMPLETED',
+          preparedAt: ownerPreparedAt,
+          completedAt: ownerCompletedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        })),
+        updateMany: executionClaimUpdateMany,
+      },
+    };
+    prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    for (const mirrorId of [
+      'event-timeout-shadow-mirror-multiple-1',
+      'event-timeout-shadow-mirror-multiple-2',
+    ]) {
+      await expect(
+        service.completeTimedOutExecution(
+          {
+            webhookEvent: { id: mirrorId } as never,
+            update,
+            activeBotId: 'bot-1',
+            businessLeaseToken: null,
+          },
+          {
+            errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-${mirrorId}: pending`,
+            deadlineAt: new Date('2026-08-15T12:05:00.000Z'),
+          },
+        ),
+      ).resolves.toBe('duplicate');
+    }
+
+    const promotionCalls = executionClaimUpdateMany.mock.calls.filter(
+      ([args]) => args.where.id === 'claim-timeout-shadow-owner-multiple-1',
+    );
+    expect(promotionCalls).toHaveLength(2);
+    expect(promotionCalls[0]?.[0].where.enforced).toBe(false);
+    expect(promotionCalls[1]?.[0].where.enforced).toBe(true);
+  });
+
+  it.each(['PENDING', 'READY'] as const)(
+    'retries a timed-out mirror while its semantic owner claim is %s',
+    async (ownerClaimStatus) => {
+      const update = createUpdate();
+      const semanticKey = buildWebhookSemanticEventKey(update);
+      if (!semanticKey) {
+        throw new Error('Expected the test webhook to have a semantic key');
+      }
+      const webhookEventUpdateMany = jest
+        .fn()
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 });
+      const prisma: {
+        webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
+        webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
+        $transaction?: jest.Mock;
+      } = {
+        webhookEvent: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'event-timeout-shadow-transitional-1',
+            status: 'PROCESSED',
+            normalizedPayload: update,
+            errorMessage: null,
+            processedAt: new Date('2026-08-15T12:00:01.000Z'),
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          }),
+          updateMany: webhookEventUpdateMany,
+        },
+        webhookExecutionClaim: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'claim-timeout-shadow-transitional-owner-1',
+            semanticKey,
+            webhookEventId: 'event-timeout-shadow-transitional-owner-1',
+            executionBotId: 'bot-1',
+            enforced: ownerClaimStatus === 'READY',
+            status: ownerClaimStatus,
+            preparedAt: ownerClaimStatus === 'READY' ? new Date('2026-08-15T12:00:00.000Z') : null,
+            completedAt: null,
+            leaseToken: ownerClaimStatus === 'READY' ? 'owner-lease' : null,
+            leaseExpiresAt:
+              ownerClaimStatus === 'READY' ? new Date('2026-08-15T12:05:00.000Z') : null,
+          }),
+          updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        },
+      };
+      prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+      const service = new WebhookCanonicalExecutionService(prisma as never);
+
+      await expect(
+        service.completeTimedOutExecution(
+          {
+            webhookEvent: { id: 'event-timeout-shadow-transitional-1' } as never,
+            update,
+            activeBotId: 'bot-1',
+            businessLeaseToken: null,
+          },
+          {
+            errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-transitional: pending`,
+            deadlineAt: new Date('2026-08-15T12:05:00.000Z'),
+          },
+        ),
+      ).resolves.toBe('retry');
+
+      expect(webhookEventUpdateMany).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retries a timed-out mirror until its completed owner event becomes processed', async () => {
+    const update = createUpdate();
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    if (!semanticKey) {
+      throw new Error('Expected the test webhook to have a semantic key');
+    }
+    const ownerPreparedAt = new Date('2026-08-15T12:00:00.000Z');
+    const ownerCompletedAt = new Date('2026-08-15T12:00:01.000Z');
+    let ownerReadCount = 0;
+    const webhookEventUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const executionClaimUpdateMany = jest.fn().mockImplementation(async ({ where }) => ({
+      count: where.id ? 1 : 0,
+    }));
+    const prisma: {
+      webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
+      webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
+      $transaction?: jest.Mock;
+    } = {
+      webhookEvent: {
+        findUnique: jest.fn().mockImplementation(async ({ where }) => {
+          if (where.id === 'event-timeout-shadow-owner-later-1') {
+            ownerReadCount += 1;
+            return {
+              id: where.id,
+              status: ownerReadCount === 1 ? 'QUEUED' : 'PROCESSED',
+              normalizedPayload: update,
+              errorMessage: null,
+              processedAt: ownerReadCount === 1 ? null : ownerCompletedAt,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            };
+          }
+          return {
+            id: where.id,
+            status: 'PROCESSED',
+            normalizedPayload: update,
+            errorMessage: null,
+            processedAt: ownerCompletedAt,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          };
+        }),
+        updateMany: webhookEventUpdateMany,
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-timeout-shadow-owner-later-1',
+          semanticKey,
+          webhookEventId: 'event-timeout-shadow-owner-later-1',
+          executionBotId: 'bot-1',
+          enforced: true,
+          status: 'COMPLETED',
+          preparedAt: ownerPreparedAt,
+          completedAt: ownerCompletedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: executionClaimUpdateMany,
+      },
+    };
+    prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+    const context = {
+      webhookEvent: { id: 'event-timeout-shadow-owner-later-mirror-1' } as never,
+      update,
+      activeBotId: 'bot-1',
+      businessLeaseToken: null,
+    };
+    const lease = {
+      errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-owner-later: pending`,
+      deadlineAt: new Date('2026-08-15T12:05:00.000Z'),
+    };
+
+    await expect(service.completeTimedOutExecution(context, lease)).resolves.toBe('retry');
+    await expect(service.completeTimedOutExecution(context, lease)).resolves.toBe('duplicate');
+  });
+
+  it('retries convergence when the completed owner changes before its CAS fence', async () => {
+    const update = createUpdate();
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    if (!semanticKey) {
+      throw new Error('Expected the test webhook to have a semantic key');
+    }
+    const completedAt = new Date('2026-08-15T12:00:01.000Z');
+    const webhookEventUpdateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    const prisma: {
+      webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
+      webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
+      $transaction?: jest.Mock;
+    } = {
+      webhookEvent: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'event-timeout-shadow-owner-cas-mirror-1',
+            status: 'PROCESSED',
+            normalizedPayload: update,
+            errorMessage: null,
+            processedAt: completedAt,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          })
+          .mockResolvedValueOnce({
+            id: 'event-timeout-shadow-owner-cas-1',
+            status: 'PROCESSED',
+            normalizedPayload: update,
+            errorMessage: null,
+            processedAt: completedAt,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          }),
+        updateMany: webhookEventUpdateMany,
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-timeout-shadow-owner-cas-1',
+          semanticKey,
+          webhookEventId: 'event-timeout-shadow-owner-cas-1',
+          executionBotId: 'bot-1',
+          enforced: true,
+          status: 'COMPLETED',
+          preparedAt: new Date('2026-08-15T12:00:00.000Z'),
+          completedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    await expect(
+      service.completeTimedOutExecution(
+        {
+          webhookEvent: { id: 'event-timeout-shadow-owner-cas-mirror-1' } as never,
+          update,
+          activeBotId: 'bot-1',
+          businessLeaseToken: null,
+        },
+        {
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-owner-cas: pending`,
+          deadlineAt: new Date('2026-08-15T12:05:00.000Z'),
+        },
+      ),
+    ).resolves.toBe('retry');
+
+    expect(webhookEventUpdateMany).toHaveBeenCalledTimes(2);
+    expect(webhookEventUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED' }) }),
+    );
+  });
+
+  it.each([
+    { caseName: 'the foreign claim was never prepared', preparedAt: null, corruptOwner: false },
+    {
+      caseName: 'the owner payload no longer derives the claimed semantic key',
+      preparedAt: new Date('2026-08-15T12:00:00.000Z'),
+      corruptOwner: true,
+    },
+  ])('retains the timeout fence when $caseName', async ({ preparedAt, corruptOwner }) => {
+    const update = createUpdate();
+    const semanticKey = buildWebhookSemanticEventKey(update);
+    if (!semanticKey) {
+      throw new Error('Expected the test webhook to have a semantic key');
+    }
+    const ownerPayload = corruptOwner
+      ? {
+          ...update,
+          message: {
+            ...update.message,
+            messageId: 'different-owner-message',
+          },
+        }
+      : update;
+    if (corruptOwner && buildWebhookSemanticEventKey(ownerPayload) === semanticKey) {
+      throw new Error('Expected the corrupted owner payload to derive a different semantic key');
+    }
+    const completedAt = new Date('2026-08-15T12:00:01.000Z');
+    const pendingErrorMessage = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-shadow-invalid-owner: pending`;
+    const webhookEventUpdateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    const executionClaimUpdateMany = jest.fn().mockResolvedValueOnce({ count: 0 });
+    const prisma: {
+      webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
+      webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
+      $transaction?: jest.Mock;
+    } = {
+      webhookEvent: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'event-timeout-shadow-invalid-mirror-1',
+            status: 'PROCESSED',
+            normalizedPayload: update,
+            errorMessage: null,
+            processedAt: completedAt,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          })
+          .mockResolvedValue({
+            id: 'event-timeout-shadow-invalid-owner-1',
+            status: 'PROCESSED',
+            normalizedPayload: ownerPayload,
+            errorMessage: null,
+            processedAt: completedAt,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          }),
+        updateMany: webhookEventUpdateMany,
+      },
+      webhookExecutionClaim: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'claim-timeout-shadow-invalid-owner-1',
+          semanticKey,
+          webhookEventId: 'event-timeout-shadow-invalid-owner-1',
+          enforced: false,
+          status: 'COMPLETED',
+          preparedAt,
+          completedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        updateMany: executionClaimUpdateMany,
+      },
+    };
+    prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+    const service = new WebhookCanonicalExecutionService(prisma as never);
+
+    await expect(
+      service.completeTimedOutExecution(
+        {
+          webhookEvent: { id: 'event-timeout-shadow-invalid-mirror-1' } as never,
+          update,
+          activeBotId: 'bot-1',
+          businessLeaseToken: null,
+        },
+        {
+          errorMessage: pendingErrorMessage,
+          deadlineAt: new Date('2026-08-15T12:05:00.000Z'),
+        },
+      ),
+    ).resolves.toBe('quarantined');
+
+    expect(executionClaimUpdateMany).toHaveBeenCalledTimes(1);
+    expect(webhookEventUpdateMany).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({
+        id: 'event-timeout-shadow-invalid-mirror-1',
+        status: 'PROCESSED',
+      }),
+      data: {
+        status: 'FAILED',
+        processedAt: null,
+        errorMessage: pendingErrorMessage,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
   });
 
   it('promotes an exact shadow claim when failing a timeout quarantine', async () => {
@@ -863,7 +1422,7 @@ describe('ModerationService', () => {
         },
         { errorMessage: 'detached shadow execution failed' },
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe('settled');
 
     expect(executionClaimUpdateMany).toHaveBeenCalledWith({
       where: {
@@ -884,9 +1443,131 @@ describe('ModerationService', () => {
     });
   });
 
+  it.each(['completed', 'failed'] as const)(
+    'recognizes an already committed durable timeout fence after detached work %s',
+    async (outcome) => {
+      const webhookEventId = `event-timeout-fence-retry-${outcome}-1`;
+      const pendingErrorMessage = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-fence-retry-${outcome}: pending`;
+      const webhookEventUpdateMany = jest
+        .fn()
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 1 });
+      const executionClaimUpdateMany = jest.fn();
+      const prisma: {
+        webhookEvent: { updateMany: jest.Mock };
+        webhookExecutionClaim: { updateMany: jest.Mock };
+        $transaction?: jest.Mock;
+      } = {
+        webhookEvent: { updateMany: webhookEventUpdateMany },
+        webhookExecutionClaim: { updateMany: executionClaimUpdateMany },
+      };
+      prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+      const service = new WebhookCanonicalExecutionService(prisma as never);
+      const context = {
+        webhookEvent: { id: webhookEventId } as never,
+        update: createUpdate(),
+        activeBotId: 'bot-1',
+        businessLeaseToken: null,
+      };
+      const lease = {
+        errorMessage: pendingErrorMessage,
+        deadlineAt: new Date(Date.now() - 30_000),
+      };
+
+      const settlement =
+        outcome === 'completed'
+          ? service.completeTimedOutExecution(context, lease)
+          : service.failTimedOutExecution(context, lease, {
+              errorMessage: 'detached execution failed',
+            });
+
+      await expect(settlement).resolves.toBe('quarantined');
+      expect(webhookEventUpdateMany).toHaveBeenNthCalledWith(3, {
+        where: {
+          id: webhookEventId,
+          status: 'FAILED',
+          processedAt: null,
+          errorMessage: pendingErrorMessage,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+        data: {
+          status: 'FAILED',
+          processedAt: null,
+          errorMessage: pendingErrorMessage,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+      });
+      expect(executionClaimUpdateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['completed', 'failed'] as const)(
+    'recognizes an already committed shadow-mirror duplicate after detached work %s',
+    async (outcome) => {
+      const webhookEventId = `event-timeout-duplicate-retry-${outcome}-1`;
+      const webhookEventUpdateMany = jest
+        .fn()
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 1 });
+      const prisma: {
+        webhookEvent: { updateMany: jest.Mock };
+        webhookExecutionClaim: { updateMany: jest.Mock };
+        $transaction?: jest.Mock;
+      } = {
+        webhookEvent: { updateMany: webhookEventUpdateMany },
+        webhookExecutionClaim: { updateMany: jest.fn() },
+      };
+      prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+      const service = new WebhookCanonicalExecutionService(prisma as never);
+      const context = {
+        webhookEvent: { id: webhookEventId } as never,
+        update: createUpdate(),
+        activeBotId: 'bot-1',
+        businessLeaseToken: null,
+      };
+      const lease = {
+        errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-duplicate-retry: pending`,
+        deadlineAt: new Date(Date.now() - 30_000),
+      };
+
+      const settlement =
+        outcome === 'completed'
+          ? service.completeTimedOutExecution(context, lease)
+          : service.failTimedOutExecution(context, lease, {
+              errorMessage: 'detached execution failed',
+            });
+
+      await expect(settlement).resolves.toBe('duplicate');
+      expect(webhookEventUpdateMany).toHaveBeenNthCalledWith(2, {
+        where: {
+          id: webhookEventId,
+          status: 'DUPLICATE',
+          processedAt: { not: null },
+          errorMessage: null,
+          queueName: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+        data: {
+          status: 'DUPLICATE',
+          errorMessage: null,
+          queueName: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+        },
+      });
+      expect(prisma.webhookExecutionClaim.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
   it('recognizes an already committed timeout completion on persistence retry', async () => {
     const webhookEventUpdateMany = jest
       .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 1 });
     const executionClaimUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
@@ -914,9 +1595,9 @@ describe('ModerationService', () => {
           deadlineAt: new Date(Date.now() - 30_000),
         },
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe('settled');
 
-    expect(webhookEventUpdateMany).toHaveBeenNthCalledWith(2, {
+    expect(webhookEventUpdateMany).toHaveBeenNthCalledWith(4, {
       where: {
         id: 'event-timeout-completion-retry-1',
         status: 'PROCESSED',
@@ -955,6 +1636,8 @@ describe('ModerationService', () => {
     const webhookEventUpdateMany = jest
       .fn()
       .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 1 });
     const executionClaimUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma: {
@@ -982,9 +1665,9 @@ describe('ModerationService', () => {
         },
         { errorMessage: 'detached execution failed' },
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe('settled');
 
-    expect(webhookEventUpdateMany).toHaveBeenNthCalledWith(2, {
+    expect(webhookEventUpdateMany).toHaveBeenNthCalledWith(4, {
       where: {
         id: 'event-timeout-failure-retry-1',
         status: 'FAILED',
@@ -1393,6 +2076,182 @@ describe('ModerationService', () => {
       setTimeoutSpy.mockRestore();
     }
   });
+
+  it.each(['completed', 'failed'] as const)(
+    'converges a timed-out shadow mirror whose detached work %s on its completed owner',
+    async (outcome) => {
+      const webhookEventId = `event-timeout-shadow-mirror-${outcome}-1`;
+      const update = {
+        ...createUpdate(),
+        message: {
+          ...createUpdate().message,
+          chatId: '-chat-shadow-mirror',
+        },
+      };
+      const semanticKey = buildWebhookSemanticEventKey(update);
+      if (!semanticKey) {
+        throw new Error('Expected the shadow mirror test webhook to have a semantic key');
+      }
+      const ownerPreparedAt = new Date('2026-08-15T12:00:00.000Z');
+      const ownerCompletedAt = new Date('2026-08-15T12:00:01.000Z');
+      const detachedTask = createDeferred<void>();
+      const webhookEventUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const executionClaimUpdateMany = jest
+        .fn()
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 1 });
+      const prisma: {
+        webhookEvent: { findUnique: jest.Mock; updateMany: jest.Mock };
+        webhookExecutionClaim: { findUnique: jest.Mock; updateMany: jest.Mock };
+        $transaction?: jest.Mock;
+      } = {
+        webhookEvent: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce({
+              id: webhookEventId,
+              status: 'QUEUED',
+              botId: 'id613002203036_bot',
+              normalizedPayload: update,
+            })
+            .mockResolvedValueOnce({
+              id: webhookEventId,
+              status: outcome === 'completed' ? 'PROCESSED' : 'FAILED',
+              normalizedPayload: update,
+              errorMessage: null,
+              processedAt: outcome === 'completed' ? ownerCompletedAt : null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            })
+            .mockResolvedValue({
+              id: 'event-timeout-shadow-owner-1',
+              status: 'PROCESSED',
+              normalizedPayload: update,
+              errorMessage: null,
+              processedAt: ownerCompletedAt,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            }),
+          updateMany: webhookEventUpdateMany,
+        },
+        webhookExecutionClaim: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'claim-timeout-shadow-owner-1',
+            semanticKey,
+            webhookEventId: 'event-timeout-shadow-owner-1',
+            executionBotId: 'id613002203036_bot',
+            enforced: false,
+            status: 'COMPLETED',
+            preparedAt: ownerPreparedAt,
+            completedAt: ownerCompletedAt,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          }),
+          updateMany: executionClaimUpdateMany,
+        },
+      };
+      prisma.$transaction = jest.fn(async (operation) => operation(prisma));
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+      );
+      const commercialOcrEnqueueService = {
+        activatePendingBatch: jest.fn().mockResolvedValue(undefined),
+        suppressPendingBatch: jest.fn().mockResolvedValue(undefined),
+      };
+      (service as any).commercialOcrEnqueueService = commercialOcrEnqueueService;
+      (service as any).webhookUserFacingTimeoutMs = 10;
+      jest.spyOn(service, 'handleUpdate').mockReturnValue(detachedTask.promise);
+      const retryWait = jest.spyOn(service as any, 'waitForWebhookTimeoutPersistenceRetry');
+      const settlementWatchdog = {
+        deadlineAtMs: Date.now() + WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MAX_LIFETIME_MS,
+        isExpired: jest.fn().mockReturnValue(false),
+        stop: jest.fn(),
+      };
+      const startSettlementWatchdog = jest
+        .spyOn(service as any, 'startWebhookTimeoutSettlementWatchdog')
+        .mockReturnValue(settlementWatchdog);
+      const convergenceLogged = createDeferred<void>();
+      const warnLog = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation((...args: unknown[]) => {
+          if (args[1] === 'Converged a timed-out shadow mirror on its completed semantic owner') {
+            convergenceLogged.resolve();
+          }
+        });
+      const setTimeoutSpy = installImmediateTimeoutForDelay(10);
+
+      try {
+        await expect(service.processWebhookEvent(webhookEventId)).resolves.toBeUndefined();
+
+        if (outcome === 'completed') {
+          detachedTask.resolve();
+        } else {
+          detachedTask.reject(new Error('detached shadow mirror failed'));
+        }
+        await convergenceLogged.promise;
+
+        expect(executionClaimUpdateMany).toHaveBeenCalledTimes(2);
+        expect(executionClaimUpdateMany).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({
+            where: expect.objectContaining({
+              webhookEventId,
+              kind: 'EXECUTION',
+            }),
+          }),
+        );
+        expect(executionClaimUpdateMany).toHaveBeenNthCalledWith(2, {
+          where: {
+            id: 'claim-timeout-shadow-owner-1',
+            kind: 'EXECUTION',
+            semanticKey,
+            webhookEventId: 'event-timeout-shadow-owner-1',
+            enforced: false,
+            status: 'COMPLETED',
+            preparedAt: ownerPreparedAt,
+            completedAt: ownerCompletedAt,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+          data: {
+            enforced: true,
+            status: 'COMPLETED',
+            completedAt: ownerCompletedAt,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+        });
+        expect(webhookEventUpdateMany).toHaveBeenLastCalledWith({
+          where: expect.objectContaining({
+            id: webhookEventId,
+            status: outcome === 'completed' ? 'PROCESSED' : 'FAILED',
+            timeoutQuarantineExpiresAt: null,
+            normalizedPayload: { equals: update },
+          }),
+          data: {
+            status: 'DUPLICATE',
+            processedAt: ownerCompletedAt,
+            errorMessage: null,
+            queueName: null,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          },
+        });
+        expect(retryWait).not.toHaveBeenCalled();
+        expect(settlementWatchdog.stop).toHaveBeenCalledTimes(1);
+        expect(commercialOcrEnqueueService.suppressPendingBatch).not.toHaveBeenCalled();
+        expect(commercialOcrEnqueueService.activatePendingBatch).not.toHaveBeenCalled();
+      } finally {
+        detachedTask.resolve();
+        setTimeoutSpy.mockRestore();
+        warnLog.mockRestore();
+        startSettlementWatchdog.mockRestore();
+      }
+    },
+  );
 
   it('keeps a hot-path timeout quarantined when detached work later fails', async () => {
     const update = {

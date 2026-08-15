@@ -2,6 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { ConfigService } from '@nestjs/config';
 
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
+import { buildWebhookSemanticEventKey } from '../../webhook/webhook-semantic-event-key';
 import type {
   CommercialOcrAdmissionActivationResult,
   CommercialOcrAdmissionSuppressionResult,
@@ -434,6 +435,100 @@ describe('CommercialOcrModerationService', () => {
     expect(harness.metrics.recordCounter).toHaveBeenCalledWith(
       'admission.reconciliation.activated',
     );
+  });
+
+  it('follows a duplicate OCR envelope to its validated completed semantic owner', async () => {
+    const normalizedUpdate = update();
+    const semanticKey = buildWebhookSemanticEventKey(normalizedUpdate);
+    if (!semanticKey) {
+      throw new Error('Expected the OCR source to have a semantic key');
+    }
+    const completedAt = new Date('2026-08-12T08:00:01.000Z');
+    const harness = buildHarness({
+      normalizedUpdate,
+      webhookStatus: WebhookStatus.DUPLICATE,
+      admissionStates: ['pending', 'actionable'],
+    });
+    harness.prisma.webhookExecutionClaim.findUnique.mockResolvedValue({
+      id: 'claim-ocr-owner-1',
+      semanticKey,
+      webhookEventId: 'webhook-owner-1',
+      executionBotId: 'execution-bot',
+      enforced: true,
+      status: 'COMPLETED',
+      preparedAt: new Date('2026-08-12T08:00:00.000Z'),
+      completedAt,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      webhookEvent: {
+        botId: 'webhook-bot',
+        status: WebhookStatus.PROCESSED,
+        processedAt: completedAt,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+        normalizedPayload: normalizedUpdate,
+      },
+    });
+
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({ kind: 'completed' });
+
+    expect(harness.prisma.webhookExecutionClaim.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey } },
+      }),
+    );
+    expect(harness.admissionStore.suppress).not.toHaveBeenCalled();
+    expect(harness.admissionStore.activate).toHaveBeenCalledTimes(1);
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers a duplicate OCR envelope while its semantic owner is still active', async () => {
+    const normalizedUpdate = update();
+    const semanticKey = buildWebhookSemanticEventKey(normalizedUpdate);
+    if (!semanticKey) {
+      throw new Error('Expected the OCR source to have a semantic key');
+    }
+    const harness = buildHarness({
+      normalizedUpdate,
+      webhookStatus: WebhookStatus.DUPLICATE,
+      admissionStates: ['pending'],
+    });
+    harness.prisma.webhookExecutionClaim.findUnique.mockResolvedValue({
+      id: 'claim-ocr-owner-active-1',
+      semanticKey,
+      webhookEventId: 'webhook-owner-active-1',
+      executionBotId: 'execution-bot',
+      enforced: true,
+      status: 'READY',
+      preparedAt: new Date('2026-08-12T08:00:00.000Z'),
+      completedAt: null,
+      leaseToken: 'owner-lease',
+      leaseExpiresAt: new Date('2026-08-12T08:05:00.000Z'),
+      webhookEvent: {
+        botId: 'webhook-bot',
+        status: WebhookStatus.QUEUED,
+        processedAt: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+        normalizedPayload: normalizedUpdate,
+      },
+    });
+
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toEqual({
+      kind: 'defer',
+      delayMs: 5_000,
+      reason: 'source_not_ready',
+    });
+
+    expect(harness.admissionStore.suppress).not.toHaveBeenCalled();
+    expect(harness.admissionStore.activate).not.toHaveBeenCalled();
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
   });
 
   it('defers a pending admission until the webhook is durably processed', async () => {
@@ -980,6 +1075,9 @@ function buildHarness(options: HarnessOptions = {}) {
             normalizedPayload: normalizedUpdate,
             executionClaims: [{ executionBotId: 'execution-bot' }],
           }),
+    },
+    webhookExecutionClaim: {
+      findUnique: jest.fn(),
     },
     chat: {
       findUnique: jest

@@ -16902,72 +16902,72 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     commercialOcrPendingActivations: CommercialOcrPendingActivation[];
     settlementWatchdog: WebhookTimeoutSettlementWatchdog;
   }): void {
+    const webhookEventId = params.execution.webhookEvent.id;
     const heartbeat = this.webhookCanonicalExecutionService.startTimedOutExecutionHeartbeat(
       params.execution,
       params.quarantineLease,
     );
     void (async () => {
-      let outcome: { kind: 'completed' } | { kind: 'failed'; error: unknown };
-      try {
-        await params.detachedTask;
-        outcome = { kind: 'completed' };
-      } catch (error: unknown) {
-        outcome = { kind: 'failed', error };
-      }
-
+      const outcome = await params.detachedTask.then(
+        () => ({ kind: 'completed' as const }),
+        (error: unknown) => ({ kind: 'failed' as const, error }),
+      );
       const durableSettlement = await this.persistWebhookTimeoutSettlementWithRetry({
-        webhookEventId: params.execution.webhookEvent.id,
+        webhookEventId,
         outcome: outcome.kind,
         settlementWatchdog: params.settlementWatchdog,
         persist: async () => {
           const quarantineLease = await heartbeat.stop();
-          return outcome.kind === 'completed'
-            ? this.webhookCanonicalExecutionService.completeTimedOutExecution(
-                params.execution,
-                quarantineLease,
-              )
-            : this.webhookCanonicalExecutionService.failTimedOutExecution(
-                params.execution,
-                quarantineLease,
-                {
-                  errorMessage: this.formatWebhookProcessingErrorMessage(outcome.error),
-                },
-              );
+          if (outcome.kind === 'completed') {
+            return this.webhookCanonicalExecutionService.completeTimedOutExecution(
+              params.execution,
+              quarantineLease,
+            );
+          }
+          return this.webhookCanonicalExecutionService.failTimedOutExecution(
+            params.execution,
+            quarantineLease,
+            { errorMessage: this.formatWebhookProcessingErrorMessage(outcome.error) },
+          );
         },
-        isDurable: (settled) => settled,
+        isDurable: (settled) => settled !== 'retry',
         logMessage: 'Could not persist detached webhook settlement; the hard fence remains active',
       });
-      if (durableSettlement !== true) {
+      if (durableSettlement === null) return;
+      params.settlementWatchdog.stop();
+      if (durableSettlement === 'duplicate') {
+        this.logger.warn(
+          { webhookEventId },
+          'Converged a timed-out shadow mirror on its completed semantic owner',
+        );
         return;
       }
-
-      params.settlementWatchdog.stop();
-      if (outcome.kind === 'failed') {
+      const failed = outcome.kind === 'failed';
+      if (durableSettlement === 'quarantined' || failed) {
         await this.commercialOcrEnqueueService?.suppressPendingBatch(
           params.commercialOcrPendingActivations,
         );
-        this.logger.warn(
-          {
-            webhookEventId: params.execution.webhookEvent.id,
-            err: this.formatWebhookProcessingErrorMessage(outcome.error),
-            terminalized: true,
-          },
-          'Detached webhook execution failed after timeout',
+        this.logger[failed ? 'warn' : 'error'](
+          failed
+            ? { webhookEventId, err: this.formatWebhookProcessingErrorMessage(outcome.error) }
+            : { webhookEventId },
+          failed
+            ? 'Detached webhook execution failed after timeout'
+            : 'Retained a durable webhook timeout quarantine after exact claim settlement was unavailable',
         );
         return;
       }
-
       await this.commercialOcrEnqueueService?.activatePendingBatch(
         params.commercialOcrPendingActivations,
       );
       this.logger.log(
-        { webhookEventId: params.execution.webhookEvent.id },
+        { webhookEventId },
         'Detached webhook execution completed after timeout quarantine',
       );
     })().catch((error: unknown) => {
       this.logger.error(
         {
-          webhookEventId: params.execution.webhookEvent.id,
+          webhookEventId,
           err: this.formatWebhookProcessingErrorMessage(error),
         },
         'Detached webhook timeout observer failed before durable settlement',

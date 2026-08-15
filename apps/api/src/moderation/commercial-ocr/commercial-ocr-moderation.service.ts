@@ -7,9 +7,15 @@ import { isPrivateDirectChatId } from '../../common/chat-id.util';
 import { MaxBotContextService } from '../../max/max-bot-context.service';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MaxClientService } from '../../max/max-client.service';
-import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
+import {
+  ChatEntityType,
+  Prisma,
+  WebhookStatus,
+  type ChatSettings,
+} from '../../prisma/prisma-client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
+import { buildWebhookSemanticEventKey } from '../../webhook/webhook-semantic-event-key';
 import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-timeout-quarantine';
 import { buildMessageScopedModerationActionClaimKey } from '../moderation-message-action-claim';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
@@ -66,6 +72,17 @@ type SourceEnvelope = {
   originBotId: string;
   exactSource: CommercialOcrDeleteSource;
   persistedDownloadUrlFallbackIndexes: readonly number[];
+};
+
+type CommercialOcrWebhookSource = {
+  botId: string | null;
+  status: WebhookStatus;
+  processedAt: Date | null;
+  nextEnqueueAt: Date | null;
+  timeoutQuarantineExpiresAt: Date | null;
+  errorMessage: string | null;
+  normalizedPayload: Prisma.JsonValue;
+  executionClaims: Array<{ executionBotId: string | null }>;
 };
 
 @Injectable()
@@ -469,13 +486,15 @@ export class CommercialOcrModerationService {
     | { kind: 'defer'; delayMs: number }
     | { kind: 'terminal' }
   > {
-    const webhookEvent = await this.prisma.webhookEvent
+    const initialWebhookEvent = await this.prisma.webhookEvent
       .findUnique({
         where: { id: job.webhookEventId },
         select: {
           botId: true,
           status: true,
+          processedAt: true,
           nextEnqueueAt: true,
+          timeoutQuarantineExpiresAt: true,
           errorMessage: true,
           normalizedPayload: true,
           executionClaims: {
@@ -492,12 +511,21 @@ export class CommercialOcrModerationService {
         );
         return null;
       });
+    if (!initialWebhookEvent) {
+      return { kind: 'terminal' };
+    }
+    let webhookEvent: CommercialOcrWebhookSource = initialWebhookEvent;
+    if (webhookEvent.status === WebhookStatus.DUPLICATE) {
+      const owner = await this.loadCompletedSemanticOwner(job, webhookEvent.normalizedPayload);
+      if (owner.kind !== 'ready') {
+        return owner.kind === 'defer' ? { kind: 'defer', delayMs: 5_000 } : { kind: 'terminal' };
+      }
+      webhookEvent = owner.value;
+    }
     if (
-      !webhookEvent ||
-      webhookEvent.status === WebhookStatus.DUPLICATE ||
-      (webhookEvent.status === WebhookStatus.FAILED &&
-        webhookEvent.nextEnqueueAt === null &&
-        !isPendingWebhookTimeoutQuarantineMessage(webhookEvent.errorMessage))
+      webhookEvent.status === WebhookStatus.FAILED &&
+      webhookEvent.nextEnqueueAt === null &&
+      !isPendingWebhookTimeoutQuarantineMessage(webhookEvent.errorMessage)
     ) {
       return { kind: 'terminal' };
     }
@@ -549,6 +577,105 @@ export class CommercialOcrModerationService {
         originBotId,
         exactSource: exact.source,
         persistedDownloadUrlFallbackIndexes: refreshed.persistedDownloadUrlFallbackIndexes,
+      },
+    };
+  }
+
+  // FLAG: OCR job identity is message-scoped, so BullMQ may retain a mirror receipt in the job
+  // envelope. Follow it only through the completed semantic claim and a clean processed owner.
+  private async loadCompletedSemanticOwner(
+    job: CommercialOcrJob,
+    mirrorPayload: unknown,
+  ): Promise<
+    { kind: 'ready'; value: CommercialOcrWebhookSource } | { kind: 'defer' } | { kind: 'terminal' }
+  > {
+    const semanticKey = buildWebhookSemanticEventKey(mirrorPayload);
+    if (!semanticKey) {
+      return { kind: 'terminal' };
+    }
+
+    const semanticClaim = await this.prisma.webhookExecutionClaim
+      .findUnique({
+        where: {
+          kind_semanticKey: {
+            kind: 'EXECUTION',
+            semanticKey,
+          },
+        },
+        select: {
+          id: true,
+          semanticKey: true,
+          webhookEventId: true,
+          executionBotId: true,
+          enforced: true,
+          status: true,
+          preparedAt: true,
+          completedAt: true,
+          leaseToken: true,
+          leaseExpiresAt: true,
+          webhookEvent: {
+            select: {
+              botId: true,
+              status: true,
+              processedAt: true,
+              nextEnqueueAt: true,
+              timeoutQuarantineExpiresAt: true,
+              errorMessage: true,
+              normalizedPayload: true,
+            },
+          },
+        },
+      })
+      .catch(() => null);
+    if (!semanticClaim) {
+      return { kind: 'defer' };
+    }
+    if (
+      !semanticClaim.id ||
+      semanticClaim.semanticKey !== semanticKey ||
+      !semanticClaim.webhookEventId ||
+      semanticClaim.webhookEventId === job.webhookEventId
+    ) {
+      return { kind: 'terminal' };
+    }
+    if (
+      semanticClaim.status === 'PENDING' ||
+      semanticClaim.status === 'READY' ||
+      semanticClaim.enforced === false
+    ) {
+      return { kind: 'defer' };
+    }
+    if (
+      semanticClaim.enforced !== true ||
+      semanticClaim.status !== 'COMPLETED' ||
+      !(semanticClaim.preparedAt instanceof Date) ||
+      !Number.isFinite(semanticClaim.preparedAt.getTime()) ||
+      !(semanticClaim.completedAt instanceof Date) ||
+      !Number.isFinite(semanticClaim.completedAt.getTime()) ||
+      semanticClaim.leaseToken !== null ||
+      semanticClaim.leaseExpiresAt !== null
+    ) {
+      return { kind: 'terminal' };
+    }
+
+    const owner = semanticClaim.webhookEvent;
+    if (
+      owner.status !== WebhookStatus.PROCESSED ||
+      !(owner.processedAt instanceof Date) ||
+      !Number.isFinite(owner.processedAt.getTime()) ||
+      owner.errorMessage !== null ||
+      owner.nextEnqueueAt !== null ||
+      owner.timeoutQuarantineExpiresAt !== null ||
+      buildWebhookSemanticEventKey(owner.normalizedPayload) !== semanticKey
+    ) {
+      return owner.status === WebhookStatus.DUPLICATE ? { kind: 'terminal' } : { kind: 'defer' };
+    }
+
+    return {
+      kind: 'ready',
+      value: {
+        ...owner,
+        executionClaims: [{ executionBotId: semanticClaim.executionBotId }],
       },
     };
   }

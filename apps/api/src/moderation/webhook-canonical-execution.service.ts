@@ -22,10 +22,12 @@ const WEBHOOK_CANONICAL_BUSINESS_LEASE_MS = 5 * 60_000;
 
 type WebhookExecutionClaimRecord = {
   id?: string;
+  semanticKey?: string;
   webhookEventId?: string;
   executionBotId?: string | null;
   enforced?: boolean;
   status?: string;
+  preparedAt?: Date | null;
   completedAt?: Date | null;
   leaseToken?: string | null;
   leaseExpiresAt?: Date | null;
@@ -39,6 +41,15 @@ type WebhookExecutionClaimModel = {
 
 type WebhookCanonicalPersistenceClient = {
   webhookEvent: {
+    findUnique?: (args: unknown) => Promise<{
+      id: string;
+      status: WebhookStatus;
+      normalizedPayload: unknown;
+      errorMessage: string | null;
+      processedAt: Date | null;
+      nextEnqueueAt: Date | null;
+      timeoutQuarantineExpiresAt: Date | null;
+    } | null>;
     updateMany: (args: unknown) => Promise<{ count: number }>;
   };
   webhookExecutionClaim?: WebhookExecutionClaimModel;
@@ -60,10 +71,12 @@ const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL = Prisma.raw(
 
 const WEBHOOK_EXECUTION_CLAIM_SELECT = {
   id: true,
+  semanticKey: true,
   webhookEventId: true,
   executionBotId: true,
   enforced: true,
   status: true,
+  preparedAt: true,
   completedAt: true,
   leaseToken: true,
   leaseExpiresAt: true,
@@ -86,6 +99,13 @@ export type WebhookTimeoutQuarantineHeartbeat = {
 };
 
 export type WebhookUnquarantinedSettlementResult = 'quarantined' | 'settled';
+
+export type WebhookTimeoutSettlementResult =
+  | WebhookUnquarantinedSettlementResult
+  | 'duplicate'
+  | 'retry';
+
+type WebhookShadowMirrorSettlementResult = 'settled' | 'retry' | 'invalid';
 
 @Injectable()
 export class WebhookCanonicalExecutionService {
@@ -561,7 +581,7 @@ export class WebhookCanonicalExecutionService {
   async completeTimedOutExecution(
     context: WebhookCanonicalExecutionContext,
     lease: WebhookTimeoutQuarantineLease,
-  ): Promise<boolean> {
+  ): Promise<WebhookTimeoutSettlementResult> {
     const completedAt = new Date();
     try {
       return await this.runInTransaction(async (client) => {
@@ -577,6 +597,63 @@ export class WebhookCanonicalExecutionService {
         });
         const isFreshSettlement = freshEventSettlement.count === 1;
         if (!isFreshSettlement) {
+          const idempotentDuplicateSettlement = await client.webhookEvent.updateMany({
+            where: {
+              id: context.webhookEvent.id,
+              status: WebhookStatus.DUPLICATE,
+              processedAt: { not: null },
+              errorMessage: null,
+              queueName: null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+            data: {
+              status: WebhookStatus.DUPLICATE,
+              errorMessage: null,
+              queueName: null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+          });
+          if (idempotentDuplicateSettlement.count === 1) {
+            return 'duplicate';
+          }
+
+          const retainedFenceWhere: Prisma.WebhookEventWhereInput = {
+            id: context.webhookEvent.id,
+            status: WebhookStatus.FAILED,
+            processedAt: null,
+            errorMessage: lease.errorMessage,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          };
+          const retainedFence = await client.webhookEvent.updateMany({
+            where: retainedFenceWhere,
+            data: {
+              status: WebhookStatus.FAILED,
+              processedAt: null,
+              errorMessage: lease.errorMessage,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+          });
+          if (retainedFence.count === 1) {
+            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
+              client,
+              context,
+              retainedFenceWhere,
+            );
+            if (mirrorSettlement === 'settled') {
+              return 'duplicate';
+            }
+            if (mirrorSettlement === 'retry') {
+              throw new WebhookTimeoutSettlementCasLostError(
+                `Semantic webhook owner is still settling for ${context.webhookEvent.id}`,
+              );
+            }
+            return 'quarantined';
+          }
+
           const idempotentEventSettlement = await client.webhookEvent.updateMany({
             where: {
               id: context.webhookEvent.id,
@@ -594,7 +671,7 @@ export class WebhookCanonicalExecutionService {
             },
           });
           if (idempotentEventSettlement.count !== 1) {
-            return false;
+            return 'retry';
           }
         }
 
@@ -638,15 +715,52 @@ export class WebhookCanonicalExecutionService {
           },
         });
         if (completion.count !== 1) {
+          if (isFreshSettlement) {
+            const freshSettlementWhere: Prisma.WebhookEventWhereInput = {
+              id: context.webhookEvent.id,
+              status: WebhookStatus.PROCESSED,
+              processedAt: completedAt,
+              errorMessage: null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            };
+            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
+              client,
+              context,
+              freshSettlementWhere,
+            );
+            if (mirrorSettlement === 'settled') {
+              return 'duplicate';
+            }
+            if (mirrorSettlement === 'retry') {
+              throw new WebhookTimeoutSettlementCasLostError(
+                `Semantic webhook owner is still settling for ${context.webhookEvent.id}`,
+              );
+            }
+
+            const retainedFence = await client.webhookEvent.updateMany({
+              where: freshSettlementWhere,
+              data: {
+                status: WebhookStatus.FAILED,
+                processedAt: null,
+                errorMessage: lease.errorMessage,
+                nextEnqueueAt: null,
+                timeoutQuarantineExpiresAt: null,
+              },
+            });
+            if (retainedFence.count === 1) {
+              return 'quarantined';
+            }
+          }
           throw new WebhookTimeoutSettlementCasLostError(
             `Canonical webhook claim was lost before timeout completion for ${context.webhookEvent.id}`,
           );
         }
-        return true;
+        return 'settled';
       });
     } catch (error: unknown) {
       if (error instanceof WebhookTimeoutSettlementCasLostError) {
-        return false;
+        return 'retry';
       }
       throw error;
     }
@@ -656,7 +770,7 @@ export class WebhookCanonicalExecutionService {
     context: WebhookCanonicalExecutionContext,
     lease: WebhookTimeoutQuarantineLease,
     params: { errorMessage: string },
-  ): Promise<boolean> {
+  ): Promise<WebhookTimeoutSettlementResult> {
     const terminalErrorMessage = buildTerminalWebhookTimeoutQuarantineMessage(params.errorMessage);
     try {
       return await this.runInTransaction(async (client) => {
@@ -671,6 +785,63 @@ export class WebhookCanonicalExecutionService {
         });
         const isFreshSettlement = freshEventSettlement.count === 1;
         if (!isFreshSettlement) {
+          const idempotentDuplicateSettlement = await client.webhookEvent.updateMany({
+            where: {
+              id: context.webhookEvent.id,
+              status: WebhookStatus.DUPLICATE,
+              processedAt: { not: null },
+              errorMessage: null,
+              queueName: null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+            data: {
+              status: WebhookStatus.DUPLICATE,
+              errorMessage: null,
+              queueName: null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+          });
+          if (idempotentDuplicateSettlement.count === 1) {
+            return 'duplicate';
+          }
+
+          const retainedFenceWhere: Prisma.WebhookEventWhereInput = {
+            id: context.webhookEvent.id,
+            status: WebhookStatus.FAILED,
+            processedAt: null,
+            errorMessage: lease.errorMessage,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          };
+          const retainedFence = await client.webhookEvent.updateMany({
+            where: retainedFenceWhere,
+            data: {
+              status: WebhookStatus.FAILED,
+              processedAt: null,
+              errorMessage: lease.errorMessage,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+          });
+          if (retainedFence.count === 1) {
+            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
+              client,
+              context,
+              retainedFenceWhere,
+            );
+            if (mirrorSettlement === 'settled') {
+              return 'duplicate';
+            }
+            if (mirrorSettlement === 'retry') {
+              throw new WebhookTimeoutSettlementCasLostError(
+                `Semantic webhook owner is still settling for ${context.webhookEvent.id}`,
+              );
+            }
+            return 'quarantined';
+          }
+
           const idempotentEventSettlement = await client.webhookEvent.updateMany({
             where: {
               id: context.webhookEvent.id,
@@ -687,7 +858,7 @@ export class WebhookCanonicalExecutionService {
             },
           });
           if (idempotentEventSettlement.count !== 1) {
-            return false;
+            return 'retry';
           }
         }
 
@@ -731,18 +902,232 @@ export class WebhookCanonicalExecutionService {
           },
         });
         if (failure.count !== 1) {
+          if (isFreshSettlement) {
+            const freshSettlementWhere: Prisma.WebhookEventWhereInput = {
+              id: context.webhookEvent.id,
+              status: WebhookStatus.FAILED,
+              processedAt: null,
+              errorMessage: terminalErrorMessage,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            };
+            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
+              client,
+              context,
+              freshSettlementWhere,
+            );
+            if (mirrorSettlement === 'settled') {
+              return 'duplicate';
+            }
+            if (mirrorSettlement === 'retry') {
+              throw new WebhookTimeoutSettlementCasLostError(
+                `Semantic webhook owner is still settling for ${context.webhookEvent.id}`,
+              );
+            }
+
+            const retainedFence = await client.webhookEvent.updateMany({
+              where: freshSettlementWhere,
+              data: {
+                status: WebhookStatus.FAILED,
+                processedAt: null,
+                errorMessage: lease.errorMessage,
+                nextEnqueueAt: null,
+                timeoutQuarantineExpiresAt: null,
+              },
+            });
+            if (retainedFence.count === 1) {
+              return 'quarantined';
+            }
+          }
           throw new WebhookTimeoutSettlementCasLostError(
             `Canonical webhook claim was lost before timeout failure for ${context.webhookEvent.id}`,
           );
         }
-        return true;
+        return 'settled';
       });
     } catch (error: unknown) {
       if (error instanceof WebhookTimeoutSettlementCasLostError) {
-        return false;
+        return 'retry';
       }
       throw error;
     }
+  }
+
+  // FLAG: A shadow mirror can converge only on a fully prepared, completed semantic owner whose
+  // persisted payload still derives the same key. Transitional evidence retries under the live hard
+  // fence; absent or inconsistent evidence retains a permanent replay fence.
+  private async trySettleCompletedShadowMirrorWithClient(
+    client: WebhookCanonicalPersistenceClient,
+    context: WebhookCanonicalExecutionContext,
+    mirrorWhere: Prisma.WebhookEventWhereInput,
+  ): Promise<WebhookShadowMirrorSettlementResult> {
+    if (context.businessLeaseToken !== null) {
+      return 'invalid';
+    }
+
+    const semanticKey = buildWebhookSemanticEventKey(context.update);
+    const executionClaimModel = client.webhookExecutionClaim;
+    if (
+      semanticKey === null ||
+      typeof executionClaimModel?.findUnique !== 'function' ||
+      typeof executionClaimModel.updateMany !== 'function' ||
+      typeof client.webhookEvent.findUnique !== 'function'
+    ) {
+      return 'invalid';
+    }
+
+    const mirrorEvent = await client.webhookEvent.findUnique({
+      where: { id: context.webhookEvent.id },
+      select: {
+        id: true,
+        status: true,
+        normalizedPayload: true,
+        errorMessage: true,
+        processedAt: true,
+        nextEnqueueAt: true,
+        timeoutQuarantineExpiresAt: true,
+      },
+    });
+    if (
+      !mirrorEvent ||
+      mirrorEvent.id !== context.webhookEvent.id ||
+      buildWebhookSemanticEventKey(mirrorEvent.normalizedPayload) !== semanticKey
+    ) {
+      return 'invalid';
+    }
+
+    const semanticClaim = await executionClaimModel.findUnique({
+      where: {
+        kind_semanticKey: {
+          kind: 'EXECUTION',
+          semanticKey,
+        },
+      },
+      select: WEBHOOK_EXECUTION_CLAIM_SELECT,
+    });
+    if (
+      !semanticClaim?.id ||
+      semanticClaim.semanticKey !== semanticKey ||
+      !semanticClaim.webhookEventId ||
+      semanticClaim.webhookEventId === context.webhookEvent.id ||
+      typeof semanticClaim.enforced !== 'boolean'
+    ) {
+      return 'invalid';
+    }
+    if (semanticClaim.status === 'PENDING' || semanticClaim.status === 'READY') {
+      return 'retry';
+    }
+    if (
+      semanticClaim.status !== 'COMPLETED' ||
+      !(semanticClaim.preparedAt instanceof Date) ||
+      !Number.isFinite(semanticClaim.preparedAt.getTime()) ||
+      !(semanticClaim.completedAt instanceof Date) ||
+      !Number.isFinite(semanticClaim.completedAt.getTime()) ||
+      semanticClaim.leaseToken !== null ||
+      semanticClaim.leaseExpiresAt !== null
+    ) {
+      return 'invalid';
+    }
+
+    const ownerEvent = await client.webhookEvent.findUnique({
+      where: { id: semanticClaim.webhookEventId },
+      select: {
+        id: true,
+        status: true,
+        normalizedPayload: true,
+        errorMessage: true,
+        processedAt: true,
+        nextEnqueueAt: true,
+        timeoutQuarantineExpiresAt: true,
+      },
+    });
+    if (!ownerEvent || buildWebhookSemanticEventKey(ownerEvent.normalizedPayload) !== semanticKey) {
+      return 'invalid';
+    }
+    if (ownerEvent.status !== WebhookStatus.PROCESSED) {
+      return ownerEvent.status === WebhookStatus.DUPLICATE ? 'invalid' : 'retry';
+    }
+    if (
+      !(ownerEvent.processedAt instanceof Date) ||
+      !Number.isFinite(ownerEvent.processedAt.getTime()) ||
+      ownerEvent.errorMessage !== null ||
+      ownerEvent.nextEnqueueAt !== null ||
+      ownerEvent.timeoutQuarantineExpiresAt !== null
+    ) {
+      return 'invalid';
+    }
+
+    const ownerFence = await client.webhookEvent.updateMany({
+      where: {
+        id: ownerEvent.id,
+        status: WebhookStatus.PROCESSED,
+        normalizedPayload: {
+          equals: ownerEvent.normalizedPayload as Prisma.InputJsonValue,
+        },
+        processedAt: ownerEvent.processedAt,
+        errorMessage: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+      data: {
+        status: WebhookStatus.PROCESSED,
+        processedAt: ownerEvent.processedAt,
+        errorMessage: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+    if (ownerFence.count !== 1) {
+      return 'retry';
+    }
+
+    const promotedClaim = await executionClaimModel.updateMany({
+      where: {
+        id: semanticClaim.id,
+        kind: 'EXECUTION',
+        semanticKey,
+        webhookEventId: ownerEvent.id,
+        enforced: semanticClaim.enforced,
+        status: 'COMPLETED',
+        preparedAt: semanticClaim.preparedAt,
+        completedAt: semanticClaim.completedAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },
+      data: {
+        enforced: true,
+        status: 'COMPLETED',
+        completedAt: semanticClaim.completedAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },
+    });
+    if (promotedClaim.count !== 1) {
+      return 'retry';
+    }
+
+    const duplicateSettlement = await client.webhookEvent.updateMany({
+      where: {
+        ...mirrorWhere,
+        normalizedPayload: {
+          equals: mirrorEvent.normalizedPayload as Prisma.InputJsonValue,
+        },
+      },
+      data: {
+        status: WebhookStatus.DUPLICATE,
+        processedAt: semanticClaim.completedAt,
+        errorMessage: null,
+        queueName: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+    if (duplicateSettlement.count !== 1) {
+      throw new WebhookTimeoutSettlementCasLostError(
+        `Shadow mirror changed before timeout convergence for ${context.webhookEvent.id}`,
+      );
+    }
+    return 'settled';
   }
 
   private get executionClaimModel(): WebhookExecutionClaimModel | undefined {

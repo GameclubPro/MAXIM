@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   createPrismaClient,
+  Prisma,
   type PrismaClient,
   WebhookStatus,
 } from '../prisma/prisma-client';
@@ -19,7 +20,45 @@ type OrderedWebhookHeadReader = {
   findOrderedWebhookHeadsForChats: (
     chatIds: readonly string[],
   ) => Promise<Map<string, OrderedWebhookHead>>;
+  selectEnqueueCandidates: (now: Date) => Promise<
+    Array<{
+      id: string;
+      status: WebhookStatus;
+      createdAt: Date;
+      normalizedPayload: unknown;
+    }>
+  >;
+  expandSelectedChatCandidates: (
+    candidates: Array<{
+      id: string;
+      status: WebhookStatus;
+      createdAt: Date;
+      normalizedPayload: unknown;
+      priority: number;
+    }>,
+    now: Date,
+  ) => Promise<
+    Array<{
+      id: string;
+      status: WebhookStatus;
+      createdAt: Date;
+      normalizedPayload: unknown;
+      priority: number;
+    }>
+  >;
 };
+
+function collectExplainNodes(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) {
+    return value.flatMap(collectExplainNodes);
+  }
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  return [record, ...Object.values(record).flatMap(collectExplainNodes)];
+}
 
 function assertDisposableDatabaseUrl(value: string): void {
   const parsed = new URL(value);
@@ -45,6 +84,8 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     await prisma.$connect();
     const service = Object.create(WebhookOutboxService.prototype) as object;
     Object.defineProperty(service, 'prisma', { value: prisma });
+    Object.defineProperty(service, 'batchSize', { value: 100 });
+    Object.defineProperty(service, 'manualClosePriorityCache', { value: new Map() });
     reader = service as OrderedWebhookHeadReader;
   });
 
@@ -120,5 +161,155 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
         [chatB, { id: eventB, createdAt: secondCreatedAt }],
       ]),
     );
+  });
+
+  it('selects fair work-unit heads before the bounded window and uses the ordered-chat index', async () => {
+    const suffix = randomUUID();
+    const poisonChat = `outbox-poison-${suffix}`;
+    const fencedChat = `outbox-fenced-${suffix}`;
+    const lifecycleEventId = `outbox-lifecycle-${suffix}`;
+    const [fencedHeadId, fencedNewerId] = [randomUUID(), randomUUID()].sort();
+    const baseCreatedAt = new Date('2026-08-15T09:00:00.000Z');
+    const tiedCreatedAt = new Date(baseCreatedAt.getTime() + 100_000);
+    const now = new Date('2026-08-15T10:00:00.000Z');
+    const poisonRows = Array.from({ length: 400 }, (_, index) => ({
+      id: `outbox-poison-${String(index).padStart(3, '0')}-${suffix}`,
+      dedupKey: `outbox-poison-dedup-${index}-${suffix}`,
+      status: WebhookStatus.RECEIVED,
+      rawPayload: {},
+      normalizedPayload: {
+        updateId: `outbox-poison-update-${index}-${suffix}`,
+        type: 'message_created',
+        message: {
+          chatId: poisonChat,
+          messageId: `outbox-poison-message-${index}-${suffix}`,
+        },
+      },
+      createdAt: new Date(baseCreatedAt.getTime() + index * 1_000),
+    }));
+    createdEventIds.push(
+      ...poisonRows.map((row) => row.id),
+      lifecycleEventId,
+      fencedHeadId,
+      fencedNewerId,
+    );
+
+    await prisma.webhookEvent.createMany({
+      data: [
+        ...poisonRows,
+        {
+          id: lifecycleEventId,
+          dedupKey: `outbox-lifecycle-dedup-${suffix}`,
+          status: WebhookStatus.RECEIVED,
+          rawPayload: {},
+          normalizedPayload: {
+            updateId: `outbox-lifecycle-update-${suffix}`,
+            type: 'user_removed',
+            chatId: fencedChat,
+          },
+          createdAt: tiedCreatedAt,
+        },
+        {
+          id: fencedHeadId,
+          dedupKey: `outbox-fenced-head-dedup-${suffix}`,
+          status: WebhookStatus.FAILED,
+          rawPayload: {},
+          normalizedPayload: {
+            updateId: `outbox-fenced-head-update-${suffix}`,
+            type: 'message_created',
+            message: { chatId: fencedChat, messageId: `fenced-head-${suffix}` },
+          },
+          nextEnqueueAt: new Date(now.getTime() + 60_000),
+          createdAt: tiedCreatedAt,
+        },
+        {
+          id: fencedNewerId,
+          dedupKey: `outbox-fenced-newer-dedup-${suffix}`,
+          status: WebhookStatus.RECEIVED,
+          rawPayload: {},
+          normalizedPayload: {
+            updateId: `outbox-fenced-newer-update-${suffix}`,
+            type: 'message_edited',
+            message: { chatId: fencedChat, messageId: `fenced-newer-${suffix}` },
+          },
+          createdAt: tiedCreatedAt,
+        },
+      ],
+    });
+
+    const candidates = await reader.selectEnqueueCandidates(now);
+    const selectedTestIds = candidates
+      .map((candidate) => candidate.id)
+      .filter((id) => createdEventIds.includes(id));
+
+    expect(selectedTestIds).toContain(poisonRows[0]!.id);
+    expect(selectedTestIds).toContain(lifecycleEventId);
+    expect(selectedTestIds.filter((id) => id.startsWith('outbox-poison-'))).toEqual([
+      poisonRows[0]!.id,
+    ]);
+    expect(selectedTestIds).not.toContain(fencedHeadId);
+    expect(selectedTestIds).not.toContain(fencedNewerId);
+
+    await prisma.webhookEvent.update({
+      where: { id: fencedHeadId },
+      data: { nextEnqueueAt: now },
+    });
+    const dueCandidates = await reader.selectEnqueueCandidates(now);
+    const dueSelectedTestIds = dueCandidates
+      .map((candidate) => candidate.id)
+      .filter((id) => createdEventIds.includes(id));
+    expect(dueSelectedTestIds).toContain(fencedHeadId);
+    expect(dueSelectedTestIds).not.toContain(fencedNewerId);
+    expect(dueSelectedTestIds).toContain(lifecycleEventId);
+
+    const dueHead = dueCandidates.find((candidate) => candidate.id === fencedHeadId);
+    if (!dueHead) {
+      throw new Error('Expected the due ordered head to be selected');
+    }
+    const expandedCandidates = await reader.expandSelectedChatCandidates(
+      [{ ...dueHead, priority: 5 }],
+      now,
+    );
+    const expandedTestIds = expandedCandidates
+      .map((candidate) => candidate.id)
+      .filter((id) => createdEventIds.includes(id));
+    expect(expandedTestIds).toContain(fencedHeadId);
+    expect(expandedTestIds).toContain(fencedNewerId);
+    expect(expandedTestIds).not.toContain(lifecycleEventId);
+
+    let capturedSelectionQuery: Prisma.Sql | null = null;
+    const captureService = Object.create(WebhookOutboxService.prototype) as object;
+    Object.defineProperty(captureService, 'batchSize', { value: 100 });
+    Object.defineProperty(captureService, 'prisma', {
+      value: {
+        $queryRaw: async (query: Prisma.Sql) => {
+          capturedSelectionQuery = query;
+          return [];
+        },
+      },
+    });
+    await (captureService as OrderedWebhookHeadReader).selectEnqueueCandidates(now);
+    expect(capturedSelectionQuery).not.toBeNull();
+
+    const plan = await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL enable_seqscan = off`;
+      return transaction.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(
+        Prisma.sql`EXPLAIN (FORMAT JSON) ${capturedSelectionQuery!}`,
+      );
+    });
+    const planNodes = collectExplainNodes(plan);
+    const headCteRoot = planNodes.find(
+      (node) => node['Subplan Name'] === 'CTE ordered_message_head_ids',
+    );
+    expect(headCteRoot).toBeDefined();
+    const headCteNodes = collectExplainNodes(headCteRoot);
+    expect(
+      headCteNodes.some((node) => node['Index Name'] === 'webhook_events_ordered_chat_head_idx'),
+    ).toBe(true);
+    expect(
+      headCteNodes.some(
+        (node) => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'webhook_events',
+      ),
+    ).toBe(false);
   });
 });
