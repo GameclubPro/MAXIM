@@ -71,6 +71,34 @@ test('rules reset uses the in-app confirmation sheet', () => {
   assert.match(settingsPageSource, /onConfirm=\{confirmResetPublishedRules\}/u);
 });
 
+test('rules autosave keeps draft editors enabled so mobile keyboard focus survives', () => {
+  assert.match(
+    settingsPageSource,
+    /const isRulesDraftEditingDisabled =\s*isPublishingRules \|\|\s*isResettingPublishedRules \|\|\s*updateRulesAttachMutation\.isPending;/u,
+  );
+  assert.match(
+    settingsPageSource,
+    /const isRulesBusy = isSavingRules \|\| isRulesDraftEditingDisabled;/u,
+  );
+
+  const rulesComposerSource = settingsPageSource.slice(
+    settingsPageSource.indexOf(
+      '<LazyBroadcastContentComposer',
+      settingsPageSource.indexOf('rules-panel'),
+    ),
+    settingsPageSource.indexOf('</Suspense>', settingsPageSource.indexOf('rules-panel')),
+  );
+  assert.match(rulesComposerSource, /disabled=\{isRulesDraftEditingDisabled\}/u);
+  assert.doesNotMatch(rulesComposerSource, /disabled=\{isRulesBusy\}/u);
+
+  const rulesButtonsSheetStart = settingsPageSource.indexOf('<LazyBroadcastButtonsSheet');
+  const rulesButtonsSheetSource = settingsPageSource.slice(
+    rulesButtonsSheetStart,
+    settingsPageSource.indexOf('/>', rulesButtonsSheetStart),
+  );
+  assert.match(rulesButtonsSheetSource, /disabled=\{isRulesDraftEditingDisabled\}/u);
+});
+
 test('giveaway editors can intercept parent panel close requests', () => {
   assert.match(managedGiveawaySource, /export type ManagedGiveawayCardHandle/u);
   assert.match(managedGiveawaySource, /useImperativeHandle\(/u);

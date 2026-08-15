@@ -4203,11 +4203,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const rulesAdminContactButtonSummary = rulesDraft?.adminContactButtonEnabled
     ? 'Включено'
     : 'Выключено';
-  const isRulesBusy =
-    isSavingRules ||
-    isPublishingRules ||
-    isResettingPublishedRules ||
-    updateRulesAttachMutation.isPending;
+  const isRulesDraftEditingDisabled =
+    isPublishingRules || isResettingPublishedRules || updateRulesAttachMutation.isPending;
+  const isRulesBusy = isSavingRules || isRulesDraftEditingDisabled;
   const rulesDrilldownFooter = rulesDraft ? (
     <div
       className={cn(
@@ -6017,7 +6015,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         mimeType: rulesDraft.imageMimeType,
                                         fileName: rulesDraft.imageFileName,
                                       }}
-                                      disabled={isRulesBusy}
+                                      disabled={isRulesDraftEditingDisabled}
                                       textError={rulesTextError}
                                       imageError={rulesImageError}
                                       messageAriaLabel="Пост правил"
@@ -7989,7 +7987,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           buttons={rulesDraft?.buttons ?? []}
           errors={rulesButtonErrors}
           revealNextStepSignal={rulesButtonRevealSignal}
-          disabled={isRulesBusy}
+          disabled={isRulesDraftEditingDisabled}
           urlPlaceholder="https://max.ru/channel/rules"
           textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
           onEnabledChange={handleRulesButtonsEnabledChange}
