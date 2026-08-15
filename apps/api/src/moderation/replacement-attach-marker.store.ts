@@ -23,8 +23,14 @@ export const CHAT_AUTO_COMMENT_ATTACH_STATUS = {
 } as const satisfies Record<string, ReplacementAttachMarkerStatus>;
 
 export type ReplacementAttachMarkerClaim =
-  | { status: 'claimed'; lockToken: string }
-  | { status: 'done' | 'in_progress' };
+  | { status: 'claimed'; lockToken: string; markerId?: string }
+  | {
+      status: 'recover_audit';
+      markerId: string;
+      replyMessageId: string;
+      botId: string | null;
+    }
+  | { status: 'done' | 'in_progress' | 'recovered_audit' };
 
 export type LegacyChannelEditRecoveryCandidate = {
   chatId: string;
@@ -50,8 +56,10 @@ type MarkerKind = 'channel_auto_post' | 'chat_auto_comment';
 type CompletionState = 'none' | 'done' | 'recover_legacy_channel_edit';
 
 type MarkerRow = {
+  id: string;
   status: ReplacementAttachMarkerStatus;
   lockedAt: Date | null;
+  botId: string | null;
   deliveryMode: string | null;
   replacementMessageId: string | null;
   replyMessageId: string | null;
@@ -73,6 +81,9 @@ type MarkerPrisma = {
 };
 
 const ATTACH_LOCK_TTL_MS = 2 * 60_000;
+const CHAT_AUTO_COMMENT_MARKER_ID_PREFIX = 'ccr1_';
+const CHAT_AUTO_COMMENT_AUDIT_ID_PREFIX = 'aca1_';
+const CHAT_AUTO_COMMENT_MARKER_ID_PATTERN = /^ccr1_[a-f0-9]{32}$/u;
 const CHANNEL_EDIT_RECOVERY_VERSION = 'channel-engagement-edit-recovery:v1';
 const CHANNEL_EDIT_RECOVERY_ERROR_PREFIX = `[${CHANNEL_EDIT_RECOVERY_VERSION}]`;
 const CHANNEL_EDIT_RECOVERY_LOCK_PREFIX = `${CHANNEL_EDIT_RECOVERY_VERSION}:`;
@@ -82,6 +93,17 @@ const CHANNEL_EDIT_RECOVERY_MAX_LIMIT = 100;
 const CHANNEL_EDIT_RECOVERY_DEFAULT_LOOKBACK_MS = 72 * 60 * 60_000;
 const CHANNEL_EDIT_RECOVERY_MAX_LOOKBACK_MS = 7 * 24 * 60 * 60_000;
 const CHANNEL_EDIT_RECOVERY_DEFAULT_MINIMUM_AGE_MS = 5 * 60_000;
+
+export function buildChatAutoCommentAuditId(markerId: string): string | null {
+  const normalized = markerId.trim().toLowerCase();
+  if (!CHAT_AUTO_COMMENT_MARKER_ID_PATTERN.test(normalized)) {
+    return null;
+  }
+
+  return `${CHAT_AUTO_COMMENT_AUDIT_ID_PREFIX}${normalized.slice(
+    CHAT_AUTO_COMMENT_MARKER_ID_PREFIX.length,
+  )}`;
+}
 
 export class ReplacementAttachMarkerStore {
   constructor(private readonly prisma: PrismaService) {}
@@ -104,6 +126,17 @@ export class ReplacementAttachMarkerStore {
     botId: string | null;
   }): Promise<ReplacementAttachMarkerClaim> {
     return this.claim('chat_auto_comment', params);
+  }
+
+  probeChatAutoCommentAuditRecovery(params: {
+    chatId: string;
+    messageId: string;
+  }): Promise<ReplacementAttachMarkerClaim | null> {
+    return this.resolveChatAutoCommentAuditRecovery(
+      this.getDelegate('chat_auto_comment'),
+      params.chatId,
+      params.messageId,
+    );
   }
 
   async listLegacyChannelEditRecoveryCandidates(
@@ -353,6 +386,34 @@ export class ReplacementAttachMarkerStore {
     return this.complete('chat_auto_comment', params);
   }
 
+  async completeChatAutoCommentAuditRecovery(params: {
+    chatId: string;
+    messageId: string;
+    markerId: string;
+    replyMessageId: string;
+  }): Promise<void> {
+    const updated = await this.getDelegate('chat_auto_comment')?.updateMany?.({
+      where: {
+        id: params.markerId,
+        chatId: params.chatId,
+        messageId: params.messageId,
+        status: { in: ['IN_PROGRESS', 'SUCCEEDED'] },
+      },
+      data: {
+        status: 'SUCCEEDED',
+        lockToken: null,
+        lockedAt: null,
+        deliveryMode: 'reply_message',
+        replyMessageId: params.replyMessageId,
+        replacementSendStartedAt: null,
+        originalDeleted: false,
+      },
+    });
+    if (updated && updated.count !== 1) {
+      throw new Error('Failed to finalize the recovered chat auto-comment audit marker');
+    }
+  }
+
   recordChannelReplacementMessage(params: {
     chatId: string;
     messageId: string;
@@ -462,6 +523,17 @@ export class ReplacementAttachMarkerStore {
     },
   ): Promise<ReplacementAttachMarkerClaim> {
     const delegate = this.getDelegate(kind);
+    if (kind === 'chat_auto_comment') {
+      const auditRecovery = await this.resolveChatAutoCommentAuditRecovery(
+        delegate,
+        params.chatId,
+        params.messageId,
+      );
+      if (auditRecovery) {
+        return auditRecovery;
+      }
+    }
+
     const canPersistRecovery = Boolean(
       delegate?.findUnique && (delegate.create || delegate.createMany) && delegate.updateMany,
     );
@@ -486,14 +558,20 @@ export class ReplacementAttachMarkerStore {
       (!delegate.create && !delegate.createMany) ||
       !delegate.updateMany
     ) {
-      return { status: 'claimed', lockToken: this.createLockToken(false) };
+      return {
+        status: 'claimed',
+        lockToken: this.createLockToken(false),
+        ...(kind === 'chat_auto_comment' ? { markerId: this.createChatAutoCommentMarkerId() } : {}),
+      };
     }
 
     const existing = await delegate.findUnique({
       where: { chatId_messageId: { chatId: params.chatId, messageId: params.messageId } },
       select: {
+        id: true,
         status: true,
         lockedAt: true,
+        botId: true,
         deliveryMode: true,
         replacementMessageId: true,
         replyMessageId: true,
@@ -531,7 +609,12 @@ export class ReplacementAttachMarkerStore {
           lastError: this.withChannelEditRecoveryEvidence(existing.lastError),
         },
       });
-      return claimed.count > 0 ? { status: 'claimed', lockToken } : { status: 'in_progress' };
+      return claimed.count > 0
+        ? {
+            status: 'claimed',
+            lockToken,
+          }
+        : { status: 'in_progress' };
     }
     if (
       existing?.replacementMessageId ||
@@ -545,8 +628,16 @@ export class ReplacementAttachMarkerStore {
       completionState === 'recover_legacy_channel_edit' ||
       this.hasChannelEditRecoveryEvidence(existing?.lastError);
     const lockToken = this.createLockToken(recoveryClaim);
+    const existingMarkerId = this.readNonEmptyString(existing?.id);
+    const markerId =
+      kind === 'chat_auto_comment'
+        ? existingMarkerId && buildChatAutoCommentAuditId(existingMarkerId)
+          ? existingMarkerId
+          : this.createChatAutoCommentMarkerId()
+        : null;
     if (!existing) {
       const createData = {
+        ...(markerId ? { id: markerId } : {}),
         chatId: params.chatId,
         messageId: params.messageId,
         status: 'IN_PROGRESS',
@@ -565,12 +656,20 @@ export class ReplacementAttachMarkerStore {
       if (delegate.createMany) {
         const created = await delegate.createMany({ data: [createData], skipDuplicates: true });
         if (created.count > 0) {
-          return { status: 'claimed', lockToken };
+          return {
+            status: 'claimed',
+            lockToken,
+            ...(markerId ? { markerId } : {}),
+          };
         }
       } else if (delegate.create) {
         try {
           await delegate.create({ data: createData });
-          return { status: 'claimed', lockToken };
+          return {
+            status: 'claimed',
+            lockToken,
+            ...(markerId ? { markerId } : {}),
+          };
         } catch (error: unknown) {
           if (!this.isPrismaKnownError(error, 'P2002')) {
             throw error;
@@ -581,6 +680,9 @@ export class ReplacementAttachMarkerStore {
 
     const claimed = await delegate.updateMany({
       where: {
+        ...(kind === 'chat_auto_comment' && (existingMarkerId ?? markerId)
+          ? { id: existingMarkerId ?? markerId }
+          : {}),
         chatId: params.chatId,
         messageId: params.messageId,
         status: 'IN_PROGRESS',
@@ -590,6 +692,9 @@ export class ReplacementAttachMarkerStore {
         OR: [{ lockedAt: null }, { lockedAt: { lt: new Date(Date.now() - ATTACH_LOCK_TTL_MS) } }],
       },
       data: {
+        ...(kind === 'chat_auto_comment' && existingMarkerId && markerId !== existingMarkerId
+          ? { id: markerId }
+          : {}),
         lockToken,
         lockedAt: now,
         source: params.source,
@@ -600,7 +705,121 @@ export class ReplacementAttachMarkerStore {
           : {}),
       },
     });
-    return claimed.count > 0 ? { status: 'claimed', lockToken } : { status: 'in_progress' };
+    return claimed.count > 0
+      ? {
+          status: 'claimed',
+          lockToken,
+          ...(markerId ? { markerId } : {}),
+        }
+      : { status: 'in_progress' };
+  }
+
+  private async resolveChatAutoCommentAuditRecovery(
+    delegate: MarkerDelegate | null,
+    chatId: string,
+    messageId: string,
+  ): Promise<ReplacementAttachMarkerClaim | null> {
+    if (!delegate?.findUnique) {
+      return null;
+    }
+
+    const marker = await delegate.findUnique({
+      where: { chatId_messageId: { chatId, messageId } },
+      select: {
+        id: true,
+        status: true,
+        botId: true,
+        deliveryMode: true,
+        replyMessageId: true,
+      },
+    });
+    const markerId = this.readNonEmptyString(marker?.id);
+    const replyMessageId = this.readNonEmptyString(marker?.replyMessageId);
+    const auditId = markerId ? buildChatAutoCommentAuditId(markerId) : null;
+    if (
+      !marker ||
+      !markerId ||
+      !auditId ||
+      (marker.status !== 'IN_PROGRESS' && marker.status !== 'SUCCEEDED')
+    ) {
+      return null;
+    }
+
+    const audit = await this.prisma.auditLog.findFirst({
+      where: {
+        id: auditId,
+        chatId,
+        action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
+      },
+      select: { id: true, payload: true },
+    });
+    if (!replyMessageId) {
+      const payload = this.readRecord(audit?.payload);
+      const auditedReplyMessageId = this.readNonEmptyString(payload?.replyMessageId);
+      if (
+        !audit ||
+        !auditedReplyMessageId ||
+        this.readNonEmptyString(payload?.messageId) !== messageId ||
+        this.readNonEmptyString(payload?.threadId) !== markerId ||
+        this.readNonEmptyString(payload?.deliveryMode) !== 'reply_message'
+      ) {
+        return null;
+      }
+
+      const repaired = await delegate.updateMany?.({
+        where: {
+          id: markerId,
+          chatId,
+          messageId,
+          status: { in: ['IN_PROGRESS', 'SUCCEEDED'] },
+        },
+        data: {
+          status: 'SUCCEEDED',
+          lockToken: null,
+          lockedAt: null,
+          deliveryMode: 'reply_message',
+          replyMessageId: auditedReplyMessageId,
+          replacementSendStartedAt: null,
+          originalDeleted: false,
+        },
+      });
+      if (repaired && repaired.count !== 1) {
+        throw new Error('Failed to repair the chat auto-comment marker from its audit');
+      }
+      return { status: 'recovered_audit' };
+    }
+
+    if (marker.deliveryMode !== 'reply_message') {
+      return null;
+    }
+    if (!audit) {
+      return {
+        status: 'recover_audit',
+        markerId,
+        replyMessageId,
+        botId: this.readNonEmptyString(marker.botId),
+      };
+    }
+
+    const finalized = await delegate.updateMany?.({
+      where: {
+        id: markerId,
+        chatId,
+        messageId,
+        replyMessageId,
+        status: { in: ['IN_PROGRESS', 'SUCCEEDED'] },
+      },
+      data: {
+        status: 'SUCCEEDED',
+        lockToken: null,
+        lockedAt: null,
+        replacementSendStartedAt: null,
+      },
+    });
+    if (finalized && finalized.count !== 1) {
+      throw new Error('Failed to finalize the chat auto-comment marker from its audit');
+    }
+    return { status: 'done' };
   }
 
   private async resolveCompletionState(
@@ -894,6 +1113,10 @@ export class ReplacementAttachMarkerStore {
     return kind === 'channel_auto_post' ? 'channel auto-post' : 'chat auto-comment';
   }
 
+  private createChatAutoCommentMarkerId(): string {
+    return `${CHAT_AUTO_COMMENT_MARKER_ID_PREFIX}${randomUUID().replaceAll('-', '')}`;
+  }
+
   private readMarkerRecoveryCandidate(row: {
     id: unknown;
     chatId: unknown;
@@ -987,6 +1210,12 @@ export class ReplacementAttachMarkerStore {
 
   private readNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private readRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
   }
 
   private isRecoverableLegacyChannelEditMarker(marker: MarkerRow): boolean {

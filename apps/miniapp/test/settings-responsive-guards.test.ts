@@ -96,6 +96,13 @@ test('settings dialogs keep stable geometry and accessible controls', () => {
   );
 });
 
+test('open settings hints render above neighboring toggle rows', () => {
+  assert.match(
+    settingsRoutePolishCss,
+    /:is\(\.settings-native-toggle, \.channel-settings-toggle-card, \.managed-giveaway__section\):has\(\s*\.channel-settings-hint-popover\s*\) \{\s*position: relative;\s*overflow: visible;\s*z-index: 90;/u,
+  );
+});
+
 test('disabled settings publish actions remain legible', () => {
   assert.match(
     settingsNativePolishCss,

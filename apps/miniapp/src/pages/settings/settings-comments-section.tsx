@@ -124,7 +124,8 @@ export function SettingsCommentsSection({
                         onToggleHint={onToggleHint}
                         label="Как работают комментарии в чатах"
                       >
-                        Бот добавляет кнопку комментариев к выбранным публикациям.
+                        На сообщение админа бот отвечает отдельным сообщением с кнопкой, не удаляя
+                        оригинал. В публикацию бота кнопка добавляется сразу.
                       </SettingsHintAnchor>
                     </div>
                   </div>
@@ -150,12 +151,14 @@ export function SettingsCommentsSection({
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Под постами админов</span>
+                        <span className="settings-native-toggle__title">
+                          Под сообщениями админов
+                        </span>
                       </div>
 
                       <label
                         className="settings-native-switch"
-                        aria-label="Комментарии под постами админов"
+                        aria-label="Комментарии под сообщениями админов"
                       >
                         <input
                           type="checkbox"

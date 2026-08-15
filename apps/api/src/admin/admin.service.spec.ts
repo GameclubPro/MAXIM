@@ -27595,8 +27595,9 @@ describe('AdminService.sendBroadcast', () => {
         action: 'AUTO_ATTACH_CHAT_COMMENTS',
         payload: {
           threadId: 'chat-thread-counter',
-          deliveryMode: 'replace_with_bot_message',
-          replacementMessageId: 'mid-bot-copy-7',
+          messageId: 'mid-admin-post-7',
+          deliveryMode: 'reply_message',
+          replyMessageId: 'mid-bot-reply-7',
         },
       },
     ]);
@@ -27642,7 +27643,7 @@ describe('AdminService.sendBroadcast', () => {
 
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'chat-1',
-      'mid-bot-copy-7',
+      'mid-bot-reply-7',
       null,
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: '💬 Комментарии · 7', type: 'link' })]],

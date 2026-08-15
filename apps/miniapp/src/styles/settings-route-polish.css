@@ -1556,7 +1556,7 @@
   }
 
   .settings-drilldown
-    :is(.channel-settings-toggle-card, .managed-giveaway__section):has(
+    :is(.settings-native-toggle, .channel-settings-toggle-card, .managed-giveaway__section):has(
       .channel-settings-hint-popover
     ) {
     position: relative;

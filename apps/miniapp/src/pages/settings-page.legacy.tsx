@@ -4692,7 +4692,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
   const commentsTargetSummary = [
-    draft?.commentsAdminsEnabled ? 'посты админов' : null,
+    draft?.commentsAdminsEnabled ? 'сообщения админов' : null,
     draft?.commentsChatBroadcastsEnabled ? 'автопостинг' : null,
   ]
     .filter(Boolean)

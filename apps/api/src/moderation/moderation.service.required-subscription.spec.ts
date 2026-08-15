@@ -4173,7 +4173,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('persists admin chat replacement cleanup as a durable delete intent', async () => {
+  it('publishes admin chat comments as a strict-routed reply without cleanup intent', async () => {
     const prisma = {
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -4181,11 +4181,25 @@ describe('ModerationService', () => {
       },
     };
     const maxClient = {
-      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
-        messageId: 'mid-chat-copy-1',
-        url: 'https://max.ru/chats/chat-1/message/mid-chat-copy-1',
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-reply-1',
+        url: 'https://max.ru/chats/chat-1/message/mid-chat-reply-1',
       }),
+      sendMessageCopyWithInlineKeyboard: jest.fn(),
       deleteMessage: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'chat-1',
+        primaryBotId: 'chat-bot-2',
+        botId: 'chat-bot-2',
+        candidateBotIds: ['chat-bot-2'],
+        reason: 'primary_confirmed',
+        quarantinedCandidateBotIds: [],
+        halfOpenCandidateBotIds: [],
+        retryAt: null,
+      }),
     };
     const deleteIntents = {
       getRolloutForChat: jest.fn().mockReturnValue('execute'),
@@ -4208,46 +4222,62 @@ describe('ModerationService', () => {
       {} as never,
       {} as never,
       maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
     (service as any).moderationDeleteIntentService = deleteIntents;
-    jest.spyOn(service as any, 'resolveAutoAttachMutationBotId').mockResolvedValue('chat-bot-2');
     jest.spyOn(service as any, 'buildChatDialogButton').mockReturnValue({
       type: 'link',
       text: 'Comments',
       url: 'https://max.ru/entry-bot?startapp=comments',
     });
 
-    const update = createUpdate();
-    update.message!.createdAt = '2026-08-15T09:41:00.000Z';
     await (service as any).tryAutoAttachChatMessageComments({
       chatId: 'chat-1',
       messageId: 'mid-chat-original-1',
-      text: 'Admin post',
       senderId: 'admin-1',
-      senderIsAdmin: true,
-      update,
     });
 
-    expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      fallbackToPrimary: true,
+    });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Открыть комментарии',
       expect.objectContaining({
-        chatId: 'chat-1',
-        messageId: 'mid-chat-original-1',
-        entityType: 'CHAT',
-        messageAuthorKind: 'user',
-        originBotId: 'chat-bot-2',
-        routingPolicy: 'origin_first',
-        ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
-        sourceMessageAt: update.message!.createdAt,
+        messageLink: {
+          type: 'reply',
+          mid: 'mid-chat-original-1',
+        },
+        buttons: [[expect.objectContaining({ type: 'link', text: 'Comments' })]],
       }),
-      undefined,
+      expect.objectContaining({
+        botId: 'chat-bot-2',
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'comment_notification',
+      }),
     );
+    expect(deleteIntents.ensureIntent).not.toHaveBeenCalled();
+    expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         payload: expect.objectContaining({
           messageId: 'mid-chat-original-1',
-          replacementMessageId: 'mid-chat-copy-1',
+          deliveryMode: 'reply_message',
+          replyMessageId: 'mid-chat-reply-1',
           originalDeleted: false,
+          botId: 'chat-bot-2',
         }),
       }),
     });

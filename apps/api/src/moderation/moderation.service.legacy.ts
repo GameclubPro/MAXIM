@@ -148,6 +148,7 @@ import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-
 import type { PhotoDuplicateModerationActionRequest } from './photo-duplicate/photo-duplicate-moderation.actions';
 import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
 import {
+  buildChatAutoCommentAuditId,
   CHANNEL_AUTO_POST_ATTACH_STATUS,
   CHAT_AUTO_COMMENT_ATTACH_STATUS,
   ReplacementAttachMarkerStore,
@@ -1452,6 +1453,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      if (
+        messageId &&
+        (await this.tryRecoverChatMessageCommentsAudit({
+          chatId,
+          messageId,
+          senderId,
+        }))
+      ) {
+        return;
+      }
+
       const senderIsCurrentBot = this.isCurrentBotSender(senderId, update);
       if (this.isKnownRuntimeBotUserId(senderId) && !senderIsCurrentBot) {
         this.logger.debug(
@@ -2012,10 +2024,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.tryAutoAttachChatMessageComments({
             chatId,
             messageId,
-            text: typeof text === 'string' && text.trim() ? text : null,
             senderId,
-            senderIsAdmin: false,
-            update,
           });
         }
         return;
@@ -2088,10 +2097,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.tryAutoAttachChatMessageComments({
             chatId,
             messageId,
-            text: typeof text === 'string' && text.trim() ? text : null,
             senderId,
-            senderIsAdmin: false,
-            update,
           });
         }
 
@@ -2182,10 +2188,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.tryAutoAttachChatMessageComments({
             chatId,
             messageId,
-            text: typeof text === 'string' && text.trim() ? text : null,
             senderId,
-            senderIsAdmin: false,
-            update,
           });
         }
 
@@ -14007,8 +14010,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: ChatSettings;
     source: ChatAdminCheckSource;
   }): Promise<void> {
-    const { update, chatId, chatTitle, senderId, senderName, messageId, text, settings, source } =
-      params;
+    const { update, chatId, chatTitle, senderId, senderName, messageId, settings, source } = params;
 
     if (messageId) {
       const handledAdminCommand = await this.handleAdminForwardedModerationCommand({
@@ -14029,10 +14031,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.tryAutoAttachChatMessageComments({
         chatId,
         messageId,
-        text: typeof text === 'string' && text.trim() ? text : null,
         senderId,
-        senderIsAdmin: true,
-        update,
       });
     }
 
@@ -15546,27 +15545,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async tryAutoAttachChatMessageComments(params: {
     chatId: string;
     messageId: string;
-    text: string | null;
     senderId: string;
-    senderIsAdmin: boolean;
-    update: MaxUpdate;
   }): Promise<void> {
-    const { chatId, messageId, text, senderId, senderIsAdmin, update } = params;
-    const autoAttachBotId = await this.resolveAutoAttachMutationBotId({
+    const { chatId, messageId, senderId } = params;
+    const sendRoute = await this.resolveUnifiedBotRoute({
+      purpose: 'send_message',
       chatId,
-      source: 'webhook',
-      action: 'delete_message',
+      fallbackToPrimary: true,
     });
+    const autoAttachBotId = sendRoute?.botId?.trim() || null;
+    if (!autoAttachBotId) {
+      this.logger.warn(
+        {
+          chatId,
+          messageId,
+          quarantinedCandidateBotIds:
+            sendRoute?.purpose === 'send_message'
+              ? sendRoute.quarantinedCandidateBotIds
+              : undefined,
+          retryAt: sendRoute?.purpose === 'send_message' ? sendRoute.retryAt : undefined,
+        },
+        'Skipped chat comments reply because no executable MAX send route is available',
+      );
+      return;
+    }
     const mutationRequestOptions = {
       trafficClass: 'background',
       actionHealthLane: 'background',
       sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
-      ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
+      botId: autoAttachBotId,
     } as const;
-
-    if (this.messageHasInlineKeyboard(update)) {
-      return;
-    }
 
     const claim = await this.replacementAttachMarkerStore.claimChatAutoComment({
       chatId,
@@ -15574,6 +15582,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       source: 'webhook',
       botId: autoAttachBotId,
     });
+    if (claim.status === 'recover_audit') {
+      await this.recoverChatAutoCommentAudit({
+        recovery: claim,
+        chatId,
+        messageId,
+        senderId,
+        fallbackBotId: autoAttachBotId,
+      });
+      return;
+    }
     if (claim.status === 'done' || claim.status === 'in_progress') {
       return;
     }
@@ -15581,7 +15599,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const threadId = randomUUID();
+    const markerId = claim.markerId?.trim() || '';
+    if (!buildChatAutoCommentAuditId(markerId)) {
+      await this.replacementAttachMarkerStore.releaseChatAutoComment({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        source: 'webhook',
+        botId: autoAttachBotId,
+        lastError: 'Chat auto-comment claim did not provide a recoverable marker id',
+        lastStatusCode: null,
+      });
+      throw new Error('Chat auto-comment claim did not provide a recoverable marker id');
+    }
+    const threadId = markerId;
     const buttons = [
       [
         this.buildChatDialogButton(
@@ -15593,244 +15624,64 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ),
       ],
     ];
-    let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
-      'edit_message';
-    let replacementMessageId: string | null = null;
     let replyMessageId: string | null = null;
-    let publishedUrl: string | null = null;
-    let originalDeleted = false;
-    let originalCleanupError: string | null = null;
-    let originalCleanupStatusCode: number | null = null;
-    let replacementSendStarted = false;
     let replySendStarted = false;
 
-    if (senderIsAdmin) {
-      try {
-        const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(
-          chatId,
-          messageId,
-          text,
-          {
-            buttons,
-            beforeSend: async () => {
-              await this.replacementAttachMarkerStore.recordChatReplacementSendStarted({
-                chatId,
-                messageId,
-                lockToken: claim.lockToken,
-              });
-              replacementSendStarted = true;
-            },
-            debugContext: {
-              screen: 'chat-auto-comments',
-              action: 'replace-admin-message-with-bot-copy',
-            },
+    try {
+      const sent = await this.maxClient.sendMessageImmediateWithResolvedLink(
+        chatId,
+        CHAT_COMMENTS_REPLY_TEXT,
+        {
+          buttons,
+          messageLink: {
+            type: 'reply',
+            mid: messageId,
           },
-          mutationRequestOptions,
-        );
-        replacementMessageId = sent.messageId;
-        publishedUrl = sent.url ?? null;
-        deliveryMode = 'replace_with_bot_message';
-      } catch (error: unknown) {
-        const status = this.extractStatusCode(error);
-        if (
-          (replacementSendStarted || wasMaxMessageSendAttempted(error)) &&
-          isAmbiguousMaxSendError(error)
-        ) {
-          this.logger.error(
-            {
+          beforeSend: async () => {
+            await this.replacementAttachMarkerStore.recordChatReplySendStarted({
               chatId,
               messageId,
-              status,
-              error: error instanceof Error ? error.message : String(error),
-            },
-            'Quarantined ambiguous admin chat replacement send without automatic retry',
-          );
-          await this.replacementAttachMarkerStore.completeChatAutoComment({
-            chatId,
-            messageId,
-            lockToken: claim.lockToken,
-            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
-            source: 'webhook',
-            botId: autoAttachBotId,
-            deliveryMode: 'replace_with_bot_message',
-            originalDeleted: false,
-            lastError: `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Ambiguous replacement send: ${this.extractErrorSummary(error)}`,
-            lastStatusCode: status,
-          });
-          return;
-        }
-        if (status && status < 500 && status !== 429) {
-          this.logger.warn(
-            {
-              chatId,
-              messageId,
-              status,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Failed to publish bot copy for admin chat message; skipping retry',
-          );
-          await this.replacementAttachMarkerStore.completeChatAutoComment({
-            chatId,
-            messageId,
-            lockToken: claim.lockToken,
-            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
-            source: 'webhook',
-            botId: autoAttachBotId,
-            deliveryMode: 'replace_with_bot_message',
-            originalDeleted: false,
-            lastError: this.extractErrorSummary(error),
-            lastStatusCode: status,
-          });
-          return;
-        }
-        await this.replacementAttachMarkerStore.releaseChatAutoComment({
-          chatId,
-          messageId,
-          lockToken: claim.lockToken,
-          source: 'webhook',
-          botId: autoAttachBotId,
-          lastError: this.extractErrorSummary(error),
-          lastStatusCode: status,
-        });
-        throw error;
-      }
-
-      // FLAG: Persist the copy ID before awaiting the original deletion. Its webhook can run
-      // in another worker immediately after send succeeds.
-      try {
-        await this.replacementAttachMarkerStore.recordChatReplacementMessage({
-          chatId,
-          messageId,
-          lockToken: claim.lockToken,
-          replacementMessageId,
-          publishedUrl,
-        });
-      } catch (error: unknown) {
+              lockToken: claim.lockToken,
+            });
+            replySendStarted = true;
+          },
+          debugContext: {
+            screen: 'chat-auto-comments',
+            action: 'reply-to-admin-message',
+          },
+        },
+        mutationRequestOptions,
+      );
+      replyMessageId = sent.messageId;
+    } catch (error: unknown) {
+      const status = this.extractStatusCode(error);
+      if (
+        (replySendStarted || wasMaxMessageSendAttempted(error)) &&
+        isAmbiguousMaxSendError(error)
+      ) {
         this.logger.error(
           {
             chatId,
             messageId,
-            replacementMessageId,
+            status,
             error: error instanceof Error ? error.message : String(error),
           },
-          'Quarantined delivered chat replacement after marker persistence failure',
+          'Quarantined ambiguous chat comments reply without automatic retry',
         );
         await this.replacementAttachMarkerStore.completeChatAutoComment({
           chatId,
           messageId,
           lockToken: claim.lockToken,
-          status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+          status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
           source: 'webhook',
           botId: autoAttachBotId,
-          deliveryMode: 'replace_with_bot_message',
-          replacementMessageId,
-          publishedUrl,
+          deliveryMode: 'reply_message',
           originalDeleted: false,
-          lastError: `Delivered replacement marker persistence failed: ${this.extractErrorSummary(error)}`,
-          lastStatusCode: this.extractStatusCode(error),
+          lastError: `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Ambiguous reply send: ${this.extractErrorSummary(error)}`,
+          lastStatusCode: status,
         });
         return;
       }
-
-      try {
-        const cleanupInput: EnsureModerationDeleteIntentInput = {
-          chatId,
-          messageId,
-          reasonKey: 'chat_auto_comment_admin_message_replacement_cleanup',
-          ruleCode: 'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
-          subjectUserId: senderId,
-          ...(update.message?.createdAt ? { sourceMessageAt: update.message.createdAt } : {}),
-          entityType: 'CHAT',
-          messageAuthorKind: 'user',
-          originBotId: autoAttachBotId,
-          routingPolicy: 'origin_first',
-          event: {
-            eventType: null,
-            metadata: {
-              source: 'webhook',
-              cleanupKind: 'chat_auto_comment_admin_message_replacement',
-              replacementMessageId,
-            },
-          },
-        };
-        await this.ensureModerationDeleteIntent(cleanupInput, mutationRequestOptions);
-        const cleanup = await this.executeModerationDelete(cleanupInput, mutationRequestOptions);
-        originalDeleted = cleanup.gone;
-        if (!cleanup.accepted) {
-          originalCleanupError = 'Durable cleanup reached a terminal state';
-          this.logger.warn(
-            { chatId, messageId, replacementMessageId },
-            'Durable cleanup could not accept original admin chat message deletion',
-          );
-        }
-      } catch (deleteError: unknown) {
-        originalCleanupError = this.extractErrorSummary(deleteError);
-        originalCleanupStatusCode = this.extractStatusCode(deleteError);
-        this.logger.warn(
-          {
-            chatId,
-            messageId,
-            status: this.extractStatusCode(deleteError),
-            error: deleteError instanceof Error ? deleteError.message : 'Unknown error',
-            replacementMessageId,
-          },
-          'Failed to delete original admin chat message after bot copy publish',
-        );
-      }
-
-      await this.replacementAttachMarkerStore.completeChatAutoComment({
-        chatId,
-        messageId,
-        lockToken: claim.lockToken,
-        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
-        source: 'webhook',
-        botId: autoAttachBotId,
-        deliveryMode,
-        replacementMessageId,
-        publishedUrl,
-        originalDeleted,
-        lastError: originalCleanupError,
-        lastStatusCode: originalCleanupStatusCode,
-      });
-
-      await this.prisma.auditLog.create({
-        data: {
-          chatId,
-          actorUserId: senderId,
-          action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
-          payload: {
-            messageId,
-            threadId,
-            source: 'webhook',
-            deliveryMode,
-            replacementMessageId,
-            ...(publishedUrl ? { publishedUrl } : {}),
-            originalDeleted,
-            cleanupState: originalDeleted ? 'confirmed' : originalCleanupError ? 'failed' : 'owned',
-            ...(originalCleanupError ? { cleanupError: originalCleanupError } : {}),
-            ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
-          },
-        },
-      });
-      return;
-    }
-
-    try {
-      await this.maxClient.editMessageInlineKeyboard(
-        chatId,
-        messageId,
-        text,
-        {
-          buttons,
-          debugContext: {
-            screen: 'chat-auto-comments',
-            action: 'attach-comments',
-          },
-        },
-        mutationRequestOptions,
-      );
-    } catch (error: unknown) {
-      const status = this.extractStatusCode(error);
       if (status && status < 500 && status !== 429) {
         this.logger.warn(
           {
@@ -15839,196 +15690,204 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             status,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
-          'Failed to edit chat message inline keyboard; falling back to bot reply',
+          'Failed to send chat comments reply; skipping retry',
         );
-        try {
-          const sent = await this.maxClient.sendMessageImmediateWithResolvedLink(
-            chatId,
-            CHAT_COMMENTS_REPLY_TEXT,
-            {
-              buttons,
-              messageLink: {
-                type: 'reply',
-                mid: messageId,
-              },
-              beforeSend: async () => {
-                await this.replacementAttachMarkerStore.recordChatReplySendStarted({
-                  chatId,
-                  messageId,
-                  lockToken: claim.lockToken,
-                });
-                replySendStarted = true;
-              },
-            },
-            mutationRequestOptions,
-          );
-          deliveryMode = 'reply_message';
-          replyMessageId = sent.messageId;
-        } catch (fallbackError: unknown) {
-          const fallbackStatus = this.extractStatusCode(fallbackError);
-          if (
-            (replySendStarted || wasMaxMessageSendAttempted(fallbackError)) &&
-            isAmbiguousMaxSendError(fallbackError)
-          ) {
-            this.logger.error(
-              {
-                chatId,
-                messageId,
-                status: fallbackStatus,
-                error:
-                  fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-              },
-              'Quarantined ambiguous fallback chat comments reply without automatic retry',
-            );
-            await this.replacementAttachMarkerStore.completeChatAutoComment({
-              chatId,
-              messageId,
-              lockToken: claim.lockToken,
-              status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
-              source: 'webhook',
-              botId: autoAttachBotId,
-              deliveryMode: 'reply_message',
-              originalDeleted: false,
-              lastError: `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Ambiguous fallback reply send: ${this.extractErrorSummary(fallbackError)}`,
-              lastStatusCode: fallbackStatus,
-            });
-            return;
-          }
-          if (fallbackStatus && fallbackStatus < 500 && fallbackStatus !== 429) {
-            this.logger.warn(
-              {
-                chatId,
-                messageId,
-                status: fallbackStatus,
-                error: fallbackError instanceof Error ? fallbackError.message : 'Unknown error',
-              },
-              'Failed to send fallback chat comments reply; skipping retry',
-            );
-            await this.replacementAttachMarkerStore.completeChatAutoComment({
-              chatId,
-              messageId,
-              lockToken: claim.lockToken,
-              status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
-              source: 'webhook',
-              botId: autoAttachBotId,
-              deliveryMode: 'reply_message',
-              originalDeleted: false,
-              lastError: this.extractErrorSummary(fallbackError),
-              lastStatusCode: fallbackStatus,
-            });
-            return;
-          }
-          await this.replacementAttachMarkerStore.releaseChatAutoComment({
-            chatId,
-            messageId,
-            lockToken: claim.lockToken,
-            source: 'webhook',
-            botId: autoAttachBotId,
-            lastError: this.extractErrorSummary(fallbackError),
-            lastStatusCode: fallbackStatus,
-          });
-          throw fallbackError;
-        }
-
-        try {
-          await this.replacementAttachMarkerStore.recordChatReplyMessage({
-            chatId,
-            messageId,
-            lockToken: claim.lockToken,
-            replyMessageId,
-          });
-        } catch (markerError: unknown) {
-          this.logger.error(
-            {
-              chatId,
-              messageId,
-              replyMessageId,
-              error: markerError instanceof Error ? markerError.message : String(markerError),
-            },
-            'Quarantined delivered fallback chat comments reply after marker persistence failure',
-          );
-          await this.replacementAttachMarkerStore.completeChatAutoComment({
-            chatId,
-            messageId,
-            lockToken: claim.lockToken,
-            status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
-            source: 'webhook',
-            botId: autoAttachBotId,
-            deliveryMode: 'reply_message',
-            replyMessageId,
-            originalDeleted: false,
-            lastError: `Delivered fallback reply marker persistence failed: ${this.extractErrorSummary(markerError)}`,
-            lastStatusCode: this.extractStatusCode(markerError),
-          });
-          return;
-        }
-      } else {
-        await this.replacementAttachMarkerStore.releaseChatAutoComment({
+        await this.replacementAttachMarkerStore.completeChatAutoComment({
           chatId,
           messageId,
           lockToken: claim.lockToken,
+          status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
           source: 'webhook',
           botId: autoAttachBotId,
+          deliveryMode: 'reply_message',
+          originalDeleted: false,
           lastError: this.extractErrorSummary(error),
           lastStatusCode: status,
         });
-        throw error;
+        return;
+      }
+      await this.replacementAttachMarkerStore.releaseChatAutoComment({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        source: 'webhook',
+        botId: autoAttachBotId,
+        lastError: this.extractErrorSummary(error),
+        lastStatusCode: status,
+      });
+      throw error;
+    }
+
+    let replyMarkerError: unknown = null;
+    try {
+      await this.replacementAttachMarkerStore.recordChatReplyMessage({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        replyMessageId,
+      });
+    } catch (markerError: unknown) {
+      this.logger.error(
+        {
+          chatId,
+          messageId,
+          replyMessageId,
+          error: markerError instanceof Error ? markerError.message : String(markerError),
+        },
+        'Quarantined delivered chat comments reply after marker persistence failure',
+      );
+      replyMarkerError = markerError;
+      try {
+        await this.replacementAttachMarkerStore.completeChatAutoComment({
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+          source: 'webhook',
+          botId: autoAttachBotId,
+          deliveryMode: 'reply_message',
+          replyMessageId,
+          originalDeleted: false,
+          lastError: `Delivered reply marker persistence failed: ${this.extractErrorSummary(markerError)}`,
+          lastStatusCode: this.extractStatusCode(markerError),
+        });
+      } catch (completionError: unknown) {
+        this.logger.error(
+          {
+            chatId,
+            messageId,
+            replyMessageId,
+            error:
+              completionError instanceof Error ? completionError.message : String(completionError),
+          },
+          'Failed to terminalize delivered chat comments reply after marker persistence failure',
+        );
       }
     }
 
-    await this.replacementAttachMarkerStore.completeChatAutoComment({
+    await this.persistChatAutoCommentAudit({
+      markerId,
       chatId,
       messageId,
-      lockToken: claim.lockToken,
-      status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
-      source: 'webhook',
-      botId: autoAttachBotId,
-      deliveryMode,
-      replacementMessageId,
+      senderId,
       replyMessageId,
-      publishedUrl,
-      originalDeleted,
-      lastError: null,
-      lastStatusCode: null,
+      botId: autoAttachBotId,
     });
 
-    await this.prisma.auditLog.create({
-      data: {
+    if (replyMarkerError) {
+      await this.replacementAttachMarkerStore.completeChatAutoCommentAuditRecovery({
+        markerId,
         chatId,
-        actorUserId: senderId,
-        action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
-        payload: {
-          messageId,
-          threadId,
-          source: 'webhook',
-          deliveryMode,
-          ...(replacementMessageId ? { replacementMessageId } : {}),
-          ...(publishedUrl ? { publishedUrl } : {}),
-          ...(replyMessageId ? { replyMessageId } : {}),
-          originalDeleted,
-          ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
-        },
-      },
+        messageId,
+        replyMessageId,
+      });
+    } else {
+      await this.replacementAttachMarkerStore.completeChatAutoComment({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SUCCEEDED,
+        source: 'webhook',
+        botId: autoAttachBotId,
+        deliveryMode: 'reply_message',
+        replyMessageId,
+        originalDeleted: false,
+        lastError: null,
+        lastStatusCode: null,
+      });
+    }
+  }
+
+  private async tryRecoverChatMessageCommentsAudit(params: {
+    chatId: string;
+    messageId: string;
+    senderId: string;
+  }): Promise<boolean> {
+    const pendingAuditRecovery =
+      await this.replacementAttachMarkerStore.probeChatAutoCommentAuditRecovery({
+        chatId: params.chatId,
+        messageId: params.messageId,
+      });
+    if (pendingAuditRecovery?.status === 'recovered_audit') {
+      return true;
+    }
+    if (pendingAuditRecovery?.status !== 'recover_audit') {
+      return false;
+    }
+
+    await this.recoverChatAutoCommentAudit({
+      recovery: pendingAuditRecovery,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      senderId: params.senderId,
+      fallbackBotId: null,
+    });
+    return true;
+  }
+
+  private async recoverChatAutoCommentAudit(params: {
+    recovery: {
+      markerId: string;
+      replyMessageId: string;
+      botId: string | null;
+    };
+    chatId: string;
+    messageId: string;
+    senderId: string;
+    fallbackBotId: string | null;
+  }): Promise<void> {
+    await this.persistChatAutoCommentAudit({
+      markerId: params.recovery.markerId,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      senderId: params.senderId,
+      replyMessageId: params.recovery.replyMessageId,
+      botId: params.recovery.botId?.trim() || params.fallbackBotId?.trim() || null,
+    });
+    await this.replacementAttachMarkerStore.completeChatAutoCommentAuditRecovery({
+      markerId: params.recovery.markerId,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      replyMessageId: params.recovery.replyMessageId,
     });
   }
 
-  private messageHasInlineKeyboard(update: MaxUpdate): boolean {
-    const raw = this.asRecord(update.raw);
-    const message = this.asRecord(raw?.message);
-    const body = this.asRecord(message?.body);
-    const attachmentGroups = [
-      Array.isArray(body?.attachments) ? body.attachments : null,
-      Array.isArray(message?.attachments) ? message.attachments : null,
-    ];
+  private async persistChatAutoCommentAudit(params: {
+    markerId: string;
+    chatId: string;
+    messageId: string;
+    senderId: string;
+    replyMessageId: string;
+    botId: string | null;
+  }): Promise<void> {
+    const auditId = buildChatAutoCommentAuditId(params.markerId);
+    if (!auditId) {
+      throw new Error('Cannot persist chat auto-comment audit for an invalid marker id');
+    }
 
-    return attachmentGroups.some((attachments) =>
-      Array.isArray(attachments)
-        ? attachments.some((attachment) => {
-            const row = this.asRecord(attachment);
-            return this.readLowerString(row?.type) === 'inline_keyboard';
-          })
-        : false,
-    );
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          id: auditId,
+          chatId: params.chatId,
+          actorUserId: params.senderId,
+          action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
+          payload: {
+            messageId: params.messageId,
+            threadId: params.markerId,
+            source: 'webhook',
+            deliveryMode: 'reply_message',
+            replyMessageId: params.replyMessageId,
+            originalDeleted: false,
+            ...(params.botId ? { botId: params.botId } : {}),
+          },
+        },
+      });
+    } catch (error: unknown) {
+      if (!this.isPrismaKnownError(error, 'P2002')) {
+        throw error;
+      }
+    }
   }
 
   private buildChannelDialogButton(
