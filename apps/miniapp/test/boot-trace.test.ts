@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sanitizeMiniappBootTraceText, traceMiniappBoot } from '../src/lib/boot-trace';
+import { traceMiniappBoot } from '../src/lib/boot-trace';
 import { dispatchMiniappBootTrace } from '../src/lib/boot-trace-runtime';
 import { createMiniappBootTraceSessionId } from '../src/lib/boot-trace-session-id';
+import { sanitizeMiniappBootTraceText } from '../src/lib/boot-trace-text-sanitizer';
 import {
   claimPublicationApiTraceSample,
   shouldEnablePublicationApiTrace,

@@ -158,21 +158,30 @@ jobs:
           - component: api
             dockerfile: apps/api/Dockerfile
             image_repository: maxim-api
+            vite_api_base: ''
           - component: miniapp
             dockerfile: apps/miniapp/Dockerfile
             image_repository: maxim-miniapp-major
+            vite_api_base: https://major-maksimov.ru/api/v1
           - component: admin
             dockerfile: apps/admin/Dockerfile
             image_repository: maxim-admin
+            vite_api_base: ''
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Build ${{ matrix.component }} image
         env:
           IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
+          VITE_API_BASE: ${{ matrix.vite_api_base }}
         run: |
+          build_args=()
+          if [[ -n "$VITE_API_BASE" ]]; then
+            build_args+=(--build-arg "VITE_API_BASE=$VITE_API_BASE")
+          fi
           docker buildx build --load --provenance=false \
             --label com.maxim.release-protected=true \
             --label org.opencontainers.image.revision="${{ github.sha }}" \
+            "${build_args[@]}" \
             -f "${{ matrix.dockerfile }}" \
             -t "$IMAGE_REF" \
             .

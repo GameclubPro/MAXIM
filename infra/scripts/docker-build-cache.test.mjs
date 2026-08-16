@@ -178,6 +178,42 @@ test('packages exact-SHA main images for reuse-only production deploys', () => {
   assert.match(workflow, /github\.event_name == 'push'/u);
 });
 
+test('bakes the production API URL into only the Major mini app image', () => {
+  const workflow = read('.github/workflows/ci.yml');
+  const dockerJobStart = workflow.indexOf('  docker:\n');
+  const dockerJobEnd = workflow.indexOf('\n  required:', dockerJobStart);
+
+  assert.notEqual(dockerJobStart, -1);
+  assert.notEqual(dockerJobEnd, -1);
+  const dockerJob = workflow.slice(dockerJobStart, dockerJobEnd);
+  const apiMatrixStart = dockerJob.indexOf('          - component: api\n');
+  const miniappMatrixStart = dockerJob.indexOf('          - component: miniapp\n');
+  const adminMatrixStart = dockerJob.indexOf('          - component: admin\n');
+  const stepsStart = dockerJob.indexOf('    steps:\n');
+
+  assert.ok(apiMatrixStart < miniappMatrixStart);
+  assert.ok(miniappMatrixStart < adminMatrixStart);
+  assert.ok(adminMatrixStart < stepsStart);
+  assert.match(dockerJob.slice(apiMatrixStart, miniappMatrixStart), /vite_api_base: ''/u);
+  assert.match(
+    dockerJob.slice(miniappMatrixStart, adminMatrixStart),
+    /vite_api_base: https:\/\/major-maksimov\.ru\/api\/v1/u,
+  );
+  assert.match(dockerJob.slice(adminMatrixStart, stepsStart), /vite_api_base: ''/u);
+  assert.match(dockerJob, /VITE_API_BASE: \$\{\{ matrix\.vite_api_base \}\}/u);
+  assert.match(dockerJob, /build_args=\(\)/u);
+  assert.match(dockerJob, /if \[\[ -n "\$VITE_API_BASE" \]\]; then/u);
+  assert.match(
+    dockerJob,
+    /build_args\+=\(--build-arg "VITE_API_BASE=\$VITE_API_BASE"\)/u,
+  );
+  assert.match(dockerJob, /"\$\{build_args\[@\]\}"/u);
+  assert.equal(
+    dockerJob.match(/vite_api_base: https:\/\/major-maksimov\.ru\/api\/v1/gu)?.length,
+    1,
+  );
+});
+
 test('runs the compiled native OCR raster smoke before packaging the API image', () => {
   const workflow = read('.github/workflows/ci.yml');
   const smoke = workflow.indexOf('Smoke native OCR in API image');

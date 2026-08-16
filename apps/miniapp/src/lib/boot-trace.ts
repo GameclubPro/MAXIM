@@ -4,8 +4,6 @@ import type { MiniappBootTraceDetails } from './boot-trace-sanitizer';
 import { getInitData } from './init-data';
 import { API_BASE } from './public-config';
 
-export { sanitizeMiniappBootTraceText } from './boot-trace-text-sanitizer';
-
 type MiniappBootTracePhase =
   | 'index_loaded'
   | 'bridge_ready'
