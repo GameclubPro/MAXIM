@@ -38,6 +38,17 @@ function createConfigMock(
   } as unknown as ConfigService;
 }
 
+function captureUnauthorizedException(run: () => unknown): UnauthorizedException {
+  try {
+    run();
+  } catch (error: unknown) {
+    expect(error).toBeInstanceOf(UnauthorizedException);
+    return error as UnauthorizedException;
+  }
+
+  throw new Error('Expected validation to throw UnauthorizedException');
+}
+
 describe('InitDataService', () => {
   function createRegistryMock(previousToken?: string) {
     const tokens = previousToken ? [botToken, previousBotToken] : [botToken];
@@ -115,7 +126,29 @@ describe('InitDataService', () => {
     params.set('user', JSON.stringify({ id: '42' }));
     params.set('hash', 'bad-hash');
 
-    expect(() => service.validate(params.toString())).toThrow(UnauthorizedException);
+    const error = captureUnauthorizedException(() => service.validate(params.toString()));
+    expect(error.getResponse()).toEqual({
+      statusCode: 401,
+      error: 'Unauthorized',
+      message: 'Invalid init data signature',
+      code: 'MINIAPP_AUTH_INVALID',
+      retryable: false,
+      recovery: 'relaunch_miniapp',
+    });
+  });
+
+  it('returns a machine-readable error when init data is missing', () => {
+    const service = new InitDataService(createRegistryMock() as never, createConfigMock());
+
+    const error = captureUnauthorizedException(() => service.validate(''));
+    expect(error.getResponse()).toEqual({
+      statusCode: 401,
+      error: 'Unauthorized',
+      message: 'Init data is empty',
+      code: 'MINIAPP_AUTH_MISSING',
+      retryable: false,
+      recovery: 'relaunch_miniapp',
+    });
   });
 
   it('validates urlencoded payload', () => {
@@ -215,7 +248,87 @@ describe('InitDataService', () => {
     params.set('auth_date', String(Math.floor(Date.now() / 1000) - 301));
     params.set('hash', sign(params));
 
-    expect(() => service.validate(params.toString())).toThrow('Init data has expired');
+    const error = captureUnauthorizedException(() => service.validate(params.toString()));
+    expect(error.getResponse()).toEqual({
+      statusCode: 401,
+      error: 'Unauthorized',
+      message: 'Init data has expired',
+      code: 'MINIAPP_AUTH_EXPIRED',
+      retryable: false,
+      recovery: 'relaunch_miniapp',
+    });
+    expect(service.validateForSessionRecovery(params.toString())).toMatchObject({
+      userId: '42',
+      launchBotId: 'default-bot',
+    });
+  });
+
+  it.each([
+    {
+      label: 'invalid signature',
+      createPayload: () => {
+        const params = new URLSearchParams({
+          user: JSON.stringify({ id: '42' }),
+          auth_date: String(Math.floor(Date.now() / 1_000) - 10_000),
+          hash: '0'.repeat(64),
+        });
+        return params.toString();
+      },
+      message: 'Invalid init data signature',
+    },
+    {
+      label: 'missing user',
+      createPayload: () => {
+        const params = new URLSearchParams({
+          auth_date: String(Math.floor(Date.now() / 1_000) - 10_000),
+        });
+        params.set('hash', sign(params));
+        return params.toString();
+      },
+      message: 'Missing user payload',
+    },
+    {
+      label: 'missing auth date',
+      createPayload: () => {
+        const params = new URLSearchParams({ user: JSON.stringify({ id: '42' }) });
+        params.set('hash', sign(params));
+        return params.toString();
+      },
+      message: 'Missing auth_date in init data',
+    },
+    {
+      label: 'future auth date',
+      createPayload: () => {
+        const params = new URLSearchParams({
+          user: JSON.stringify({ id: '42' }),
+          auth_date: String(Math.floor(Date.now() / 1_000) + 31),
+        });
+        params.set('hash', sign(params));
+        return params.toString();
+      },
+      message: 'Init data auth_date is in the future',
+    },
+  ])('does not recover a session identity from $label', ({ createPayload, message }) => {
+    const service = new InitDataService(createRegistryMock() as never, createConfigMock());
+    expect(() => service.validateForSessionRecovery(createPayload())).toThrow(message);
+  });
+
+  it('returns clock recovery guidance for init data from the future', () => {
+    const service = new InitDataService(createRegistryMock() as never, createConfigMock());
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '42' }));
+    params.set('auth_date', String(Math.floor(Date.now() / 1000) + 31));
+    params.set('hash', sign(params));
+
+    const error = captureUnauthorizedException(() => service.validate(params.toString()));
+    expect(error.getResponse()).toEqual({
+      statusCode: 401,
+      error: 'Unauthorized',
+      message: 'Init data auth_date is in the future',
+      code: 'MINIAPP_AUTH_FUTURE',
+      retryable: false,
+      recovery: 'check_clock_and_relaunch',
+    });
   });
 
   it('rejects duplicated launch parameters before signature verification', () => {

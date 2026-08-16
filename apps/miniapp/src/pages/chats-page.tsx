@@ -32,7 +32,6 @@ import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { Skeleton, SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { describeApiError } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
@@ -128,6 +127,10 @@ const CHAT_LIST_ROW_HEIGHT = 72;
 const CHAT_LIST_VIRTUAL_ROW_PITCH = 80;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
+
+function describeChatsError(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim() ? error.message.trim() : fallback;
+}
 
 const LazyChatOnboardingSection = lazy(async () => {
   const module = await import('../components/chat-onboarding-section');
@@ -1450,7 +1453,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       });
       pushToast({
         title: 'Не удалось сохранить категорию',
-        description: describeApiError(error, 'Попробуйте ещё раз.'),
+        description: describeChatsError(error, 'Попробуйте ещё раз.'),
         tone: 'danger',
       });
     } finally {
@@ -2008,7 +2011,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="danger"
             title="Не удалось загрузить список"
-            description={describeApiError(queryError, 'Не удалось загрузить список.')}
+            description={describeChatsError(queryError, 'Не удалось загрузить список.')}
             action={
               <button
                 type="button"

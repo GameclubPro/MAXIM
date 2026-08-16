@@ -37,9 +37,9 @@ import {
 } from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
+import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/dialog-api-error';
 import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';

@@ -63,7 +63,8 @@ export function readPreviewRouteSearch(): string {
   }
 
   const directSearch = window.location.search;
-  if (new URLSearchParams(directSearch).has('access')) {
+  const directParams = new URLSearchParams(directSearch);
+  if (directParams.has('access') || directParams.has('settingsError')) {
     return directSearch;
   }
 

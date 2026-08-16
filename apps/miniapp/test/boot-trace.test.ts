@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sanitizeMiniappBootTraceText } from '../src/lib/boot-trace';
+import { sanitizeMiniappBootTraceText, traceMiniappBoot } from '../src/lib/boot-trace';
+import { dispatchMiniappBootTrace } from '../src/lib/boot-trace-runtime';
 import { createMiniappBootTraceSessionId } from '../src/lib/boot-trace-session-id';
 import {
   claimPublicationApiTraceSample,
@@ -94,6 +95,82 @@ test('boot trace text sanitizer redacts exact search parameter keys', () => {
   assert.equal(sanitized.includes('first'), false);
   assert.equal(sanitized.includes('second'), false);
   assert.equal(sanitized.includes('third'), false);
+});
+
+test('lazy boot trace runtime preserves early event order and sanitization', async () => {
+  const originalFetch = globalThis.fetch;
+  const payloads: Array<Record<string, unknown>> = [];
+  let resolveDispatch: () => void = () => undefined;
+  const dispatched = new Promise<void>((resolve) => {
+    resolveDispatch = resolve;
+  });
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    payloads.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    if (payloads.length === 2) {
+      resolveDispatch();
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  try {
+    assert.equal(
+      traceMiniappBoot('bridge_ready', { token: 'first-secret' }, { runtimeEnabled: true }),
+      true,
+    );
+    assert.equal(
+      traceMiniappBoot('init_data_found', { stage: 'second' }, { runtimeEnabled: true }),
+      true,
+    );
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      dispatched,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('boot trace dispatch timed out')), 1_000);
+      }),
+    ]).finally(() => clearTimeout(timeout));
+
+    assert.deepEqual(
+      payloads.map((payload) => payload.phase),
+      ['bridge_ready', 'init_data_found'],
+    );
+    assert.equal(Number(payloads[1]?.sequence), Number(payloads[0]?.sequence) + 1);
+    assert.deepEqual(payloads[0]?.details, { token: '[redacted]' });
+    assert.deepEqual(payloads[1]?.details, { stage: 'second' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('boot trace runtime sends the captured route and native environment snapshot', () => {
+  const originalFetch = globalThis.fetch;
+  let payload: Record<string, unknown> | null = null;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  try {
+    dispatchMiniappBootTrace({
+      phase: 'first_render',
+      sessionId: 'snapshot-session',
+      sequence: 7,
+      elapsedMs: 12,
+      details: { screen: 'home' },
+      route: '/app/?startapp=secret-value&screen=home',
+      baseUrl: 'https://major-maksimov.ru/app/',
+      platform: 'ios',
+      userAgent: 'MAX/snapshot',
+      mutationTunnelInitData: null,
+    });
+
+    assert.equal(payload?.route, '/app/?startapp=%5Bredacted%5D&screen=home');
+    assert.equal(payload?.platform, 'ios');
+    assert.equal(payload?.ua, 'MAX/snapshot');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('publication API trace samples are bounded by operation, outcome, and boot window', () => {

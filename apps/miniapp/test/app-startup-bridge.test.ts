@@ -33,7 +33,15 @@ test('late bridge discovery remains wired to script load and removes the listene
 test('authenticated API transport stays stable across bridge-only rerenders for one principal', () => {
   assert.match(
     appSource,
-    /const authenticatedApiClient = useMemo\([\s\S]*?createApiTransport\(getInitData\)[\s\S]*?\[authQueryPrincipalKey, hasAuthenticatedInitData\]/u,
+    /const authenticatedApiClient = useMemo\([\s\S]*?createApiTransport\(getInitData, \{ authSession, serverSession \}\)[\s\S]*?\[authQueryPrincipalKey, authSession, hasAuthenticatedInitData, serverSession\]/u,
   );
   assert.doesNotMatch(appSource, /: initData\s*\? createApiTransport\(getInitData\)/u);
+});
+
+test('durable server session manager survives authenticated principal changes', () => {
+  assert.match(
+    appSource,
+    /const serverSession = useMemo\([\s\S]*?createLazyMiniappServerSessionManager\([\s\S]*?\),\s*\[\],\s*\);/u,
+  );
+  assert.match(appSource, /createApiTransport\(getInitData, \{ authSession, serverSession \}\)/u);
 });

@@ -82,6 +82,7 @@
     "publication:recover-send-route": "sh -c 'if [ -f dist/apps/api/src/scripts/recover-publication-send-route.js ]; then exec node dist/apps/api/src/scripts/recover-publication-send-route.js \"$@\"; else exec tsx src/scripts/recover-publication-send-route.ts \"$@\"; fi' --"
   },
   "dependencies": {
+    "@fastify/cookie": "11.1.2",
     "@maxim/contracts": "0.1.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/bullmq": "^11.0.2",

@@ -11,7 +11,7 @@ export function describeUserFacingError(error: unknown, fallback: string): strin
   }
 
   if (isSessionExpiredApiMessage(message)) {
-    return 'Сессия истекла или доступ запрещён. Откройте мини-приложение заново.';
+    return 'Срок входа истёк. Закройте мини-приложение и откройте его снова из MAX.';
   }
 
   if (/rate[ _-]?limit|too many requests|\b429\b/iu.test(message)) {

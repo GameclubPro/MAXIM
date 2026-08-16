@@ -1,9 +1,10 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { MiniappAuthException } from './miniapp-auth.error';
 
 const INIT_DATA_ALLOWED_CLOCK_SKEW_SEC = 30;
 const DEFAULT_INIT_DATA_MAX_AGE_SEC = 3_600;
@@ -27,34 +28,42 @@ export class InitDataService {
   }
 
   validate(initData: string): AuthUser {
+    return this.validateSigned(initData, true);
+  }
+
+  validateForSessionRecovery(initData: string): AuthUser {
+    return this.validateSigned(initData, false);
+  }
+
+  private validateSigned(initData: string, requireFresh: boolean): AuthUser {
     const { params, receivedHash, sortedPairs } = this.parseAndPrepareInitData(initData);
 
     if (!/^[a-f0-9]{64}$/i.test(receivedHash)) {
-      throw new UnauthorizedException('Invalid init data signature');
+      throw new MiniappAuthException('invalid', 'Invalid init data signature');
     }
 
     const launchBotId = this.resolveLaunchBotId(receivedHash.toLowerCase(), sortedPairs);
     if (!launchBotId) {
-      throw new UnauthorizedException('Invalid init data signature');
+      throw new MiniappAuthException('invalid', 'Invalid init data signature');
     }
 
-    this.assertFreshAuthDate(params.get('auth_date'));
+    this.assertAuthDate(params.get('auth_date'), requireFresh);
 
     const userPayload = params.get('user');
     if (!userPayload) {
-      throw new UnauthorizedException('Missing user payload');
+      throw new MiniappAuthException('missing', 'Missing user payload');
     }
 
     let parsedUser: Record<string, unknown>;
     try {
       parsedUser = JSON.parse(userPayload) as Record<string, unknown>;
     } catch {
-      throw new UnauthorizedException('Invalid user payload');
+      throw new MiniappAuthException('invalid', 'Invalid user payload');
     }
 
     const userId = String(parsedUser.id ?? parsedUser.user_id ?? '');
     if (!userId) {
-      throw new UnauthorizedException('Missing user id');
+      throw new MiniappAuthException('missing', 'Missing user id');
     }
 
     const chatPayload = params.get('chat');
@@ -93,7 +102,7 @@ export class InitDataService {
       }
 
       if (matchedBotId && matchedBotId !== candidate.botId) {
-        throw new UnauthorizedException('Init data signature matches multiple bots');
+        throw new MiniappAuthException('invalid', 'Init data signature matches multiple bots');
       }
       matchedBotId = candidate.botId;
     }
@@ -109,7 +118,7 @@ export class InitDataService {
     const entries = this.parseInitDataEntries(this.normalizeInitData(raw));
     const hashEntries = entries.filter(([key]) => key === 'hash');
     if (hashEntries.length !== 1) {
-      throw new UnauthorizedException('Missing hash in init data');
+      throw new MiniappAuthException('missing', 'Missing hash in init data');
     }
 
     const receivedHash = hashEntries[0][1].trim();
@@ -182,7 +191,7 @@ export class InitDataService {
   private parseInitDataEntries(value: string): Array<[string, string]> {
     const normalized = value.trim();
     if (!normalized) {
-      throw new UnauthorizedException('Init data is empty');
+      throw new MiniappAuthException('missing', 'Init data is empty');
     }
 
     const parts = normalized.split('&');
@@ -191,7 +200,7 @@ export class InitDataService {
 
     for (const part of parts) {
       if (!part) {
-        throw new UnauthorizedException('Invalid init data payload');
+        throw new MiniappAuthException('invalid', 'Invalid init data payload');
       }
 
       const separatorIndex = part.indexOf('=');
@@ -199,17 +208,17 @@ export class InitDataService {
       const rawValue = separatorIndex >= 0 ? part.slice(separatorIndex + 1) : '';
       const key = rawKey.trim();
       if (!key) {
-        throw new UnauthorizedException('Invalid init data payload');
+        throw new MiniappAuthException('invalid', 'Invalid init data payload');
       }
       if (seen.has(key)) {
-        throw new UnauthorizedException(`Duplicate init data parameter: ${key}`);
+        throw new MiniappAuthException('invalid', `Duplicate init data parameter: ${key}`);
       }
 
       let decodedValue = rawValue;
       try {
         decodedValue = decodeURIComponent(rawValue.replace(/\+/g, '%20'));
       } catch {
-        throw new UnauthorizedException(`Invalid init data parameter encoding: ${key}`);
+        throw new MiniappAuthException('invalid', `Invalid init data parameter encoding: ${key}`);
       }
 
       seen.add(key);
@@ -219,28 +228,28 @@ export class InitDataService {
     return entries;
   }
 
-  private assertFreshAuthDate(rawAuthDate: string | null) {
+  private assertAuthDate(rawAuthDate: string | null, requireFresh: boolean) {
     if (!rawAuthDate) {
-      throw new UnauthorizedException('Missing auth_date in init data');
+      throw new MiniappAuthException('missing', 'Missing auth_date in init data');
     }
 
     const normalized = rawAuthDate.trim();
     if (!/^\d+$/u.test(normalized)) {
-      throw new UnauthorizedException('Invalid auth_date in init data');
+      throw new MiniappAuthException('invalid', 'Invalid auth_date in init data');
     }
 
     const authDateSec = Number.parseInt(normalized, 10);
     if (!Number.isFinite(authDateSec) || authDateSec <= 0) {
-      throw new UnauthorizedException('Invalid auth_date in init data');
+      throw new MiniappAuthException('invalid', 'Invalid auth_date in init data');
     }
 
     const nowSec = Math.floor(Date.now() / 1_000);
     if (authDateSec > nowSec + INIT_DATA_ALLOWED_CLOCK_SKEW_SEC) {
-      throw new UnauthorizedException('Init data auth_date is in the future');
+      throw new MiniappAuthException('future', 'Init data auth_date is in the future');
     }
 
-    if (nowSec - authDateSec > this.maxAgeSec) {
-      throw new UnauthorizedException('Init data has expired');
+    if (requireFresh && nowSec - authDateSec > this.maxAgeSec) {
+      throw new MiniappAuthException('expired', 'Init data has expired');
     }
   }
 

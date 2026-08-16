@@ -75,6 +75,30 @@ describe('validateEnv boolean parsing', () => {
     );
   });
 
+  it('keeps mini app sessions bounded and Redis checks fail-fast', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.MINIAPP_SESSION_TTL_SEC).toBe(28_800);
+    expect(defaults.MINIAPP_SESSION_REDIS_TIMEOUT_MS).toBe(500);
+
+    expect(
+      validateEnv(
+        createValidEnv({
+          MINIAPP_SESSION_TTL_SEC: '43200',
+          MINIAPP_SESSION_REDIS_TIMEOUT_MS: '750',
+        }),
+      ),
+    ).toMatchObject({
+      MINIAPP_SESSION_TTL_SEC: 43_200,
+      MINIAPP_SESSION_REDIS_TIMEOUT_MS: 750,
+    });
+    expect(() => validateEnv(createValidEnv({ MINIAPP_SESSION_TTL_SEC: '3599' }))).toThrow(
+      /MINIAPP_SESSION_TTL_SEC/u,
+    );
+    expect(() => validateEnv(createValidEnv({ MINIAPP_SESSION_REDIS_TIMEOUT_MS: '2001' }))).toThrow(
+      /MINIAPP_SESSION_REDIS_TIMEOUT_MS/u,
+    );
+  });
+
   it('keeps webhook admission and ACK work within bounded defaults', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.WEBHOOK_BODY_LIMIT_BYTES).toBe(1_048_576);

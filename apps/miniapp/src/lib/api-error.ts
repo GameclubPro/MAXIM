@@ -48,8 +48,12 @@ function extractApiMessageFromJsonPayload(payload: string): string | null {
 }
 
 function formatStatusFallback(status: number): string {
-  if (status === 401 || status === 403) {
-    return 'Сессия истекла или доступ запрещён. Откройте мини-приложение заново.';
+  if (status === 401) {
+    return 'Срок входа истёк. Закройте мини-приложение и откройте его снова из MAX.';
+  }
+
+  if (status === 403) {
+    return 'Недостаточно прав для этого действия.';
   }
 
   if (status === 404) {
@@ -75,38 +79,11 @@ function formatStatusFallback(status: number): string {
   return `Ошибка запроса (${status}).`;
 }
 
-const DIALOG_TERMINAL_ERROR_PATTERNS = [
-  /^Комментарии для этого (чата|канала) сейчас закрыты\.$/u,
-  /^Кнопка устарела\./u,
-  /^Неверный токен кнопки\./u,
-] as const;
-
-export function isSessionExpiredApiMessage(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  return (
-    normalized.includes('сессия истекла') ||
-    normalized.includes('доступ запрещ') ||
-    normalized.includes('init data has expired') ||
-    normalized.includes('missing initdata authorization header') ||
-    normalized.includes('invalid init data signature')
-  );
-}
-
-export function isTerminalDialogApiMessage(message: string): boolean {
-  const normalized = message.trim();
-  if (!normalized) {
-    return false;
-  }
-
-  return (
-    isSessionExpiredApiMessage(normalized) ||
-    DIALOG_TERMINAL_ERROR_PATTERNS.some((pattern) => pattern.test(normalized))
-  );
-}
+export {
+  isAccessDeniedApiMessage,
+  isSessionExpiredApiMessage,
+  isTerminalDialogApiMessage,
+} from './dialog-api-error';
 
 export function buildApiErrorMessage(
   status: number,

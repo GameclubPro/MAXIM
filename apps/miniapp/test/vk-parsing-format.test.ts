@@ -23,7 +23,7 @@ test('VK errors localize common access, throttling, and network failures', () =>
   assert.equal(normalizeApiError(new Error('Failed to fetch')), 'Нет связи с сервисом. Повторите.');
   assert.equal(
     normalizeApiError(new Error('API request failed: 403 Forbidden')),
-    'Не удалось подтвердить доступ. Откройте приложение заново.',
+    'Недостаточно прав для этого действия.',
   );
 });
 

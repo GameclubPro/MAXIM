@@ -12,7 +12,7 @@ import { describeUserFacingError } from '../src/lib/user-facing-error';
 test('maps 401 responses to the user-facing session-expired message', () => {
   const message = buildApiErrorMessage(401, 'Init data has expired', 'text/plain');
 
-  assert.equal(message, 'Сессия истекла или доступ запрещён. Откройте мини-приложение заново.');
+  assert.equal(message, 'Срок входа истёк. Закройте мини-приложение и откройте его снова из MAX.');
   assert.equal(isSessionExpiredApiMessage(message), true);
 });
 
@@ -23,7 +23,7 @@ test('keeps backend access details out of 403 messages', () => {
     'application/json',
   );
 
-  assert.equal(message, 'Сессия истекла или доступ запрещён. Откройте мини-приложение заново.');
+  assert.equal(message, 'Недостаточно прав для этого действия.');
 });
 
 test('keeps oversized upload errors concise and localized', () => {
@@ -131,7 +131,7 @@ test('treats stale dialog token errors as terminal for comments polling', () => 
   );
   assert.equal(
     isTerminalDialogApiMessage(
-      'Сессия истекла или доступ запрещён. Откройте мини-приложение заново.',
+      'Срок входа истёк. Закройте мини-приложение и откройте его снова из MAX.',
     ),
     true,
   );

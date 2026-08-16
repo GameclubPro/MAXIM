@@ -32,6 +32,7 @@ import {
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
 } from '@maxim/contracts';
+import { ApiRequestError } from '../api-request-error';
 import {
   createManagedPollRequestSchema,
   managedPollDetailsSchema,
@@ -297,6 +298,33 @@ function createUniquePreviewId(
   return candidate;
 }
 
+function assertPreviewSettingsScreenAvailable(state: PreviewState): void {
+  if (state.settingsScreenError === 'auth-expired') {
+    throw new ApiRequestError(
+      401,
+      JSON.stringify({
+        statusCode: 401,
+        code: 'MINIAPP_AUTH_EXPIRED',
+        retryable: false,
+        recovery: 'relaunch_miniapp',
+      }),
+      'Срок входа истёк. Закройте мини-приложение и откройте его снова из MAX.',
+    );
+  }
+  if (state.settingsScreenError === 'access-denied') {
+    throw new ApiRequestError(
+      403,
+      JSON.stringify({
+        statusCode: 403,
+        code: 'SETTINGS_ACCESS_USER_DENIED',
+        retryable: false,
+        recovery: 'return_to_entities',
+      }),
+      'Недостаточно прав для этого действия.',
+    );
+  }
+}
+
 export async function handleChatRequest(
   state: PreviewState,
   chatId: string,
@@ -330,6 +358,7 @@ export async function handleChatRequest(
   }
 
   if (tail[0] === 'settings-screen' && method === 'GET') {
+    assertPreviewSettingsScreenAvailable(state);
     return cloneJson(buildChatSettingsScreen(state, chatId));
   }
 
@@ -691,6 +720,7 @@ export async function handleChannelRequest(
   }
 
   if (tail[0] === 'settings-screen' && method === 'GET') {
+    assertPreviewSettingsScreenAvailable(state);
     return cloneJson(buildChannelSettingsScreen(state, channelId));
   }
 

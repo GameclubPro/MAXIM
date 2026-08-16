@@ -1,4 +1,9 @@
 import { channelSettingsSchema, chatSettingsSchema } from '@maxim/contracts';
+import {
+  ForbiddenException,
+  InternalServerErrorException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { resolvePhotoDuplicateRuntimePolicy } from '../moderation/photo-duplicate/photo-duplicate.runtime';
 import { UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES } from './admin-chat-settings';
@@ -407,6 +412,9 @@ function createService(
       .fn()
       .mockReturnValue(options.photoDuplicateDeleteIntentRollout ?? 'execute'),
   };
+  const accessObservability = {
+    recordRejection: jest.fn(),
+  };
   const service = new AdminSettingsService(
     legacyAdminService as never,
     prisma as never,
@@ -420,9 +428,11 @@ function createService(
     nightModeTransitionScheduler as never,
     undefined,
     channelPostSignatureService as never,
+    accessObservability as never,
   );
 
   return {
+    accessObservability,
     chatContextCache,
     channelPostSignatureService,
     configService,
@@ -440,6 +450,98 @@ function createService(
 }
 
 describe('AdminSettingsService chat rules', () => {
+  it.each([
+    {
+      description: 'user access denial',
+      error: new ForbiddenException('Пользователь не является администратором чата.'),
+      code: 'SETTINGS_ACCESS_USER_DENIED',
+      retryable: false,
+      recovery: 'return_to_entities',
+    },
+    {
+      description: 'bot access denial',
+      error: new ForbiddenException(
+        'Действие недоступно: бот больше не состоит в этом чате MAX или утратил права администратора.',
+      ),
+      code: 'SETTINGS_ACCESS_BOT_DENIED',
+      retryable: false,
+      recovery: 'recheck_bot_access',
+    },
+    {
+      description: 'temporarily unavailable access check',
+      error: new ServiceUnavailableException(
+        'Не удалось проверить права администратора в MAX. Повторите попытку.',
+      ),
+      code: 'SETTINGS_ACCESS_CHECK_UNAVAILABLE',
+      retryable: true,
+      recovery: 'retry',
+    },
+  ])('returns a machine-readable settings error for $description', async (testCase) => {
+    const { accessObservability, managedEntitiesService, service } = createService();
+    managedEntitiesService.assertManagedEntityDiagnosticsAccess.mockRejectedValueOnce(
+      testCase.error,
+    );
+
+    const rejected = await service
+      .getChatSettingsScreen('chat-1', user as never)
+      .catch((error: unknown) => error);
+
+    expect(rejected).not.toBe(testCase.error);
+    expect((rejected as ForbiddenException | ServiceUnavailableException).getResponse()).toEqual({
+      statusCode: testCase.error.getStatus(),
+      error: testCase.error.getStatus() === 403 ? 'Forbidden' : 'Service Unavailable',
+      message: testCase.error.message,
+      code: testCase.code,
+      retryable: testCase.retryable,
+      recovery: testCase.recovery,
+    });
+    expect(accessObservability.recordRejection).toHaveBeenCalledWith({
+      scope: 'settings_screen',
+      code: testCase.code,
+      retryable: testCase.retryable,
+      recovery: testCase.recovery,
+    });
+  });
+
+  it('classifies cached channel settings access failures', async () => {
+    const { accessObservability, legacyAdminService, service } = createService();
+    const sourceError = new ForbiddenException('Пользователь не является администратором чата.');
+    legacyAdminService.assertManagedEntityReadAccess.mockRejectedValueOnce(sourceError);
+
+    const rejected = await service
+      .getChannelSettingsScreen('channel-1', user as never, { liveAdminCheck: false })
+      .catch((error: unknown) => error);
+
+    expect((rejected as ForbiddenException).getResponse()).toMatchObject({
+      code: 'SETTINGS_ACCESS_USER_DENIED',
+      retryable: false,
+      recovery: 'return_to_entities',
+    });
+    expect(accessObservability.recordRejection).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'SETTINGS_ACCESS_USER_DENIED' }),
+    );
+  });
+
+  it('preserves unknown access errors without recording a rejection metric', async () => {
+    const { accessObservability, managedEntitiesService, service } = createService();
+    const sourceError = new InternalServerErrorException('Unexpected access failure');
+    managedEntitiesService.assertManagedEntityDiagnosticsAccess.mockRejectedValueOnce(sourceError);
+
+    await expect(service.getChatSettingsScreen('chat-1', user as never)).rejects.toBe(sourceError);
+    expect(accessObservability.recordRejection).not.toHaveBeenCalled();
+  });
+
+  it('does not classify failures after the settings access check', async () => {
+    const { accessObservability, managedEntitiesService, service } = createService();
+    const sourceError = new ServiceUnavailableException('Settings payload is unavailable');
+    managedEntitiesService.getChatHeaderWithBotSpeechPreviewProfile.mockRejectedValueOnce(
+      sourceError,
+    );
+
+    await expect(service.getChatSettingsScreen('chat-1', user as never)).rejects.toBe(sourceError);
+    expect(accessObservability.recordRejection).not.toHaveBeenCalled();
+  });
+
   it('builds chat settings screen without routing through legacy getChatSettingsScreen', async () => {
     const requiredChannel = createManagedEntityHeader({
       id: 'channel-1',

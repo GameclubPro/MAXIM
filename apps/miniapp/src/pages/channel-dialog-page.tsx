@@ -59,7 +59,7 @@ import {
 } from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/api-error';
+import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/dialog-api-error';
 import {
   createChatDialogMessage,
   createChannelDialogMessage,

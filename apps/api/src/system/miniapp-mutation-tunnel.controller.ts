@@ -6,13 +6,16 @@ import {
   Headers,
   type OnModuleDestroy,
   Query,
+  Req,
   Res,
   UseGuards,
 } from '@nestjs/common';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { InitDataGuard } from '../auth/init-data.guard';
+import { MINIAPP_CSRF_HEADER_NAME } from '../auth/miniapp-session.constants';
+import type { MiniappAuthContext } from '../auth/miniapp-session.types';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import {
   ChunkedMutationTunnelUploadStore,
@@ -322,6 +325,10 @@ type MutationTunnelQuery = {
   commit?: string;
 };
 
+type MutationTunnelRequest = FastifyRequest & {
+  miniappAuth?: MiniappAuthContext;
+};
+
 @Controller('v1')
 @UseGuards(InitDataGuard)
 export class MiniappMutationTunnelController implements OnModuleDestroy {
@@ -337,17 +344,18 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     @Headers('authorization') authorization: string | undefined,
     @CurrentUser() user: AuthUser,
     @Res() reply: FastifyReply,
+    @Req() request?: MutationTunnelRequest,
   ): Promise<void> {
     const method = this.normalizeMethod(query.method);
     const target = this.normalizePath(query.path, method);
 
     if (query.uploadId) {
       if (this.isTruthy(query.commit)) {
-        await this.commitChunkedTunnel(query, authorization, user, reply, method, target);
+        await this.commitChunkedTunnel(query, authorization, user, reply, method, target, request);
         return;
       }
 
-      this.storeChunkedTunnelPart(query, authorization, user, reply, method, target);
+      this.storeChunkedTunnelPart(query, authorization, user, reply, method, target, request);
       return;
     }
 
@@ -360,6 +368,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
       contentType,
       authorization,
       reply,
+      request,
     });
   }
 
@@ -370,6 +379,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     contentType: string | undefined;
     authorization: string | undefined;
     reply: FastifyReply;
+    request?: MutationTunnelRequest;
   }): Promise<void> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), TUNNEL_TIMEOUT_MS);
@@ -383,6 +393,23 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
         headers: {
           Authorization: params.authorization ?? '',
           ...(params.contentType ? { 'Content-Type': params.contentType } : {}),
+          ...(this.readHeader(params.request, 'cookie')
+            ? { Cookie: this.readHeader(params.request, 'cookie') as string }
+            : {}),
+          ...(this.readHeader(params.request, MINIAPP_CSRF_HEADER_NAME)
+            ? {
+                'X-Miniapp-Csrf-Token': this.readHeader(
+                  params.request,
+                  MINIAPP_CSRF_HEADER_NAME,
+                ) as string,
+              }
+            : {}),
+          ...(this.readHeader(params.request, 'origin')
+            ? { Origin: this.readHeader(params.request, 'origin') as string }
+            : {}),
+          ...(this.readHeader(params.request, 'sec-fetch-site')
+            ? { 'Sec-Fetch-Site': this.readHeader(params.request, 'sec-fetch-site') as string }
+            : {}),
           'X-Miniapp-Mutation-Tunnel': '1',
         },
       });
@@ -419,6 +446,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     reply: FastifyReply,
     method: string,
     target: string,
+    request?: MutationTunnelRequest,
   ): void {
     const uploadId = this.normalizeUploadId(query.uploadId);
     const chunkIndex = this.normalizeChunkIndex(query.chunkIndex);
@@ -429,7 +457,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
 
     const chunk = this.decodeChunk(query.chunk);
     const contentType = this.normalizeContentType(query.contentType, '');
-    const authHash = this.hashAuthorization(authorization);
+    const authHash = this.resolveAuthBinding(authorization, request);
     const progress = this.chunkedUploadStore.storeChunk({
       uploadId,
       metadata: {
@@ -463,10 +491,11 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     reply: FastifyReply,
     method: string,
     target: string,
+    request?: MutationTunnelRequest,
   ): Promise<void> {
     const uploadId = this.normalizeUploadId(query.uploadId);
     const chunkCount = this.normalizeChunkCount(query.chunkCount);
-    const authHash = this.hashAuthorization(authorization);
+    const authHash = this.resolveAuthBinding(authorization, request);
     const contentType = this.normalizeContentType(query.contentType, '');
     const upload = this.chunkedUploadStore.beginCompletedUpload(uploadId, {
       method,
@@ -490,6 +519,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
         contentType: upload.contentType,
         authorization,
         reply,
+        request,
       });
     } finally {
       this.chunkedUploadStore.deleteUpload(uploadId);
@@ -644,6 +674,18 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     return createHash('sha256')
       .update(value ?? '')
       .digest('hex');
+  }
+
+  private resolveAuthBinding(
+    authorization: string | undefined,
+    request: MutationTunnelRequest | undefined,
+  ): string {
+    return request?.miniappAuth?.principalKey ?? this.hashAuthorization(authorization);
+  }
+
+  private readHeader(request: MutationTunnelRequest | undefined, name: string): string | undefined {
+    const value = request?.headers[name];
+    return Array.isArray(value) ? value[0] : value;
   }
 
   private buildInternalUrl(target: string): string {

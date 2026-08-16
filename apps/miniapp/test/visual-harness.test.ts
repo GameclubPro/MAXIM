@@ -129,6 +129,21 @@ test('chat poll creation, saved draft, and publication have dedicated visual sce
   }
 });
 
+test('settings auth and access errors have dedicated visual scenarios', () => {
+  const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
+
+  for (const entityType of ['chat', 'channel'] as const) {
+    for (const errorKind of ['auth-expired', 'access-denied'] as const) {
+      const scenario = scenarios.get(`${entityType}-settings-${errorKind}`);
+
+      assert.equal(scenario?.routeId, `${entityType}-settings`);
+      assert.deepEqual(scenario?.searchParams, { settingsError: errorKind });
+      assert.equal(scenario?.readySelector, '.status-state');
+      assert.ok(scenario?.features.includes('settings'));
+    }
+  }
+});
+
 test('smoke preset is short, local-device focused, and includes navigation order', () => {
   const smoke = MINIAPP_VISUAL_PRESETS.smoke;
   assert.ok(smoke.scenarioNames.length >= 8 && smoke.scenarioNames.length <= 12);
@@ -263,6 +278,20 @@ test('native visual mode removes preview wrapper geometry without styling app co
   ]) {
     assert.equal(elements.get(selector)?.style.display, 'contents');
   }
+});
+
+test('strict layout checks use the framed device screen as their viewport', () => {
+  const script = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(
+    script,
+    /const previewScreen = document\.querySelector\('\.design-preview__device-screen'\)/u,
+  );
+  assert.match(script, /rect\.top > viewportBottom \+ 2/u);
+  assert.match(script, /rect\.bottom > viewportBottom \+ 2/u);
 });
 
 function createFakeElement(classNames: string[]) {

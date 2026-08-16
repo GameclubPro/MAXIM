@@ -1,5 +1,6 @@
 import { Link } from 'react-router';
 import { cn } from '../lib/cn';
+import { SettingsLoadErrorState } from './settings-load-error-state';
 import { GlassCard } from './ui/glass-card';
 import './handoff.css';
 
@@ -9,6 +10,7 @@ type SettingsHandoffStateProps = {
   retryCount?: number;
   onRetry?: () => void;
   backTo?: string;
+  error?: unknown;
 };
 
 export default function SettingsHandoffState({
@@ -16,10 +18,15 @@ export default function SettingsHandoffState({
   mode,
   onRetry,
   backTo,
+  error,
 }: SettingsHandoffStateProps) {
   const entityLabel = entityType === 'channel' ? 'канал' : 'чат';
   const fallbackBackTo = entityType === 'channel' ? '/?view=channel' : '/?view=chat';
   const isError = mode === 'error';
+
+  if (error && onRetry) {
+    return <SettingsLoadErrorState entityType={entityType} error={error} onRetry={onRetry} />;
+  }
 
   return (
     <GlassCard className={cn('settings-handoff-card', isError && 'is-error')} elevated>

@@ -204,6 +204,10 @@ export async function fetchMutationWithTunnelFallback(
   init: RequestInit,
   fetchWithTimeout: FetchWithTimeout,
 ): Promise<FetchAttemptResult> {
+  const replayableBody =
+    !init.body ||
+    typeof init.body !== 'object' ||
+    typeof (init.body as { getReader?: unknown }).getReader !== 'function';
   const tryMutationTunnel = async (apiBase: string): Promise<FetchAttemptResult | null> => {
     return fetchMutationWithTunnel(apiBase, path, authInitData, init, fetchWithTimeout);
   };
@@ -220,6 +224,10 @@ export async function fetchMutationWithTunnelFallback(
           return tunnelResult;
         }
 
+        if (!replayableBody) {
+          return result;
+        }
+
         lastError = new Error('API front door rejected method');
         continue;
       }
@@ -227,6 +235,10 @@ export async function fetchMutationWithTunnelFallback(
       return result;
     } catch (error: unknown) {
       if (init.signal?.aborted) {
+        throw error;
+      }
+
+      if (!replayableBody) {
         throw error;
       }
 

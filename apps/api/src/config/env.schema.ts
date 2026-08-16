@@ -179,6 +179,8 @@ const envSchema = z.object({
 
   INIT_DATA_HMAC_SECRET: z.string().optional(),
   INIT_DATA_MAX_AGE_SEC: z.coerce.number().int().positive().default(3600),
+  MINIAPP_SESSION_TTL_SEC: z.coerce.number().int().min(3_600).max(86_400).default(28_800),
+  MINIAPP_SESSION_REDIS_TIMEOUT_MS: z.coerce.number().int().min(50).max(2_000).default(500),
   SYSTEM_ADMIN_USER_IDS: z.string().optional(),
   SAFETY_DESK_ALLOWED_HOSTS: z.string().optional(),
   ADMIN_ACCESS_CODE: z

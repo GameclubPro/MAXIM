@@ -29,6 +29,7 @@ import {
 } from '@nestjs/common';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { MiniappAccessObservabilityService } from '../auth/miniapp-access-observability.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
@@ -65,6 +66,7 @@ import {
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManualModerationService } from './manual-moderation.service';
+import { classifySettingsScreenAccessError } from './settings-screen-access.error';
 
 const NIGHT_MODE_TRANSITION_SETTING_KEYS = new Set<keyof ChatSettings>([
   'nightModeEnabled',
@@ -93,6 +95,8 @@ export class AdminSettingsService {
     private readonly manualMessageCleanupService?: AdminManualMessageCleanupService,
     @Optional()
     private readonly channelPostSignatureService?: ChannelPostSignatureService,
+    @Optional()
+    private readonly accessObservability?: MiniappAccessObservabilityService,
   ) {}
 
   async getSettings(
@@ -122,14 +126,14 @@ export class AdminSettingsService {
     user: AuthUser,
     options: { liveAdminCheck?: boolean } = {},
   ): Promise<ChatSettingsScreenResponse> {
-    if (options.liveAdminCheck === false) {
-      await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat', {
-        forceRemote: false,
-        timeoutMs: undefined,
-      });
-    } else {
-      await this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(chatId, user, 'chat');
-    }
+    await this.assertSettingsScreenAccess(() =>
+      options.liveAdminCheck === false
+        ? this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat', {
+            forceRemote: false,
+            timeoutMs: undefined,
+          })
+        : this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(chatId, user, 'chat'),
+    );
 
     const [settings, rules, headerBundle, domains, managedBroadcasts] = await Promise.all([
       this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
@@ -453,18 +457,14 @@ export class AdminSettingsService {
     user: AuthUser,
     options: { liveAdminCheck?: boolean } = {},
   ): Promise<ChannelSettingsScreenResponse> {
-    if (options.liveAdminCheck === false) {
-      await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel', {
-        forceRemote: false,
-        timeoutMs: undefined,
-      });
-    } else {
-      await this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(
-        chatId,
-        user,
-        'channel',
-      );
-    }
+    await this.assertSettingsScreenAccess(() =>
+      options.liveAdminCheck === false
+        ? this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel', {
+            forceRemote: false,
+            timeoutMs: undefined,
+          })
+        : this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(chatId, user, 'channel'),
+    );
 
     const [settings, postSignature, header, managedBroadcasts] = await Promise.all([
       this.getChannelSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
@@ -507,6 +507,20 @@ export class AdminSettingsService {
       refreshExecutionReadiness: () =>
         this.legacyAdminService.refreshChannelSettingsExecutionReadiness(chatId),
     });
+  }
+
+  private async assertSettingsScreenAccess(check: () => Promise<void>): Promise<void> {
+    try {
+      await check();
+    } catch (error: unknown) {
+      const classified = classifySettingsScreenAccessError(error);
+      if (!classified) {
+        throw error;
+      }
+
+      this.accessObservability?.recordRejection(classified.metric);
+      throw classified.exception;
+    }
   }
 
   async getChannelPostSignature(

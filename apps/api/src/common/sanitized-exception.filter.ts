@@ -13,11 +13,12 @@ export class SanitizedExceptionFilter implements ExceptionFilter {
     const statusCode = exception instanceof HttpException ? exception.getStatus() : 500;
 
     if (!(exception instanceof HttpException)) {
+      const routeUrl = request?.routeOptions?.url;
       this.logger.error(
         {
           err: sanitizeErrorForLogs(exception),
           method: request?.method,
-          url: request?.url,
+          url: typeof routeUrl === 'string' && routeUrl ? routeUrl : request?.url?.split('?', 1)[0],
         },
         'Unhandled HTTP exception',
       );

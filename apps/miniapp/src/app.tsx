@@ -24,8 +24,9 @@ import { GlassCard } from './components/ui/glass-card';
 import { Spinner } from './components/ui/spinner';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
-import { createApiTransport } from './lib/api/transport';
+import { createApiTransport, createLazyMiniappServerSessionManager } from './lib/api/transport';
 import { createAuthQueryClient, useAuthQueryPrincipalKey } from './lib/auth-query-session';
+import { createAuthSessionCoordinator } from './lib/auth-session-coordinator';
 import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { migrateHashRouterLegacyPathFromWindow } from './lib/hash-router-legacy-path';
@@ -403,10 +404,7 @@ function AppRouteShell({
   const content = (
     <>
       {launchInitData ? (
-        <LaunchRouteSync
-          launchInitData={launchInitData}
-          appliedRouteRef={launchRouteAppliedRef}
-        />
+        <LaunchRouteSync launchInitData={launchInitData} appliedRouteRef={launchRouteAppliedRef} />
       ) : null}
       <Shell />
     </>
@@ -477,10 +475,7 @@ function AppRoutes({
             path="/channel/:chatId/settings"
             element={<LazyChannelSettingsPage api={apiClient} />}
           />
-          <Route
-            path="/channel/:chatId/stats"
-            element={<LazyChannelStatsPage api={apiClient} />}
-          />
+          <Route path="/channel/:chatId/stats" element={<LazyChannelStatsPage api={apiClient} />} />
           <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
         </Route>
       </Routes>
@@ -651,12 +646,32 @@ export function App() {
 
   const PreviewScaffold = previewRuntime?.DesignPreviewScaffold ?? null;
   const authQueryPrincipalKey = useAuthQueryPrincipalKey(initData, preview.enabled);
-  const queryClient = useMemo(createAuthQueryClient, [authQueryPrincipalKey]);
+  const serverSession = useMemo(
+    () => createLazyMiniappServerSessionManager(typeof document !== 'undefined'),
+    [],
+  );
+  const authSession = useMemo(
+    () => createAuthSessionCoordinator(initData),
+    [authQueryPrincipalKey],
+  );
+  const queryClient = useMemo(
+    () => createAuthQueryClient(preview.enabled ? undefined : authSession),
+    [authQueryPrincipalKey, authSession, preview.enabled],
+  );
   const hasAuthenticatedInitData = Boolean(initData);
   const authenticatedApiClient = useMemo(
-    () => (hasAuthenticatedInitData ? createApiTransport(getInitData) : null),
-    [authQueryPrincipalKey, hasAuthenticatedInitData],
+    () =>
+      hasAuthenticatedInitData
+        ? createApiTransport(getInitData, { authSession, serverSession })
+        : null,
+    [authQueryPrincipalKey, authSession, hasAuthenticatedInitData, serverSession],
   );
+
+  useEffect(() => {
+    if (!preview.enabled && initData) {
+      authSession.observeInitData(initData);
+    }
+  }, [authSession, initData, preview.enabled]);
 
   useEffect(
     () => () => {
@@ -680,9 +695,7 @@ export function App() {
     );
   }
 
-  const apiClient = preview.enabled
-    ? previewApiRef.current
-    : authenticatedApiClient;
+  const apiClient = preview.enabled ? previewApiRef.current : authenticatedApiClient;
 
   if (apiClient && !authenticatedRouterPreparedRef.current) {
     if (!initialLaunchRoutePreparedRef.current && !preview.enabled && initData) {

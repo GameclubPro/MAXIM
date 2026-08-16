@@ -61,6 +61,7 @@ import {
   type BroadcastWorkspaceView,
 } from '../components/broadcast-studio-workspace';
 import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
+import { SettingsLoadErrorState } from '../components/settings-load-error-state';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import { GlassCard } from '../components/ui/glass-card';
@@ -93,9 +94,11 @@ import {
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
+import { shouldRetryTransientApiError } from '../lib/api-retry';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { describeVkParsingCapability } from '../lib/vk-parsing-capability';
+import { findTerminalSettingsLoadError } from '../lib/settings-load-error';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/shared-types';
 import {
   buildBroadcastLinkButtonLegacyFields,
@@ -1012,7 +1015,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
     ...(handoffRequested
       ? {
-          retry: 7,
+          retry: (failureCount: number, error: unknown) =>
+            shouldRetryTransientApiError(failureCount, error, 7),
           retryDelay: (failureCount: number) => Math.min(800 + failureCount * 400, 2600),
         }
       : {}),
@@ -1031,6 +1035,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     requested: Boolean(chatId) && focusSection === 'broadcast' && handoffRequested,
     queries: [settingsScreenQuery, broadcastHandoffStateQuery],
   });
+  const settingsHandoffTerminalError = findTerminalSettingsLoadError(
+    settingsScreenQuery.error,
+    broadcastHandoffStateQuery.error,
+  );
   const hasLegacyBroadcastHandoff =
     handoffRequested &&
     Boolean(
@@ -2163,7 +2171,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   const openManagedBroadcastEditorMutation = useMutation({
     mutationFn: (broadcastId: string) => getChannelManagedBroadcast(api, chatId ?? '', broadcastId),
-    retry: 2,
+    retry: (failureCount, error) => shouldRetryTransientApiError(failureCount, error, 2),
     onSuccess: (broadcast) => {
       applyManagedBroadcastToComposer(broadcast);
     },
@@ -2322,6 +2330,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <LazySettingsHandoffState
             entityType="channel"
             mode="error"
+            error={settingsHandoffTerminalError}
             onRetry={() => {
               void settingsQuery.refetch();
               void broadcastHandoffStateQuery.refetch();
@@ -2347,22 +2356,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     return (
       <div className="page-stack page-enter" data-managed-entity-workspace="channel-settings">
         {workspaceHeader}
-        <GlassCard>
-          <StatusState
-            tone="danger"
-            title="Не удалось загрузить настройки"
-            description={normalizeApiError(settingsQuery.error)}
-            action={
-              <button
-                type="button"
-                className="button button--danger"
-                onClick={() => void settingsQuery.refetch()}
-              >
-                Повторить
-              </button>
-            }
-          />
-        </GlassCard>
+        <SettingsLoadErrorState
+          entityType="channel"
+          error={settingsQuery.error}
+          onRetry={() => void settingsQuery.refetch()}
+        />
       </div>
     );
   }

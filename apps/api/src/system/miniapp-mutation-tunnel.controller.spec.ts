@@ -62,7 +62,7 @@ describe('MiniappMutationTunnelController', () => {
     controller.onModuleDestroy();
   });
 
-  it('forwards mutation requests to the local API with the original authorization header', async () => {
+  it('forwards session credentials and request-origin signals to the local API', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();
     const body = Buffer.from(JSON.stringify({ enabled: true }), 'utf8')
@@ -88,6 +88,18 @@ describe('MiniappMutationTunnelController', () => {
       'InitData auth_date=1&hash=test',
       TEST_USER,
       reply as never,
+      {
+        headers: {
+          cookie: '__Host-maxim_session=session-token',
+          'x-miniapp-csrf-token': 'csrf-token',
+          origin: 'https://major-maksimov.ru',
+          'sec-fetch-site': 'same-origin',
+        },
+        miniappAuth: {
+          source: 'session',
+          principalKey: 'session-principal-key',
+        },
+      } as never,
     );
 
     expect(global.fetch).toHaveBeenCalledWith(
@@ -97,7 +109,11 @@ describe('MiniappMutationTunnelController', () => {
         body: JSON.stringify({ enabled: true }),
         headers: expect.objectContaining({
           Authorization: 'InitData auth_date=1&hash=test',
+          Cookie: '__Host-maxim_session=session-token',
           'Content-Type': 'application/json',
+          Origin: 'https://major-maksimov.ru',
+          'Sec-Fetch-Site': 'same-origin',
+          'X-Miniapp-Csrf-Token': 'csrf-token',
           'X-Miniapp-Mutation-Tunnel': '1',
         }),
       }),
@@ -626,6 +642,82 @@ describe('MiniappMutationTunnelController', () => {
     );
     expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.send).toHaveBeenCalledWith(JSON.stringify({ ok: true }));
+  });
+
+  it('binds chunked uploads to the resolved session principal across credential rotation', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const sessionRequest = (principalKey: string) =>
+      ({
+        headers: {},
+        miniappAuth: {
+          source: 'session',
+          principalKey,
+        },
+      }) as never;
+
+    global.fetch = jest.fn().mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch;
+
+    try {
+      await controller.tunnel(
+        {
+          method: 'POST',
+          path: '/channels/channel-1/broadcast',
+          contentType: 'application/json',
+          uploadId: 'principal-bound-upload-123',
+          chunkIndex: '0',
+          chunkCount: '1',
+          chunk: 'e30',
+        },
+        'InitData auth_date=1&hash=old',
+        TEST_USER,
+        createReply() as never,
+        sessionRequest('session-principal-a'),
+      );
+
+      await expect(
+        controller.tunnel(
+          {
+            method: 'POST',
+            path: '/channels/channel-1/broadcast',
+            contentType: 'application/json',
+            uploadId: 'principal-bound-upload-123',
+            chunkCount: '1',
+            commit: '1',
+          },
+          'InitData auth_date=2&hash=new',
+          TEST_USER,
+          createReply() as never,
+          sessionRequest('session-principal-b'),
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(global.fetch).not.toHaveBeenCalled();
+
+      await controller.tunnel(
+        {
+          method: 'POST',
+          path: '/channels/channel-1/broadcast',
+          contentType: 'application/json',
+          uploadId: 'principal-bound-upload-123',
+          chunkCount: '1',
+          commit: '1',
+        },
+        'InitData auth_date=2&hash=new',
+        TEST_USER,
+        createReply() as never,
+        sessionRequest('session-principal-a'),
+      );
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:3001/api/v1/channels/channel-1/broadcast',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'InitData auth_date=2&hash=new',
+          }),
+        }),
+      );
+    } finally {
+      controller.onModuleDestroy();
+    }
   });
 
   it('rejects ambiguous compressed and plain tunnel bodies', async () => {

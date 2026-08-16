@@ -1,3 +1,5 @@
+import { isTransientHttpStatus } from '../api-retry';
+
 const IDEMPOTENT_FALLBACK_HEDGE_DELAY_MS = 750;
 
 type FetchAttemptResponse = {
@@ -204,5 +206,5 @@ function isRetryableFallbackResponse<T>(value: T): value is T & RetryableFetchAt
     return false;
   }
 
-  return response.status === 403 || response.status >= 500;
+  return isTransientHttpStatus(response.status);
 }

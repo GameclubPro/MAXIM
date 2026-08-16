@@ -1,8 +1,10 @@
+import fastifyCookie from '@fastify/cookie';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
+import { MiniappRequestSecurityService } from './auth/miniapp-request-security.service';
 import { SanitizedExceptionFilter } from './common/sanitized-exception.filter';
 import { getAppRole, resolveHttpListenHost, roleRunsHttp } from './runtime/app-role';
 import { WebhookIngressMetricsService } from './system/webhook-ingress-metrics.service';
@@ -37,11 +39,13 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
   const webhookIngestionService = app.get(WebhookIngestionService);
   const webhookIngressMetricsService = app.get(WebhookIngressMetricsService);
+  const miniappRequestSecurity = app.get(MiniappRequestSecurityService);
   const webhookBodyLimit = configService.getOrThrow<number>('WEBHOOK_BODY_LIMIT_BYTES');
   const webhookAckDeadlineMs = configService.getOrThrow<number>('WEBHOOK_ACK_DEADLINE_MS');
   app.enableShutdownHooks();
   app.useGlobalFilters(new SanitizedExceptionFilter());
   const fastify = app.getHttpAdapter().getInstance();
+  await app.register(fastifyCookie);
   registerMaxWebhookHttpRouteLimits(fastify, {
     bodyLimit: webhookBodyLimit,
     ackDeadlineMs: webhookAckDeadlineMs,
@@ -59,8 +63,16 @@ async function bootstrap() {
     recordRouteOutcome: (metric) => webhookIngressMetricsService.recordRouteOutcome(metric),
   });
   app.setGlobalPrefix('api');
+  const allowDevelopmentLoopback = configService.get<string>('NODE_ENV') !== 'production';
   app.enableCors({
-    origin: true,
+    origin: (origin, callback) => {
+      const allowed =
+        miniappRequestSecurity.isCorsOriginAllowed(origin) ||
+        (allowDevelopmentLoopback &&
+          origin !== undefined &&
+          /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/u.test(origin));
+      callback(null, allowed);
+    },
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });

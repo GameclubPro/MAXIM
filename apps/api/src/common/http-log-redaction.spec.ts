@@ -33,10 +33,18 @@ describe('HTTP log redaction', () => {
         },
         headers: {
           authorization: 'InitData signed-max-init-data',
+          cookie: '__Host-maxim_session=session-token',
           'x-admin-access-code': 'server-admin-code',
+          'x-miniapp-csrf-token': 'csrf-token',
           referer: 'https://major-maksimov.ru/app/?startapp=signed-miniapp-start-payload',
           'user-agent': 'MAX WebView',
           'x-request-id': 'request-123',
+        },
+      },
+      res: {
+        statusCode: 200,
+        headers: {
+          'set-cookie': '__Host-maxim_session=session-token; Secure; HttpOnly',
         },
       },
     });
@@ -48,6 +56,7 @@ describe('HTTP log redaction', () => {
         query: Record<string, string>;
         headers: Record<string, string>;
       };
+      res: { statusCode: number; headers: Record<string, string> };
     };
 
     expect(record.req).toEqual({
@@ -65,11 +74,17 @@ describe('HTTP log redaction', () => {
       },
       headers: {
         authorization: '[Redacted]',
+        cookie: '[Redacted]',
         'x-admin-access-code': '[Redacted]',
+        'x-miniapp-csrf-token': '[Redacted]',
         referer: '[Redacted]',
         'user-agent': 'MAX WebView',
         'x-request-id': 'request-123',
       },
+    });
+    expect(record.res).toEqual({
+      statusCode: 200,
+      headers: { 'set-cookie': '[Redacted]' },
     });
   });
 

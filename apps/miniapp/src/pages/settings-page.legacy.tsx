@@ -78,6 +78,7 @@ import {
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
 import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
+import { SettingsLoadErrorState } from '../components/settings-load-error-state';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { DateField } from '../components/ui/date-field';
 import { GlassCard } from '../components/ui/glass-card';
@@ -190,9 +191,11 @@ import {
 } from '../lib/message-limits-blocked-words';
 import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
 import { maxNotify, openMaxBotLink } from '../lib/max-bridge';
+import { shouldRetryTransientApiError } from '../lib/api-retry';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { findTerminalSettingsLoadError } from '../lib/settings-load-error';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
@@ -259,7 +262,7 @@ import {
   LazyBroadcastContentComposer,
   LazyBroadcastButtonsSheet,
   LazyBroadcastPublishReviewSheet,
-  LazySettingsHandoffState,
+  LazySettingsHandoffState as HandoffState,
   LazyManagedGiveawayCard,
   LazyActionConfirmMarkdownPreview,
   LazyVkParsingCard,
@@ -755,7 +758,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchInterval: expandedSections.duplicates ? 60_000 : false,
     ...(handoffRequested
       ? {
-          retry: 7,
+          retry: (failureCount: number, error: unknown) =>
+            shouldRetryTransientApiError(failureCount, error, 7),
           retryDelay: (failureCount: number) => Math.min(800 + failureCount * 400, 2600),
         }
       : {}),
@@ -770,10 +774,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       handoffRequested,
     refetchOnWindowFocus: false,
   });
-  const settingsHandoffMode = resolveBroadcastHandoffLoadMode({
+  const handoffMode = resolveBroadcastHandoffLoadMode({
     requested: Boolean(chatId) && focusSection === 'broadcast' && handoffRequested,
     queries: [settingsScreenQuery, broadcastHandoffStateQuery],
   });
+  const handoffError = findTerminalSettingsLoadError(
+    settingsScreenQuery.error,
+    broadcastHandoffStateQuery.error,
+  );
   const hasLegacyBroadcastHandoff =
     handoffRequested &&
     Boolean(
@@ -1965,7 +1973,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const openManagedBroadcastEditorMutation = useMutation({
     mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
-    retry: 2,
+    retry: (failureCount, error) => shouldRetryTransientApiError(failureCount, error, 2),
     onSuccess: (broadcast) => {
       applyManagedBroadcastToMailingComposer(broadcast);
     },
@@ -3909,7 +3917,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (section === 'duplicates' && !expandedSections.duplicates) void settingsScreenQuery.refetch();
+    if (section === 'duplicates' && !expandedSections.duplicates)
+      void settingsScreenQuery.refetch();
     startTransition(() => {
       setExpandedSections({ ...INITIAL_EXPANDED_SECTIONS, [section]: true });
     });
@@ -5245,10 +5254,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         fallbackAvatarUrl={routeChatAvatarUrl}
         backTo={managedChatsRoute}
         counterpartHidden={
-          !chatId ||
-          handoffRequested ||
-          Boolean(settingsHandoffMode) ||
-          legacyBroadcastWorkspaceRequested
+          !chatId || handoffRequested || Boolean(handoffMode) || legacyBroadcastWorkspaceRequested
         }
         compact={isHeaderCompact}
       />
@@ -5273,13 +5279,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </Suspense>
       ) : null}
 
-      {settingsHandoffMode ? (
+      {handoffMode ? (
         <Suspense fallback={null}>
-          <LazySettingsHandoffState mode={settingsHandoffMode} onRetry={refetchSettings} />
+          <HandoffState mode={handoffMode} error={handoffError} onRetry={refetchSettings} />
         </Suspense>
       ) : null}
 
-      {settingsQuery.isLoading && settingsHandoffMode !== 'loading' ? (
+      {settingsQuery.isLoading && handoffMode !== 'loading' ? (
         <section className="settings-sections" aria-label="Загрузка настроек">
           <GlassCard className="settings-section">
             <SkeletonCard lines={5} />
@@ -5287,22 +5293,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </section>
       ) : null}
 
-      {settingsQuery.error && settingsHandoffMode !== 'error' ? (
-        <GlassCard>
-          <StatusState
-            tone="danger"
-            title="Ошибка загрузки настроек"
-            description={formatApiError(settingsQuery.error)}
-            action={
-              <button type="button" className="button button--danger" onClick={refetchSettings}>
-                Повторить
-              </button>
-            }
-          />
-        </GlassCard>
+      {settingsQuery.error && handoffMode !== 'error' ? (
+        <SettingsLoadErrorState
+          entityType="chat"
+          error={settingsQuery.error}
+          onRetry={refetchSettings}
+        />
       ) : null}
 
-      {!settingsHandoffMode && !settingsQuery.isLoading && !settingsQuery.error && draft ? (
+      {!handoffMode && !settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section
           className="settings-sections settings-sections--chat-home"
           aria-label="Настройки чата"

@@ -113,6 +113,7 @@ export type PreviewState = {
   chatPartnerAssistEnabled: boolean;
   channelPartnerAssistEnabled: boolean;
   accessDiagnostics: ManagedEntityAccessDiagnostics | null;
+  settingsScreenError: 'auth-expired' | 'access-denied' | null;
 };
 
 export type PreviewDialogBucket = {
@@ -883,6 +884,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     chatPartnerAssistEnabled: false,
     channelPartnerAssistEnabled: false,
     accessDiagnostics: buildPreviewAccessDiagnostics(search),
+    settingsScreenError: resolvePreviewSettingsScreenError(search),
   };
 
   state.autopostRules = [
@@ -957,6 +959,11 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   state.publicationDeliveries = publicationFixtures.deliveries;
 
   return state;
+}
+
+function resolvePreviewSettingsScreenError(search: string): PreviewState['settingsScreenError'] {
+  const value = new URLSearchParams(search).get('settingsError');
+  return value === 'auth-expired' || value === 'access-denied' ? value : null;
 }
 
 export function createPreviewState(options: PreviewApiTransportOptions): PreviewState {

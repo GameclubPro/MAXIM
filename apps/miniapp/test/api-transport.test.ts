@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ApiRequestError } from '../src/lib/api-request-error';
+import { createMiniappServerSessionManager } from '../src/lib/api/miniapp-server-session';
 import { createApiTransport } from '../src/lib/api/transport';
+import { createAuthSessionCoordinator } from '../src/lib/auth-session-coordinator';
 
 type FetchCall = {
   input: string | URL | Request;
@@ -47,6 +49,14 @@ function createResponse(options: {
     } as Headers,
     text: async () => options.text ?? '',
   } as Response;
+}
+
+function createDeferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
 }
 
 test('request URL matching rejects lookalike origins and paths', () => {
@@ -107,6 +117,354 @@ test('refreshes Authorization header from the init data provider between request
   );
 });
 
+test('bootstraps the durable session before the first browser API request', async () => {
+  const calls: FetchCall[] = [];
+  const initData = new URLSearchParams({
+    auth_date: '1',
+    hash: 'first',
+    user: JSON.stringify({ id: 'user-1' }),
+  }).toString();
+  const csrfToken = 'c'.repeat(43);
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    if (String(input).endsWith('/auth/miniapp-session')) {
+      return new Response(
+        JSON.stringify({
+          authenticated: true,
+          csrfToken,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  const api = createApiTransport(initData, {
+    apiBases: ['https://major-maksimov.ru/api/v1'],
+    authSession: createAuthSessionCoordinator(initData),
+    durableSession: true,
+  });
+
+  assert.equal(await api.request('/me'), null);
+  assert.equal(calls.length, 2);
+  assert.equal(String(calls[0].input), 'https://major-maksimov.ru/api/v1/auth/miniapp-session');
+  assert.equal(calls[0].init?.method, 'POST');
+  assert.equal(calls[0].init?.credentials, 'include');
+  assert.equal(String(calls[1].input), 'https://major-maksimov.ru/api/v1/me');
+  assert.equal(calls[1].init?.credentials, 'include');
+  assert.equal(new Headers(calls[1].init?.headers).get('X-Miniapp-Csrf-Token'), csrfToken);
+});
+
+test('uses an existing cookie session when bridge init data is already expired', async () => {
+  const calls: FetchCall[] = [];
+  const initData = new URLSearchParams({
+    auth_date: '1',
+    hash: 'expired',
+    user: JSON.stringify({ id: 'user-1' }),
+  }).toString();
+  const authSession = createAuthSessionCoordinator(initData);
+  const csrfToken = 'r'.repeat(43);
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.endsWith('/auth/miniapp-session') && init?.method === 'POST') {
+      return new Response(JSON.stringify({ code: 'MINIAPP_AUTH_EXPIRED' }), { status: 401 });
+    }
+    if (url.endsWith('/auth/miniapp-session')) {
+      return new Response(
+        JSON.stringify({
+          authenticated: true,
+          csrfToken,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  const api = createApiTransport(initData, {
+    apiBases: ['https://major-maksimov.ru/api/v1'],
+    authSession,
+    durableSession: true,
+  });
+
+  assert.equal(await api.request('/me'), null);
+  assert.deepEqual(
+    calls.map((call) => `${call.init?.method ?? 'GET'} ${String(call.input)}`),
+    [
+      'POST https://major-maksimov.ru/api/v1/auth/miniapp-session',
+      'GET https://major-maksimov.ru/api/v1/auth/miniapp-session',
+      'GET https://major-maksimov.ru/api/v1/me',
+    ],
+  );
+  assert.equal(new Headers(calls[2].init?.headers).get('X-Miniapp-Csrf-Token'), csrfToken);
+  assert.equal(authSession.getSnapshot().blocked, false);
+});
+
+test('serializes durable-session rotation across transports sharing one manager', async () => {
+  const apiBase = 'https://major-maksimov.ru/api/v1';
+  const firstCredential = 'auth_date=1&hash=first';
+  const secondCredential = 'auth_date=2&hash=second';
+  const firstSession = createDeferred<Response>();
+  const calls: FetchCall[] = [];
+  const sharedSession = createMiniappServerSessionManager(true);
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    const authorization = new Headers(init?.headers).get('Authorization') ?? '';
+    if (url.endsWith('/auth/miniapp-session')) {
+      if (authorization.includes('hash=first')) {
+        return firstSession.promise;
+      }
+      return new Response(
+        JSON.stringify({
+          authenticated: true,
+          csrfToken: 's'.repeat(43),
+          expiresInSec: 60,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  const firstApi = createApiTransport(firstCredential, {
+    apiBases: [apiBase],
+    serverSession: sharedSession,
+  });
+  const secondApi = createApiTransport(secondCredential, {
+    apiBases: [apiBase],
+    serverSession: sharedSession,
+  });
+  const firstRequest = firstApi.request('/first');
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  const secondRequest = secondApi.request('/second');
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+  assert.deepEqual(
+    calls.map((call) => new Headers(call.init?.headers).get('Authorization')),
+    [`InitData ${firstCredential}`],
+  );
+
+  firstSession.resolve(
+    new Response(
+      JSON.stringify({
+        authenticated: true,
+        csrfToken: 'f'.repeat(43),
+        expiresInSec: 60,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ),
+  );
+  await Promise.all([firstRequest, secondRequest]);
+
+  const sessionCalls = calls.filter((call) => String(call.input).endsWith('/auth/miniapp-session'));
+  assert.deepEqual(
+    sessionCalls.map((call) => new Headers(call.init?.headers).get('Authorization')),
+    [`InitData ${firstCredential}`, `InitData ${secondCredential}`],
+  );
+  const firstBusiness = calls.find((call) => String(call.input).endsWith('/first'));
+  const secondBusiness = calls.find((call) => String(call.input).endsWith('/second'));
+  assert.equal(
+    new Headers(firstBusiness?.init?.headers).get('X-Miniapp-Csrf-Token'),
+    'f'.repeat(43),
+  );
+  assert.equal(
+    new Headers(secondBusiness?.init?.headers).get('X-Miniapp-Csrf-Token'),
+    's'.repeat(43),
+  );
+});
+
+test('an aborted queued session bootstrap never starts its business fetch', async () => {
+  const apiBase = 'https://major-maksimov.ru/api/v1';
+  const firstSession = createDeferred<Response>();
+  const calls: FetchCall[] = [];
+  const sharedSession = createMiniappServerSessionManager(true);
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    if (String(input).endsWith('/auth/miniapp-session')) {
+      return firstSession.promise;
+    }
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  const firstApi = createApiTransport('auth_date=1&hash=first', {
+    apiBases: [apiBase],
+    serverSession: sharedSession,
+  });
+  const abortedApi = createApiTransport('auth_date=2&hash=aborted', {
+    apiBases: [apiBase],
+    serverSession: sharedSession,
+  });
+  const firstRequest = firstApi.request('/first');
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  const controller = new AbortController();
+  const abortedRequest = abortedApi.request('/must-not-run', { signal: controller.signal });
+  controller.abort();
+  firstSession.resolve(
+    new Response(
+      JSON.stringify({
+        authenticated: true,
+        csrfToken: 'f'.repeat(43),
+        expiresInSec: 60,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ),
+  );
+
+  await firstRequest;
+  await assert.rejects(
+    abortedRequest,
+    (error: unknown) => error instanceof Error && error.name === 'AbortError',
+  );
+  assert.equal(
+    calls.some((call) => String(call.input).endsWith('/must-not-run')),
+    false,
+  );
+  assert.equal(
+    calls.some((call) =>
+      (new Headers(call.init?.headers).get('Authorization') ?? '').includes('hash=aborted'),
+    ),
+    false,
+  );
+});
+
+test('deduplicates CSRF recovery and replays each rejected request once', async () => {
+  const apiBase = 'https://major-maksimov.ru/api/v1';
+  const credential = 'auth_date=1&hash=csrf';
+  const staleCsrf = 'o'.repeat(43);
+  const freshCsrf = 'n'.repeat(43);
+  const calls: FetchCall[] = [];
+  const recoveryResponse = createDeferred<Response>();
+  const recoveryStarted = createDeferred<void>();
+  let recoveryCalls = 0;
+  const sharedSession = createMiniappServerSessionManager(true);
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.endsWith('/auth/miniapp-session') && init?.method === 'POST') {
+      return new Response(
+        JSON.stringify({ authenticated: true, csrfToken: staleCsrf, expiresInSec: 60 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (url.endsWith('/auth/miniapp-session')) {
+      recoveryCalls += 1;
+      recoveryStarted.resolve();
+      return recoveryResponse.promise;
+    }
+
+    const csrfToken = new Headers(init?.headers).get('X-Miniapp-Csrf-Token');
+    return csrfToken === staleCsrf
+      ? new Response(JSON.stringify({ code: 'MINIAPP_CSRF_REJECTED' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        })
+      : new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  const api = createApiTransport(credential, {
+    apiBases: [apiBase],
+    serverSession: sharedSession,
+  });
+  const first = api.request('/first-mutation', { method: 'POST', body: '{"first":true}' });
+  const second = api.request('/second-mutation', { method: 'POST', body: '{"second":true}' });
+  await recoveryStarted.promise;
+  recoveryResponse.resolve(
+    new Response(JSON.stringify({ authenticated: true, csrfToken: freshCsrf, expiresInSec: 60 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  );
+
+  assert.deepEqual(await Promise.all([first, second]), [null, null]);
+  assert.equal(recoveryCalls, 1);
+  for (const path of ['/first-mutation', '/second-mutation']) {
+    const pathCalls = calls.filter((call) => String(call.input).endsWith(path));
+    assert.equal(pathCalls.length, 2);
+    assert.deepEqual(
+      pathCalls.map((call) => new Headers(call.init?.headers).get('X-Miniapp-Csrf-Token')),
+      [staleCsrf, freshCsrf],
+    );
+  }
+});
+
+test('does not recover or replay a generic 403 response', async () => {
+  const apiBase = 'https://major-maksimov.ru/api/v1';
+  const calls: FetchCall[] = [];
+  const sharedSession = createMiniappServerSessionManager(true);
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    if (String(input).endsWith('/auth/miniapp-session')) {
+      return new Response(
+        JSON.stringify({ authenticated: true, csrfToken: 'c'.repeat(43), expiresInSec: 60 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(JSON.stringify({ code: 'SETTINGS_SCREEN_ACCESS_DENIED' }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=denied', {
+    apiBases: [apiBase],
+    serverSession: sharedSession,
+  });
+  await assert.rejects(
+    () => api.request('/denied'),
+    (error: unknown) => error instanceof ApiRequestError && error.status === 403,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((call) => String(call.input).endsWith('/denied')).length, 1);
+});
+
+test('recovers CSRF state without replaying a stream body', async () => {
+  const calls: FetchCall[] = [];
+  let recoverCalls = 0;
+  const api = createApiTransport('auth_date=1&hash=stream', {
+    apiBases: ['https://major-maksimov.ru/api/v1'],
+    serverSession: {
+      async ensure() {},
+      async recover() {
+        recoverCalls += 1;
+        return true;
+      },
+      applyHeaders(_apiBase, _initData, headers) {
+        const csrfToken = 'c'.repeat(43);
+        headers.set('X-Miniapp-Csrf-Token', csrfToken);
+        return csrfToken;
+      },
+    },
+  });
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    return new Response(JSON.stringify({ code: 'MINIAPP_CSRF_REJECTED' }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      api.request('/stream-upload', {
+        method: 'POST',
+        body: new ReadableStream(),
+      }),
+    (error: unknown) => error instanceof ApiRequestError && error.status === 403,
+  );
+  assert.equal(recoverCalls, 1);
+  assert.equal(calls.length, 1);
+});
+
 test('retries a 401 request once when fresh init data becomes available', async () => {
   const calls: FetchCall[] = [];
   let currentInitData = 'auth_date=1&hash=stale';
@@ -144,6 +502,31 @@ test('retries a 401 request once when fresh init data becomes available', async 
     new Headers(calls[1].init?.headers).get('Authorization'),
     'InitData auth_date=2&hash=fresh',
   );
+});
+
+test('observes fresh init data without replaying a stream body after 401', async () => {
+  const calls: FetchCall[] = [];
+  let currentInitData = 'auth_date=1&hash=stale';
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    currentInitData = 'auth_date=2&hash=fresh';
+    return createResponse({
+      ok: false,
+      status: 401,
+      text: JSON.stringify({ code: 'MINIAPP_AUTH_EXPIRED' }),
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport(() => currentInitData);
+  await assert.rejects(
+    () =>
+      api.request('/stream-upload', {
+        method: 'POST',
+        body: new ReadableStream(),
+      }),
+    (error: unknown) => error instanceof ApiRequestError && error.status === 401,
+  );
+  assert.equal(calls.length, 1);
 });
 
 test('waits briefly for bridge-refreshed init data before surfacing a 401', async () => {
@@ -186,6 +569,57 @@ test('waits briefly for bridge-refreshed init data before surfacing a 401', asyn
     new Headers(calls[1].init?.headers).get('Authorization'),
     'InitData auth_date=2&hash=fresh',
   );
+});
+
+test('auth latch blocks request storms until a fresh credential for the same user arrives', async () => {
+  const calls: FetchCall[] = [];
+  const initial = new URLSearchParams({
+    auth_date: '1',
+    hash: 'stale',
+    user: JSON.stringify({ id: 'user-1' }),
+  }).toString();
+  const refreshed = new URLSearchParams({
+    auth_date: '2',
+    hash: 'fresh',
+    user: JSON.stringify({ id: 'user-1' }),
+  }).toString();
+  const authSession = createAuthSessionCoordinator(initial);
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const authorization = new Headers(init?.headers).get('Authorization') ?? '';
+    if (authorization.includes('hash=stale')) {
+      return createResponse({
+        ok: false,
+        status: 401,
+        text: JSON.stringify({ code: 'MINIAPP_AUTH_EXPIRED' }),
+      });
+    }
+    return createResponse({ ok: true, status: 204, text: '', contentType: null });
+  }) as typeof fetch;
+
+  const staleApi = createApiTransport(initial, {
+    apiBases: ['https://major-maksimov.ru/api/v1'],
+    authSession,
+  });
+  await assert.rejects(
+    () => staleApi.request('/me'),
+    (error: unknown) => error instanceof ApiRequestError && error.status === 401,
+  );
+  await assert.rejects(
+    () => staleApi.request('/chats'),
+    (error: unknown) => error instanceof ApiRequestError && error.status === 401,
+  );
+  staleApi.requestKeepalive('/presence', { method: 'POST' });
+  assert.equal(calls.length, 1);
+
+  assert.equal(authSession.observeInitData(refreshed), true);
+  const refreshedApi = createApiTransport(refreshed, {
+    apiBases: ['https://major-maksimov.ru/api/v1'],
+    authSession,
+  });
+  assert.equal(await refreshedApi.request('/me'), null);
+  assert.equal(calls.length, 2);
 });
 
 test('loads a structured publication conflict error on the async HTTP error path', async () => {
@@ -310,7 +744,7 @@ test('uses the first reachable API base for idempotent requests', async () => {
   );
 });
 
-test('tries the next API base when the primary returns a retryable error response', async () => {
+test('tries the next API base when the primary returns a transient error response', async () => {
   const calls: FetchCall[] = [];
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -318,8 +752,8 @@ test('tries the next API base when the primary returns a retryable error respons
     if (matchesRequestUrl(input, CDN_API_ORIGIN)) {
       return createResponse({
         ok: false,
-        status: 403,
-        text: JSON.stringify({ message: 'Forbidden' }),
+        status: 503,
+        text: JSON.stringify({ message: 'Unavailable' }),
       });
     }
 
@@ -340,6 +774,29 @@ test('tries the next API base when the primary returns a retryable error respons
   assert.deepEqual(
     calls.map((call) => String(call.input)),
     ['https://api-cdn.flex-craft.ru/api/v1/chats', 'https://major-maksimov.ru/api/v1/chats'],
+  );
+});
+
+test('does not try another API base after a terminal 403 response', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    return createResponse({
+      ok: false,
+      status: 403,
+      text: JSON.stringify({ message: 'Forbidden' }),
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://api-cdn.flex-craft.ru/api/v1', 'https://major-maksimov.ru/api/v1'],
+  });
+
+  await assert.rejects(() => api.request('/chats'), /Недостаточно прав/u);
+  assert.deepEqual(
+    calls.map((call) => String(call.input)),
+    ['https://api-cdn.flex-craft.ru/api/v1/chats'],
   );
 });
 
@@ -672,6 +1129,30 @@ test('falls back to the next API base when mutation tunneling is rejected too', 
       'https://major-maksimov.ru/api/v1/chats/chat-1/settings',
     ],
   );
+});
+
+test('does not retry a stream mutation body on another API base', async () => {
+  const calls: FetchCall[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    throw new TypeError('Network request failed');
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://api-cdn.flex-craft.ru/api/v1', 'https://major-maksimov.ru/api/v1'],
+  });
+
+  await assert.rejects(
+    () =>
+      api.request('/stream-upload', {
+        method: 'POST',
+        body: new ReadableStream(),
+      }),
+    /Нет связи с сервисом/u,
+  );
+  assert.deepEqual(calls.map((call) => String(call.input)), [
+    'https://api-cdn.flex-craft.ru/api/v1/stream-upload',
+  ]);
 });
 
 test('tries the mutation tunnel when the preferred tunnel host is the last fallback', async () => {

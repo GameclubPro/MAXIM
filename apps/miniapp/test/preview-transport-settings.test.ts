@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-entities';
+import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
 test('preview settings include schema-complete managed broadcast summaries', async () => {
@@ -142,6 +143,71 @@ test('preview access query exposes deterministic lost and degraded settings diag
     assert.equal(degradedScreen.header.accessDiagnostics.state, 'bot_access_lost');
     assert.equal(degradedScreen.header.accessDiagnostics.activeBotCount, 1);
     assert.equal(degradedScreen.header.accessDiagnostics.lostBots[0]?.reason, 'bot_denied');
+  }
+});
+
+test('preview settings errors preserve auth and entity-access classifications', async () => {
+  const endpoints = [
+    '/chats/preview-chat/settings-screen',
+    '/channels/preview-channel/settings-screen',
+  ];
+  const cases = [
+    {
+      variant: 'auth-expired',
+      status: 401,
+      code: 'MINIAPP_AUTH_EXPIRED',
+    },
+    {
+      variant: 'access-denied',
+      status: 403,
+      code: 'SETTINGS_ACCESS_USER_DENIED',
+    },
+  ] as const;
+
+  for (const endpoint of endpoints) {
+    for (const testCase of cases) {
+      const api = createPreviewApiTransport({
+        search: `?settingsError=${testCase.variant}`,
+      });
+
+      await assert.rejects(
+        () => api.request(endpoint),
+        (error: unknown) =>
+          error instanceof ApiRequestError &&
+          error.status === testCase.status &&
+          error.code === testCase.code,
+      );
+    }
+  }
+});
+
+test('preview settings error uses the direct visual route query', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: {
+        search: '?preview=1&settingsError=auth-expired',
+        hash: '#/chat/preview-chat/settings?settingsError=access-denied',
+      },
+    },
+  });
+
+  try {
+    const api = createPreviewApiTransport();
+    await assert.rejects(
+      () => api.request('/chats/preview-chat/settings-screen'),
+      (error: unknown) =>
+        error instanceof ApiRequestError &&
+        error.status === 401 &&
+        error.code === 'MINIAPP_AUTH_EXPIRED',
+    );
+  } finally {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, 'window', previousWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, 'window');
+    }
   }
 });
 

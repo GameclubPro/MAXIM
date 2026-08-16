@@ -308,6 +308,14 @@ const baseScenarios = [
   ]),
   ...defineRouteScenarios('chat-settings', [
     'chat-settings',
+    [
+      'chat-settings-auth-expired',
+      { searchParams: { settingsError: 'auth-expired' }, readySelector: '.status-state' },
+    ],
+    [
+      'chat-settings-access-denied',
+      { searchParams: { settingsError: 'access-denied' }, readySelector: '.status-state' },
+    ],
     ['chat-settings-access-lost', { searchParams: { access: 'lost' } }],
     'chat-settings-rules',
     'chat-settings-greeting',
@@ -378,6 +386,14 @@ const baseScenarios = [
   }),
   ...defineRouteScenarios('channel-settings', [
     'channel-settings',
+    [
+      'channel-settings-auth-expired',
+      { searchParams: { settingsError: 'auth-expired' }, readySelector: '.status-state' },
+    ],
+    [
+      'channel-settings-access-denied',
+      { searchParams: { settingsError: 'access-denied' }, readySelector: '.status-state' },
+    ],
     'channel-settings-post-signature',
     ['channel-settings-access-degraded', { searchParams: { access: 'degraded' } }],
     'channel-settings-comments',

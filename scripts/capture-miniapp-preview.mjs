@@ -2117,8 +2117,18 @@ async function assertAppHasVisibleContent(page, scenario) {
 
 async function assertViewportBounds(page, scenario) {
   const issues = await page.evaluate((keyboardMode) => {
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    const previewScreen = document.querySelector('.design-preview__device-screen');
+    const previewRect =
+      previewScreen instanceof HTMLElement ? previewScreen.getBoundingClientRect() : null;
+    const hasPreviewBounds = Boolean(
+      previewRect && previewRect.width > 1 && previewRect.height > 1,
+    );
+    const viewportLeft = hasPreviewBounds ? previewRect.left : 0;
+    const viewportTop = hasPreviewBounds ? previewRect.top : 0;
+    const viewportRight = hasPreviewBounds ? previewRect.right : window.innerWidth;
+    const viewportBottom = hasPreviewBounds ? previewRect.bottom : window.innerHeight;
+    const viewportWidth = viewportRight - viewportLeft;
+    const viewportHeight = viewportBottom - viewportTop;
     const selectors = [
       '.app-shell:not(.app-shell--immersive)',
       keyboardMode ? null : '.bottom-nav:not(.is-keyboard-open)',
@@ -2153,10 +2163,10 @@ async function assertViewportBounds(page, scenario) {
           (style.position !== 'fixed' && style.position !== 'sticky');
         const topTolerance = selector === '.channel-dialog-screen' ? 12 : 2;
         const problem =
-          rect.left < -2 ||
-          rect.right > viewportWidth + 2 ||
-          (!allowScrolledTop && rect.top < -topTolerance) ||
-          rect.top > viewportHeight + 2;
+          rect.left < viewportLeft - 2 ||
+          rect.right > viewportRight + 2 ||
+          (!allowScrolledTop && rect.top < viewportTop - topTolerance) ||
+          rect.top > viewportBottom + 2;
         return problem
           ? [
               {
@@ -2270,7 +2280,14 @@ async function assertNoUnexpectedHorizontalOverflow(page, scenario) {
 
 async function assertPrimaryControlsReachable(page, scenario) {
   const issues = await page.evaluate((keyboardMode) => {
-    const viewportHeight = window.innerHeight;
+    const previewScreen = document.querySelector('.design-preview__device-screen');
+    const previewRect =
+      previewScreen instanceof HTMLElement ? previewScreen.getBoundingClientRect() : null;
+    const hasPreviewBounds = Boolean(
+      previewRect && previewRect.width > 1 && previewRect.height > 1,
+    );
+    const viewportBottom = hasPreviewBounds ? previewRect.bottom : window.innerHeight;
+    const viewportHeight = hasPreviewBounds ? previewRect.height : window.innerHeight;
     const hasActiveOverlay = Boolean(
       document.querySelector(
         '.broadcast-buttons-sheet__panel, .broadcast-planner-sheet__panel, .time-field-sheet, .giveaway-page__overlay-card',
@@ -2300,7 +2317,7 @@ async function assertPrimaryControlsReachable(page, scenario) {
         }
 
         const rect = element.getBoundingClientRect();
-        return rect.bottom > viewportHeight + 2
+        return rect.bottom > viewportBottom + 2
           ? [
               {
                 selector,
