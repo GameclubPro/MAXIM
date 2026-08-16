@@ -8,8 +8,8 @@ import {
 const options = [{ text: 'Да' }, { text: 'Нет' }];
 
 describe('managed poll contracts', () => {
-  it('accepts a 400-character question and rejects a longer one', () => {
-    expect(MANAGED_POLL_QUESTION_MAX_LENGTH).toBe(400);
+  it('accepts a 2000-character question and rejects a longer one', () => {
+    expect(MANAGED_POLL_QUESTION_MAX_LENGTH).toBe(2_000);
     expect(
       createManagedPollRequestSchema.safeParse({
         question: 'A'.repeat(MANAGED_POLL_QUESTION_MAX_LENGTH),

@@ -529,6 +529,81 @@ describe('ManagedPollService callback rendering', () => {
     expect(scheduleRepair).toHaveBeenCalledWith('channel-1', 'poll-1');
   });
 
+  it('acknowledges a recorded vote when callback message preparation exceeds the MAX limit', async () => {
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const maxClient = { answerCallback: jest.fn().mockResolvedValue(undefined) };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: 'x'.repeat(4_001),
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      channelPostSignatureService as never,
+    );
+    jest.spyOn(service as any, 'recordVote').mockResolvedValue({
+      kind: 'recorded',
+      changed: true,
+      pollId: 'poll-1',
+      needsRender: true,
+    });
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      publicationMessageId: 'message-1',
+      publicationBotId: 'bot-1',
+      renderRevision: 2,
+      imageCount: 0,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 1, percent: 100 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 0, percent: 0 },
+      ],
+    });
+    jest
+      .spyOn(service as any, 'resolvePollChannelEngagement')
+      .mockResolvedValue({ state: 'inconclusive' });
+
+    await expect(
+      service.tryHandleCallback({
+        updateId: 'update-1',
+        botId: 'bot-1',
+        message: { chatId: 'channel-1', messageId: 'message-1' },
+        raw: {
+          callback: {
+            callback_id: 'callback-1',
+            payload: 'poll|v2|poll-1|option-1',
+            user: { user_id: 'user-1' },
+          },
+        },
+      } as never),
+    ).resolves.toBe(true);
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      'Голос учтён',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1', trafficClass: 'critical' }),
+    );
+    expect(prisma.managedPoll.updateMany).toHaveBeenCalledWith({
+      where: { id: 'poll-1' },
+      data: { lastRenderError: expect.stringContaining('слишком длинный') },
+    });
+  });
+
   it('acknowledges an image poll callback without rewriting stable poll content', async () => {
     const maxClient = { answerCallback: jest.fn().mockResolvedValue(undefined) };
     const service = new ManagedPollService(
@@ -742,6 +817,55 @@ describe('ManagedPollService callback rendering', () => {
         renderFormatVersion: POLL_RENDER_FORMAT_VERSION,
         lastRenderError: null,
       },
+    });
+  });
+
+  it('records a render error when a later channel signature exceeds the MAX limit', async () => {
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const maxClient = { editMessageInlineKeyboard: jest.fn() };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: 'x'.repeat(4_001),
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      channelPostSignatureService as never,
+    );
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Кто кого',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 7, percent: 70 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 3, percent: 30 },
+      ],
+      publicationMessageId: 'message-1',
+      publicationBotId: 'bot-1',
+      renderRevision: 4,
+    });
+
+    await expect(
+      (service as any).renderPollPublication('channel-1', 'poll-1', 'background-repair'),
+    ).resolves.toBe(false);
+
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.managedPoll.updateMany).toHaveBeenCalledWith({
+      where: { id: 'poll-1' },
+      data: { lastRenderError: expect.stringContaining('слишком длинный') },
     });
   });
 
@@ -1550,6 +1674,29 @@ describe('ManagedPollService callback rendering', () => {
 });
 
 describe('ManagedPollService creation', () => {
+  it('rejects a 2000-character Markdown question that exceeds the rendered MAX limit', async () => {
+    const prisma = { $transaction: jest.fn() };
+    const adminService = {
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      {} as never,
+      adminService as never,
+      {} as never,
+    );
+
+    await expect(
+      service.createChannelPoll('channel-1', { userId: 'admin-1' } as never, {
+        question: '&'.repeat(2_000),
+        questionFormat: 'markdown',
+        options: [{ text: 'Да' }, { text: 'Нет' }],
+      }),
+    ).rejects.toThrow('Вопрос после форматирования слишком длинный');
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('creates two independent polls in the same chat', async () => {
     const now = new Date('2026-08-11T10:00:00.000Z');
     const buildPoll = (id: string, question: string) => ({

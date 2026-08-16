@@ -75,7 +75,10 @@ import {
 import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminService } from './admin.service';
 import type { ChannelPublicationEngagementContext } from './admin.service.support';
-import { ChannelPostSignatureService } from './channel-post-signature.service';
+import {
+  CHANNEL_POST_MAX_TEXT_LENGTH,
+  ChannelPostSignatureService,
+} from './channel-post-signature.service';
 import {
   BROADCAST_IMAGE_MAX_BYTES,
   BROADCAST_IMAGES_TOTAL_MAX_BYTES,
@@ -287,6 +290,7 @@ export class ManagedPollService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    this.assertManagedPollQuestionFitsMax(parsed.data.question, parsed.data.questionFormat);
 
     const created = await this.prisma.$transaction(async (tx) => {
       const poll = await tx.managedPoll.create({
@@ -355,6 +359,7 @@ export class ManagedPollService {
       }
       const questionFormat =
         parsed.data.questionFormat ?? this.normalizeQuestionFormat(poll.questionFormat);
+      this.assertManagedPollQuestionFitsMax(parsed.data.question, questionFormat);
       const images = parsed.data.images ?? this.readPollImages(poll.images);
 
       const knownOptionIds = new Set(poll.options.map((option) => option.id));
@@ -500,6 +505,7 @@ export class ManagedPollService {
             },
           )
         : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
+      this.assertManagedPollMessageFitsMax(preparedText.text);
       const text = preparedText.text;
       const textFormat = preparedText.textFormat;
       const pollButtons = buildManagedPollButtons(publicationPoll.id, result.options);
@@ -945,15 +951,17 @@ export class ManagedPollService {
       }
       // Current MAX clients can ignore notification-only callback answers. Re-send the exact
       // authored publication so the documented message response acknowledges the button press.
-      const engagement = await this.resolvePollChannelEngagement(
-        poll,
-        poll.publicationBotId ?? update.botId?.trim() ?? null,
-      );
-      const messageEdit = await this.buildCallbackMessageEdit(
-        poll,
-        engagement.state === 'resolved' ? engagement.context.buttons : [],
-      );
+      let callbackAttempted = false;
       try {
+        const engagement = await this.resolvePollChannelEngagement(
+          poll,
+          poll.publicationBotId ?? update.botId?.trim() ?? null,
+        );
+        const messageEdit = await this.buildCallbackMessageEdit(
+          poll,
+          engagement.state === 'resolved' ? engagement.context.buttons : [],
+        );
+        callbackAttempted = true;
         await this.maxClient.answerCallback(callbackId, undefined, messageEdit, {
           ...this.buildMaxOptions(
             poll.publicationBotId ?? update.botId,
@@ -986,6 +994,16 @@ export class ManagedPollService {
           }
         }
       } catch (error: unknown) {
+        if (!callbackAttempted) {
+          await this.recordPollRenderError(poll.id, chatId, 'vote-callback-prepare', error);
+          await this.answerCallback(
+            callbackId,
+            notification,
+            poll.publicationBotId ?? update.botId,
+            chatId,
+          );
+          return;
+        }
         if (!this.isTerminalCallbackError(error)) {
           this.logger.warn(
             {
@@ -1208,47 +1226,48 @@ export class ManagedPollService {
       if (!poll.publicationMessageId) {
         return true;
       }
-      const baseText = buildManagedPollMessageText({
-        question: poll.question,
-        questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
-      });
-      const baseTextFormat = this.resolveQuestionTextFormat(poll.questionFormat);
       const entityType = this.managedEntityTypeFromPrisma(poll.chat.entityType);
-      const preparedText = this.channelPostSignatureService
-        ? await this.channelPostSignatureService.preparePostText(
-            chatId,
-            { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
-            {
-              entityType,
-              trafficClass: action === 'background-repair' ? 'background' : 'interactive',
-              sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
-            },
-          )
-        : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
-      const text = preparedText.text;
-      const textFormat = preparedText.textFormat;
-      const callbackPayloadPrefix = buildManagedPollCallbackPayloadPrefix(poll.id);
-      const botId =
-        poll.publicationBotId ?? (await this.resolveFallbackPollBotId(chatId, entityType));
-      const engagement = await this.resolvePollChannelEngagement(poll, botId ?? null);
-      const engagementButtons = engagement.state === 'resolved' ? engagement.context.buttons : [];
-      const options =
-        poll.status === ManagedPollStatus.ACTIVE
-          ? {
-              ...(textFormat ? { textFormat } : {}),
-              buttons: [
-                ...buildManagedPollButtons(poll.id, poll.resultOptions),
-                ...engagementButtons,
-              ],
-              replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
-              debugContext: { screen: 'managed-poll', action },
-            }
-          : {
-              ...(textFormat ? { textFormat } : {}),
-              ...(engagementButtons.length > 0 ? { buttons: engagementButtons } : {}),
-              replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
-            };
+      let botId: string | null | undefined = poll.publicationBotId;
       try {
+        const baseText = buildManagedPollMessageText({
+          question: poll.question,
+          questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
+        });
+        const baseTextFormat = this.resolveQuestionTextFormat(poll.questionFormat);
+        const preparedText = this.channelPostSignatureService
+          ? await this.channelPostSignatureService.preparePostText(
+              chatId,
+              { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
+              {
+                entityType,
+                trafficClass: action === 'background-repair' ? 'background' : 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
+              },
+            )
+          : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
+        this.assertManagedPollMessageFitsMax(preparedText.text);
+        const text = preparedText.text;
+        const textFormat = preparedText.textFormat;
+        const callbackPayloadPrefix = buildManagedPollCallbackPayloadPrefix(poll.id);
+        botId = poll.publicationBotId ?? (await this.resolveFallbackPollBotId(chatId, entityType));
+        const engagement = await this.resolvePollChannelEngagement(poll, botId ?? null);
+        const engagementButtons = engagement.state === 'resolved' ? engagement.context.buttons : [];
+        const options =
+          poll.status === ManagedPollStatus.ACTIVE
+            ? {
+                ...(textFormat ? { textFormat } : {}),
+                buttons: [
+                  ...buildManagedPollButtons(poll.id, poll.resultOptions),
+                  ...engagementButtons,
+                ],
+                replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
+                debugContext: { screen: 'managed-poll', action },
+              }
+            : {
+                ...(textFormat ? { textFormat } : {}),
+                ...(engagementButtons.length > 0 ? { buttons: engagementButtons } : {}),
+                replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
+              };
         await this.maxClient.editMessageInlineKeyboard(
           chatId,
           poll.publicationMessageId,
@@ -1285,16 +1304,8 @@ export class ManagedPollService {
         if (await this.reconcileMissingPollPublication(poll, botId, entityType, error)) {
           return true;
         }
-        const message = extractMaxApiErrorMessage(error) || this.formatError(error);
-        await this.prisma.managedPoll.updateMany({
-          where: { id: poll.id },
-          data: { lastRenderError: message },
-        });
+        await this.recordPollRenderError(poll.id, chatId, action, error);
         await this.recordAccessLoss(poll, botId ?? null, 'edit', error, entityType);
-        this.logger.warn(
-          { pollId: poll.id, chatId, action, err: message },
-          'Failed to render managed poll publication',
-        );
         if (this.shouldSchedulePollRenderRepair(action)) {
           this.schedulePollRenderRepair(chatId, poll.id);
         }
@@ -1425,6 +1436,7 @@ export class ManagedPollService {
           },
         )
       : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
+    this.assertManagedPollMessageFitsMax(preparedText.text);
     const text = preparedText.text;
     const textFormat = preparedText.textFormat;
     return {
@@ -1565,6 +1577,38 @@ export class ManagedPollService {
     questionFormat: unknown,
   ): MaxSendMessageOptions['textFormat'] | undefined {
     return this.normalizeQuestionFormat(questionFormat) === 'markdown' ? 'html' : undefined;
+  }
+
+  private assertManagedPollQuestionFitsMax(
+    question: string,
+    questionFormat: ManagedPollQuestionFormat,
+  ): void {
+    this.assertManagedPollMessageFitsMax(buildManagedPollMessageText({ question, questionFormat }));
+  }
+
+  private assertManagedPollMessageFitsMax(text: string): void {
+    if (text.length > CHANNEL_POST_MAX_TEXT_LENGTH) {
+      throw new BadRequestException(
+        `Вопрос после форматирования слишком длинный. Максимум ${CHANNEL_POST_MAX_TEXT_LENGTH} символов сообщения.`,
+      );
+    }
+  }
+
+  private async recordPollRenderError(
+    pollId: string,
+    chatId: string,
+    action: string,
+    error: unknown,
+  ): Promise<void> {
+    const message = extractMaxApiErrorMessage(error) || this.formatError(error);
+    await this.prisma.managedPoll.updateMany({
+      where: { id: pollId },
+      data: { lastRenderError: message },
+    });
+    this.logger.warn(
+      { pollId, chatId, action, err: message },
+      'Failed to render managed poll publication',
+    );
   }
 
   private readPollImages(value: unknown): ManagedPollImage[] {

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260815124500_add_webhook_timeout_quarantine_lease",
-  "baselineNamesSha256": "f72c92e70257623fd273eb29ffe92d462ba35a6dd3517e71e93865e5774763b3",
-  "baselineContentsSha256": "69a25203d49fd5f274de7cbba5bded03b0cf7e519019dfc2043f61b1d193e825",
+  "baselineThrough": "20260816204000_expand_managed_poll_question_length_to_2000",
+  "baselineNamesSha256": "e9e261c4cf068da376c01e015b9db5404a437cd96d506ffda9e1e522fdf79b5f",
+  "baselineContentsSha256": "9328f992a223a0b9b6a9b1aff52b9a77457ca0e043b3746d9cd0d3466d84211d",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."

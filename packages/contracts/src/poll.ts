@@ -9,7 +9,7 @@ import {
 
 export const MANAGED_POLL_MIN_OPTIONS = 2;
 export const MANAGED_POLL_MAX_OPTIONS = 6;
-export const MANAGED_POLL_QUESTION_MAX_LENGTH = 400;
+export const MANAGED_POLL_QUESTION_MAX_LENGTH = 2_000;
 export const MANAGED_POLL_OPTION_MAX_LENGTH = 80;
 
 export const managedPollStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
