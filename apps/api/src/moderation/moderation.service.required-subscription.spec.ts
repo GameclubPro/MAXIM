@@ -4251,7 +4251,7 @@ describe('ModerationService', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      'Открыть комментарии',
+      '',
       expect.objectContaining({
         messageLink: {
           type: 'reply',

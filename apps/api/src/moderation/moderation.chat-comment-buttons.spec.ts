@@ -375,7 +375,7 @@ describe('ModerationService chat comment buttons', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      'Открыть комментарии',
+      '',
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
         messageLink: {
@@ -1163,7 +1163,7 @@ describe('ModerationService chat comment buttons', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      'Открыть комментарии',
+      '',
       expect.objectContaining({
         messageLink: {
           type: 'reply',
