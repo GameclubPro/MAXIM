@@ -1013,6 +1013,7 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
+    const hasText = text.length > 0;
     const timeoutMs = this.normalizeTimeoutMs(requestOptions.timeoutMs);
     const sendResponse = await this.executeMessageMutation(
       'send',
@@ -1024,8 +1025,8 @@ export class MaxClientService implements OnModuleDestroy {
             chat_id: chatId,
           },
           data: {
-            text,
-            ...(options?.textFormat ? { format: options.textFormat } : {}),
+            ...(hasText ? { text } : {}),
+            ...(hasText && options?.textFormat ? { format: options.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
           },

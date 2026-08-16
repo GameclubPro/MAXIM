@@ -4673,6 +4673,76 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('omits empty text from an immediate attachment-only reply', async () => {
+    const order: string[] = [];
+    const httpService = {
+      request: jest.fn().mockImplementationOnce(() => {
+        order.push('post');
+        return of({
+          status: 200,
+          data: {
+            message_id: 'mid-comments-reply',
+            url: 'https://max.ru/chats/chat-1/message/comments-reply',
+          },
+        });
+      }),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageImmediateWithResolvedLink('chat-1', '', {
+      buttons: [
+        [
+          {
+            type: 'link',
+            text: 'Комментарии',
+            url: 'https://major-maksimov.ru/app/',
+          },
+        ],
+      ],
+      messageLink: {
+        type: 'reply',
+        mid: 'mid-source',
+      },
+      textFormat: 'markdown',
+      beforeSend: async () => {
+        order.push('fence');
+      },
+    });
+
+    expect(order).toEqual(['fence', 'post']);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          link: {
+            type: 'reply',
+            mid: 'mid-source',
+          },
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Комментарии',
+                      url: 'https://major-maksimov.ru/app/',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('does not POST an immediate send when its fence cannot be persisted', async () => {
     const fenceError = new Error('reply marker unavailable');
     const httpService = { request: jest.fn() };
