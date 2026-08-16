@@ -295,23 +295,29 @@ describe('WebhookIngestionService', () => {
   });
 
   it('bounds durable receipt work by the webhook ACK deadline', async () => {
-    const { service, webhookService, webhookIngressMetricsService } = createService({
-      ackDeadlineMs: 1,
-    });
-    webhookService.storeReceipt.mockReturnValueOnce(new Promise(() => undefined));
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
 
-    await expect(
-      service.ingest({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
-        headers: { 'x-max-bot-api-secret': 'secret-header' },
-        ip: '127.0.0.1',
-      } as never),
-    ).rejects.toMatchObject({ status: 503 });
-    await flushImmediate();
-    expect(webhookIngressMetricsService.recordReceiptPersistence).toHaveBeenCalledWith({
-      botId: 'bot-1',
-      outcome: 'failed',
-      latencyMs: expect.any(Number),
-    });
+    try {
+      const { service, webhookService, webhookIngressMetricsService } = createService({
+        ackDeadlineMs: 1,
+      });
+      webhookService.storeReceipt.mockReturnValueOnce(new Promise(() => undefined));
+
+      await expect(
+        service.ingest({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
+          headers: { 'x-max-bot-api-secret': 'secret-header' },
+          ip: '127.0.0.1',
+        } as never),
+      ).rejects.toMatchObject({ status: 503 });
+      await flushImmediate();
+      expect(webhookIngressMetricsService.recordReceiptPersistence).toHaveBeenCalledWith({
+        botId: 'bot-1',
+        outcome: 'failed',
+        latencyMs: expect.any(Number),
+      });
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('keeps timed-out receipt work capped until the underlying operation settles', async () => {
