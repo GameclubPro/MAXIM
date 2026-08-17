@@ -58,6 +58,7 @@ import {
 import {
   markMaxPreDispatchGuardRejected,
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
   wasMaxPreDispatchGuardRejected,
 } from './max-action-pre-dispatch-guard';
@@ -374,6 +375,7 @@ type MaxEditableMessageOptions = Pick<
   mergeExistingInlineKeyboard?: boolean;
   preserveExistingInlineKeyboard?: boolean;
   replaceCallbackPayloadPrefixes?: readonly string[];
+  beforeEditMutation?: () => Promise<void>;
 };
 
 type MaxImmediateSendMessageOptions = MaxSendMessageOptions & {
@@ -1366,6 +1368,11 @@ export class MaxClientService implements OnModuleDestroy {
         'edit',
         chatId,
         async () => {
+          await assertOwnership();
+          await this.runPreDispatchMutationGuard(
+            options?.beforeEditMutation,
+            MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+          );
           await assertOwnership();
           await this.request('put', '/messages', {
             params: {

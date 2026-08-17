@@ -75,8 +75,14 @@ const DEFAULT_DELETE_TIMEOUT_MS = 5_000;
 const DEFAULT_RETENTION_DAYS = 90;
 const DELETE_QUEUE_PRIORITY_INTERACTIVE = 1;
 const DELETE_QUEUE_PRIORITY_BACKGROUND = 10;
+const CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE =
+  'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP';
+const CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE =
+  'channel_auto_post_cleanup_entity_mismatch';
+const CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE =
+  'channel_auto_post_cleanup_sender_not_admin';
 export const MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES = [
-  'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+  CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE,
   'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
   'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
 ] as const;
@@ -124,6 +130,9 @@ type IntentRow = {
   leaseExpiresAt: Date | null;
   leasedFromStatus: ModerationDeleteIntentStatus | null;
   replacementCleanup?: boolean;
+  nonChannelReplacementCleanup?: boolean;
+  channelAutoPostCleanupReason?: boolean;
+  channelAutoPostCleanupOnly?: boolean;
   botMessageAutoDeleteReason?: boolean;
   botMessageAutoDeleteOnly?: boolean;
   commercialOcrDeleteReason?: boolean;
@@ -196,6 +205,28 @@ class ModerationDeleteReasonMissingError extends Error {
   constructor() {
     super('Moderation delete intent has no durable reason');
     this.name = 'ModerationDeleteReasonMissingError';
+  }
+}
+
+class ChannelAutoPostCleanupEntityGuardRejectedError extends Error {
+  readonly code = CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE;
+
+  constructor(chatId: string, entityType: string | null) {
+    super(
+      `Channel auto-post cleanup for ${chatId} cannot run against ${entityType ?? 'a missing entity'}`,
+    );
+    this.name = 'ChannelAutoPostCleanupEntityGuardRejectedError';
+  }
+}
+
+class ChannelAutoPostCleanupSenderGuardRejectedError extends Error {
+  readonly code = CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE;
+
+  constructor(chatId: string, userId: string | null) {
+    super(
+      `Channel auto-post cleanup for ${chatId} cannot delete a message from ${userId ?? 'an unknown sender'}`,
+    );
+    this.name = 'ChannelAutoPostCleanupSenderGuardRejectedError';
   }
 }
 
@@ -1013,6 +1044,9 @@ export class ModerationDeleteIntentService {
             intent."status" AS "existingIntentStatus",
             marker."updated_at" AS "createdAt"
           FROM "channel_auto_post_attach_markers" marker
+          INNER JOIN "chats" channel_chat
+            ON channel_chat."id" = marker."chat_id"
+            AND channel_chat."entity_type" = CAST('CHANNEL' AS "ChatEntityType")
           LEFT JOIN "moderation_delete_intents" intent
             ON intent."chat_id" = marker."chat_id"
             AND intent."message_id" = marker."message_id"
@@ -1498,6 +1532,8 @@ export class ModerationDeleteIntentService {
     try {
       // FLAG: A remote DELETE must always have a durable reason at the exact dispatch boundary.
       // Derived rule classifiers cannot represent a reasonless intent and therefore cannot fence it.
+      // FLAG: A channel replacement cleanup must never cross an entity reclassification boundary.
+      await this.assertChannelAutoPostCleanupStillAuthorized(intent, botId);
       const commercialOcrGuardRequired = await this.resolveDeleteIntentCommercialOcrGuard(intent);
       // FLAG: A durable photo-only retry must regain authorization from current chat settings and
       // a fresh shared runtime control immediately before every remote DELETE mutation.
@@ -1586,7 +1622,11 @@ export class ModerationDeleteIntentService {
 
   private isTerminalDeleteGuardRejection(error: unknown): boolean {
     const code = this.firstString(this.asRecord(error)?.code);
-    if (code === 'moderation_delete_reason_missing') {
+    if (
+      code === 'moderation_delete_reason_missing' ||
+      code === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
+      code === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE
+    ) {
       return true;
     }
     return (
@@ -1607,6 +1647,56 @@ export class ModerationDeleteIntentService {
       code === 'commercial_ocr_message_changed' ||
       code === 'commercial_ocr_participant_immune'
     );
+  }
+
+  private async assertChannelAutoPostCleanupStillAuthorized(
+    intent: IntentRow,
+    botId: string,
+  ): Promise<void> {
+    if (
+      intent.channelAutoPostCleanupReason !== true ||
+      this.hasExecutableReasonIgnoringChannelAutoPostCleanup(intent)
+    ) {
+      return;
+    }
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: intent.chatId },
+      select: { entityType: true },
+    });
+    if (chat?.entityType !== 'CHANNEL') {
+      throw new ChannelAutoPostCleanupEntityGuardRejectedError(
+        intent.chatId,
+        chat?.entityType ?? null,
+      );
+    }
+
+    const snapshot = await this.maxClient.getChatSnapshot(intent.chatId, {
+      botId,
+      bypassCache: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      timeoutMs: this.deleteTimeoutMs,
+    });
+    if (snapshot.entityType !== 'channel') {
+      throw new ChannelAutoPostCleanupEntityGuardRejectedError(intent.chatId, snapshot.entityType);
+    }
+
+    const senderId = intent.subjectUserId?.trim() || null;
+    if (!senderId) {
+      throw new ChannelAutoPostCleanupSenderGuardRejectedError(intent.chatId, null);
+    }
+    const senderAccess = await this.maxClient.getChatMemberAccess(intent.chatId, senderId, {
+      botId,
+      bypassCache: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      timeoutMs: this.deleteTimeoutMs,
+    });
+    if (senderAccess?.isAdmin !== true && senderAccess?.isOwner !== true) {
+      throw new ChannelAutoPostCleanupSenderGuardRejectedError(intent.chatId, senderId);
+    }
   }
 
   private async resolveDeleteIntentCommercialOcrGuard(intent: IntentRow): Promise<boolean> {
@@ -1796,6 +1886,23 @@ export class ModerationDeleteIntentService {
       OR EXCLUDED."commercial_ocr_guard_required"
       OR ${hasStoredCommercialOcrReason}
     )`;
+    const shouldAdoptIndependentChannelCleanupContext = Prisma.sql`(
+      ${normalized.ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
+      AND ${normalized.entityType !== null}
+      AND EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" stored_channel_cleanup_reason
+        WHERE stored_channel_cleanup_reason."intent_id" = "moderation_delete_intents"."id"
+          AND stored_channel_cleanup_reason."rule_code" =
+            ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM "chats" current_entity
+        WHERE current_entity."id" = "moderation_delete_intents"."chat_id"
+          AND current_entity."entity_type" = EXCLUDED."entity_type"
+      )
+    )`;
 
     const persist = async (tx: Prisma.TransactionClient) => {
       const rows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
@@ -1843,17 +1950,17 @@ export class ModerationDeleteIntentService {
             )
           END,
           "origin_bot_id" = CASE
-            WHEN ${shouldPromoteObserved}
+            WHEN ${shouldPromoteObserved} OR ${shouldAdoptIndependentChannelCleanupContext}
             THEN COALESCE(EXCLUDED."origin_bot_id", "moderation_delete_intents"."origin_bot_id")
             ELSE COALESCE("moderation_delete_intents"."origin_bot_id", EXCLUDED."origin_bot_id")
           END,
           "entity_type" = CASE
-            WHEN ${shouldPromoteObserved}
+            WHEN ${shouldPromoteObserved} OR ${shouldAdoptIndependentChannelCleanupContext}
             THEN COALESCE(EXCLUDED."entity_type", "moderation_delete_intents"."entity_type")
             ELSE COALESCE("moderation_delete_intents"."entity_type", EXCLUDED."entity_type")
           END,
           "message_author_kind" = CASE
-            WHEN ${shouldPromoteObserved}
+            WHEN ${shouldPromoteObserved} OR ${shouldAdoptIndependentChannelCleanupContext}
             THEN COALESCE(
               EXCLUDED."message_author_kind",
               "moderation_delete_intents"."message_author_kind"
@@ -1864,7 +1971,7 @@ export class ModerationDeleteIntentService {
             )
           END,
           "routing_policy" = CASE
-            WHEN ${shouldPromoteObserved}
+            WHEN ${shouldPromoteObserved} OR ${shouldAdoptIndependentChannelCleanupContext}
             THEN EXCLUDED."routing_policy"
             WHEN ${shouldAdoptReplacementRouting}
               AND EXCLUDED."routing_policy" = 'delete_capable'
@@ -1972,12 +2079,16 @@ export class ModerationDeleteIntentService {
       `);
       let storedNonCommercialOcrDeleteReason: boolean | undefined;
       let storedReplacementCleanup: boolean | undefined;
+      let storedNonChannelReplacementCleanup: boolean | undefined;
+      let storedChannelAutoPostCleanupReason: boolean | undefined;
       let storedBotMessageAutoDeleteReason: boolean | undefined;
       if (intent.id !== intentId && normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE) {
         const reasonState = await tx.$queryRaw<
           Array<{
             nonCommercialOcrDeleteReason: boolean;
             replacementCleanup: boolean;
+            nonChannelReplacementCleanup: boolean;
+            channelAutoPostCleanupReason: boolean;
             botMessageAutoDeleteReason: boolean;
           }>
         >(Prisma.sql`
@@ -1986,6 +2097,8 @@ export class ModerationDeleteIntentService {
             FROM "moderation_delete_intent_reasons" existing_non_ocr_reason
             WHERE existing_non_ocr_reason."intent_id" = ${intent.id}
               AND existing_non_ocr_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+              AND existing_non_ocr_reason."rule_code" <>
+                ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
           ) AS "nonCommercialOcrDeleteReason",
           EXISTS (
             SELECT 1
@@ -1997,6 +2110,24 @@ export class ModerationDeleteIntentService {
           ) AS "replacementCleanup",
           EXISTS (
             SELECT 1
+            FROM "moderation_delete_intent_reasons" existing_non_channel_replacement_reason
+            WHERE existing_non_channel_replacement_reason."intent_id" = ${intent.id}
+              AND existing_non_channel_replacement_reason."rule_code" IN (${Prisma.join([
+                ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES.filter(
+                  (ruleCode) =>
+                    ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE,
+                ),
+              ])})
+          ) AS "nonChannelReplacementCleanup",
+          EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" existing_channel_cleanup_reason
+            WHERE existing_channel_cleanup_reason."intent_id" = ${intent.id}
+              AND existing_channel_cleanup_reason."rule_code" =
+                ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
+          ) AS "channelAutoPostCleanupReason",
+          EXISTS (
+            SELECT 1
             FROM "moderation_delete_intent_reasons" existing_auto_delete_reason
             WHERE existing_auto_delete_reason."intent_id" = ${intent.id}
               AND existing_auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
@@ -2004,6 +2135,14 @@ export class ModerationDeleteIntentService {
         `);
         storedNonCommercialOcrDeleteReason = reasonState[0]?.nonCommercialOcrDeleteReason === true;
         storedReplacementCleanup = reasonState[0]?.replacementCleanup === true;
+        storedNonChannelReplacementCleanup =
+          typeof reasonState[0]?.nonChannelReplacementCleanup === 'boolean'
+            ? reasonState[0].nonChannelReplacementCleanup
+            : undefined;
+        storedChannelAutoPostCleanupReason =
+          typeof reasonState[0]?.channelAutoPostCleanupReason === 'boolean'
+            ? reasonState[0].channelAutoPostCleanupReason
+            : undefined;
         storedBotMessageAutoDeleteReason = reasonState[0]?.botMessageAutoDeleteReason === true;
       }
       let effectiveIntent = intent;
@@ -2178,6 +2317,67 @@ export class ModerationDeleteIntentService {
         `);
         effectiveIntent = reopenedRows[0] ?? intent;
       }
+      if (
+        reasonChanged === 1 &&
+        effectiveIntent === intent &&
+        initialStatus === 'PENDING' &&
+        normalized.ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE &&
+        normalized.entityType !== null &&
+        intent.status === 'FAILED_TERMINAL' &&
+        (intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
+          intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE)
+      ) {
+        // FLAG: A later independent reason must not inherit a terminal channel-cleanup mismatch.
+        const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+          UPDATE "moderation_delete_intents"
+          SET
+            "status" = CASE
+              WHEN "remote_delete_succeeded_at" IS NOT NULL
+                OR "remote_delete_succeeded_bot_id" IS NOT NULL
+                OR "delete_dispatch_started_at" IS NOT NULL
+                OR "delete_dispatch_started_bot_id" IS NOT NULL
+              THEN CAST('AMBIGUOUS' AS "ModerationDeleteIntentStatus")
+              ELSE CAST('PENDING' AS "ModerationDeleteIntentStatus")
+            END,
+            "execute_at" = LEAST("execute_at", ${normalized.executeAt}),
+            "next_attempt_at" = ${normalized.executeAt},
+            "retry_until_at" = GREATEST("retry_until_at", ${normalized.retryUntilAt}),
+            "entity_type" = CAST(${normalized.entityType} AS "ChatEntityType"),
+            "message_author_kind" = COALESCE(
+              ${normalized.messageAuthorKind},
+              "message_author_kind"
+            ),
+            "origin_bot_id" = COALESCE(${normalized.originBotId}, "origin_bot_id"),
+            "routing_policy" = ${normalized.routingPolicy},
+            "last_status_code" = NULL,
+            "last_error_code" = NULL,
+            "last_error" = NULL,
+            "completed_at" = NULL,
+            "lease_token" = NULL,
+            "lease_expires_at" = NULL,
+            "leased_from_status" = NULL,
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${intent.id}
+            AND "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
+            AND "last_error_code" IN (
+              ${CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE},
+              ${CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE}
+            )
+            AND "remote_delete_succeeded_at" IS NULL
+            AND "remote_delete_succeeded_bot_id" IS NULL
+            AND "delete_dispatch_started_at" IS NULL
+            AND "delete_dispatch_started_bot_id" IS NULL
+            AND EXISTS (
+              SELECT 1
+              FROM "chats" current_entity
+              WHERE current_entity."id" = "moderation_delete_intents"."chat_id"
+                AND current_entity."entity_type" =
+                  CAST(${normalized.entityType} AS "ChatEntityType")
+            )
+          RETURNING ${this.intentReturningSql()}
+        `);
+        effectiveIntent = reopenedRows[0] ?? intent;
+      }
       await this.linkReplacementCleanupIntent(tx, normalized, effectiveIntent.id);
       if (effectiveIntent.status === 'SUCCEEDED') {
         await this.materializeModerationEventsForIntent(tx, effectiveIntent.id);
@@ -2187,6 +2387,12 @@ export class ModerationDeleteIntentService {
       }
       if (storedReplacementCleanup !== undefined) {
         effectiveIntent.replacementCleanup = storedReplacementCleanup;
+      }
+      if (storedNonChannelReplacementCleanup !== undefined) {
+        effectiveIntent.nonChannelReplacementCleanup = storedNonChannelReplacementCleanup;
+      }
+      if (storedChannelAutoPostCleanupReason !== undefined) {
+        effectiveIntent.channelAutoPostCleanupReason = storedChannelAutoPostCleanupReason;
       }
       if (storedBotMessageAutoDeleteReason !== undefined) {
         effectiveIntent.botMessageAutoDeleteReason = storedBotMessageAutoDeleteReason;
@@ -2199,6 +2405,24 @@ export class ModerationDeleteIntentService {
     persisted.replacementCleanup =
       persisted.replacementCleanup === true ||
       this.isReplacementCleanupRuleCode(normalized.ruleCode);
+    const normalizedNonChannelReplacementCleanup =
+      this.isReplacementCleanupRuleCode(normalized.ruleCode) &&
+      normalized.ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE;
+    if (
+      persisted.nonChannelReplacementCleanup !== undefined ||
+      normalizedNonChannelReplacementCleanup
+    ) {
+      persisted.nonChannelReplacementCleanup =
+        persisted.nonChannelReplacementCleanup === true || normalizedNonChannelReplacementCleanup;
+    }
+    if (
+      persisted.channelAutoPostCleanupReason !== undefined ||
+      normalized.ruleCode === CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE
+    ) {
+      persisted.channelAutoPostCleanupReason =
+        persisted.channelAutoPostCleanupReason === true ||
+        normalized.ruleCode === CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE;
+    }
     persisted.botMessageAutoDeleteReason =
       persisted.botMessageAutoDeleteReason === true ||
       normalized.ruleCode === BOT_MESSAGE_AUTO_DELETE_RULE_CODE;
@@ -2387,7 +2611,12 @@ export class ModerationDeleteIntentService {
           return null;
         }
 
-        const independentReasonExecutable = this.hasExecutableNonCommercialOcrReason(latest);
+        const channelCleanupGuardRejected =
+          details.errorCode === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
+          details.errorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE;
+        const independentReasonExecutable = channelCleanupGuardRejected
+          ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
+          : this.hasExecutableNonCommercialOcrReason(latest);
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.
@@ -3582,6 +3811,8 @@ export class ModerationDeleteIntentService {
       IntentRow,
       | 'chatId'
       | 'replacementCleanup'
+      | 'nonChannelReplacementCleanup'
+      | 'channelAutoPostCleanupReason'
       | 'botMessageAutoDeleteReason'
       | 'botMessageAutoDeleteOnly'
       | 'commercialOcrGuardRequired'
@@ -3590,6 +3821,9 @@ export class ModerationDeleteIntentService {
     >,
   ): boolean {
     if (this.hasExecutableNonCommercialOcrReason(intent)) {
+      return true;
+    }
+    if (this.replacementCleanupEnabled && intent.channelAutoPostCleanupReason === true) {
       return true;
     }
     const hasCommercialOcrReason =
@@ -3611,6 +3845,8 @@ export class ModerationDeleteIntentService {
       IntentRow,
       | 'chatId'
       | 'replacementCleanup'
+      | 'nonChannelReplacementCleanup'
+      | 'channelAutoPostCleanupReason'
       | 'botMessageAutoDeleteReason'
       | 'botMessageAutoDeleteOnly'
       | 'nonCommercialOcrDeleteReason'
@@ -3619,13 +3855,40 @@ export class ModerationDeleteIntentService {
     if (
       intent.botMessageAutoDeleteReason === true ||
       intent.botMessageAutoDeleteOnly === true ||
-      (this.replacementCleanupEnabled && intent.replacementCleanup === true)
+      (this.replacementCleanupEnabled &&
+        (intent.nonChannelReplacementCleanup === true ||
+          (intent.nonChannelReplacementCleanup === undefined &&
+            intent.channelAutoPostCleanupReason === undefined &&
+            intent.replacementCleanup === true)))
     ) {
       return true;
     }
     return (
       intent.nonCommercialOcrDeleteReason === true &&
       this.getRolloutForChat(intent.chatId) === 'execute'
+    );
+  }
+
+  private hasExecutableReasonIgnoringChannelAutoPostCleanup(
+    intent: Pick<
+      IntentRow,
+      | 'chatId'
+      | 'replacementCleanup'
+      | 'nonChannelReplacementCleanup'
+      | 'channelAutoPostCleanupReason'
+      | 'botMessageAutoDeleteReason'
+      | 'botMessageAutoDeleteOnly'
+      | 'commercialOcrGuardRequired'
+      | 'commercialOcrDeleteReason'
+      | 'nonCommercialOcrDeleteReason'
+    >,
+  ): boolean {
+    if (this.hasExecutableNonCommercialOcrReason(intent)) {
+      return true;
+    }
+    return (
+      (intent.commercialOcrDeleteReason === true || intent.commercialOcrGuardRequired === true) &&
+      this.getCommercialOcrRolloutForChat(intent.chatId) === 'execute'
     );
   }
 
@@ -4100,6 +4363,39 @@ export class ModerationDeleteIntentService {
       ) AS "replacementCleanup",
       EXISTS (
         SELECT 1
+        FROM "moderation_delete_intent_reasons" non_channel_replacement_reason
+        WHERE non_channel_replacement_reason."intent_id" = ${intentIdColumn}
+          AND non_channel_replacement_reason."rule_code" IN (${Prisma.join([
+            ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES.filter(
+              (ruleCode) => ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE,
+            ),
+          ])})
+      ) AS "nonChannelReplacementCleanup",
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" channel_cleanup_reason
+        WHERE channel_cleanup_reason."intent_id" = ${intentIdColumn}
+          AND channel_cleanup_reason."rule_code" =
+            ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
+      ) AS "channelAutoPostCleanupReason",
+      (
+        EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" channel_cleanup_reason
+          WHERE channel_cleanup_reason."intent_id" = ${intentIdColumn}
+            AND channel_cleanup_reason."rule_code" =
+              ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" independent_reason
+          WHERE independent_reason."intent_id" = ${intentIdColumn}
+            AND independent_reason."rule_code" <>
+              ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
+        )
+      ) AS "channelAutoPostCleanupOnly",
+      EXISTS (
+        SELECT 1
         FROM "moderation_delete_intent_reasons" auto_delete_reason
         WHERE auto_delete_reason."intent_id" = ${intentIdColumn}
           AND auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
@@ -4117,7 +4413,8 @@ export class ModerationDeleteIntentService {
           WHERE other_reason."intent_id" = ${intentIdColumn}
             AND other_reason."rule_code" NOT IN (
               ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE},
-              ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+              ${COMMERCIAL_OCR_DELETE_RULE_CODE},
+              ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
             )
         )
       ) AS "botMessageAutoDeleteOnly",
@@ -4132,6 +4429,8 @@ export class ModerationDeleteIntentService {
         FROM "moderation_delete_intent_reasons" non_ocr_reason
         WHERE non_ocr_reason."intent_id" = ${intentIdColumn}
           AND non_ocr_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+          AND non_ocr_reason."rule_code" <>
+            ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
       ) AS "nonCommercialOcrDeleteReason",
       (
         EXISTS (
@@ -4151,6 +4450,7 @@ export class ModerationDeleteIntentService {
               LINK_BLOCKED_DELETE_RULE_CODE,
               LINK_HISTORY_RECOVERY_RULE_CODE,
               COMMERCIAL_OCR_DELETE_RULE_CODE,
+              CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE,
             ])})
         )
       ) AS "linkFamilyDeleteOnly"
@@ -4168,6 +4468,8 @@ export class ModerationDeleteIntentService {
           FROM "moderation_delete_intent_reasons" independent_reason
           WHERE independent_reason."intent_id" = ${intentIdColumn}
             AND independent_reason."rule_code" <> ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+            AND independent_reason."rule_code" <>
+              ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
             AND (
               independent_reason."rule_code" <> 'DUPLICATE_DELETE'
               OR COALESCE(independent_reason."metadata"->>'duplicateSource', '') <> 'photo'

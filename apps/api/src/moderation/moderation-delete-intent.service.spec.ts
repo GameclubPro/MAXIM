@@ -2412,6 +2412,443 @@ describe('ModerationDeleteIntentService', () => {
     expect(prisma.moderationDeleteIntentReason.findMany).not.toHaveBeenCalled();
   });
 
+  it('terminalizes channel auto-post cleanup when the current entity is CHAT without a MAX delete', async () => {
+    const intent = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: intent.id }])
+      .mockResolvedValueOnce([intent]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+    );
+    const findUnique = jest.fn().mockResolvedValue({ entityType: 'CHAT' });
+    const maxHttpDelete = jest.fn();
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+        $executeRaw: executeRaw,
+        $transaction: transaction,
+        chat: { findUnique },
+      },
+      { deleteMessage: maxHttpDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'chat-1' },
+      select: { entityType: true },
+    });
+    expect(maxHttpDelete).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+    });
+    expect(txQueryRaw.mock.calls[1]?.[0]?.strings?.join('?') ?? '').toContain(
+      'AS "channelAutoPostCleanupOnly"',
+    );
+    const sqlCalls = executeRaw.mock.calls.map(
+      (call: unknown[]) => call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+    );
+    expect(
+      sqlCalls.some((query) =>
+        (query.strings?.join('?') ?? '').includes(
+          '"delete_dispatch_started_at" = CURRENT_TIMESTAMP',
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      sqlCalls.find((query) => query.values?.includes('channel_auto_post_cleanup_entity_mismatch'))
+        ?.values,
+    ).toEqual(
+      expect.arrayContaining(['FAILED_TERMINAL', 'channel_auto_post_cleanup_entity_mismatch']),
+    );
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'MAX identifies the target as a chat',
+      snapshotEntityType: 'chat',
+      senderAccess: {
+        userId: 'user-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      },
+      expectedErrorCode: 'channel_auto_post_cleanup_entity_mismatch',
+      expectSenderLookup: false,
+    },
+    {
+      label: 'MAX says the sender is no longer an admin',
+      snapshotEntityType: 'channel',
+      senderAccess: {
+        userId: 'user-1',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      },
+      expectedErrorCode: 'channel_auto_post_cleanup_sender_not_admin',
+      expectSenderLookup: true,
+    },
+  ])('terminalizes channel cleanup when $label', async (scenario) => {
+    const intent = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: intent.id }])
+      .mockResolvedValueOnce([intent]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+    );
+    const getChatSnapshot = jest.fn().mockResolvedValue({
+      entityType: scenario.snapshotEntityType,
+    });
+    const getChatMemberAccess = jest.fn().mockResolvedValue(scenario.senderAccess);
+    const maxHttpDelete = jest.fn();
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+        $executeRaw: executeRaw,
+        $transaction: transaction,
+        chat: { findUnique: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }) },
+      },
+      { deleteMessage: maxHttpDelete, getChatSnapshot, getChatMemberAccess },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(getChatSnapshot).toHaveBeenCalledWith('chat-1', {
+      botId: 'bot-1',
+      bypassCache: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: 'moderation_delete',
+      timeoutMs: 5_000,
+    });
+    expect(getChatMemberAccess).toHaveBeenCalledTimes(scenario.expectSenderLookup ? 1 : 0);
+    expect(maxHttpDelete).not.toHaveBeenCalled();
+    const terminalUpdate = executeRaw.mock.calls
+      .map((call: unknown[]) => call[0] as { values?: readonly unknown[] })
+      .find((query) => query.values?.includes(scenario.expectedErrorCode));
+    expect(terminalUpdate?.values).toEqual(
+      expect.arrayContaining(['FAILED_TERMINAL', scenario.expectedErrorCode]),
+    );
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('permits channel auto-post cleanup only while the entity remains CHANNEL', async () => {
+    const intent = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+    };
+    const completed = {
+      ...intent,
+      status: 'SUCCEEDED' as const,
+      succeededBotId: 'bot-1',
+      remoteDeleteSucceededAt: new Date(),
+      remoteDeleteSucceededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const events: string[] = [];
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      if (
+        (query.strings?.join('?') ?? '').includes(
+          '"delete_dispatch_started_at" = CURRENT_TIMESTAMP',
+        )
+      ) {
+        events.push('dispatch-fence');
+      }
+      return 1;
+    });
+    const findUnique = jest.fn().mockImplementation(async () => {
+      events.push('entity-guard');
+      return { entityType: 'CHANNEL' };
+    });
+    const maxHttpDelete = jest.fn().mockImplementation(async () => {
+      events.push('max-delete');
+    });
+    const queryRaw = jest.fn().mockResolvedValueOnce([intent]).mockResolvedValueOnce([completed]);
+    const { service } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: executeRaw, chat: { findUnique } },
+      {
+        deleteMessage: maxHttpDelete,
+        getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
+        getChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+        }),
+      },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      confirmed: true,
+      status: 'SUCCEEDED',
+    });
+
+    expect(findUnique).toHaveBeenCalledTimes(2);
+    expect(maxHttpDelete).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(['entity-guard', 'dispatch-fence', 'entity-guard', 'max-delete']);
+  });
+
+  it('clears the dispatch fence when a channel becomes a CHAT between the two delete guards', async () => {
+    const intent = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+    };
+    const events: string[] = [];
+    const executeRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      const sql = query.strings?.join('?') ?? '';
+      if (sql.includes('"delete_dispatch_started_at" = CURRENT_TIMESTAMP')) {
+        events.push('dispatch-fence');
+      } else if (
+        sql.includes('"delete_dispatch_started_at" = NULL') &&
+        sql.includes('AND "delete_dispatch_started_at" IS NOT NULL')
+      ) {
+        events.push('clear-fence');
+      } else if (sql.includes('"status" = CAST(? AS "ModerationDeleteIntentStatus")')) {
+        events.push('terminal-status');
+      }
+      return 1;
+    });
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: intent.id }])
+      .mockResolvedValueOnce([intent]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+    );
+    const findUnique = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        events.push('entity-guard:CHANNEL');
+        return { entityType: 'CHANNEL' };
+      })
+      .mockImplementationOnce(async () => {
+        events.push('entity-guard:CHAT');
+        return { entityType: 'CHAT' };
+      });
+    const maxHttpDelete = jest.fn(async () => {
+      events.push('max-http');
+    });
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+        $executeRaw: executeRaw,
+        $transaction: transaction,
+        chat: { findUnique },
+      },
+      {
+        deleteMessage: maxHttpDelete,
+        getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
+        getChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+        }),
+      },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(findUnique).toHaveBeenCalledTimes(2);
+    expect(maxHttpDelete).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      'entity-guard:CHANNEL',
+      'dispatch-fence',
+      'entity-guard:CHAT',
+      'clear-fence',
+      'terminal-status',
+    ]);
+    const terminalUpdate = executeRaw.mock.calls
+      .map(
+        (call: unknown[]) =>
+          call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+      )
+      .find((query) =>
+        (query.strings?.join('?') ?? '').includes(
+          '"status" = CAST(? AS "ModerationDeleteIntentStatus")',
+        ),
+      );
+    expect(terminalUpdate?.values).toEqual(
+      expect.arrayContaining(['FAILED_TERMINAL', 'channel_auto_post_cleanup_entity_mismatch']),
+    );
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('retries a channel entity rejection when a concurrent independent reason is executable', async () => {
+    const intent = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+    };
+    const mixedIntent = {
+      ...intent,
+      channelAutoPostCleanupOnly: false,
+      nonCommercialOcrDeleteReason: true,
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: intent.id }])
+      .mockResolvedValueOnce([mixedIntent]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+    );
+    const maxHttpDelete = jest.fn();
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+        $executeRaw: executeRaw,
+        $transaction: transaction,
+        chat: { findUnique: jest.fn().mockResolvedValue({ entityType: 'CHAT' }) },
+      },
+      { deleteMessage: maxHttpDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'pending',
+      confirmed: false,
+      status: 'RETRYABLE',
+    });
+
+    expect(maxHttpDelete).not.toHaveBeenCalled();
+    const retryableUpdate = executeRaw.mock.calls
+      .map(
+        (call: unknown[]) =>
+          call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+      )
+      .find((query) =>
+        (query.strings?.join('?') ?? '').includes(
+          '"status" = CAST(? AS "ModerationDeleteIntentStatus")',
+        ),
+      );
+    expect(retryableUpdate?.values).toEqual(
+      expect.arrayContaining(['RETRYABLE', 'channel_auto_post_cleanup_entity_mismatch', null]),
+    );
+    expect(retryableUpdate?.values).not.toContain('FAILED_TERMINAL');
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a shadow OCR reason authorize stale channel cleanup in a CHAT', async () => {
+    const intent = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+    };
+    const mixedIntent = {
+      ...intent,
+      channelAutoPostCleanupOnly: false,
+      commercialOcrGuardRequired: true,
+      commercialOcrDeleteReason: true,
+      nonCommercialOcrDeleteReason: false,
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: intent.id }])
+      .mockResolvedValueOnce([mixedIntent]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+    );
+    const maxHttpDelete = jest.fn();
+    const { service, queue } = createService(
+      { COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow' },
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+        $executeRaw: executeRaw,
+        $transaction: transaction,
+        chat: { findUnique: jest.fn().mockResolvedValue({ entityType: 'CHAT' }) },
+      },
+      { deleteMessage: maxHttpDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(maxHttpDelete).not.toHaveBeenCalled();
+    const terminalUpdate = executeRaw.mock.calls
+      .map(
+        (call: unknown[]) =>
+          call[0] as { strings?: readonly string[]; values?: readonly unknown[] },
+      )
+      .find((query) =>
+        (query.strings?.join('?') ?? '').includes(
+          '"status" = CAST(? AS "ModerationDeleteIntentStatus")',
+        ),
+      );
+    expect(terminalUpdate?.values).toEqual(
+      expect.arrayContaining(['FAILED_TERMINAL', 'channel_auto_post_cleanup_entity_mismatch']),
+    );
+    expect(terminalUpdate?.values).not.toContain('RETRYABLE');
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
   it('keeps an OCR-only intent fail-closed when its guard is unavailable', async () => {
     const intent = {
       ...baseIntent,
@@ -2824,6 +3261,149 @@ describe('ModerationDeleteIntentService', () => {
       status: 'FAILED_TERMINAL',
     });
 
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('reopens a channel cleanup entity rejection when a later independent reason commits', async () => {
+    const independentDeadline = new Date(Date.now() + 120_000);
+    const terminalChannelCleanup = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+      status: 'FAILED_TERMINAL' as const,
+      completedAt: new Date(),
+      lastErrorCode: 'channel_auto_post_cleanup_entity_mismatch',
+      lastError: 'Entity is no longer a channel',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const reopened = {
+      ...terminalChannelCleanup,
+      entityType: 'CHAT' as const,
+      status: 'PENDING' as const,
+      retryUntilAt: independentDeadline,
+      completedAt: null,
+      lastErrorCode: null,
+      lastError: null,
+      channelAutoPostCleanupOnly: false,
+      nonCommercialOcrDeleteReason: true,
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([terminalChannelCleanup])
+      .mockResolvedValueOnce([reopened]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw, $executeRaw: txExecuteRaw }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'independent-delete-after-channel-cleanup-rejection',
+        ruleCode: 'INDEPENDENT_DELETE',
+        subjectUserId: 'user-1',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        retryUntilAt: independentDeadline,
+      }),
+    ).resolves.toEqual({ intentId: 'intent-1', rollout: 'execute', status: 'PENDING' });
+
+    expect(txQueryRaw).toHaveBeenCalledTimes(2);
+    const upsertSql = txQueryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(upsertSql).toContain(
+      'FROM "moderation_delete_intent_reasons" stored_channel_cleanup_reason',
+    );
+    expect(upsertSql).toContain('current_entity."entity_type" = EXCLUDED."entity_type"');
+    const reopenQuery = txQueryRaw.mock.calls[1]?.[0];
+    const reopenSql = reopenQuery?.strings?.join('?') ?? '';
+    expect(reopenSql).toContain('"last_error_code" IN');
+    expect(reopenSql).toContain('"remote_delete_succeeded_at" IS NULL');
+    expect(reopenSql).toContain('"remote_delete_succeeded_bot_id" IS NULL');
+    expect(reopenSql).toContain('"delete_dispatch_started_at" IS NULL');
+    expect(reopenSql).toContain('"delete_dispatch_started_bot_id" IS NULL');
+    expect(reopenSql).toContain('"last_status_code" = NULL');
+    expect(reopenSql).toContain('"last_error_code" = NULL');
+    expect(reopenSql).toContain('"completed_at" = NULL');
+    expect(reopenSql).toContain('"lease_token" = NULL');
+    expect(reopenSql).toContain('"retry_until_at" = GREATEST');
+    expect(reopenSql).toContain('"entity_type" = CAST(? AS "ChatEntityType")');
+    expect(reopenSql).toContain('current_entity."entity_type" =');
+    expect(reopenQuery?.values).toEqual(
+      expect.arrayContaining([
+        'CHAT',
+        'origin_only',
+        'channel_auto_post_cleanup_entity_mismatch',
+        'channel_auto_post_cleanup_sender_not_admin',
+      ]),
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({ priority: 1 }),
+    );
+  });
+
+  it('does not reopen a channel cleanup entity rejection with an unresolved dispatch marker', async () => {
+    const independentDeadline = new Date(Date.now() + 120_000);
+    const terminalWithDispatch = {
+      ...baseIntent,
+      entityType: 'CHANNEL' as const,
+      routingPolicy: 'origin_only',
+      replacementCleanup: true,
+      channelAutoPostCleanupReason: true,
+      channelAutoPostCleanupOnly: true,
+      status: 'FAILED_TERMINAL' as const,
+      completedAt: new Date(),
+      lastErrorCode: 'channel_auto_post_cleanup_entity_mismatch',
+      deleteDispatchStartedAt: new Date(),
+      deleteDispatchStartedBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([terminalWithDispatch])
+      .mockResolvedValueOnce([]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: txQueryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'independent-delete-after-ambiguous-channel-cleanup',
+        ruleCode: 'INDEPENDENT_DELETE',
+        subjectUserId: 'user-1',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        retryUntilAt: independentDeadline,
+      }),
+    ).resolves.toEqual({
+      intentId: 'intent-1',
+      rollout: 'execute',
+      status: 'FAILED_TERMINAL',
+    });
+
+    const reopenSql = txQueryRaw.mock.calls[1]?.[0]?.strings?.join('?') ?? '';
+    expect(reopenSql).toContain('"delete_dispatch_started_at" IS NULL');
+    expect(reopenSql).toContain('"delete_dispatch_started_bot_id" IS NULL');
     expect(queue.add).not.toHaveBeenCalled();
   });
 
@@ -3281,6 +3861,41 @@ describe('ModerationDeleteIntentService', () => {
     expect(query.values).toEqual(
       expect.arrayContaining(['BOT_MESSAGE_AUTO_DELETE', COMMERCIAL_OCR_DELETE_RULE_CODE]),
     );
+  });
+
+  it('classifies channel auto-post cleanup as guarded only without an independent reason', () => {
+    const { service } = createService();
+    const query = (
+      service as unknown as {
+        intentSelectSql(alias: string): {
+          strings?: readonly string[];
+          values?: readonly unknown[];
+        };
+      }
+    ).intentSelectSql('intent');
+    const sql = query.strings?.join('?') ?? '';
+    const classifierStart = sql.indexOf(
+      'FROM "moderation_delete_intent_reasons" channel_cleanup_reason',
+    );
+    const classifierEnd = sql.indexOf('AS "channelAutoPostCleanupOnly"');
+    const classifierSql = sql.slice(classifierStart, classifierEnd);
+
+    expect(classifierStart).toBeGreaterThanOrEqual(0);
+    expect(classifierEnd).toBeGreaterThan(classifierStart);
+    expect(classifierSql).toContain('channel_cleanup_reason."rule_code" =');
+    expect(classifierSql).toContain('AND NOT EXISTS');
+    expect(classifierSql).toContain('FROM "moderation_delete_intent_reasons" independent_reason');
+    expect(classifierSql).toContain('independent_reason."rule_code" <>');
+    expect(query.values?.slice(0, 8)).toEqual([
+      'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+      'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+      'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
+      'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
+      'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+      'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+      'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+    ]);
   });
 
   it('loads the durable commercial OCR ownership fence directly from the intent', () => {
@@ -5175,6 +5790,23 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('replacement-cleanup-recovery:chat_rules_state:');
     expect(sql).toContain('replacement-cleanup-recovery:chat_rules_republish:');
     expect(sql).toContain('NOT EXISTS');
+  });
+
+  it('requires a typed current CHANNEL row for channel auto-post cleanup recovery', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const { service } = createService({}, { $queryRaw: queryRaw });
+
+    await expect(service.recoverReplacementCleanupSources()).resolves.toBe(0);
+
+    const sql = queryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    const channelBranchEnd = sql.indexOf('UNION ALL');
+    const channelBranchSql = sql.slice(0, channelBranchEnd);
+    expect(channelBranchSql).toContain('FROM "channel_auto_post_attach_markers" marker');
+    expect(channelBranchSql).toContain('INNER JOIN "chats" channel_chat');
+    expect(channelBranchSql).toContain('ON channel_chat."id" = marker."chat_id"');
+    expect(channelBranchSql).toContain(
+      'channel_chat."entity_type" = CAST(\'CHANNEL\' AS "ChatEntityType")',
+    );
   });
 
   it('does not purge intents still owned by unresolved replacement cleanup sources', async () => {

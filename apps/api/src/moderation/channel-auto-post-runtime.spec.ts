@@ -110,6 +110,32 @@ describe('channel auto-post runtime', () => {
     expect(parseChannelAutoPostListedMessage({ id: 'message-1', timestamp: 'invalid' })).toBeNull();
   });
 
+  it.each([
+    ['numeric sender.user_id', { sender: { user_id: 195714583 } }, '195714583'],
+    ['sender.userId alias', { sender: { userId: ' user-2 ' } }, 'user-2'],
+    ['numeric sender.id alias', { sender: { id: 42 } }, '42'],
+    ['numeric top-level sender_id', { sender_id: 777 }, '777'],
+    ['top-level senderId alias', { senderId: ' user-3 ' }, 'user-3'],
+  ])('normalizes %s in listed-message history', (_label, senderShape, expectedSenderId) => {
+    expect(
+      parseChannelAutoPostListedMessage({
+        id: 'message-1',
+        timestamp: 1234,
+        ...senderShape,
+      })?.senderId,
+    ).toBe(expectedSenderId);
+  });
+
+  it('rejects unsafe numeric sender IDs instead of rounding them', () => {
+    expect(
+      parseChannelAutoPostListedMessage({
+        id: 'message-1',
+        timestamp: 1234,
+        sender: { user_id: Number.MAX_SAFE_INTEGER + 1 },
+      })?.senderId,
+    ).toBeNull();
+  });
+
   it('detects existing internal channel buttons without treating custom or cross-channel links as owned', () => {
     const commentsToken = `cdt-${Buffer.from(
       JSON.stringify({ v: 1, d: 'comments-thread', s: 'a'.repeat(64) }),

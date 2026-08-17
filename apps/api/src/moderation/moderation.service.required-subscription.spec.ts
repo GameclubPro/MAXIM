@@ -3913,6 +3913,9 @@ describe('ModerationService', () => {
           chatId: {
             in: channelBatch,
           },
+          chat: {
+            entityType: ChatEntityType.CHANNEL,
+          },
         },
       }),
     );
@@ -3921,12 +3924,16 @@ describe('ModerationService', () => {
 
   it('uses the resolved scan bot when auto-attaching channel buttons during poll repair', async () => {
     const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
+      },
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const maxBotLinkService = {
@@ -4036,16 +4043,36 @@ describe('ModerationService', () => {
 
   it('persists forwarded channel replacement cleanup as a durable delete intent', async () => {
     const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
+      },
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
-      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
-        messageId: 'mid-channel-copy-1',
-        url: 'https://max.ru/chats/channel-1/message/mid-channel-copy-1',
+      getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'admin-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
       }),
+      sendMessageCopyWithInlineKeyboard: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          _text: string,
+          options: { beforeSend?: () => Promise<void> },
+        ) => {
+          await options.beforeSend?.();
+          return {
+            messageId: 'mid-channel-copy-1',
+            url: 'https://max.ru/chats/channel-1/message/mid-channel-copy-1',
+          };
+        },
+      ),
       deleteMessage: jest.fn(),
     };
     const maxBotLinkService = {
@@ -4066,12 +4093,20 @@ describe('ModerationService', () => {
         rollout: 'execute',
         status: 'PENDING',
       }),
-      ensureAndAttempt: jest.fn().mockResolvedValue({
-        kind: 'pending',
-        confirmed: false,
-        intentId: 'intent-channel-copy-1',
-        status: 'RETRYABLE',
-      }),
+      ensureAndAttempt: jest.fn(
+        async (
+          _input: unknown,
+          options?: { beforeDeleteMutation?: () => Promise<void> },
+        ) => {
+          await options?.beforeDeleteMutation?.();
+          return {
+            kind: 'pending',
+            confirmed: false,
+            intentId: 'intent-channel-copy-1',
+            status: 'RETRYABLE',
+          };
+        },
+      ),
     };
     const service = new ModerationService(
       prisma as never,
@@ -4105,6 +4140,7 @@ describe('ModerationService', () => {
       },
       source: 'poll',
       senderId: 'admin-1',
+      senderAdminVerified: true,
     });
 
     expect(deleteIntents.ensureAndAttempt).toHaveBeenCalledWith(
@@ -4117,9 +4153,27 @@ describe('ModerationService', () => {
         routingPolicy: 'origin_only',
         ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
       }),
-      undefined,
+      { beforeDeleteMutation: expect.any(Function) },
     );
     expect(deleteIntents.ensureIntent.mock.calls[0]?.[0]).not.toHaveProperty('sourceMessageAt');
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+      botId: 'scan-bot-2',
+    });
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('channel-1', 'admin-1', {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+      botId: 'scan-bot-2',
+    });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -4168,6 +4222,7 @@ describe('ModerationService', () => {
     expect(attach).toHaveBeenCalledWith(
       expect.objectContaining({
         source: 'webhook',
+        senderAdminVerified: true,
         sourceMessageAt,
       }),
     );
@@ -4363,12 +4418,16 @@ describe('ModerationService', () => {
       'message.not.found',
     );
     const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
+      },
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
       editMessageInlineKeyboard: jest.fn().mockRejectedValue(maxError),
     };
     const maxBotLinkService = {

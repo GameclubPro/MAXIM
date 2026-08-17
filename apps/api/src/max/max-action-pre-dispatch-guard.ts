@@ -1,5 +1,6 @@
 export const MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE = 'max_member_pre_dispatch_guard_rejected';
 export const MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE = 'max_delete_pre_dispatch_guard_rejected';
+export const MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE = 'max_edit_pre_dispatch_guard_rejected';
 
 const rejectedGuardErrors = new WeakSet<object>();
 

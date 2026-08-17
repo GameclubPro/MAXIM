@@ -64,6 +64,7 @@ import {
 } from '../max/max-send-ambiguity.util';
 import { MaxBotContextService } from '../max/max-bot-context.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
+import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import {
   isValidMaxBotStartPayload,
@@ -558,6 +559,7 @@ const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 const WEBHOOK_TIMEOUT_SETTLEMENT_PERSIST_RETRY_MAX_MS = 30_000;
 const WEBHOOK_TIMEOUT_PERSISTENCE_LOG_INTERVAL_MS = 30_000;
 const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
+const CHANNEL_AUTO_POST_MUTATION_GUARD_TIMEOUT_MS = 2_000;
 
 type ModerationDeleteExecutionResult = {
   accepted: boolean;
@@ -14571,6 +14573,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const eventTimestampMs = resolveChannelAutoPostEventTimestampMs(update);
+    let senderAdminVerified = false;
 
     if (senderId) {
       const mode = await this.resolveSystemModeSnapshot();
@@ -14588,6 +14591,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.channelAutoPostScanManager.markWebhookSeen(chatId, messageId, eventTimestampMs);
         return;
       }
+      senderAdminVerified = true;
     }
 
     const raw = this.asRecord(update.raw);
@@ -14609,6 +14613,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       managedChannel,
       source: 'webhook',
       senderId,
+      senderAdminVerified,
       sourceMessageAt: createdAt,
     });
     if (outcome !== 'in_progress') {
@@ -14640,6 +14645,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       let encounteredTransientThrottle = false;
       const channelCandidates = await this.prisma.channelSettings.findMany({
         where: {
+          chat: {
+            entityType: ChatEntityType.CHANNEL,
+          },
           OR: [
             {
               postSignatureEnabled: true,
@@ -14738,6 +14746,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId: {
           in: normalizedChatIds,
         },
+        chat: {
+          entityType: ChatEntityType.CHANNEL,
+        },
       },
       include: {
         chat: {
@@ -14835,7 +14846,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           existingDialogThreadId: normalized.existingDialogThreadId,
           managedChannel,
           source: 'poll',
-          senderId: null,
+          senderId: normalized.senderId,
+          senderAdminVerified:
+            normalized.senderId !== null &&
+            managedChannel.adminUserIds.includes(normalized.senderId),
         }),
     });
   }
@@ -14982,6 +14996,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     managedChannel: ManagedChannelContext;
     source: 'webhook' | 'poll';
     senderId: string | null;
+    senderAdminVerified: boolean;
     sourceMessageAt?: string | null;
   }): Promise<ChannelAutoPostAttachOutcome> {
     const {
@@ -14993,8 +15008,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       managedChannel,
       source,
       senderId,
+      senderAdminVerified,
       sourceMessageAt,
     } = params;
+    if (linkType === 'forward' && (!senderId || !senderAdminVerified)) {
+      return 'skipped';
+    }
+    if (linkType === 'forward' && !(await this.isCurrentChannelEntity(chatId))) {
+      return 'skipped';
+    }
     const buttonVisibility = resolveChannelAutoPostButtonVisibility(managedChannel.channelSettings);
     const existingButtonKinds = new Set(params.existingDialogButtonKinds ?? []);
     const includeCommentsButton =
@@ -15107,6 +15129,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
             ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
             beforeSend: async () => {
+              // FLAG: Re-read MAX and local authorization in the final callback before publishing.
+              await this.assertCurrentChannelForwardMutationAuthorized(
+                chatId,
+                senderId,
+                autoAttachBotId,
+              );
               await this.replacementAttachMarkerStore.recordChannelReplacementSendStarted({
                 chatId,
                 messageId,
@@ -15158,8 +15186,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
             },
           };
-          await this.ensureModerationDeleteIntent(cleanupInput, mutationRequestOptions);
-          const cleanup = await this.executeModerationDelete(cleanupInput, mutationRequestOptions);
+          const cleanupRequestOptions = {
+            ...mutationRequestOptions,
+            beforeImmediateDeleteMutation: () =>
+              this.assertCurrentChannelForwardMutationAuthorized(chatId, senderId, autoAttachBotId),
+          };
+          await this.ensureModerationDeleteIntent(cleanupInput, cleanupRequestOptions);
+          const cleanup = await this.executeModerationDelete(cleanupInput, cleanupRequestOptions);
           originalDeleted = cleanup.gone;
           if (!cleanup.accepted) {
             originalCleanupError = 'Durable cleanup reached a terminal state';
@@ -15194,6 +15227,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               mergeExistingInlineKeyboard: true,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
+              beforeEditMutation: () =>
+                this.assertCurrentChannelMutationTarget(chatId, autoAttachBotId),
               debugContext: {
                 screen: 'channel-auto-post',
                 action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
@@ -15209,6 +15244,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             mergedEditStatus !== null &&
             mergedEditStatus < 500 &&
             mergedEditStatus !== 429 &&
+            !wasMaxPreDispatchGuardRejected(mergedEditError) &&
             !isAmbiguousMaxMutationError(mergedEditError) &&
             mergedEditFailure === null;
           if (!canRetryWithReplacementKeyboard) {
@@ -15244,6 +15280,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             {
               buttons: replacementButtons,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
+              beforeEditMutation: () =>
+                this.assertCurrentChannelMutationTarget(chatId, autoAttachBotId),
               debugContext: {
                 screen: 'channel-auto-post',
                 action:
@@ -15453,6 +15491,71 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
     return 'attached';
+  }
+
+  private async isCurrentChannelEntity(chatId: string): Promise<boolean> {
+    if (typeof this.prisma.chat?.findUnique !== 'function') {
+      return false;
+    }
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { entityType: true },
+    });
+    return chat?.entityType === ChatEntityType.CHANNEL;
+  }
+
+  private async assertCurrentChannelEntity(chatId: string): Promise<void> {
+    if (!(await this.isCurrentChannelEntity(chatId))) {
+      throw new BadRequestException(
+        `Channel auto-post mutation rejected because ${chatId} is not a channel`,
+      );
+    }
+  }
+
+  private async assertCurrentChannelMutationTarget(
+    chatId: string,
+    botId?: string | null,
+  ): Promise<void> {
+    await this.assertCurrentChannelEntity(chatId);
+    const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      timeoutMs: CHANNEL_AUTO_POST_MUTATION_GUARD_TIMEOUT_MS,
+      ...(botId ? { botId } : {}),
+    });
+    if (snapshot.entityType !== 'channel') {
+      throw new BadRequestException(
+        `Channel auto-post mutation rejected because MAX classifies ${chatId} as ${snapshot.entityType}`,
+      );
+    }
+  }
+
+  private async assertCurrentChannelForwardMutationAuthorized(
+    chatId: string,
+    senderId: string | null,
+    botId?: string | null,
+  ): Promise<void> {
+    await this.assertCurrentChannelMutationTarget(chatId, botId);
+    if (!senderId) {
+      throw new BadRequestException(
+        `Channel auto-post replacement rejected because ${chatId} has no verified sender`,
+      );
+    }
+    const access = await this.maxClient.getChatMemberAccess(chatId, senderId, {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      timeoutMs: CHANNEL_AUTO_POST_MUTATION_GUARD_TIMEOUT_MS,
+      ...(botId ? { botId } : {}),
+    });
+    if (access?.isAdmin !== true && access?.isOwner !== true) {
+      throw new BadRequestException(
+        `Channel auto-post replacement rejected because ${senderId} is not a current admin of ${chatId}`,
+      );
+    }
   }
 
   private async loadManagedChannelContext(

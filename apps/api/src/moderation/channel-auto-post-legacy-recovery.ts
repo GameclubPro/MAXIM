@@ -40,6 +40,7 @@ export type ChannelAutoPostLegacyRecoveryAttachInput = {
   managedChannel: ManagedChannelContext;
   source: 'poll';
   senderId: null;
+  senderAdminVerified: false;
 };
 
 type LegacyRecoveryMarkerStore = Pick<
@@ -263,6 +264,7 @@ export class ChannelAutoPostLegacyRecovery {
             },
             source: 'poll',
             senderId: null,
+            senderAdminVerified: false,
           });
           if (outcome === 'in_progress' || outcome === 'noop') {
             cursorCanAdvance = false;

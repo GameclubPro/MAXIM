@@ -72,6 +72,20 @@ function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
+function readIdentifier(...values: unknown[]): string | null {
+  for (const value of values) {
+    const stringValue = readString(value);
+    if (stringValue) {
+      return stringValue;
+    }
+    if (typeof value === 'number' && Number.isSafeInteger(value)) {
+      return String(value);
+    }
+  }
+
+  return null;
+}
+
 function readInteger(value: unknown): number | null {
   const parsed =
     typeof value === 'number'
@@ -258,7 +272,14 @@ export function parseChannelAutoPostListedMessage(
   }
 
   const messageText = resolveChannelAutoPostMessageText(message, null);
-  const senderId = asRecord(message.sender)?.user_id ?? message.sender_id;
+  const sender = asRecord(message.sender);
+  const senderId = readIdentifier(
+    sender?.user_id,
+    sender?.userId,
+    sender?.id,
+    message.sender_id,
+    message.senderId,
+  );
   const existingDialogButtons = extractChannelAutoPostDialogButtons(message, expectedChatId);
 
   return {
@@ -267,7 +288,7 @@ export function parseChannelAutoPostListedMessage(
     textFormat: messageText.textFormat,
     linkType: readLowerString(link?.type),
     timestampMs,
-    senderId: typeof senderId === 'string' && senderId.trim() ? senderId.trim() : null,
+    senderId,
     existingDialogButtonKinds: existingDialogButtons.kinds,
     existingDialogThreadId: existingDialogButtons.threadId,
   };

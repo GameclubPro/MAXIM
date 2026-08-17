@@ -218,6 +218,19 @@ describe('ChannelAutoPostLegacyRecovery', () => {
       sourceTag: 'channel_auto_post',
       botId: 'scan-bot',
     });
+    expect(harness.findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: { in: ['channel-1'] },
+        chat: { entityType: 'CHANNEL' },
+      },
+      include: {
+        chat: {
+          select: {
+            admins: { select: { userId: true } },
+          },
+        },
+      },
+    });
     expect(harness.attach).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: 'channel-1',
@@ -229,6 +242,7 @@ describe('ChannelAutoPostLegacyRecovery', () => {
         existingDialogThreadId: 'existing-thread',
         source: 'poll',
         senderId: null,
+        senderAdminVerified: false,
         managedChannel: expect.objectContaining({
           channelSettings: expect.objectContaining({
             commentsEnabled: true,

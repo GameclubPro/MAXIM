@@ -1,6 +1,10 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
+import {
+  markMaxPreDispatchGuardRejected,
+  MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+} from '../max/max-action-pre-dispatch-guard';
 import { ModerationService } from './moderation.service';
 
 function expectChannelAutoPostOptions(overrides: Record<string, unknown> = {}) {
@@ -67,15 +71,15 @@ function createChannelPostUpdateWithoutSender(): MaxUpdate {
   };
 }
 
-function createForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
+function createForwardedChannelPostUpdate(senderId = ''): MaxUpdate {
   return {
-    updateId: 'upd-channel-forward-no-sender-1',
+    updateId: senderId ? 'upd-channel-forward-admin-1' : 'upd-channel-forward-no-sender-1',
     type: 'message_created',
     message: {
       messageId: 'mid-channel-forward-no-sender-1',
       chatId: 'channel-1',
-      senderId: '',
-      senderName: '',
+      senderId,
+      senderName: senderId ? 'Админ' : '',
       text: 'Пересланный пост',
       createdAt: new Date('2026-03-06T15:10:00.000Z').toISOString(),
     },
@@ -86,6 +90,14 @@ function createForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
           chat_type: 'channel',
         },
         timestamp: 1772810100000,
+        ...(senderId
+          ? {
+              sender: {
+                user_id: senderId,
+                is_bot: false,
+              },
+            }
+          : {}),
         body: {
           mid: 'mid-channel-forward-no-sender-1',
           text: '',
@@ -101,7 +113,7 @@ function createForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
   };
 }
 
-function createRichForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
+function createRichForwardedChannelPostUpdate(): MaxUpdate {
   const sourceText = '🔥MAX Docs\n\nВторой абзац';
   return {
     updateId: 'upd-channel-forward-rich-no-sender-1',
@@ -109,8 +121,8 @@ function createRichForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
     message: {
       messageId: 'mid-channel-forward-rich-no-sender-1',
       chatId: 'channel-1',
-      senderId: '',
-      senderName: '',
+      senderId: 'admin-1',
+      senderName: 'Админ',
       text: sourceText,
       createdAt: new Date('2026-03-06T15:10:00.000Z').toISOString(),
     },
@@ -121,6 +133,10 @@ function createRichForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
           chat_type: 'channel',
         },
         timestamp: 1772810100000,
+        sender: {
+          user_id: 'admin-1',
+          is_bot: false,
+        },
         body: {
           mid: 'mid-channel-forward-rich-no-sender-1',
           text: '',
@@ -179,6 +195,26 @@ function createAdminServiceMock() {
   };
 }
 
+function createChannelMutationGuardMaxClientMock() {
+  return {
+    getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
+    getChatMemberAccess: jest.fn().mockResolvedValue({
+      userId: 'admin-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: [],
+    }),
+  };
+}
+
+function createChannelMutationGuardPrismaMock() {
+  return {
+    chat: {
+      findUnique: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }),
+    },
+  };
+}
+
 function createChannelAutoPostAttachMarkerMock() {
   const rows = new Map<string, Record<string, any>>();
   const buildKey = (chatId: string, messageId: string) => `${chatId}:${messageId}`;
@@ -231,6 +267,7 @@ function createChannelAutoPostAttachMarkerMock() {
 describe('ModerationService channel auto post buttons', () => {
   it('auto-attaches buttons to a fresh admin post in a managed channel', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -257,6 +294,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -373,6 +411,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('opens channel suggestions in the mini app when admins select mini app mode', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -393,6 +432,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -439,6 +479,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('does not auto-attach comments when channel settings are auto-created with fresh defaults', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -476,6 +517,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -519,6 +561,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('auto-attaches buttons when MAX omits sender metadata for a channel post', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -544,6 +587,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -587,8 +631,9 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('falls back to a bot reply with buttons for forwarded channel posts', async () => {
+  it('does not copy or delete a forwarded channel post when its sender is unknown', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -614,6 +659,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
@@ -642,50 +688,410 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
-    await service.handleUpdate(createForwardedChannelPostUpdateWithoutSender());
+    await service.handleUpdate(createForwardedChannelPostUpdate());
 
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-channel-forward-no-sender-1',
-      'Пересланный пост',
-      expect.objectContaining({
-        buttons: [
-          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
-          [expect.objectContaining({ text: 'Предложить пост' })],
-        ],
-      }),
-      expectChannelAutoPostOptions(),
-    );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-channel-forward-no-sender-1',
-      {
-        immediate: true,
-        trafficClass: 'background',
-        actionHealthLane: 'background',
-        sourceTag: 'channel_auto_post',
-        timeoutMs: 2_000,
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the entity immediately before publishing a forwarded post copy', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      chat: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce({ entityType: 'CHANNEL' })
+          .mockResolvedValueOnce({ entityType: 'CHAT' }),
       },
+      channelAutoPostAttachMarker: markerMock.delegate,
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    let maxPostStarted = false;
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      sendMessageCopyWithInlineKeyboard: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          _text: string,
+          options: { beforeSend?: () => Promise<void> },
+        ) => {
+          await options.beforeSend?.();
+          maxPostStarted = true;
+          return { messageId: 'must-not-be-created', url: null };
+        },
+      ),
+      deleteMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
     );
-    expect(prisma.auditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            deliveryMode: 'replace_with_bot_message',
-            linkType: 'forward',
-            replacementMessageId: 'mid-forward-copy-1',
-            publishedUrl: 'https://max.ru/chats/channel-1/message/1001',
-            originalDeleted: true,
-          }),
-        }),
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-forward-race-1',
+        text: 'Пересланный пост',
+        linkType: 'forward',
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: 'admin-1',
+        senderAdminVerified: true,
       }),
+    ).resolves.toBe('skipped');
+
+    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+    expect(maxPostStarted).toBe(false);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(markerMock.rows.get('channel-1:mid-channel-forward-race-1')).toMatchObject({
+      status: 'SKIPPED',
+      replacementSendStartedAt: null,
+      replacementMessageId: null,
+      originalDeleted: false,
+    });
+  });
+
+  it('does not publish a forwarded copy when fresh MAX metadata classifies the target as a chat', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelAutoPostAttachMarker: markerMock.delegate,
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    let maxPostStarted = false;
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'chat' }),
+      sendMessageCopyWithInlineKeyboard: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          _text: string,
+          options: { beforeSend?: () => Promise<void> },
+        ) => {
+          await options.beforeSend?.();
+          maxPostStarted = true;
+          return { messageId: 'must-not-be-created', url: null };
+        },
+      ),
+      deleteMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
     );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-forward-remote-chat-1',
+        text: 'Пересланный пост',
+        linkType: 'forward',
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: 'admin-1',
+        senderAdminVerified: true,
+      }),
+    ).resolves.toBe('skipped');
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+    });
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxPostStarted).toBe(false);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a forwarded copy when the sender is no longer a MAX admin', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelAutoPostAttachMarker: markerMock.delegate,
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    let maxPostStarted = false;
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'admin-1',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      sendMessageCopyWithInlineKeyboard: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          _text: string,
+          options: { beforeSend?: () => Promise<void> },
+        ) => {
+          await options.beforeSend?.();
+          maxPostStarted = true;
+          return { messageId: 'must-not-be-created', url: null };
+        },
+      ),
+      deleteMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-forward-demoted-admin-1',
+        text: 'Пересланный пост',
+        linkType: 'forward',
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: 'admin-1',
+        senderAdminVerified: true,
+      }),
+    ).resolves.toBe('skipped');
+
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('channel-1', 'admin-1', {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+    });
+    expect(maxPostStarted).toBe(false);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('uses fresh MAX entity and sender checks before both forward copy and cleanup', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelAutoPostAttachMarker: markerMock.delegate,
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      sendMessageCopyWithInlineKeyboard: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          _text: string,
+          options: { beforeSend?: () => Promise<void> },
+        ) => {
+          await options.beforeSend?.();
+          return {
+            messageId: 'mid-channel-forward-safe-copy-1',
+            url: 'https://max.ru/chats/channel-1/message/mid-channel-forward-safe-copy-1',
+          };
+        },
+      ),
+      deleteMessage: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          options: { beforeImmediateDeleteMutation?: () => Promise<void> },
+        ) => {
+          await options.beforeImmediateDeleteMutation?.();
+        },
+      ),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-forward-safe-1',
+        text: 'Пересланный пост',
+        linkType: 'forward',
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: 'admin-1',
+        senderAdminVerified: true,
+      }),
+    ).resolves.toBe('attached');
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+    });
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('channel-1', 'admin-1', {
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+    });
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not edit a post when fresh MAX metadata classifies the target as a chat', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelAutoPostAttachMarker: markerMock.delegate,
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    let maxEditStarted = false;
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'chat' }),
+      editMessageInlineKeyboard: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          _text: string,
+          options: { beforeEditMutation?: () => Promise<void> },
+        ) => {
+          try {
+            await options.beforeEditMutation?.();
+          } catch (error: unknown) {
+            throw markMaxPreDispatchGuardRejected(
+              error,
+              MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+            );
+          }
+          maxEditStarted = true;
+        },
+      ),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-channel-edit-remote-chat-1',
+        text: 'Пост',
+        linkType: null,
+        managedChannel: {
+          channelSettings: {
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: null,
+        senderAdminVerified: false,
+      }),
+    ).resolves.toBe('skipped');
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+    expect(maxEditStarted).toBe(false);
+    expect(markerMock.rows.get('channel-1:mid-channel-edit-remote-chat-1')).toMatchObject({
+      status: 'SKIPPED',
+      replacementMessageId: null,
+      originalDeleted: false,
+    });
   });
 
   it('preserves MAX markup from forwarded channel post webhooks when publishing the bot copy', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -711,6 +1117,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
@@ -739,7 +1146,7 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
-    await service.handleUpdate(createRichForwardedChannelPostUpdateWithoutSender());
+    await service.handleUpdate(createRichForwardedChannelPostUpdate());
 
     expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
@@ -757,18 +1164,20 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-forward-rich-no-sender-1',
-      {
+      expect.objectContaining({
         immediate: true,
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'channel_auto_post',
         timeoutMs: 2_000,
-      },
+        beforeImmediateDeleteMutation: expect.any(Function),
+      }),
     );
   });
 
   it('auto-attaches comments and suggestions when both features are enabled', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -794,6 +1203,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -845,6 +1255,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('skips forwarded channel post buttons when bot copy delivery is terminally rejected', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -870,6 +1281,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       sendMessageCopyWithInlineKeyboard: jest.fn().mockRejectedValue({
@@ -901,7 +1313,7 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
-    await service.handleUpdate(createForwardedChannelPostUpdateWithoutSender());
+    await service.handleUpdate(createForwardedChannelPostUpdate('admin-1'));
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
@@ -922,12 +1334,17 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('does not publish a forwarded-post reply fallback with the resolved scan bot in multi-bot mode', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }),
+      },
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       sendMessageCopyWithInlineKeyboard: jest.fn().mockRejectedValue({
         response: {
           status: 400,
@@ -977,7 +1394,8 @@ describe('ModerationService channel auto post buttons', () => {
         adminUserIds: ['admin-1'],
       },
       source: 'poll',
-      senderId: null,
+      senderId: 'admin-1',
+      senderAdminVerified: true,
     });
 
     expect(maxBotLinkService.resolveBotIdForCapability).toHaveBeenCalledWith({
@@ -1013,7 +1431,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'channel-1',
-        actorUserId: 'system',
+        actorUserId: 'admin-1',
         action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
         payload: expect.objectContaining({
           messageId: 'mid-channel-forward-multi-1',
@@ -1030,6 +1448,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('does not auto-attach when comments and suggestions are disabled', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -1055,6 +1474,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -1083,6 +1503,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('appends the configured signature to a manual channel post without engagement buttons', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -1103,6 +1524,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
@@ -1162,12 +1584,14 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('applies the signature and engagement buttons in one manual-post edit', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const channelPostSignatureService = {
@@ -1228,6 +1652,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('does not duplicate a signature after an ambiguous successful edit is retried', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findUnique: jest.fn().mockResolvedValue({
           postSignatureEnabled: true,
@@ -1247,6 +1672,7 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const ambiguousEditError = new Error('MAX edit response timed out');
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn().mockRejectedValueOnce(ambiguousEditError),
     };
     const channelPostSignatureService = new ChannelPostSignatureService(
@@ -1300,12 +1726,14 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('terminally skips a local signature validation failure', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn(),
     };
     const channelPostSignatureService = {
@@ -1357,6 +1785,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('auto-attaches the comments button when comments are enabled', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -1382,6 +1811,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -1416,6 +1846,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('auto-attaches the suggestion button when suggestions are enabled', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -1441,6 +1872,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
@@ -1487,12 +1919,14 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('uses the existing comments thread and resolved scan bot when poll repair adds suggestions', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const maxBotLinkService = {
@@ -1601,6 +2035,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('polls channel posts and attaches buttons even without webhook delivery', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -1631,6 +2066,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1772810100000,
@@ -1671,6 +2107,9 @@ describe('ModerationService channel auto post buttons', () => {
 
     expect(prisma.channelSettings.findMany).toHaveBeenNthCalledWith(1, {
       where: {
+        chat: {
+          entityType: 'CHANNEL',
+        },
         OR: [
           {
             postSignatureEnabled: true,
@@ -1694,6 +2133,9 @@ describe('ModerationService channel auto post buttons', () => {
       where: {
         chatId: {
           in: ['channel-1'],
+        },
+        chat: {
+          entityType: 'CHANNEL',
         },
       },
       include: {
@@ -1741,10 +2183,61 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
+  it('does not scan a stale CHAT candidate that fails the defensive channel reload', async () => {
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelSettings: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([{ chatId: 'chat-1' }])
+          .mockResolvedValueOnce([]),
+      },
+      auditLog: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      listMessages: jest.fn(),
+      editMessageInlineKeyboard: jest.fn(),
+      sendMessageCopyWithInlineKeyboard: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(prisma.channelSettings.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          chatId: { in: ['chat-1'] },
+          chat: { entityType: 'CHANNEL' },
+        },
+      }),
+    );
+    expect(maxClient.listMessages).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('treats polling as a repair sweep and skips scans right after a webhook-seen channel post', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-06T15:10:00.000Z'));
 
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       chat: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'channel-1',
@@ -1788,6 +2281,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       listMessages: jest.fn().mockResolvedValue([]),
@@ -1832,12 +2326,14 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('retries a rejected merged edit by replacing the keyboard without losing the signature', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest
         .fn()
         .mockRejectedValueOnce({
@@ -1949,6 +2445,7 @@ describe('ModerationService channel auto post buttons', () => {
       message: 'Error on message edit',
     };
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
@@ -1956,6 +2453,7 @@ describe('ModerationService channel auto post buttons', () => {
       channelAutoPostAttachMarker: markerMock.delegate,
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn().mockRejectedValue(terminalEditError),
       sendMessageImmediateWithResolvedLink: jest.fn(),
     };
@@ -2047,12 +2545,14 @@ describe('ModerationService channel auto post buttons', () => {
       response: { status: 408 },
     });
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn().mockRejectedValue(editError),
       sendMessageImmediateWithResolvedLink: jest.fn(),
     };
@@ -2093,8 +2593,9 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it('skips polled channel posts from non-admin authors', async () => {
+  it('skips and advances past numeric non-admin forwarded posts during polling', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -2106,7 +2607,7 @@ describe('ModerationService channel auto post buttons', () => {
             chat: {
               admins: [
                 {
-                  userId: 'admin-1',
+                  userId: '195714583',
                 },
               ],
             },
@@ -2125,20 +2626,26 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1772810100000,
           sender: {
-            user_id: 'user-2',
+            user_id: 195_714_584,
           },
           body: {
             mid: 'mid-polled-non-admin-1',
-            text: 'Пост не админа',
+            text: '',
             attachments: [],
+          },
+          link: {
+            type: 'forward',
+            message: { text: 'Пост не админа' },
           },
         },
       ]),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageCopyWithInlineKeyboard: jest.fn(),
       getChatAdminIds: jest.fn(),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -2164,11 +2671,85 @@ describe('ModerationService channel auto post buttons', () => {
     await (service as any).processChannelAutoPostButtons();
 
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect((service as any).channelAutoPostScanState.get('channel-1')).toMatchObject({
+      latestTimestampMs: 1772810100000,
+      latestMessageIdsAtTimestamp: ['mid-polled-non-admin-1'],
+    });
+  });
+
+  it('fails closed and advances past a polled forward with no sender metadata', async () => {
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-1',
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+            commentsEnabled: true,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: { admins: [{ userId: 'admin-1' }] },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          id: 'mid-polled-forward-unknown-1',
+          timestamp: 1772810100000,
+          body: { text: '', attachments: [] },
+          link: {
+            type: 'forward',
+            message: { text: 'Пересланный пост без автора' },
+          },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn(),
+      sendMessageCopyWithInlineKeyboard: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    const resolveMutationBot = jest.spyOn(service as any, 'resolveAutoAttachMutationBotId');
+    const claimMarker = jest.spyOn(
+      (service as any).replacementAttachMarkerStore,
+      'claimChannelAutoPost',
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(resolveMutationBot).not.toHaveBeenCalled();
+    expect(claimMarker).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect((service as any).channelAutoPostScanState.get('channel-1')).toMatchObject({
+      latestTimestampMs: 1772810100000,
+      latestMessageIdsAtTimestamp: ['mid-polled-forward-unknown-1'],
+    });
   });
 
   it('allows polled channel posts when MAX does not provide sender metadata', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -2199,6 +2780,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1772810100000,
@@ -2258,6 +2840,10 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('routes forwarded channel replacement and cleanup through a delete-capable bot', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }),
+      },
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -2270,7 +2856,7 @@ describe('ModerationService channel auto post buttons', () => {
             chat: {
               admins: [
                 {
-                  userId: 'admin-1',
+                  userId: '195714583',
                 },
               ],
             },
@@ -2289,12 +2875,13 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           id: 'mid-polled-forward-1',
           timestamp: 1772810100000,
           sender: {
-            user_id: 'admin-1',
+            user_id: 195_714_583,
           },
           body: {
             text: '',
@@ -2378,24 +2965,37 @@ describe('ModerationService channel auto post buttons', () => {
         botId: 'delete-capable-bot',
       },
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('channel-1', 'mid-polled-forward-1', {
-      immediate: true,
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      sourceTag: 'channel_auto_post',
-      timeoutMs: 2_000,
-      botId: 'delete-capable-bot',
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-polled-forward-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
+        timeoutMs: 2_000,
+        botId: 'delete-capable-bot',
+        beforeImmediateDeleteMutation: expect.any(Function),
+      }),
+    );
     expect(maxBotLinkService.resolveBotRoutes).toHaveBeenCalledWith({
       purpose: 'moderation_action',
       chatId: 'channel-1',
       action: 'delete_message',
       fallbackToPrimary: true,
     });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          actorUserId: '195714583',
+        }),
+      }),
+    );
   });
 
   it('backs off channel polling after MAX API rate limit errors', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -2432,6 +3032,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockRejectedValue(new Error('MAX API global rate limit exceeded')),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       getChatAdminIds: jest.fn(),
@@ -2472,6 +3073,7 @@ describe('ModerationService channel auto post buttons', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T02:00:00.000Z'));
 
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -2502,6 +3104,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1774810100000,
@@ -2557,6 +3160,7 @@ describe('ModerationService channel auto post buttons', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T02:30:00.000Z'));
 
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -2587,6 +3191,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([]),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       getChatAdminIds: jest.fn(),
@@ -2633,6 +3238,7 @@ describe('ModerationService channel auto post buttons', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
 
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -2663,6 +3269,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1774810000000,
@@ -2768,6 +3375,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('pauses channel polling while the shared system mode is degraded', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn(),
       },
@@ -2783,6 +3391,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn(),
       editMessageInlineKeyboard: jest.fn(),
       getChatAdminIds: jest.fn(),
@@ -2831,6 +3440,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('does not pause channel polling during recovery window without active pressure', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest.fn().mockResolvedValue([]),
       },
@@ -2846,6 +3456,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn(),
       editMessageInlineKeyboard: jest.fn(),
       getChatAdminIds: jest.fn(),
@@ -2893,6 +3504,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('routes ordinary auto-attach edits through an edit-capable bot', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
@@ -2905,6 +3517,7 @@ describe('ModerationService channel auto post buttons', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -3008,6 +3621,7 @@ describe('ModerationService channel auto post buttons', () => {
     });
     const markerRows = new Map<string, any>();
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest
           .fn()
@@ -3050,6 +3664,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1772810100000,
@@ -3099,6 +3714,7 @@ describe('ModerationService channel auto post buttons', () => {
 
   it('uses the durable auto-attach marker to avoid concurrent duplicate side effects', async () => {
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
@@ -3113,6 +3729,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn(),
     };
     const service = new ModerationService(
@@ -3212,6 +3829,7 @@ describe('ModerationService channel auto post buttons', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
 
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
         findMany: jest
           .fn()
@@ -3250,6 +3868,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1772810100000,
@@ -3310,6 +3929,7 @@ describe('ModerationService channel auto post buttons', () => {
   it('completes the durable marker and does not retry when audit persistence fails', async () => {
     const markerRows = new Map<string, any>();
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockRejectedValue(new Error('audit unavailable')),
@@ -3335,6 +3955,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const service = new ModerationService(
@@ -3398,6 +4019,7 @@ describe('ModerationService channel auto post buttons', () => {
   ])('does not reclaim a stale channel replacement marker with $label', async (markerState) => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
       },
@@ -3412,6 +4034,7 @@ describe('ModerationService channel auto post buttons', () => {
       },
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       sendMessageCopyWithInlineKeyboard: jest.fn(),
     };
     const service = new ModerationService(
@@ -3510,10 +4133,15 @@ describe('ModerationService channel auto post buttons', () => {
       }),
     };
     const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: 'CHANNEL' }),
+      },
       auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
       channelAutoPostAttachMarker: markerDelegate,
     };
     const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
       sendMessageCopyWithInlineKeyboard: jest.fn().mockImplementation(async (...args: any[]) => {
         await args[3]?.beforeSend?.();
         return {
@@ -3559,7 +4187,8 @@ describe('ModerationService channel auto post buttons', () => {
         adminUserIds: ['admin-1'],
       },
       source: 'poll',
-      senderId: null,
+      senderId: 'admin-1',
+      senderAdminVerified: true,
     } as const;
 
     await expect((service as any).tryAutoAttachChannelMessageButtons(input)).resolves.toBe(

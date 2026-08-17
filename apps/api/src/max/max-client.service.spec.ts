@@ -25,6 +25,7 @@ import {
 } from './max-video-upload.constants';
 import {
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
 } from './max-action-pre-dispatch-guard';
 import {
@@ -2301,6 +2302,47 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('runs an edit guard after reading the source message and before the HTTP mutation', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-edit-guard-1',
+                  text: 'Текст',
+                  attachments: [],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const guardError = new Error('edit no longer authorized');
+    const beforeEditMutation = jest.fn(async () => {
+      expect(httpService.request).toHaveBeenCalledTimes(1);
+      throw guardError;
+    });
+
+    await expect(
+      service.editMessageInlineKeyboard('chat-1', 'mid-edit-guard-1', 'Текст', {
+        beforeEditMutation,
+      }),
+    ).rejects.toBe(guardError);
+
+    expect(beforeEditMutation).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect((guardError as Error & { code?: string }).code).toBe(
+      MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('answers callback with notification and inline keyboard update in one request', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:35.000Z'));
 
@@ -2581,6 +2623,69 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect.objectContaining({ method: 'put' }),
     );
     expect(renewalCount).toBe(2);
+
+    await service.onModuleDestroy();
+  });
+
+  it('rechecks the keyboard lock after an asynchronous edit guard and before PUT', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-lost-edit-lock-after-guard-1',
+                  text: 'Текст опроса',
+                  attachments: [],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const evalMock = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis
+      .eval;
+    const originalEval = evalMock.getMockImplementation()!;
+    let renewalCount = 0;
+    evalMock.mockImplementation(async (script: string, ...args: unknown[]) => {
+      if (script.includes('MAX_MESSAGE_EDIT_LOCK_RENEW_V1')) {
+        renewalCount += 1;
+        return renewalCount < 3 ? 1 : 0;
+      }
+      return originalEval(script, ...args);
+    });
+    const beforeEditMutation = jest.fn().mockResolvedValue(undefined);
+
+    await expect(
+      service.editMessageInlineKeyboard(
+        'channel-1',
+        'mid-lost-edit-lock-after-guard-1',
+        'Текст опроса',
+        {
+          buttons: [
+            [
+              {
+                type: 'callback',
+                text: 'Да',
+                payload: 'poll|v2|poll-1|option-1',
+              },
+            ],
+          ],
+          beforeEditMutation,
+        },
+      ),
+    ).rejects.toThrow('Lost ownership of the MAX message keyboard edit lock');
+
+    expect(beforeEditMutation).toHaveBeenCalledTimes(1);
+    expect(renewalCount).toBe(3);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(httpService.request).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'put' }),
+    );
 
     await service.onModuleDestroy();
   });
