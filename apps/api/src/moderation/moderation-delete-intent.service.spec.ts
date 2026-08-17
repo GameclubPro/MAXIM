@@ -12,6 +12,7 @@ import {
   ModerationDeleteIntentService,
   PhotoDuplicateDeleteIntentGuardRejectedError,
 } from './moderation-delete-intent.service';
+import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
 
 type ServiceInternals = {
   classifyDeleteError(
@@ -54,6 +55,7 @@ type ServiceInternals = {
   hasRemoteSuccessMarker(intent: Record<string, unknown>): boolean;
   hasDeleteDispatchMarker(intent: Record<string, unknown>): boolean;
   hasDeleteMutationEvidence(intent: Record<string, unknown>): boolean;
+  isBotMessageAutoDeleteRetryLimitApplicable(intent: Record<string, unknown>): boolean;
 };
 
 const ownedHeartbeat = {
@@ -799,7 +801,9 @@ describe('ModerationDeleteIntentService', () => {
     expect(shadowDefault.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe(
       'execute',
     );
-    expect(shadowDisabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe('observed');
+    expect(shadowDisabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe(
+      'observed',
+    );
     expect(shadowDisabled.getRolloutForInput(requiredSubscriptionDeleteIntentInput())).toBe(
       'observed',
     );
@@ -1215,6 +1219,280 @@ describe('ModerationDeleteIntentService', () => {
         botMessageAutoDeleteOnly: true,
       }),
     ).toBe(true);
+  });
+
+  it('applies the bot-message auto-delete retry cap only before mutation and without a required reason', () => {
+    const { service } = createService();
+    const internals = service as unknown as ServiceInternals;
+    const autoDeleteOnly = {
+      ...baseIntent,
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+    };
+
+    expect(internals.isBotMessageAutoDeleteRetryLimitApplicable(autoDeleteOnly)).toBe(true);
+    for (const bypass of [
+      { requiredSubscriptionDeleteReason: true },
+      { replacementCleanup: true },
+      { commercialOcrGuardRequired: true },
+      { commercialOcrDeleteReason: true },
+      { deleteDispatchStartedAt: new Date() },
+      { deleteDispatchStartedBotId: 'bot-1' },
+      { remoteDeleteSucceededAt: new Date() },
+      { remoteDeleteSucceededBotId: 'bot-1' },
+    ]) {
+      expect(
+        internals.isBotMessageAutoDeleteRetryLimitApplicable({
+          ...autoDeleteOnly,
+          ...bypass,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('allows the initial bot-message auto-delete route attempt', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+    };
+    const waitingIntent = {
+      ...autoDeleteIntent,
+      status: 'WAITING_CAPABILITY' as const,
+      nextAttemptAt: new Date(Date.now() + 30_000),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'no_active_membership',
+    };
+    const unavailableRoute = {
+      ...confirmedRoute,
+      primaryBotId: null,
+      botId: null,
+      candidateBotIds: [],
+      candidateCapabilities: [],
+      capabilityState: 'stale_or_unknown',
+      capabilityReason: 'no_active_membership',
+    } as const;
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([autoDeleteIntent])
+      .mockResolvedValueOnce([waitingIntent]);
+    const resolveDeleteMessageBotRoute = jest.fn().mockResolvedValue(unavailableRoute);
+    const getCurrentChatMemberAccess = jest.fn();
+    const deleteMessage = jest.fn();
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: queryRaw, $executeRaw: jest.fn().mockResolvedValue(1) },
+      { getCurrentChatMemberAccess, deleteMessage },
+      {
+        resolveDeleteMessageBotRoute,
+        getExecutableBotById: jest.fn().mockReturnValue(null),
+      },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'waiting_capability',
+      status: 'WAITING_CAPABILITY',
+    });
+
+    expect(resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
+    expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes the fifth bot-message auto-delete failure after its route attempt', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      attemptCount: 5,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+    };
+    const terminalIntent = {
+      ...autoDeleteIntent,
+      status: 'FAILED_TERMINAL' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'bot_message_auto_delete_retry_limit_reached',
+    };
+    const unavailableRoute = {
+      ...confirmedRoute,
+      primaryBotId: null,
+      botId: null,
+      candidateBotIds: [],
+      candidateCapabilities: [],
+      capabilityState: 'stale_or_unknown',
+      capabilityReason: 'no_active_membership',
+    } as const;
+    const rootQueryRaw = jest.fn().mockResolvedValueOnce([autoDeleteIntent]);
+    const txQueryRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+      const sql = query.strings?.join('?') ?? '';
+      if (sql.includes('FOR UPDATE')) {
+        return [{ id: 'intent-1' }];
+      }
+      return sql.includes('UPDATE "moderation_delete_intents"')
+        ? [terminalIntent]
+        : [autoDeleteIntent];
+    });
+    const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
+      callback({ $queryRaw: txQueryRaw }),
+    );
+    const resolveDeleteMessageBotRoute = jest.fn().mockResolvedValue(unavailableRoute);
+    const getCurrentChatMemberAccess = jest.fn();
+    const deleteMessage = jest.fn();
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: rootQueryRaw,
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        $transaction: transaction,
+      },
+      { getCurrentChatMemberAccess, deleteMessage },
+      {
+        resolveDeleteMessageBotRoute,
+        getExecutableBotById: jest.fn().mockReturnValue(null),
+      },
+    );
+
+    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+    expect(result).toMatchObject({
+      kind: 'terminal',
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
+    expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+    const terminalQuery = txQueryRaw.mock.calls
+      .map((call) => call[0])
+      .find((query) => (query?.strings?.join('?') ?? '').includes('SET\n'));
+    expect(terminalQuery?.values).toContain('bot_message_auto_delete_retry_limit_reached');
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+    });
+  });
+
+  it('terminalizes an already-capped queued auto-delete before any external lookup', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      attemptCount: 6,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+    };
+    const terminalIntent = {
+      ...autoDeleteIntent,
+      status: 'FAILED_TERMINAL' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'bot_message_auto_delete_retry_limit_reached',
+    };
+    const rootQueryRaw = jest.fn().mockResolvedValueOnce([autoDeleteIntent]);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: 'intent-1' }])
+      .mockResolvedValueOnce([autoDeleteIntent])
+      .mockResolvedValueOnce([terminalIntent]);
+    const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
+      callback({ $queryRaw: txQueryRaw }),
+    );
+    const resolveDeleteMessageBotRoute = jest.fn();
+    const getCurrentChatMemberAccess = jest.fn();
+    const deleteMessage = jest.fn();
+    const { service, prisma, queue } = createService(
+      {},
+      { $queryRaw: rootQueryRaw, $transaction: transaction },
+      { getCurrentChatMemberAccess, deleteMessage },
+      { resolveDeleteMessageBotRoute },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(resolveDeleteMessageBotRoute).not.toHaveBeenCalled();
+    expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('rechecks coalesced required-subscription ownership before applying the cap', async () => {
+    const autoDeleteIntent = {
+      ...baseIntent,
+      attemptCount: 5,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+    };
+    const mixedIntent = {
+      ...autoDeleteIntent,
+      botMessageAutoDeleteOnly: false,
+      requiredSubscriptionDeleteReason: true,
+    };
+    const waitingIntent = {
+      ...mixedIntent,
+      status: 'WAITING_CAPABILITY' as const,
+      nextAttemptAt: new Date(Date.now() + 30_000),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+      lastErrorCode: 'no_active_membership',
+    };
+    const unavailableRoute = {
+      ...confirmedRoute,
+      primaryBotId: null,
+      botId: null,
+      candidateBotIds: [],
+      candidateCapabilities: [],
+      capabilityState: 'stale_or_unknown',
+      capabilityReason: 'no_active_membership',
+    } as const;
+    const rootQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([autoDeleteIntent])
+      .mockResolvedValueOnce([waitingIntent]);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: 'intent-1' }])
+      .mockResolvedValueOnce([mixedIntent]);
+    const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
+      callback({ $queryRaw: txQueryRaw }),
+    );
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const { service, queue } = createService(
+      { MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true },
+      { $queryRaw: rootQueryRaw, $executeRaw: executeRaw, $transaction: transaction },
+      {},
+      {
+        resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(unavailableRoute),
+        getExecutableBotById: jest.fn().mockReturnValue(null),
+      },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'waiting_capability',
+      status: 'WAITING_CAPABILITY',
+    });
+
+    expect(txQueryRaw).toHaveBeenCalledTimes(2);
+    const finishQuery = executeRaw.mock.calls
+      .map((call) => call[0])
+      .find((query) => (query?.strings?.join('?') ?? '').includes('"last_error_code" ='));
+    expect(finishQuery?.values).toContain('no_active_membership');
+    expect(finishQuery?.values).not.toContain('bot_message_auto_delete_retry_limit_reached');
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('rejects executable origin-only intents without an origin bot', () => {
@@ -5066,8 +5344,19 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('intent."remote_delete_succeeded_bot_id" IS NOT NULL');
     expect(sql).toContain('intent."delete_dispatch_started_at" IS NOT NULL');
     expect(sql).toContain('intent."delete_dispatch_started_bot_id" IS NOT NULL');
+    expect(sql).toContain('intent."attempt_count" <');
+    expect(sql).toContain('intent."commercial_ocr_guard_required" = FALSE');
+    expect(sql).toContain('retry_cap_other_reason."rule_code" <>');
+    expect(sql).not.toContain('retry_cap_other_reason."rule_code" NOT IN');
+    expect(sql.match(/intent\."remote_delete_succeeded_at" IS NOT NULL/gu)).toHaveLength(2);
+    expect(sql.match(/intent\."remote_delete_succeeded_bot_id" IS NOT NULL/gu)).toHaveLength(2);
+    expect(sql.match(/intent\."delete_dispatch_started_at" IS NOT NULL/gu)).toHaveLength(2);
+    expect(sql.match(/intent\."delete_dispatch_started_bot_id" IS NOT NULL/gu)).toHaveLength(2);
     expect(query?.values).toEqual(
       expect.arrayContaining([
+        5,
+        'BOT_MESSAGE_AUTO_DELETE',
+        COMMERCIAL_OCR_DELETE_RULE_CODE,
         'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
         'CHAT_AUTO_COMMENT_ADMIN_MESSAGE_REPLACEMENT_CLEANUP',
         'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
@@ -5566,6 +5855,161 @@ describe('ModerationDeleteIntentService', () => {
     const reopenSql = queryRaw.mock.calls[1]?.[0]?.strings?.join('?') ?? '';
     expect(reopenSql).toContain("last_error_code\" = 'managed_output_auto_delete_blocked'");
     expect(reopenSql).toContain('CAST(\'PENDING\' AS "ModerationDeleteIntentStatus")');
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({ priority: 1 }),
+    );
+  });
+
+  it.each<{
+    label: string;
+    config: Record<string, unknown>;
+    input: () => EnsureModerationDeleteIntentInput;
+  }>([
+    {
+      label: 'required-subscription',
+      config: { MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true },
+      input: () => ({
+        ...requiredSubscriptionDeleteIntentInput(),
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+      }),
+    },
+    {
+      label: 'commercial OCR',
+      config: {},
+      input: () => commercialOcrClaimedIntentInput().intent,
+    },
+    {
+      label: 'channel replacement cleanup',
+      config: {},
+      input: () => ({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'channel-auto-post-cleanup:message-1',
+        ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
+        entityType: 'CHANNEL',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        routingPolicy: 'origin_only',
+      }),
+    },
+  ])(
+    'reopens a capped auto-delete when a later $label reason arrives',
+    async ({ config, input }) => {
+      const capped = {
+        ...baseIntent,
+        status: 'FAILED_TERMINAL' as const,
+        attemptCount: 5,
+        lastErrorCode: 'bot_message_auto_delete_retry_limit_reached',
+        lastError: 'BOT_MESSAGE_AUTO_DELETE reached its external-attempt limit',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const reopened = {
+        ...capped,
+        status: 'PENDING' as const,
+        lastErrorCode: null,
+        lastError: null,
+        nextAttemptAt: new Date(Date.now() - 1_000),
+        retryUntilAt: new Date(Date.now() + 60_000),
+      };
+      const queryRaw = jest.fn().mockImplementation(async (query: { strings?: string[] }) => {
+        const sql = query.strings?.join('?') ?? '';
+        if (sql.includes('UPDATE "moderation_delete_intents"')) {
+          return [reopened];
+        }
+        if (sql.includes('AS "nonCommercialOcrDeleteReason"')) {
+          return [
+            {
+              nonCommercialOcrDeleteReason: true,
+              replacementCleanup: false,
+              nonChannelReplacementCleanup: false,
+              channelAutoPostCleanupReason: false,
+              botMessageAutoDeleteReason: true,
+              requiredSubscriptionDeleteReason: false,
+            },
+          ];
+        }
+        return [capped];
+      });
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const transaction = jest.fn(
+        async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+          callback({ $queryRaw: queryRaw, $executeRaw: executeRaw }),
+      );
+      const { service, queue } = createService(config, { $transaction: transaction });
+
+      await expect(service.ensureIntent(input())).resolves.toMatchObject({ status: 'PENDING' });
+
+      const reopenQuery = queryRaw.mock.calls
+        .map((call) => call[0])
+        .find((query) =>
+          (query?.strings?.join('?') ?? '').includes('UPDATE "moderation_delete_intents"'),
+        );
+      expect(reopenQuery?.strings?.join('?') ?? '').toContain(
+        'CAST(\'PENDING\' AS "ModerationDeleteIntentStatus")',
+      );
+      expect(reopenQuery?.values).toContain('bot_message_auto_delete_retry_limit_reached');
+      expect(queue.add).toHaveBeenCalledWith(
+        'execute-moderation-delete-intent',
+        { intentId: 'intent-1' },
+        expect.objectContaining({ priority: 1 }),
+      );
+    },
+  );
+
+  it('resets the bounded auto-delete attempt counter on an explicit manual retry', async () => {
+    const updatedAt = new Date('2026-08-17T12:00:00.000Z');
+    const capped = {
+      ...baseIntent,
+      status: 'FAILED_TERMINAL' as const,
+      attemptCount: 5,
+      updatedAt,
+      completedAt: new Date(),
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      requiredSubscriptionDeleteReason: false,
+      lastErrorCode: 'bot_message_auto_delete_retry_limit_reached',
+      lastError: 'BOT_MESSAGE_AUTO_DELETE reached its external-attempt limit',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const reopened = {
+      ...capped,
+      status: 'PENDING' as const,
+      attemptCount: 0,
+      completedAt: null,
+      lastErrorCode: null,
+      lastError: null,
+      nextAttemptAt: new Date(Date.now() - 1_000),
+      retryUntilAt: new Date(Date.now() + 60_000),
+    };
+    const rootQueryRaw = jest.fn().mockResolvedValueOnce([capped]);
+    const txQueryRaw = jest.fn().mockResolvedValueOnce([reopened]);
+    const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
+      callback({ $queryRaw: txQueryRaw }),
+    );
+    const { service, queue } = createService(
+      {},
+      { $queryRaw: rootQueryRaw, $transaction: transaction },
+    );
+
+    await expect(
+      service.retryTerminalIntent('intent-1', 'FAILED_TERMINAL', {
+        updatedAt,
+        attemptCount: 5,
+      }),
+    ).resolves.toMatchObject({
+      reopened: true,
+      intent: { status: 'PENDING', attemptCount: 0 },
+    });
+
+    const retryQuery = txQueryRaw.mock.calls[0]?.[0];
+    expect(retryQuery?.strings?.join('?') ?? '').toContain('"attempt_count" = CASE');
+    expect(retryQuery?.values).toContain(true);
     expect(queue.add).toHaveBeenCalledWith(
       'execute-moderation-delete-intent',
       { intentId: 'intent-1' },

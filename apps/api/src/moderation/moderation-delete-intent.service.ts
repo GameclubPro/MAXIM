@@ -73,6 +73,9 @@ const DEFAULT_RECOVERY_BATCH_SIZE = 10;
 const DEFAULT_PURGE_MAX_BATCHES = 40;
 const DEFAULT_DELETE_TIMEOUT_MS = 5_000;
 const DEFAULT_RETENTION_DAYS = 90;
+const BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS = 5;
+const BOT_MESSAGE_AUTO_DELETE_RETRY_LIMIT_ERROR_CODE =
+  'bot_message_auto_delete_retry_limit_reached';
 const DELETE_QUEUE_PRIORITY_INTERACTIVE = 1;
 const DELETE_QUEUE_PRIORITY_BACKGROUND = 10;
 const CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE =
@@ -181,6 +184,11 @@ type IntentLeaseHeartbeat = {
   renew: () => Promise<boolean>;
   stop: () => void;
 };
+
+type BotMessageAutoDeleteRetryLimitOutcome =
+  | { kind: 'continue'; intent: IntentRow }
+  | { kind: 'terminal'; intent: IntentRow }
+  | { kind: 'lease_lost' };
 
 export type ModerationDeleteIntentAttemptOptions = {
   /** Fences this inline attempt only; the persisted intent remains the durable recovery owner. */
@@ -563,6 +571,10 @@ export class ModerationDeleteIntentService {
       return { reopened: false, intent: this.toSnapshot(existing) };
     }
     const independentNonCommercialOcrExecution = this.hasExecutableNonCommercialOcrReason(existing);
+    const resetBotMessageAutoDeleteRetryLimit =
+      existing.status === 'FAILED_TERMINAL' &&
+      existing.lastErrorCode === BOT_MESSAGE_AUTO_DELETE_RETRY_LIMIT_ERROR_CODE &&
+      !this.hasDeleteMutationEvidence(existing);
 
     const now = new Date();
     const retryUntilAt = new Date(now.getTime() + this.retryHorizonMs);
@@ -580,6 +592,10 @@ export class ModerationDeleteIntentService {
           END,
           "execute_at" = LEAST("execute_at", ${now}),
           "next_attempt_at" = ${now},
+          "attempt_count" = CASE
+            WHEN ${resetBotMessageAutoDeleteRetryLimit} THEN 0
+            ELSE "attempt_count"
+          END,
           "commercial_ocr_guard_required" = (
             "commercial_ocr_guard_required"
             OR EXISTS (
@@ -615,6 +631,18 @@ export class ModerationDeleteIntentService {
             ELSE GREATEST("retry_until_at", ${retryUntilAt})
           END,
           "completed_at" = NULL,
+          "last_status_code" = CASE
+            WHEN ${resetBotMessageAutoDeleteRetryLimit} THEN NULL
+            ELSE "last_status_code"
+          END,
+          "last_error_code" = CASE
+            WHEN ${resetBotMessageAutoDeleteRetryLimit} THEN NULL
+            ELSE "last_error_code"
+          END,
+          "last_error" = CASE
+            WHEN ${resetBotMessageAutoDeleteRetryLimit} THEN NULL
+            ELSE "last_error"
+          END,
           "lease_token" = NULL,
           "lease_expires_at" = NULL,
           "leased_from_status" = NULL,
@@ -694,6 +722,25 @@ export class ModerationDeleteIntentService {
     if (!this.isExecutionEnabledForIntent(intent)) {
       await this.releasePausedLease(intent.id, leaseToken);
       return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
+    }
+    // FLAG: A queued historical job may already be above the sweep cap. Terminalize it before
+    // starting a heartbeat or making any MAX access, presence, or delete call.
+    if (
+      this.isBotMessageAutoDeleteRetryLimitApplicable(intent) &&
+      intent.attemptCount > BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS
+    ) {
+      const retryLimitOutcome = await this.enforceBotMessageAutoDeleteRetryLimit(
+        intent,
+        leaseToken,
+        true,
+      );
+      if (retryLimitOutcome.kind === 'terminal') {
+        return this.toAttemptResult(retryLimitOutcome.intent);
+      }
+      if (retryLimitOutcome.kind === 'lease_lost') {
+        return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
+      }
+      Object.assign(intent, retryLimitOutcome.intent);
     }
     const heartbeat = this.startLeaseHeartbeat(intent.id, leaseToken);
     try {
@@ -2228,6 +2275,42 @@ export class ModerationDeleteIntentService {
         effectiveIntent = reopenedRows[0] ?? intent;
       }
       if (
+        reasonChanged === 1 &&
+        effectiveIntent === intent &&
+        initialStatus === 'PENDING' &&
+        normalized.ruleCode !== BOT_MESSAGE_AUTO_DELETE_RULE_CODE &&
+        intent.status === 'FAILED_TERMINAL' &&
+        intent.lastErrorCode === BOT_MESSAGE_AUTO_DELETE_RETRY_LIMIT_ERROR_CODE
+      ) {
+        // FLAG: Any later executable reason owns an independent deletion and must not remain
+        // hidden behind the bounded best-effort bot-message cleanup decision.
+        const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+          UPDATE "moderation_delete_intents"
+          SET
+            "status" = CAST('PENDING' AS "ModerationDeleteIntentStatus"),
+            "execute_at" = LEAST("execute_at", ${normalized.executeAt}),
+            "next_attempt_at" = ${normalized.executeAt},
+            "retry_until_at" = GREATEST("retry_until_at", ${normalized.retryUntilAt}),
+            "last_status_code" = NULL,
+            "last_error_code" = NULL,
+            "last_error" = NULL,
+            "completed_at" = NULL,
+            "lease_token" = NULL,
+            "lease_expires_at" = NULL,
+            "leased_from_status" = NULL,
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${intent.id}
+            AND "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
+            AND "last_error_code" = ${BOT_MESSAGE_AUTO_DELETE_RETRY_LIMIT_ERROR_CODE}
+            AND "remote_delete_succeeded_at" IS NULL
+            AND "remote_delete_succeeded_bot_id" IS NULL
+            AND "delete_dispatch_started_at" IS NULL
+            AND "delete_dispatch_started_bot_id" IS NULL
+          RETURNING ${this.intentReturningSql()}
+        `);
+        effectiveIntent = reopenedRows[0] ?? intent;
+      }
+      if (
         effectiveIntent === intent &&
         initialStatus === 'PENDING' &&
         normalized.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE &&
@@ -2585,6 +2668,26 @@ export class ModerationDeleteIntentService {
     leaseToken: string,
     details: DeleteErrorDetails,
   ): Promise<ModerationDeleteAttemptResult> {
+    const retryLimitReached =
+      details.status !== 'FAILED_TERMINAL' &&
+      details.status !== 'EXPIRED' &&
+      this.isBotMessageAutoDeleteRetryLimitApplicable(intent) &&
+      intent.attemptCount >= BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS;
+    if (retryLimitReached) {
+      const retryLimitOutcome = await this.enforceBotMessageAutoDeleteRetryLimit(
+        intent,
+        leaseToken,
+        false,
+      );
+      if (retryLimitOutcome.kind === 'terminal') {
+        return this.toAttemptResult(retryLimitOutcome.intent);
+      }
+      if (retryLimitOutcome.kind === 'lease_lost') {
+        return this.toAttemptResult(await this.loadRequiredIntent(intent.id));
+      }
+      intent = retryLimitOutcome.intent;
+    }
+
     const now = Date.now();
     const requestedNextAt = new Date(now + Math.max(1_000, details.retryDelayMs ?? 1_000));
     const hasRemoteSuccessMarker = this.hasRemoteSuccessMarker(intent);
@@ -3778,7 +3881,7 @@ export class ModerationDeleteIntentService {
           )
         `
       : Prisma.empty;
-    return Prisma.sql`(
+    const executableRolloutFilter = Prisma.sql`(
       (
         ${baseFilter}
         AND EXISTS (
@@ -3806,6 +3909,24 @@ export class ModerationDeleteIntentService {
           WHERE auto_delete_reason."intent_id" = intent."id"
             AND auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
         )
+      )
+    )`;
+    const botMessageAutoDeleteRetryLimitApplicable =
+      this.botMessageAutoDeleteRetryLimitApplicableSql(
+        Prisma.sql`intent."id"`,
+        Prisma.sql`intent."commercial_ocr_guard_required"`,
+      );
+    // FLAG: Keep the fifth attempt selectable, but never requeue an auto-delete-only row after it.
+    // Mutation evidence must still be reconciled regardless of the cap.
+    return Prisma.sql`(
+      ${executableRolloutFilter}
+      AND (
+        NOT ${botMessageAutoDeleteRetryLimitApplicable}
+        OR intent."attempt_count" < ${BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS}
+        OR intent."delete_dispatch_started_at" IS NOT NULL
+        OR intent."delete_dispatch_started_bot_id" IS NOT NULL
+        OR intent."remote_delete_succeeded_at" IS NOT NULL
+        OR intent."remote_delete_succeeded_bot_id" IS NOT NULL
       )
     )`;
   }
@@ -4195,6 +4316,112 @@ export class ModerationDeleteIntentService {
     return Math.max(1_000, Math.round(base * jitter));
   }
 
+  private isBotMessageAutoDeleteRetryLimitApplicable(
+    intent: Pick<
+      IntentRow,
+      | 'botMessageAutoDeleteOnly'
+      | 'requiredSubscriptionDeleteReason'
+      | 'replacementCleanup'
+      | 'commercialOcrGuardRequired'
+      | 'commercialOcrDeleteReason'
+      | 'remoteDeleteSucceededAt'
+      | 'remoteDeleteSucceededBotId'
+      | 'deleteDispatchStartedAt'
+      | 'deleteDispatchStartedBotId'
+    >,
+  ): boolean {
+    return (
+      intent.botMessageAutoDeleteOnly === true &&
+      intent.requiredSubscriptionDeleteReason !== true &&
+      intent.replacementCleanup !== true &&
+      intent.commercialOcrGuardRequired !== true &&
+      intent.commercialOcrDeleteReason !== true &&
+      !this.hasDeleteMutationEvidence(intent)
+    );
+  }
+
+  private botMessageAutoDeleteRetryLimitDetails(): DeleteErrorDetails {
+    return {
+      status: 'FAILED_TERMINAL',
+      statusCode: null,
+      errorCode: BOT_MESSAGE_AUTO_DELETE_RETRY_LIMIT_ERROR_CODE,
+      message:
+        `BOT_MESSAGE_AUTO_DELETE reached its limit of ` +
+        `${BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS} external attempts before dispatch`,
+      retryDelayMs: null,
+    };
+  }
+
+  private async enforceBotMessageAutoDeleteRetryLimit(
+    intent: IntentRow,
+    leaseToken: string,
+    exceededOnly: boolean,
+  ): Promise<BotMessageAutoDeleteRetryLimitOutcome> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        // FLAG: Lock first, then classify reasons in a new READ COMMITTED statement. This prevents
+        // a concurrent independent reason from inheriting an auto-delete-only terminal.
+        const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "moderation_delete_intents"
+          WHERE "id" = ${intent.id}
+            AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+            AND "lease_token" = ${leaseToken}
+          FOR UPDATE
+        `);
+        if (!locked[0]) {
+          return { kind: 'lease_lost' } as const;
+        }
+
+        const latestRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+          SELECT ${this.intentSelectSql('intent')}
+          FROM "moderation_delete_intents" intent
+          WHERE intent."id" = ${intent.id}
+          LIMIT 1
+        `);
+        const latest = latestRows[0];
+        if (!latest) {
+          return { kind: 'lease_lost' } as const;
+        }
+        const attemptLimitReached = exceededOnly
+          ? latest.attemptCount > BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS
+          : latest.attemptCount >= BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS;
+        if (!attemptLimitReached || !this.isBotMessageAutoDeleteRetryLimitApplicable(latest)) {
+          return { kind: 'continue', intent: latest } as const;
+        }
+
+        const details = this.botMessageAutoDeleteRetryLimitDetails();
+        const completedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+          UPDATE "moderation_delete_intents"
+          SET
+            "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus"),
+            "next_attempt_at" = CURRENT_TIMESTAMP,
+            "last_status_code" = ${details.statusCode},
+            "last_error_code" = ${details.errorCode},
+            "last_error" = ${details.message.slice(0, 2_000)},
+            "completed_at" = CURRENT_TIMESTAMP,
+            "lease_token" = NULL,
+            "lease_expires_at" = NULL,
+            "leased_from_status" = NULL,
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${intent.id}
+            AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+            AND "lease_token" = ${leaseToken}
+            AND "remote_delete_succeeded_at" IS NULL
+            AND "remote_delete_succeeded_bot_id" IS NULL
+            AND "delete_dispatch_started_at" IS NULL
+            AND "delete_dispatch_started_bot_id" IS NULL
+          RETURNING ${this.intentReturningSql()}
+        `);
+        const completed = completedRows[0];
+        return completed
+          ? ({ kind: 'terminal', intent: completed } as const)
+          : ({ kind: 'lease_lost' } as const);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+  }
+
   private hasRemoteSuccessMarker(
     intent: Pick<IntentRow, 'remoteDeleteSucceededAt' | 'remoteDeleteSucceededBotId'>,
   ): boolean {
@@ -4474,24 +4701,7 @@ export class ModerationDeleteIntentService {
           AND required_subscription_reason."rule_code" =
             ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
       ) AS "requiredSubscriptionDeleteReason",
-      (
-        EXISTS (
-          SELECT 1
-          FROM "moderation_delete_intent_reasons" auto_delete_reason
-          WHERE auto_delete_reason."intent_id" = ${intentIdColumn}
-            AND auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
-        )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "moderation_delete_intent_reasons" other_reason
-          WHERE other_reason."intent_id" = ${intentIdColumn}
-            AND other_reason."rule_code" NOT IN (
-              ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE},
-              ${COMMERCIAL_OCR_DELETE_RULE_CODE},
-              ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
-            )
-        )
-      ) AS "botMessageAutoDeleteOnly",
+      ${this.botMessageAutoDeleteOnlySql(intentIdColumn)} AS "botMessageAutoDeleteOnly",
       EXISTS (
         SELECT 1
         FROM "moderation_delete_intent_reasons" ocr_reason
@@ -4551,6 +4761,48 @@ export class ModerationDeleteIntentService {
         )
       ) AS "photoDuplicateDeleteOnly"
     `;
+  }
+
+  private botMessageAutoDeleteOnlySql(intentIdColumn: Prisma.Sql): Prisma.Sql {
+    return Prisma.sql`(
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" auto_delete_reason
+        WHERE auto_delete_reason."intent_id" = ${intentIdColumn}
+          AND auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" other_reason
+        WHERE other_reason."intent_id" = ${intentIdColumn}
+          AND other_reason."rule_code" NOT IN (
+            ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE},
+            ${COMMERCIAL_OCR_DELETE_RULE_CODE},
+            ${CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE}
+          )
+      )
+    )`;
+  }
+
+  private botMessageAutoDeleteRetryLimitApplicableSql(
+    intentIdColumn: Prisma.Sql,
+    commercialOcrGuardRequiredColumn: Prisma.Sql,
+  ): Prisma.Sql {
+    return Prisma.sql`(
+      ${commercialOcrGuardRequiredColumn} = FALSE
+      AND EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" retry_cap_auto_delete_reason
+        WHERE retry_cap_auto_delete_reason."intent_id" = ${intentIdColumn}
+          AND retry_cap_auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" retry_cap_other_reason
+        WHERE retry_cap_other_reason."intent_id" = ${intentIdColumn}
+          AND retry_cap_other_reason."rule_code" <> ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
+      )
+    )`;
   }
 
   private intentColumnsSql(alias?: string): Prisma.Sql {
