@@ -1,4 +1,5 @@
 export const MAX_PREPARED_IMAGE_BYTES = 6_000_000;
+export const BROADCAST_IMAGE_OPERATION_TIMEOUT_MS = 10_000;
 const MAX_SOURCE_IMAGE_BYTES = 64_000_000;
 const MIN_PREPARED_IMAGE_BYTES = 96_000;
 const IMAGE_DIMENSION_STEPS = [2560, 2200, 1920, 1600, 1440, 1280, 1080, 960, 800, 640];
@@ -75,19 +76,170 @@ type LoadedImageSource = {
   close: () => void;
 };
 
+function safeCloseImageBitmap(bitmap: ImageBitmap): void {
+  try {
+    bitmap.close();
+  } catch {
+    // A timed-out WebView decoder may already have released the bitmap.
+  }
+}
+
+function loadImageBitmapWithTimeout(blob: Blob): Promise<LoadedImageSource | null> {
+  let pendingBitmap: Promise<ImageBitmap>;
+  try {
+    pendingBitmap = createImageBitmap(blob, {
+      imageOrientation: 'from-image',
+    } as ImageBitmapOptions);
+  } catch {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const timeoutId = globalThis.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    }, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
+
+    void pendingBitmap.then(
+      (bitmap) => {
+        if (settled) {
+          safeCloseImageBitmap(bitmap);
+          return;
+        }
+        settled = true;
+        globalThis.clearTimeout(timeoutId);
+        resolve({
+          width: bitmap.width,
+          height: bitmap.height,
+          draw: (context, width, height) => {
+            context.drawImage(bitmap, 0, 0, width, height);
+          },
+          close: () => safeCloseImageBitmap(bitmap),
+        });
+      },
+      () => {
+        if (!settled) {
+          settled = true;
+          globalThis.clearTimeout(timeoutId);
+          resolve(null);
+        }
+      },
+    );
+  });
+}
+
+function loadHtmlImageWithTimeout(blob: Blob): Promise<LoadedImageSource> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(blob);
+    let settled = false;
+    let revoked = false;
+
+    const revokeObjectUrl = () => {
+      if (revoked) {
+        return;
+      }
+      revoked = true;
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        // URL cleanup is best-effort in older WebViews.
+      }
+    };
+    const clearHandlers = () => {
+      image.onload = null;
+      image.onerror = null;
+    };
+    const clearSource = () => {
+      try {
+        image.src = '';
+      } catch {
+        // Some WebViews expose a read-only image source during teardown.
+      }
+    };
+    const fail = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      clearHandlers();
+      revokeObjectUrl();
+      clearSource();
+      reject(new Error(FALLBACK_IMAGE_ERROR));
+    };
+    const timeoutId = globalThis.setTimeout(fail, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
+
+    image.onload = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      clearHandlers();
+      revokeObjectUrl();
+      resolve({
+        width: image.naturalWidth || image.width,
+        height: image.naturalHeight || image.height,
+        draw: (context, width, height) => {
+          context.drawImage(image, 0, 0, width, height);
+        },
+        close: clearSource,
+      });
+    };
+    image.onerror = fail;
+
+    try {
+      image.src = objectUrl;
+    } catch {
+      fail();
+    }
+  });
+}
+
 function readBlobAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    let settled = false;
+    const clearHandlers = () => {
+      reader.onload = null;
+      reader.onerror = null;
+      reader.onabort = null;
+    };
+    const rejectRead = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      clearHandlers();
+      try {
+        reader.abort();
+      } catch {
+        // The reader may already be inactive after a WebView failure.
+      }
+      reject(new Error('Не удалось прочитать файл.'));
+    };
+    const timeoutId = globalThis.setTimeout(rejectRead, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
+
     reader.onload = () => {
+      if (settled) {
+        return;
+      }
       const result = typeof reader.result === 'string' ? reader.result : '';
       if (!result) {
-        reject(new Error('Не удалось прочитать файл.'));
+        rejectRead();
         return;
       }
 
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      clearHandlers();
       resolve(result);
     };
-    const rejectRead = () => reject(new Error('Не удалось прочитать файл.'));
     reader.onerror = rejectRead;
     reader.onabort = rejectRead;
     try {
@@ -95,6 +247,42 @@ function readBlobAsDataUrl(blob: Blob): Promise<string> {
     } catch {
       rejectRead();
     }
+  });
+}
+
+function readBlobArrayBufferWithTimeout(blob: Blob): Promise<ArrayBuffer | null> {
+  let pendingBuffer: Promise<ArrayBuffer>;
+  try {
+    pendingBuffer = blob.arrayBuffer();
+  } catch {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const timeoutId = globalThis.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    }, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
+
+    void pendingBuffer.then(
+      (buffer) => {
+        if (!settled) {
+          settled = true;
+          globalThis.clearTimeout(timeoutId);
+          resolve(buffer);
+        }
+      },
+      () => {
+        if (!settled) {
+          settled = true;
+          globalThis.clearTimeout(timeoutId);
+          resolve(null);
+        }
+      },
+    );
   });
 }
 
@@ -121,7 +309,8 @@ function encodeArrayBufferAsBase64(buffer: ArrayBuffer): string {
 export async function readBlobAsBase64(blob: Blob): Promise<string> {
   if (typeof blob.arrayBuffer === 'function' && typeof globalThis.btoa === 'function') {
     try {
-      const base64 = encodeArrayBufferAsBase64(await blob.arrayBuffer());
+      const buffer = await readBlobArrayBufferWithTimeout(blob);
+      const base64 = buffer ? encodeArrayBufferAsBase64(buffer) : '';
       if (base64) {
         return base64;
       }
@@ -141,43 +330,13 @@ export async function readBlobAsBase64(blob: Blob): Promise<string> {
 
 async function loadImageFromBlob(blob: Blob): Promise<LoadedImageSource> {
   if (typeof createImageBitmap === 'function') {
-    try {
-      const bitmap = await createImageBitmap(blob, {
-        imageOrientation: 'from-image',
-      } as ImageBitmapOptions);
-      return {
-        width: bitmap.width,
-        height: bitmap.height,
-        draw: (context, width, height) => {
-          context.drawImage(bitmap, 0, 0, width, height);
-        },
-        close: () => bitmap.close(),
-      };
-    } catch {
-      // Fall through to HTMLImageElement for WebViews with partial bitmap support.
+    const bitmap = await loadImageBitmapWithTimeout(blob);
+    if (bitmap) {
+      return bitmap;
     }
   }
 
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    const objectUrl = URL.createObjectURL(blob);
-    image.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      resolve({
-        width: image.naturalWidth || image.width,
-        height: image.naturalHeight || image.height,
-        draw: (context, width, height) => {
-          context.drawImage(image, 0, 0, width, height);
-        },
-        close: () => undefined,
-      });
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error('Не удалось открыть изображение.'));
-    };
-    image.src = objectUrl;
-  });
+  return loadHtmlImageWithTimeout(blob);
 }
 
 function normalizeImageMimeType(mimeType: string): string {
@@ -261,12 +420,32 @@ function canvasToBlob(
   mimeType: string,
   quality: number,
 ): Promise<Blob | null> {
-  if ('convertToBlob' in canvas) {
-    return canvas.convertToBlob({ type: mimeType, quality }).catch(() => null);
-  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (blob: Blob | null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      resolve(blob);
+    };
+    const timeoutId = globalThis.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(FALLBACK_IMAGE_ERROR));
+      }
+    }, BROADCAST_IMAGE_OPERATION_TIMEOUT_MS);
 
-  return new Promise((resolve) => {
-    canvas.toBlob((blob) => resolve(blob), mimeType, quality);
+    try {
+      if ('convertToBlob' in canvas) {
+        void canvas.convertToBlob({ type: mimeType, quality }).then(finish, () => finish(null));
+      } else {
+        canvas.toBlob(finish, mimeType, quality);
+      }
+    } catch {
+      finish(null);
+    }
   });
 }
 
