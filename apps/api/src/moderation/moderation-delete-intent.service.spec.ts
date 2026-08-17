@@ -72,6 +72,7 @@ function createService(
 ) {
   const config = {
     MODERATION_DELETE_INTENT_MODE: 'on',
+    MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: false,
     COMMERCIAL_OCR_ROLLOUT_MODE: 'on',
     ...overrides,
   };
@@ -777,8 +778,13 @@ describe('ModerationDeleteIntentService', () => {
   });
 
   it('gates exact required-subscription deletion independently of the global rollout', () => {
+    const shadowDefault = createService({
+      MODERATION_DELETE_INTENT_MODE: 'shadow',
+      MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: undefined,
+    }).service;
     const shadowDisabled = createService({
       MODERATION_DELETE_INTENT_MODE: 'shadow',
+      MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: false,
     }).service;
     const shadowEnabled = createService({
       MODERATION_DELETE_INTENT_MODE: 'shadow',
@@ -790,9 +796,10 @@ describe('ModerationDeleteIntentService', () => {
       MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
     }).service;
 
-    expect(shadowDisabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe(
-      'observed',
+    expect(shadowDefault.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe(
+      'execute',
     );
+    expect(shadowDisabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe('observed');
     expect(shadowDisabled.getRolloutForInput(requiredSubscriptionDeleteIntentInput())).toBe(
       'observed',
     );

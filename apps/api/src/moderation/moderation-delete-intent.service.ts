@@ -339,7 +339,7 @@ export class ModerationDeleteIntentService {
     );
     this.requiredSubscriptionDeleteEnabled = this.readBoolean(
       configService.get('MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED'),
-      false,
+      true,
     );
     this.retryHorizonMs = this.readPositiveInt(
       configService.get('MODERATION_DELETE_INTENT_RETRY_HORIZON_MS'),
