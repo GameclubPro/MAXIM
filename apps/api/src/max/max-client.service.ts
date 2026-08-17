@@ -1027,7 +1027,7 @@ export class MaxClientService implements OnModuleDestroy {
             chat_id: chatId,
           },
           data: {
-            ...(hasText ? { text } : {}),
+            text: hasText ? text : null,
             ...(hasText && options?.textFormat ? { format: options.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),

@@ -4778,7 +4778,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('omits empty text from an immediate attachment-only reply', async () => {
+  it('uses nullable text for an immediate attachment-only reply', async () => {
     const order: string[] = [];
     const httpService = {
       request: jest.fn().mockImplementationOnce(() => {
@@ -4821,6 +4821,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
+          text: null,
           link: {
             type: 'reply',
             mid: 'mid-source',
