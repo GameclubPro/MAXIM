@@ -49,10 +49,11 @@ const WEBHOOK_FAILED_JOB_RETENTION = {
   age: 7 * 24 * 60 * 60,
   count: 5_000,
 } as const;
-const RETENTION_CLEANUP_INTERVAL_MS = 60 * 60 * 1_000;
+const WEBHOOK_RETENTION_CLEANUP_INTERVAL_MS = 30 * 1_000;
+const RETENTION_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1_000;
 const RETENTION_CLEANUP_BATCH_SIZE = 500;
 const RETENTION_CLEANUP_BATCH_DELAY_MS = 500;
-const WEBHOOK_RETENTION_MAX_BATCHES = 80;
+const WEBHOOK_RETENTION_MAX_BATCHES_PER_TICK = 1;
 const DEFAULT_RETENTION_MAX_BATCHES = 10;
 const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
 const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL = Prisma.raw(
@@ -260,6 +261,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private poller: NodeJS.Timeout | null = null;
   private cleaner: NodeJS.Timeout | null = null;
+  private maintenanceScheduler: NodeJS.Timeout | null = null;
+  private retentionMaintenanceDue = false;
   private draining = false;
   private cleaning = false;
   private readonly queuesByName: Record<AnyWebhookQueueName, Queue<ProcessWebhookJob>>;
@@ -342,9 +345,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }, this.pollIntervalMs);
     this.poller.unref();
 
+    this.maintenanceScheduler = setInterval(() => {
+      this.retentionMaintenanceDue = true;
+    }, RETENTION_MAINTENANCE_INTERVAL_MS);
+    this.maintenanceScheduler.unref();
+
     this.cleaner = setInterval(() => {
       void this.cleanupRetention();
-    }, RETENTION_CLEANUP_INTERVAL_MS);
+    }, WEBHOOK_RETENTION_CLEANUP_INTERVAL_MS);
     this.cleaner.unref();
 
     void this.tick();
@@ -359,6 +367,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       clearInterval(this.cleaner);
       this.cleaner = null;
     }
+    if (this.maintenanceScheduler) {
+      clearInterval(this.maintenanceScheduler);
+      this.maintenanceScheduler = null;
+    }
+    this.retentionMaintenanceDue = false;
   }
 
   private async tick() {
@@ -1663,54 +1676,64 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     this.cleaning = true;
+    let runMaintenance = false;
     try {
-      const webhookCutoff = new Date(Date.now() - this.webhookRetentionDays * 24 * 60 * 60 * 1_000);
+      const nowMs = Date.now();
+      runMaintenance = this.retentionMaintenanceDue;
+      if (runMaintenance) {
+        this.retentionMaintenanceDue = false;
+      }
+
+      const webhookCutoff = new Date(nowMs - this.webhookRetentionDays * 24 * 60 * 60 * 1_000);
       const failedWebhookCutoff = new Date(
-        Date.now() - this.webhookFailedRetentionHours * 60 * 60 * 1_000,
+        nowMs - this.webhookFailedRetentionHours * 60 * 60 * 1_000,
       );
       const moderationCutoff = new Date(
-        Date.now() - this.moderationRetentionDays * 24 * 60 * 60 * 1_000,
+        nowMs - this.moderationRetentionDays * 24 * 60 * 60 * 1_000,
       );
       const userDisplayNameCutoff = new Date(
-        Date.now() - this.userDisplayNameRetentionDays * 24 * 60 * 60 * 1_000,
+        nowMs - this.userDisplayNameRetentionDays * 24 * 60 * 60 * 1_000,
       );
       const phases: RetentionCleanupPhase[] = [
         {
           name: 'webhookProcessedOrDuplicate',
-          maxBatches: WEBHOOK_RETENTION_MAX_BATCHES,
+          maxBatches: WEBHOOK_RETENTION_MAX_BATCHES_PER_TICK,
           deleteBatch: () => this.deleteCompletedWebhookBatch(webhookCutoff),
         },
-        {
-          name: 'webhookFailedTerminal',
-          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
-          deleteBatch: () => this.deleteTerminalFailedWebhookBatch(failedWebhookCutoff),
-        },
-        {
-          name: 'moderationEvents',
-          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
-          deleteBatch: () => this.deleteModerationEventBatch(moderationCutoff),
-        },
-        {
-          name: 'violations',
-          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
-          deleteBatch: () => this.deleteViolationBatch(moderationCutoff),
-        },
-        {
-          name: 'violationMessageClaims',
-          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
-          deleteBatch: () => this.deleteViolationMessageClaimBatch(moderationCutoff),
-        },
-        {
-          name: 'userDisplayNames',
-          maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
-          deleteBatch: () => this.deleteUserDisplayNameBatch(userDisplayNameCutoff),
-        },
       ];
+      if (runMaintenance) {
+        phases.push(
+          {
+            name: 'webhookFailedTerminal',
+            maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+            deleteBatch: () => this.deleteTerminalFailedWebhookBatch(failedWebhookCutoff),
+          },
+          {
+            name: 'moderationEvents',
+            maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+            deleteBatch: () => this.deleteModerationEventBatch(moderationCutoff),
+          },
+          {
+            name: 'violations',
+            maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+            deleteBatch: () => this.deleteViolationBatch(moderationCutoff),
+          },
+          {
+            name: 'violationMessageClaims',
+            maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+            deleteBatch: () => this.deleteViolationMessageClaimBatch(moderationCutoff),
+          },
+          {
+            name: 'userDisplayNames',
+            maxBatches: DEFAULT_RETENTION_MAX_BATCHES,
+            deleteBatch: () => this.deleteUserDisplayNameBatch(userDisplayNameCutoff),
+          },
+        );
+      }
       const cleanupSummary: Record<string, RetentionCleanupPhaseResult> = {};
       for (const phase of phases) {
         cleanupSummary[phase.name] = await this.runRetentionCleanupPhase(phase);
       }
-
       this.logger.log(
         {
           phases: cleanupSummary,
@@ -1718,10 +1741,15 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           webhookFailedRetentionHours: this.webhookFailedRetentionHours,
           moderationRetentionDays: this.moderationRetentionDays,
           userDisplayNameRetentionDays: this.userDisplayNameRetentionDays,
+          maintenanceRun: runMaintenance,
+          maintenancePending: this.retentionMaintenanceDue,
         },
         'Retention cleanup finished',
       );
     } catch (error: unknown) {
+      if (runMaintenance) {
+        this.retentionMaintenanceDue = true;
+      }
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
         'Retention cleanup failed',

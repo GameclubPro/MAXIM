@@ -55,6 +55,7 @@ type RetentionInternals = {
     budgetExhausted: boolean;
   }>;
   retentionBatchDelayMs: number;
+  retentionMaintenanceDue: boolean;
   enabled: boolean;
   cleaning: boolean;
 };
@@ -1647,9 +1648,11 @@ describe('WebhookOutboxService', () => {
     );
   });
 
-  it('defers retention cleanup until the first hourly timer', async () => {
+  it('smooths webhook retention every 30 seconds and defers maintenance for one hour', async () => {
     jest.useFakeTimers();
-    const { service } = createService();
+    const { service } = createService({
+      configOverrides: { ENQUEUE_POLL_INTERVAL_MS: 2 * 60 * 60 * 1_000 },
+    });
     const internals = service as unknown as RetentionInternals;
     internals.enabled = true;
     const tick = jest.spyOn(service as any, 'tick').mockResolvedValue(undefined);
@@ -1658,11 +1661,17 @@ describe('WebhookOutboxService', () => {
     service.onModuleInit();
     expect(tick).toHaveBeenCalledTimes(1);
     expect(cleanup).not.toHaveBeenCalled();
+    expect(internals.retentionMaintenanceDue).toBe(false);
 
-    jest.advanceTimersByTime(60 * 60 * 1_000 - 1);
+    await jest.advanceTimersByTimeAsync(30 * 1_000 - 1);
     expect(cleanup).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(1);
+    await jest.advanceTimersByTimeAsync(1);
     expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(internals.retentionMaintenanceDue).toBe(false);
+
+    await jest.advanceTimersByTimeAsync(60 * 60 * 1_000 - 30 * 1_000);
+    expect(cleanup).toHaveBeenCalledTimes(120);
+    expect(internals.retentionMaintenanceDue).toBe(true);
 
     service.onModuleDestroy();
     jest.useRealTimers();
@@ -1677,6 +1686,7 @@ describe('WebhookOutboxService', () => {
         USER_DISPLAY_NAME_RETENTION_DAYS: 180,
       },
     });
+    (service as unknown as RetentionInternals).retentionMaintenanceDue = true;
     const logger = jest.spyOn((service as any).logger, 'log');
 
     await (service as unknown as RetentionInternals).cleanupRetention();
@@ -1725,7 +1735,7 @@ describe('WebhookOutboxService', () => {
         phase: 'webhookProcessedOrDuplicate',
         rows: 0,
         batches: 1,
-        maxBatches: 80,
+        maxBatches: 1,
         batchSize: 500,
       }),
       'Retention cleanup phase finished',
@@ -1738,6 +1748,7 @@ describe('WebhookOutboxService', () => {
       resolveFirstBatch = resolve;
     });
     const { service, prisma } = createService();
+    (service as unknown as RetentionInternals).retentionMaintenanceDue = true;
     prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
 
     const cleanup = (service as unknown as RetentionInternals).cleanupRetention();
@@ -1766,7 +1777,7 @@ describe('WebhookOutboxService', () => {
     expect(deleteBatch).toHaveBeenCalledTimes(2);
   });
 
-  it('shares one 80-batch budget across processed and duplicate webhook retention', async () => {
+  it('limits processed and duplicate webhook retention to one batch per tick', async () => {
     const { service, prisma } = createService();
     const internals = service as unknown as RetentionInternals;
     internals.retentionBatchDelayMs = 0;
@@ -1788,13 +1799,14 @@ describe('WebhookOutboxService', () => {
         extractSql(query).includes(`'DUPLICATE'::"WebhookStatus"`)
       );
     });
-    expect(completedWebhookCalls).toHaveLength(80);
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(85);
+    expect(completedWebhookCalls).toHaveLength(1);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it('reports the failed retention phase and resets the cleaning guard', async () => {
     const { service, prisma } = createService();
     const internals = service as unknown as RetentionInternals;
+    internals.retentionMaintenanceDue = true;
     const logger = jest.spyOn((service as any).logger, 'warn');
     prisma.$executeRaw.mockRejectedValueOnce(new Error('retention database unavailable'));
 
@@ -1810,11 +1822,13 @@ describe('WebhookOutboxService', () => {
       'Retention cleanup phase failed',
     );
     expect(internals.cleaning).toBe(false);
+    expect(internals.retentionMaintenanceDue).toBe(true);
 
     await internals.cleanupRetention();
 
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(7);
     expect(internals.cleaning).toBe(false);
+    expect(internals.retentionMaintenanceDue).toBe(false);
   });
 
   it('skips overlapping retention cleanup runs', async () => {
@@ -1833,6 +1847,27 @@ describe('WebhookOutboxService', () => {
 
     resolveFirstBatch(0);
     await firstCleanup;
+  });
+
+  it('preserves a new maintenance tick that arrives during cleanup', async () => {
+    let resolveFirstBatch!: (rows: number) => void;
+    const firstBatch = new Promise<number>((resolve) => {
+      resolveFirstBatch = resolve;
+    });
+    const { service, prisma } = createService();
+    prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
+    const internals = service as unknown as RetentionInternals;
+    internals.retentionMaintenanceDue = true;
+
+    const cleanup = internals.cleanupRetention();
+    await Promise.resolve();
+    expect(internals.retentionMaintenanceDue).toBe(false);
+
+    internals.retentionMaintenanceDue = true;
+    resolveFirstBatch(0);
+    await cleanup;
+
+    expect(internals.retentionMaintenanceDue).toBe(true);
   });
 
   it('assigns highest BullMQ priority to callback events', async () => {

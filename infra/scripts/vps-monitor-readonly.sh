@@ -431,6 +431,7 @@ now_ms="$(($(date +%s) * 1000))"
 due_score="$((now_ms * 4096 + 4095))"
 for q in "$@"; do
   printf "%s wait=" "$q"; redis_count "bull:$q:wait"
+  printf "%s prioritized=" "$q"; redis_count "bull:$q:prioritized"
   printf "%s active=" "$q"; redis_count "bull:$q:active"
   printf "%s failed=" "$q"; redis_count "bull:$q:failed"
   printf "%s delayed=" "$q"; redis_count "bull:$q:delayed"

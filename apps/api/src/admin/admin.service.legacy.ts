@@ -9270,19 +9270,23 @@ export class AdminService implements OnModuleDestroy {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
-      chatId,
-      this.resolveManualModerationBotAction(parsed.data.action),
-      {
-        preferredBotId: options.preferredBotId,
-      },
-    );
+    const resolvedBotId =
+      parsed.data.action === 'UNMUTE'
+        ? undefined
+        : await this.resolveManualModerationActionBotAssignment(
+            chatId,
+            this.resolveManualModerationBotAction(parsed.data.action),
+            {
+              preferredBotId: options.preferredBotId,
+            },
+          );
     const targetDisplayName =
       normalizeMaxUserDisplayName(options.targetDisplayNameHint, targetUserId) ??
       (await this.resolveManualModerationTargetDisplayName(chatId, targetUserId, {
         botId: resolvedBotId,
         allowRemoteLookup:
-          options.allowTargetDisplayNameRemoteLookup ?? parsed.data.action !== 'UNBAN',
+          options.allowTargetDisplayNameRemoteLookup ??
+          (parsed.data.action !== 'UNBAN' && parsed.data.action !== 'UNMUTE'),
       }));
     const expectedSanctionEventId = this.readTrimmedString(options.expectedSanctionEventId);
     await this.assertExpectedManualModerationSanctionState({
