@@ -4306,7 +4306,7 @@ describe('ModerationService', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      '',
+      '\u200B',
       expect.objectContaining({
         messageLink: {
           type: 'reply',
