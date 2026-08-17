@@ -16,6 +16,30 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('keeps completed webhook retention disabled unless explicitly enabled', () => {
+    expect(validateEnv(createValidEnv()).WEBHOOK_COMPLETED_RETENTION_ENABLED).toBe(false);
+    expect(
+      validateEnv(createValidEnv({ WEBHOOK_COMPLETED_RETENTION_ENABLED: 'true' }))
+        .WEBHOOK_COMPLETED_RETENTION_ENABLED,
+    ).toBe(true);
+    expect(
+      validateEnv(createValidEnv({ WEBHOOK_COMPLETED_RETENTION_ENABLED: 'false' }))
+        .WEBHOOK_COMPLETED_RETENTION_ENABLED,
+    ).toBe(false);
+  });
+
+  it('keeps the global ownership repair runner disabled unless explicitly enabled', () => {
+    expect(validateEnv(createValidEnv()).BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED).toBe(false);
+    expect(
+      validateEnv(createValidEnv({ BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED: 'true' }))
+        .BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED,
+    ).toBe(true);
+    expect(
+      validateEnv(createValidEnv({ BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED: 'false' }))
+        .BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED,
+    ).toBe(false);
+  });
+
   it('keeps plain-text link clickability shadow-only unless explicitly enabled', () => {
     expect(validateEnv(createValidEnv()).MODERATION_LINK_TEXT_CLICKABILITY_ENABLED).toBe(false);
     expect(

@@ -253,6 +253,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly batchSize: number;
   private readonly enqueueConcurrency: number;
   private readonly maxEnqueueAttempts: number;
+  private readonly webhookCompletedRetentionEnabled: boolean;
   private readonly webhookRetentionDays: number;
   private readonly webhookFailedRetentionHours: number;
   private readonly moderationRetentionDays: number;
@@ -291,6 +292,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.batchSize = this.configService.get<number>('ENQUEUE_BATCH_SIZE', 400);
     this.enqueueConcurrency = this.configService.get<number>('ENQUEUE_CONCURRENCY', 32);
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
+    this.webhookCompletedRetentionEnabled = this.configService.get<boolean>(
+      'WEBHOOK_COMPLETED_RETENTION_ENABLED',
+      false,
+    );
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
     this.webhookFailedRetentionHours = this.configService.get<number>(
       'WEBHOOK_FAILED_RETENTION_HOURS',
@@ -1675,6 +1680,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     if (this.cleaning) {
       return;
     }
+    if (!this.webhookCompletedRetentionEnabled && !this.retentionMaintenanceDue) {
+      return;
+    }
     this.cleaning = true;
     let runMaintenance = false;
     try {
@@ -1694,13 +1702,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       const userDisplayNameCutoff = new Date(
         nowMs - this.userDisplayNameRetentionDays * 24 * 60 * 60 * 1_000,
       );
-      const phases: RetentionCleanupPhase[] = [
-        {
+      const phases: RetentionCleanupPhase[] = [];
+      if (this.webhookCompletedRetentionEnabled) {
+        phases.push({
           name: 'webhookProcessedOrDuplicate',
           maxBatches: WEBHOOK_RETENTION_MAX_BATCHES_PER_TICK,
           deleteBatch: () => this.deleteCompletedWebhookBatch(webhookCutoff),
-        },
-      ];
+        });
+      }
       if (runMaintenance) {
         phases.push(
           {
@@ -1737,6 +1746,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         {
           phases: cleanupSummary,
+          webhookCompletedRetentionEnabled: this.webhookCompletedRetentionEnabled,
           webhookRetentionDays: this.webhookRetentionDays,
           webhookFailedRetentionHours: this.webhookFailedRetentionHours,
           moderationRetentionDays: this.moderationRetentionDays,

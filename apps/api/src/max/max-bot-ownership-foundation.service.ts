@@ -93,6 +93,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
   private readonly logger = new Logger(MaxBotOwnershipFoundationService.name);
   private readonly redis: Redis;
   private readonly enabled: boolean;
+  private readonly repairRunnerEnabled: boolean;
   private readonly activeOnThisRole: boolean;
   private readonly repairIntervalMs: number;
   private readonly repairLockTtlMs: number;
@@ -122,6 +123,10 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.enabled = configService.get<boolean>('BOT_OWNERSHIP_FOUNDATION_ENABLED', true);
+    this.repairRunnerEnabled = configService.get<boolean>(
+      'BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED',
+      false,
+    );
     this.repairIntervalMs = configService.get<number>('BOT_OWNERSHIP_REPAIR_INTERVAL_MS', 300_000);
     this.repairLockTtlMs = configService.get<number>('BOT_OWNERSHIP_REPAIR_LOCK_TTL_MS', 60_000);
     this.repairBatchSize = configService.get<number>('BOT_OWNERSHIP_REPAIR_BATCH_SIZE', 250);
@@ -143,7 +148,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       'BOT_OWNERSHIP_REBALANCE_MAX_MOVES_PER_RUN',
       25,
     );
-    this.activeOnThisRole = this.enabled && roleRunsAdmin(getAppRole());
+    this.activeOnThisRole = this.enabled && this.repairRunnerEnabled && roleRunsAdmin(getAppRole());
   }
 
   async onModuleInit(): Promise<void> {
@@ -184,8 +189,15 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
 
     const cached = await this.readSnapshotFromRedis();
     if (cached) {
-      this.cacheSnapshot(cached);
-      return cached;
+      const normalized = this.applyCurrentRepairRuntime(cached);
+      this.cacheSnapshot(normalized);
+      return normalized;
+    }
+
+    if (!this.enabled || !this.repairRunnerEnabled) {
+      const fallback = this.createFallbackSnapshot(null);
+      this.cacheSnapshot(fallback);
+      return fallback;
     }
 
     try {
@@ -1064,7 +1076,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       routingStates,
       anomalies,
       repair: {
-        enabled: this.enabled,
+        enabled: this.enabled && this.repairRunnerEnabled,
         activeOnThisRole: this.activeOnThisRole,
         intervalMs: this.repairIntervalMs,
         rebalanceMode: this.rebalanceMode,
@@ -1098,7 +1110,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       },
       anomalies: this.createEmptyAnomalies(),
       repair: {
-        enabled: this.enabled,
+        enabled: this.enabled && this.repairRunnerEnabled,
         activeOnThisRole: this.activeOnThisRole,
         intervalMs: this.repairIntervalMs,
         rebalanceMode: this.rebalanceMode,
@@ -1283,6 +1295,19 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       );
       return null;
     }
+  }
+
+  private applyCurrentRepairRuntime(
+    snapshot: BotOwnershipFoundationSnapshot,
+  ): BotOwnershipFoundationSnapshot {
+    return {
+      ...snapshot,
+      repair: {
+        ...snapshot.repair,
+        enabled: this.enabled && this.repairRunnerEnabled,
+        activeOnThisRole: this.activeOnThisRole,
+      },
+    };
   }
 
   private async writeSnapshot(snapshot: BotOwnershipFoundationSnapshot): Promise<void> {

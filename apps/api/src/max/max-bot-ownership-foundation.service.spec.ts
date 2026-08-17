@@ -312,6 +312,9 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
       if (key === 'BOT_OWNERSHIP_FOUNDATION_ENABLED') {
         return true;
       }
+      if (key === 'BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED') {
+        return true;
+      }
       if (key === 'BOT_OWNERSHIP_REPAIR_INTERVAL_MS') {
         return 300_000;
       }
@@ -348,6 +351,70 @@ describe('MaxBotOwnershipFoundationService', () => {
     } else {
       process.env.APP_ROLE = originalAppRole;
     }
+  });
+
+  it('keeps the global ownership repair runner disabled unless explicitly enabled', async () => {
+    process.env.APP_ROLE = 'admin';
+    const prisma = createPrismaMock({ chats: [], memberships: [] });
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock({ BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED: false }) as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([]),
+        getAdminVisibleBots: jest.fn().mockReturnValue([]),
+      } as never,
+      {} as never,
+    );
+
+    await service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(10 * 60_000);
+    const snapshot = await service.getSnapshot(0);
+
+    expect(prisma.chat.findMany).not.toHaveBeenCalled();
+    expect(prisma.chatBotMembership.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityLocalActivity.findMany).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(snapshot.repair).toMatchObject({
+      enabled: false,
+      activeOnThisRole: false,
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('marks a cached ownership snapshot inactive without rebuilding it when repair is disabled', async () => {
+    process.env.APP_ROLE = 'admin';
+    const prisma = createPrismaMock({ chats: [], memberships: [] });
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock({ BOT_OWNERSHIP_REPAIR_RUNNER_ENABLED: false }) as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([]),
+        getAdminVisibleBots: jest.fn().mockReturnValue([]),
+      } as never,
+      {} as never,
+    );
+    const staleSnapshot = (
+      service as unknown as {
+        createFallbackSnapshot: (lastError: string | null) => {
+          repair: { enabled: boolean; activeOnThisRole: boolean };
+        };
+      }
+    ).createFallbackSnapshot(null);
+    staleSnapshot.repair.enabled = true;
+    staleSnapshot.repair.activeOnThisRole = true;
+    redisStore.set('system:bot-ownership:foundation:v1', JSON.stringify(staleSnapshot));
+
+    const snapshot = await service.getSnapshot(0);
+
+    expect(prisma.chat.findMany).not.toHaveBeenCalled();
+    expect(prisma.chatBotMembership.findMany).not.toHaveBeenCalled();
+    expect(snapshot.repair).toMatchObject({
+      enabled: false,
+      activeOnThisRole: false,
+    });
+
+    await service.onModuleDestroy();
   });
 
   it('repairs recoverable ownership gaps and exposes rollout blockers in the snapshot', async () => {

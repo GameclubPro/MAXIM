@@ -466,7 +466,7 @@ function createService(params?: {
   backgroundJob?: JobMock | null;
   legacyJob?: JobMock | null;
   undefinedJobs?: boolean;
-  configOverrides?: Partial<Record<string, number>>;
+  configOverrides?: Partial<Record<string, number | boolean>>;
   resolvedQueueName?: string;
   timeoutExecutionClaim?: {
     status: string;
@@ -697,7 +697,7 @@ function createService(params?: {
     get: jest.fn((token: string) => queueTokens[token]),
   };
 
-  const configValues: Record<string, number> = {
+  const configValues: Record<string, number | boolean> = {
     ENQUEUE_POLL_INTERVAL_MS: 500,
     ENQUEUE_BATCH_SIZE: 200,
     ENQUEUE_CONCURRENCY: 25,
@@ -709,7 +709,7 @@ function createService(params?: {
     ...(params?.configOverrides ?? {}),
   };
   const config = {
-    get: jest.fn((key: string, fallback?: number) =>
+    get: jest.fn((key: string, fallback?: number | boolean) =>
       key in configValues ? configValues[key] : fallback,
     ),
   };
@@ -1677,10 +1677,33 @@ describe('WebhookOutboxService', () => {
     jest.useRealTimers();
   });
 
+  it('skips completed webhook retention by default between maintenance ticks', async () => {
+    const { service, prisma } = createService();
+    const logger = jest.spyOn((service as any).logger, 'log');
+
+    await (service as unknown as RetentionInternals).cleanupRetention();
+
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
+  });
+
+  it('keeps hourly maintenance enabled when completed webhook retention is disabled', async () => {
+    const { service, prisma } = createService();
+    (service as unknown as RetentionInternals).retentionMaintenanceDue = true;
+
+    await (service as unknown as RetentionInternals).cleanupRetention();
+
+    const queries = prisma.$executeRaw.mock.calls.map(([query]) => extractSql(query));
+    expect(queries).toHaveLength(5);
+    expect(queries.join(' ')).not.toContain(`'PROCESSED'::"WebhookStatus"`);
+    expect(queries.join(' ')).not.toContain(`'DUPLICATE'::"WebhookStatus"`);
+  });
+
   it('uses bounded ordered SQL for every sequential retention phase', async () => {
     const { service, prisma } = createService({
       configOverrides: {
         WEBHOOK_RETENTION_DAYS: 7,
+        WEBHOOK_COMPLETED_RETENTION_ENABLED: true,
         WEBHOOK_FAILED_RETENTION_HOURS: 24,
         MODERATION_RETENTION_DAYS: 90,
         USER_DISPLAY_NAME_RETENTION_DAYS: 180,
@@ -1747,7 +1770,9 @@ describe('WebhookOutboxService', () => {
     const firstBatch = new Promise<number>((resolve) => {
       resolveFirstBatch = resolve;
     });
-    const { service, prisma } = createService();
+    const { service, prisma } = createService({
+      configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
+    });
     (service as unknown as RetentionInternals).retentionMaintenanceDue = true;
     prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
 
@@ -1778,7 +1803,9 @@ describe('WebhookOutboxService', () => {
   });
 
   it('limits processed and duplicate webhook retention to one batch per tick', async () => {
-    const { service, prisma } = createService();
+    const { service, prisma } = createService({
+      configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
+    });
     const internals = service as unknown as RetentionInternals;
     internals.retentionBatchDelayMs = 0;
     prisma.$executeRaw.mockImplementation(async (query: SqlQuery) => {
@@ -1804,7 +1831,9 @@ describe('WebhookOutboxService', () => {
   });
 
   it('reports the failed retention phase and resets the cleaning guard', async () => {
-    const { service, prisma } = createService();
+    const { service, prisma } = createService({
+      configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
+    });
     const internals = service as unknown as RetentionInternals;
     internals.retentionMaintenanceDue = true;
     const logger = jest.spyOn((service as any).logger, 'warn');
@@ -1836,7 +1865,9 @@ describe('WebhookOutboxService', () => {
     const firstBatch = new Promise<number>((resolve) => {
       resolveFirstBatch = resolve;
     });
-    const { service, prisma } = createService();
+    const { service, prisma } = createService({
+      configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
+    });
     prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
     const internals = service as unknown as RetentionInternals;
 
@@ -1854,7 +1885,9 @@ describe('WebhookOutboxService', () => {
     const firstBatch = new Promise<number>((resolve) => {
       resolveFirstBatch = resolve;
     });
-    const { service, prisma } = createService();
+    const { service, prisma } = createService({
+      configOverrides: { WEBHOOK_COMPLETED_RETENTION_ENABLED: true },
+    });
     prisma.$executeRaw.mockImplementationOnce(() => firstBatch).mockResolvedValue(0);
     const internals = service as unknown as RetentionInternals;
     internals.retentionMaintenanceDue = true;
