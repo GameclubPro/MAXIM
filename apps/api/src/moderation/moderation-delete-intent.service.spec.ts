@@ -294,6 +294,21 @@ function commercialOcrClaimedIntentInput() {
   };
 }
 
+function requiredSubscriptionDeleteIntentInput() {
+  return {
+    chatId: 'chat-1',
+    messageId: 'message-1',
+    reasonKey: 'REQUIRED_SUBSCRIPTION:message-delete',
+    ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',
+    subjectUserId: 'user-1',
+    sourceMessageAt: new Date(Date.now() - 1_000),
+    entityType: 'CHAT' as const,
+    messageAuthorKind: 'user' as const,
+    originBotId: 'bot-1',
+    routingPolicy: 'delete_capable' as const,
+  };
+}
+
 describe('ModerationDeleteIntentService', () => {
   it('atomically claims the OCR action, materializes its intent and reason, then enqueues after commit', async () => {
     const order: string[] = [];
@@ -759,6 +774,355 @@ describe('ModerationDeleteIntentService', () => {
     ).toBe('observed');
     expect(enabled.getRolloutForRule('chat-1', 'BOT_MESSAGE_AUTO_DELETE')).toBe('execute');
     expect(enabled.getRolloutForRule('chat-1', 'BOT_MESSAGE_AUTO_DELETE_EXTRA')).toBe('observed');
+  });
+
+  it('gates exact required-subscription deletion independently of the global rollout', () => {
+    const shadowDisabled = createService({
+      MODERATION_DELETE_INTENT_MODE: 'shadow',
+    }).service;
+    const shadowEnabled = createService({
+      MODERATION_DELETE_INTENT_MODE: 'shadow',
+      MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+    }).service;
+    const canaryEnabled = createService({
+      MODERATION_DELETE_INTENT_MODE: 'canary',
+      MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+      MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+    }).service;
+
+    expect(shadowDisabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe(
+      'observed',
+    );
+    expect(shadowDisabled.getRolloutForInput(requiredSubscriptionDeleteIntentInput())).toBe(
+      'observed',
+    );
+    expect(shadowEnabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe(
+      'execute',
+    );
+    expect(canaryEnabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE')).toBe(
+      'execute',
+    );
+    expect(shadowEnabled.getRolloutForRule('chat-1', 'REQUIRED_SUBSCRIPTION_DELETE_EXTRA')).toBe(
+      'observed',
+    );
+    expect(shadowEnabled.getRolloutForRule('chat-1', 'PREFIX_REQUIRED_SUBSCRIPTION_DELETE')).toBe(
+      'observed',
+    );
+    expect(shadowEnabled.getRolloutForRule('chat-1', 'STOP_WORD_DELETE')).toBe('observed');
+    expect(
+      (shadowDisabled as unknown as ServiceInternals).isExecutionEnabledForIntent({
+        chatId: 'chat-1',
+        requiredSubscriptionDeleteReason: true,
+      }),
+    ).toBe(false);
+    expect(
+      (shadowEnabled as unknown as ServiceInternals).isExecutionEnabledForIntent({
+        chatId: 'chat-1',
+        requiredSubscriptionDeleteReason: true,
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['shadow', { MODERATION_DELETE_INTENT_MODE: 'shadow' }],
+    [
+      'outside the canary cohort',
+      {
+        MODERATION_DELETE_INTENT_MODE: 'canary',
+        MODERATION_DELETE_INTENT_CANARY_CHAT_IDS: 'other-chat',
+      },
+    ],
+  ])('persists required-subscription deletion as executable in %s', async (_label, rollout) => {
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: jest.fn().mockResolvedValue([persisted]),
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service, queue } = createService(
+      {
+        ...rollout,
+        MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+      },
+      { $transaction: transaction },
+    );
+
+    await expect(service.ensureIntent(requiredSubscriptionDeleteIntentInput())).resolves.toEqual({
+      intentId: 'intent-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({ priority: 1 }),
+    );
+  });
+
+  it('keeps exact required-subscription deletion observed while its switch is off', async () => {
+    const persisted = {
+      ...baseIntent,
+      status: 'OBSERVED' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: jest.fn().mockResolvedValue([persisted]),
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service, queue } = createService(
+      { MODERATION_DELETE_INTENT_MODE: 'shadow' },
+      { $transaction: transaction },
+    );
+
+    await expect(service.ensureIntent(requiredSubscriptionDeleteIntentInput())).resolves.toEqual({
+      intentId: 'intent-1',
+      rollout: 'observed',
+      status: 'OBSERVED',
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('promotes a replayed required-subscription observation when its switch is enabled', async () => {
+    const promoted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const txQueryRaw = jest.fn().mockResolvedValue([promoted]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: txQueryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'shadow',
+        MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+      },
+      { $transaction: transaction },
+    );
+
+    await expect(service.ensureIntent(requiredSubscriptionDeleteIntentInput())).resolves.toEqual({
+      intentId: 'intent-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+
+    const upsertSql = txQueryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(upsertSql).toContain('ON CONFLICT');
+    expect(upsertSql).toContain('"moderation_delete_intents"."status" = CAST');
+    expect(upsertSql).toContain('\'OBSERVED\' AS "ModerationDeleteIntentStatus"');
+    expect(upsertSql).toContain('EXCLUDED."status" <> CAST');
+    expect(upsertSql).not.toContain('WHEN FALSE');
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('attempts a freshly persisted required-subscription intent in shadow mode', async () => {
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: jest.fn().mockResolvedValue([persisted]),
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'shadow',
+        MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+      },
+      { $transaction: transaction },
+    );
+    const attempt = jest.spyOn(service, 'attemptIntent').mockResolvedValue({
+      kind: 'confirmed',
+      confirmed: true,
+      intentId: 'intent-1',
+      status: 'SUCCEEDED',
+      botId: 'bot-1',
+    });
+
+    await expect(
+      service.ensureAndAttempt(requiredSubscriptionDeleteIntentInput()),
+    ).resolves.toMatchObject({ kind: 'confirmed', confirmed: true });
+    expect(attempt).toHaveBeenCalledWith('intent-1', undefined);
+  });
+
+  it('preserves required-subscription execution when a non-required reason coalesces', async () => {
+    const persisted = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([persisted])
+      .mockResolvedValueOnce([{ requiredSubscriptionDeleteReason: true }]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: txQueryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service, queue } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'shadow',
+        MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+      },
+      { $transaction: transaction },
+    );
+
+    await expect(
+      service.ensureIntent({
+        ...requiredSubscriptionDeleteIntentInput(),
+        reasonKey: 'STOP_WORD:message-delete',
+        ruleCode: 'STOP_WORD_DELETE',
+      }),
+    ).resolves.toEqual({
+      intentId: 'intent-1',
+      rollout: 'execute',
+      status: 'PENDING',
+    });
+
+    expect(txQueryRaw).toHaveBeenCalledTimes(2);
+    expect(txQueryRaw.mock.calls[1]?.[0]?.values).toContain('REQUIRED_SUBSCRIPTION_DELETE');
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps required-subscription execution durable across reload and DB sweep', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const { service } = createService(
+      {
+        MODERATION_DELETE_INTENT_MODE: 'shadow',
+        MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED: true,
+      },
+      { $queryRaw: queryRaw },
+    );
+    const internals = service as unknown as ServiceInternals;
+
+    await internals.selectDueIntentIds();
+
+    const sweepQuery = queryRaw.mock.calls[0]?.[0];
+    expect(sweepQuery?.strings?.join('?') ?? '').toContain('required_subscription_reason');
+    expect(sweepQuery?.values).toContain('REQUIRED_SUBSCRIPTION_DELETE');
+
+    const selectQuery = (
+      service as unknown as {
+        intentSelectSql(alias: string): {
+          strings?: readonly string[];
+          values?: readonly unknown[];
+        };
+      }
+    ).intentSelectSql('intent');
+    expect(selectQuery.strings?.join('?') ?? '').toContain('AS "requiredSubscriptionDeleteReason"');
+    expect(selectQuery.values).toContain('REQUIRED_SUBSCRIPTION_DELETE');
+    expect(
+      internals.isExecutionEnabledForIntent({
+        chatId: 'chat-1',
+        requiredSubscriptionDeleteReason: true,
+      }),
+    ).toBe(true);
+
+    const loaded = {
+      ...baseIntent,
+      status: 'PENDING' as const,
+      requiredSubscriptionDeleteReason: true,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    jest.spyOn(service as any, 'loadIntent').mockResolvedValue(loaded);
+    jest.spyOn(service as any, 'claimOne').mockResolvedValue({
+      ...loaded,
+      status: 'IN_PROGRESS',
+      leaseToken: 'reloaded-lease',
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      leasedFromStatus: 'PENDING',
+    });
+    const execute = jest.spyOn(service, 'executeLeasedIntent').mockResolvedValue({
+      kind: 'confirmed',
+      confirmed: true,
+      intentId: 'intent-1',
+      status: 'SUCCEEDED',
+      botId: 'bot-1',
+    });
+
+    await expect(service.attemptIntent('intent-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+    });
+    expect(execute).toHaveBeenCalledWith('intent-1', 'reloaded-lease', undefined);
+  });
+
+  it('excludes required-subscription retry from the shadow sweep while its switch is off', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const { service } = createService(
+      { MODERATION_DELETE_INTENT_MODE: 'shadow' },
+      { $queryRaw: queryRaw },
+    );
+
+    await (service as unknown as ServiceInternals).selectDueIntentIds();
+
+    const sweepQuery = queryRaw.mock.calls[0]?.[0];
+    expect(sweepQuery?.values).not.toContain('REQUIRED_SUBSCRIPTION_DELETE');
+  });
+
+  it('releases a claimed required-subscription intent without a MAX mutation after switch-off', async () => {
+    const leased = {
+      ...baseIntent,
+      requiredSubscriptionDeleteReason: true,
+    };
+    const paused = {
+      ...leased,
+      status: 'PENDING' as const,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const queryRaw = jest.fn().mockResolvedValueOnce([leased]).mockResolvedValueOnce([paused]);
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const deleteMessage = jest.fn();
+    const resolveDeleteMessageBotRoute = jest.fn();
+    const { service } = createService(
+      { MODERATION_DELETE_INTENT_MODE: 'shadow' },
+      { $queryRaw: queryRaw, $executeRaw: executeRaw },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      status: 'PENDING',
+    });
+
+    const releaseSql = executeRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(releaseSql).toContain('"status" = COALESCE');
+    expect(releaseSql).toContain('"lease_token" = NULL');
+    expect(resolveDeleteMessageBotRoute).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
   });
 
   it('scopes commercial OCR execution to its exact OCR canary without widening other rules', () => {

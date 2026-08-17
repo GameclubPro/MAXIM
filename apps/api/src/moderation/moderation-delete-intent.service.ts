@@ -87,6 +87,7 @@ export const MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES = [
   'CHAT_RULES_REPUBLISH_PREVIOUS_MESSAGE_CLEANUP',
 ] as const;
 const BOT_MESSAGE_AUTO_DELETE_RULE_CODE = 'BOT_MESSAGE_AUTO_DELETE';
+const REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE = 'REQUIRED_SUBSCRIPTION_DELETE';
 const REPLACEMENT_CLEANUP_RULE_CODE_SET: ReadonlySet<string> = new Set(
   MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
 );
@@ -135,6 +136,7 @@ type IntentRow = {
   channelAutoPostCleanupOnly?: boolean;
   botMessageAutoDeleteReason?: boolean;
   botMessageAutoDeleteOnly?: boolean;
+  requiredSubscriptionDeleteReason?: boolean;
   commercialOcrDeleteReason?: boolean;
   nonCommercialOcrDeleteReason?: boolean;
   linkFamilyDeleteOnly?: boolean;
@@ -289,6 +291,7 @@ export class ModerationDeleteIntentService {
   private readonly commercialOcrCanaryChatIds: ReadonlySet<string>;
   private readonly crossBotCanaryChatIds: ReadonlySet<string>;
   private readonly replacementCleanupEnabled: boolean;
+  private readonly requiredSubscriptionDeleteEnabled: boolean;
   private readonly retryHorizonMs: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
@@ -333,6 +336,10 @@ export class ModerationDeleteIntentService {
     this.replacementCleanupEnabled = this.readBoolean(
       configService.get('MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_ENABLED'),
       true,
+    );
+    this.requiredSubscriptionDeleteEnabled = this.readBoolean(
+      configService.get('MODERATION_DELETE_INTENT_REQUIRED_SUBSCRIPTION_ENABLED'),
+      false,
     );
     this.retryHorizonMs = this.readPositiveInt(
       configService.get('MODERATION_DELETE_INTENT_RETRY_HORIZON_MS'),
@@ -407,6 +414,13 @@ export class ModerationDeleteIntentService {
     ruleCodes: readonly string[],
   ): ModerationDeleteIntentRollout {
     const normalizedRuleCodes = ruleCodes.map((ruleCode) => ruleCode.trim());
+    // FLAG: Required-subscription enforcement deletion must retain durable retry ownership.
+    if (
+      this.requiredSubscriptionDeleteEnabled &&
+      normalizedRuleCodes.some((ruleCode) => ruleCode === REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE)
+    ) {
+      return 'execute';
+    }
     if (normalizedRuleCodes.some((ruleCode) => ruleCode === BOT_MESSAGE_AUTO_DELETE_RULE_CODE)) {
       return 'execute';
     }
@@ -653,6 +667,7 @@ export class ModerationDeleteIntentService {
     reopened.replacementCleanup = existing.replacementCleanup;
     reopened.botMessageAutoDeleteReason = existing.botMessageAutoDeleteReason;
     reopened.botMessageAutoDeleteOnly = existing.botMessageAutoDeleteOnly;
+    reopened.requiredSubscriptionDeleteReason = existing.requiredSubscriptionDeleteReason;
     reopened.commercialOcrDeleteReason = existing.commercialOcrDeleteReason;
     reopened.nonCommercialOcrDeleteReason = existing.nonCommercialOcrDeleteReason;
     await this.enqueueWakeup(reopened, DELETE_QUEUE_PRIORITY_INTERACTIVE);
@@ -2082,6 +2097,7 @@ export class ModerationDeleteIntentService {
       let storedNonChannelReplacementCleanup: boolean | undefined;
       let storedChannelAutoPostCleanupReason: boolean | undefined;
       let storedBotMessageAutoDeleteReason: boolean | undefined;
+      let storedRequiredSubscriptionDeleteReason: boolean | undefined;
       if (intent.id !== intentId && normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE) {
         const reasonState = await tx.$queryRaw<
           Array<{
@@ -2090,6 +2106,7 @@ export class ModerationDeleteIntentService {
             nonChannelReplacementCleanup: boolean;
             channelAutoPostCleanupReason: boolean;
             botMessageAutoDeleteReason: boolean;
+            requiredSubscriptionDeleteReason: boolean;
           }>
         >(Prisma.sql`
           SELECT EXISTS (
@@ -2131,7 +2148,14 @@ export class ModerationDeleteIntentService {
             FROM "moderation_delete_intent_reasons" existing_auto_delete_reason
             WHERE existing_auto_delete_reason."intent_id" = ${intent.id}
               AND existing_auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
-          ) AS "botMessageAutoDeleteReason"
+          ) AS "botMessageAutoDeleteReason",
+          EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" existing_required_subscription_reason
+            WHERE existing_required_subscription_reason."intent_id" = ${intent.id}
+              AND existing_required_subscription_reason."rule_code" =
+                ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
+          ) AS "requiredSubscriptionDeleteReason"
         `);
         storedNonCommercialOcrDeleteReason = reasonState[0]?.nonCommercialOcrDeleteReason === true;
         storedReplacementCleanup = reasonState[0]?.replacementCleanup === true;
@@ -2144,6 +2168,26 @@ export class ModerationDeleteIntentService {
             ? reasonState[0].channelAutoPostCleanupReason
             : undefined;
         storedBotMessageAutoDeleteReason = reasonState[0]?.botMessageAutoDeleteReason === true;
+        storedRequiredSubscriptionDeleteReason =
+          reasonState[0]?.requiredSubscriptionDeleteReason === true;
+      } else if (
+        intent.id !== intentId &&
+        this.requiredSubscriptionDeleteEnabled &&
+        normalized.ruleCode !== REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE
+      ) {
+        const reasonState = await tx.$queryRaw<
+          Array<{ requiredSubscriptionDeleteReason: boolean }>
+        >(Prisma.sql`
+          SELECT EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" existing_required_subscription_reason
+            WHERE existing_required_subscription_reason."intent_id" = ${intent.id}
+              AND existing_required_subscription_reason."rule_code" =
+                ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
+          ) AS "requiredSubscriptionDeleteReason"
+        `);
+        storedRequiredSubscriptionDeleteReason =
+          reasonState[0]?.requiredSubscriptionDeleteReason === true;
       }
       let effectiveIntent = intent;
       if (
@@ -2397,6 +2441,9 @@ export class ModerationDeleteIntentService {
       if (storedBotMessageAutoDeleteReason !== undefined) {
         effectiveIntent.botMessageAutoDeleteReason = storedBotMessageAutoDeleteReason;
       }
+      if (storedRequiredSubscriptionDeleteReason !== undefined) {
+        effectiveIntent.requiredSubscriptionDeleteReason = storedRequiredSubscriptionDeleteReason;
+      }
       return effectiveIntent;
     };
     const persisted = transactionClient
@@ -2426,6 +2473,9 @@ export class ModerationDeleteIntentService {
     persisted.botMessageAutoDeleteReason =
       persisted.botMessageAutoDeleteReason === true ||
       normalized.ruleCode === BOT_MESSAGE_AUTO_DELETE_RULE_CODE;
+    persisted.requiredSubscriptionDeleteReason =
+      persisted.requiredSubscriptionDeleteReason === true ||
+      normalized.ruleCode === REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE;
     persisted.commercialOcrDeleteReason =
       persisted.commercialOcrGuardRequired ||
       normalized.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE;
@@ -3717,6 +3767,17 @@ export class ModerationDeleteIntentService {
           )
         `
       : Prisma.empty;
+    const requiredSubscriptionDeleteFilter = this.requiredSubscriptionDeleteEnabled
+      ? Prisma.sql`
+          OR EXISTS (
+            SELECT 1
+            FROM "moderation_delete_intent_reasons" required_subscription_reason
+            WHERE required_subscription_reason."intent_id" = intent."id"
+              AND required_subscription_reason."rule_code" =
+                ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
+          )
+        `
+      : Prisma.empty;
     return Prisma.sql`(
       (
         ${baseFilter}
@@ -3737,6 +3798,7 @@ export class ModerationDeleteIntentService {
         )
       )
       ${replacementCleanupFilter}
+      ${requiredSubscriptionDeleteFilter}
       OR (
         EXISTS (
           SELECT 1
@@ -3815,6 +3877,7 @@ export class ModerationDeleteIntentService {
       | 'channelAutoPostCleanupReason'
       | 'botMessageAutoDeleteReason'
       | 'botMessageAutoDeleteOnly'
+      | 'requiredSubscriptionDeleteReason'
       | 'commercialOcrGuardRequired'
       | 'commercialOcrDeleteReason'
       | 'nonCommercialOcrDeleteReason'
@@ -3849,10 +3912,13 @@ export class ModerationDeleteIntentService {
       | 'channelAutoPostCleanupReason'
       | 'botMessageAutoDeleteReason'
       | 'botMessageAutoDeleteOnly'
+      | 'requiredSubscriptionDeleteReason'
       | 'nonCommercialOcrDeleteReason'
     >,
   ): boolean {
     if (
+      (this.requiredSubscriptionDeleteEnabled &&
+        intent.requiredSubscriptionDeleteReason === true) ||
       intent.botMessageAutoDeleteReason === true ||
       intent.botMessageAutoDeleteOnly === true ||
       (this.replacementCleanupEnabled &&
@@ -3878,6 +3944,7 @@ export class ModerationDeleteIntentService {
       | 'channelAutoPostCleanupReason'
       | 'botMessageAutoDeleteReason'
       | 'botMessageAutoDeleteOnly'
+      | 'requiredSubscriptionDeleteReason'
       | 'commercialOcrGuardRequired'
       | 'commercialOcrDeleteReason'
       | 'nonCommercialOcrDeleteReason'
@@ -4400,6 +4467,13 @@ export class ModerationDeleteIntentService {
         WHERE auto_delete_reason."intent_id" = ${intentIdColumn}
           AND auto_delete_reason."rule_code" = ${BOT_MESSAGE_AUTO_DELETE_RULE_CODE}
       ) AS "botMessageAutoDeleteReason",
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" required_subscription_reason
+        WHERE required_subscription_reason."intent_id" = ${intentIdColumn}
+          AND required_subscription_reason."rule_code" =
+            ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
+      ) AS "requiredSubscriptionDeleteReason",
       (
         EXISTS (
           SELECT 1
