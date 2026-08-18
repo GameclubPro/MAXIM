@@ -327,6 +327,15 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           aria-disabled={disabled || undefined}
           spellCheck
           suppressContentEditableWarning
+          onPointerDownCapture={(event) => {
+            const editor = editorRef.current;
+            if (!editor || !moveCaretAfterPlaceholderToken(editor, event.target)) {
+              return;
+            }
+
+            event.preventDefault();
+            savedRangeRef.current = readCurrentEditorRange(editor);
+          }}
           onBeforeInput={() => {
             savedRangeRef.current = restoreOrCreateEditorRange();
           }}
@@ -514,6 +523,24 @@ function applyDocumentRange(range: Range): void {
 
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function moveCaretAfterPlaceholderToken(editor: HTMLElement, target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  const token = target.closest<HTMLElement>('[data-max-placeholder]');
+  if (!token || !editor.contains(token)) {
+    return false;
+  }
+
+  const range = document.createRange();
+  range.setStartAfter(token);
+  range.collapse(true);
+  editor.focus();
+  applyDocumentRange(range);
+  return true;
 }
 
 function wrapRangeWithElement(

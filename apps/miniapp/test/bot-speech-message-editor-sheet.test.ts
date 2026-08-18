@@ -26,6 +26,10 @@ const richTextEditorSource = readFileSync(
   new URL('../src/components/max-rich-text-editor.tsx', import.meta.url),
   'utf8',
 );
+const settingsPageSource = readFileSync(
+  new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
+  'utf8',
+);
 
 test('bot speech editor keeps focus inside the topmost named dialog', () => {
   assert.match(editorSheetSource, /useDialogFocusTrap\(true, panelRef, closeButtonRef\);/u);
@@ -40,10 +44,7 @@ test('bot speech editor keeps focus inside the topmost named dialog', () => {
     /event\.key !== 'Escape'[\s\S]*?isTopmostModalDialog\(panel\)[\s\S]*?onClose\(\)/u,
   );
   assert.match(editorSheetSource, /BOT_MESSAGE_EDITOR_NATIVE_BACK_PRIORITY = 700/u);
-  assert.match(
-    editorSheetSource,
-    /bot-message-editor-sheet__backdrop[\s\S]*?tabIndex=\{-1\}/u,
-  );
+  assert.match(editorSheetSource, /bot-message-editor-sheet__backdrop[\s\S]*?tabIndex=\{-1\}/u);
 });
 
 test('rich text link panel handles native Back before its parent speech editor', () => {
@@ -154,4 +155,49 @@ test('bot speech editor keeps every compact action at least 44px', () => {
     /\.bot-message-editor-sheet__rich-editor \.max-rich-text-editor__link-panel button \{[\s\S]*?min-width: 44px;[\s\S]*?height: 44px;/u,
   );
   assert.match(editorSheetCss, /\.bot-message-editor-sheet__rich-editor:focus-within/u);
+});
+
+test('bot speech editor keeps an empty in-progress replacement instead of restoring the template', () => {
+  assert.match(
+    editorSheetSource,
+    /const \[editorValue, setEditorValue\] = useState\(\(\) =>\s*hasCustomBotSpeechText\(value\) \? value : defaultValue,/u,
+  );
+  assert.match(
+    editorSheetSource,
+    /const handleTextChange = useCallback\([\s\S]*?setEditorValue\(nextValue\);[\s\S]*?onChange\(nextValue\);/u,
+  );
+  assert.match(editorSheetSource, /value=\{editorValue\}[\s\S]*?onChange=\{handleTextChange\}/u);
+  assert.match(editorSheetSource, /setEditorValue\(defaultValue\);\s*onReset\(\);/u);
+});
+
+test('bot speech editor follows the visual viewport while the mobile keyboard is open', () => {
+  assert.match(editorSheetSource, /useVisualViewportOverlayStyle\(true\)/u);
+  assert.match(editorSheetSource, /className="bot-message-editor-sheet" style=\{overlayStyle\}/u);
+  assert.match(
+    editorSheetCss,
+    /\.bot-message-editor-sheet__panel \{[\s\S]*?max-height: min\(82dvh, calc\(100% - 12px\), 650px\);[\s\S]*?min-height: min\(460px, 78dvh, calc\(100% - 12px\)\);/u,
+  );
+});
+
+test('bot speech placeholders move a tapped mobile caret outside the protected token', () => {
+  assert.match(
+    richTextEditorSource,
+    /onPointerDownCapture=\{\(event\) => \{[\s\S]*?moveCaretAfterPlaceholderToken\(editor, event\.target\)[\s\S]*?event\.preventDefault\(\);/u,
+  );
+  assert.match(
+    richTextEditorSource,
+    /function moveCaretAfterPlaceholderToken[\s\S]*?target\.closest<HTMLElement>\('\[data-max-placeholder\]'\)[\s\S]*?range\.setStartAfter\(token\);[\s\S]*?editor\.focus\(\);[\s\S]*?applyDocumentRange\(range\);/u,
+  );
+});
+
+test('required subscription explanation editor opens even while the action is disabled', () => {
+  const editorStart = settingsPageSource.indexOf("openBotEditorKey === 'requiredSubscription' ?");
+  const editorSource = settingsPageSource.slice(
+    editorStart,
+    settingsPageSource.indexOf('/>', editorStart) + 2,
+  );
+
+  assert.notEqual(editorStart, -1);
+  assert.match(editorSource, /<LazyBotMessageEditor/u);
+  assert.doesNotMatch(editorSource, /requiredSubscriptionBotMessageEnabled/u);
 });

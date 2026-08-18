@@ -7793,8 +7793,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </label>
                         </div>
 
-                        {draft.requiredSubscriptionBotMessageEnabled &&
-                        openBotEditorKey === 'requiredSubscription' ? (
+                        {openBotEditorKey === 'requiredSubscription' ? (
                           <LazyBotMessageEditor
                             editorKey="requiredSubscription"
                             {...botSpeechEditorProps!}

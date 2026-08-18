@@ -17,6 +17,7 @@ import { cn } from '../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../lib/dialog-focus';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { useNativeBackHandler } from '../lib/native-back';
+import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import './bot-speech-message-editor-sheet.css';
 import './bot-speech-message-editor-sheet-a11y.css';
 
@@ -108,14 +109,16 @@ export function BotSpeechMessageEditorSheet({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const [editorValue, setEditorValue] = useState(() =>
+    hasCustomBotSpeechText(value) ? value : defaultValue,
+  );
   const [imageError, setImageError] = useState('');
   const [isPreparingImage, setIsPreparingImage] = useState(false);
   const portalTarget = resolveBotMessageEditorPortalTarget();
-  const isDefaultTemplate = !hasCustomBotSpeechText(value);
-  const editorValue = isDefaultTemplate ? defaultValue : value;
+  const overlayStyle = useVisualViewportOverlayStyle(true);
   const hasImage = Boolean(image?.base64 && image.mimeType);
   const imagePreviewUrl = hasImage ? `data:${image?.mimeType};base64,${image?.base64}` : '';
-  const canReset = !isDefaultTemplate || hasImage;
+  const canReset = editorValue !== defaultValue || hasImage;
   const remainingLength = BOT_MESSAGE_EDITOR_MAX_LENGTH - editorValue.length;
   const isNearLimit =
     remainingLength >= 0 && remainingLength <= Math.min(100, BOT_MESSAGE_EDITOR_MAX_LENGTH * 0.08);
@@ -175,6 +178,14 @@ export function BotSpeechMessageEditorSheet({
     editorRef.current?.applyTool(tool);
   }, []);
 
+  const handleTextChange = useCallback(
+    (nextValue: string) => {
+      setEditorValue(nextValue);
+      onChange(nextValue);
+    },
+    [onChange],
+  );
+
   async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     if (!file || !onImageChange) {
@@ -204,7 +215,7 @@ export function BotSpeechMessageEditorSheet({
   }
 
   const sheet = (
-    <div className="bot-message-editor-sheet">
+    <div className="bot-message-editor-sheet" style={overlayStyle}>
       <button
         type="button"
         className="bot-message-editor-sheet__backdrop"
@@ -251,7 +262,7 @@ export function BotSpeechMessageEditorSheet({
           <MaxRichTextEditor
             ref={editorRef}
             value={editorValue}
-            onChange={onChange}
+            onChange={handleTextChange}
             maxLength={BOT_MESSAGE_EDITOR_MAX_LENGTH}
             placeholder="Свой текст"
             preserveCurlyBracePlaceholders
@@ -381,6 +392,7 @@ export function BotSpeechMessageEditorSheet({
                 if (hasImage) {
                   onImageChange?.(null);
                 }
+                setEditorValue(defaultValue);
                 onReset();
               }}
             >
