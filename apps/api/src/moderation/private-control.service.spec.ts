@@ -13,6 +13,10 @@ import {
 } from '../common/user-agreement-notice';
 import { LEGACY_PUBLICATION_WRITES_DISABLED_CODE } from '../admin/legacy-publication-write-freeze';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
+import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from '../max/max-media-upload-validation';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { createDefaultPrivateControlSession } from './private-control-session-normalizer';
 import { PrivateControlService } from './private-control.service';
@@ -3561,6 +3565,27 @@ describe('PrivateControlService', () => {
       }),
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
+  });
+
+  it('shows a user-facing media validation error while composing a suggestion', async () => {
+    const { service, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-7');
+    const imageMock = mockImageFetch();
+    const validationError = new MaxMediaUploadValidationError(
+      MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.INVALID_PAYLOAD,
+      'image',
+    );
+    maxClient.uploadImage.mockRejectedValueOnce(validationError);
+
+    try {
+      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+      await service.handleUpdate(createPrivatePhotoUpdate());
+    } finally {
+      imageMock.restore();
+    }
+
+    expect(getLastSentText(maxClient)).toContain(validationError.publicMessage);
+    expect(getLastSentText(maxClient)).not.toContain('Что-то пошло не так');
   });
 
   it('sends several suggestion photos from the bot as one album payload', async () => {

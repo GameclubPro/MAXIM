@@ -1,5 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
+import sharp from 'sharp';
+import { validateMaxMediaUploadPayload } from '../max/max-media-upload-validation';
 import {
   buildPrivateDownloadedFileName,
   buildPrivateSuggestionImageDraftsFromImages,
@@ -38,15 +40,32 @@ function createAttachmentUpdate(attachments: unknown[]): MaxUpdate {
   };
 }
 
-function mockFetch(buffer: Buffer, mimeType: string, ok = true, status = 200) {
+function mockFetch(
+  buffer: Buffer,
+  mimeType: string,
+  ok = true,
+  status = 200,
+  options: { contentLength?: string } = {},
+) {
+  const arrayBuffer = jest.fn(async () =>
+    buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+  );
   const fetchMock = jest.fn().mockResolvedValue({
     ok,
     status,
     headers: {
-      get: (name: string) => (name.toLowerCase() === 'content-type' ? mimeType : null),
+      get: (name: string) => {
+        const normalized = name.toLowerCase();
+        if (normalized === 'content-type') {
+          return mimeType;
+        }
+        if (normalized === 'content-length') {
+          return options.contentLength ?? null;
+        }
+        return null;
+      },
     },
-    arrayBuffer: async () =>
-      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+    arrayBuffer,
   });
   const originalFetch = global.fetch;
   Object.defineProperty(global, 'fetch', {
@@ -56,6 +75,7 @@ function mockFetch(buffer: Buffer, mimeType: string, ok = true, status = 200) {
   });
 
   return {
+    arrayBuffer,
     fetchMock,
     restore() {
       Object.defineProperty(global, 'fetch', {
@@ -177,6 +197,10 @@ describe('private control media attachments', () => {
     expect(buildPrivateDownloadedFileName('private-rules', null, 'file-1', 'image/webp')).toBe(
       'private-rules-file-1.webp',
     );
+    expect(resolvePrivateImageMimeType(null, 'photo.avif', null)).toBe('image/avif');
+    expect(buildPrivateDownloadedFileName('private-rules', null, 'file-2', 'image/avif')).toBe(
+      'private-rules-file-2.avif',
+    );
   });
 
   it('downloads images and preserves server image mime type', async () => {
@@ -239,6 +263,65 @@ describe('private control media attachments', () => {
       );
     } finally {
       emptyFetch.restore();
+    }
+  });
+
+  it('rejects oversized image downloads from metadata before reading the response body', async () => {
+    const imageFileSource = extractPrivateFirstImageSourceAttachment(
+      createAttachmentUpdate([
+        {
+          type: 'file',
+          filename: 'huge-photo.webp',
+          payload: {
+            url: 'https://example.test/huge-photo.webp',
+            size: 50_000_001,
+          },
+        },
+      ]),
+    );
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn();
+    Object.defineProperty(global, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: fetchMock,
+    });
+
+    try {
+      await expect(downloadPrivateImageSourceAttachment(imageFileSource!)).rejects.toThrow(
+        'Изображение слишком большое. Максимальный размер — 50 МБ.',
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(global, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    }
+
+    const imageSource = extractPrivateFirstImageSourceAttachment(
+      createAttachmentUpdate([
+        {
+          type: 'image',
+          payload: {
+            url: 'https://example.test/huge-photo.webp',
+            photo_id: 'huge-photo',
+          },
+        },
+      ]),
+    );
+    const responseMock = mockFetch(Buffer.from('not-read'), 'image/webp', true, 200, {
+      contentLength: '50000001',
+    });
+
+    try {
+      await expect(downloadPrivateImageSourceAttachment(imageSource!)).rejects.toThrow(
+        'Изображение слишком большое. Максимальный размер — 50 МБ.',
+      );
+      expect(responseMock.arrayBuffer).not.toHaveBeenCalled();
+    } finally {
+      responseMock.restore();
     }
   });
 
@@ -311,6 +394,112 @@ describe('private control media attachments', () => {
     } finally {
       videoFetch.restore();
     }
+  });
+
+  it.each([
+    { label: 'WebP', extension: 'webp', mimeType: 'image/webp' },
+    { label: 'AVIF', extension: 'avif', mimeType: 'image/avif' },
+  ])(
+    'transcodes incoming $label photos before retrying a MAX suggestion upload',
+    async ({ extension, mimeType }) => {
+      const inputImage = sharp({
+        create: {
+          width: 4,
+          height: 3,
+          channels: 3,
+          background: { r: 25, g: 100, b: 180 },
+        },
+      });
+      const encoded =
+        extension === 'webp'
+          ? await inputImage.webp().toBuffer()
+          : await inputImage.avif().toBuffer();
+      const imageSources = extractPrivateImageSourceAttachments(
+        createAttachmentUpdate([
+          {
+            type: 'image',
+            payload: {
+              url: `https://example.test/photo.${extension}`,
+              photo_id: `photo-${extension}-1`,
+            },
+          },
+        ]),
+      );
+      const uploader = {
+        uploadImage: jest.fn(async (data: Buffer, fileName: string, uploadMimeType: string) => {
+          const validated = await validateMaxMediaUploadPayload('image', data);
+          expect(fileName).toMatch(new RegExp(`\\.${validated.extension}$`, 'u'));
+          expect(uploadMimeType).toBe(validated.mimeType);
+          return { token: 'converted-image-token' };
+        }),
+        uploadVideo: jest.fn(),
+      };
+      const imageFetch = mockFetch(encoded, mimeType);
+
+      try {
+        await expect(
+          buildPrivateSuggestionImageDraftsFromImages(imageSources, uploader, 'channel-suggestion'),
+        ).resolves.toEqual([
+          {
+            kind: 'image',
+            mimeType: 'image/jpeg',
+            fileName: `channel-suggestion-photo-${extension}-1.jpg`,
+            payload: { token: 'converted-image-token' },
+          },
+        ]);
+      } finally {
+        imageFetch.restore();
+      }
+
+      expect(uploader.uploadImage).toHaveBeenCalledTimes(2);
+      expect(uploader.uploadImage).toHaveBeenNthCalledWith(
+        1,
+        encoded,
+        `channel-suggestion-photo-${extension}-1.${extension}`,
+        mimeType,
+      );
+      expect(uploader.uploadImage).toHaveBeenNthCalledWith(
+        2,
+        expect.any(Buffer),
+        `channel-suggestion-photo-${extension}-1.jpg`,
+        'image/jpeg',
+      );
+      const converted = uploader.uploadImage.mock.calls[1]?.[0];
+      await expect(sharp(converted).metadata()).resolves.toMatchObject({
+        format: 'jpeg',
+        width: 4,
+        height: 3,
+      });
+    },
+  );
+
+  it('does not retry an image upload after an unrelated uploader failure', async () => {
+    const imageSources = extractPrivateImageSourceAttachments(
+      createAttachmentUpdate([
+        {
+          type: 'image',
+          payload: {
+            url: 'https://example.test/photo.jpg',
+            photo_id: 'photo-transport-error',
+          },
+        },
+      ]),
+    );
+    const uploader = {
+      uploadImage: jest.fn().mockRejectedValue(new Error('upload transport failed')),
+      uploadVideo: jest.fn(),
+    };
+    const imageFetch = mockFetch(Buffer.from('image'), 'image/jpeg');
+
+    try {
+      await expect(
+        buildPrivateSuggestionImageDraftsFromImages(imageSources, uploader, 'channel-suggestion'),
+      ).rejects.toThrow('upload transport failed');
+    } finally {
+      imageFetch.restore();
+    }
+
+    expect(uploader.uploadImage).toHaveBeenCalledTimes(1);
   });
 
   it('reuses incoming MAX video tokens without downloading or uploading', async () => {

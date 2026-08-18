@@ -5252,6 +5252,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
+          text: null,
           attachments: [
             {
               type: 'image',

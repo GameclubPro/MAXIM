@@ -1,6 +1,14 @@
 import { BadRequestException } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
-import { MAX_VIDEO_UPLOAD_MAX_BYTES } from '../max/max-video-upload.constants';
+import {
+  MAX_IMAGE_UPLOAD_MAX_DIMENSION_PX,
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from '../max/max-media-upload-validation';
+import {
+  MAX_IMAGE_UPLOAD_MAX_BYTES,
+  MAX_VIDEO_UPLOAD_MAX_BYTES,
+} from '../max/max-video-upload.constants';
 import type {
   DownloadedBinaryAsset,
   DownloadedImageAsset,
@@ -13,8 +21,16 @@ import type {
   PrivateSuggestionVideoDraft,
 } from './private-control.types';
 
+const PRIVATE_IMAGE_DOWNLOAD_MAX_BYTES = MAX_IMAGE_UPLOAD_MAX_BYTES;
+const PRIVATE_MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
 const PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES = MAX_VIDEO_UPLOAD_MAX_BYTES;
-const PRIVATE_VIDEO_DOWNLOAD_TIMEOUT_MS = 10_000;
+const PRIVATE_IMAGE_TRANSCODE_MAX_PIXELS = 16_000_000;
+const PRIVATE_IMAGE_TRANSCODE_MAX_CONCURRENCY = 2;
+const PRIVATE_IMAGE_TOO_LARGE_MESSAGE = 'Изображение слишком большое. Максимальный размер — 50 МБ.';
+const PRIVATE_IMAGE_TRANSCODE_TOO_LARGE_MESSAGE =
+  'Изображение слишком большое для обработки. Отправьте фото размером до 16 мегапикселей.';
+let privateImageTranscodesInFlight = 0;
+const privateImageTranscodeWaiters: Array<() => void> = [];
 
 export type PrivateControlMediaAttachmentUploader = {
   uploadImage(data: Buffer, fileName: string, mimeType: string): Promise<Record<string, unknown>>;
@@ -229,7 +245,7 @@ export async function downloadPrivateVideoSourceAttachment(
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
-  }, PRIVATE_VIDEO_DOWNLOAD_TIMEOUT_MS);
+  }, PRIVATE_MEDIA_DOWNLOAD_TIMEOUT_MS);
 
   try {
     const response = await fetch(videoSourceAttachment.url, {
@@ -258,7 +274,11 @@ export async function downloadPrivateVideoSourceAttachment(
       throw new BadRequestException('Файл должен быть видео.');
     }
 
-    const buffer = await readResponseBufferWithLimit(response, PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES);
+    const buffer = await readResponseBufferWithLimit(
+      response,
+      PRIVATE_VIDEO_DOWNLOAD_MAX_BYTES,
+      'Видео слишком большое. Максимальный размер — 250 МБ.',
+    );
     if (buffer.length === 0) {
       throw new BadRequestException('Видео оказалось пустым.');
     }
@@ -311,16 +331,43 @@ export async function buildPrivateSuggestionMediaDraftFromImage(
   filePrefix = 'channel-suggestion',
 ): Promise<PrivateSuggestionImageDraft> {
   const downloaded = await downloadPrivateImageSourceAttachment(imageSourceAttachment, filePrefix);
+  const originalBuffer = Buffer.from(downloaded.base64, 'base64');
+  downloaded.base64 = '';
+
+  try {
+    const payload = await uploader.uploadImage(
+      originalBuffer,
+      downloaded.fileName,
+      downloaded.mimeType,
+    );
+
+    return {
+      kind: 'image',
+      mimeType: downloaded.mimeType,
+      fileName: downloaded.fileName,
+      payload,
+    };
+  } catch (error: unknown) {
+    if (
+      !(error instanceof MaxMediaUploadValidationError) ||
+      error.uploadType !== 'image' ||
+      error.code !== MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.UNSUPPORTED_FORMAT
+    ) {
+      throw error;
+    }
+  }
+
+  const transcoded = await transcodeUnsupportedPrivateImage(originalBuffer, downloaded.fileName);
   const payload = await uploader.uploadImage(
-    Buffer.from(downloaded.base64, 'base64'),
-    downloaded.fileName,
-    downloaded.mimeType,
+    transcoded.buffer,
+    transcoded.fileName,
+    transcoded.mimeType,
   );
 
   return {
     kind: 'image',
-    mimeType: downloaded.mimeType,
-    fileName: downloaded.fileName,
+    mimeType: transcoded.mimeType,
+    fileName: transcoded.fileName,
     payload,
   };
 }
@@ -443,7 +490,7 @@ async function downloadPrivateImageAttachment(
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
-  }, 10_000);
+  }, PRIVATE_MEDIA_DOWNLOAD_TIMEOUT_MS);
 
   try {
     const response = await fetch(imageAttachment.url, {
@@ -455,13 +502,18 @@ async function downloadPrivateImageAttachment(
       throw new BadRequestException(`Не удалось загрузить фото (${response.status}).`);
     }
 
+    assertPrivateImageContentLength(response);
+
     const mimeTypeHeader = response.headers.get('content-type') ?? '';
     const mimeType = mimeTypeHeader.toLowerCase().startsWith('image/')
       ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
       : (imageAttachment.mimeType ?? 'image/jpeg');
 
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const buffer = await readResponseBufferWithLimit(
+      response,
+      PRIVATE_IMAGE_DOWNLOAD_MAX_BYTES,
+      PRIVATE_IMAGE_TOO_LARGE_MESSAGE,
+    );
     if (buffer.length === 0) {
       throw new BadRequestException('Фото оказалось пустым.');
     }
@@ -548,10 +600,17 @@ async function downloadPrivateImageFileAttachment(
   imageFileAttachment: ParsedImageFileAttachment,
   filePrefix = 'private-broadcast',
 ): Promise<DownloadedImageAsset> {
+  if (
+    typeof imageFileAttachment.size === 'number' &&
+    imageFileAttachment.size > PRIVATE_IMAGE_DOWNLOAD_MAX_BYTES
+  ) {
+    throw new BadRequestException(PRIVATE_IMAGE_TOO_LARGE_MESSAGE);
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
-  }, 10_000);
+  }, PRIVATE_MEDIA_DOWNLOAD_TIMEOUT_MS);
 
   try {
     const response = await fetch(imageFileAttachment.url, {
@@ -562,6 +621,8 @@ async function downloadPrivateImageFileAttachment(
     if (!response.ok) {
       throw new BadRequestException(`Не удалось загрузить файл (${response.status}).`);
     }
+
+    assertPrivateImageContentLength(response);
 
     const mimeTypeHeader = response.headers.get('content-type') ?? '';
     const mimeType = resolvePrivateImageMimeType(
@@ -575,8 +636,11 @@ async function downloadPrivateImageFileAttachment(
       throw new BadRequestException('Файл должен быть изображением.');
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const buffer = await readResponseBufferWithLimit(
+      response,
+      PRIVATE_IMAGE_DOWNLOAD_MAX_BYTES,
+      PRIVATE_IMAGE_TOO_LARGE_MESSAGE,
+    );
     if (buffer.length === 0) {
       throw new BadRequestException('Файл оказался пустым.');
     }
@@ -610,6 +674,9 @@ function extensionFromMimeType(mimeType: string): string {
   }
   if (mimeType === 'image/webp') {
     return 'webp';
+  }
+  if (mimeType === 'image/avif') {
+    return 'avif';
   }
   if (mimeType === 'image/gif') {
     return 'gif';
@@ -650,6 +717,9 @@ function inferImageMimeTypeFromFileName(fileName: string | null): string | null 
   }
   if (normalized.endsWith('.webp')) {
     return 'image/webp';
+  }
+  if (normalized.endsWith('.avif')) {
+    return 'image/avif';
   }
   if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
     return 'image/jpeg';
@@ -692,11 +762,134 @@ function inferVideoMimeTypeFromFileName(fileName: string | null): string | null 
   return null;
 }
 
-async function readResponseBufferWithLimit(response: Response, maxBytes: number): Promise<Buffer> {
+async function transcodeUnsupportedPrivateImage(
+  data: Buffer,
+  fileName: string,
+): Promise<DownloadedBinaryAsset> {
+  const admission = acquirePrivateImageTranscodeSlot();
+  if (admission) {
+    await admission;
+  }
+
+  try {
+    return await transcodeUnsupportedPrivateImageWithSharp(data, fileName);
+  } finally {
+    releasePrivateImageTranscodeSlot();
+  }
+}
+
+async function transcodeUnsupportedPrivateImageWithSharp(
+  data: Buffer,
+  fileName: string,
+): Promise<DownloadedBinaryAsset> {
+  try {
+    const { default: sharp } = await import('sharp');
+    const createPipeline = () =>
+      sharp(data, {
+        failOn: 'error',
+        limitInputPixels: PRIVATE_IMAGE_TRANSCODE_MAX_PIXELS,
+        sequentialRead: true,
+      }).rotate();
+    const metadata = await createPipeline().metadata();
+
+    if (
+      !metadata.width ||
+      !metadata.height ||
+      metadata.width > MAX_IMAGE_UPLOAD_MAX_DIMENSION_PX ||
+      metadata.height > MAX_IMAGE_UPLOAD_MAX_DIMENSION_PX
+    ) {
+      throw new BadRequestException(
+        `Размер изображения превышает ${MAX_IMAGE_UPLOAD_MAX_DIMENSION_PX}x${MAX_IMAGE_UPLOAD_MAX_DIMENSION_PX} пикселей.`,
+      );
+    }
+
+    if (metadata.hasAlpha) {
+      const png = await createPipeline()
+        .png({ compressionLevel: 9, adaptiveFiltering: true })
+        .toBuffer();
+      if (png.length <= MAX_IMAGE_UPLOAD_MAX_BYTES) {
+        return {
+          buffer: png,
+          mimeType: 'image/png',
+          fileName: replacePrivateImageFileExtension(fileName, 'png'),
+        };
+      }
+    }
+
+    for (const quality of [92, 82]) {
+      const jpeg = await createPipeline()
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality, progressive: true })
+        .toBuffer();
+      if (jpeg.length <= MAX_IMAGE_UPLOAD_MAX_BYTES) {
+        return {
+          buffer: jpeg,
+          mimeType: 'image/jpeg',
+          fileName: replacePrivateImageFileExtension(fileName, 'jpg'),
+        };
+      }
+    }
+
+    throw new BadRequestException(PRIVATE_IMAGE_TOO_LARGE_MESSAGE);
+  } catch (error: unknown) {
+    if (error instanceof BadRequestException) {
+      throw error;
+    }
+
+    if (error instanceof Error && error.message.toLowerCase().includes('pixel limit')) {
+      throw new BadRequestException(PRIVATE_IMAGE_TRANSCODE_TOO_LARGE_MESSAGE);
+    }
+
+    throw new BadRequestException(
+      'Не удалось обработать изображение. Отправьте исправный файл или другое фото.',
+    );
+  }
+}
+
+function acquirePrivateImageTranscodeSlot(): Promise<void> | null {
+  if (
+    privateImageTranscodesInFlight < PRIVATE_IMAGE_TRANSCODE_MAX_CONCURRENCY &&
+    privateImageTranscodeWaiters.length === 0
+  ) {
+    privateImageTranscodesInFlight += 1;
+    return null;
+  }
+
+  return new Promise<void>((resolve) => privateImageTranscodeWaiters.push(resolve));
+}
+
+function releasePrivateImageTranscodeSlot(): void {
+  const next = privateImageTranscodeWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+
+  privateImageTranscodesInFlight = Math.max(0, privateImageTranscodesInFlight - 1);
+}
+
+function replacePrivateImageFileExtension(fileName: string, extension: 'jpg' | 'png'): string {
+  const normalized = normalizeDownloadedFileName(fileName) ?? 'image';
+  const stem = normalized.replace(/\.[^./\\]+$/u, '').replace(/[. ]+$/u, '') || 'image';
+  return `${stem}.${extension}`;
+}
+
+function assertPrivateImageContentLength(response: Response): void {
+  const contentLength = parseContentLength(response.headers.get('content-length'));
+  if (contentLength !== null && contentLength > PRIVATE_IMAGE_DOWNLOAD_MAX_BYTES) {
+    throw new BadRequestException(PRIVATE_IMAGE_TOO_LARGE_MESSAGE);
+  }
+}
+
+async function readResponseBufferWithLimit(
+  response: Response,
+  maxBytes: number,
+  tooLargeMessage: string,
+): Promise<Buffer> {
   if (!response.body) {
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.length > maxBytes) {
-      throw new BadRequestException('Видео слишком большое. Максимальный размер — 250 МБ.');
+      throw new BadRequestException(tooLargeMessage);
     }
     return buffer;
   }
@@ -714,7 +907,7 @@ async function readResponseBufferWithLimit(response: Response, maxBytes: number)
       totalBytes += chunk.length;
       if (totalBytes > maxBytes) {
         await reader.cancel().catch(() => undefined);
-        throw new BadRequestException('Видео слишком большое. Максимальный размер — 250 МБ.');
+        throw new BadRequestException(tooLargeMessage);
       }
       chunks.push(chunk);
     }

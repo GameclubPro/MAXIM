@@ -1,6 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
+import { MaxMediaUploadValidationError } from '../max/max-media-upload-validation';
 
-export function extractPrivateControlBadRequestDetails(error: unknown): string | null {
+export function extractPrivateControlUserErrorDetails(error: unknown): string | null {
+  if (error instanceof MaxMediaUploadValidationError) {
+    return error.publicMessage;
+  }
+
   if (!(error instanceof BadRequestException)) {
     return null;
   }

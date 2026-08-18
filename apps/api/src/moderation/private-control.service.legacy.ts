@@ -102,7 +102,7 @@ import {
   SEARCH_RESULT_LIMIT,
   SUPPORT_CHAT_URL,
 } from './private-control.constants';
-import { extractPrivateControlBadRequestDetails } from './private-control-bad-request.util';
+import { extractPrivateControlUserErrorDetails } from './private-control-bad-request.util';
 import {
   buildBroadcastComposerClientResetKey,
   normalizeBroadcastComposerClientResetValue,
@@ -4720,7 +4720,7 @@ export class PrivateControlService {
         params.privateBotId,
       );
     } catch (error: unknown) {
-      const badRequestDetails = extractPrivateControlBadRequestDetails(error);
+      const badRequestDetails = extractPrivateControlUserErrorDetails(error);
       const userMessage = publicationWriteFreeze.resolveWriteErrorMessage(error, badRequestDetails);
       const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
       this.logger.warn(
@@ -8353,7 +8353,7 @@ export class PrivateControlService {
     callback: CallbackAction | null,
     error: unknown,
   ): Promise<void> {
-    const badRequestDetails = extractPrivateControlBadRequestDetails(error);
+    const badRequestDetails = extractPrivateControlUserErrorDetails(error);
     const userMessage =
       typeof badRequestDetails === 'string' && badRequestDetails.trim().length > 0
         ? badRequestDetails
