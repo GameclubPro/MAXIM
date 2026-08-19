@@ -47,12 +47,13 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
+import { useLocation, useParams, useSearchParams } from 'react-router';
 import {
   MAX_MARKDOWN_TOOL_DEFINITIONS,
   type MaxMarkdownTool,
 } from '../components/max-markdown-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import { PublicDialogUnavailableState } from '../components/public-dialog-unavailable-state';
 import {
   MaxRichTextEditor,
   type MaxRichTextEditorHandle,
@@ -86,7 +87,7 @@ import {
 } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { getInitDataUserId } from '../lib/init-data';
-import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
+import type { LastEntityType } from '../lib/last-chat';
 import {
   downloadMaxFile,
   maxImpact,
@@ -1365,6 +1366,14 @@ type PreparingAttachmentState = {
   done: number;
 };
 
+type TerminalDialogErrorState = {
+  entityType: LastEntityType;
+  chatId: string;
+  dialogType: ChannelDialogType;
+  token: string;
+  message: string;
+};
+
 type SuggestionStatusPresentation = {
   badge: string;
   headline: string;
@@ -1393,7 +1402,6 @@ function resolveDialogEntityType(pathname: string): LastEntityType {
 export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(location.pathname);
@@ -1417,7 +1425,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const [terminalDialogError, setTerminalDialogError] = useState<string | null>(null);
+  const [terminalDialogErrorState, setTerminalDialogErrorState] =
+    useState<TerminalDialogErrorState | null>(null);
   const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
   const [preparingAttachmentState, setPreparingAttachmentState] =
     useState<PreparingAttachmentState | null>(null);
@@ -1461,7 +1470,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messageRectsRef = useRef(new Map<string, DOMRect>());
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const ignoreNextBubbleClickRef = useRef(false);
-  const launchErrorRedirectedRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const fileInputActivationMode = resolveFileInputActivationMode(
@@ -1471,13 +1479,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const currentUserId = useMemo(() => getInitDataUserId(), []);
   const dialogQueryKey = queryKeys.entityDialog(entityType, chatId, dialogType, token);
+  const terminalDialogError =
+    terminalDialogErrorState?.entityType === entityType &&
+    terminalDialogErrorState.chatId === chatId &&
+    terminalDialogErrorState.dialogType === dialogType &&
+    terminalDialogErrorState.token === token
+      ? terminalDialogErrorState.message
+      : null;
   const shouldLoadDialog = Boolean(chatId && token) && terminalDialogError === null;
-
-  useEffect(() => {
-    if (chatId) {
-      saveLastEntityId(entityType, chatId);
-    }
-  }, [chatId, entityType]);
 
   const dialogQuery = useQuery({
     queryKey: dialogQueryKey,
@@ -1501,7 +1510,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   });
 
   useEffect(() => {
-    if (launchErrorRedirectedRef.current) {
+    if (terminalDialogError) {
       return;
     }
 
@@ -1510,19 +1519,18 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    launchErrorRedirectedRef.current = true;
-    setTerminalDialogError(message);
+    setTerminalDialogErrorState({ entityType, chatId, dialogType, token, message });
     void queryClient.cancelQueries({ queryKey: dialogQueryKey });
-    pushToast({
-      tone: 'info',
-      title: isSessionExpiredApiMessage(message)
-        ? 'Откройте мини-приложение заново'
-        : 'Диалог недоступен',
-      description: message,
-      durationMs: 4_000,
-    });
-    navigate(buildManagedEntitiesRoute(entityType), { replace: true });
-  }, [dialogQuery.error, dialogQueryKey, entityType, navigate, pushToast, queryClient]);
+  }, [
+    chatId,
+    dialogQuery.error,
+    dialogQueryKey,
+    dialogType,
+    entityType,
+    queryClient,
+    terminalDialogError,
+    token,
+  ]);
 
   useEffect(() => {
     if (!imageViewer) {
@@ -1914,7 +1922,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setIsReactionPickerExpanded(false);
     setIsNearBottom(true);
     setFirstUnreadMessageId(null);
-    setTerminalDialogError(null);
+    setTerminalDialogErrorState(null);
     setReactionPopoverLayout(null);
     setDraft('');
     setDraftAttachments([]);
@@ -3654,41 +3662,36 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     };
   }, [dialogQuery.data, dialogQuery.error, dialogQuery.isLoading, dialogType]);
 
+  if (terminalDialogError) {
+    const sessionExpired = isSessionExpiredApiMessage(terminalDialogError);
+    return (
+      <PublicDialogUnavailableState
+        tone={sessionExpired ? 'danger' : 'warning'}
+        title={sessionExpired ? 'Нужно открыть приложение заново' : 'Диалог недоступен'}
+        description={
+          sessionExpired
+            ? 'Закройте мини-приложение и откройте этот диалог снова из сообщения в MAX.'
+            : terminalDialogError
+        }
+      />
+    );
+  }
+
   if (!chatId) {
     return (
-      <div className="page-stack page-enter">
-        <div className="glass-card glass-card--md">
-          <StatusState
-            tone="warning"
-            title={entityType === 'channel' ? 'Канал не найден' : 'Чат не найден'}
-            description="Откройте диалог заново из сообщения."
-            action={
-              <Link to={buildManagedEntitiesRoute(entityType)} className="button button--accent">
-                К списку
-              </Link>
-            }
-          />
-        </div>
-      </div>
+      <PublicDialogUnavailableState
+        title={entityType === 'channel' ? 'Канал не найден' : 'Чат не найден'}
+        description="Откройте диалог заново из сообщения."
+      />
     );
   }
 
   if (!token) {
     return (
-      <div className="page-stack page-enter">
-        <div className="glass-card glass-card--md">
-          <StatusState
-            tone="warning"
-            title="Кнопка устарела"
-            description="Откройте сообщение и нажмите кнопку ещё раз."
-            action={
-              <Link to={buildManagedEntitiesRoute(entityType)} className="button button--accent">
-                К списку
-              </Link>
-            }
-          />
-        </div>
-      </div>
+      <PublicDialogUnavailableState
+        title="Кнопка устарела"
+        description="Откройте сообщение и нажмите кнопку ещё раз."
+      />
     );
   }
 

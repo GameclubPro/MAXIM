@@ -1,13 +1,12 @@
 import type { ManagedEntityType } from '@maxim/contracts';
+import type { ManagedPollListScope } from '@maxim/contracts/poll';
 
 export const managedPollQueryKeys = {
-  list: (entityType: ManagedEntityType, entityId: string | null | undefined) =>
-    ['managed-polls', entityType, entityId] as const,
-  details: (
+  list: (
     entityType: ManagedEntityType,
     entityId: string | null | undefined,
-    pollId: string | null | undefined,
-  ) => ['managed-poll-details', entityType, entityId, pollId] as const,
+    scope: ManagedPollListScope,
+  ) => ['managed-polls', entityType, entityId, scope] as const,
   voters: (
     entityType: ManagedEntityType,
     entityId: string | null | undefined,

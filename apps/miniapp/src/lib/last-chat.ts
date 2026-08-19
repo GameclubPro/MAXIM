@@ -92,6 +92,13 @@ export function buildManagedEntitiesRoute(entityType: LastEntityType): string {
   return entityType === 'channel' ? '/?view=channel' : '/?view=chat';
 }
 
+export function isManagedEntityWorkspacePath(pathname: string): boolean {
+  return (
+    /^\/chat\/[^/]+\/(?:settings|events)\/?$/u.test(pathname) ||
+    /^\/channel\/[^/]+\/(?:settings|stats)\/?$/u.test(pathname)
+  );
+}
+
 export function buildHomeView<T extends ManagedEntityListItem>(options: {
   entities: readonly T[] | null | undefined;
   query: string;

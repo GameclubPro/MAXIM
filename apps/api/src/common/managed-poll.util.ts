@@ -4,7 +4,8 @@ import { measureMaxInlineKeyboardTextWeight } from '../max/max-inline-keyboard-l
 import { renderSupportedMarkdownAsHtml } from './max-markdown.util';
 
 export const MANAGED_POLL_CALLBACK_PREFIX = 'poll';
-const MANAGED_POLL_CALLBACK_VERSION = 'v2';
+const MANAGED_POLL_LEGACY_CALLBACK_VERSION = 'v2';
+const MANAGED_POLL_CALLBACK_VERSION = 'v3';
 const MANAGED_POLL_PROGRESS_CELLS = 10;
 const MANAGED_POLL_BUTTON_MAX_VISUAL_WEIGHT = 36;
 
@@ -55,12 +56,13 @@ export function buildManagedPollMessageText(params: {
 export function buildManagedPollButtons(
   pollId: string,
   options: readonly ManagedPollOptionResult[],
+  publicationToken?: string | null,
 ): MaxMessageButton[][] {
   return options.map((option) => [
     {
       type: 'callback',
       text: buildManagedPollButtonText(option),
-      payload: buildManagedPollCallbackPayload(pollId, option.id),
+      payload: buildManagedPollCallbackPayload(pollId, option.id, publicationToken),
     },
   ]);
 }
@@ -85,39 +87,74 @@ function buildManagedPollButtonText(option: ManagedPollOptionResult): string {
   return `${normalizedOptionText}  ${result}`;
 }
 
-export function buildManagedPollCallbackPayload(pollId: string, optionId: string): string {
-  return [
-    MANAGED_POLL_CALLBACK_PREFIX,
-    MANAGED_POLL_CALLBACK_VERSION,
-    pollId.trim(),
-    optionId.trim(),
-  ].join('|');
+export function buildManagedPollCallbackPayload(
+  pollId: string,
+  optionId: string,
+  publicationToken?: string | null,
+): string {
+  const normalizedPublicationToken = publicationToken?.trim();
+  return normalizedPublicationToken
+    ? [
+        MANAGED_POLL_CALLBACK_PREFIX,
+        MANAGED_POLL_CALLBACK_VERSION,
+        pollId.trim(),
+        normalizedPublicationToken,
+        optionId.trim(),
+      ].join('|')
+    : [
+        MANAGED_POLL_CALLBACK_PREFIX,
+        MANAGED_POLL_LEGACY_CALLBACK_VERSION,
+        pollId.trim(),
+        optionId.trim(),
+      ].join('|');
 }
 
 export function buildManagedPollCallbackPayloadPrefix(pollId: string): string {
-  return [MANAGED_POLL_CALLBACK_PREFIX, MANAGED_POLL_CALLBACK_VERSION, pollId.trim(), ''].join('|');
+  return [
+    MANAGED_POLL_CALLBACK_PREFIX,
+    MANAGED_POLL_LEGACY_CALLBACK_VERSION,
+    pollId.trim(),
+    '',
+  ].join('|');
+}
+
+export function buildManagedPollCallbackPayloadPrefixes(pollId: string): string[] {
+  const normalizedPollId = pollId.trim();
+  return [
+    buildManagedPollCallbackPayloadPrefix(normalizedPollId),
+    [MANAGED_POLL_CALLBACK_PREFIX, MANAGED_POLL_CALLBACK_VERSION, normalizedPollId, ''].join('|'),
+  ];
 }
 
 export function parseManagedPollCallbackPayload(
   payload: string | null | undefined,
-): { pollId: string; optionId: string } | null {
+): { pollId: string; optionId: string; publicationToken: string | null } | null {
   if (!payload) {
     return null;
   }
 
   const parts = payload.trim().split('|');
-  if (
-    parts.length !== 4 ||
-    parts[0] !== MANAGED_POLL_CALLBACK_PREFIX ||
-    parts[1] !== MANAGED_POLL_CALLBACK_VERSION
-  ) {
+  if (parts[0] !== MANAGED_POLL_CALLBACK_PREFIX) {
     return null;
   }
 
-  const pollId = parts[2]?.trim() ?? '';
-  const optionId = parts[3]?.trim() ?? '';
   const idPattern = /^[a-z0-9_-]{1,128}$/u;
-  return idPattern.test(pollId) && idPattern.test(optionId) ? { pollId, optionId } : null;
+  if (parts.length === 4 && parts[1] === MANAGED_POLL_LEGACY_CALLBACK_VERSION) {
+    const pollId = parts[2]?.trim() ?? '';
+    const optionId = parts[3]?.trim() ?? '';
+    return idPattern.test(pollId) && idPattern.test(optionId)
+      ? { pollId, optionId, publicationToken: null }
+      : null;
+  }
+  if (parts.length === 5 && parts[1] === MANAGED_POLL_CALLBACK_VERSION) {
+    const pollId = parts[2]?.trim() ?? '';
+    const publicationToken = parts[3]?.trim() ?? '';
+    const optionId = parts[4]?.trim() ?? '';
+    return idPattern.test(pollId) && idPattern.test(publicationToken) && idPattern.test(optionId)
+      ? { pollId, optionId, publicationToken }
+      : null;
+  }
+  return null;
 }
 
 function normalizeVoteCount(value: unknown): number {

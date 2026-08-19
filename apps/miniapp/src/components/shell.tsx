@@ -11,6 +11,7 @@ import {
 import {
   buildManagedEntitiesRoute,
   hydrateLastEntityState,
+  isManagedEntityWorkspacePath,
   normalizeEntityType,
   readLastEntityType,
   saveLastEntityId,
@@ -219,9 +220,10 @@ export function Shell() {
     typeof location.state.chatTitle === 'string'
       ? location.state.chatTitle.trim()
       : '';
+  const isManagedEntityRoute = isManagedEntityWorkspacePath(location.pathname);
 
   useEffect(() => {
-    if (!chatId) {
+    if (!chatId || !isManagedEntityRoute) {
       return;
     }
 
@@ -233,7 +235,7 @@ export function Shell() {
     }
 
     saveChatTitle(chatId, routeChatTitle);
-  }, [chatId, routeChatTitle, routeEntityType]);
+  }, [chatId, isManagedEntityRoute, routeChatTitle, routeEntityType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -262,8 +264,6 @@ export function Shell() {
     setLastEntityType(selectedRootEntityType);
   }, [isChatsRoute, selectedRootEntityType]);
 
-  const isManagedEntityRoute =
-    location.pathname.includes('/channel/') || location.pathname.includes('/chat/');
   const resolvedEntityType: LastEntityType = isChatsRoute
     ? selectedRootEntityType
     : isManagedEntityRoute

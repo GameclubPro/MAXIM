@@ -25,12 +25,13 @@ import {
   type ChangeEvent as ReactChangeEvent,
   type FormEvent as ReactFormEvent,
 } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
+import { useParams, useSearchParams } from 'react-router';
 import {
   MAX_MARKDOWN_TOOL_DEFINITIONS,
   type MaxMarkdownTool,
 } from '../components/max-markdown-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import { PublicDialogUnavailableState } from '../components/public-dialog-unavailable-state';
 import {
   MaxRichTextEditor,
   type MaxRichTextEditorHandle,
@@ -42,7 +43,6 @@ import { cn } from '../lib/cn';
 import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/dialog-api-error';
 import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
-import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { maxSelectionChanged } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import '../styles/channel-dialog-suggest.css';
@@ -59,6 +59,8 @@ type PreparingImageState = {
   total: number;
   done: number;
 };
+
+type TerminalDialogErrorState = readonly [chatId: string, token: string, message: string];
 
 type SuggestionStatusPresentation = {
   badge: string;
@@ -382,13 +384,13 @@ function SuggestionRequirements({ text }: { text: string }) {
 
 export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const [draft, setDraft] = useState('');
   const [draftAttachments, setDraftAttachments] = useState<SuggestDraftAttachment[]>([]);
   const [preparingImageState, setPreparingImageState] = useState<PreparingImageState | null>(null);
-  const [terminalDialogError, setTerminalDialogError] = useState<string | null>(null);
+  const [terminalDialogErrorState, setTerminalDialogErrorState] =
+    useState<TerminalDialogErrorState | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const suggestComposerRef = useRef<HTMLElement | null>(null);
@@ -400,7 +402,6 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   const recentAttachmentSelectionRef = useRef<{ signature: string; handledAt: number } | null>(
     null,
   );
-  const launchErrorRedirectedRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const fileInputActivationMode = resolveFileInputActivationMode(
@@ -408,13 +409,11 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   );
   const useNativeTapFileInputs = fileInputActivationMode === 'native-tap';
   const dialogQueryKey = queryKeys.entityDialog('channel', chatId, 'suggest', token);
-  const shouldLoadDialog = Boolean(chatId && token) && terminalDialogError === null;
-
-  useEffect(() => {
-    if (chatId) {
-      saveLastEntityId('channel', chatId);
-    }
-  }, [chatId]);
+  const terminalDialogError =
+    terminalDialogErrorState?.[0] === chatId && terminalDialogErrorState[1] === token
+      ? terminalDialogErrorState[2]
+      : null;
+  const shouldLoadDialog = Boolean(chatId && token) && !terminalDialogError;
 
   const dialogQuery = useQuery({
     queryKey: dialogQueryKey,
@@ -422,8 +421,8 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     enabled: shouldLoadDialog,
     retry: (failureCount, error) =>
       !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
-    refetchOnWindowFocus: terminalDialogError === null,
-    retryOnMount: terminalDialogError === null,
+    refetchOnWindowFocus: !terminalDialogError,
+    retryOnMount: !terminalDialogError,
     refetchInterval: (query) => {
       const message = query.state.error ? normalizeApiError(query.state.error) : '';
       if (message && isTerminalDialogApiMessage(message)) {
@@ -435,7 +434,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   });
 
   useEffect(() => {
-    if (launchErrorRedirectedRef.current) {
+    if (terminalDialogError) {
       return;
     }
 
@@ -444,19 +443,9 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    launchErrorRedirectedRef.current = true;
-    setTerminalDialogError(message);
+    setTerminalDialogErrorState([chatId, token, message]);
     void queryClient.cancelQueries({ queryKey: dialogQueryKey });
-    pushToast({
-      tone: 'info',
-      title: isSessionExpiredApiMessage(message)
-        ? 'Откройте мини-приложение заново'
-        : 'Диалог недоступен',
-      description: message,
-      durationMs: 4_000,
-    });
-    navigate(buildManagedEntitiesRoute('channel'), { replace: true });
-  }, [dialogQuery.error, dialogQueryKey, navigate, pushToast, queryClient]);
+  }, [chatId, dialogQuery.error, dialogQueryKey, queryClient, terminalDialogError, token]);
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
@@ -995,41 +984,36 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     });
   };
 
+  if (terminalDialogError) {
+    const sessionExpired = isSessionExpiredApiMessage(terminalDialogError);
+    return (
+      <PublicDialogUnavailableState
+        tone={sessionExpired ? 'danger' : undefined}
+        title={sessionExpired ? 'Нужно открыть приложение заново' : 'Диалог недоступен'}
+        description={
+          sessionExpired
+            ? 'Закройте мини-приложение и откройте этот диалог снова из сообщения в MAX.'
+            : terminalDialogError
+        }
+      />
+    );
+  }
+
   if (!chatId) {
     return (
-      <div className="page-stack page-enter">
-        <div className="glass-card glass-card--md">
-          <StatusState
-            tone="warning"
-            title="Канал не найден"
-            description="Откройте диалог заново из сообщения."
-            action={
-              <Link to={buildManagedEntitiesRoute('channel')} className="button button--accent">
-                К списку
-              </Link>
-            }
-          />
-        </div>
-      </div>
+      <PublicDialogUnavailableState
+        title="Канал не найден"
+        description="Откройте диалог заново из сообщения."
+      />
     );
   }
 
   if (!token) {
     return (
-      <div className="page-stack page-enter">
-        <div className="glass-card glass-card--md">
-          <StatusState
-            tone="warning"
-            title="Кнопка устарела"
-            description="Откройте сообщение и нажмите кнопку ещё раз."
-            action={
-              <Link to={buildManagedEntitiesRoute('channel')} className="button button--accent">
-                К списку
-              </Link>
-            }
-          />
-        </div>
-      </div>
+      <PublicDialogUnavailableState
+        title="Кнопка устарела"
+        description="Откройте сообщение и нажмите кнопку ещё раз."
+      />
     );
   }
 

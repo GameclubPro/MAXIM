@@ -177,12 +177,12 @@ async function savePreviewPollDraft(page) {
 
   const savedToast = page.locator('.toast').filter({ hasText: 'Черновик сохранён' });
   await savedToast.waitFor({ state: 'visible' });
+  await savedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
+  await savedToast.waitFor({ state: 'detached' });
   await editor.getByRole('button', { name: 'Назад к списку', exact: true }).click();
 
   const draft = page.locator('.managed-poll-item').filter({ hasText: question });
   await draft.locator('.managed-poll-item__status.is-draft').waitFor({ state: 'visible' });
-  await savedToast.getByRole('button', { name: 'Закрыть уведомление' }).click();
-  await savedToast.waitFor({ state: 'detached' });
 }
 
 async function assertBotMessagePlaceholderRoundTrip(page) {

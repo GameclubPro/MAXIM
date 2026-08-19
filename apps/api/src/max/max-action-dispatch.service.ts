@@ -99,10 +99,7 @@ export class MaxActionDispatchService {
     );
   }
 
-  async execute(
-    job: MaxActionJob,
-    options: MaxActionDispatchExecutionOptions = {},
-  ): Promise<MaxActionDispatchResult | void> {
+  async recoverCompletedSend(job: MaxActionJob): Promise<MaxActionDispatchResult | null> {
     const completedSendDispatch =
       typeof this.actionLedgerService?.getCompletedSendDispatchResult === 'function'
         ? await this.actionLedgerService.getCompletedSendDispatchResult(job)
@@ -112,12 +109,24 @@ export class MaxActionDispatchService {
       (typeof this.actionLedgerService?.getCompletedSendDispatchResult !== 'function'
         ? await this.actionLedgerService?.getCompletedSendDispatch?.(job)
         : null);
-    if (completedSendMessageId) {
-      return {
-        messageId: completedSendMessageId,
-        url: null,
-        botId: completedSendDispatch?.dispatchBotId ?? job.botId?.trim() ?? null,
-      };
+    if (!completedSendMessageId) {
+      return null;
+    }
+
+    return {
+      messageId: completedSendMessageId,
+      url: null,
+      botId: completedSendDispatch?.dispatchBotId ?? job.botId?.trim() ?? null,
+    };
+  }
+
+  async execute(
+    job: MaxActionJob,
+    options: MaxActionDispatchExecutionOptions = {},
+  ): Promise<MaxActionDispatchResult | void> {
+    const completedSend = await this.recoverCompletedSend(job);
+    if (completedSend) {
+      return completedSend;
     }
     await this.actionLedgerService?.assertCanExecute?.(job);
     const routedMutationEnforced = this.shouldEnforceRoutedFailover(job);

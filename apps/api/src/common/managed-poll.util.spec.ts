@@ -1,6 +1,7 @@
 import {
   buildManagedPollButtons,
   buildManagedPollCallbackPayloadPrefix,
+  buildManagedPollCallbackPayloadPrefixes,
   buildManagedPollMessageText,
   buildManagedPollOptionResults,
   parseManagedPollCallbackPayload,
@@ -23,9 +24,31 @@ describe('managed poll util', () => {
     expect(parseManagedPollCallbackPayload(payload)).toEqual({
       pollId: 'poll-1',
       optionId: 'option-a',
+      publicationToken: null,
     });
     expect(parseManagedPollCallbackPayload('poll|v1|poll-1|option-a')).toBeNull();
     expect(buildManagedPollCallbackPayloadPrefix('poll-1')).toBe('poll|v2|poll-1|');
+  });
+
+  it('binds current callback payloads to one publication attempt', () => {
+    const [firstRow] = buildManagedPollButtons(
+      'poll-1',
+      buildManagedPollOptionResults(options, new Map()).options,
+      'claim-token-1',
+    );
+    const payload = firstRow?.[0]?.type === 'callback' ? firstRow[0].payload : null;
+
+    expect(payload).toBe('poll|v3|poll-1|claim-token-1|option-a');
+    expect(parseManagedPollCallbackPayload(payload)).toEqual({
+      pollId: 'poll-1',
+      optionId: 'option-a',
+      publicationToken: 'claim-token-1',
+    });
+    expect(parseManagedPollCallbackPayload('poll|v3|poll-1||option-a')).toBeNull();
+    expect(buildManagedPollCallbackPayloadPrefixes('poll-1')).toEqual([
+      'poll|v2|poll-1|',
+      'poll|v3|poll-1|',
+    ]);
   });
 
   it('adds a ten-cell result bar, percentage, and vote count to callback labels', () => {

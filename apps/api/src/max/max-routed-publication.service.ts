@@ -71,25 +71,9 @@ export class MaxRoutedPublicationService {
     }
 
     const routePurpose = request.routePurpose ?? 'send_message';
-    const route = await this.resolveFreshRoute(entityId, routePurpose, request);
-    const candidateBotIds = this.normalizeBotIds(route.candidateBotIds);
-    if (routePurpose === 'channel_poll' && candidateBotIds.length === 0) {
-      throw new MaxActionNoExecutableRouteError('SEND_MESSAGE', entityId);
-    }
-    const job: MaxActionJob = {
+    const baseJob: MaxActionJob = {
       actionType: 'SEND_MESSAGE',
       chatId: entityId,
-      ...(candidateBotIds[0] ? { botId: candidateBotIds[0] } : {}),
-      candidateBotIds,
-      routing: {
-        purpose: routePurpose,
-        primaryBotId: route.primaryBotId,
-        reason: route.reason,
-        routingVersion: route.routingVersion ?? null,
-        ...(request.sendRouteHalfOpenProbe
-          ? { sendRouteHalfOpenProbe: request.sendRouteHalfOpenProbe }
-          : {}),
-      },
       trafficClass: request.trafficClass,
       ...(request.actionHealthLane ? { actionHealthLane: request.actionHealthLane } : {}),
       sourceTag: request.sourceTag,
@@ -102,6 +86,44 @@ export class MaxRoutedPublicationService {
       attempt: 1,
       idempotencyKey: logicalIdempotencyKey,
       createdAt: new Date().toISOString(),
+    };
+    const recovered = await this.maxActionDispatchService.recoverCompletedSend(baseJob);
+    const recoveredBotId = recovered?.botId?.trim();
+    if (recovered && recoveredBotId) {
+      const url =
+        recovered.url ??
+        (await this.resolveRecoveredMessageUrl(request, {
+          messageId: recovered.messageId,
+          botId: recoveredBotId,
+        }));
+      return {
+        messageId: recovered.messageId,
+        url,
+        ...(recovered.chatId ? { chatId: recovered.chatId } : {}),
+        botId: recoveredBotId,
+        candidateBotIds: [recoveredBotId],
+        routingVersion: null,
+      };
+    }
+
+    const route = await this.resolveFreshRoute(entityId, routePurpose, request);
+    const candidateBotIds = this.normalizeBotIds(route.candidateBotIds);
+    if (routePurpose === 'channel_poll' && candidateBotIds.length === 0) {
+      throw new MaxActionNoExecutableRouteError('SEND_MESSAGE', entityId);
+    }
+    const job: MaxActionJob = {
+      ...baseJob,
+      ...(candidateBotIds[0] ? { botId: candidateBotIds[0] } : {}),
+      candidateBotIds,
+      routing: {
+        purpose: routePurpose,
+        primaryBotId: route.primaryBotId,
+        reason: route.reason,
+        routingVersion: route.routingVersion ?? null,
+        ...(request.sendRouteHalfOpenProbe
+          ? { sendRouteHalfOpenProbe: request.sendRouteHalfOpenProbe }
+          : {}),
+      },
     };
     const executionOptions: MaxActionDispatchExecutionOptions = {
       ...(request.prepareAttempt

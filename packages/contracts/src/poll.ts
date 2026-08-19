@@ -11,6 +11,8 @@ export const MANAGED_POLL_MIN_OPTIONS = 2;
 export const MANAGED_POLL_MAX_OPTIONS = 6;
 export const MANAGED_POLL_QUESTION_MAX_LENGTH = 2_000;
 export const MANAGED_POLL_OPTION_MAX_LENGTH = 80;
+export const MANAGED_POLL_MESSAGE_MAX_LENGTH = 4_000;
+export const MAX_MANAGED_POLL_LIST_CURSOR_LENGTH = 1_024;
 
 export const managedPollStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
 export const managedPollVisibilitySchema = z.enum(['ANONYMOUS', 'OPEN']);
@@ -60,7 +62,6 @@ export type ManagedPollOptionInput = z.infer<typeof managedPollOptionInputSchema
 
 const managedPollMutationFields = {
   question: managedPollQuestionSchema,
-  visibility: managedPollVisibilitySchema.default('ANONYMOUS'),
   options: z
     .array(managedPollOptionInputSchema)
     .min(MANAGED_POLL_MIN_OPTIONS)
@@ -101,6 +102,7 @@ function validateManagedPollOptions(
 export const createManagedPollRequestSchema = z
   .object({
     ...managedPollMutationFields,
+    visibility: managedPollVisibilitySchema.default('ANONYMOUS'),
     questionFormat: managedPollQuestionFormatSchema.default('plain'),
     images: managedPollImagesSchema,
   })
@@ -110,6 +112,8 @@ export type CreateManagedPollRequest = z.infer<typeof createManagedPollRequestSc
 export const updateManagedPollRequestSchema = z
   .object({
     ...managedPollMutationFields,
+    expectedUpdatedAt: z.string().datetime(),
+    visibility: managedPollVisibilitySchema.optional(),
     questionFormat: managedPollQuestionFormatSchema.optional(),
     images: managedPollImagesInputSchema.optional(),
   })
@@ -153,8 +157,69 @@ export const managedPollSummarySchema = z.object({
 });
 export type ManagedPollSummary = z.infer<typeof managedPollSummarySchema>;
 
+export const managedPollListScopeSchema = z.enum(['current', 'archive']);
+export type ManagedPollListScope = z.infer<typeof managedPollListScopeSchema>;
+
+export const managedPollListCursorScopeSchema = z.enum(['current', 'archive', 'all']);
+export type ManagedPollListCursorScope = z.infer<typeof managedPollListCursorScopeSchema>;
+
+export const managedPollListCursorPayloadSchema = z.object({
+  v: z.literal(1),
+  createdAt: z.string().datetime({ offset: true }).max(32),
+  id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(128)
+    .regex(/^[A-Za-z0-9_-]+$/u),
+  chatId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(256)
+    .regex(/^[A-Za-z0-9_-]+$/u),
+  scope: managedPollListCursorScopeSchema,
+});
+export type ManagedPollListCursorPayload = z.infer<typeof managedPollListCursorPayloadSchema>;
+
+export function encodeManagedPollListCursor(payload: ManagedPollListCursorPayload): string {
+  const parsed = managedPollListCursorPayloadSchema.parse(payload);
+  const bytes = new TextEncoder().encode(JSON.stringify(parsed));
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return globalThis.btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
+}
+
+export function decodeManagedPollListCursor(value: string): ManagedPollListCursorPayload | null {
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > MAX_MANAGED_POLL_LIST_CURSOR_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/u.test(normalized)
+  ) {
+    return null;
+  }
+
+  try {
+    const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+    const binary = globalThis.atob(
+      `${normalized.replace(/-/gu, '+').replace(/_/gu, '/')}${padding}`,
+    );
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const decoded = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    const parsed = managedPollListCursorPayloadSchema.safeParse(decoded);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 export const managedPollListQuerySchema = z.object({
-  cursor: z.string().trim().min(1).optional(),
+  scope: managedPollListScopeSchema.optional(),
+  cursor: z.string().trim().min(1).max(MAX_MANAGED_POLL_LIST_CURSOR_LENGTH).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(30),
 });
 export type ManagedPollListQuery = z.infer<typeof managedPollListQuerySchema>;
@@ -162,6 +227,7 @@ export type ManagedPollListQuery = z.infer<typeof managedPollListQuerySchema>;
 export const managedPollListResponseSchema = z.object({
   items: z.array(managedPollSummarySchema),
   nextCursor: z.string().nullable(),
+  total: z.number().int().min(0),
 });
 export type ManagedPollListResponse = z.infer<typeof managedPollListResponseSchema>;
 

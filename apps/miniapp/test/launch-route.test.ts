@@ -55,6 +55,25 @@ function encodeRouteStartParam(route: string): string {
   return `mr-${payload}`;
 }
 
+function encodeDialogStartParam(options: {
+  kind: 'chat-dialog' | 'channel-dialog';
+  chatId: string;
+  mode?: 'comments' | 'suggest';
+  token?: string;
+}): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      v: 1,
+      k: options.kind,
+      c: options.chatId,
+      m: options.mode ?? 'comments',
+      t: options.token ?? 'public-dialog-token-123456',
+    }),
+    'utf8',
+  ).toString('base64url');
+  return `cd-${payload}`;
+}
+
 test.afterEach(() => {
   delete (globalThis as { window?: Window }).window;
 });
@@ -90,6 +109,76 @@ test('prefers signed initData start_param over bridge and URL fallbacks', () => 
       )}&hash=ok`,
     ),
     '/chat/signed/events',
+  );
+});
+
+test('prefers a fresh URL public dialog over stale managed launchers in a reused WebView', () => {
+  const staleSettingsLauncher = encodeRouteStartParam('/chat/admin-chat-a/settings');
+  const freshDialogLauncher = encodeDialogStartParam({
+    kind: 'chat-dialog',
+    chatId: 'public-chat-b',
+    token: 'fresh-public-dialog-token-123456',
+  });
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(freshDialogLauncher)}`,
+    {
+      MAX: {
+        WebApp: {
+          initDataUnsafe: {
+            start_param: staleSettingsLauncher,
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(
+    resolveLaunchRoute(
+      `query_id=test&start_param=${encodeURIComponent(staleSettingsLauncher)}&hash=ok`,
+    ),
+    '/chat/public-chat-b/dialog/comments?token=fresh-public-dialog-token-123456',
+  );
+});
+
+test('prefers a fresh URL public dialog over a stale dialog launcher in reused initData', () => {
+  const staleDialogLauncher = encodeDialogStartParam({
+    kind: 'chat-dialog',
+    chatId: 'public-chat-a',
+    token: 'stale-public-dialog-token-123456',
+  });
+  const freshDialogLauncher = encodeDialogStartParam({
+    kind: 'chat-dialog',
+    chatId: 'public-chat-b',
+    token: 'fresh-public-dialog-token-123456',
+  });
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(freshDialogLauncher)}`,
+  );
+
+  assert.equal(
+    resolveLaunchRoute(
+      `query_id=test&start_param=${encodeURIComponent(staleDialogLauncher)}&hash=ok`,
+    ),
+    '/chat/public-chat-b/dialog/comments?token=fresh-public-dialog-token-123456',
+  );
+});
+
+test('does not let an invalid URL dialog payload override signed managed initData', () => {
+  const signedSettingsLauncher = encodeRouteStartParam('/chat/signed-chat/settings');
+  const invalidDialogLauncher = encodeDialogStartParam({
+    kind: 'chat-dialog',
+    chatId: 'public-chat',
+    token: 'too-short',
+  });
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(invalidDialogLauncher)}`,
+  );
+
+  assert.equal(
+    resolveLaunchRoute(
+      `query_id=test&start_param=${encodeURIComponent(signedSettingsLauncher)}&hash=ok`,
+    ),
+    '/chat/signed-chat/settings',
   );
 });
 

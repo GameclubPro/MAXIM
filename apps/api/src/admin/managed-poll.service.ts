@@ -1,5 +1,8 @@
 import {
   createManagedPollRequestSchema,
+  decodeManagedPollListCursor,
+  encodeManagedPollListCursor,
+  MANAGED_POLL_MESSAGE_MAX_LENGTH,
   managedPollDetailsSchema,
   managedPollImagesSchema,
   managedPollListQuerySchema,
@@ -10,6 +13,7 @@ import {
   updateManagedPollRequestSchema,
   type ManagedPollDetails,
   type ManagedPollImage,
+  type ManagedPollListCursorPayload,
   type ManagedPollListResponse,
   type ManagedPollQuestionFormat,
   type ManagedPollVotersResponse,
@@ -29,9 +33,10 @@ import { ChatContextCacheService } from '../chat-context/chat-context-cache.serv
 import type { InternalChannelDialogButtonIdentity } from '../common/channel-dialog-button-identity.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
+import { stripSupportedMarkdownToPlainText } from '../common/max-markdown.util';
 import {
   buildManagedPollButtons,
-  buildManagedPollCallbackPayloadPrefix,
+  buildManagedPollCallbackPayloadPrefixes,
   buildManagedPollMessageText,
   buildManagedPollOptionResults,
   parseManagedPollCallbackPayload,
@@ -75,10 +80,7 @@ import {
 import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminService } from './admin.service';
 import type { ChannelPublicationEngagementContext } from './admin.service.support';
-import {
-  CHANNEL_POST_MAX_TEXT_LENGTH,
-  ChannelPostSignatureService,
-} from './channel-post-signature.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
 import {
   BROADCAST_IMAGE_MAX_BYTES,
   BROADCAST_IMAGES_TOTAL_MAX_BYTES,
@@ -101,8 +103,8 @@ const MANAGED_POLL_BACKGROUND_REPAIR_BATCH_SIZE = 10;
 const MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS = 5 * 60_000;
 const MANAGED_POLL_RECENT_EVENT_HASH_LIMIT = 16;
 const MANAGED_POLL_AMBIGUOUS_PUBLICATION_ERROR = 'Публикация требует ручной проверки.';
-const MANAGED_POLL_RENDER_FORMAT_VERSION = 5;
-// A dispatched send key must remain stable across render-only format upgrades.
+const MANAGED_POLL_RENDER_FORMAT_VERSION = 7;
+// FLAG: A dispatched send key must remain stable across render-only format upgrades.
 const MANAGED_POLL_SEND_IDEMPOTENCY_VERSION = 4;
 
 const MANAGED_POLL_LIST_SELECT = {
@@ -188,7 +190,7 @@ export class ManagedPollService {
     @Optional() private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
-    @Optional() private readonly channelPostSignatureService?: ChannelPostSignatureService,
+    @Optional() _channelPostSignatureService?: ChannelPostSignatureService,
     @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
   ) {}
 
@@ -242,19 +244,79 @@ export class ManagedPollService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const polls = await this.prisma.managedPoll.findMany({
-      where: { chatId },
-      select: MANAGED_POLL_LIST_SELECT,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      ...(parsed.data.cursor ? { cursor: { id: parsed.data.cursor }, skip: 1 } : {}),
-      take: parsed.data.limit + 1,
-    });
+    const scope = parsed.data.scope ?? 'all';
+    let cursor: ManagedPollListCursorPayload | null = null;
+    if (parsed.data.cursor) {
+      const decodedCursor = decodeManagedPollListCursor(parsed.data.cursor);
+      if (decodedCursor) {
+        if (decodedCursor.scope !== scope || decodedCursor.chatId !== chatId) {
+          throw new BadRequestException('Курсор списка опросов недействителен.');
+        }
+        cursor = decodedCursor;
+      } else {
+        const legacyCursorPoll = await this.prisma.managedPoll.findFirst({
+          where: { id: parsed.data.cursor, chatId },
+          select: { id: true, createdAt: true },
+        });
+        if (!legacyCursorPoll) {
+          throw new BadRequestException('Курсор списка опросов недействителен.');
+        }
+        cursor = {
+          v: 1,
+          createdAt: legacyCursorPoll.createdAt.toISOString(),
+          id: legacyCursorPoll.id,
+          chatId,
+          scope,
+        };
+      }
+    }
+
+    const baseWhere: Prisma.ManagedPollWhereInput = {
+      chatId,
+      ...(parsed.data.scope === 'current'
+        ? { status: { in: [ManagedPollStatus.DRAFT, ManagedPollStatus.ACTIVE] } }
+        : parsed.data.scope === 'archive'
+          ? { status: ManagedPollStatus.CLOSED }
+          : {}),
+    };
+    const pageWhere: Prisma.ManagedPollWhereInput = cursor
+      ? {
+          AND: [
+            baseWhere,
+            {
+              OR: [
+                { createdAt: { lt: new Date(cursor.createdAt) } },
+                { createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } },
+              ],
+            },
+          ],
+        }
+      : baseWhere;
+    const [polls, total] = await Promise.all([
+      this.prisma.managedPoll.findMany({
+        where: pageWhere,
+        select: MANAGED_POLL_LIST_SELECT,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: parsed.data.limit + 1,
+      }),
+      this.prisma.managedPoll.count({ where: baseWhere }),
+    ]);
     const hasMore = polls.length > parsed.data.limit;
     const page = hasMore ? polls.slice(0, parsed.data.limit) : polls;
     const counts = await this.loadVoteCounts(page.map((poll) => poll.id));
     const response = managedPollListResponseSchema.parse({
       items: page.map((poll) => managedPollSummarySchema.parse(this.mapPoll(poll, counts))),
-      nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
+      nextCursor:
+        hasMore && page.at(-1)
+          ? encodeManagedPollListCursor({
+              v: 1,
+              createdAt: page.at(-1)!.createdAt.toISOString(),
+              id: page.at(-1)!.id,
+              chatId,
+              scope,
+            })
+          : null,
+      total,
     });
     for (const [index, poll] of page.entries()) {
       if (
@@ -354,6 +416,9 @@ export class ManagedPollService {
       if (!poll) {
         throw new NotFoundException('Опрос не найден.');
       }
+      if (poll.updatedAt.getTime() !== new Date(parsed.data.expectedUpdatedAt).getTime()) {
+        throw new ConflictException('Черновик опроса уже изменён. Обновите экран.');
+      }
       if (poll.status !== ManagedPollStatus.DRAFT || poll.lockedAt) {
         throw new BadRequestException('Опубликованный опрос нельзя изменить.');
       }
@@ -361,6 +426,7 @@ export class ManagedPollService {
         parsed.data.questionFormat ?? this.normalizeQuestionFormat(poll.questionFormat);
       this.assertManagedPollQuestionFitsMax(parsed.data.question, questionFormat);
       const images = parsed.data.images ?? this.readPollImages(poll.images);
+      const visibility = parsed.data.visibility ?? poll.visibility;
 
       const knownOptionIds = new Set(poll.options.map((option) => option.id));
       for (const option of parsed.data.options) {
@@ -384,7 +450,7 @@ export class ManagedPollService {
           actorUserId: user.userId,
           question: parsed.data.question,
           questionFormat,
-          visibility: parsed.data.visibility,
+          visibility,
           imageCount: images.length,
           images: images as Prisma.InputJsonValue,
           renderRevision: { increment: 1 },
@@ -400,7 +466,7 @@ export class ManagedPollService {
           payload: {
             pollId,
             questionFormat,
-            visibility: parsed.data.visibility,
+            visibility,
             imageCount: images.length,
             optionsCount: parsed.data.options.length,
           },
@@ -489,26 +555,11 @@ export class ManagedPollService {
     try {
       const publicationPoll = await this.findPoll(chatId, poll.id);
       const result = buildManagedPollOptionResults(publicationPoll.options, new Map());
-      const baseText = buildManagedPollMessageText({
-        question: publicationPoll.question,
-        questionFormat: this.normalizeQuestionFormat(publicationPoll.questionFormat),
-      });
-      const baseTextFormat = this.resolveQuestionTextFormat(publicationPoll.questionFormat);
-      const preparedText = this.channelPostSignatureService
-        ? await this.channelPostSignatureService.preparePostText(
-            chatId,
-            { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
-            {
-              entityType,
-              trafficClass: 'interactive',
-              sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
-            },
-          )
-        : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
-      this.assertManagedPollMessageFitsMax(preparedText.text);
-      const text = preparedText.text;
-      const textFormat = preparedText.textFormat;
-      const pollButtons = buildManagedPollButtons(publicationPoll.id, result.options);
+      const { text, textFormat } = this.buildAuthoredPollMessage(
+        publicationPoll.question,
+        publicationPoll.questionFormat,
+      );
+      const pollButtons = buildManagedPollButtons(publicationPoll.id, result.options, lockToken);
       const messageOptions: MaxSendMessageOptions = {
         ...(textFormat ? { textFormat } : {}),
         buttons: pollButtons,
@@ -546,6 +597,7 @@ export class ManagedPollService {
         chatId,
         publicationPoll.id,
         publicationPoll.renderRevision,
+        lockToken,
         text,
         messageOptions,
         this.readPollImages(publicationPoll.images),
@@ -557,7 +609,10 @@ export class ManagedPollService {
               lockToken,
               status: ManagedPollStatus.DRAFT,
             },
-            data: { publicationBotId: botId },
+            data: {
+              publicationBotId: botId,
+              lockedAt: new Date(),
+            },
           });
           if (boundAttempt.count === 0) {
             throw new ConflictException(
@@ -576,16 +631,23 @@ export class ManagedPollService {
         );
       }
       let engagementContextResolved = engagementContextByBotId.has(published.botId);
+      let publicationFormatResolved = entityType !== 'channel' || engagementContextResolved;
       let engagementContext = engagementContextByBotId.get(published.botId) ?? null;
       if (!engagementContextResolved && entityType === 'channel') {
         try {
           const recovered = await this.loadManagedPollLedgerChannelEngagement(
-            this.buildPollPublicationActionKey(publicationPoll.id, publicationPoll.renderRevision),
+            this.buildPollPublicationActionKey(
+              publicationPoll.id,
+              publicationPoll.renderRevision,
+              lockToken,
+            ),
             chatId,
             published.botId,
           );
           engagementContextResolved = recovered.found;
           engagementContext = recovered.found ? recovered.context : null;
+          publicationFormatResolved =
+            recovered.found && recovered.renderFormatVersion === MANAGED_POLL_RENDER_FORMAT_VERSION;
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -600,7 +662,7 @@ export class ManagedPollService {
         }
       }
       const publicationRenderFormatVersion =
-        entityType === 'channel' && !engagementContextResolved
+        entityType === 'channel' && !publicationFormatResolved
           ? MANAGED_POLL_SEND_IDEMPOTENCY_VERSION
           : MANAGED_POLL_RENDER_FORMAT_VERSION;
       const publishedAt = new Date();
@@ -622,7 +684,6 @@ export class ManagedPollService {
             renderFormatVersion: publicationRenderFormatVersion,
             images: [],
             lockedAt: null,
-            lockToken: null,
             lastError: null,
             lastRenderError: null,
           },
@@ -658,10 +719,18 @@ export class ManagedPollService {
           context: engagementContext,
           botId: published.botId,
         });
-      } else if (entityType === 'channel' && !engagementContextResolved) {
+      }
+      if (entityType === 'channel' && (!engagementContextResolved || !publicationFormatResolved)) {
         this.logger.warn(
-          { pollId: poll.id, chatId, messageId: published.messageId, botId: published.botId },
-          'Scheduled managed poll format repair because the exact sent context is unavailable',
+          {
+            pollId: poll.id,
+            chatId,
+            messageId: published.messageId,
+            botId: published.botId,
+            engagementContextResolved,
+            publicationFormatResolved,
+          },
+          'Scheduled managed poll format repair after publication recovery',
         );
         this.schedulePollRenderRepair(chatId, poll.id);
       }
@@ -672,7 +741,7 @@ export class ManagedPollService {
       const ambiguous = accepted || (attempted && isAmbiguousMaxSendError(error));
       const message = extractMaxApiErrorMessage(error) || this.formatError(error);
       const released = await this.prisma.managedPoll.updateMany({
-        where: { id: poll.id, lockToken },
+        where: { id: poll.id, lockToken, status: ManagedPollStatus.DRAFT },
         data: ambiguous
           ? { lastError: MANAGED_POLL_AMBIGUOUS_PUBLICATION_ERROR }
           : {
@@ -910,6 +979,7 @@ export class ManagedPollService {
       chatId,
       messageId,
       callbackBotId: update.botId?.trim() || null,
+      publicationToken: parsed.publicationToken,
       eventId: this.buildCallbackEventId(update, callbackId),
       eventAt: this.extractCallbackOccurredAt(update, callback),
       voter: callbackUser,
@@ -961,7 +1031,6 @@ export class ManagedPollService {
           poll,
           engagement.state === 'resolved' ? engagement.context.buttons : [],
         );
-        callbackAttempted = true;
         await this.maxClient.answerCallback(callbackId, undefined, messageEdit, {
           ...this.buildMaxOptions(
             poll.publicationBotId ?? update.botId,
@@ -969,6 +1038,9 @@ export class ManagedPollService {
           ),
           trafficClass: 'critical',
           rateLimitEntityId: chatId,
+          onDispatchAttempt: () => {
+            callbackAttempted = true;
+          },
         });
         if (
           engagement.state === 'resolved' &&
@@ -995,13 +1067,22 @@ export class ManagedPollService {
         }
       } catch (error: unknown) {
         if (!callbackAttempted) {
-          await this.recordPollRenderError(poll.id, chatId, 'vote-callback-prepare', error);
+          await this.recordPollRenderError(
+            poll.id,
+            poll.renderRevision,
+            chatId,
+            'vote-callback-prepare',
+            error,
+          );
           await this.answerCallback(
             callbackId,
             notification,
             poll.publicationBotId ?? update.botId,
             chatId,
           );
+          if (outcome.needsRender) {
+            this.schedulePollRenderRepair(chatId, poll.id);
+          }
           return;
         }
         if (!this.isTerminalCallbackError(error)) {
@@ -1054,6 +1135,7 @@ export class ManagedPollService {
     chatId: string;
     messageId: string;
     callbackBotId: string | null;
+    publicationToken: string | null;
     eventId: string;
     eventAt: Date;
     voter: PollCallbackUser;
@@ -1067,11 +1149,17 @@ export class ManagedPollService {
       if (!poll || poll.chatId !== params.chatId) {
         return { kind: 'stale' };
       }
+      if ((poll.lockToken?.trim() || null) !== (params.publicationToken?.trim() || null)) {
+        return { kind: 'stale' };
+      }
       if (
         poll.publicationBotId &&
         params.callbackBotId &&
         poll.publicationBotId !== params.callbackBotId
       ) {
+        return { kind: 'stale' };
+      }
+      if (!poll.options.some((option) => option.id === params.optionId)) {
         return { kind: 'stale' };
       }
 
@@ -1094,7 +1182,6 @@ export class ManagedPollService {
             publishedAt,
             images: [],
             lockedAt: null,
-            lockToken: null,
             lastError: null,
           },
         });
@@ -1118,7 +1205,6 @@ export class ManagedPollService {
           publicationMessageId: params.messageId,
           publishedAt,
           lockedAt: null,
-          lockToken: null,
           lastError: null,
         };
       }
@@ -1133,10 +1219,6 @@ export class ManagedPollService {
           needsRender: this.pollNeedsRenderRepair(poll),
         };
       }
-      if (!poll.options.some((option) => option.id === params.optionId)) {
-        return { kind: 'stale' };
-      }
-
       const needsRender = this.pollNeedsRenderRepair(poll);
       const identityHash = this.buildIdentityHash(poll.identitySalt, params.voter.userId);
       const eventHash = this.buildVoteEventHash(poll.identitySalt, params.eventId);
@@ -1229,26 +1311,11 @@ export class ManagedPollService {
       const entityType = this.managedEntityTypeFromPrisma(poll.chat.entityType);
       let botId: string | null | undefined = poll.publicationBotId;
       try {
-        const baseText = buildManagedPollMessageText({
-          question: poll.question,
-          questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
-        });
-        const baseTextFormat = this.resolveQuestionTextFormat(poll.questionFormat);
-        const preparedText = this.channelPostSignatureService
-          ? await this.channelPostSignatureService.preparePostText(
-              chatId,
-              { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
-              {
-                entityType,
-                trafficClass: action === 'background-repair' ? 'background' : 'interactive',
-                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
-              },
-            )
-          : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
-        this.assertManagedPollMessageFitsMax(preparedText.text);
-        const text = preparedText.text;
-        const textFormat = preparedText.textFormat;
-        const callbackPayloadPrefix = buildManagedPollCallbackPayloadPrefix(poll.id);
+        const { text, textFormat } = this.buildAuthoredPollMessage(
+          poll.question,
+          poll.questionFormat,
+        );
+        const callbackPayloadPrefixes = buildManagedPollCallbackPayloadPrefixes(poll.id);
         botId = poll.publicationBotId ?? (await this.resolveFallbackPollBotId(chatId, entityType));
         const engagement = await this.resolvePollChannelEngagement(poll, botId ?? null);
         const engagementButtons = engagement.state === 'resolved' ? engagement.context.buttons : [];
@@ -1257,16 +1324,16 @@ export class ManagedPollService {
             ? {
                 ...(textFormat ? { textFormat } : {}),
                 buttons: [
-                  ...buildManagedPollButtons(poll.id, poll.resultOptions),
+                  ...buildManagedPollButtons(poll.id, poll.resultOptions, poll.lockToken),
                   ...engagementButtons,
                 ],
-                replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
+                replaceCallbackPayloadPrefixes: callbackPayloadPrefixes,
                 debugContext: { screen: 'managed-poll', action },
               }
             : {
                 ...(textFormat ? { textFormat } : {}),
                 ...(engagementButtons.length > 0 ? { buttons: engagementButtons } : {}),
-                replaceCallbackPayloadPrefixes: [callbackPayloadPrefix],
+                replaceCallbackPayloadPrefixes: callbackPayloadPrefixes,
               };
         await this.maxClient.editMessageInlineKeyboard(
           chatId,
@@ -1292,6 +1359,13 @@ export class ManagedPollService {
           });
         }
         if (engagement.state === 'inconclusive') {
+          await this.recordPollRenderError(
+            poll.id,
+            poll.renderRevision,
+            chatId,
+            action,
+            new Error('Не удалось подтвердить дополнительные кнопки канала.'),
+          );
           if (this.shouldSchedulePollRenderRepair(action)) {
             this.schedulePollRenderRepair(chatId, poll.id);
           }
@@ -1304,7 +1378,7 @@ export class ManagedPollService {
         if (await this.reconcileMissingPollPublication(poll, botId, entityType, error)) {
           return true;
         }
-        await this.recordPollRenderError(poll.id, chatId, action, error);
+        await this.recordPollRenderError(poll.id, poll.renderRevision, chatId, action, error);
         await this.recordAccessLoss(poll, botId ?? null, 'edit', error, entityType);
         if (this.shouldSchedulePollRenderRepair(action)) {
           this.schedulePollRenderRepair(chatId, poll.id);
@@ -1416,29 +1490,11 @@ export class ManagedPollService {
     return reconciled;
   }
 
-  private async buildCallbackMessageEdit(
+  private buildCallbackMessageEdit(
     poll: Awaited<ReturnType<ManagedPollService['loadPollAggregate']>>,
     engagementButtons: MaxSendMessageOptions['buttons'] = [],
   ) {
-    const baseText = buildManagedPollMessageText({
-      question: poll.question,
-      questionFormat: this.normalizeQuestionFormat(poll.questionFormat),
-    });
-    const baseTextFormat = this.resolveQuestionTextFormat(poll.questionFormat);
-    const preparedText = this.channelPostSignatureService
-      ? await this.channelPostSignatureService.preparePostText(
-          poll.chatId,
-          { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
-          {
-            entityType: this.managedEntityTypeFromPrisma(poll.chat.entityType),
-            trafficClass: 'critical',
-            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
-          },
-        )
-      : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
-    this.assertManagedPollMessageFitsMax(preparedText.text);
-    const text = preparedText.text;
-    const textFormat = preparedText.textFormat;
+    const { text, textFormat } = this.buildAuthoredPollMessage(poll.question, poll.questionFormat);
     return {
       text,
       ...(poll.publicationMessageId ? { messageId: poll.publicationMessageId } : {}),
@@ -1446,11 +1502,11 @@ export class ManagedPollService {
         ? {
             options: {
               ...(textFormat ? { textFormat } : {}),
-              replaceCallbackPayloadPrefixes: [buildManagedPollCallbackPayloadPrefix(poll.id)],
+              replaceCallbackPayloadPrefixes: buildManagedPollCallbackPayloadPrefixes(poll.id),
               ...(poll.status === ManagedPollStatus.ACTIVE
                 ? {
                     buttons: [
-                      ...buildManagedPollButtons(poll.id, poll.resultOptions),
+                      ...buildManagedPollButtons(poll.id, poll.resultOptions, poll.lockToken),
                       ...(engagementButtons ?? []),
                     ],
                     debugContext: { screen: 'managed-poll', action: 'vote' },
@@ -1583,26 +1639,47 @@ export class ManagedPollService {
     question: string,
     questionFormat: ManagedPollQuestionFormat,
   ): void {
-    this.assertManagedPollMessageFitsMax(buildManagedPollMessageText({ question, questionFormat }));
+    this.buildAuthoredPollMessage(question, questionFormat);
+  }
+
+  private buildAuthoredPollMessage(
+    question: string,
+    questionFormat: unknown,
+  ): Pick<MaxSendMessageOptions, 'textFormat'> & { text: string } {
+    const normalizedQuestionFormat = this.normalizeQuestionFormat(questionFormat);
+    if (
+      normalizedQuestionFormat === 'markdown' &&
+      !stripSupportedMarkdownToPlainText(question).trim()
+    ) {
+      throw new BadRequestException('Введите вопрос.');
+    }
+    const text = buildManagedPollMessageText({
+      question,
+      questionFormat: normalizedQuestionFormat,
+    });
+    this.assertManagedPollMessageFitsMax(text);
+    const textFormat = this.resolveQuestionTextFormat(normalizedQuestionFormat);
+    return { text, ...(textFormat ? { textFormat } : {}) };
   }
 
   private assertManagedPollMessageFitsMax(text: string): void {
-    if (text.length > CHANNEL_POST_MAX_TEXT_LENGTH) {
+    if (text.length > MANAGED_POLL_MESSAGE_MAX_LENGTH) {
       throw new BadRequestException(
-        `Вопрос после форматирования слишком длинный. Максимум ${CHANNEL_POST_MAX_TEXT_LENGTH} символов сообщения.`,
+        `Вопрос после форматирования слишком длинный. Максимум ${MANAGED_POLL_MESSAGE_MAX_LENGTH} символов сообщения.`,
       );
     }
   }
 
   private async recordPollRenderError(
     pollId: string,
+    renderRevision: number,
     chatId: string,
     action: string,
     error: unknown,
   ): Promise<void> {
     const message = extractMaxApiErrorMessage(error) || this.formatError(error);
     await this.prisma.managedPoll.updateMany({
-      where: { id: pollId },
+      where: { id: pollId, renderRevision },
       data: { lastRenderError: message },
     });
     this.logger.warn(
@@ -1694,6 +1771,7 @@ export class ManagedPollService {
     chatId: string,
     pollId: string,
     renderRevision: number,
+    publicationToken: string,
     text: string,
     options: MaxSendMessageOptions,
     images: readonly ManagedPollImage[],
@@ -1714,7 +1792,11 @@ export class ManagedPollService {
         if (this.maxRoutedPublicationService) {
           return await this.maxRoutedPublicationService.publish({
             entityId: chatId,
-            logicalIdempotencyKey: this.buildPollPublicationActionKey(pollId, renderRevision),
+            logicalIdempotencyKey: this.buildPollPublicationActionKey(
+              pollId,
+              renderRevision,
+              publicationToken,
+            ),
             routePurpose: 'channel_poll',
             text,
             options,
@@ -1733,6 +1815,7 @@ export class ManagedPollService {
                 ledgerContext: buildManagedPollLedgerContext(
                   prepared.engagementContext,
                   routedBotId,
+                  MANAGED_POLL_RENDER_FORMAT_VERSION,
                 ),
               };
             },
@@ -1778,7 +1861,15 @@ export class ManagedPollService {
     }
   }
 
-  private buildPollPublicationActionKey(pollId: string, renderRevision: number): string {
+  private buildPollPublicationActionKey(
+    pollId: string,
+    renderRevision: number,
+    publicationToken?: string | null,
+  ): string {
+    const normalizedPublicationToken = publicationToken?.trim();
+    if (normalizedPublicationToken) {
+      return `managed-poll:publish:${pollId}:attempt:${normalizedPublicationToken}:revision:${renderRevision}:format:${MANAGED_POLL_SEND_IDEMPOTENCY_VERSION}`;
+    }
     return `managed-poll:publish:${pollId}:revision:${renderRevision}:format:${MANAGED_POLL_SEND_IDEMPOTENCY_VERSION}`;
   }
 
@@ -1789,9 +1880,10 @@ export class ManagedPollService {
   ): Promise<{
     found: boolean;
     context: ChannelPublicationEngagementContext | null;
+    renderFormatVersion: number | null;
   }> {
     if (typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function') {
-      return { found: false, context: null };
+      return { found: false, context: null, renderFormatVersion: null };
     }
     const ledger = await this.prisma.maxActionLedgerEntry.findUnique({
       where: { jobId },
@@ -1799,7 +1891,11 @@ export class ManagedPollService {
     });
     const recovered = readManagedPollLedgerChannelEngagement(ledger?.metadata ?? null);
     if (!recovered.found || !recovered.reference) {
-      return { found: recovered.found, context: null };
+      return {
+        found: recovered.found,
+        context: null,
+        renderFormatVersion: recovered.renderFormatVersion,
+      };
     }
     return {
       found: true,
@@ -1808,6 +1904,7 @@ export class ManagedPollService {
         recovered.reference,
         recovered.reference.botId ?? fallbackBotId,
       ),
+      renderFormatVersion: recovered.renderFormatVersion,
     };
   }
 
@@ -1884,7 +1981,7 @@ export class ManagedPollService {
     );
     for (const publicationRevision of publicationRevisions) {
       const recovered = await this.loadManagedPollLedgerChannelEngagement(
-        this.buildPollPublicationActionKey(poll.id, publicationRevision),
+        this.buildPollPublicationActionKey(poll.id, publicationRevision, poll.lockToken),
         poll.chatId,
         botId,
       );

@@ -386,11 +386,27 @@ function parseMiniappRouteStartParam(value: string): string | null {
   }
 }
 
+function buildChannelDialogRoute(launch: ChannelDialogLaunchPayload): string {
+  const entitySegment = launch.k === 'chat-dialog' ? 'chat' : 'channel';
+  return `/${entitySegment}/${encodeURIComponent(launch.c)}/dialog/${launch.m}?token=${encodeURIComponent(launch.t)}`;
+}
+
 export function resolveLaunchRoute(initData: string): string | null {
+  const startParamFromLocation = readStartParamFromLocation();
+  // MAX can reuse a WebView whose initData still contains the previous launcher. A dialog URL
+  // carries its own API-verified token, so the button that produced the current URL wins.
+  const locationDialogLaunch = parseChannelDialogStartParam(startParamFromLocation);
+  if (locationDialogLaunch) {
+    return buildChannelDialogRoute(locationDialogLaunch);
+  }
+
   const startParam =
-    readStartParamFromInitData(initData) ||
-    readStartParamFromBridge() ||
-    readStartParamFromLocation();
+    readStartParamFromInitData(initData) || readStartParamFromBridge() || startParamFromLocation;
+
+  const selectedDialogLaunch = parseChannelDialogStartParam(startParam);
+  if (selectedDialogLaunch) {
+    return buildChannelDialogRoute(selectedDialogLaunch);
+  }
 
   const routeLaunch = parseMiniappRouteStartParam(startParam);
   if (routeLaunch) {
@@ -402,13 +418,7 @@ export function resolveLaunchRoute(initData: string): string | null {
     return `/giveaways/${encodeURIComponent(giveawayLaunch.g)}`;
   }
 
-  const channelDialogLaunch = parseChannelDialogStartParam(startParam);
-  if (!channelDialogLaunch) {
-    return null;
-  }
-
-  const entitySegment = channelDialogLaunch.k === 'chat-dialog' ? 'chat' : 'channel';
-  return `/${entitySegment}/${encodeURIComponent(channelDialogLaunch.c)}/dialog/${channelDialogLaunch.m}?token=${encodeURIComponent(channelDialogLaunch.t)}`;
+  return null;
 }
 
 export const resolveLaunchDialogRoute = resolveLaunchRoute;

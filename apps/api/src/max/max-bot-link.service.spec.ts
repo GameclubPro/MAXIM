@@ -535,6 +535,32 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe(false);
   });
 
+  it('treats routed access as stale immediately when its explicit expiry is reached', async () => {
+    const fixture = createServiceFixture();
+    const membership = createActiveMembership('chat-access-expiry', fixture.bots[0]!.id, 0, {
+      botAccessCheckedAt: new Date('2026-05-09T09:49:00.000Z'),
+      botAccessExpiresAt: new Date('2026-05-09T10:05:00.000Z'),
+    });
+    fixture.memberships.push(membership);
+
+    await expect(
+      fixture.service.isBotAccessSnapshotStale({
+        chatId: 'chat-access-expiry',
+        botId: fixture.bots[0]!.id,
+        maxAgeMs: 30 * 60_000,
+      }),
+    ).resolves.toBe(true);
+
+    membership.botAccessExpiresAt = new Date('2026-05-09T10:05:00.001Z');
+    await expect(
+      fixture.service.isBotAccessSnapshotStale({
+        chatId: 'chat-access-expiry',
+        botId: fixture.bots[0]!.id,
+        maxAgeMs: 30 * 60_000,
+      }),
+    ).resolves.toBe(false);
+  });
+
   it('persists a live routed access probe only onto an ACTIVE membership', async () => {
     const fixture = createServiceFixture();
     const membership = createActiveMembership('chat-access-probe', fixture.bots[0]!.id, 0);
@@ -2388,7 +2414,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({ botId: null, candidateBotIds: [] });
   });
 
-  it('selects a channel poll bot only with confirmed write and edit permissions', async () => {
+  it('selects a channel poll bot only with confirmed read-all, write, and edit permissions', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('channel-poll-route', {
       id: 'channel-poll-route',
@@ -2400,27 +2426,30 @@ describe('MaxBotLinkService', () => {
     fixture.memberships.push(
       createActiveMembership('channel-poll-route', 'id613002203036_bot', 0, {
         role: ChatBotMembershipRole.PRIMARY,
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
           checkedAt: '2026-07-10T10:00:00.000Z',
           isAdmin: true,
           isOwner: false,
-          permissions: ['write'],
+          permissions: ['write', 'edit'],
         },
       }),
       createActiveMembership('channel-poll-route', 'id613002203036_4_bot', 1, {
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
           checkedAt: '2026-07-10T10:00:01.000Z',
           isAdmin: true,
           isOwner: false,
-          permissions: ['write', 'edit'],
+          permissions: ['read_all_messages', 'write', 'edit'],
         },
       }),
       createActiveMembership('channel-poll-route', 'id613002203036_5_bot', 2, {
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
           checkedAt: '2026-07-10T10:00:02.000Z',
           isAdmin: true,
           isOwner: false,
-          permissions: ['write', 'edit'],
+          permissions: ['read_all_messages', 'post_edit_delete_message', 'edit_message'],
         },
       }),
     );
@@ -2436,7 +2465,36 @@ describe('MaxBotLinkService', () => {
     });
   });
 
-  it('selects a chat poll bot only from confirmed chat administrators', async () => {
+  it('keeps a channel owner eligible for poll routing without read-all permission', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-poll-owner', {
+      id: 'channel-poll-owner',
+      title: 'Owner poll channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHANNEL',
+    });
+    fixture.memberships.push(
+      createActiveMembership('channel-poll-owner', 'id613002203036_bot', 0, {
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: true,
+          permissions: ['edit'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotRouteForChannelPoll({ chatId: 'channel-poll-owner' }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot'],
+    });
+  });
+
+  it('selects a chat poll bot only with confirmed admin, read-all, and write access', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-poll-route', {
       id: 'chat-poll-route',
@@ -2448,6 +2506,7 @@ describe('MaxBotLinkService', () => {
     fixture.memberships.push(
       createActiveMembership('chat-poll-route', 'id613002203036_bot', 0, {
         role: ChatBotMembershipRole.PRIMARY,
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
           checkedAt: '2026-07-10T10:00:00.000Z',
           isAdmin: false,
@@ -2456,6 +2515,7 @@ describe('MaxBotLinkService', () => {
         },
       }),
       createActiveMembership('chat-poll-route', 'id613002203036_4_bot', 1, {
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
           checkedAt: '2026-07-10T10:00:01.000Z',
           isAdmin: true,
@@ -2463,16 +2523,54 @@ describe('MaxBotLinkService', () => {
           permissions: ['write'],
         },
       }),
+      createActiveMembership('chat-poll-route', 'id613002203036_5_bot', 2, {
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:02.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['can_read_all_messages', 'can_write'],
+        },
+      }),
     );
 
     await expect(
       fixture.service.resolveBotIdForManagedPoll({ chatId: 'chat-poll-route' }),
-    ).resolves.toBe('id613002203036_4_bot');
+    ).resolves.toBe('id613002203036_5_bot');
     await expect(
       fixture.service.resolveBotRouteForManagedPoll({ chatId: 'chat-poll-route' }),
     ).resolves.toMatchObject({
-      botId: 'id613002203036_4_bot',
-      candidateBotIds: ['id613002203036_4_bot'],
+      botId: 'id613002203036_5_bot',
+      candidateBotIds: ['id613002203036_5_bot'],
+    });
+  });
+
+  it('keeps a chat owner eligible for poll routing without explicit permissions', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-poll-owner', {
+      id: 'chat-poll-owner',
+      title: 'Owner poll chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHAT',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-poll-owner', 'id613002203036_bot', 0, {
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-07-10T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: true,
+          permissions: [],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotRouteForManagedPoll({ chatId: 'chat-poll-owner' }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot'],
     });
   });
 
@@ -2488,6 +2586,7 @@ describe('MaxBotLinkService', () => {
     fixture.memberships.push(
       createActiveMembership('channel-poll-split', 'id613002203036_bot', 0, {
         role: ChatBotMembershipRole.PRIMARY,
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
           checkedAt: '2026-07-10T10:00:00.000Z',
           isAdmin: true,
@@ -2496,6 +2595,7 @@ describe('MaxBotLinkService', () => {
         },
       }),
       createActiveMembership('channel-poll-split', 'id613002203036_4_bot', 1, {
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
         permissionsSnapshot: {
           checkedAt: '2026-07-10T10:00:01.000Z',
           isAdmin: true,
@@ -2508,6 +2608,45 @@ describe('MaxBotLinkService', () => {
     await expect(
       fixture.service.resolveBotIdForChannelPoll({ chatId: 'channel-poll-split' }),
     ).resolves.toBeNull();
+  });
+
+  it('excludes an expired poll route and falls back to a fresh snapshot without an expiry', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-poll-expired', {
+      id: 'chat-poll-expired',
+      title: 'Poll expiry',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: 'CHAT',
+    });
+    fixture.memberships.push(
+      createActiveMembership('chat-poll-expired', 'id613002203036_bot', 0, {
+        role: ChatBotMembershipRole.PRIMARY,
+        botAccessExpiresAt: new Date('2026-05-09T10:04:59.999Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+      createActiveMembership('chat-poll-expired', 'id613002203036_4_bot', 1, {
+        botAccessExpiresAt: null,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'write'],
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotRouteForManagedPoll({ chatId: 'chat-poll-expired' }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot'],
+    });
   });
 
   it('keeps an explicit denied stored primary out of route fallbacks', async () => {

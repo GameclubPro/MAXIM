@@ -6,18 +6,13 @@ import {
   managedPollSummarySchema,
   type CreateManagedPollRequest,
   type ManagedPollDetails,
-  type ManagedPollListResponse,
+  type ManagedPollListScope,
   type ManagedPollSummary,
   type ManagedPollVoter,
   type ManagedPollVisibility,
 } from '@maxim/contracts/poll';
 import type { BroadcastImage, ManagedEntityType } from '@maxim/contracts';
-import {
-  useInfiniteQuery,
-  useMutation,
-  useQueryClient,
-  type InfiniteData,
-} from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CheckCircle,
   Camera,
@@ -41,7 +36,6 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { stripSupportedMarkdownToPlainText } from '../lib/max-markdown';
 import {
   closeManagedPoll,
   createManagedPoll,
@@ -55,7 +49,19 @@ import {
   updateManagedPoll,
 } from '../lib/api/managed-polls-client';
 import type { ApiTransport } from '../lib/api/transport';
+import {
+  isManagedPollEditable,
+  reconcileManagedPollListData,
+  removeManagedPollFromListData,
+  resolveManagedPollListScope,
+  type ManagedPollListData,
+} from '../lib/managed-poll-cache';
+import {
+  isManagedPollEditConflict,
+  rebaseManagedPollDraftAfterConflict,
+} from '../lib/managed-poll-edit-conflict';
 import { managedPollQueryKeys } from '../lib/managed-poll-query-keys';
+import { validateManagedPollQuestion } from '../lib/managed-poll-validation';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { describeUserFacingError } from '../lib/user-facing-error';
@@ -68,7 +74,7 @@ import { StatusState } from './ui/status-state';
 import { useToast } from './ui/toast';
 import './managed-poll-workspace.css';
 
-type PollWorkspaceTab = 'current' | 'archive';
+type PollWorkspaceTab = ManagedPollListScope;
 
 type PollDraftOption = {
   key: string;
@@ -78,6 +84,7 @@ type PollDraftOption = {
 
 type PollEditorDraft = {
   pollId: string | null;
+  expectedUpdatedAt: string | null;
   question: string;
   questionFormat: 'plain' | 'markdown';
   images: BroadcastImage[];
@@ -127,6 +134,7 @@ function createImageRevision(): number {
 function createEmptyDraft(): PollEditorDraft {
   return {
     pollId: null,
+    expectedUpdatedAt: null,
     question: '',
     questionFormat: 'plain',
     images: [],
@@ -142,6 +150,7 @@ function createEmptyDraft(): PollEditorDraft {
 function toEditorDraft(poll: ManagedPollDetails): PollEditorDraft {
   return {
     pollId: poll.id,
+    expectedUpdatedAt: poll.updatedAt,
     question: poll.question,
     questionFormat: poll.questionFormat,
     images: poll.images.map((image) => ({ ...image })),
@@ -193,16 +202,7 @@ function normalizeOptionText(value: string): string {
 
 function validateDraft(draft: PollEditorDraft): PollValidationErrors {
   const errors: PollValidationErrors = { question: '', options: {} };
-  const sourceQuestion = draft.question.trim();
-  const question =
-    draft.questionFormat === 'markdown'
-      ? stripSupportedMarkdownToPlainText(sourceQuestion).trim()
-      : sourceQuestion;
-  if (!question) {
-    errors.question = 'Введите вопрос.';
-  } else if (sourceQuestion.length > MANAGED_POLL_QUESTION_MAX_LENGTH) {
-    errors.question = `Максимум ${MANAGED_POLL_QUESTION_MAX_LENGTH} символов.`;
-  }
+  errors.question = validateManagedPollQuestion(draft.question, draft.questionFormat);
 
   const seenOptions = new Map<string, string>();
   for (const option of draft.options) {
@@ -247,35 +247,6 @@ function sortPolls(items: ManagedPollSummary[]): ManagedPollSummary[] {
     }
     return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
   });
-}
-
-function upsertPoll(
-  current: InfiniteData<ManagedPollListResponse, string | null> | undefined,
-  poll: ManagedPollDetails,
-): InfiniteData<ManagedPollListResponse, string | null> {
-  const summary = managedPollSummarySchema.parse(poll);
-  const pages = current?.pages ?? [{ items: [], nextCursor: null }];
-  let found = false;
-  const nextPages = pages.map((page) => ({
-    ...page,
-    items: page.items.map((item) => {
-      if (item.id !== poll.id) {
-        return item;
-      }
-      found = true;
-      return summary;
-    }),
-  }));
-  if (!found) {
-    nextPages[0] = {
-      ...(nextPages[0] ?? { nextCursor: null }),
-      items: [summary, ...(nextPages[0]?.items ?? [])],
-    };
-  }
-  return {
-    pages: nextPages,
-    pageParams: current?.pageParams ?? [null],
-  };
 }
 
 function formatVotes(value: number): string {
@@ -869,67 +840,173 @@ export const ManagedPollWorkspace = forwardRef<
   const questionRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef(new Map<string, HTMLInputElement>());
   const publishSavedPollRef = useRef<ManagedPollDetails | null>(null);
-  const listQueryKey = managedPollQueryKeys.list(entityType, entityId);
+  const currentListQueryKey = managedPollQueryKeys.list(entityType, entityId, 'current');
+  const archiveListQueryKey = managedPollQueryKeys.list(entityType, entityId, 'archive');
 
-  const pollsQuery = useInfiniteQuery({
-    queryKey: listQueryKey,
+  const currentPollsQuery = useInfiniteQuery({
+    queryKey: currentListQueryKey,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) =>
-      getManagedPolls(api, entityType, entityId, { cursor: pageParam, limit: 30, signal }),
+      getManagedPolls(api, entityType, entityId, {
+        scope: 'current',
+        cursor: pageParam,
+        limit: 30,
+        signal,
+      }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(entityId),
     refetchInterval: 15_000,
     refetchOnWindowFocus: true,
   });
-  const hasPollData = Boolean(pollsQuery.data);
-  const pollsInitialError = pollsQuery.error && !hasPollData;
-  const pollsRefreshError = pollsQuery.error && hasPollData;
+  const archivePollsQuery = useInfiniteQuery({
+    queryKey: archiveListQueryKey,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) =>
+      getManagedPolls(api, entityType, entityId, {
+        scope: 'archive',
+        cursor: pageParam,
+        limit: 30,
+        signal,
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: Boolean(entityId),
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
+  });
 
-  const allPolls = useMemo(() => {
+  const currentPolls = useMemo(() => {
     const unique = new Map<string, ManagedPollSummary>();
-    for (const page of pollsQuery.data?.pages ?? []) {
+    for (const page of currentPollsQuery.data?.pages ?? []) {
       for (const poll of page.items) {
         unique.set(poll.id, poll);
       }
     }
     return sortPolls(Array.from(unique.values()));
-  }, [pollsQuery.data?.pages]);
-  const currentPolls = useMemo(
-    () => allPolls.filter((poll) => poll.status !== 'CLOSED'),
-    [allPolls],
-  );
-  const archivedPolls = useMemo(
-    () => allPolls.filter((poll) => poll.status === 'CLOSED'),
-    [allPolls],
-  );
-  const visiblePolls = tab === 'current' ? currentPolls : archivedPolls;
+  }, [currentPollsQuery.data?.pages]);
+  const archivePolls = useMemo(() => {
+    const unique = new Map<string, ManagedPollSummary>();
+    for (const page of archivePollsQuery.data?.pages ?? []) {
+      for (const poll of page.items) {
+        unique.set(poll.id, poll);
+      }
+    }
+    return sortPolls(Array.from(unique.values()));
+  }, [archivePollsQuery.data?.pages]);
+  const selectedPollsQuery = tab === 'current' ? currentPollsQuery : archivePollsQuery;
+  const visiblePolls = tab === 'current' ? currentPolls : archivePolls;
+  const hasSelectedPollData = Boolean(selectedPollsQuery.data);
+  const pollsInitialError = selectedPollsQuery.error && !hasSelectedPollData;
+  const pollsRefreshError = selectedPollsQuery.error && hasSelectedPollData;
+  const currentPollTotal = currentPollsQuery.data?.pages[0]?.total ?? 0;
+  const archivePollTotal = archivePollsQuery.data?.pages[0]?.total ?? 0;
   const isDirty = Boolean(draft && buildDraftKey(draft) !== buildDraftKey(savedDraft));
 
   const applyPoll = useCallback(
     (poll: ManagedPollDetails) => {
-      queryClient.setQueryData<InfiniteData<ManagedPollListResponse, string | null>>(
-        listQueryKey,
-        (current) => upsertPoll(current, poll),
+      const summary = managedPollSummarySchema.parse(poll);
+      queryClient.setQueryData<ManagedPollListData>(currentListQueryKey, (current) =>
+        reconcileManagedPollListData(current, 'current', summary),
       );
-      queryClient.setQueryData(managedPollQueryKeys.details(entityType, entityId, poll.id), poll);
+      queryClient.setQueryData<ManagedPollListData>(archiveListQueryKey, (current) =>
+        reconcileManagedPollListData(current, 'archive', summary),
+      );
     },
-    [entityId, entityType, listQueryKey, queryClient],
+    [archiveListQueryKey, currentListQueryKey, queryClient],
   );
+
+  const invalidatePollLists = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: currentListQueryKey });
+    void queryClient.invalidateQueries({ queryKey: archiveListQueryKey });
+  }, [archiveListQueryKey, currentListQueryKey, queryClient]);
 
   const persistDraft = useCallback(
     (value: PollEditorDraft) => {
       const payload = buildPollPayload(value);
-      return value.pollId
-        ? updateManagedPoll(api, entityType, entityId, value.pollId, payload)
-        : createManagedPoll(api, entityType, entityId, payload);
+      if (!value.pollId) {
+        return createManagedPoll(api, entityType, entityId, payload);
+      }
+      if (!value.expectedUpdatedAt) {
+        throw new Error('Версия черновика опроса недоступна. Обновите экран.');
+      }
+      return updateManagedPoll(api, entityType, entityId, value.pollId, {
+        ...payload,
+        expectedUpdatedAt: value.expectedUpdatedAt,
+      });
     },
     [api, entityId, entityType],
+  );
+
+  const recoverFromEditConflict = useCallback(
+    async (error: unknown, localDraft: PollEditorDraft, failureTitle: string) => {
+      if (!localDraft.pollId || !isManagedPollEditConflict(error)) {
+        return false;
+      }
+
+      let latestPoll: ManagedPollDetails;
+      try {
+        latestPoll = await getManagedPoll(api, entityType, entityId, localDraft.pollId);
+      } catch (refreshError: unknown) {
+        pushToast({
+          tone: 'danger',
+          title: failureTitle,
+          description: describeUserFacingError(refreshError, 'Повторите позже.'),
+        });
+        return true;
+      }
+
+      applyPoll(latestPoll);
+      invalidatePollLists();
+      setValidationErrors({ question: '', options: {} });
+      setImagesPreparing(false);
+
+      if (!isManagedPollEditable(latestPoll)) {
+        setDraft(null);
+        setSavedDraft(null);
+        setTab(resolveManagedPollListScope(latestPoll));
+        pushToast({
+          tone: 'info',
+          title: latestPoll.publicationNeedsReview
+            ? 'Публикация требует проверки'
+            : latestPoll.publicationPending
+              ? 'Публикация уже выполняется'
+              : 'Черновик уже недоступен',
+        });
+        return true;
+      }
+
+      setSavedDraft(toEditorDraft(latestPoll));
+      setDraft(rebaseManagedPollDraftAfterConflict(localDraft, latestPoll));
+      pushToast({
+        tone: 'info',
+        title: 'Черновик уже изменён',
+        description:
+          'Ваши правки сохранены в редакторе. Проверьте их и снова нажмите «Сохранить» или «Опубликовать».',
+      });
+      return true;
+    },
+    [api, applyPoll, entityId, entityType, invalidatePollLists, pushToast],
   );
 
   const openPollMutation = useMutation({
     mutationFn: (pollId: string) => getManagedPoll(api, entityType, entityId, pollId),
     onSuccess: (poll) => {
       applyPoll(poll);
+      if (!isManagedPollEditable(poll)) {
+        setDraft(null);
+        setSavedDraft(null);
+        setValidationErrors({ question: '', options: {} });
+        setImagesPreparing(false);
+        setTab(resolveManagedPollListScope(poll));
+        pushToast({
+          tone: 'info',
+          title: poll.publicationNeedsReview
+            ? 'Публикация требует проверки'
+            : poll.publicationPending
+              ? 'Публикация уже выполняется'
+              : 'Черновик уже недоступен',
+        });
+        return;
+      }
       const nextDraft = toEditorDraft(poll);
       setDraft(nextDraft);
       setSavedDraft(nextDraft);
@@ -954,12 +1031,20 @@ export const ManagedPollWorkspace = forwardRef<
       setSavedDraft(nextDraft);
       pushToast({ tone: 'success', title: 'Черновик сохранён' });
     },
-    onError: (error) => {
+    onError: async (error, value) => {
+      if (await recoverFromEditConflict(error, value, 'Не удалось сохранить')) {
+        return;
+      }
       pushToast({
         tone: 'danger',
         title: 'Не удалось сохранить',
         description: describeUserFacingError(error, 'Повторите позже.'),
       });
+    },
+    onSettled: (_saved, _error, value) => {
+      if (value.pollId === null) {
+        invalidatePollLists();
+      }
     },
   });
 
@@ -985,25 +1070,59 @@ export const ManagedPollWorkspace = forwardRef<
         title: published.publicationPending ? 'Публикация проверяется' : 'Опрос опубликован',
       });
     },
-    onError: (error) => {
-      if (publishSavedPollRef.current) {
-        const persistedDraft = publishSavedPollRef.current;
-        const nextDraft = toEditorDraft(persistedDraft);
-        applyPoll(persistedDraft);
+    onError: async (error, value) => {
+      const persistedDraft = publishSavedPollRef.current;
+      publishSavedPollRef.current = null;
+      setConfirmState(null);
+
+      if (
+        !persistedDraft &&
+        (await recoverFromEditConflict(error, value, 'Не удалось опубликовать'))
+      ) {
+        return;
+      }
+
+      if (persistedDraft) {
+        let latestPoll = persistedDraft;
+        try {
+          latestPoll = await getManagedPoll(api, entityType, entityId, persistedDraft.id);
+        } catch {
+          // The saved response is still the newest safe editable fallback.
+        }
+        applyPoll(latestPoll);
+        if (!isManagedPollEditable(latestPoll)) {
+          setDraft(null);
+          setSavedDraft(null);
+          setValidationErrors({ question: '', options: {} });
+          setImagesPreparing(false);
+          setTab(resolveManagedPollListScope(latestPoll));
+          pushToast({
+            tone: latestPoll.status === 'ACTIVE' ? 'success' : 'info',
+            title: latestPoll.publicationNeedsReview
+              ? 'Публикация требует проверки'
+              : latestPoll.publicationPending
+                ? 'Публикация проверяется'
+                : latestPoll.status === 'ACTIVE'
+                  ? 'Опрос опубликован'
+                  : 'Статус опроса обновлён',
+          });
+          return;
+        }
+
+        const nextDraft = toEditorDraft(latestPoll);
         setDraft(nextDraft);
         setSavedDraft(nextDraft);
         setValidationErrors({ question: '', options: {} });
         setImagesPreparing(false);
-        void queryClient.invalidateQueries({ queryKey: listQueryKey });
       }
-      publishSavedPollRef.current = null;
-      setConfirmState(null);
+
       pushToast({
         tone: 'danger',
         title: 'Не удалось опубликовать',
         description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
+    onSettled: () => invalidatePollLists(),
   });
 
   const closeMutation = useMutation({
@@ -1033,6 +1152,7 @@ export const ManagedPollWorkspace = forwardRef<
         description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
+    onSettled: () => invalidatePollLists(),
   });
 
   const refreshMutation = useMutation({
@@ -1070,27 +1190,18 @@ export const ManagedPollWorkspace = forwardRef<
         description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
+    onSettled: () => invalidatePollLists(),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (pollId: string) => deleteManagedPoll(api, entityType, entityId, pollId),
     onSuccess: (_result, pollId) => {
-      queryClient.setQueryData<InfiniteData<ManagedPollListResponse, string | null>>(
-        listQueryKey,
-        (current) =>
-          current
-            ? {
-                ...current,
-                pages: current.pages.map((page) => ({
-                  ...page,
-                  items: page.items.filter((poll) => poll.id !== pollId),
-                })),
-              }
-            : current,
+      queryClient.setQueryData<ManagedPollListData>(currentListQueryKey, (current) =>
+        removeManagedPollFromListData(current, pollId),
       );
-      queryClient.removeQueries({
-        queryKey: managedPollQueryKeys.details(entityType, entityId, pollId),
-      });
+      queryClient.setQueryData<ManagedPollListData>(archiveListQueryKey, (current) =>
+        removeManagedPollFromListData(current, pollId),
+      );
       if (draft?.pollId === pollId) {
         setDraft(null);
         setSavedDraft(null);
@@ -1106,6 +1217,7 @@ export const ManagedPollWorkspace = forwardRef<
         description: describeUserFacingError(error, 'Повторите позже.'),
       });
     },
+    onSettled: () => invalidatePollLists(),
   });
 
   const isBusy =
@@ -1137,7 +1249,7 @@ export const ManagedPollWorkspace = forwardRef<
   }, [closeEditorImmediately, draft, isBusy, isDirty]);
 
   const requestPanelClose = useCallback(() => {
-    if (isBusy || confirmState) {
+    if (confirmState) {
       return;
     }
     if (!draft) {
@@ -1150,7 +1262,7 @@ export const ManagedPollWorkspace = forwardRef<
     }
     closeEditorImmediately();
     onClosePanel();
-  }, [closeEditorImmediately, confirmState, draft, isBusy, isDirty, onClosePanel]);
+  }, [closeEditorImmediately, confirmState, draft, isDirty, onClosePanel]);
 
   useImperativeHandle(ref, () => ({ requestClose: requestPanelClose }), [requestPanelClose]);
 
@@ -1168,6 +1280,9 @@ export const ManagedPollWorkspace = forwardRef<
   useNativeBackHandler(
     useCallback(() => {
       if (draft) {
+        if (isBusy) {
+          return false;
+        }
         requestEditorClose();
         return true;
       }
@@ -1176,7 +1291,7 @@ export const ManagedPollWorkspace = forwardRef<
         return true;
       }
       return false;
-    }, [draft, requestEditorClose, votersPollId]),
+    }, [draft, isBusy, requestEditorClose, votersPollId]),
     { enabled: Boolean(draft || votersPollId), priority: 650 },
   );
 
@@ -1335,15 +1450,19 @@ export const ManagedPollWorkspace = forwardRef<
           isBusy={confirmBusy}
           onClose={() => setConfirmState(null)}
           onConfirm={() => {
-            if (confirmState?.kind === 'publish') {
-              publishMutation.mutate(confirmState.draft);
-            } else if (confirmState?.kind === 'delete') {
-              deleteMutation.mutate(confirmState.poll.id);
+            const confirmedState = confirmState;
+            if (!confirmedState) {
+              return;
+            }
+            setConfirmState(null);
+            if (confirmedState.kind === 'publish') {
+              publishMutation.mutate(confirmedState.draft);
+            } else if (confirmedState.kind === 'delete') {
+              deleteMutation.mutate(confirmedState.poll.id);
             } else {
               const closePanel =
-                confirmState?.kind === 'discard' && confirmState.closePanel === true;
+                confirmedState.kind === 'discard' && confirmedState.closePanel === true;
               closeEditorImmediately();
-              setConfirmState(null);
               if (closePanel) {
                 onClosePanel();
               }
@@ -1360,8 +1479,8 @@ export const ManagedPollWorkspace = forwardRef<
         <SegmentedControl
           value={tab}
           options={[
-            { value: 'current', label: 'Текущие', count: currentPolls.length },
-            { value: 'archive', label: 'Архив', count: archivedPolls.length },
+            { value: 'current', label: 'Текущие', count: currentPollTotal },
+            { value: 'archive', label: 'Архив', count: archivePollTotal },
           ]}
           onChange={setTab}
           ariaLabel="Опросы"
@@ -1377,7 +1496,7 @@ export const ManagedPollWorkspace = forwardRef<
         </button>
       </div>
 
-      {pollsQuery.isLoading ? <SkeletonCard lines={5} /> : null}
+      {selectedPollsQuery.isLoading ? <SkeletonCard lines={5} /> : null}
       {pollsInitialError ? (
         <StatusState
           tone="danger"
@@ -1387,7 +1506,7 @@ export const ManagedPollWorkspace = forwardRef<
             <button
               type="button"
               className="managed-poll-action-button"
-              onClick={() => void pollsQuery.refetch()}
+              onClick={() => void selectedPollsQuery.refetch()}
             >
               Повторить
             </button>
@@ -1398,13 +1517,13 @@ export const ManagedPollWorkspace = forwardRef<
       {pollsRefreshError ? (
         <div className="managed-poll-workspace__sync-error">
           <span>Не удалось обновить</span>
-          <button type="button" onClick={() => void pollsQuery.refetch()}>
+          <button type="button" onClick={() => void selectedPollsQuery.refetch()}>
             Повторить
           </button>
         </div>
       ) : null}
 
-      {!pollsQuery.isLoading && !pollsInitialError && visiblePolls.length === 0 ? (
+      {!selectedPollsQuery.isLoading && !pollsInitialError && visiblePolls.length === 0 ? (
         <StatusState title={tab === 'current' ? 'Нет текущих опросов' : 'Архив пуст'} />
       ) : null}
 
@@ -1432,14 +1551,14 @@ export const ManagedPollWorkspace = forwardRef<
         </div>
       ) : null}
 
-      {pollsQuery.hasNextPage ? (
+      {selectedPollsQuery.hasNextPage ? (
         <button
           type="button"
           className="managed-poll-action-button managed-poll-workspace__more"
-          onClick={() => void pollsQuery.fetchNextPage()}
-          disabled={pollsQuery.isFetchingNextPage}
+          onClick={() => void selectedPollsQuery.fetchNextPage()}
+          disabled={selectedPollsQuery.isFetchingNextPage}
         >
-          {pollsQuery.isFetchingNextPage ? 'Загрузка...' : 'Показать ещё'}
+          {selectedPollsQuery.isFetchingNextPage ? 'Загрузка...' : 'Показать ещё'}
         </button>
       ) : null}
 
@@ -1479,12 +1598,17 @@ export const ManagedPollWorkspace = forwardRef<
         isBusy={confirmBusy}
         onClose={() => setConfirmState(null)}
         onConfirm={() => {
-          if (confirmState?.kind === 'close') {
-            closeMutation.mutate(confirmState.poll.id);
-          } else if (confirmState?.kind === 'reset-publication') {
-            resetPublicationMutation.mutate(confirmState.poll.id);
-          } else if (confirmState?.kind === 'delete') {
-            deleteMutation.mutate(confirmState.poll.id);
+          const confirmedState = confirmState;
+          if (!confirmedState || !('poll' in confirmedState)) {
+            return;
+          }
+          setConfirmState(null);
+          if (confirmedState.kind === 'close') {
+            closeMutation.mutate(confirmedState.poll.id);
+          } else if (confirmedState.kind === 'reset-publication') {
+            resetPublicationMutation.mutate(confirmedState.poll.id);
+          } else if (confirmedState.kind === 'delete') {
+            deleteMutation.mutate(confirmedState.poll.id);
           }
         }}
       />

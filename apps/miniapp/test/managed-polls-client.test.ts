@@ -4,6 +4,7 @@ import type { ManagedEntityType } from '@maxim/contracts';
 import {
   MANAGED_POLL_MUTATION_TIMEOUT_MS,
   createManagedPoll,
+  getManagedPolls,
   publishManagedPoll,
   updateManagedPoll,
 } from '../src/lib/api/managed-polls-client';
@@ -30,6 +31,7 @@ for (const entityType of ['chat', 'channel'] as const satisfies readonly Managed
         { id: 'option-2', text: 'Второй ответ' },
       ],
     };
+    const expectedUpdatedAt = '2026-08-19T10:00:00.000Z';
     const collection = entityType === 'chat' ? 'chats' : 'channels';
 
     await assert.rejects(
@@ -37,7 +39,11 @@ for (const entityType of ['chat', 'channel'] as const satisfies readonly Managed
       /stop after request/u,
     );
     await assert.rejects(
-      () => updateManagedPoll(api, entityType, 'entity-1', 'poll-1', payload),
+      () =>
+        updateManagedPoll(api, entityType, 'entity-1', 'poll-1', {
+          ...payload,
+          expectedUpdatedAt,
+        }),
       /stop after request/u,
     );
     await assert.rejects(
@@ -72,16 +78,37 @@ for (const entityType of ['chat', 'channel'] as const satisfies readonly Managed
       assert.equal(JSON.stringify(body).includes('Опрос'), false);
       assert.equal(JSON.stringify(body).includes('голос'), false);
     }
+    assert.equal('expectedUpdatedAt' in bodies[0], false);
+    assert.equal(bodies[1].expectedUpdatedAt, expectedUpdatedAt);
   });
 }
 
-test('poll query keys isolate chats and channels with the same entity id', () => {
+test('poll list client serializes scope and pagination', async () => {
+  const calls: string[] = [];
+  const api: ApiTransport = {
+    request: async (path) => {
+      calls.push(path);
+      return { items: [], nextCursor: null, total: 0 };
+    },
+    requestKeepalive: () => undefined,
+  };
+
+  await getManagedPolls(api, 'chat', 'entity/1', {
+    scope: 'archive',
+    cursor: 'cursor value',
+    limit: 7,
+  });
+
+  assert.deepEqual(calls, ['/chats/entity%2F1/polls?scope=archive&cursor=cursor+value&limit=7']);
+});
+
+test('poll query keys isolate entities and list scopes', () => {
   assert.notDeepEqual(
-    managedPollQueryKeys.list('chat', 'same-id'),
-    managedPollQueryKeys.list('channel', 'same-id'),
+    managedPollQueryKeys.list('chat', 'same-id', 'current'),
+    managedPollQueryKeys.list('channel', 'same-id', 'current'),
   );
   assert.notDeepEqual(
-    managedPollQueryKeys.details('chat', 'same-id', 'poll-1'),
-    managedPollQueryKeys.details('channel', 'same-id', 'poll-1'),
+    managedPollQueryKeys.list('chat', 'same-id', 'current'),
+    managedPollQueryKeys.list('chat', 'same-id', 'archive'),
   );
 });

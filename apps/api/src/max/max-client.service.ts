@@ -496,6 +496,11 @@ type MaxApiRequestOptions = {
   rateLimitEntityId?: string;
 };
 
+type MaxCallbackAnswerRequestOptions = MaxApiRequestOptions & {
+  /** Runs after preparation and pre-dispatch checks, immediately before POST /answers. */
+  onDispatchAttempt?: () => void | Promise<void>;
+};
+
 export const MAX_API_SOURCE_TAGS = {
   MANAGED_REFRESH: 'managed_refresh',
   MODERATION_DELETE: 'moderation_delete',
@@ -4471,7 +4476,7 @@ export class MaxClientService implements OnModuleDestroy {
     callbackId: string,
     notification?: string,
     messageEdit?: MaxCallbackMessageEdit,
-    requestOptions: MaxApiRequestOptions = {},
+    requestOptions: MaxCallbackAnswerRequestOptions = {},
   ): Promise<void> {
     const normalizedCallbackId = callbackId.trim();
     if (!normalizedCallbackId) {
@@ -4509,6 +4514,7 @@ export class MaxClientService implements OnModuleDestroy {
         rateLimitEntityId,
         async () => {
           await assertOwnership?.();
+          await requestOptions.onDispatchAttempt?.();
           await this.request('post', '/answers', {
             params: {
               callback_id: normalizedCallbackId,

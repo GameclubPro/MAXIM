@@ -47,7 +47,18 @@ const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
 const SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD = 2;
 const SEND_ROUTE_OPEN_CIRCUIT_RECHECK_MS = 15 * 60_000;
-const WRITE_MESSAGE_PERMISSION_ALIASES = new Set(['write', 'can_write']);
+const WRITE_MESSAGE_PERMISSION_ALIASES = new Set([
+  'write',
+  'can_write',
+  'post_edit_delete_message',
+  'post_edit_delete_messages',
+  'can_post_edit_delete_message',
+  'can_post_edit_delete_messages',
+]);
+const READ_ALL_MESSAGES_PERMISSION_ALIASES = new Set([
+  'read_all_messages',
+  'can_read_all_messages',
+]);
 const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'add_remove_members',
   'can_add_remove_members',
@@ -502,9 +513,8 @@ export class MaxBotLinkService {
     const eligible = state.activeActionableMemberships.filter((membership) => {
       const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
       return (
-        this.hasConfirmedSendMessageAccess(snapshot, state.entityType) &&
-        (state.entityType !== ChatEntityType.CHANNEL ||
-          this.hasModerationActionPermission(snapshot, 'edit_message', ChatEntityType.CHANNEL))
+        this.hasFreshManagedPollAccessSnapshot(membership, snapshot) &&
+        this.hasConfirmedManagedPollAccess(snapshot, state.entityType)
       );
     });
     const primaryBotId =
@@ -595,9 +605,16 @@ export class MaxBotLinkService {
       select: {
         status: true,
         botAccessCheckedAt: true,
+        botAccessExpiresAt: true,
       },
     });
     if (!membership || membership.status !== ChatBotMembershipStatus.ACTIVE) {
+      return true;
+    }
+
+    const nowMs = (params.now ?? new Date()).getTime();
+    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) {
       return true;
     }
 
@@ -607,7 +624,7 @@ export class MaxBotLinkService {
     }
 
     const maxAgeMs = Math.max(0, Math.trunc(params.maxAgeMs));
-    return (params.now ?? new Date()).getTime() - checkedAtMs >= maxAgeMs;
+    return nowMs - checkedAtMs >= maxAgeMs;
   }
 
   async recordBotAccessProbe(params: {
@@ -2853,6 +2870,52 @@ export class MaxBotLinkService {
     return snapshot.permissions.some((permission) =>
       WRITE_MESSAGE_PERMISSION_ALIASES.has(normalizePermissionName(permission)),
     );
+  }
+
+  private hasConfirmedManagedPollAccess(
+    snapshot: MembershipAccessSnapshot | null,
+    entityType: ChatEntityType | null,
+  ): boolean {
+    if (!this.hasConfirmedSendMessageAccess(snapshot, entityType)) {
+      return false;
+    }
+    if (entityType === ChatEntityType.CHANNEL) {
+      if (!this.hasModerationActionPermission(snapshot, 'edit_message', ChatEntityType.CHANNEL)) {
+        return false;
+      }
+      if (snapshot?.isOwner) {
+        return true;
+      }
+    } else if (entityType === ChatEntityType.CHAT) {
+      if (snapshot?.isOwner) {
+        return true;
+      }
+      if (
+        !snapshot?.permissions.some((permission) =>
+          WRITE_MESSAGE_PERMISSION_ALIASES.has(normalizePermissionName(permission)),
+        )
+      ) {
+        return false;
+      }
+    } else {
+      return true;
+    }
+
+    return (
+      snapshot?.permissions.some((permission) =>
+        READ_ALL_MESSAGES_PERMISSION_ALIASES.has(normalizePermissionName(permission)),
+      ) ?? false
+    );
+  }
+
+  private hasFreshManagedPollAccessSnapshot(
+    membership: Pick<ResolvedChatRouteMembership, 'botAccessExpiresAt'>,
+    snapshot: MembershipAccessSnapshot | null,
+  ): boolean {
+    const expiresAtMs = membership.botAccessExpiresAt?.getTime() ?? Number.NaN;
+    return Number.isFinite(expiresAtMs)
+      ? expiresAtMs > Date.now()
+      : isFreshMembershipAccessSnapshot(snapshot);
   }
 
   private membershipExplicitlyLacksSendMessageAccess(

@@ -7,6 +7,7 @@ import {
   updateManagedPollRequestSchema,
   type CreateManagedPollRequest,
   type ManagedPollDetails,
+  type ManagedPollListScope,
   type ManagedPollListResponse,
   type ManagedPollVotersResponse,
   type UpdateManagedPollRequest,
@@ -24,9 +25,17 @@ export async function getManagedPolls(
   api: ApiTransport,
   entityType: ManagedEntityType,
   entityId: string,
-  options: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {},
+  options: {
+    scope?: ManagedPollListScope;
+    cursor?: string | null;
+    limit?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<ManagedPollListResponse> {
   const params = new URLSearchParams();
+  if (options.scope) {
+    params.set('scope', options.scope);
+  }
   if (options.cursor) {
     params.set('cursor', options.cursor);
   }

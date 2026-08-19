@@ -2573,6 +2573,86 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('does not mark a callback dispatch attempt when exact-message preparation fails', async () => {
+    const preparationError = new Error('Exact callback message lookup failed');
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(throwError(() => preparationError)),
+    };
+    const service = createService(httpService);
+    const onDispatchAttempt = jest.fn();
+
+    await expect(
+      service.answerCallback(
+        'callback-prepare-failure',
+        undefined,
+        {
+          messageId: 'mid-callback-prepare-failure',
+          text: 'Текст опроса',
+        },
+        { onDispatchAttempt },
+      ),
+    ).rejects.toBe(preparationError);
+
+    expect(onDispatchAttempt).not.toHaveBeenCalled();
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
+    expect(httpService.request).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'post' }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('marks a callback dispatch immediately before POST even when the POST fails', async () => {
+    const order: string[] = [];
+    const dispatchError = new Error('Callback answer POST failed');
+    const httpService = {
+      request: jest.fn().mockImplementation((config: { method: string }) => {
+        if (config.method === 'get') {
+          order.push('get');
+          return of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-callback-dispatch-failure',
+                    text: 'Текст опроса',
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          });
+        }
+        order.push('post');
+        return throwError(() => dispatchError);
+      }),
+    };
+    const service = createService(httpService);
+    const onDispatchAttempt = jest.fn(() => {
+      order.push('dispatch-attempt');
+    });
+
+    await expect(
+      service.answerCallback(
+        'callback-dispatch-failure',
+        undefined,
+        {
+          messageId: 'mid-callback-dispatch-failure',
+          text: 'Текст опроса',
+        },
+        { onDispatchAttempt },
+      ),
+    ).rejects.toBe(dispatchError);
+
+    expect(order).toEqual(['get', 'dispatch-attempt', 'post']);
+    expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+
+    await service.onModuleDestroy();
+  });
+
   it('does not edit a message after losing the keyboard lock before the mutation', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

@@ -35,6 +35,8 @@ import {
 import { ApiRequestError } from '../api-request-error';
 import {
   createManagedPollRequestSchema,
+  decodeManagedPollListCursor,
+  encodeManagedPollListCursor,
   managedPollDetailsSchema,
   managedPollListQuerySchema,
   managedPollListResponseSchema,
@@ -864,22 +866,69 @@ export async function handleChannelRequest(
   if (tail[0] === 'polls' && tail.length === 1) {
     if (method === 'GET') {
       const query = managedPollListQuerySchema.parse({
+        scope: url.searchParams.get('scope') ?? undefined,
         cursor: url.searchParams.get('cursor') ?? undefined,
         limit: url.searchParams.get('limit') ?? undefined,
       });
-      const polls = [...managedPolls].sort(
-        (left, right) =>
-          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime() ||
-          right.id.localeCompare(left.id),
-      );
-      const cursorIndex = query.cursor ? polls.findIndex((poll) => poll.id === query.cursor) : -1;
-      const page = polls.slice(cursorIndex + 1, cursorIndex + 1 + query.limit);
+      const scope = query.scope ?? 'all';
+      const decodedCursor = query.cursor ? decodeManagedPollListCursor(query.cursor) : null;
+      let cursor = decodedCursor;
+      if (decodedCursor && (decodedCursor.scope !== scope || decodedCursor.chatId !== channelId)) {
+        throw new Error('Preview managed poll cursor is invalid.');
+      }
+      if (query.cursor && !decodedCursor) {
+        const legacyCursorPoll = managedPolls.find((poll) => poll.id === query.cursor);
+        if (!legacyCursorPoll) {
+          throw new Error('Preview managed poll cursor is invalid.');
+        }
+        cursor = {
+          v: 1,
+          createdAt: legacyCursorPoll.createdAt,
+          id: legacyCursorPoll.id,
+          chatId: channelId,
+          scope,
+        };
+      }
+
+      const scopedPolls = [...managedPolls]
+        .filter((poll) =>
+          query.scope === 'archive'
+            ? poll.status === 'CLOSED'
+            : query.scope === 'current'
+              ? poll.status !== 'CLOSED'
+              : true,
+        )
+        .sort(
+          (left, right) =>
+            new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime() ||
+            right.id.localeCompare(left.id),
+        );
+      const total = scopedPolls.length;
+      const cursorCreatedAt = cursor ? new Date(cursor.createdAt).getTime() : null;
+      const polls = cursor
+        ? scopedPolls.filter((poll) => {
+            const createdAt = new Date(poll.createdAt).getTime();
+            return (
+              createdAt < cursorCreatedAt! || (createdAt === cursorCreatedAt && poll.id < cursor.id)
+            );
+          })
+        : scopedPolls;
+      const page = polls.slice(0, query.limit);
       const lastPoll = page.at(-1);
-      const lastIndex = lastPoll ? polls.findIndex((poll) => poll.id === lastPoll.id) : -1;
       return cloneJson(
         managedPollListResponseSchema.parse({
           items: page,
-          nextCursor: lastPoll && lastIndex < polls.length - 1 ? lastPoll.id : null,
+          nextCursor:
+            lastPoll && polls.length > query.limit
+              ? encodeManagedPollListCursor({
+                  v: 1,
+                  createdAt: lastPoll.createdAt,
+                  id: lastPoll.id,
+                  chatId: channelId,
+                  scope,
+                })
+              : null,
+          total,
         }),
       );
     }
@@ -1048,10 +1097,17 @@ export async function handleChannelRequest(
     }
 
     if (method === 'PUT') {
+      const payload = updateManagedPollRequestSchema.parse(parseJsonBody(init));
+      if (payload.expectedUpdatedAt !== poll.updatedAt) {
+        throw new ApiRequestError(
+          409,
+          JSON.stringify({ statusCode: 409 }),
+          'Черновик опроса уже изменён. Обновите экран.',
+        );
+      }
       if (poll.status !== 'DRAFT' || poll.publicationPending) {
         throw new Error('Опубликованный опрос нельзя изменить.');
       }
-      const payload = updateManagedPollRequestSchema.parse(parseJsonBody(init));
       const questionFormat = payload.questionFormat ?? poll.questionFormat;
       const images = payload.images ?? poll.images;
       const optionIds = new Set(poll.options.map((option) => option.id));
@@ -1064,7 +1120,7 @@ export async function handleChannelRequest(
         questionFormat,
         images,
         imageCount: images.length,
-        visibility: payload.visibility,
+        visibility: payload.visibility ?? poll.visibility,
         options: payload.options.map((option, index) => ({
           id: option.id ?? `${poll.id}-option-${index + 1}`,
           position: index,

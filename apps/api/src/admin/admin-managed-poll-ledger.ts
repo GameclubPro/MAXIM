@@ -14,9 +14,11 @@ export type ManagedPollChannelEngagementReference = {
 export function buildManagedPollLedgerContext(
   context: ChannelPublicationEngagementContext | null,
   botId: string | null,
+  renderFormatVersion: number,
 ): MaxActionLedgerContext {
   return {
     managedPoll: {
+      renderFormatVersion,
       channelEngagement: toManagedPollChannelEngagementReference(context, botId),
     },
   };
@@ -25,18 +27,22 @@ export function buildManagedPollLedgerContext(
 export function readManagedPollLedgerChannelEngagement(value: unknown): {
   found: boolean;
   reference: ManagedPollChannelEngagementReference | null;
+  renderFormatVersion: number | null;
 } {
   const metadata = readObject(value);
   const ledgerContext = readObject(metadata?.ledgerContext);
   const managedPoll = readObject(ledgerContext?.managedPoll);
+  const renderFormatVersion = readPositiveInteger(managedPoll?.renderFormatVersion);
   if (!managedPoll || !Object.prototype.hasOwnProperty.call(managedPoll, 'channelEngagement')) {
-    return { found: false, reference: null };
+    return { found: false, reference: null, renderFormatVersion };
   }
   if (managedPoll.channelEngagement === null) {
-    return { found: true, reference: null };
+    return { found: true, reference: null, renderFormatVersion };
   }
   const reference = readManagedPollChannelEngagementReference(managedPoll.channelEngagement);
-  return reference ? { found: true, reference } : { found: false, reference: null };
+  return reference
+    ? { found: true, reference, renderFormatVersion }
+    : { found: false, reference: null, renderFormatVersion };
 }
 
 export function readManagedPollChannelEngagementReference(
@@ -93,4 +99,8 @@ function readObject(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }

@@ -16,6 +16,7 @@ describe('MaxRoutedPublicationService', () => {
       }),
     };
     const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
       execute: jest.fn().mockImplementation(async (job: MaxActionJob, options: any) => {
         const prepared = await options.prepareAttempt({ botId: 'bot-2', job });
         await options.onDispatchAttempt({ botId: 'bot-2', job: { ...job, ...prepared } });
@@ -89,6 +90,7 @@ describe('MaxRoutedPublicationService', () => {
       resolveBotRoute: jest.fn(),
     };
     const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
       execute: jest.fn().mockResolvedValue({
         messageId: 'mid-poll-1',
         url: null,
@@ -141,6 +143,84 @@ describe('MaxRoutedPublicationService', () => {
     });
   });
 
+  it('recovers a completed poll before rejecting its now-empty route', async () => {
+    const emptyRoute = {
+      purpose: 'send_message',
+      chatId: 'channel-1',
+      primaryBotId: 'former-dispatch-bot',
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+      routingVersion: 10,
+    };
+    const maxBotLinkService = {
+      resolveBotRouteForManagedPoll: jest.fn().mockResolvedValue(emptyRoute),
+      resolveBotRoute: jest.fn().mockResolvedValue(emptyRoute),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue({
+        messageId: 'mid-recovered-poll-1',
+        url: null,
+        botId: 'former-dispatch-bot',
+      }),
+      execute: jest.fn(),
+    };
+    const maxClientService = {
+      getCurrentChatMemberAccess: jest.fn(),
+      resolveMessageLink: jest
+        .fn()
+        .mockResolvedValue('https://max.ru/channel-1/mid-recovered-poll-1'),
+    };
+    const prepareAttempt = jest.fn();
+    const onDispatchAttempt = jest.fn();
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      maxClientService as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'channel-1',
+        logicalIdempotencyKey: 'managed-poll:publish:poll-recovered-1',
+        routePurpose: 'channel_poll',
+        text: 'admin-authored poll question',
+        trafficClass: 'interactive',
+        sourceTag: 'managed_poll',
+        ignoreFailureMetricStatuses: [403, 404],
+        prepareAttempt,
+        onDispatchAttempt,
+      }),
+    ).resolves.toEqual({
+      messageId: 'mid-recovered-poll-1',
+      url: 'https://max.ru/channel-1/mid-recovered-poll-1',
+      botId: 'former-dispatch-bot',
+      candidateBotIds: ['former-dispatch-bot'],
+      routingVersion: null,
+    });
+
+    expect(maxActionDispatchService.recoverCompletedSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'channel-1',
+        idempotencyKey: 'managed-poll:publish:poll-recovered-1',
+        text: 'admin-authored poll question',
+      }),
+    );
+    expect(maxClientService.resolveMessageLink).toHaveBeenCalledWith('mid-recovered-poll-1', {
+      botId: 'former-dispatch-bot',
+      trafficClass: 'interactive',
+      sourceTag: 'managed_poll',
+      ignoreFailureMetricStatuses: [403, 404],
+    });
+    expect(maxBotLinkService.resolveBotRouteForManagedPoll).not.toHaveBeenCalled();
+    expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
+    expect(maxClientService.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxActionDispatchService.execute).not.toHaveBeenCalled();
+    expect(prepareAttempt).not.toHaveBeenCalled();
+    expect(onDispatchAttempt).not.toHaveBeenCalled();
+  });
+
   it('hydrates an unknown poll route candidate before dispatch', async () => {
     const emptyRoute = {
       purpose: 'send_message',
@@ -173,6 +253,7 @@ describe('MaxRoutedPublicationService', () => {
       recordBotAccessProbe: jest.fn().mockResolvedValue(true),
     };
     const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
       execute: jest.fn().mockResolvedValue({
         messageId: 'mid-chat-poll-1',
         url: 'https://max.ru/chat-1/mid-chat-poll-1',
@@ -257,7 +338,10 @@ describe('MaxRoutedPublicationService', () => {
       isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
       recordBotAccessProbe: jest.fn().mockResolvedValue(true),
     };
-    const maxActionDispatchService = { execute: jest.fn() };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn(),
+    };
     const memberAccess = {
       userId: 'bot-user-1',
       isAdmin: false,
@@ -311,7 +395,10 @@ describe('MaxRoutedPublicationService', () => {
       isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
       recordBotAccessProbe: jest.fn(),
     };
-    const maxActionDispatchService = { execute: jest.fn() };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn(),
+    };
     const maxClientService = {
       getCurrentChatMemberAccess: jest.fn().mockRejectedValue(new Error('chat denied')),
       resolveMessageLink: jest.fn(),
@@ -369,6 +456,7 @@ describe('MaxRoutedPublicationService', () => {
       recordBotAccessProbe: jest.fn().mockResolvedValue(true),
     };
     const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
       execute: jest.fn().mockResolvedValue({
         messageId: 'mid-chat-poll-2',
         url: null,
