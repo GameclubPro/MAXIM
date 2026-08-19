@@ -9,6 +9,7 @@ function readSource(relativePath: string): string {
 
 const dialogPageSource = readSource('../src/pages/channel-dialog-page.tsx');
 const suggestDialogPageSource = readSource('../src/pages/channel-suggest-dialog-page.tsx');
+const appSource = readSource('../src/app.tsx');
 const shellSource = readSource('../src/components/shell.tsx');
 const unavailableStateSource = readSource('../src/components/public-dialog-unavailable-state.tsx');
 
@@ -49,4 +50,28 @@ test('public dialog pages keep terminal failures in the public flow', () => {
 
   assert.match(unavailableStateSource, /onClick=\{\(\) => closeMaxMiniApp\(\)\}/u);
   assert.match(unavailableStateSource, /Закрыть приложение/u);
+});
+
+test('suggestion dialog state is remounted for every chat and token pair', () => {
+  assert.match(
+    appSource,
+    /function KeyedChannelSuggestDialogPage[\s\S]*?key=\{location\.pathname \+ location\.search\}/u,
+  );
+  assert.match(
+    suggestDialogPageSource,
+    /export function ChannelSuggestDialogPage[\s\S]*?const \[draft, setDraft\] = useState\(''\)/u,
+  );
+  assert.match(
+    appSource,
+    /path="\/channel\/:chatId\/dialog\/suggest"[\s\S]*?element=\{<KeyedChannelSuggestDialogPage api=\{apiClient\} \/>\}/u,
+  );
+});
+
+test('the app shares one stateful launch resolver between boot and router sync', () => {
+  assert.match(
+    appSource,
+    /const launchRouteResolver = useMemo\(\(\) => createLaunchRouteResolver\(\), \[\]\)/u,
+  );
+  assert.match(appSource, /const initialLaunchRoute = launchRouteResolver\(initData\)/u);
+  assert.match(appSource, /launchRouteResolver=\{launchRouteResolver\}/u);
 });

@@ -40,7 +40,10 @@ test('authenticated app keeps the lightweight router and syncs runtime launch co
     appSource,
     /<AppRouter basename=\{ROUTER_BASENAME\}>[\s\S]*?<PreviewScaffold initialDevice=\{preview\.device\}>/u,
   );
-  assert.match(appSource, /<AppRoutes apiClient=\{apiClient\} launchInitData=\{initData\} \/>/u);
+  assert.match(
+    appSource,
+    /<AppRoutes[\s\S]*?apiClient=\{apiClient\}[\s\S]*?launchInitData=\{initData\}[\s\S]*?launchRouteResolver=\{launchRouteResolver\}[\s\S]*?\/>/u,
+  );
   assert.match(appSource, /function LaunchRouteSync[\s\S]*?navigate\(mergedTargetRoute/u);
   assert.match(
     appSource,

@@ -1451,27 +1451,38 @@ describe('ManagedEntitiesService headers', () => {
     });
   });
 
-  it('lets a fresh granted edge win over a fresher denied edge from another bot', async () => {
+  it('lets a fresher user denial override an older granted edge from another bot', async () => {
     const { prisma, service } = createService();
     prisma.managedEntityAccessEdge.findFirst
       .mockResolvedValueOnce({
         checkedAt: new Date('2026-06-01T10:00:00.000Z'),
       })
-      .mockResolvedValueOnce(null);
+      .mockResolvedValueOnce({
+        checkedAt: new Date('2026-06-01T10:01:00.000Z'),
+        deniedReason: 'user_not_admin',
+      });
 
     const result = await service.getChatHeader('chat-1', user as never);
 
     expect(result.viewerAccess).toEqual({
-      state: 'granted',
-      reason: null,
-      checkedAt: '2026-06-01T10:00:00.000Z',
-      canEdit: true,
+      state: 'denied',
+      reason: 'user_not_admin',
+      checkedAt: '2026-06-01T10:01:00.000Z',
+      canEdit: false,
     });
     expect(prisma.managedEntityAccessEdge.findFirst).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
         where: expect.objectContaining({
           state: 'GRANTED',
+        }),
+      }),
+    );
+    expect(prisma.managedEntityAccessEdge.findFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          state: 'USER_DENIED',
         }),
       }),
     );

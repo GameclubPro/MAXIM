@@ -104,12 +104,7 @@ export class AdminSettingsService {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ChatSettings> {
-    await this.legacyAdminService.assertManagedEntityReadAccess(
-      chatId,
-      user.userId,
-      'chat',
-      options,
-    );
+    await this.assertSensitiveSettingsReadAccess(chatId, user, 'chat', options);
     const botAssignmentData =
       await this.legacyAdminService.resolveChatSettingsReadBotAssignmentData(chatId);
     return readChatSettings({
@@ -124,15 +119,10 @@ export class AdminSettingsService {
   async getChatSettingsScreen(
     chatId: string,
     user: AuthUser,
-    options: { liveAdminCheck?: boolean } = {},
+    _options: { liveAdminCheck?: boolean } = {},
   ): Promise<ChatSettingsScreenResponse> {
     await this.assertSettingsScreenAccess(() =>
-      options.liveAdminCheck === false
-        ? this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat', {
-            forceRemote: false,
-            timeoutMs: undefined,
-          })
-        : this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(chatId, user, 'chat'),
+      this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat'),
     );
 
     const [settings, rules, headerBundle, domains, managedBroadcasts] = await Promise.all([
@@ -230,12 +220,7 @@ export class AdminSettingsService {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ChatRules> {
-    await this.legacyAdminService.assertManagedEntityReadAccess(
-      chatId,
-      user.userId,
-      'chat',
-      options,
-    );
+    await this.assertSensitiveSettingsReadAccess(chatId, user, 'chat', options);
     return readChatRules({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
@@ -436,12 +421,7 @@ export class AdminSettingsService {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ChannelSettings> {
-    await this.legacyAdminService.assertManagedEntityReadAccess(
-      chatId,
-      user.userId,
-      'channel',
-      options,
-    );
+    await this.assertSensitiveSettingsReadAccess(chatId, user, 'channel', options);
     const botAssignmentData =
       await this.legacyAdminService.resolveChannelSettingsReadBotAssignmentData(chatId);
     return readChannelSettings({
@@ -455,15 +435,10 @@ export class AdminSettingsService {
   async getChannelSettingsScreen(
     chatId: string,
     user: AuthUser,
-    options: { liveAdminCheck?: boolean } = {},
+    _options: { liveAdminCheck?: boolean } = {},
   ): Promise<ChannelSettingsScreenResponse> {
     await this.assertSettingsScreenAccess(() =>
-      options.liveAdminCheck === false
-        ? this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel', {
-            forceRemote: false,
-            timeoutMs: undefined,
-          })
-        : this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(chatId, user, 'channel'),
+      this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel'),
     );
 
     const [settings, postSignature, header, managedBroadcasts] = await Promise.all([
@@ -523,11 +498,34 @@ export class AdminSettingsService {
     }
   }
 
+  private async assertSensitiveSettingsReadAccess(
+    chatId: string,
+    user: AuthUser,
+    entityType: 'chat' | 'channel',
+    options: AdminReadBypassOptions,
+  ): Promise<void> {
+    if (options.skipAdminCheck) {
+      await this.legacyAdminService.assertManagedEntityReadAccess(
+        chatId,
+        user.userId,
+        entityType,
+        options,
+      );
+      return;
+    }
+
+    await this.legacyAdminService.assertManagedEntityAdminAccess(
+      chatId,
+      user.userId,
+      entityType,
+    );
+  }
+
   async getChannelPostSignature(
     chatId: string,
     user: AuthUser,
   ): Promise<ChannelPostSignatureSettings> {
-    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
     if (!this.channelPostSignatureService) {
       throw new ServiceUnavailableException('Настройки подписи публикаций недоступны.');
     }

@@ -56,7 +56,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { isSystemModeRecoveryWindow, SystemModeService } from '../system/system-mode.service';
-import { isPrismaKnownError } from './admin-legacy-utils';
+import { isPrismaKnownError, mapWithConcurrencyLimit } from './admin-legacy-utils';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import {
@@ -68,6 +68,7 @@ import {
   resolvePublicationOccurrenceRollupStatus,
 } from './publication-delivery-verification-state';
 import { PublicationContentService } from './publication-content.service';
+import { publicationBackgroundAccess } from './publication-background-access';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
   buildUnsafePublicationExecutionDeliveryWhere,
@@ -91,6 +92,7 @@ const PUBLICATION_DISPATCH_BATCH = 50;
 const PUBLICATION_DEADLINE_DISPATCH_BATCH = 25;
 const PUBLICATION_SLOW_BATCH = 10;
 const PUBLICATION_RECONCILE_BATCH = 200;
+const PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY = 4;
 
 type ResolvedPublicationTarget = PublicationTargetInput & {
   title: string;
@@ -790,10 +792,13 @@ export class PublicationService {
     const audienceChanged =
       request.audience !== undefined &&
       !this.isPublicationAudienceEquivalent(request.audience, existing);
-    const targets =
-      audienceChanged && request.audience
-        ? await this.resolveAudienceTargets(user, request.audience)
-        : await this.resolvePersistedPublicationTargets(user, existing.targets);
+    let targets: ResolvedPublicationTarget[];
+    if (audienceChanged && request.audience) {
+      await this.resolvePersistedPublicationTargets(user, existing.targets);
+      targets = await this.resolveAudienceTargets(user, request.audience);
+    } else {
+      targets = await this.resolvePersistedPublicationTargets(user, existing.targets);
+    }
 
     const now = new Date();
     const existingSchedule =
@@ -1550,6 +1555,7 @@ export class PublicationService {
       return this.get(publicationId, user);
     }
     const publication = await this.assertPublicationOwner(publicationId, user.userId);
+    await this.resolvePersistedPublicationTargets(user, publication.targets);
     const delivery = await this.prisma.managedBroadcastDelivery.findFirst({
       where: {
         id: parsed.data.deliveryId,
@@ -1933,7 +1939,14 @@ export class PublicationService {
               ? this.resolveRecurrenceHorizonEntry(nextSlot, now)
               : new Date(now.getTime() + PUBLICATION_RECURRENCE_REFRESH_MS);
         const targets =
-          slots.length > 0 ? await this.resolveOccurrenceTargets(schedule.publication) : [];
+          slots.length > 0
+            ? await publicationBackgroundAccess.recurrence(
+                () => this.resolveOccurrenceTargets(schedule.publication),
+                this.logger,
+                schedule,
+              )
+            : [];
+        if (targets === null) continue;
         await this.prisma.$transaction(async (tx: any) => {
           if (slots.length > 0) {
             await this.lockPublicationCalendar(tx);
@@ -2067,7 +2080,12 @@ export class PublicationService {
           });
           continue;
         }
-        const targets = await this.resolveOccurrenceTargets(occurrence.publication);
+        const targets = await publicationBackgroundAccess.execution(
+          () => this.resolveOccurrenceTargets(occurrence.publication),
+          this.logger,
+          occurrence,
+        );
+        if (targets === null) continue;
         if (targets.length === 0) {
           throw new Error('Нет доступных чатов или каналов для публикации.');
         }
@@ -2827,26 +2845,20 @@ export class PublicationService {
         `Можно выбрать не больше ${MAX_PUBLICATION_TARGETS} чатов и каналов.`,
       );
     }
+    await mapWithConcurrencyLimit(
+      resolved,
+      PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY,
+      async (target) => this.assertTargetAdminAccess(target, user),
+    );
     return resolved;
   }
 
   private async resolveOccurrenceTargets(publication: any): Promise<ResolvedPublicationTarget[]> {
-    const user: AuthUser = {
-      userId: publication.actorUserId,
-      username: null,
-      displayName: null,
-    };
-    if (
-      publication.audienceMode === PublicationAudienceMode.SNAPSHOT ||
-      publication.audienceSelection === PublicationAudienceSelection.SELECTED
-    ) {
-      return this.resolvePersistedPublicationTargets(user, publication.targets);
-    }
-    return this.resolveAudienceTargets(user, {
-      selection: publication.audienceSelection,
-      mode: publication.audienceMode,
-      targets: [],
-    });
+    return publicationBackgroundAccess.resolveOccurrence(
+      publication,
+      (user, targets) => this.resolvePersistedPublicationTargets(user, targets),
+      (user, audience) => this.resolveAudienceTargets(user, audience),
+    );
   }
 
   private resolvePersistedPublicationTargets(

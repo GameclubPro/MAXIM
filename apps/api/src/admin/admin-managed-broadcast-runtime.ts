@@ -304,7 +304,6 @@ import {
   isPrismaKnownError,
   isMaxApiTimeoutError,
   isUnsupportedManagedChat,
-  mapWithConcurrencyLimit,
   normalizeAppBaseUrl,
   normalizeBotContactId,
   normalizeOwnBotUserId,
@@ -312,6 +311,12 @@ import {
   resolvePresentableManagedEntityTitle,
   toPrismaEntityType,
 } from './admin-legacy-utils';
+import {
+  assertManagedBroadcastTargetAdminAccess,
+  failManagedBroadcastAfterTargetAccessDenied,
+  resolveManagedBroadcastAccessDeniedMessage,
+} from './admin-managed-broadcast-authorization';
+import { failManagedBroadcastAfterFatalProcessingError as failManagedBroadcastAfterFatalProcessingErrorValue } from './admin-managed-broadcast-terminal-failure';
 import {
   buildManagedBroadcastButtonState as buildManagedBroadcastButtonStateValue,
   buildManagedBroadcastLinkButtonRows,
@@ -1290,6 +1295,14 @@ export class AdminManagedBroadcastRuntime {
       );
     }
 
+    await assertManagedBroadcastTargetAdminAccess(
+      this.context,
+      targetChatIds,
+      user.userId,
+      entityType,
+      [sourceChatId],
+    );
+
     const prismaEntityType = mapManagedEntityTypeToChatEntityType(entityType);
     const reservations = await this.prisma.managedBroadcastCalendarReservation.findMany({
       where: {
@@ -1477,6 +1490,14 @@ export class AdminManagedBroadcastRuntime {
     if (!existing) {
       throw new BadRequestException('Автопостинг не найден или уже завершён.');
     }
+
+    await assertManagedBroadcastTargetAdminAccess(
+      this.context,
+      parseManagedBroadcastTargetChatIds(existing.targetChatIds, existing.sourceChatId),
+      user.userId,
+      entityType,
+      [sourceChatId],
+    );
 
     const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
       entityType,
@@ -1826,6 +1847,14 @@ export class AdminManagedBroadcastRuntime {
     if (!existing) {
       throw new BadRequestException('Для повтора нет неуспешного автопостинга.');
     }
+
+    await assertManagedBroadcastTargetAdminAccess(
+      this.context,
+      parseManagedBroadcastTargetChatIds(existing.targetChatIds, existing.sourceChatId),
+      user.userId,
+      entityType,
+      [sourceChatId],
+    );
 
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(existing);
     const adminLock = await this.claimManagedBroadcastForAdminMutation(
@@ -2619,6 +2648,14 @@ export class AdminManagedBroadcastRuntime {
       targetChatIds = parsed.data.targetChatIds;
     }
 
+    await assertManagedBroadcastTargetAdminAccess(
+      this.context,
+      targetChatIds,
+      user.userId,
+      options.entityType,
+      [sourceChatId],
+    );
+
     return {
       payload: parsed.data,
       targetChatIds,
@@ -3111,26 +3148,26 @@ export class AdminManagedBroadcastRuntime {
 
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
     const maxApiOptions = this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions(reason);
-    if (
-      !(await this.ensureManagedBroadcastPublicationExecutionActive(
-        row,
-        currentOccurrence,
-        staleLockBefore,
-      ))
-    ) {
-      return {
-        status: PrismaManagedBroadcastStatus.CANCELED,
-        currentOccurrence,
-        sentChatIds: [],
-        failedChatIds: [],
-        pendingChatIds: [],
-        canRetry: false,
-        firstSendError: null,
-        nextSendAt: null,
-      };
-    }
-
+    const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     try {
+      if (
+        !(await this.ensureManagedBroadcastPublicationExecutionActive(
+          row,
+          currentOccurrence,
+          staleLockBefore,
+        ))
+      ) {
+        return {
+          status: PrismaManagedBroadcastStatus.CANCELED,
+          currentOccurrence,
+          sentChatIds: [],
+          failedChatIds: [],
+          pendingChatIds: [],
+          canRetry: false,
+          firstSendError: null,
+          nextSendAt: null,
+        };
+      }
       await this.reconcileStaleManagedBroadcastDeliveries(
         row.id,
         currentOccurrence,
@@ -3154,7 +3191,40 @@ export class AdminManagedBroadcastRuntime {
           nextSendAt: row.nextSendAt,
         };
       }
-      const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
+      try {
+        await assertManagedBroadcastTargetAdminAccess(
+          this.context,
+          targetChatIds,
+          row.actorUserId,
+          row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+        );
+      } catch (error: unknown) {
+        if (!(error instanceof ForbiddenException)) {
+          throw error;
+        }
+        const accessDeniedMessage = resolveManagedBroadcastAccessDeniedMessage(error);
+        const updated = await failManagedBroadcastAfterTargetAccessDenied({
+          prisma: this.prisma,
+          logger: this.logger,
+          row,
+          occurrenceIndex: currentOccurrence,
+          failureMessage: accessDeniedMessage,
+          lease: activeLease,
+        });
+        if (!updated) {
+          return this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], error);
+        }
+        return {
+          status: PrismaManagedBroadcastStatus.FAILED,
+          currentOccurrence,
+          sentChatIds: [],
+          failedChatIds: [],
+          pendingChatIds: [],
+          canRetry: false,
+          firstSendError: error,
+          nextSendAt: null,
+        };
+      }
       let initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
         where: {
           broadcastId: row.id,
@@ -5678,103 +5748,14 @@ export class AdminManagedBroadcastRuntime {
     failureMessage: string,
     lease?: ManagedBroadcastLease,
   ): Promise<void> {
-    const updated = await this.updateManagedBroadcastIfNotCanceled(
-      row.id,
-      {
-        status: PrismaManagedBroadcastStatus.FAILED,
-        lastError: failureMessage,
-        nextSendAt: null,
-        lockedAt: null,
-        lockToken: null,
-      },
+    await failManagedBroadcastAfterFatalProcessingErrorValue({
+      prisma: this.prisma,
+      logger: this.logger,
+      row,
+      occurrenceIndex: currentOccurrence,
+      failureMessage,
       lease,
-    );
-    if (!updated) {
-      return;
-    }
-
-    await this.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: currentOccurrence,
-        status: {
-          in: [
-            PrismaManagedBroadcastDeliveryStatus.PENDING,
-            PrismaManagedBroadcastDeliveryStatus.SENDING,
-            PrismaManagedBroadcastDeliveryStatus.FAILED,
-          ],
-        },
-      },
-      data: {
-        status: PrismaManagedBroadcastDeliveryStatus.FAILED,
-        lockedAt: null,
-        lockToken: null,
-        lastError: failureMessage,
-      },
     });
-    await this.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: { gt: currentOccurrence },
-        status: {
-          in: [
-            PrismaManagedBroadcastDeliveryStatus.PENDING,
-            PrismaManagedBroadcastDeliveryStatus.SENDING,
-            PrismaManagedBroadcastDeliveryStatus.FAILED,
-          ],
-        },
-      },
-      data: {
-        status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
-        lockedAt: null,
-        lockToken: null,
-        lastError: failureMessage,
-      },
-    });
-
-    if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-      await this.prisma.managedBroadcastCalendarReservation.deleteMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: { gt: currentOccurrence },
-        },
-      });
-      await this.prisma.managedBroadcastOccurrence.updateMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: currentOccurrence,
-        },
-        data: {
-          status: PrismaManagedBroadcastStatus.FAILED,
-        },
-      });
-      await this.prisma.managedBroadcastOccurrence.updateMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: { gt: currentOccurrence },
-        },
-        data: {
-          status: PrismaManagedBroadcastStatus.CANCELED,
-        },
-      });
-      await this.prisma.managedBroadcastOccurrence.deleteMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: { gt: currentOccurrence },
-        },
-      });
-    }
-
-    this.logger.warn(
-      {
-        broadcastId: row.id,
-        sourceChatId: row.sourceChatId,
-        actorUserId: row.actorUserId,
-        occurrenceIndex: currentOccurrence,
-        err: failureMessage,
-      },
-      'Managed broadcast was stopped after a fatal processing error',
-    );
   }
 
   private async updateManagedBroadcastIfNotCanceled(

@@ -1,3 +1,4 @@
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
@@ -15,6 +16,22 @@ import { PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE } from './admin.service.support
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 
 const AUTOMATED_VERIFICATION_DUE_AT = new Date('2026-07-25T08:00:15.000Z');
+
+const createPublicationEnvelopeRow = () => ({
+  id: 'broadcast-access-check',
+  sourceChatId: 'chat-source',
+  entityType: 'CHAT',
+  actorUserId: 'admin-1',
+  applyToAllChats: false,
+  targetChatIds: ['chat-target'],
+  scheduleMode: 'calendar',
+  nextSendAt: new Date('2026-07-12T10:00:00.000Z'),
+  cycleCount: 1,
+  sentCount: 0,
+  status: ManagedBroadcastStatus.ACTIVE,
+  publicationOccurrenceId: 'occurrence-access-check',
+  publicationContentRevisionId: 'content-access-check',
+});
 
 describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   it('persists a structured access-loss code for the current and future target deliveries', async () => {
@@ -1699,6 +1716,271 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(retryQueries.every((query) => query.where?.publicationOccurrenceId === null)).toBe(true);
   });
 
+  it('checks that a publication envelope is active before revalidating target access', async () => {
+    const row = createPublicationEnvelopeRow();
+    const assertManagedEntityAdminAccess = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedBroadcast: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findUnique: jest.fn().mockResolvedValue(row),
+        },
+      },
+      assertManagedEntityAdminAccess,
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
+    const executionActive = jest
+      .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+      .mockResolvedValue(false);
+
+    const result = await (runtime as any).processManagedBroadcastOccurrence(
+      row.id,
+      'deadline',
+      new Date('2026-07-12T09:55:00.000Z'),
+      [ManagedBroadcastStatus.ACTIVE],
+    );
+
+    expect(executionActive).toHaveBeenCalledTimes(1);
+    expect(assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.CANCELED,
+        canRetry: false,
+        nextSendAt: null,
+      }),
+    );
+  });
+
+  it('terminally fails a publication envelope when target admin access is denied', async () => {
+    const row = createPublicationEnvelopeRow();
+    const accessError = new ForbiddenException(
+      'Пользователь больше не является администратором чата.',
+    );
+    const assertManagedEntityAdminAccess = jest.fn().mockRejectedValue(accessError);
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const occurrenceUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const reservationDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedBroadcast: {
+          updateMany: broadcastUpdateMany,
+          findUnique: jest.fn().mockResolvedValue(row),
+        },
+        managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+        managedBroadcastCalendarReservation: { deleteMany: reservationDeleteMany },
+        managedBroadcastOccurrence: { updateMany: occurrenceUpdateMany },
+      },
+      assertManagedEntityAdminAccess,
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
+    const executionActive = jest
+      .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+      .mockResolvedValue(true);
+    const reconcile = jest
+      .spyOn(runtime as any, 'reconcileStaleManagedBroadcastDeliveries')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(runtime as any, 'deferManagedBroadcastOccurrenceWithFreshSendingDeliveries')
+      .mockResolvedValue(false);
+
+    const result = await (runtime as any).processManagedBroadcastOccurrence(
+      row.id,
+      'deadline',
+      new Date('2026-07-12T09:55:00.000Z'),
+      [ManagedBroadcastStatus.ACTIVE],
+    );
+
+    expect(executionActive.mock.invocationCallOrder[0]).toBeLessThan(
+      assertManagedEntityAdminAccess.mock.invocationCallOrder[0]!,
+    );
+    expect(assertManagedEntityAdminAccess).toHaveBeenCalledWith('chat-target', 'admin-1', 'chat');
+    expect(reconcile.mock.invocationCallOrder[0]).toBeLessThan(
+      assertManagedEntityAdminAccess.mock.invocationCallOrder[0]!,
+    );
+    expect(broadcastUpdateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: {
+          status: ManagedBroadcastStatus.FAILED,
+          lastError: accessError.message,
+          nextSendAt: null,
+          lockedAt: null,
+          lockToken: null,
+        },
+      }),
+    );
+    expect(deliveryUpdateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: 1,
+        status: {
+          in: [ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.FAILED],
+        },
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.CANCELED,
+        lockedAt: null,
+        lockToken: null,
+        lastErrorCode: PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE,
+        lastError: accessError.message,
+      },
+    });
+    expect(deliveryUpdateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({ occurrenceIndex: { gt: 1 } }),
+        data: expect.objectContaining({ status: ManagedBroadcastDeliveryStatus.CANCELED }),
+      }),
+    );
+    expect(occurrenceUpdateMany).toHaveBeenNthCalledWith(1, {
+      where: { broadcastId: row.id, occurrenceIndex: 1 },
+      data: { status: ManagedBroadcastStatus.FAILED },
+    });
+    expect(occurrenceUpdateMany).toHaveBeenNthCalledWith(2, {
+      where: { broadcastId: row.id, occurrenceIndex: { gt: 1 } },
+      data: { status: ManagedBroadcastStatus.CANCELED },
+    });
+    expect(reservationDeleteMany).toHaveBeenCalledWith({
+      where: { broadcastId: row.id, occurrenceIndex: { gte: 1 } },
+    });
+    expect(
+      deliveryUpdateMany.mock.calls.some(([query]) =>
+        query.where.status.in.some(
+          (status: ManagedBroadcastDeliveryStatus) =>
+            status === ManagedBroadcastDeliveryStatus.SENDING ||
+            status === ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        ),
+      ),
+    ).toBe(false);
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.FAILED,
+        pendingChatIds: [],
+        canRetry: false,
+        firstSendError: accessError,
+        nextSendAt: null,
+      }),
+    );
+  });
+
+  it('does not classify a downstream forbidden error as target access loss', async () => {
+    const row = createPublicationEnvelopeRow();
+    const downstreamError = new ForbiddenException('Вложение недоступно.');
+    const assertManagedEntityAdminAccess = jest.fn().mockResolvedValue(undefined);
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const deliveryUpdateMany = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedBroadcast: {
+          updateMany: broadcastUpdateMany,
+          findUnique: jest.fn().mockResolvedValue(row),
+        },
+        managedBroadcastDelivery: {
+          findMany: jest.fn().mockRejectedValue(downstreamError),
+          updateMany: deliveryUpdateMany,
+        },
+      },
+      assertManagedEntityAdminAccess,
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
+    jest
+      .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+      .mockResolvedValue(true);
+    jest
+      .spyOn(runtime as any, 'reconcileStaleManagedBroadcastDeliveries')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(runtime as any, 'deferManagedBroadcastOccurrenceWithFreshSendingDeliveries')
+      .mockResolvedValue(false);
+
+    const result = await (runtime as any).processManagedBroadcastOccurrence(
+      row.id,
+      'deadline',
+      new Date('2026-07-12T09:55:00.000Z'),
+      [ManagedBroadcastStatus.ACTIVE],
+    );
+
+    expect(assertManagedEntityAdminAccess).toHaveBeenCalledTimes(1);
+    expect(deliveryUpdateMany).not.toHaveBeenCalled();
+    expect(broadcastUpdateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: {
+          status: ManagedBroadcastStatus.FAILED,
+          lastError: downstreamError.message,
+          lockedAt: null,
+          lockToken: null,
+        },
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.FAILED,
+        firstSendError: downstreamError,
+        nextSendAt: row.nextSendAt,
+      }),
+    );
+  });
+
+  it('keeps a publication envelope retryable when target access cannot be checked temporarily', async () => {
+    const row = createPublicationEnvelopeRow();
+    const accessError = new ServiceUnavailableException(
+      'Не удалось проверить права администратора в MAX. Повторите попытку.',
+    );
+    const assertManagedEntityAdminAccess = jest.fn().mockRejectedValue(accessError);
+    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const deliveryUpdateMany = jest.fn();
+    const occurrenceUpdateMany = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedBroadcast: {
+          updateMany: broadcastUpdateMany,
+          findUnique: jest.fn().mockResolvedValue(row),
+        },
+        managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+        managedBroadcastOccurrence: { updateMany: occurrenceUpdateMany },
+      },
+      assertManagedEntityAdminAccess,
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
+    jest
+      .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+      .mockResolvedValue(true);
+    jest
+      .spyOn(runtime as any, 'reconcileStaleManagedBroadcastDeliveries')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(runtime as any, 'deferManagedBroadcastOccurrenceWithFreshSendingDeliveries')
+      .mockResolvedValue(false);
+
+    const result = await (runtime as any).processManagedBroadcastOccurrence(
+      row.id,
+      'deadline',
+      new Date('2026-07-12T09:55:00.000Z'),
+      [ManagedBroadcastStatus.ACTIVE],
+    );
+
+    expect(broadcastUpdateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: {
+          status: ManagedBroadcastStatus.FAILED,
+          lastError: accessError.message,
+          lockedAt: null,
+          lockToken: null,
+        },
+      }),
+    );
+    expect(deliveryUpdateMany).not.toHaveBeenCalled();
+    expect(occurrenceUpdateMany).not.toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.FAILED,
+        canRetry: true,
+        firstSendError: accessError,
+        nextSendAt: row.nextSendAt,
+      }),
+    );
+  });
+
   it('limits one automatic publication envelope pass to four deliveries', async () => {
     const nextSendAt = new Date('2026-07-12T10:00:00.000Z');
     const row = {
@@ -1761,6 +2043,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     };
     const runtime = new AdminManagedBroadcastRuntime({
       prisma,
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
       logger: { log: jest.fn(), warn: jest.fn() },
     } as never);
     jest
@@ -1914,6 +2197,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         },
       },
       maxRoutedPublicationService: { publish },
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
       logger: { log: jest.fn(), warn: jest.fn() },
     } as never);
     jest
@@ -2304,7 +2588,11 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         findMany: jest.fn().mockResolvedValue([ambiguousDelivery]),
       },
     };
-    const runtime = new AdminManagedBroadcastRuntime({ prisma } as never);
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma,
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+      logger: { log: jest.fn(), warn: jest.fn() },
+    } as never);
     jest
       .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
       .mockResolvedValue(true);

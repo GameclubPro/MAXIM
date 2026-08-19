@@ -3,6 +3,8 @@ import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   Prisma,
+  PublicationAudienceMode,
+  PublicationAudienceSelection,
   PublicationContentFormat,
   PublicationDeliveryVerificationSource,
   PublicationLifecycle,
@@ -10,7 +12,12 @@ import {
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { buildMaxActionNoExecutableRouteMessage } from '../max/max-action-dispatch-error';
 import { validateMaxMediaUploadPayload } from '../max/max-media-upload-validation';
 import {
@@ -59,6 +66,8 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
         link: null,
       },
     ]),
+    assertChatAdminAccess: jest.fn().mockResolvedValue(undefined),
+    assertChannelAdminAccess: jest.fn().mockResolvedValue(undefined),
   };
   const service = new PublicationService(
     prisma as never,
@@ -69,7 +78,7 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     {} as never,
     {} as never,
   );
-  return { contentService, presenter, service, prisma };
+  return { contentService, presenter, service, prisma, managedEntitiesService };
 }
 
 function createDeferred<T>() {
@@ -851,9 +860,9 @@ describe('PublicationService', () => {
     }
   });
 
-  it('rejects an update when the owner no longer administers a persisted target', async () => {
+  it('rejects an update when a cached target fails live admin verification', async () => {
     const transaction = jest.fn();
-    const { service } = createService({
+    const { service, managedEntitiesService } = createService({
       publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
       publication: {
         findFirst: jest.fn().mockResolvedValue({
@@ -869,10 +878,9 @@ describe('PublicationService', () => {
       },
       $transaction: transaction,
     });
-    (service as any).managedEntitiesService = {
-      listChats: jest.fn().mockResolvedValue([]),
-      listChannels: jest.fn().mockResolvedValue([]),
-    };
+    managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+      new ForbiddenException('Пользователь не является администратором чата.'),
+    );
 
     await expect(
       service.update(
@@ -884,13 +892,19 @@ describe('PublicationService', () => {
           title: 'Новый заголовок',
         },
       ),
-    ).rejects.toThrow('больше недоступны');
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(managedEntitiesService.listChats).toHaveBeenCalledTimes(1);
+    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'user-1' }),
+    );
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it('allows an explicit audience update to remove a target whose access was revoked', async () => {
+  it('rejects an audience replacement before canceling work for a revoked persisted target', async () => {
     const tx = createPublicationUpdateTransaction();
     tx.publicationOccurrence.findMany.mockResolvedValue([]);
+    const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
     const { service } = createService({
       publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
       publication: {
@@ -907,9 +921,17 @@ describe('PublicationService', () => {
           targets: [{ targetChatId: 'chat-revoked', entityType: ChatEntityType.CHAT, position: 0 }],
         }),
       },
-      $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: transaction,
     });
-    const listChats = jest.fn().mockResolvedValue([]);
+    const listChats = jest.fn().mockResolvedValue([
+      {
+        id: 'chat-revoked',
+        entityType: 'chat',
+        title: 'Старый чат',
+        avatarUrl: null,
+        link: null,
+      },
+    ]);
     const listChannels = jest.fn().mockResolvedValue([
       {
         id: 'channel-1',
@@ -919,8 +941,16 @@ describe('PublicationService', () => {
         link: null,
       },
     ]);
-    (service as any).managedEntitiesService = { listChats, listChannels };
-    jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-replace-revoked' } as never);
+    const assertChatAdminAccess = jest
+      .fn()
+      .mockRejectedValue(new ForbiddenException('Пользователь не является администратором чата.'));
+    const assertChannelAdminAccess = jest.fn().mockResolvedValue(undefined);
+    (service as any).managedEntitiesService = {
+      listChats,
+      listChannels,
+      assertChatAdminAccess,
+      assertChannelAdminAccess,
+    };
 
     await expect(
       service.update(
@@ -937,23 +967,52 @@ describe('PublicationService', () => {
           intent: 'draft',
         },
       ),
-    ).resolves.toEqual({ id: 'publication-replace-revoked' });
+    ).rejects.toBeInstanceOf(ForbiddenException);
 
     expect(listChats).toHaveBeenCalledTimes(1);
     expect(listChannels).toHaveBeenCalledTimes(1);
-    expect(tx.publicationTarget.deleteMany).toHaveBeenCalledWith({
-      where: { publicationId: 'publication-replace-revoked' },
+    expect(assertChatAdminAccess).toHaveBeenCalledWith(
+      'chat-revoked',
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+    expect(assertChannelAdminAccess).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+    expect(tx.publicationTarget.deleteMany).not.toHaveBeenCalled();
+    expect(tx.publicationTarget.createMany).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before content preparation and persistence on a transient live access error', async () => {
+    const transaction = jest.fn();
+    const { service, contentService, managedEntitiesService } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      $transaction: transaction,
     });
-    expect(tx.publicationTarget.createMany).toHaveBeenCalledWith({
-      data: [
+    managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+      new ServiceUnavailableException('Не удалось проверить права администратора в MAX.'),
+    );
+    const prepareContent = jest.spyOn(contentService, 'prepareContentRevision');
+
+    await expect(
+      service.create(
+        { userId: 'user-1', username: null, displayName: null },
         {
-          publicationId: 'publication-replace-revoked',
-          targetChatId: 'channel-1',
-          entityType: ChatEntityType.CHANNEL,
-          position: 0,
+          requestId: 'create-access-transient-001',
+          title: 'Черновик',
+          content: { text: 'Текст', textFormat: 'plain', buttons: [], media: [] },
+          audience: {
+            selection: 'SELECTED',
+            mode: 'SNAPSHOT',
+            targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+          },
+          schedule: null,
+          intent: 'draft',
         },
-      ],
-    });
+      ),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledTimes(1);
+    expect(prepareContent).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('keeps a finite recurrence revision and occurrence count on a semantic no-op edit', async () => {
@@ -1310,6 +1369,7 @@ describe('PublicationService', () => {
             actorUserId: 'user-1',
             version: 3,
             lifecycle: PublicationLifecycle.ACTIVE,
+            targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
           }),
         },
         $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
@@ -2385,11 +2445,10 @@ describe('PublicationService', () => {
   });
 
   it('fails closed when a background occurrence target is no longer administered', async () => {
-    const { service } = createService();
-    (service as any).managedEntitiesService = {
-      listChats: jest.fn().mockResolvedValue([]),
-      listChannels: jest.fn().mockResolvedValue([]),
-    };
+    const { service, managedEntitiesService } = createService();
+    managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+      new ForbiddenException('Пользователь не является администратором чата.'),
+    );
 
     await expect(
       (service as any).resolveOccurrenceTargets({
@@ -2398,7 +2457,121 @@ describe('PublicationService', () => {
         audienceSelection: 'SELECTED',
         targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
       }),
-    ).rejects.toThrow('больше недоступны');
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('defers background dispatch without terminal mutations on a transient access outage', async () => {
+    const scheduleUpdate = jest.fn();
+    const occurrenceUpdate = jest.fn();
+    const publicationUpdate = jest.fn();
+    const transaction = jest.fn();
+    const { service, managedEntitiesService } = createService({
+      publicationOccurrence: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'occurrence-access-transient',
+            publicationId: 'publication-access-transient',
+            scheduleId: 'schedule-access-transient',
+            scheduleRevision: 3,
+            contentRevisionId: 'content-1',
+            scheduledAt: new Date('2026-07-10T09:00:00.000Z'),
+            schedule: {
+              revision: 3,
+              rule: { mode: 'now', timezone: 'UTC' },
+            },
+            publication: {
+              actorUserId: 'user-1',
+              audienceMode: PublicationAudienceMode.SNAPSHOT,
+              audienceSelection: PublicationAudienceSelection.SELECTED,
+              targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+            },
+          },
+        ]),
+        updateMany: occurrenceUpdate,
+      },
+      publicationSchedule: { updateMany: scheduleUpdate },
+      publication: { updateMany: publicationUpdate },
+      $transaction: transaction,
+    });
+    managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+      new ServiceUnavailableException('Не удалось проверить права администратора в MAX.'),
+    );
+    const createExecution = jest.spyOn(service as any, 'createOccurrenceExecution');
+    (service as any).logger.warn = jest.fn();
+
+    await (service as any).dispatchScheduledOccurrences(1);
+
+    expect(createExecution).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+    expect(scheduleUpdate).not.toHaveBeenCalled();
+    expect(occurrenceUpdate).not.toHaveBeenCalled();
+    expect(publicationUpdate).not.toHaveBeenCalled();
+  });
+
+  it('defers recurrence materialization without terminal mutations on a transient access outage', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:00.000Z'));
+    try {
+      const scheduleUpdate = jest.fn();
+      const publicationUpdate = jest.fn();
+      const occurrenceCreate = jest.fn();
+      const transaction = jest.fn();
+      const { service, managedEntitiesService } = createService({
+        publicationSchedule: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'schedule-access-transient',
+              publicationId: 'publication-access-transient',
+              revision: 4,
+              rule: {
+                mode: 'recurrence',
+                timezone: 'UTC',
+                frequency: 'daily',
+                interval: 1,
+                weekdays: [],
+                times: ['10:00'],
+                startsAt: '2026-07-10T09:00:00.000Z',
+                endsAt: null,
+                maxOccurrences: 1,
+                replaceConflicts: false,
+              },
+              publication: {
+                id: 'publication-access-transient',
+                actorUserId: 'user-1',
+                audienceMode: PublicationAudienceMode.SNAPSHOT,
+                audienceSelection: PublicationAudienceSelection.SELECTED,
+                canonicalContentRevisionId: 'content-1',
+                targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+              },
+            },
+          ]),
+          updateMany: scheduleUpdate,
+        },
+        publicationOccurrence: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          count: jest.fn().mockResolvedValue(0),
+          createMany: occurrenceCreate,
+        },
+        publication: { updateMany: publicationUpdate },
+        $transaction: transaction,
+      });
+      managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+        new ServiceUnavailableException('Не удалось проверить права администратора в MAX.'),
+      );
+      (service as any).logger.warn = jest.fn();
+
+      await (service as any).materializeRecurringSchedules(1);
+
+      expect(transaction).not.toHaveBeenCalled();
+      expect(scheduleUpdate).not.toHaveBeenCalled();
+      expect(publicationUpdate).not.toHaveBeenCalled();
+      expect(occurrenceCreate).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('does not materialize recurrence slots after a stale schedule claim', async () => {
@@ -3183,9 +3356,9 @@ describe('PublicationService', () => {
     ).rejects.toThrow();
   });
 
-  it('rejects resume when access to a persisted target was revoked', async () => {
+  it('rejects resume before mutation when live access to a persisted target is revoked', async () => {
     const transaction = jest.fn();
-    const { service } = createService({
+    const { service, managedEntitiesService } = createService({
       publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
       publication: {
         findFirst: jest.fn().mockResolvedValue({
@@ -3197,10 +3370,9 @@ describe('PublicationService', () => {
       },
       $transaction: transaction,
     });
-    (service as any).managedEntitiesService = {
-      listChats: jest.fn().mockResolvedValue([]),
-      listChannels: jest.fn().mockResolvedValue([]),
-    };
+    managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+      new ForbiddenException('Пользователь не является администратором чата.'),
+    );
 
     await expect(
       service.resume(
@@ -3208,9 +3380,45 @@ describe('PublicationService', () => {
         { userId: 'user-1', username: null, displayName: null },
         { requestId: 'resume-revoked-001', expectedRevision: 1 },
       ),
-    ).rejects.toThrow('больше недоступны');
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledTimes(1);
     expect(transaction).not.toHaveBeenCalled();
   });
+
+  it.each(['pause', 'cancel'] as const)(
+    'allows %s to reach the stop transaction without live target access',
+    async (action) => {
+      const transactionStarted = new Error('stop transaction started');
+      const transaction = jest.fn().mockRejectedValue(transactionStarted);
+      const { service, managedEntitiesService } = createService({
+        publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+        publication: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'publication-1',
+            version: 1,
+            lifecycle: PublicationLifecycle.ACTIVE,
+            targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+          }),
+        },
+        $transaction: transaction,
+      });
+      managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+        new ForbiddenException('Пользователь не является администратором чата.'),
+      );
+
+      await expect(
+        service[action](
+          'publication-1',
+          { userId: 'user-1', username: null, displayName: null },
+          { requestId: `${action}-revoked-001`, expectedRevision: 1 },
+        ),
+      ).rejects.toBe(transactionStarted);
+
+      expect(managedEntitiesService.assertChatAdminAccess).not.toHaveBeenCalled();
+      expect(transaction).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('removes only unsent canceled envelopes from future scheduled occurrences before resume', async () => {
     const tx = {
@@ -3288,6 +3496,7 @@ describe('PublicationService', () => {
           id: 'publication-1',
           version: 2,
           lifecycle: PublicationLifecycle.ERROR,
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
         }),
       },
       managedBroadcastDelivery: {
@@ -3343,6 +3552,43 @@ describe('PublicationService', () => {
     expect(rollupLifecycle.mock.invocationCallOrder[0]).toBeLessThan(
       get.mock.invocationCallOrder[0],
     );
+  });
+
+  it('rejects ambiguous-delivery resolution before reading or mutating delivery state', async () => {
+    const transaction = jest.fn();
+    const findDelivery = jest.fn();
+    const { service, managedEntitiesService } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-1',
+          version: 2,
+          lifecycle: PublicationLifecycle.ERROR,
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+        }),
+      },
+      managedBroadcastDelivery: { findFirst: findDelivery },
+      $transaction: transaction,
+    });
+    managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+      new ForbiddenException('Пользователь не является администратором чата.'),
+    );
+
+    await expect(
+      service.resolveAmbiguousDelivery(
+        'publication-1',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'resolve-revoked-001',
+          deliveryId: 'delivery-1',
+          resolution: 'mark_failed',
+        },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(findDelivery).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('reactivates a broadcast when ambiguous resolution leaves pending fanout targets', async () => {
@@ -4320,5 +4566,35 @@ describe('PublicationService', () => {
         { selection: 'ALL_CHATS', mode: 'DYNAMIC', targets: [] },
       ),
     ).rejects.toThrow('не больше 500');
+  });
+
+  it('bounds live audience access verification concurrency', async () => {
+    const { service, managedEntitiesService } = createService();
+    managedEntitiesService.listChats.mockResolvedValue(
+      Array.from({ length: 8 }, (_, index) => ({
+        id: `chat-${index}`,
+        entityType: 'chat',
+        title: `Чат ${index}`,
+        avatarUrl: null,
+        link: null,
+      })),
+    );
+    managedEntitiesService.listChannels.mockResolvedValue([]);
+    let activeChecks = 0;
+    let maxActiveChecks = 0;
+    managedEntitiesService.assertChatAdminAccess.mockImplementation(async () => {
+      activeChecks += 1;
+      maxActiveChecks = Math.max(maxActiveChecks, activeChecks);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      activeChecks -= 1;
+    });
+
+    await (service as any).resolveAudienceTargets(
+      { userId: 'user-1', username: null, displayName: null },
+      { selection: 'ALL_CHATS', mode: 'DYNAMIC', targets: [] },
+    );
+
+    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledTimes(8);
+    expect(maxActiveChecks).toBe(4);
   });
 });

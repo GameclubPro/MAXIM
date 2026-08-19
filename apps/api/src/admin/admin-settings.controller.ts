@@ -7,7 +7,6 @@ import {
   Patch,
   Post,
   Put,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
@@ -28,11 +27,8 @@ export class AdminSettingsController {
   getChatSettingsScreen(
     @Param('chatId') chatId: string,
     @CurrentUser() user: AuthUser,
-    @Query('prefetch') prefetch?: string,
   ) {
-    return this.settingsService.getChatSettingsScreen(chatId, user, {
-      liveAdminCheck: prefetch !== '1',
-    });
+    return this.settingsService.getChatSettingsScreen(chatId, user);
   }
 
   @Post('chats/:chatId/required-subscription/channels/resolve')
@@ -86,11 +82,8 @@ export class AdminSettingsController {
   getChannelSettingsScreen(
     @Param('chatId') chatId: string,
     @CurrentUser() user: AuthUser,
-    @Query('prefetch') prefetch?: string,
   ) {
-    return this.settingsService.getChannelSettingsScreen(chatId, user, {
-      liveAdminCheck: prefetch !== '1',
-    });
+    return this.settingsService.getChannelSettingsScreen(chatId, user);
   }
 
   @Put('channels/:chatId/settings')

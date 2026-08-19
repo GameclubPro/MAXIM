@@ -391,12 +391,19 @@ function buildChannelDialogRoute(launch: ChannelDialogLaunchPayload): string {
   return `/${entitySegment}/${encodeURIComponent(launch.c)}/dialog/${launch.m}?token=${encodeURIComponent(launch.t)}`;
 }
 
-export function resolveLaunchRoute(initData: string): string | null {
+type ResolveLaunchRouteOptions = {
+  preferLocationDialog?: boolean;
+};
+
+export function resolveLaunchRoute(
+  initData: string,
+  options: ResolveLaunchRouteOptions = {},
+): string | null {
   const startParamFromLocation = readStartParamFromLocation();
   // MAX can reuse a WebView whose initData still contains the previous launcher. A dialog URL
   // carries its own API-verified token, so the button that produced the current URL wins.
   const locationDialogLaunch = parseChannelDialogStartParam(startParamFromLocation);
-  if (locationDialogLaunch) {
+  if (options.preferLocationDialog !== false && locationDialogLaunch) {
     return buildChannelDialogRoute(locationDialogLaunch);
   }
 
@@ -419,6 +426,32 @@ export function resolveLaunchRoute(initData: string): string | null {
   }
 
   return null;
+}
+
+export function createLaunchRouteResolver(): (initData: string) => string | null {
+  let hasResolved = false;
+  let previousLocationStartParam = '';
+  let previousLauncherStartParam = '';
+  let preferLocationDialog = true;
+
+  return (initData: string) => {
+    const locationStartParam = readStartParamFromLocation();
+    const launcherStartParam = readStartParamFromInitData(initData) || readStartParamFromBridge();
+
+    if (!hasResolved || locationStartParam !== previousLocationStartParam) {
+      preferLocationDialog = true;
+    } else if (launcherStartParam !== previousLauncherStartParam) {
+      // Once MAX supplies a newer launcher for the same document URL, do not let the URL fallback
+      // pin the app to the dialog from the previous launch.
+      preferLocationDialog = false;
+    }
+
+    hasResolved = true;
+    previousLocationStartParam = locationStartParam;
+    previousLauncherStartParam = launcherStartParam;
+
+    return resolveLaunchRoute(initData, { preferLocationDialog });
+  };
 }
 
 export const resolveLaunchDialogRoute = resolveLaunchRoute;

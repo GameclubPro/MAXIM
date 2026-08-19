@@ -477,10 +477,8 @@ describe('AdminSettingsService chat rules', () => {
       recovery: 'retry',
     },
   ])('returns a machine-readable settings error for $description', async (testCase) => {
-    const { accessObservability, managedEntitiesService, service } = createService();
-    managedEntitiesService.assertManagedEntityDiagnosticsAccess.mockRejectedValueOnce(
-      testCase.error,
-    );
+    const { accessObservability, legacyAdminService, service } = createService();
+    legacyAdminService.assertManagedEntityAdminAccess.mockRejectedValueOnce(testCase.error);
 
     const rejected = await service
       .getChatSettingsScreen('chat-1', user as never)
@@ -503,10 +501,10 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
-  it('classifies cached channel settings access failures', async () => {
+  it('keeps channel settings screens strict when prefetch asks for cached access', async () => {
     const { accessObservability, legacyAdminService, service } = createService();
     const sourceError = new ForbiddenException('Пользователь не является администратором чата.');
-    legacyAdminService.assertManagedEntityReadAccess.mockRejectedValueOnce(sourceError);
+    legacyAdminService.assertManagedEntityAdminAccess.mockRejectedValueOnce(sourceError);
 
     const rejected = await service
       .getChannelSettingsScreen('channel-1', user as never, { liveAdminCheck: false })
@@ -523,9 +521,9 @@ describe('AdminSettingsService chat rules', () => {
   });
 
   it('preserves unknown access errors without recording a rejection metric', async () => {
-    const { accessObservability, managedEntitiesService, service } = createService();
+    const { accessObservability, legacyAdminService, service } = createService();
     const sourceError = new InternalServerErrorException('Unexpected access failure');
-    managedEntitiesService.assertManagedEntityDiagnosticsAccess.mockRejectedValueOnce(sourceError);
+    legacyAdminService.assertManagedEntityAdminAccess.mockRejectedValueOnce(sourceError);
 
     await expect(service.getChatSettingsScreen('chat-1', user as never)).rejects.toBe(sourceError);
     expect(accessObservability.recordRejection).not.toHaveBeenCalled();
@@ -623,14 +621,10 @@ describe('AdminSettingsService chat rules', () => {
       characterName: 'Майор Максимова',
     });
     expect(result.duplicatePhotoModerationMode).toBe('OBSERVE');
-    expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'chat-1',
       'admin-1',
       'chat',
-      {
-        forceRemote: false,
-        timeoutMs: undefined,
-      },
     );
     expect(legacyAdminService.getChatSettingsScreen).not.toHaveBeenCalled();
     expect(managedEntitiesService.getChatHeaderWithBotSpeechPreviewProfile).toHaveBeenCalledWith(
@@ -819,11 +813,10 @@ describe('AdminSettingsService chat rules', () => {
     const result = await service.getSettings('chat-1', user as never);
 
     expect(result.antiSpamEnabled).toBe(false);
-    expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'chat-1',
       'admin-1',
       'chat',
-      {},
     );
     expect(legacyAdminService.resolveChatSettingsReadBotAssignmentData).toHaveBeenCalledWith(
       'chat-1',
@@ -1157,14 +1150,10 @@ describe('AdminSettingsService chat rules', () => {
     });
     expect(result.header).toEqual(channelHeader);
     expect(result.managedBroadcasts).toHaveLength(1);
-    expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'channel-1',
       'admin-1',
       'channel',
-      {
-        forceRemote: false,
-        timeoutMs: undefined,
-      },
     );
     expect(legacyAdminService.getChannelSettingsScreen).not.toHaveBeenCalled();
     expect(legacyAdminService.getChannelSettings).not.toHaveBeenCalled();
@@ -1205,11 +1194,6 @@ describe('AdminSettingsService chat rules', () => {
       url: 'https://max.ru/contact',
     });
 
-    expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
-      'channel-1',
-      'admin-1',
-      'channel',
-    );
     expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'channel-1',
       'admin-1',
@@ -1871,11 +1855,10 @@ describe('AdminSettingsService chat rules', () => {
       publishedUrl: 'https://max.ru/chats/chat-1/message/1',
       publishedAt: '2026-03-09T09:30:00.000Z',
     });
-    expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'chat-1',
       'admin-1',
       'chat',
-      {},
     );
     expect(legacyAdminService.getRules).not.toHaveBeenCalled();
     expect(prisma.chatRules.upsert).toHaveBeenCalledWith({

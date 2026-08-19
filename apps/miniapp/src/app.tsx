@@ -31,7 +31,7 @@ import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { migrateHashRouterLegacyPathFromWindow } from './lib/hash-router-legacy-path';
 import { getInitData, waitForInitData } from './lib/init-data';
-import { resolveLaunchRoute } from './lib/launch-route';
+import { createLaunchRouteResolver } from './lib/launch-route';
 import {
   installMaxNativeInteractionFeedback,
   readyMaxMiniApp,
@@ -267,16 +267,18 @@ function applyInitialLaunchRoute(targetRoute: string): void {
 function LaunchRouteSync({
   launchInitData,
   appliedRouteRef,
+  launchRouteResolver,
 }: {
   launchInitData: string;
   appliedRouteRef: RefObject<string | null>;
+  launchRouteResolver: (initData: string) => string | null;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
     let cancelled = false;
-    const targetRoute = resolveLaunchRoute(launchInitData);
+    const targetRoute = launchRouteResolver(launchInitData);
     traceMiniappLaunchRoute(targetRoute, 'router-sync');
     if (!targetRoute || appliedRouteRef.current === targetRoute) {
       return undefined;
@@ -368,7 +370,15 @@ function LaunchRouteSync({
     return () => {
       cancelled = true;
     };
-  }, [launchInitData, location.key, location.pathname, location.search, location.state, navigate]);
+  }, [
+    launchInitData,
+    launchRouteResolver,
+    location.key,
+    location.pathname,
+    location.search,
+    location.state,
+    navigate,
+  ]);
 
   return null;
 }
@@ -392,19 +402,36 @@ function RouteLoadingFallback() {
   );
 }
 
+function KeyedChannelSuggestDialogPage({
+  api,
+}: {
+  api: ReturnType<typeof createApiTransport>;
+}) {
+  const location = useLocation();
+  return (
+    <LazyChannelSuggestDialogPage key={location.pathname + location.search} api={api} />
+  );
+}
+
 function AppRouteShell({
   launchInitData,
   launchRouteAppliedRef,
+  launchRouteResolver,
   managedEntityWorkspace = false,
 }: {
   launchInitData: string | null;
   launchRouteAppliedRef: RefObject<string | null>;
+  launchRouteResolver: (initData: string) => string | null;
   managedEntityWorkspace?: boolean;
 }) {
   const content = (
     <>
       {launchInitData ? (
-        <LaunchRouteSync launchInitData={launchInitData} appliedRouteRef={launchRouteAppliedRef} />
+        <LaunchRouteSync
+          launchInitData={launchInitData}
+          appliedRouteRef={launchRouteAppliedRef}
+          launchRouteResolver={launchRouteResolver}
+        />
       ) : null}
       <Shell />
     </>
@@ -420,9 +447,11 @@ function AppRouteShell({
 function AppRoutes({
   apiClient,
   launchInitData,
+  launchRouteResolver,
 }: {
   apiClient: ReturnType<typeof createApiTransport>;
   launchInitData: string | null;
+  launchRouteResolver: (initData: string) => string | null;
 }) {
   const launchRouteAppliedRef = useRef<string | null>(null);
 
@@ -438,6 +467,7 @@ function AppRoutes({
             <AppRouteShell
               launchInitData={launchInitData}
               launchRouteAppliedRef={launchRouteAppliedRef}
+              launchRouteResolver={launchRouteResolver}
             />
           }
         >
@@ -454,7 +484,7 @@ function AppRoutes({
           />
           <Route
             path="/channel/:chatId/dialog/suggest"
-            element={<LazyChannelSuggestDialogPage api={apiClient} />}
+            element={<KeyedChannelSuggestDialogPage api={apiClient} />}
           />
           <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
@@ -466,6 +496,7 @@ function AppRoutes({
             <AppRouteShell
               launchInitData={launchInitData}
               launchRouteAppliedRef={launchRouteAppliedRef}
+              launchRouteResolver={launchRouteResolver}
               managedEntityWorkspace
             />
           }
@@ -499,6 +530,7 @@ function PublicLegalRoutes() {
 
 export function App() {
   const [initData, setInitData] = useState(() => getInitData());
+  const launchRouteResolver = useMemo(() => createLaunchRouteResolver(), []);
   const preview = getPreviewBootstrap(initData);
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
@@ -699,7 +731,7 @@ export function App() {
 
   if (apiClient && !authenticatedRouterPreparedRef.current) {
     if (!initialLaunchRoutePreparedRef.current && !preview.enabled && initData) {
-      const initialLaunchRoute = resolveLaunchRoute(initData);
+      const initialLaunchRoute = launchRouteResolver(initData);
       traceMiniappLaunchRoute(initialLaunchRoute, 'initial');
       if (initialLaunchRoute) {
         applyInitialLaunchRoute(initialLaunchRoute);
@@ -766,10 +798,18 @@ export function App() {
         <AppRouter basename={ROUTER_BASENAME}>
           {preview.enabled && PreviewScaffold ? (
             <PreviewScaffold initialDevice={preview.device}>
-              <AppRoutes apiClient={apiClient} launchInitData={null} />
+              <AppRoutes
+                apiClient={apiClient}
+                launchInitData={null}
+                launchRouteResolver={launchRouteResolver}
+              />
             </PreviewScaffold>
           ) : (
-            <AppRoutes apiClient={apiClient} launchInitData={initData} />
+            <AppRoutes
+              apiClient={apiClient}
+              launchInitData={initData}
+              launchRouteResolver={launchRouteResolver}
+            />
           )}
         </AppRouter>
       </ToastProvider>

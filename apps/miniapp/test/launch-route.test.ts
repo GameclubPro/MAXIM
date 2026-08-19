@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { migrateHashRouterLegacyPathFromWindow } from '../src/lib/hash-router-legacy-path';
-import { resolveLaunchRoute } from '../src/lib/launch-route';
+import { createLaunchRouteResolver, resolveLaunchRoute } from '../src/lib/launch-route';
 
 type MutableWindow = Window &
   typeof globalThis & {
@@ -160,6 +160,84 @@ test('prefers a fresh URL public dialog over a stale dialog launcher in reused i
       `query_id=test&start_param=${encodeURIComponent(staleDialogLauncher)}&hash=ok`,
     ),
     '/chat/public-chat-b/dialog/comments?token=fresh-public-dialog-token-123456',
+  );
+});
+
+test('lets a late signed launcher replace the initial URL dialog without pinning later URLs', () => {
+  const firstUrlDialogLauncher = encodeDialogStartParam({
+    kind: 'chat-dialog',
+    chatId: 'url-public-chat-a',
+    token: 'url-public-dialog-token-a-123456',
+  });
+  const staleSignedLauncher = encodeRouteStartParam('/chat/stale-admin-chat/settings');
+  const freshSignedLauncher = encodeDialogStartParam({
+    kind: 'chat-dialog',
+    chatId: 'signed-public-chat-b',
+    token: 'signed-public-dialog-token-b-123456',
+  });
+  const nextUrlDialogLauncher = encodeDialogStartParam({
+    kind: 'channel-dialog',
+    chatId: 'url-public-channel-c',
+    token: 'url-public-dialog-token-c-123456',
+  });
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(firstUrlDialogLauncher)}`,
+  );
+  const resolver = createLaunchRouteResolver();
+
+  assert.equal(
+    resolver(`query_id=test&start_param=${encodeURIComponent(staleSignedLauncher)}&hash=stale`),
+    '/chat/url-public-chat-a/dialog/comments?token=url-public-dialog-token-a-123456',
+  );
+  assert.equal(
+    resolver(`query_id=test&start_param=${encodeURIComponent(freshSignedLauncher)}&hash=fresh`),
+    '/chat/signed-public-chat-b/dialog/comments?token=signed-public-dialog-token-b-123456',
+  );
+
+  window.location.href = `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(nextUrlDialogLauncher)}`;
+  assert.equal(
+    resolver(`query_id=test&start_param=${encodeURIComponent(freshSignedLauncher)}&hash=fresh`),
+    '/channel/url-public-channel-c/dialog/comments?token=url-public-dialog-token-c-123456',
+  );
+});
+
+test('lets a late bridge launcher replace the initial URL dialog', () => {
+  const urlDialogLauncher = encodeDialogStartParam({
+    kind: 'chat-dialog',
+    chatId: 'url-public-chat',
+    token: 'url-public-dialog-token-123456',
+  });
+  const staleBridgeLauncher = encodeRouteStartParam('/chat/stale-bridge-chat/settings');
+  const freshBridgeLauncher = encodeDialogStartParam({
+    kind: 'channel-dialog',
+    chatId: 'bridge-public-channel',
+    token: 'bridge-public-dialog-token-123456',
+  });
+  assignWindow(
+    `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(urlDialogLauncher)}`,
+    {
+      MAX: {
+        WebApp: {
+          initDataUnsafe: {
+            start_param: staleBridgeLauncher,
+          },
+        },
+      },
+    },
+  );
+  const resolver = createLaunchRouteResolver();
+
+  assert.equal(
+    resolver('query_id=test&hash=ok'),
+    '/chat/url-public-chat/dialog/comments?token=url-public-dialog-token-123456',
+  );
+
+  const bridge = window.MAX?.WebApp?.initDataUnsafe;
+  assert.ok(bridge);
+  bridge.start_param = freshBridgeLauncher;
+  assert.equal(
+    resolver('query_id=test&hash=ok'),
+    '/channel/bridge-public-channel/dialog/comments?token=bridge-public-dialog-token-123456',
   );
 });
 

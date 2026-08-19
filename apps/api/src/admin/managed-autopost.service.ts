@@ -48,7 +48,7 @@ import {
   BROADCAST_MAX_DELAY_MS,
   mapManagedEntityTypeToChatEntityType,
 } from './admin.service.support';
-import { isPrismaKnownError } from './admin-legacy-utils';
+import { isPrismaKnownError, mapWithConcurrencyLimit } from './admin-legacy-utils';
 
 const AUTOSCHEDULE_HORIZON_DAYS = 14;
 const AUTOSCHEDULE_MIN_DELAY_MS = 30_000;
@@ -56,6 +56,7 @@ const AUTOSCHEDULE_LOCK_STALE_MS = 5 * 60_000;
 const AUTOSCHEDULE_RETRY_MS = 5 * 60_000;
 const AUTOSCHEDULE_MATERIALIZATION_STALE_MS = 10 * 60_000;
 const AUTOSCHEDULE_BACKGROUND_POLL_MS = 60_000;
+const HUB_SOURCE_READ_ACCESS_CHECK_CONCURRENCY = 4;
 const MANAGED_BROADCAST_TARGETS_UNAVAILABLE_MESSAGE =
   'Некоторые выбранные чаты больше недоступны. Откройте список заново.';
 const AUTOSCHEDULE_MIN_RULE_SLOT_DELAY_MS =
@@ -81,6 +82,11 @@ type HubSourceBundle = {
   chatPreviews: ManagedBroadcastTargetPreview[];
   sourcePreviewsByKey: Map<string, ManagedBroadcastTargetPreview>;
   sourceIdsByEntityType: Record<ManagedEntityType, string[]>;
+};
+
+type HubSourceCandidate = {
+  source: ChatSummary;
+  entityType: ManagedEntityType;
 };
 
 @Injectable()
@@ -199,7 +205,7 @@ export class ManagedAutopostService {
       return [];
     }
 
-    const sources = await this.loadHubSourceBundle(user);
+    const sources = await this.loadHubSourceBundle(user, { validateReadAccess: true });
     const requestedEntityTypes: ManagedEntityType[] =
       request.entityType === 'chat'
         ? ['chat']
@@ -324,17 +330,47 @@ export class ManagedAutopostService {
     return rowsWithDeliveryRollups.map((row) => this.mapRuleSummary(row, entityType));
   }
 
-  private async loadHubSourceBundle(user: AuthUser): Promise<HubSourceBundle> {
+  private async loadHubSourceBundle(
+    user: AuthUser,
+    options: { validateReadAccess?: boolean } = {},
+  ): Promise<HubSourceBundle> {
     const [chatSources, channelSources] = await Promise.all([
       this.managedEntitiesService.listChats(user, { fresh: false }),
       this.managedEntitiesService.listChannels(user, { fresh: false }),
     ]);
-    const chatPreviews = chatSources
-      .filter((source) => source.entityType === 'chat')
-      .map((source) => this.toTargetPreview(source, 'chat'));
-    const channelPreviews = channelSources
-      .filter((source) => source.entityType === 'channel')
-      .map((source) => this.toTargetPreview(source, 'channel'));
+    const candidates: HubSourceCandidate[] = [
+      ...chatSources
+        .filter((source) => source.entityType === 'chat')
+        .map((source) => ({ source, entityType: 'chat' as const })),
+      ...channelSources
+        .filter((source) => source.entityType === 'channel')
+        .map((source) => ({ source, entityType: 'channel' as const })),
+    ];
+    const accessibleCandidates = options.validateReadAccess
+      ? (
+          await mapWithConcurrencyLimit(
+            candidates,
+            HUB_SOURCE_READ_ACCESS_CHECK_CONCURRENCY,
+            async (candidate): Promise<HubSourceCandidate | null> => {
+              try {
+                await this.assertHubReadAccess(candidate.source.id, candidate.entityType, user);
+                return candidate;
+              } catch (error) {
+                if (error instanceof ForbiddenException) {
+                  return null;
+                }
+                throw error;
+              }
+            },
+          )
+        ).filter((candidate): candidate is HubSourceCandidate => candidate !== null)
+      : candidates;
+    const chatPreviews = accessibleCandidates
+      .filter((candidate) => candidate.entityType === 'chat')
+      .map((candidate) => this.toTargetPreview(candidate.source, 'chat'));
+    const channelPreviews = accessibleCandidates
+      .filter((candidate) => candidate.entityType === 'channel')
+      .map((candidate) => this.toTargetPreview(candidate.source, 'channel'));
     const sourcePreviewsByKey = new Map<string, ManagedBroadcastTargetPreview>();
 
     for (const preview of [...chatPreviews, ...channelPreviews]) {

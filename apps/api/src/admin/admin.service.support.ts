@@ -134,6 +134,7 @@ export type AssertChatAdminOptions = {
   trafficClass?: 'critical' | 'interactive' | 'background';
   timeoutMs?: number;
   allowPersistedFallback?: boolean;
+  bypassPositiveCache?: boolean;
 };
 
 export type AdminReadBypassOptions = {

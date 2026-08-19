@@ -1256,17 +1256,33 @@ export class ManagedEntitiesService {
         },
       ],
     };
-    const grantedEdge = await this.prisma.managedEntityAccessEdge.findFirst({
-      where: {
-        ...freshWhere,
-        state: ManagedEntityAccessState.GRANTED,
-      },
-      orderBy: { checkedAt: 'desc' },
-      select: {
-        checkedAt: true,
-      },
-    });
-    if (grantedEdge) {
+    const [grantedEdge, userDeniedEdge] = await Promise.all([
+      this.prisma.managedEntityAccessEdge.findFirst({
+        where: {
+          ...freshWhere,
+          state: ManagedEntityAccessState.GRANTED,
+        },
+        orderBy: { checkedAt: 'desc' },
+        select: {
+          checkedAt: true,
+        },
+      }),
+      this.prisma.managedEntityAccessEdge.findFirst({
+        where: {
+          ...freshWhere,
+          state: ManagedEntityAccessState.USER_DENIED,
+        },
+        orderBy: { checkedAt: 'desc' },
+        select: {
+          checkedAt: true,
+          deniedReason: true,
+        },
+      }),
+    ]);
+    if (
+      grantedEdge &&
+      (!userDeniedEdge || grantedEdge.checkedAt.getTime() > userDeniedEdge.checkedAt.getTime())
+    ) {
       return {
         state: 'granted',
         reason: null,
@@ -1275,8 +1291,20 @@ export class ManagedEntitiesService {
       };
     }
 
+    if (userDeniedEdge) {
+      return {
+        state: 'denied',
+        reason: 'user_not_admin',
+        checkedAt: userDeniedEdge.checkedAt.toISOString(),
+        canEdit: false,
+      };
+    }
+
     const edge = await this.prisma.managedEntityAccessEdge.findFirst({
-      where: freshWhere,
+      where: {
+        ...freshWhere,
+        state: ManagedEntityAccessState.BOT_DENIED,
+      },
       orderBy: { checkedAt: 'desc' },
       select: {
         state: true,
@@ -1288,11 +1316,7 @@ export class ManagedEntitiesService {
       return {
         state: 'denied',
         reason:
-          edge.state === ManagedEntityAccessState.BOT_DENIED
-            ? 'bot_not_admin'
-            : edge.deniedReason === 'bot_denied'
-              ? 'bot_access_lost'
-              : 'user_not_admin',
+          edge.deniedReason === 'bot_denied' ? 'bot_access_lost' : 'bot_not_admin',
         checkedAt: edge.checkedAt.toISOString(),
         canEdit: false,
       };

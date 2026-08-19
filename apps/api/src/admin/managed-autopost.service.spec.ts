@@ -284,6 +284,81 @@ describe('ManagedAutopostService', () => {
     );
   });
 
+  it('omits cached hub sources whose live read access is forbidden', async () => {
+    const allowedRule = persistedRule({ id: 'rule-allowed' });
+    const assertChatReadAccess = jest.fn().mockImplementation(async (chatId: string) => {
+      if (chatId === 'chat-stale') {
+        throw new ForbiddenException('Пользователь больше не является администратором чата.');
+      }
+    });
+    const { service, prisma } = createService({
+      managedEntitiesService: {
+        assertChatReadAccess,
+        listChats: jest.fn().mockResolvedValue([
+          {
+            id: 'chat-1',
+            title: 'Доступный чат',
+            createdAt: new Date().toISOString(),
+            entityType: 'chat',
+            link: null,
+            avatarUrl: null,
+          },
+          {
+            id: 'chat-stale',
+            title: 'Бывший чат',
+            createdAt: new Date().toISOString(),
+            entityType: 'chat',
+            link: null,
+            avatarUrl: null,
+          },
+        ]),
+        listChannels: jest.fn().mockResolvedValue([]),
+      },
+    });
+    prisma.managedAutopostRule.findMany.mockResolvedValue([allowedRule]);
+
+    await expect(service.listAutopostRules(user, { entityType: 'chat' })).resolves.toEqual([
+      expect.objectContaining({
+        id: 'rule-allowed',
+        sourcePreview: expect.objectContaining({ id: 'chat-1' }),
+      }),
+    ]);
+
+    expect(assertChatReadAccess).toHaveBeenCalledWith('chat-1', user);
+    expect(assertChatReadAccess).toHaveBeenCalledWith('chat-stale', user);
+    expect(prisma.managedAutopostRule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            {
+              entityType: ChatEntityType.CHAT,
+              sourceChatId: { in: ['chat-1'] },
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it('fails a hub read closed before querying rules when live access is unavailable', async () => {
+    const transientError = new ServiceUnavailableException(
+      'Не удалось проверить права администратора в MAX.',
+    );
+    const { service, prisma } = createService({
+      managedEntitiesService: {
+        assertChatReadAccess: jest.fn().mockRejectedValue(transientError),
+        listChannels: jest.fn().mockResolvedValue([]),
+      },
+    });
+
+    await expect(service.listAutopostRules(user, { entityType: 'chat' })).rejects.toBe(
+      transientError,
+    );
+
+    expect(prisma.managedAutopostRule.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedAutopostMaterialization.findMany).not.toHaveBeenCalled();
+  });
+
   it('rolls a partial child broadcast up into the rule summary', async () => {
     const rule = persistedRule();
     const { service, prisma } = createService();

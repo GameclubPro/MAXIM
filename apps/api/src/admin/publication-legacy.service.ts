@@ -11,7 +11,7 @@ import {
   type LegacyPublicationSummary,
   type ListLegacyPublicationsResponse,
 } from '@maxim/contracts/publication';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   ChatEntityType,
@@ -22,7 +22,10 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import { ManagedEntitiesService } from './managed-entities.service';
+
+const LEGACY_SOURCE_READ_ACCESS_CHECK_CONCURRENCY = 4;
 
 type LegacySourceClause = {
   entityType: ChatEntityType;
@@ -89,6 +92,11 @@ type LegacyBroadcastRow = {
 type SourceBundle = {
   byKey: Map<string, LegacyPublicationSource>;
   chatCount: number;
+};
+
+type SourceCandidate = {
+  source: ChatSummary;
+  entityType: 'chat' | 'channel';
 };
 
 @Injectable()
@@ -455,18 +463,44 @@ export class PublicationLegacyService {
       this.managedEntitiesService.listChats(user, { fresh: false }),
       this.managedEntitiesService.listChannels(user, { fresh: false }),
     ]);
-    const normalizedChats = chats.filter((source) => source.entityType === 'chat');
-    const normalizedChannels = channels.filter((source) => source.entityType === 'channel');
-    const sourcePreviews = [
-      ...normalizedChats.map((source) => this.mapSource(source, 'chat')),
-      ...normalizedChannels.map((source) => this.mapSource(source, 'channel')),
+    const candidates: SourceCandidate[] = [
+      ...chats
+        .filter((source) => source.entityType === 'chat')
+        .map((source) => ({ source, entityType: 'chat' as const })),
+      ...channels
+        .filter((source) => source.entityType === 'channel')
+        .map((source) => ({ source, entityType: 'channel' as const })),
     ];
+    const accessibleCandidates = (
+      await mapWithConcurrencyLimit(
+        candidates,
+        LEGACY_SOURCE_READ_ACCESS_CHECK_CONCURRENCY,
+        async (candidate): Promise<SourceCandidate | null> => {
+          try {
+            if (candidate.entityType === 'channel') {
+              await this.managedEntitiesService.assertChannelReadAccess(candidate.source.id, user);
+            } else {
+              await this.managedEntitiesService.assertChatReadAccess(candidate.source.id, user);
+            }
+            return candidate;
+          } catch (error) {
+            if (error instanceof ForbiddenException) {
+              return null;
+            }
+            throw error;
+          }
+        },
+      )
+    ).filter((candidate): candidate is SourceCandidate => candidate !== null);
+    const sourcePreviews = accessibleCandidates.map((candidate) =>
+      this.mapSource(candidate.source, candidate.entityType),
+    );
 
     return {
       byKey: new Map(
         sourcePreviews.map((source) => [this.sourceKey(source.entityType, source.chatId), source]),
       ),
-      chatCount: normalizedChats.length,
+      chatCount: accessibleCandidates.filter((candidate) => candidate.entityType === 'chat').length,
     };
   }
 

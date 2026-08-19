@@ -321,7 +321,12 @@ export class AdminManagedEntitiesRuntime {
     userId: string,
     entityType: ManagedEntityType,
   ): Promise<void> {
-    await this.assertChatAdmin(chatId, userId, entityType);
+    await this.assertChatAdmin(chatId, userId, entityType, {
+      trafficClass: 'interactive',
+      allowPersistedFallback: false,
+      bypassPositiveCache: true,
+      syncPersistedAccess: false,
+    });
     await this.ensureEntityType(chatId, userId, entityType);
   }
 
@@ -333,7 +338,7 @@ export class AdminManagedEntitiesRuntime {
   ): Promise<void> {
     if (!options.skipAdminCheck) {
       await this.assertReadOnlyChatAdmin(chatId, userId, entityType, {
-        forceRemote: options.forceRemote,
+        forceRemote: true,
         timeoutMs: options.timeoutMs,
       });
     }

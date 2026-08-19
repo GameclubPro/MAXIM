@@ -1,5 +1,9 @@
 import { decodeLegacyPublicationListCursor } from '@maxim/contracts/publication';
-import { BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   ChatEntityType,
   ManagedAutopostMaterializationStatus,
@@ -125,6 +129,8 @@ function createService() {
     $queryRaw,
   };
   const managedEntitiesService = {
+    assertChatReadAccess: jest.fn().mockResolvedValue(undefined),
+    assertChannelReadAccess: jest.fn().mockResolvedValue(undefined),
     listChats: jest.fn().mockResolvedValue([
       {
         id: 'chat-1',
@@ -365,5 +371,82 @@ describe('PublicationLegacyService', () => {
     });
     expect(managedAutopostRule.findMany).not.toHaveBeenCalled();
     expect(managedBroadcast.findMany).not.toHaveBeenCalled();
+  });
+
+  it('omits cached sources whose live read access is forbidden', async () => {
+    const { managedAutopostRule, managedBroadcast, managedEntitiesService, service } =
+      createService();
+    managedEntitiesService.listChats.mockResolvedValue([
+      {
+        id: 'chat-1',
+        title: 'Основной чат',
+        entityType: 'chat',
+        avatarUrl: null,
+        link: 'https://max.ru/chat-1',
+      },
+      {
+        id: 'chat-stale',
+        title: 'Бывший чат',
+        entityType: 'chat',
+        avatarUrl: null,
+        link: 'https://max.ru/chat-stale',
+      },
+    ]);
+    managedEntitiesService.listChannels.mockResolvedValue([]);
+    managedEntitiesService.assertChatReadAccess.mockImplementation(async (chatId: string) => {
+      if (chatId === 'chat-stale') {
+        throw new ForbiddenException('Пользователь больше не является администратором чата.');
+      }
+    });
+
+    const response = await service.list(user as never, {
+      entityType: 'chat',
+      kind: 'autopost',
+    });
+
+    expect(response.items.map((item) => item.id)).toEqual(['autopost-a']);
+    expect(managedAutopostRule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            {
+              entityType: ChatEntityType.CHAT,
+              sourceChatId: { in: ['chat-1'] },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(managedAutopostRule.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            {
+              entityType: ChatEntityType.CHAT,
+              sourceChatId: { in: ['chat-1'] },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(managedBroadcast.findMany).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without querying legacy data when live access is unavailable', async () => {
+    const { $queryRaw, managedAutopostRule, managedBroadcast, managedEntitiesService, service } =
+      createService();
+    const transientError = new ServiceUnavailableException(
+      'Не удалось проверить права администратора в MAX.',
+    );
+    managedEntitiesService.listChannels.mockResolvedValue([]);
+    managedEntitiesService.assertChatReadAccess.mockRejectedValue(transientError);
+
+    await expect(service.list(user as never, { entityType: 'chat' })).rejects.toBe(transientError);
+
+    expect(managedAutopostRule.findMany).not.toHaveBeenCalled();
+    expect(managedAutopostRule.count).not.toHaveBeenCalled();
+    expect(managedBroadcast.findMany).not.toHaveBeenCalled();
+    expect(managedBroadcast.count).not.toHaveBeenCalled();
+    expect($queryRaw).not.toHaveBeenCalled();
   });
 });
