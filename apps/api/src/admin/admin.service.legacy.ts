@@ -20823,7 +20823,7 @@ export class AdminService implements OnModuleDestroy {
     if (route) {
       const candidateBotIds = Array.from(
         new Set(
-          [route.botId, ...(route.candidateBotIds ?? [])]
+          (route.candidateBotIds ?? [])
             .map((botId) => this.readTrimmedString(botId))
             .filter((botId): botId is string => Boolean(botId)),
         ),
@@ -20838,7 +20838,7 @@ export class AdminService implements OnModuleDestroy {
       chatId: normalizedChatId,
     });
     if (sendBotId) {
-      return { botId: sendBotId, routeResolved: false, candidateBotIds: [sendBotId] };
+      return { botId: sendBotId, routeResolved: false, candidateBotIds: [] };
     }
 
     const persisted = await this.prisma.chat.findUnique({
@@ -20850,7 +20850,7 @@ export class AdminService implements OnModuleDestroy {
     return {
       botId: persistedBotId,
       routeResolved: false,
-      candidateBotIds: persistedBotId ? [persistedBotId] : [],
+      candidateBotIds: [],
     };
   }
 

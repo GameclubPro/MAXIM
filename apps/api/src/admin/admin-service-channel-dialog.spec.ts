@@ -4732,7 +4732,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ).resolves.toEqual({
       botId: 'legacy-channel-bot',
       routeResolved: false,
-      candidateBotIds: ['legacy-channel-bot'],
+      candidateBotIds: [],
     });
     expect(resolveBotIdForSend).toHaveBeenCalledWith({ chatId: 'channel-1' });
     expect(prisma.chat.findUnique).not.toHaveBeenCalled();
@@ -4841,7 +4841,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           assignment: {
             botId: 'legacy-bot',
             routeResolved: false,
-            candidateBotIds: ['legacy-bot'],
+            candidateBotIds: [],
           },
           loadSentDeliveryBotIds,
         }),
@@ -4870,7 +4870,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           assignment: {
             botId: 'legacy-or-primary-bot',
             routeResolved: false,
-            candidateBotIds: ['legacy-or-primary-bot'],
+            candidateBotIds: [],
           },
           loadSentDeliveryBotIds,
         }),
@@ -4878,7 +4878,11 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect(loadSentDeliveryBotIds).not.toHaveBeenCalled();
     });
 
-    async function createTokenReviewHarness(candidateBotIds: string[], deliveryBotId: string) {
+    async function createTokenReviewHarness(
+      candidateBotIds: string[],
+      deliveryBotId: string,
+      routeBotId: string | null = candidateBotIds[0] ?? null,
+    ) {
       const prisma = createPrismaMock();
       prisma.chat.findUnique.mockResolvedValue({
         id: 'channel-1',
@@ -4932,8 +4936,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       const resolveBotRoute = jest.fn().mockResolvedValue({
         purpose: 'send_message',
         chatId: 'channel-1',
-        primaryBotId: candidateBotIds[0] ?? null,
-        botId: candidateBotIds[0] ?? null,
+        primaryBotId: routeBotId,
+        botId: routeBotId,
         candidateBotIds,
         reason: candidateBotIds.length > 0 ? 'primary_confirmed' : null,
       });
@@ -5042,6 +5046,24 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         "'reviewClaimReleasedAt',",
       );
       expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not restore a route bot that the executable candidate fence excludes', async () => {
+      const { maxClient, prisma, service } = await createTokenReviewHarness(
+        ['primary-bot'],
+        'quarantined-media-bot',
+        'quarantined-media-bot',
+      );
+
+      await expect(
+        service.reviewChannelSuggestionByAdmin('suggestion-media-route-1', reviewer, 'publish'),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+      expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
+        "'reviewClaimReleasedAt',",
+      );
     });
   });
 
