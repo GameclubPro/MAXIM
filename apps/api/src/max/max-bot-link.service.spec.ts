@@ -675,6 +675,104 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe(false);
   });
 
+  it('ensures a probe parent without assigning bot ownership or membership', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-access-probe-parent';
+
+    await expect(
+      fixture.service.ensureChatForAccessProbe({
+        chatId,
+        title: 'Probe-only chat',
+        entityType: ChatEntityType.CHAT,
+      }),
+    ).resolves.toBe(true);
+
+    expect(fixture.prisma.chat.createMany).toHaveBeenCalledWith({
+      data: {
+        id: chatId,
+        title: 'Probe-only chat',
+        botId: null,
+        primaryBotId: null,
+        routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+        entityType: ChatEntityType.CHAT,
+        catalogKind: ChatCatalogKind.CONTEXT_ONLY,
+      },
+      skipDuplicates: true,
+    });
+    expect(fixture.chats.get(chatId)).toEqual({
+      id: chatId,
+      title: 'Probe-only chat',
+      botId: null,
+      primaryBotId: null,
+      entityType: ChatEntityType.CHAT,
+      catalogKind: ChatCatalogKind.CONTEXT_ONLY,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 0,
+    });
+    expect(fixture.memberships).toEqual([]);
+    expect(fixture.prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.chat.update).not.toHaveBeenCalled();
+    expect(fixture.prisma.chat.updateMany).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.createMany).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing closed route and denied membership unchanged across repeated probe ensures', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-access-probe-existing-denied';
+    const botId = fixture.bots[0]!.id;
+    const deniedAt = new Date('2026-05-09T10:04:30.000Z');
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Persisted denied chat',
+      botId: null,
+      primaryBotId: null,
+      entityType: ChatEntityType.CHAT,
+      catalogKind: ChatCatalogKind.MANAGED,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 11,
+    });
+    fixture.memberships.push(
+      createActiveMembership(chatId, botId, 0, {
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.REMOVED,
+        botAccessState: ChatBotAccessState.DENIED,
+        botAccessCheckedAt: deniedAt,
+        lifecycleEventAt: deniedAt,
+        lifecycleEventType: 'bot_removed',
+        lifecycleSource: 'webhook',
+      }),
+    );
+    const originalChat = structuredClone(fixture.chats.get(chatId));
+    const originalMemberships = structuredClone(fixture.memberships);
+
+    await expect(
+      fixture.service.ensureChatForAccessProbe({
+        chatId,
+        title: 'Incoming webhook title',
+        entityType: ChatEntityType.CHANNEL,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      fixture.service.ensureChatForAccessProbe({
+        chatId,
+        title: 'Another incoming title',
+        entityType: ChatEntityType.CHANNEL,
+      }),
+    ).resolves.toBe(true);
+
+    expect(fixture.chats.get(chatId)).toEqual(originalChat);
+    expect(fixture.memberships).toEqual(originalMemberships);
+    expect(fixture.prisma.chat.createMany).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.chat.update).not.toHaveBeenCalled();
+    expect(fixture.prisma.chat.updateMany).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.createMany).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.updateMany).not.toHaveBeenCalled();
+  });
+
   it('persists a live routed access probe only onto an ACTIVE membership', async () => {
     const fixture = createServiceFixture();
     const membership = createActiveMembership('chat-access-probe', fixture.bots[0]!.id, 0);

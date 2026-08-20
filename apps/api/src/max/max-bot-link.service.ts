@@ -655,6 +655,36 @@ export class MaxBotLinkService {
     return nowMs - checkedAtMs >= maxAgeMs;
   }
 
+  async ensureChatForAccessProbe(params: {
+    chatId: string;
+    title?: string | null;
+    entityType?: ChatEntityType | null;
+  }): Promise<boolean> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return false;
+    }
+
+    const entityType = params.entityType ?? undefined;
+    await this.prisma.chat.createMany({
+      data: {
+        id: chatId,
+        title: params.title?.trim() || `Chat ${chatId}`,
+        botId: null,
+        primaryBotId: null,
+        routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+        ...(entityType ? { entityType } : {}),
+        catalogKind: resolveChatCatalogKind({
+          chatId,
+          entityType: entityType ?? null,
+          contextOnlyHint: true,
+        }),
+      },
+      skipDuplicates: true,
+    });
+    return true;
+  }
+
   async recordBotAccessProbe(params: BotAccessProbeParams): Promise<boolean> {
     const chatId = params.chatId.trim();
     const botId = this.resolveOperationalBotId(params.botId);

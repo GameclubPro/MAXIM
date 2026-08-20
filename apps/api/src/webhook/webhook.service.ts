@@ -207,6 +207,7 @@ export class WebhookService {
   private readonly extendedLifecycleCanaryEntityIds: ReadonlySet<string>;
   private readonly botSelfAccessCache = new Map<string, BotSelfAccessCacheEntry>();
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
+  private readonly botSelfAccessRecoveryInFlight = new Map<string, Promise<string | null>>();
   private readonly executionOwnerRecheckBackoffUntilMs = new Map<string, number>();
 
   constructor(
@@ -1207,10 +1208,37 @@ export class WebhookService {
       return null;
     }
 
-    await this.maxBotLinkService.bindDiscoveredChatBots({
+    const cacheKey = this.buildBotSelfAccessCacheKey(chatId, incomingBotId);
+    const existingRecovery = this.botSelfAccessRecoveryInFlight.get(cacheKey);
+    if (existingRecovery) {
+      return existingRecovery;
+    }
+    if (this.isBotSelfAccessProbeSuppressed(cacheKey)) {
+      return null;
+    }
+
+    const recovery = this.bindIncomingBotAfterFreshLiveProbe(
+      update,
       chatId,
-      primaryBotId: incomingBotId,
-      botIds: [incomingBotId],
+      entityType,
+      incomingBotId,
+    ).finally(() => {
+      if (this.botSelfAccessRecoveryInFlight.get(cacheKey) === recovery) {
+        this.botSelfAccessRecoveryInFlight.delete(cacheKey);
+      }
+    });
+    this.botSelfAccessRecoveryInFlight.set(cacheKey, recovery);
+    return recovery;
+  }
+
+  private async bindIncomingBotAfterFreshLiveProbe(
+    update: MaxUpdate,
+    chatId: string,
+    entityType: ChatEntityType | null,
+    incomingBotId: string,
+  ): Promise<string | null> {
+    await this.maxBotLinkService.ensureChatForAccessProbe({
+      chatId,
       title: update.message?.chatTitle ?? null,
       entityType,
     });
@@ -2367,7 +2395,14 @@ export class WebhookService {
       );
     } catch (error: unknown) {
       if (this.isTerminalBotSelfAccessError(error)) {
-        return await this.cacheBotSelfAccess(chatId, botId, null, checkedAt, false);
+        const result = await this.cacheBotSelfAccess(chatId, botId, null, checkedAt, false);
+        if (this.readCachedBotSelfAccess(cacheKey) !== true) {
+          this.botSelfAccessBackoffUntilMs.set(
+            cacheKey,
+            Date.now() + BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS,
+          );
+        }
+        return result;
       }
 
       this.discardRejectedBotSelfAccessCache(cacheKey, checkedAt.getTime());
@@ -2460,6 +2495,13 @@ export class WebhookService {
 
   private buildBotSelfAccessCacheKey(chatId: string, botId: string): string {
     return `${chatId}:${botId}`;
+  }
+
+  private isBotSelfAccessProbeSuppressed(cacheKey: string): boolean {
+    if (this.readCachedBotSelfAccess(cacheKey) === false) {
+      return true;
+    }
+    return (this.botSelfAccessBackoffUntilMs.get(cacheKey) ?? 0) > Date.now();
   }
 
   private cacheBotSelfAccessState(

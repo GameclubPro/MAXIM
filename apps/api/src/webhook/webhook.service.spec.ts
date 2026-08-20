@@ -107,6 +107,7 @@ describe('WebhookService', () => {
   const maxBotLinkService = {
     bindChatToBot: jest.fn().mockResolvedValue(undefined),
     bindDiscoveredChatBots: jest.fn().mockResolvedValue(null),
+    ensureChatForAccessProbe: jest.fn().mockResolvedValue(true),
     getStoredChatPrimaryBotId: jest.fn().mockResolvedValue(null),
     observeStoredChatBotWebhook: jest.fn().mockResolvedValue(undefined),
     markChatBotRemoved: jest.fn().mockResolvedValue(undefined),
@@ -123,6 +124,8 @@ describe('WebhookService', () => {
     maxBotLinkService.bindChatToBot.mockResolvedValue(undefined);
     maxBotLinkService.bindDiscoveredChatBots.mockReset();
     maxBotLinkService.bindDiscoveredChatBots.mockResolvedValue(null);
+    maxBotLinkService.ensureChatForAccessProbe.mockReset();
+    maxBotLinkService.ensureChatForAccessProbe.mockResolvedValue(true);
     maxBotLinkService.getStoredChatPrimaryBotId.mockReset();
     maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(null);
     maxBotLinkService.observeStoredChatBotWebhook.mockReset();
@@ -2735,6 +2738,10 @@ describe('WebhookService', () => {
       }),
     };
     maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce(null);
+    maxBotLinkService.ensureChatForAccessProbe.mockImplementationOnce(async () => {
+      eventOrder.push('ensure-parent');
+      return true;
+    });
     maxBotLinkService.bindChatToBot.mockImplementationOnce(async (params) => {
       eventOrder.push('bind-lifecycle');
       lifecycleEventAt = params.lifecycleEventAt;
@@ -2804,7 +2811,8 @@ describe('WebhookService', () => {
         lifecycleSource: 'live_probe',
       }),
     );
-    expect(eventOrder.slice(0, 6)).toEqual([
+    expect(eventOrder.slice(0, 7)).toEqual([
+      'ensure-parent',
       'probe-1',
       'persist-before-bind',
       'bind-lifecycle',
@@ -2812,6 +2820,7 @@ describe('WebhookService', () => {
       'persist-confirmed-access',
       'reconcile-route',
     ]);
+    expect(maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
     expect(persistedAccessData).toEqual(
       expect.objectContaining({
         botAccessState: 'CONFIRMED_ADMIN',
@@ -2821,6 +2830,141 @@ describe('WebhookService', () => {
       }),
     );
     expect(routingState).toBe('READY');
+  });
+
+  it('suppresses repeated route-gap probes after a terminal bot access denial', async () => {
+    const chatId = '-100-live-probe-denied';
+    const botId = 'id613002203036_4_bot';
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockRejectedValue({
+        response: { status: 403 },
+        message: 'chat denied',
+      }),
+    };
+    maxBotLinkService.recordBotAccessProbe.mockResolvedValue(false);
+    const service = new WebhookService(
+      { webhookEvent: {} } as never,
+      { get: jest.fn() } as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const update = {
+      updateId: 'u-live-probe-denied',
+      type: 'message_created',
+      botId,
+      message: {
+        messageId: 'mid-live-probe-denied',
+        chatId,
+        chatTitle: 'Denied route',
+        entityType: 'chat',
+        senderId: 'user-1',
+        text: 'hello',
+        createdAt: '2026-07-10T12:00:00.123Z',
+      },
+    } satisfies MaxUpdate;
+
+    await expect(
+      (service as any).bindIncomingBotAfterLiveProbe(update, chatId, ChatEntityType.CHAT),
+    ).resolves.toBeNull();
+    await expect(
+      (service as any).bindIncomingBotAfterLiveProbe(update, chatId, ChatEntityType.CHAT),
+    ).resolves.toBeNull();
+
+    expect(maxBotLinkService.ensureChatForAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+
+    (service as any).botSelfAccessBackoffUntilMs.set(`${chatId}:${botId}`, Date.now() - 1);
+    await expect(
+      (service as any).bindIncomingBotAfterLiveProbe(update, chatId, ChatEntityType.CHAT),
+    ).resolves.toBeNull();
+
+    expect(maxBotLinkService.ensureChatForAccessProbe).toHaveBeenCalledTimes(2);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(2);
+  });
+
+  it('coalesces concurrent route-gap recovery without collapsing the post-lifecycle probe', async () => {
+    const chatId = '-100-live-probe-single-flight';
+    const botId = 'id613002203036_4_bot';
+    let releaseFirstProbe!: (access: {
+      userId: string;
+      isAdmin: boolean;
+      isOwner: boolean;
+      permissions: string[];
+    }) => void;
+    const firstProbe = new Promise<{
+      userId: string;
+      isAdmin: boolean;
+      isOwner: boolean;
+      permissions: string[];
+    }>((resolve) => {
+      releaseFirstProbe = resolve;
+    });
+    const grantedAccess = {
+      userId: botId,
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    };
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockImplementationOnce(() => firstProbe)
+        .mockResolvedValueOnce(grantedAccess),
+    };
+    maxBotLinkService.bindChatToBot.mockResolvedValue(botId);
+    maxBotLinkService.recordBotAccessProbe.mockResolvedValue(true);
+    maxBotLinkService.reconcileChatPrimaryByAccess.mockResolvedValue(botId);
+    const service = new WebhookService(
+      { webhookEvent: {} } as never,
+      { get: jest.fn() } as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const update = {
+      updateId: 'u-live-probe-single-flight',
+      type: 'message_created',
+      botId,
+      message: {
+        messageId: 'mid-live-probe-single-flight',
+        chatId,
+        chatTitle: 'Single flight route',
+        entityType: 'chat',
+        senderId: 'user-1',
+        text: 'hello',
+        createdAt: '2026-07-10T12:00:00.123Z',
+      },
+    } satisfies MaxUpdate;
+
+    const first = (service as any).bindIncomingBotAfterLiveProbe(
+      update,
+      chatId,
+      ChatEntityType.CHAT,
+    );
+    const concurrent = (service as any).bindIncomingBotAfterLiveProbe(
+      update,
+      chatId,
+      ChatEntityType.CHAT,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(maxBotLinkService.ensureChatForAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+
+    releaseFirstProbe(grantedAccess);
+    await expect(Promise.all([first, concurrent])).resolves.toEqual([botId, botId]);
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.reconcileChatPrimaryByAccess).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
+    expect((service as any).botSelfAccessRecoveryInFlight.size).toBe(0);
   });
 
   it('does not bind a stale successful probe when bot removal wins during the request', async () => {
