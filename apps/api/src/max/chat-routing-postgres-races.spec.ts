@@ -615,8 +615,8 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
     const survivorBotId = `bot-survivor-${suffix}`;
     const lostMembershipId = `membership-lost-${suffix}`;
     const survivorMembershipId = `membership-survivor-${suffix}`;
-    const lossAt = new Date('2026-08-20T12:00:00.123Z');
-    const probeAt = new Date('2026-08-20T12:00:30.456Z');
+    const probeAt = new Date();
+    const lossAt = new Date(probeAt.getTime() - 30_333);
     const probeApplicationName = `access-probe-${suffix}`;
     const cleanupApplicationName = `access-cleanup-${suffix}`;
     createdChatIds.push(chatId);
