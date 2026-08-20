@@ -1178,15 +1178,20 @@ describe('WebhookService', () => {
     );
 
     expect(membershipQuery).toBeDefined();
-    expect(extractSqlText(membershipQuery)).toContain('WITH incoming');
-    expect(extractSqlText(membershipQuery)).toContain('ON CONFLICT ("dedupe_key") DO UPDATE SET');
-    expect(extractSqlText(membershipQuery)).toContain(
-      "COALESCE(BTRIM(existing.\"sender_name\"), '') = ''",
+    const membershipSql = extractSqlText(membershipQuery);
+    const compactMembershipSql = membershipSql.replace(/\s+/gu, ' ').trim();
+    expect(membershipSql).toContain('WITH incoming');
+    expect(membershipSql).toContain('ON CONFLICT ("dedupe_key") DO UPDATE SET');
+    expect(membershipSql).toContain("COALESCE(BTRIM(existing.\"sender_name\"), '') = ''");
+    expect(membershipSql).toContain('GREATEST(existing."event_at", EXCLUDED."event_at")');
+    expect(compactMembershipSql).toContain(
+      'existing."bot_id" IS NULL AND EXCLUDED."bot_id" IS NOT NULL',
     );
-    expect(extractSqlText(membershipQuery)).toContain(
-      'GREATEST(existing."event_at", EXCLUDED."event_at")',
+    expect(compactMembershipSql).toContain(
+      "COALESCE(BTRIM(existing.\"sender_name\"), '') = '' AND COALESCE(BTRIM(EXCLUDED.\"sender_name\"), '') <> ''",
     );
-    expect(extractSqlText(membershipQuery)).toMatch(/::timestamp\(3\)[\s\S]*::timestamp\(3\)/u);
+    expect(compactMembershipSql).toContain('existing."event_at" < EXCLUDED."event_at"');
+    expect(membershipSql).toMatch(/::timestamp\(3\)[\s\S]*::timestamp\(3\)/u);
     expect(snapshotQuery).toBeDefined();
     expect(extractSqlValues(snapshotQuery)).toEqual(
       expect.arrayContaining([

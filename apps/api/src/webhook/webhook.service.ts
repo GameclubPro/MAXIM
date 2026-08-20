@@ -2064,6 +2064,16 @@ export class WebhookService {
           ELSE existing."sender_name"
         END,
         "event_at" = GREATEST(existing."event_at", EXCLUDED."event_at")
+      WHERE
+        (
+          existing."bot_id" IS NULL
+          AND EXCLUDED."bot_id" IS NOT NULL
+        )
+        OR (
+          COALESCE(BTRIM(existing."sender_name"), '') = ''
+          AND COALESCE(BTRIM(EXCLUDED."sender_name"), '') <> ''
+        )
+        OR existing."event_at" < EXCLUDED."event_at"
     `);
   }
 
