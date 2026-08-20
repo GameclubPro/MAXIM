@@ -611,6 +611,15 @@ export class ManagedEntityAccessLossService {
       };
     });
 
+    if (result.applied && this.nightModeTransitionScheduler) {
+      // FLAG: SQL cleanup commits before Redis reconciliation. The scheduler verifies the durable
+      // membership epoch again after queue mutation so a concurrent fresh grant wins convergence.
+      const reconciliation = await this.nightModeTransitionScheduler.reconcileChat(
+        normalized.chatId,
+      );
+      result.cleanup.nightModeJobsCleared = !reconciliation.jobsScheduled;
+    }
+
     this.logger.log(
       {
         chatId: normalized.chatId,
@@ -1161,8 +1170,8 @@ export class ManagedEntityAccessLossService {
     if (!this.nightModeTransitionScheduler) {
       return;
     }
-    await this.nightModeTransitionScheduler.clearChatJobs(chatId);
-    cleanup.nightModeJobsCleared = true;
+    const reconciliation = await this.nightModeTransitionScheduler.reconcileChat(chatId);
+    cleanup.nightModeJobsCleared = !reconciliation.jobsScheduled;
   }
 
   private async cancelManagedBroadcastRuntime(

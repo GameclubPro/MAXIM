@@ -611,7 +611,7 @@ describe('ManagedEntityAccessLossService', () => {
       ),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn(),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -631,7 +631,7 @@ describe('ManagedEntityAccessLossService', () => {
       applied: true,
       skippedReason: null,
       cleanup: {
-        nightModeJobsCleared: false,
+        nightModeJobsCleared: true,
         canceledBroadcasts: 1,
         canceledBroadcastDeliveries: 2,
         canceledBroadcastOccurrences: 3,
@@ -645,8 +645,77 @@ describe('ManagedEntityAccessLossService', () => {
     expect(tx.managedAutopostRule.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.managedBroadcast.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.vkParsingSource.updateMany).toHaveBeenCalledTimes(1);
-    expect(nightModeTransitionScheduler.clearChatJobs).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
     expect(rosterSyncQueue.getJob).not.toHaveBeenCalled();
+  });
+
+  it('propagates deferred night-mode reconciliation failures for BullMQ retry', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ id: 'chat-1' }])
+        .mockResolvedValueOnce([
+          {
+            status: ChatBotMembershipStatus.REMOVED,
+            lifecycleEventAt,
+            lifecycleEventType: 'bot_removed',
+            lifecycleSource: 'webhook',
+          },
+        ]),
+      chatBotMembership: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      managedEntityAccessEdge: {
+        findFirst: jest.fn(),
+      },
+      managedAutopostRule: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcast: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastCalendarReservation: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      vkParsingPost: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      vkParsingSource: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
+    };
+    const reconcileError = new Error('night-mode redis unavailable');
+    const nightModeTransitionScheduler = {
+      reconcileChat: jest.fn().mockRejectedValue(reconcileError),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      nightModeTransitionScheduler as never,
+      undefined,
+      createMaxBotRegistry(['bot-1']) as never,
+    );
+
+    await expect(service.processDeferredRuntimeCleanup(createDeferredCleanupJob())).rejects.toBe(
+      reconcileError,
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.managedAutopostRule.updateMany).toHaveBeenCalledTimes(1);
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
   });
 
   it('does not cancel runtime work after a newer same-bot grant supersedes the cleanup epoch', async () => {
@@ -861,7 +930,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn().mockResolvedValue(undefined),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncJob = {
       getState: jest.fn().mockResolvedValue('delayed'),
@@ -930,7 +999,7 @@ describe('ManagedEntityAccessLossService', () => {
       'chat-1',
       'chat',
     );
-    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('chat-1');
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
     expect(prisma.managedAutopostRule.updateMany).toHaveBeenCalledWith({
       where: {
         sourceChatId: 'chat-1',
@@ -1298,7 +1367,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn(),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1350,7 +1419,7 @@ describe('ManagedEntityAccessLossService', () => {
         botAccessExpiresAt: true,
       },
     });
-    expect(nightModeTransitionScheduler.clearChatJobs).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
     expect(rosterSyncQueue.getJob).not.toHaveBeenCalled();
     expect(prisma.managedBroadcast.updateMany).not.toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
@@ -1396,7 +1465,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn().mockResolvedValue(undefined),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -1439,7 +1508,7 @@ describe('ManagedEntityAccessLossService', () => {
         }),
       }),
     );
-    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('chat-1');
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
   });
 
   it('cleans runtime work when the replacement bot only has stale snapshot access', async () => {
@@ -1492,7 +1561,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn().mockResolvedValue(undefined),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -1543,7 +1612,7 @@ describe('ManagedEntityAccessLossService', () => {
         botAccessExpiresAt: true,
       },
     });
-    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('channel-1');
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('channel-1');
     expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
     expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
@@ -1592,7 +1661,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn(),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1640,7 +1709,7 @@ describe('ManagedEntityAccessLossService', () => {
       }),
     );
     expect(prisma.managedEntityAccessEdge.findFirst).not.toHaveBeenCalled();
-    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('chat-1');
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
     expect(rosterSyncQueue.getJob).toHaveBeenCalledWith('chat-admin-roster-sync__chat-1');
     expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
@@ -1694,7 +1763,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn(),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1741,7 +1810,7 @@ describe('ManagedEntityAccessLossService', () => {
         }),
       }),
     );
-    expect(nightModeTransitionScheduler.clearChatJobs).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
     expect(rosterSyncQueue.getJob).not.toHaveBeenCalled();
     expect(prisma.managedBroadcast.updateMany).not.toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
@@ -1795,7 +1864,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn(),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1844,7 +1913,7 @@ describe('ManagedEntityAccessLossService', () => {
         }),
       }),
     );
-    expect(nightModeTransitionScheduler.clearChatJobs).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
     expect(rosterSyncQueue.getJob).not.toHaveBeenCalled();
     expect(prisma.managedBroadcast.updateMany).not.toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
@@ -1904,7 +1973,7 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      clearChatJobs: jest.fn().mockResolvedValue(undefined),
+      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -1939,7 +2008,7 @@ describe('ManagedEntityAccessLossService', () => {
       }),
     );
 
-    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('chat-1');
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('chat-1');
     expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
   });

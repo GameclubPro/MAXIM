@@ -31,6 +31,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
     if (!roleRunsModeration(getAppRole())) {
       return;
     }
+    if (!(await this.scheduler.shouldProcessChatTransitions(job.data.chatId))) {
+      return;
+    }
 
     let result: NightModeTransitionProcessResult;
     try {
@@ -40,6 +43,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
       const isQuarantinedRoute = isMaxActionRouteQuarantinedError(error);
       if (!isNoRoute && !isQuarantinedRoute) {
         throw error;
+      }
+      if (!(await this.scheduler.shouldProcessChatTransitions(job.data.chatId))) {
+        return;
       }
       const retryableError = isNoRoute ? new Error(error.message) : error;
       if (!token) {

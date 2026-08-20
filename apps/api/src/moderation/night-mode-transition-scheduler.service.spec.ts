@@ -8,6 +8,27 @@ import {
 } from './night-mode-transition.queue';
 
 describe('NightModeTransitionSchedulerService', () => {
+  it.each([
+    { name: 'all memberships are removed', counts: [2, 0], expected: false },
+    { name: 'an active membership remains', counts: [2, 1], expected: true },
+    { name: 'the chat is legacy and has no memberships', counts: [0], expected: true },
+  ])('guards transition execution when $name', async ({ counts, expected }) => {
+    const remainingCounts = [...counts];
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHAT }),
+      },
+      chatBotMembership: {
+        count: jest.fn(async () => remainingCounts.shift() ?? 0),
+      },
+    };
+    const service = new NightModeTransitionSchedulerService(prisma as never);
+
+    await expect(service.shouldProcessChatTransitions('chat-1')).resolves.toBe(expected);
+
+    expect(prisma.chatBotMembership.count).toHaveBeenCalledTimes(counts.length);
+  });
+
   it('bootstraps only chats with active bot membership or legacy chats without memberships', async () => {
     const prisma = {
       chatSettings: {
@@ -664,5 +685,136 @@ describe('NightModeTransitionSchedulerService', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('repeats reconciliation when a fresh grant commits while removed jobs are cleared', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:40:00.000Z'));
+    try {
+      const settings = {
+        chatId: 'chat-1',
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const removedSnapshot = {
+        entityType: ChatEntityType.CHAT,
+        settings,
+        botMemberships: [
+          {
+            botId: 'bot-1',
+            status: ChatBotMembershipStatus.REMOVED,
+            lifecycleEventAt: new Date('2026-05-30T20:00:00.000Z'),
+            lifecycleEventType: 'bot_removed',
+            lifecycleSource: 'webhook',
+          },
+        ],
+      };
+      const activeSnapshot = {
+        entityType: ChatEntityType.CHAT,
+        settings,
+        botMemberships: [
+          {
+            botId: 'bot-1',
+            status: ChatBotMembershipStatus.ACTIVE,
+            lifecycleEventAt: new Date('2026-05-30T20:00:01.000Z'),
+            lifecycleEventType: 'bot_added',
+            lifecycleSource: 'webhook',
+          },
+        ],
+      };
+      const staleJob = {
+        id: buildNightModeTransitionJobId(
+          'chat-1',
+          'close',
+          '2026-05-30T20:00:00.000Z',
+          'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+        ),
+        remove: jest.fn().mockResolvedValue(undefined),
+      };
+      const prisma = {
+        chat: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(removedSnapshot)
+            .mockResolvedValue(activeSnapshot),
+        },
+      };
+      const queue = {
+        getJobs: jest.fn().mockResolvedValueOnce([staleJob]).mockResolvedValue([]),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await expect(service.reconcileChat('chat-1')).resolves.toEqual({
+        jobsScheduled: true,
+        passes: 2,
+      });
+
+      expect(staleJob.remove).toHaveBeenCalledTimes(1);
+      expect(queue.getJobs).toHaveBeenCalledTimes(2);
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({ chatId: 'chat-1' }),
+        expect.any(Object),
+      );
+      expect(prisma.chat.findUnique).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('propagates a queued-job removal failure from strict reconciliation', async () => {
+    const removeError = new Error('redis remove failed');
+    const settings = {
+      chatId: 'chat-1',
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 23 * 60,
+      nightModeEndTimeMinutes: 8 * 60,
+      nightModeTimezone: 'Europe/Moscow',
+    };
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          settings,
+          botMemberships: [
+            {
+              botId: 'bot-1',
+              status: ChatBotMembershipStatus.REMOVED,
+              lifecycleEventAt: new Date('2026-05-30T20:00:00.000Z'),
+              lifecycleEventType: 'bot_removed',
+              lifecycleSource: 'webhook',
+            },
+          ],
+        }),
+      },
+    };
+    const staleJob = {
+      id: buildNightModeTransitionJobId(
+        'chat-1',
+        'close',
+        '2026-05-30T20:00:00.000Z',
+        'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      ),
+      remove: jest.fn().mockRejectedValue(removeError),
+    };
+    const queue = {
+      getJobs: jest.fn().mockResolvedValue([staleJob]),
+      add: jest.fn(),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+    );
+
+    await expect(service.reconcileChat('chat-1')).rejects.toBe(removeError);
+
+    expect(staleJob.remove).toHaveBeenCalledTimes(1);
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
   });
 });

@@ -29,6 +29,17 @@ import {
 const NIGHT_MODE_TRANSITION_JOB_ATTEMPTS = 3;
 const NIGHT_MODE_TRANSITION_JOB_BACKOFF_MS = 15_000;
 const NIGHT_MODE_TRANSITION_BOOTSTRAP_BATCH_SIZE = 200;
+const NIGHT_MODE_TRANSITION_RECONCILE_MAX_PASSES = 3;
+
+type NightModeTransitionReconcileSnapshot = {
+  signature: string;
+  settings: (NightModeTransitionScheduleSettings & { chatId: string }) | null;
+};
+
+export type NightModeTransitionReconcileResult = {
+  jobsScheduled: boolean;
+  passes: number;
+};
 
 @Injectable()
 export class NightModeTransitionSchedulerService implements OnModuleInit, OnModuleDestroy {
@@ -132,21 +143,47 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     }
   }
 
-  async reconcileChat(chatId: string): Promise<void> {
+  async reconcileChat(chatId: string): Promise<NightModeTransitionReconcileResult> {
     const normalizedChatIds = this.normalizeChatIds([chatId]);
     if (normalizedChatIds.length === 0 || !this.queue) {
-      return;
+      return { jobsScheduled: false, passes: 0 };
     }
 
-    const settings = await this.findEnabledSettingsForChat(normalizedChatIds[0]!);
+    const normalizedChatId = normalizedChatIds[0]!;
+    let snapshot = await this.readReconcileSnapshot(normalizedChatId);
+    // FLAG: A writer that commits during queue mutation changes the verified snapshot and forces
+    // another pass. A writer that commits later owns its existing post-commit reconciliation.
+    for (let pass = 1; pass <= NIGHT_MODE_TRANSITION_RECONCILE_MAX_PASSES; pass += 1) {
+      await this.clearChatJobsForChatIds(normalizedChatIds, { strict: true });
+      if (snapshot.settings) {
+        await this.enqueueChatSettingsOccurrences(snapshot.settings.chatId, snapshot.settings, {
+          includeCurrentClose: true,
+          includeCurrentOpen: true,
+        });
+      }
 
-    await this.clearChatJobsForChatIds(normalizedChatIds);
-    if (settings) {
-      await this.enqueueChatSettingsOccurrences(settings.chatId, settings, {
-        includeCurrentClose: true,
-        includeCurrentOpen: true,
-      });
+      const verified = await this.readReconcileSnapshot(normalizedChatId);
+      if (verified.signature === snapshot.signature) {
+        return {
+          jobsScheduled: verified.settings !== null,
+          passes: pass,
+        };
+      }
+      snapshot = verified;
     }
+
+    throw new Error(
+      `Night mode transition access state did not stabilize during reconciliation (${normalizedChatId})`,
+    );
+  }
+
+  async shouldProcessChatTransitions(chatId: string): Promise<boolean> {
+    const normalizedChatIds = this.normalizeChatIds([chatId]);
+    if (normalizedChatIds.length === 0) {
+      return false;
+    }
+
+    return this.hasActiveBotMembership(normalizedChatIds[0]!);
   }
 
   async enqueueNextTransitionsForChat(chatId: string): Promise<void> {
@@ -258,6 +295,79 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     }
 
     return settings;
+  }
+
+  private async readReconcileSnapshot(
+    chatId: string,
+  ): Promise<NightModeTransitionReconcileSnapshot> {
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        entityType: true,
+        settings: {
+          select: {
+            chatId: true,
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: true,
+            nightModeEndTimeMinutes: true,
+            nightModeTimezone: true,
+          },
+        },
+        botMemberships: {
+          select: {
+            botId: true,
+            status: true,
+            lifecycleEventAt: true,
+            lifecycleEventType: true,
+            lifecycleSource: true,
+          },
+          orderBy: {
+            botId: 'asc',
+          },
+        },
+      },
+    });
+    if (!chat) {
+      return {
+        signature: JSON.stringify(['missing']),
+        settings: null,
+      };
+    }
+
+    const hasActiveOrLegacyMembership =
+      chat.botMemberships.length === 0 ||
+      chat.botMemberships.some(
+        (membership) => membership.status === ChatBotMembershipStatus.ACTIVE,
+      );
+    const settings =
+      chat.entityType === ChatEntityType.CHAT &&
+      chat.settings?.nightModeEnabled === true &&
+      hasActiveOrLegacyMembership
+        ? chat.settings
+        : null;
+    return {
+      // FLAG: Only schedule inputs and lifecycle epochs belong in this fence. Incidental row
+      // updates would create churn without changing the desired BullMQ state.
+      signature: JSON.stringify([
+        chat.entityType,
+        settings
+          ? [
+              settings.nightModeEnabled,
+              settings.nightModeStartTimeMinutes,
+              settings.nightModeEndTimeMinutes,
+              settings.nightModeTimezone,
+            ]
+          : null,
+        chat.botMemberships.map((membership) => [
+          membership.botId,
+          membership.status,
+          membership.lifecycleEventAt?.toISOString() ?? null,
+          membership.lifecycleEventType,
+          membership.lifecycleSource,
+        ]),
+      ]),
+      settings,
+    };
   }
 
   private async findEnabledSettingsForChats(
@@ -507,7 +617,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     ].sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime());
   }
 
-  private async clearChatJobsForChatIds(chatIds: readonly string[]): Promise<void> {
+  private async clearChatJobsForChatIds(
+    chatIds: readonly string[],
+    options: { strict?: boolean } = {},
+  ): Promise<void> {
     if (!this.queue) {
       return;
     }
@@ -523,7 +636,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     const jobs = await this.queue.getJobs(['delayed', 'waiting', 'prioritized', 'paused'], 0, -1);
     for (const job of jobs) {
       if (typeof job.id === 'string' && prefixList.some((prefix) => job.id?.startsWith(prefix))) {
-        await this.removeJob(job);
+        await this.removeJob(job, options);
       }
     }
   }
@@ -532,7 +645,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     return Array.from(new Set(chatIds.map((item) => item.trim()).filter(Boolean)));
   }
 
-  private async removeJob(job: { id?: string; remove(): Promise<void> }): Promise<void> {
+  private async removeJob(
+    job: { id?: string; remove(): Promise<void> },
+    options: { strict?: boolean } = {},
+  ): Promise<void> {
     try {
       await job.remove();
     } catch (error: unknown) {
@@ -543,6 +659,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         },
         'Failed to remove old night mode transition job',
       );
+      if (options.strict === true) {
+        throw error;
+      }
     }
   }
 

@@ -28,6 +28,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: false }),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -47,6 +48,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: true }),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
@@ -68,6 +70,7 @@ describe('NightModeTransitionProcessor', () => {
         .mockRejectedValue(new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1')),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
@@ -96,6 +99,7 @@ describe('NightModeTransitionProcessor', () => {
         ),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -125,6 +129,7 @@ describe('NightModeTransitionProcessor', () => {
         ),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -150,6 +155,7 @@ describe('NightModeTransitionProcessor', () => {
         .mockResolvedValueOnce({ shouldEnqueueNext: true }),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
@@ -171,6 +177,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockRejectedValue(noRouteError),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -194,6 +201,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockRejectedValue(noRouteError),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -216,6 +224,7 @@ describe('NightModeTransitionProcessor', () => {
       processNightModeTransitionJob: jest.fn().mockRejectedValue(processingError),
     };
     const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
     };
     const processor = new NightModeTransitionProcessor(
@@ -225,5 +234,52 @@ describe('NightModeTransitionProcessor', () => {
 
     await expect(processor.process(job)).rejects.toBe(processingError);
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
+  });
+
+  it('completes an all-removed transition without entering moderation or MAX routing', async () => {
+    const job = buildJob();
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest.fn(),
+    };
+    const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(false),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+    expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
+  });
+
+  it('does not delay a no-route job when removal wins during route resolution', async () => {
+    const job = buildJob();
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest
+        .fn()
+        .mockRejectedValue(new MaxActionNoExecutableRouteError('SEND_MESSAGE', 'chat-1')),
+    };
+    const scheduler = {
+      shouldProcessChatTransitions: jest
+        .fn()
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+
+    expect(moderationExecutionService.processNightModeTransitionJob).toHaveBeenCalledTimes(1);
+    expect(scheduler.shouldProcessChatTransitions).toHaveBeenCalledTimes(2);
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 });
