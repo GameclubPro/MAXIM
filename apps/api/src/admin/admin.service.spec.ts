@@ -100,7 +100,6 @@ describe('AdminService dialog admin fallback reads', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-
     await expect((service as any).readDialogAdminUserIds('chat-1')).resolves.toEqual(new Set());
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
@@ -162,7 +161,7 @@ describe('AdminService dialog admin fallback reads', () => {
   });
 });
 describe('AdminService night mode settings normalization', () => {
-  it('persists primaryBotId when chat settings upsert resolves a bot assignment', async () => {
+  it('uses a resolved chat settings bot only for create without overwriting an existing route', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -210,18 +209,15 @@ describe('AdminService night mode settings normalization', () => {
       chatSettingsSchema.parse({}),
     );
 
-    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
+    const upsert = prisma.chat.upsert.mock.lastCall?.[0];
+    expect(upsert?.create).toEqual(
       expect.objectContaining({
-        create: expect.objectContaining({
-          botId: 'id613002203036_bot',
-          primaryBotId: 'id613002203036_bot',
-        }),
-        update: expect.objectContaining({
-          botId: 'id613002203036_bot',
-          primaryBotId: 'id613002203036_bot',
-        }),
+        botId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
       }),
     );
+    expect(upsert?.update).not.toHaveProperty('botId');
+    expect(upsert?.update).not.toHaveProperty('primaryBotId');
   });
 
   it('forces invitation access off when chat settings are updated', async () => {
@@ -274,7 +270,7 @@ describe('AdminService night mode settings normalization', () => {
     );
   });
 
-  it('persists primaryBotId when channel settings upsert resolves a bot assignment', async () => {
+  it('uses a resolved channel settings bot only for create without overwriting an existing route', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -327,18 +323,15 @@ describe('AdminService night mode settings normalization', () => {
       channelSettingsSchema.parse({}),
     );
 
-    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
+    const upsert = prisma.chat.upsert.mock.lastCall?.[0];
+    expect(upsert?.create).toEqual(
       expect.objectContaining({
-        create: expect.objectContaining({
-          botId: 'id613002203036_4_bot',
-          primaryBotId: 'id613002203036_4_bot',
-        }),
-        update: expect.objectContaining({
-          botId: 'id613002203036_4_bot',
-          primaryBotId: 'id613002203036_4_bot',
-        }),
+        botId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_4_bot',
       }),
     );
+    expect(upsert?.update).not.toHaveProperty('botId');
+    expect(upsert?.update).not.toHaveProperty('primaryBotId');
   });
 
   it('forces night bot message toggles off when night mode is disabled on update', async () => {
@@ -1850,7 +1843,7 @@ describe('AdminService.getChatActivityFeed', () => {
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
-    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).toHaveBeenCalledTimes(1);
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
@@ -2314,7 +2307,7 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(prisma.adminGlobalSpammerExemption.deleteMany).not.toHaveBeenCalled();
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(3);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -4075,6 +4068,7 @@ describe('AdminService.applyManualModerationAction', () => {
       'chat-1',
       expect.objectContaining({
         botId: 'bot-2',
+        bypassCache: true,
       }),
     );
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4', {
@@ -4159,6 +4153,7 @@ describe('AdminService.applyManualModerationAction', () => {
       expect.objectContaining({
         trafficClass: 'critical',
         botId: 'bot-1',
+        bypassCache: true,
       }),
     );
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
@@ -4166,6 +4161,7 @@ describe('AdminService.applyManualModerationAction', () => {
       expect.objectContaining({
         trafficClass: 'critical',
         botId: 'bot-2',
+        bypassCache: true,
       }),
     );
     expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith({
@@ -4255,6 +4251,7 @@ describe('AdminService.applyManualModerationAction', () => {
       expect.objectContaining({
         trafficClass: 'critical',
         botId: 'bot-1',
+        bypassCache: true,
       }),
     );
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
@@ -4262,6 +4259,7 @@ describe('AdminService.applyManualModerationAction', () => {
       expect.objectContaining({
         trafficClass: 'critical',
         botId: 'bot-2',
+        bypassCache: true,
       }),
     );
     expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith({
@@ -7357,19 +7355,14 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-01T10:00:00.000Z',
       }),
     ]);
-    prisma.chat.upsert
-      .mockResolvedValueOnce({
-        id: 'channel-1',
-        title: 'Новости MAX',
-        createdAt: new Date('2026-03-02T10:00:00.000Z'),
-        entityType: 'CHANNEL',
-      })
-      .mockResolvedValueOnce({
-        id: 'channel-2',
-        title: 'Обновления MAX',
-        createdAt: new Date('2026-03-01T10:00:00.000Z'),
-        entityType: 'CHANNEL',
-      });
+    prisma.chat.upsert.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id,
+      title: where.id === 'channel-1' ? 'Новости MAX' : 'Обновления MAX',
+      createdAt: new Date(
+        where.id === 'channel-1' ? '2026-03-02T10:00:00.000Z' : '2026-03-01T10:00:00.000Z',
+      ),
+      entityType: 'CHANNEL',
+    }));
     prisma.channelSettings.findMany.mockResolvedValue([
       {
         chatId: 'channel-1',
@@ -8338,18 +8331,7 @@ describe('AdminService.listChannels', () => {
         }),
       ]);
 
-      expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
-        'admin-1',
-        'channel',
-        expect.objectContaining({
-          itemCount: 2,
-          items: [
-            expect.objectContaining({ id: 'channel-1' }),
-            expect.objectContaining({ id: 'channel-2' }),
-          ],
-        }),
-        expect.any(Number),
-      );
+      expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
       expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'channel');
       expect((prisma as any).managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
       expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
@@ -9709,7 +9691,9 @@ describe('AdminService.listChannels', () => {
       .spyOn(service as any, 'resolveUserAndBotAdminAccess')
       .mockImplementation(async (...args: unknown[]) => {
         const chatId = args[0] as string;
-        return chatId === 'chat-priority' ? { status: 'granted' } : { status: 'user_denied' };
+        return chatId === 'chat-priority'
+          ? { status: 'granted', probeStartedAt: new Date('2026-03-03T09:59:00.000Z') }
+          : { status: 'user_denied' };
       });
     jest
       .spyOn(service as any, 'persistManagedEntityAccessBestEffort')
@@ -9842,6 +9826,7 @@ describe('AdminService.listChannels', () => {
 
     jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
       status: 'granted',
+      probeStartedAt: new Date('2026-03-02T09:59:00.000Z'),
     });
     jest.spyOn(service as any, 'persistManagedEntityAccessBestEffort').mockResolvedValue(
       createChatSummaryFixture({
@@ -10372,18 +10357,7 @@ describe('AdminService.listChats', () => {
         }),
       ]);
 
-      expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
-        'admin-1',
-        'chat',
-        expect.objectContaining({
-          itemCount: 2,
-          items: [
-            expect.objectContaining({ id: 'chat-1' }),
-            expect.objectContaining({ id: 'chat-2' }),
-          ],
-        }),
-        expect.any(Number),
-      );
+      expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
       expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
       expect((prisma as any).managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
       expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
@@ -10752,6 +10726,18 @@ describe('AdminService.listChats', () => {
 
   it('filters cached denied chats out of published snapshot responses and patches the snapshot', async () => {
     const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-keep',
+          title: 'Живой чат',
+          createdAt: new Date('2026-04-03T10:00:00.000Z'),
+          entityType: 'CHAT',
+          primaryBotId: '777000_bot',
+          botId: '777000_bot',
+        },
+      },
+    ]);
     const chatContextCache = createChatContextCacheMock({
       getAdminAccess: jest.fn().mockImplementation(async (chatId: string) => {
         return chatId === 'chat-stale' ? 'user_denied' : null;
@@ -10811,31 +10797,32 @@ describe('AdminService.listChats', () => {
       expect.objectContaining({
         itemCount: 1,
         items: [
-          createChatSummaryFixture({
+          expect.objectContaining({
             id: 'chat-keep',
             title: 'Живой чат',
-            createdAt: '2026-04-03T10:00:00.000Z',
-            entityType: 'chat',
-            primaryBotId: '777000_bot',
           }),
         ],
       }),
       expect.any(Number),
+      { expectedVersion: 'snapshot-v1' },
     );
-    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledWith(
-      'admin-1',
-      'chat',
-      'snapshot-v1',
-      expect.objectContaining({
-        baseVersion: 'snapshot-v1',
-        removedIds: ['chat-stale'],
-      }),
-      expect.any(Number),
-    );
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).not.toHaveBeenCalled();
   });
 
   it('keeps fresh access-edge chats visible when legacy cache says bot_denied', async () => {
     const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-bot-denied',
+          title: 'Свежий edge через другого бота',
+          createdAt: new Date('2026-04-03T10:00:00.000Z'),
+          entityType: 'CHAT',
+          primaryBotId: '777000_bot',
+          botId: '777000_bot',
+        },
+      },
+    ]);
     const chatContextCache = createChatContextCacheMock({
       getAdminAccess: jest.fn().mockImplementation(async (chatId: string) => {
         if (chatId === 'chat-bot-denied') {
@@ -10874,6 +10861,11 @@ describe('AdminService.listChats', () => {
       prisma as never,
       {
         listBotChats: jest.fn(),
+        getChatAdminIds: jest
+          .fn()
+          .mockImplementation(async (chatId: string) =>
+            chatId === 'chat-bot-denied' ? ['admin-1'] : [],
+          ),
       } as never,
       chatContextCache as never,
       createConfigMock({ botId: '777000_bot' }) as never,
@@ -10885,6 +10877,7 @@ describe('AdminService.listChats', () => {
       displayName: null,
       chatTitle: null,
     });
+    await flushAsyncTasks();
 
     expect(result.map((item) => item.id)).toEqual(['chat-bot-denied']);
     expect(chatContextCache.getAdminAccess).toHaveBeenCalledWith('chat-bot-denied', 'admin-1');
@@ -10897,16 +10890,9 @@ describe('AdminService.listChats', () => {
         items: [expect.objectContaining({ id: 'chat-bot-denied' })],
       }),
       expect.any(Number),
+      { expectedVersion: 'snapshot-v1' },
     );
-    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledWith(
-      'admin-1',
-      'chat',
-      'snapshot-v1',
-      expect.objectContaining({
-        removedIds: ['chat-user-denied'],
-      }),
-      expect.any(Number),
-    );
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).not.toHaveBeenCalled();
   });
 
   it('returns the published snapshot during refresh requests instead of a partial in-progress list', async () => {
@@ -11383,6 +11369,107 @@ describe('AdminService.listChats', () => {
         ],
       }),
       expect.any(Number),
+      { expectedVersion: null },
+    );
+  });
+
+  it('retries a raced published snapshot rebuild and emits only the committed diff', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-final',
+          title: 'Актуальный чат',
+          createdAt: new Date('2026-04-04T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    const firstSnapshot = {
+      version: 'snapshot-v1',
+      builtAt: '2026-04-04T09:00:00.000Z',
+      lastSyncedAt: null,
+      itemCount: 1,
+      itemsHash: 'hash-v1',
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-final',
+          title: 'Старая версия до гонки',
+          createdAt: '2026-04-04T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ],
+    };
+    const concurrentSnapshot = {
+      version: 'snapshot-v2',
+      builtAt: '2026-04-04T09:30:00.000Z',
+      lastSyncedAt: null,
+      itemCount: 1,
+      itemsHash: 'hash-v2',
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-final',
+          title: 'Конкурентная старая версия',
+          createdAt: '2026-04-04T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ],
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest
+        .fn()
+        .mockResolvedValueOnce(firstSnapshot)
+        .mockResolvedValueOnce(concurrentSnapshot),
+      setManagedEntitiesPublishedSnapshot: jest
+        .fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true),
+    });
+    const service = new AdminService(
+      prisma as never,
+      { listBotChats: jest.fn() } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).rebuildManagedEntitiesPublishedSnapshot('admin-1', 'chat');
+
+    expect(chatContextCache.getManagedEntitiesPublishedSnapshot).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenNthCalledWith(
+      1,
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        items: [expect.objectContaining({ id: 'chat-final' })],
+      }),
+      expect.any(Number),
+      { expectedVersion: 'snapshot-v1' },
+    );
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenNthCalledWith(
+      2,
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        items: [expect.objectContaining({ id: 'chat-final' })],
+      }),
+      expect.any(Number),
+      { expectedVersion: 'snapshot-v2' },
+    );
+    const committedSnapshot = chatContextCache.setManagedEntitiesPublishedSnapshot.mock.calls[1][2];
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      'snapshot-v2',
+      expect.objectContaining({
+        baseVersion: 'snapshot-v2',
+        nextVersion: committedSnapshot.version,
+        added: [],
+        updated: [expect.objectContaining({ id: 'chat-final', title: 'Актуальный чат' })],
+        removedIds: [],
+      }),
+      expect.any(Number),
     );
   });
 
@@ -11463,6 +11550,7 @@ describe('AdminService.listChats', () => {
           ],
         }),
         expect.any(Number),
+        { expectedVersion: null },
       );
       expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
     } finally {
@@ -11512,6 +11600,7 @@ describe('AdminService.listChats', () => {
         ],
       }),
       expect.any(Number),
+      { expectedVersion: null },
     );
   });
 
@@ -11585,6 +11674,7 @@ describe('AdminService.listChats', () => {
         ],
       }),
       expect.any(Number),
+      { expectedVersion: 'snapshot-v1' },
     );
   });
 
@@ -11636,6 +11726,7 @@ describe('AdminService.listChats', () => {
         ],
       }),
       expect.any(Number),
+      { expectedVersion: null },
     );
   });
 
@@ -12292,6 +12383,7 @@ describe('AdminService.listChats', () => {
     jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
       status: 'granted',
       source: 'remote',
+      probeStartedAt: new Date('2026-04-05T09:59:00.000Z'),
     });
     jest.spyOn(service as any, 'persistManagedEntityAccessBestEffort').mockResolvedValue(chat);
     const rebuildSpy = jest
@@ -12566,7 +12658,7 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-2',
-        userId: 'admin-1',
+        userId: { in: ['admin-1', 'idadmin-1'] },
       },
     });
   });
@@ -12837,7 +12929,7 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
       where: {
         chatId: '-72545334298631',
-        userId: 'admin-1',
+        userId: { in: ['admin-1', 'idadmin-1'] },
       },
     });
   });
@@ -14171,6 +14263,7 @@ describe('AdminService.listChats', () => {
         title: 'Лонч-тайтл',
         entityType: 'chat',
         source: 'recent_bot_added_bootstrap',
+        probeStartedAt: new Date('2026-03-03T09:59:00.000Z'),
       }),
     ).resolves.toMatchObject({
       id: 'chat-launch',
@@ -14268,6 +14361,7 @@ describe('AdminService.listChats', () => {
         title: 'Chat chat-launch',
         entityType: 'chat',
         source: 'local_discovery',
+        probeStartedAt: new Date('2026-03-03T09:59:00.000Z'),
       }),
     ).resolves.toMatchObject({
       id: 'chat-launch',
@@ -14319,7 +14413,7 @@ describe('AdminService.listChats', () => {
       undefined,
       maxBotLinkService as never,
     );
-    jest.spyOn(service as any, 'resolveBotAssignment').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'resolveBotAssignment').mockResolvedValue('stale-discovery-bot');
 
     await expect(
       (service as any).persistManagedEntityAccessBestEffort({
@@ -14328,6 +14422,7 @@ describe('AdminService.listChats', () => {
         title: 'Новый title из MAX',
         entityType: 'chat',
         source: 'recent_bot_added_bootstrap',
+        probeStartedAt: new Date('2026-03-03T09:59:00.000Z'),
       }),
     ).resolves.toMatchObject({
       id: 'chat-launch',
@@ -14336,14 +14431,21 @@ describe('AdminService.listChats', () => {
     });
 
     const upsertArgs = prisma.chat.upsert.mock.calls[0][0];
+    expect(upsertArgs.create).toMatchObject({
+      botId: 'stale-discovery-bot',
+      primaryBotId: 'stale-discovery-bot',
+    });
     expect(upsertArgs.update).toMatchObject({
       title: 'Новый title из MAX',
       entityType: 'CHAT',
     });
+    expect(upsertArgs.update).not.toHaveProperty('botId');
+    expect(upsertArgs.update).not.toHaveProperty('primaryBotId');
     expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: 'chat-launch',
         title: 'Новый title из MAX',
+        primaryBotId: 'stale-discovery-bot',
       }),
     );
   });
@@ -15022,6 +15124,15 @@ describe('AdminService.listChats', () => {
         createConfigMock() as never,
       );
 
+      jest.spyOn(service as any, 'publishRemoteAdminAccessEpoch').mockResolvedValue(true);
+      jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          createdAt: '2026-03-01T00:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ]);
       jest
         .spyOn(service as any, 'upsertUserChatAccess')
         .mockRejectedValueOnce({ code: 'P2024', message: 'pool timeout' });
@@ -15062,6 +15173,7 @@ describe('AdminService.listChats', () => {
       ]);
 
       expect(chatContextCache.activateManagedEntitiesRefreshBackoff).not.toHaveBeenCalled();
+      expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
       expect(maxClient.listBotChats).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
@@ -15749,20 +15861,14 @@ describe('AdminService.listChats', () => {
         ],
       }),
     );
-    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledWith(
-      'admin-1',
-      'chat',
-      'snapshot-v1',
-      expect.objectContaining({
-        baseVersion: 'snapshot-v1',
-        removedIds: ['chat-stale'],
-      }),
-      expect.any(Number),
-    );
-    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
-      'chat-stale',
-      null,
-    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-stale',
+      userId: 'admin-1',
+      state: 'user_denied',
+      eventAt: expect.any(Date),
+    });
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).not.toHaveBeenCalled();
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).not.toHaveBeenCalled();
   });
 
   it('defers a reset-cursor managed refresh background job when the governor reports slow pressure', async () => {
@@ -15895,6 +16001,7 @@ describe('AdminService.listChats', () => {
     const accessSpy = jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
       status: 'granted',
       source: 'remote',
+      probeStartedAt: new Date('2026-03-03T09:59:00.000Z'),
     });
     jest.spyOn(service as any, 'upsertUserChatAccess').mockResolvedValue({
       id: 'chat-local-1',
@@ -16101,7 +16208,7 @@ describe('AdminService.listChats', () => {
       ),
     ).resolves.toEqual([]);
 
-    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).toHaveBeenCalledTimes(1);
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
@@ -17514,7 +17621,9 @@ describe('AdminService settings screen endpoints', () => {
       ),
     ).rejects.toThrow(ForbiddenException);
 
-    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(
+      prisma.chat.upsert.mock.calls.every(([args]) => args?.update?.settings === undefined),
+    ).toBe(true);
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
@@ -20149,6 +20258,10 @@ describe('AdminService.getChatParticipantsPage', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    const accessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn(),
+    };
+    (service as any).managedEntityAccessLossService = accessLossService;
 
     const result = await service.getChatParticipantsPage(
       'chat-1',
@@ -20180,70 +20293,7 @@ describe('AdminService.getChatParticipantsPage', () => {
       hasMore: true,
       nextCursor: expect.any(String),
     });
-  });
-
-  it('returns an empty participant page when MAX denies roster access', async () => {
-    const prisma = createPrismaMock();
-    prisma.chat.findUnique.mockResolvedValue({
-      id: 'chat-1',
-      title: 'Команда MAX',
-      entityType: 'CHAT',
-    });
-    prisma.chatSettings.findUnique.mockResolvedValue({
-      nightModeTimezone: 'Europe/Moscow',
-    });
-
-    const rosterError = Object.assign(new Error('Request failed with status code 403'), {
-      response: {
-        status: 403,
-        data: {
-          code: 'chat.denied',
-          message: 'access denied',
-        },
-      },
-    });
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getChatMembersPage: jest.fn().mockRejectedValue(rosterError),
-      getChatSnapshot: jest.fn().mockResolvedValue({
-        chatId: 'chat-1',
-        title: 'Команда MAX',
-        participantsCount: 1200,
-        status: 'active',
-        isPublic: false,
-        link: null,
-        lastEventAt: '2026-04-14T10:00:00.000Z',
-        entityType: 'chat',
-        avatarUrl: null,
-      }),
-    };
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-
-    const result = await service.getChatParticipantsPage(
-      'chat-1',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
-      { limit: 10, range: '7d' },
-    );
-
-    expect(result).toEqual({
-      items: [],
-      totalCount: 1200,
-      hasMore: false,
-      nextCursor: null,
-    });
-    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
-    expect(prisma.chatParticipantModerationImmunity.findMany).not.toHaveBeenCalled();
+    expect(accessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
   });
 
   it('upserts participant immunity and returns a compact summary', async () => {
@@ -23551,6 +23601,57 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(0);
   });
 
+  it('refreshes the direct broadcast access epoch before every internal MAX retry', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const retryError = new Error('MAX API global rate limit exceeded');
+    const terminalError = Object.assign(new Error('chat denied'), {
+      response: {
+        status: 403,
+        data: { code: 'chat.denied', message: 'chat denied' },
+      },
+    });
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockImplementationOnce(async () => {
+          jest.setSystemTime(new Date('2026-03-03T10:00:05.000Z'));
+          throw retryError;
+        })
+        .mockRejectedValueOnce(terminalError),
+    };
+    const service = new AdminService(
+      createPrismaMock() as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const runtime = broadcastRuntime(service);
+    jest
+      .spyOn(runtime, 'resolveManagedBroadcastSendRetryDelayMs')
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(null);
+    const attemptEpochs: Date[] = [];
+
+    const sendPromise = runtime.sendManagedBroadcastMessageImmediateWithId(
+      'chat-1',
+      'Напоминание',
+      undefined,
+      'bot-1',
+      undefined,
+      undefined,
+      (startedAt: Date) => attemptEpochs.push(startedAt),
+    );
+    const sendExpectation = expect(sendPromise).rejects.toBe(terminalError);
+    await waitForPendingFakeTimer();
+    await jest.advanceTimersByTimeAsync(1);
+
+    await sendExpectation;
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(attemptEpochs).toHaveLength(2);
+    expect(attemptEpochs[1].getTime()).toBeGreaterThan(attemptEpochs[0].getTime());
+  });
+
   it.each([
     {
       label: 'transport timeout',
@@ -23632,7 +23733,8 @@ describe('AdminService.sendBroadcast', () => {
   );
 
   it('retries a managed broadcast with the promoted survivor and keeps future occurrences', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+    const maxSendAttemptStartedAt = new Date('2026-03-03T10:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(maxSendAttemptStartedAt);
 
     const prisma = createPrismaMock();
     const deliveries = wireManagedBroadcastDeliveryStore(prisma);
@@ -23739,6 +23841,17 @@ describe('AdminService.sendBroadcast', () => {
       undefined,
       expect.objectContaining({ botId: 'bot-2' }),
     );
+    expect(accessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      entityType: 'CHAT',
+      source: 'managed_broadcast:delivery',
+      operation: 'send',
+      error: denied,
+      lifecycleEventAt: maxSendAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    });
     expect(result.sentChats).toBe(1);
     expect(deliveries).toEqual(
       expect.arrayContaining([
@@ -27064,7 +27177,7 @@ describe('AdminService.sendBroadcast', () => {
       },
     );
 
-    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(3);
     expect(prisma.managedBroadcastOccurrence.createMany).toHaveBeenCalledTimes(2);
     expect(result.scheduledSlots).toEqual(['2026-03-03T12:00:00.000Z']);
   });
@@ -30351,23 +30464,27 @@ describe('AdminService chat rules', () => {
         publishedBotId: 'rules-author-bot',
       }),
     });
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    const rulesChatUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) =>
+        args?.where?.id === 'chat-1' &&
+        args?.update?.settings?.upsert?.update?.rulesAttachViolationsEnabled === true,
+    )?.[0];
+    expect(rulesChatUpsert?.update).toEqual(
       expect.objectContaining({
-        where: { id: 'chat-1' },
-        update: expect.objectContaining({
-          settings: {
-            upsert: {
-              update: {
-                rulesAttachViolationsEnabled: true,
-              },
-              create: {
-                rulesAttachViolationsEnabled: true,
-              },
+        settings: {
+          upsert: {
+            update: {
+              rulesAttachViolationsEnabled: true,
+            },
+            create: {
+              rulesAttachViolationsEnabled: true,
             },
           },
-        }),
+        },
       }),
     );
+    expect(rulesChatUpsert?.update).not.toHaveProperty('botId');
+    expect(rulesChatUpsert?.update).not.toHaveProperty('primaryBotId');
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',

@@ -493,6 +493,7 @@ type MaxApiRequestOptions = {
   timeoutMs?: number;
   botId?: string;
   forceUpsert?: boolean;
+  replaceUpdateTypes?: boolean;
   rateLimitEntityId?: string;
 };
 
@@ -1989,15 +1990,17 @@ export class MaxClientService implements OnModuleDestroy {
     const current =
       existing.find((item) => item.url === bot.webhookUrl) ??
       existing.find((item) => this.normalizeUrl(item.url) === this.normalizeUrl(bot.webhookUrl!));
-    const mergedUpdateTypes = Array.from(
-      new Set([...(current?.updateTypes ?? []), ...normalizedRequired]),
+    const targetUpdateTypes = (
+      options.replaceUpdateTypes === true
+        ? [...normalizedRequired]
+        : Array.from(new Set([...(current?.updateTypes ?? []), ...normalizedRequired]))
     ).sort();
 
     if (
       current &&
       options.forceUpsert !== true &&
-      current.updateTypes.length === mergedUpdateTypes.length &&
-      current.updateTypes.every((value, index) => value === mergedUpdateTypes[index])
+      current.updateTypes.length === targetUpdateTypes.length &&
+      current.updateTypes.every((value, index) => value === targetUpdateTypes[index])
     ) {
       return current;
     }
@@ -2008,7 +2011,7 @@ export class MaxClientService implements OnModuleDestroy {
         this.request('post', '/subscriptions', {
           data: {
             url: bot.webhookUrl,
-            update_types: mergedUpdateTypes,
+            update_types: targetUpdateTypes,
             secret: bot.webhookHeaderSecret,
           },
         }),
@@ -2022,7 +2025,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     return {
       url: bot.webhookUrl,
-      updateTypes: mergedUpdateTypes,
+      updateTypes: targetUpdateTypes,
     };
   }
 

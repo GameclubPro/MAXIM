@@ -44,7 +44,7 @@ export type MaxExtendedWebhookLifecycleMode = 'off' | 'shadow' | 'canary' | 'on'
 export function resolveRequiredWebhookUpdateTypes(
   mode: MaxExtendedWebhookLifecycleMode | string | null | undefined,
 ): readonly string[] {
-  return mode === 'canary' || mode === 'on'
-    ? MAX_REQUIRED_WEBHOOK_UPDATE_TYPES
-    : MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES;
+  return mode === 'off'
+    ? MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES
+    : MAX_REQUIRED_WEBHOOK_UPDATE_TYPES;
 }

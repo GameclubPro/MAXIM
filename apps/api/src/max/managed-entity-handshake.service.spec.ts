@@ -1,6 +1,4 @@
 import {
-  ChatBotMembershipRole,
-  ChatBotMembershipStatus,
   ChatEntityType,
   ManagedEntityAccessState,
   ManagedEntityHandshakeOutcomeStatus,
@@ -10,6 +8,7 @@ import {
   ManagedEntityHandshakeService,
   MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
 } from './managed-entity-handshake.service';
+import type { MaxChatMemberAccess } from './max-client.service';
 import { WebhookParser } from '../webhook/webhook.parser';
 
 function createUpdate(overrides: Record<string, unknown> = {}) {
@@ -107,28 +106,38 @@ function createForwardedUpdate(options: ForwardedUpdateOptions = {}) {
 }
 
 function createFixture() {
+  const transaction = jest.fn();
   const prisma = {
     chatBotMembership: {
       upsert: jest.fn((args) => ({ operation: 'membership.upsert', args })),
     },
     chatAdminAllowlist: {
       upsert: jest.fn((args) => ({ operation: 'allowlist.upsert', args })),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     managedEntityAdminMember: {
       upsert: jest.fn((args) => ({ operation: 'adminMember.upsert', args })),
+      findFirst: jest.fn().mockResolvedValue(null),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     managedBotChatCatalog: {
       upsert: jest.fn().mockResolvedValue(undefined),
     },
     managedEntityAccessEdge: {
       findUnique: jest.fn().mockResolvedValue(null),
+      findFirst: jest.fn().mockResolvedValue(null),
       upsert: jest.fn((args) => ({ operation: 'edge.upsert', args })),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     managedEntityLocalActivity: {
       upsert: jest.fn((args) => ({ operation: 'activity.upsert', args })),
     },
-    $transaction: jest.fn(async (operations) => operations),
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 'membership-1' }]),
+    $transaction: transaction,
   };
+  transaction.mockImplementation(async (callback: (client: typeof prisma) => Promise<unknown>) =>
+    callback(prisma),
+  );
   const maxClient = {
     getChatSnapshot: jest.fn().mockResolvedValue({
       chatId: FORWARDED_SOURCE_CHAT_ID,
@@ -177,6 +186,8 @@ function createFixture() {
   };
   const maxBotLinkService = {
     bindDiscoveredChatBots: jest.fn().mockResolvedValue('bot-1'),
+    recordBotAccessProbe: jest.fn().mockResolvedValue(true),
+    reconcileChatPrimaryByAccess: jest.fn().mockResolvedValue('bot-1'),
     buildEntryMiniappStartUrlSync: jest.fn().mockReturnValue('https://max.ru/entry?startapp=mr-x'),
     buildMiniappStartUrlSync: jest.fn().mockReturnValue('https://max.ru/bot-1?startapp=mr-x'),
   };
@@ -192,7 +203,14 @@ function createFixture() {
     upsertManagedEntityPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
     setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
     setAdminAccess: jest.fn().mockResolvedValue(undefined),
+    clearAdminAccess: jest.fn().mockResolvedValue(undefined),
     rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
+    rememberChatAdminUserFenced: jest.fn().mockResolvedValue(undefined),
+    invalidate: jest.fn().mockResolvedValue(undefined),
+    invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+    clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
+    clearManagedEntitiesPublishedSnapshotsForUsers: jest.fn().mockResolvedValue(undefined),
+    applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
   };
   const rosterSync = {
     processJob: jest.fn().mockResolvedValue(true),
@@ -273,41 +291,45 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
-    expect(fixture.prisma.chatBotMembership.upsert).toHaveBeenCalledWith(
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          chatId_botId: {
-            chatId: '-100',
-            botId: 'bot-1',
-          },
-        },
-        create: expect.objectContaining({
-          role: ChatBotMembershipRole.PRIMARY,
-          status: ChatBotMembershipStatus.ACTIVE,
+        chatId: '-100',
+        botId: 'bot-1',
+        source: 'handshake_start',
+        checkedAt: expect.any(Date),
+        allowMembershipRecovery: true,
+      }),
+    );
+    expect(fixture.prisma.chatBotMembership.upsert).not.toHaveBeenCalled();
+    const lockSql = fixture.prisma.$queryRaw.mock.calls.map(([query]) =>
+      (query as readonly string[]).join(''),
+    );
+    expect(lockSql).toHaveLength(4);
+    expect(lockSql[0]).toContain('FROM "chats"');
+    expect(lockSql[1]).toContain('FROM "chat_bot_memberships"');
+    expect(lockSql[2]).toContain('FROM "chats"');
+    expect(lockSql[3]).toContain('FROM "chat_bot_memberships"');
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(1);
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100',
+        userId: 'admin-1',
+        state: 'granted',
+        eventAt: expect.any(Date),
+        publishedSummary: expect.objectContaining({
+          id: '-100',
+          title: 'Команда MAX',
+          entityType: 'chat',
         }),
-        update: expect.objectContaining({
-          status: ChatBotMembershipStatus.ACTIVE,
-          permissionsSnapshot: expect.objectContaining({ isAdmin: true }),
+        recentBootstrapSummary: expect.objectContaining({
+          id: '-100',
+          title: 'Команда MAX',
+          entityType: 'chat',
         }),
       }),
     );
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
-      'admin-1',
-      expect.objectContaining({
-        id: '-100',
-        title: 'Команда MAX',
-        entityType: 'chat',
-      }),
-      expect.any(Number),
-    );
-    expect(fixture.chatContextCache.setAdminAccess).toHaveBeenCalledWith(
-      '-100',
-      'admin-1',
-      'granted',
-    );
-    expect(fixture.chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('-100', 'admin-1');
-    expect(fixture.chatContextCache.setAdminAccess.mock.invocationCallOrder[0]).toBeLessThan(
-      fixture.chatContextCache.upsertManagedEntityPublishedSnapshot.mock.invocationCallOrder[0],
+    expect(fixture.prisma.$queryRaw.mock.invocationCallOrder[3]).toBeLessThan(
+      fixture.chatContextCache.applyAdminAccessEpochMutation.mock.invocationCallOrder[0],
     );
     const catalogWrite = fixture.prisma.managedBotChatCatalog.upsert.mock.calls[0]?.[0] as {
       create: Record<string, unknown>;
@@ -350,12 +372,12 @@ describe('ManagedEntityHandshakeService', () => {
     );
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
       '-100',
-      expect.objectContaining({ sourceTag: 'managed_handshake' }),
+      expect.objectContaining({ sourceTag: 'managed_handshake', bypassCache: true }),
     );
     expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       '-100',
       ['admin-1'],
-      expect.objectContaining({ sourceTag: 'managed_handshake' }),
+      expect.objectContaining({ sourceTag: 'managed_handshake', bypassCache: true }),
     );
     expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -364,6 +386,267 @@ describe('ManagedEntityHandshakeService', () => {
         botId: 'bot-1',
         entityType: ChatEntityType.CHAT,
         status: ManagedEntityHandshakeOutcomeStatus.CONNECTED,
+      }),
+    );
+  });
+
+  it('compensates its SQL grant when a newer cache epoch rejects publication', async () => {
+    const fixture = createFixture();
+    fixture.chatContextCache.applyAdminAccessEpochMutation.mockResolvedValueOnce(false);
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.not.toBe(
+      'connected',
+    );
+
+    expect(fixture.prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: '-100',
+          userId: 'admin-1',
+          state: ManagedEntityAccessState.GRANTED,
+          checkedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(fixture.prisma.managedEntityAdminMember.deleteMany).toHaveBeenCalled();
+    expect(fixture.prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-100',
+        userId: { in: ['admin-1', 'idadmin-1'] },
+      },
+    });
+  });
+
+  it('anchors every granted access write to the start of live MAX verification', async () => {
+    const probeStartedAt = new Date('2026-08-20T10:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(probeStartedAt);
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockImplementationOnce(async () => {
+      jest.setSystemTime(new Date('2026-08-20T10:00:05.000Z'));
+      return {
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      };
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+
+    const persistedProbe = fixture.maxBotLinkService.recordBotAccessProbe.mock.calls[0]?.[0] as {
+      checkedAt: Date;
+    };
+    expect(persistedProbe.checkedAt).toEqual(probeStartedAt);
+
+    const adminWrite = fixture.prisma.managedEntityAdminMember.upsert.mock.calls[0]?.[0] as {
+      create: { checkedAt: Date; expiresAt: Date };
+      update: { checkedAt: Date; expiresAt: Date };
+    };
+    const edgeWrite = fixture.prisma.managedEntityAccessEdge.upsert.mock.calls[0]?.[0] as {
+      create: { checkedAt: Date; expiresAt: Date };
+      update: { checkedAt: Date; expiresAt: Date };
+    };
+    const activityWrite = fixture.prisma.managedEntityLocalActivity.upsert.mock.calls[0]?.[0] as {
+      create: { lastEventAt: Date };
+      update: { lastEventAt: Date };
+    };
+    const expectedExpiry = new Date(probeStartedAt.getTime() + 3 * 24 * 60 * 60 * 1_000);
+    expect(adminWrite.create).toEqual(
+      expect.objectContaining({ checkedAt: probeStartedAt, expiresAt: expectedExpiry }),
+    );
+    expect(adminWrite.update).toEqual(
+      expect.objectContaining({ checkedAt: probeStartedAt, expiresAt: expectedExpiry }),
+    );
+    expect(edgeWrite.create).toEqual(
+      expect.objectContaining({ checkedAt: probeStartedAt, expiresAt: expectedExpiry }),
+    );
+    expect(edgeWrite.update).toEqual(
+      expect.objectContaining({ checkedAt: probeStartedAt, expiresAt: expectedExpiry }),
+    );
+    expect(activityWrite.create.lastEventAt).toEqual(probeStartedAt);
+    expect(activityWrite.update.lastEventAt).toEqual(probeStartedAt);
+    expect(fixture.prisma.$queryRaw.mock.calls[1]?.slice(1)).toEqual(
+      expect.arrayContaining(['-100', 'bot-1', probeStartedAt, 'handshake_start']),
+    );
+  });
+
+  it.each([ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED] as const)(
+    'does not restore a delayed grant over a newer %s edge stored under an id-prefixed alias',
+    async (newerState) => {
+      const probeStartedAt = new Date('2026-08-20T10:00:00.000Z');
+      const newerCheckedAt = new Date('2026-08-20T10:00:01.000Z');
+      jest.useFakeTimers().setSystemTime(probeStartedAt);
+      const fixture = createFixture();
+      let resolveUserAccess!: (value: Map<string, MaxChatMemberAccess>) => void;
+      let notifyUserProbeStarted!: () => void;
+      const userProbeStarted = new Promise<void>((resolve) => {
+        notifyUserProbeStarted = resolve;
+      });
+      const delayedUserAccess = new Promise<Map<string, MaxChatMemberAccess>>((resolve) => {
+        resolveUserAccess = resolve;
+      });
+      fixture.maxClient.getChatMembersAccess.mockImplementationOnce(() => {
+        notifyUserProbeStarted();
+        return delayedUserAccess;
+      });
+
+      const pendingHandshake = fixture.service.handleWebhookUpdate(
+        createUpdate({ message: { senderId: '123' } }),
+      );
+      await userProbeStarted;
+
+      jest.setSystemTime(newerCheckedAt);
+      fixture.prisma.managedEntityAccessEdge.findFirst.mockResolvedValueOnce({
+        userId: 'id123',
+        state: newerState,
+        checkedAt: newerCheckedAt,
+      });
+      resolveUserAccess(
+        new Map([
+          [
+            '123',
+            {
+              userId: '123',
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['change_chat_info'],
+            },
+          ],
+        ]),
+      );
+
+      await expect(pendingHandshake).resolves.toBe('failed');
+
+      expect(fixture.prisma.managedEntityAccessEdge.findFirst).toHaveBeenCalledWith({
+        where: {
+          chatId: '-100',
+          userId: { in: ['123', 'id123'] },
+          checkedAt: { gt: probeStartedAt },
+        },
+        select: { checkedAt: true },
+      });
+      expect(fixture.prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+      expect(fixture.prisma.managedEntityAdminMember.upsert).not.toHaveBeenCalled();
+      expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(fixture.prisma.managedEntityLocalActivity.upsert).not.toHaveBeenCalled();
+      expect(fixture.prisma.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+      expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+      expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ManagedEntityHandshakeOutcomeStatus.FAILED,
+          reason: 'bot_access_probe_superseded',
+        }),
+      );
+    },
+  );
+
+  it('does not publish grants when a newer membership event supersedes the live probe', async () => {
+    const fixture = createFixture();
+    fixture.maxBotLinkService.recordBotAccessProbe.mockResolvedValueOnce(false);
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('failed');
+
+    expect(fixture.prisma.$transaction).not.toHaveBeenCalled();
+    expect(fixture.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAdminMember.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityLocalActivity.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxBotLinkService.reconcileChatPrimaryByAccess).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '-100',
+      'Доступ изменился во время проверки. Отправьте «Старт» еще раз.',
+      undefined,
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.FAILED,
+        reason: 'bot_access_probe_superseded',
+      }),
+    );
+    const internals = fixture.service as unknown as {
+      rateLimitUntilMs: Map<string, number>;
+    };
+    expect(internals.rateLimitUntilMs.size).toBe(0);
+  });
+
+  it('does not publish grants when the accepted membership epoch changes before commit', async () => {
+    const fixture = createFixture();
+    fixture.prisma.$queryRaw.mockResolvedValueOnce([{ id: 'chat-1' }]).mockResolvedValueOnce([]);
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('failed');
+
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAdminMember.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityLocalActivity.upsert).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.FAILED,
+        reason: 'bot_access_probe_superseded',
+      }),
+    );
+  });
+
+  it('does not publish caches when removal wins after the database grant commits', async () => {
+    const fixture = createFixture();
+    fixture.prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'chat-1' }])
+      .mockResolvedValueOnce([{ id: 'membership-1' }])
+      .mockResolvedValueOnce([{ id: 'chat-1' }])
+      .mockResolvedValueOnce([]);
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('failed');
+
+    expect(fixture.prisma.$transaction).toHaveBeenCalledTimes(3);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        chatId: '-100',
+        userId: 'admin-1',
+        botId: 'bot-1',
+        state: ManagedEntityAccessState.GRANTED,
+        checkedAt: expect.any(Date),
+      }),
+      data: expect.objectContaining({
+        state: ManagedEntityAccessState.BOT_DENIED,
+        expiresAt: null,
+        deniedReason: 'bot_access_probe_superseded',
+      }),
+    });
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(
+      fixture.chatContextCache.clearManagedEntitiesRecentBootstrapForChat,
+    ).not.toHaveBeenCalled();
+    expect(
+      fixture.chatContextCache.clearManagedEntitiesPublishedSnapshotsForUsers,
+    ).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.clearAdminAccess).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.invalidate).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.FAILED,
+        reason: 'bot_access_probe_superseded',
       }),
     );
   });
@@ -412,13 +695,17 @@ describe('ManagedEntityHandshakeService', () => {
       FORWARDED_SOURCE_CHAT_ID,
       expect.objectContaining({ bypassCache: true }),
     );
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
-      FORWARDED_USER_ID,
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: FORWARDED_SOURCE_CHAT_ID,
-        entityType: 'channel',
+        chatId: FORWARDED_SOURCE_CHAT_ID,
+        userId: FORWARDED_USER_ID,
+        state: 'granted',
+        eventAt: expect.any(Date),
+        publishedSummary: expect.objectContaining({
+          id: FORWARDED_SOURCE_CHAT_ID,
+          entityType: 'channel',
+        }),
       }),
-      expect.any(Number),
     );
     expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
     expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
@@ -571,13 +858,16 @@ describe('ManagedEntityHandshakeService', () => {
       ),
     ).resolves.toBe('connected');
 
-    expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: '-100',
-        entityType: 'chat',
+        chatId: '-100',
+        userId: 'admin-1',
+        state: 'granted',
+        recentBootstrapSummary: expect.objectContaining({
+          id: '-100',
+          entityType: 'chat',
+        }),
       }),
-      expect.any(Number),
-      'admin-1',
     );
     expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       '-100',
@@ -874,18 +1164,66 @@ describe('ManagedEntityHandshakeService', () => {
     ).resolves.toBe('bootstrapped_without_user');
 
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
-    expect(fixture.chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
     expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
       expect.objectContaining({ id: '-200', entityType: 'channel' }),
       expect.any(Number),
       null,
     );
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-200',
+        botId: 'bot-1',
+        checkedAt: expect.any(Date),
+        source: 'handshake_start',
+        allowMembershipRecovery: true,
+      }),
+    );
+    const lockSql = fixture.prisma.$queryRaw.mock.calls.map(([query]) =>
+      (query as readonly string[]).join(''),
+    );
+    expect(lockSql).toHaveLength(2);
+    expect(lockSql[0]).toContain('FROM "chats"');
+    expect(lockSql[1]).toContain('FROM "chat_bot_memberships"');
+    expect(lockSql[1]).not.toContain('FROM "chat_membership_activity_events"');
     expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'bot-1',
         status: ManagedEntityHandshakeOutcomeStatus.BOOTSTRAPPED_WITHOUT_USER,
         reason: 'sender_missing',
+      }),
+    );
+  });
+
+  it('does not revive catalog or recent UI when a newer removal supersedes bot-only bootstrap', async () => {
+    const fixture = createFixture();
+    fixture.maxBotLinkService.recordBotAccessProbe.mockResolvedValueOnce(false);
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          message: {
+            messageId: 'm-channel-superseded',
+            chatId: '-201',
+            chatTitle: 'Удаленный канал',
+            entityType: 'channel',
+            senderId: 'bot-1',
+            text: 'Старт',
+            createdAt: '2026-06-20T12:00:00.000Z',
+          },
+        }),
+      ),
+    ).resolves.toBe('failed');
+
+    expect(fixture.prisma.$transaction).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.FAILED,
+        reason: 'bot_access_probe_superseded',
       }),
     );
   });
@@ -909,10 +1247,17 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
-      'admin-1',
-      expect.objectContaining({ id: '-100', title: 'Команда MAX', entityType: 'chat' }),
-      expect.any(Number),
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100',
+        userId: 'admin-1',
+        state: 'granted',
+        publishedSummary: expect.objectContaining({
+          id: '-100',
+          title: 'Команда MAX',
+          entityType: 'chat',
+        }),
+      }),
     );
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
@@ -1124,16 +1469,19 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
-      FORWARDED_USER_ID,
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: FORWARDED_SOURCE_CHAT_ID,
-        title: 'Новости MAX',
-        entityType: 'channel',
-        link: FORWARDED_SOURCE_LINK,
-        avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
+        chatId: FORWARDED_SOURCE_CHAT_ID,
+        userId: FORWARDED_USER_ID,
+        state: 'granted',
+        publishedSummary: expect.objectContaining({
+          id: FORWARDED_SOURCE_CHAT_ID,
+          title: 'Новости MAX',
+          entityType: 'channel',
+          link: FORWARDED_SOURCE_LINK,
+          avatarUrl: FORWARDED_SOURCE_AVATAR_URL,
+        }),
       }),
-      expect.any(Number),
     );
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       FORWARDED_PRIVATE_CHAT_ID,
@@ -1197,10 +1545,17 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledWith(
-      FORWARDED_USER_ID,
-      expect.objectContaining({ id: sourceChatId, title: 'Рабочая группа', entityType: 'chat' }),
-      expect.any(Number),
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: sourceChatId,
+        userId: FORWARDED_USER_ID,
+        state: 'granted',
+        publishedSummary: expect.objectContaining({
+          id: sourceChatId,
+          title: 'Рабочая группа',
+          entityType: 'chat',
+        }),
+      }),
     );
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       FORWARDED_PRIVATE_CHAT_ID,
@@ -1234,7 +1589,7 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       1,
       FORWARDED_PRIVATE_CHAT_ID,
@@ -1434,7 +1789,7 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
     expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledTimes(1);
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(1);
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
   });
@@ -1450,7 +1805,7 @@ describe('ManagedEntityHandshakeService', () => {
     await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('rate_limited');
 
     expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
-    expect(fixture.chatContextCache.upsertManagedEntityPublishedSnapshot).toHaveBeenCalledTimes(1);
+    expect(fixture.chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(1);
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
     expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledTimes(1);
   });

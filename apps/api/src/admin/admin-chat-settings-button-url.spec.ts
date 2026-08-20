@@ -71,6 +71,10 @@ describe('stored chat settings button URL sanitizer', () => {
       chatContextCache: { invalidate },
       logger: { warn },
       chatId: 'chat-1',
+      botAssignmentData: {
+        botId: 'stale-bot',
+        primaryBotId: 'stale-bot',
+      },
     });
 
     expect(result.antiSpamEnabled).toBe(true);
@@ -85,5 +89,11 @@ describe('stored chat settings button URL sanitizer', () => {
     });
     expect(warn).not.toHaveBeenCalled();
     expect(invalidate).toHaveBeenCalledWith('chat-1');
+    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
+    expect(upsert?.create).toEqual(
+      expect.objectContaining({ botId: 'stale-bot', primaryBotId: 'stale-bot' }),
+    );
+    expect(upsert?.update).not.toHaveProperty('botId');
+    expect(upsert?.update).not.toHaveProperty('primaryBotId');
   });
 });

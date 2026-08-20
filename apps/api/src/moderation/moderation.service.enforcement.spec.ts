@@ -32,6 +32,53 @@ import {
   type MaxUpdate,
 } from './moderation.service.spec-support';
 
+function installRemoteAdminProbeFence(prisma: object): void {
+  Object.assign(prisma, {
+    $transaction: jest.fn().mockImplementation(async (operation: (tx: unknown) => unknown) =>
+      operation({
+        $queryRaw: jest.fn().mockImplementation(async (query: unknown) => {
+          const sql = (query as { strings?: readonly string[] }).strings?.join('?') ?? '';
+          return sql.includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [];
+        }),
+      }),
+    ),
+  });
+}
+
+function createAdminAccessEpochCache(
+  context: {
+    settings?: ReturnType<typeof createSettings>;
+    adminUserIds?: string[];
+  } = {},
+) {
+  const states = new Map<string, 'granted' | 'user_denied'>();
+  return {
+    getChatContext: jest.fn().mockResolvedValue({
+      chatId: 'chat-1',
+      title: 'Chat 1',
+      settings: context.settings ?? createSettings(),
+      domainAllowlist: [],
+      adminUserIds: context.adminUserIds ?? [],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    }),
+    getAdminAccessBatch: jest
+      .fn()
+      .mockImplementation(
+        async (_chatId: string, userIds: readonly string[]) =>
+          new Map(userIds.map((userId) => [userId, states.get(userId) ?? null] as const)),
+      ),
+    applyAdminAccessEpochMutation: jest
+      .fn()
+      .mockImplementation(
+        async (params: { userId: string; state: 'granted' | 'user_denied' }) => {
+          states.set(params.userId, params.state);
+          return true;
+        },
+      ),
+  };
+}
+
 describe('ModerationService', () => {
   it('deletes night mode messages silently even when bot notice is enabled', async () => {
     const nowParts = new Intl.DateTimeFormat('en-GB', {
@@ -314,6 +361,9 @@ describe('ModerationService', () => {
       expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledWith({
         chatId: 'chat-1',
         botId: 'bot-1',
+        lifecycleEventAt: new Date('2026-05-30T20:00:15.000Z'),
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
         reason: 'chat_not_found',
         source: 'night_mode_transition:send-close-notice',
         lastMaxErrorCode: null,
@@ -1023,6 +1073,9 @@ describe('ModerationService', () => {
       expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledWith({
         chatId: 'chat-1',
         botId: 'bot-1',
+        lifecycleEventAt: new Date('2026-05-31T05:00:10.000Z'),
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
         reason: 'bot_denied',
         source: 'night_mode_transition:send-open-notice',
         lastMaxErrorCode: null,
@@ -1729,6 +1782,7 @@ describe('ModerationService', () => {
         upsert: jest.fn().mockResolvedValue(undefined),
       },
     };
+    installRemoteAdminProbeFence(prisma);
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
         violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Blocked link' }],
@@ -1769,7 +1823,7 @@ describe('ModerationService', () => {
         rulesPublishedMessageId: null,
       }),
       getAdminAccess: jest.fn().mockResolvedValue(null),
-      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
       invalidate: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -1790,22 +1844,20 @@ describe('ModerationService', () => {
       ignoreFailureMetricStatuses: [403, 404],
     });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
-    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
-      where: {
-        chatId_userId: {
-          chatId: 'chat-1',
-          userId: 'user-1',
-        },
-      },
-      create: {
-        chatId: 'chat-1',
-        userId: 'user-1',
-      },
-      update: {},
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      state: 'granted',
+      eventAt: expect.any(Date),
     });
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'user-1', 'granted');
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'iduser-1', 'granted');
-    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'iduser-1',
+      state: 'granted',
+      eventAt: expect.any(Date),
+    });
+    expect(chatContextCache.invalidate).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -3662,6 +3714,7 @@ describe('ModerationService', () => {
         update: jest.fn(),
       },
     };
+    installRemoteAdminProbeFence(prisma);
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
         violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Blocked link' }],
@@ -3690,12 +3743,16 @@ describe('ModerationService', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const chatContextCache = createAdminAccessEpochCache({
+      adminUserIds: ['existing-admin'],
+    });
 
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      chatContextCache as never,
     );
 
     await service.handleUpdate(createUpdate());
@@ -3731,6 +3788,7 @@ describe('ModerationService', () => {
         update: jest.fn(),
       },
     };
+    installRemoteAdminProbeFence(prisma);
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
         violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Blocked link' }],
@@ -3762,6 +3820,9 @@ describe('ModerationService', () => {
     const karavanStorefrontRelayService = {
       handleMessageCreated: jest.fn().mockResolvedValue('handled'),
     };
+    const chatContextCache = createAdminAccessEpochCache({
+      adminUserIds: ['existing-admin'],
+    });
     const baseUpdate = createUpdate();
     const update = {
       ...baseUpdate,
@@ -3792,6 +3853,7 @@ describe('ModerationService', () => {
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      chatContextCache as never,
     );
     (
       service as unknown as {
@@ -3981,6 +4043,7 @@ describe('ModerationService', () => {
         update: jest.fn(),
       },
     };
+    installRemoteAdminProbeFence(prisma);
     const ruleEngine = {
       detect: jest.fn(),
     };
@@ -4006,6 +4069,13 @@ describe('ModerationService', () => {
       sanctionService,
       maxClient,
       manualBridge: adminService,
+      chatContextCache: createAdminAccessEpochCache({
+        settings: createSettings({
+          muteDurationHours: 12,
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: 3,
+        }),
+      }),
     });
 
     await service.handleUpdate(createAdminForwardedBanUpdate());
@@ -4355,6 +4425,7 @@ describe('ModerationService', () => {
 
   it('batches concurrent remote chat admin lookups within the same chat', async () => {
     const prisma = {};
+    installRemoteAdminProbeFence(prisma);
     const maxClient = {
       getChatMembersAccess: jest.fn().mockResolvedValue(
         new Map([
@@ -4373,7 +4444,7 @@ describe('ModerationService', () => {
     };
     const chatContextCache = {
       getAdminAccess: jest.fn().mockResolvedValue(null),
-      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
       invalidate: jest.fn().mockResolvedValue(undefined),
     };
     const service = new ModerationService(
@@ -4406,6 +4477,7 @@ describe('ModerationService', () => {
 
   it('routes remote chat admin lookups through the chat-bound bot when one is assigned', async () => {
     const prisma = {};
+    installRemoteAdminProbeFence(prisma);
     const maxClient = {
       getChatMembersAccess: jest.fn().mockResolvedValue(
         new Map([
@@ -4433,7 +4505,7 @@ describe('ModerationService', () => {
     };
     const chatContextCache = {
       getAdminAccess: jest.fn().mockResolvedValue(null),
-      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
       invalidate: jest.fn().mockResolvedValue(undefined),
     };
     const maxBotLinkService = {
@@ -4482,7 +4554,7 @@ describe('ModerationService', () => {
     };
     const chatContextCache = {
       getAdminAccess: jest.fn().mockResolvedValue(null),
-      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
       invalidate: jest.fn().mockResolvedValue(undefined),
     };
     const service = new ModerationService(

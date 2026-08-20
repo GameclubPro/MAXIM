@@ -26,6 +26,7 @@ export class WebhookParser {
     const senderName = this.extractSenderName(message, payload);
     const chatTitle = this.extractChatTitle(message, payload);
     const messageText = this.extractMessageText(message);
+    const messagePostId = this.extractMessagePostId(message, payload, type);
     const eventTimestamp = this.extractEventTimestamp(type, message, payload);
     const membershipPayload = this.extractMembershipPayload(payload, type);
     const membershipChatId = this.extractMembershipChatId(membershipPayload);
@@ -47,6 +48,7 @@ export class WebhookParser {
       message,
       resolvedSenderId,
       membershipInviterId,
+      options.botId,
     );
     const hasMessage =
       Boolean(message && resolvedMessageId && resolvedChatId) ||
@@ -60,6 +62,7 @@ export class WebhookParser {
       message: hasMessage
         ? {
             messageId: resolvedMessageId,
+            ...(messagePostId ? { postId: messagePostId } : {}),
             chatId: resolvedChatId,
             ...(chatTitle ? { chatTitle } : {}),
             ...(chatEntityType ? { entityType: chatEntityType } : {}),
@@ -197,25 +200,30 @@ export class WebhookParser {
     message: Record<string, unknown> | undefined,
     resolvedSenderId: string,
     inviterId?: string,
+    ingressBotId?: string,
   ): MaxUpdate['membership'] | undefined {
     const normalizedType = type.trim().toLowerCase();
 
-    if (
-      normalizedType === 'user_added' ||
-      normalizedType === 'bot_added' ||
-      normalizedType === 'user_removed' ||
-      normalizedType === 'bot_removed'
-    ) {
+    if (normalizedType === 'bot_added' || normalizedType === 'bot_removed') {
+      const lifecycleSubjectBotId = ingressBotId?.trim() ?? '';
+      if (!lifecycleSubjectBotId) {
+        return undefined;
+      }
+
+      return {
+        action: normalizedType === 'bot_removed' ? 'removed' : 'added',
+        memberUserIds: [lifecycleSubjectBotId],
+      };
+    }
+
+    if (normalizedType === 'user_added' || normalizedType === 'user_removed') {
       const memberUserIds = resolvedSenderId ? [resolvedSenderId] : [];
       if (memberUserIds.length === 0) {
         return undefined;
       }
 
       return {
-        action:
-          normalizedType === 'user_removed' || normalizedType === 'bot_removed'
-            ? 'removed'
-            : 'added',
+        action: normalizedType === 'user_removed' ? 'removed' : 'added',
         memberUserIds,
         ...(inviterId && normalizedType === 'user_added' ? { inviterId } : {}),
       };
@@ -253,6 +261,29 @@ export class WebhookParser {
     }
 
     return undefined;
+  }
+
+  private extractMessagePostId(
+    message: Record<string, unknown> | undefined,
+    payload: Record<string, unknown>,
+    type: string,
+  ): string {
+    const recipient = this.asRecord(message?.recipient);
+    const candidates = [
+      recipient?.post_id,
+      recipient?.postId,
+      ...(type.trim().toLowerCase() === 'message_removed' ? [payload.post_id, payload.postId] : []),
+    ];
+    for (const value of candidates) {
+      if (typeof value === 'string' || typeof value === 'number') {
+        const normalized = String(value).trim();
+        if (normalized) {
+          return normalized;
+        }
+      }
+    }
+
+    return '';
   }
 
   private extractMembershipChatId(node: Record<string, unknown> | null): string {

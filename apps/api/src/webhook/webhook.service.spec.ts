@@ -1,4 +1,6 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { ChatEntityType } from '../prisma/prisma-client';
+import { WebhookParser } from './webhook.parser';
 import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
@@ -14,46 +16,102 @@ describe('WebhookService', () => {
     const values = (query as { values?: unknown[] } | null)?.values;
     return Array.isArray(values) ? values : [];
   };
+  const buildMembershipUpdate = (params: {
+    updateId: string;
+    type: 'user_added' | 'user_removed';
+    createdAt: string;
+    userIds?: string[];
+  }): MaxUpdate => {
+    const userIds = params.userIds ?? ['user-1'];
+    return {
+      updateId: params.updateId,
+      type: params.type,
+      botId: 'id613002203036_bot',
+      message: {
+        messageId: `${params.type}:${params.updateId}`,
+        chatId: '-100-membership',
+        chatTitle: 'Membership chat',
+        entityType: 'chat',
+        senderId: userIds[0],
+        text: '',
+        createdAt: params.createdAt,
+      },
+      membership: {
+        action: params.type === 'user_removed' ? 'removed' : 'added',
+        memberUserIds: userIds,
+      },
+    };
+  };
+  const createAtomicMembershipFixture = (options?: {
+    newerGrantedUserIds?: string[];
+    newerAdminUserIds?: string[];
+  }) => {
+    const operations: string[] = [];
+    const tx = {
+      chat: {
+        createMany: jest.fn(async () => {
+          operations.push('chat:create');
+          return { count: 0 };
+        }),
+      },
+      $queryRaw: jest.fn(async () => {
+        operations.push('chat:lock');
+        return [{ id: '-100-membership' }];
+      }),
+      $executeRaw: jest.fn(async (_query: unknown) => {
+        operations.push('activity:upsert');
+        return 1;
+      }),
+      managedEntityAccessEdge: {
+        updateMany: jest.fn(async () => {
+          operations.push('edge:deny');
+          return { count: 1 };
+        }),
+        findMany: jest.fn(async () => {
+          operations.push('edge:newer');
+          return (options?.newerGrantedUserIds ?? []).map((userId) => ({ userId }));
+        }),
+      },
+      managedEntityAdminMember: {
+        deleteMany: jest.fn(async () => {
+          operations.push('admin:delete');
+          return { count: 1 };
+        }),
+        findMany: jest.fn(async () => {
+          operations.push('admin:newer');
+          return (options?.newerAdminUserIds ?? []).map((userId) => ({ userId }));
+        }),
+      },
+      chatAdminAllowlist: {
+        deleteMany: jest.fn(async () => {
+          operations.push('allowlist:delete');
+          return { count: 1 };
+        }),
+      },
+    };
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-atomic-membership' }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) => {
+        operations.push('transaction:start');
+        const result = await callback(tx);
+        operations.push('transaction:commit');
+        return result;
+      }),
+    };
+    return { operations, prisma, tx };
+  };
 
   const maxBotLinkService = {
     bindChatToBot: jest.fn().mockResolvedValue(undefined),
+    bindDiscoveredChatBots: jest.fn().mockResolvedValue(null),
     getStoredChatPrimaryBotId: jest.fn().mockResolvedValue(null),
     observeStoredChatBotWebhook: jest.fn().mockResolvedValue(undefined),
     markChatBotRemoved: jest.fn().mockResolvedValue(undefined),
+    recordBotAccessProbe: jest.fn().mockResolvedValue(true),
     reconcileChatPrimaryByAccess: jest.fn().mockResolvedValue(null),
-    resolveBotIdFromUserId: jest.fn((userId: string | number | null | undefined) => {
-      const normalized = String(userId ?? '')
-        .trim()
-        .toLowerCase();
-      if (
-        normalized === 'id613002203036_bot' ||
-        normalized === '613002203036' ||
-        normalized === '214634782'
-      ) {
-        return 'id613002203036_bot';
-      }
-      if (
-        normalized === 'id613002203036_4_bot' ||
-        normalized === '613002203036_4' ||
-        normalized === '214634783'
-      ) {
-        return 'id613002203036_4_bot';
-      }
-      if (normalized === 'bot-1' || normalized === 'bot-1-contact' || normalized === '1001') {
-        return 'bot-1';
-      }
-      if (normalized === 'bot-5' || normalized === 'bot-5-contact' || normalized === '5005') {
-        return 'bot-5';
-      }
-      if (
-        normalized === 'id613002203036_5_bot' ||
-        normalized === '613002203036_5' ||
-        normalized === '214634784'
-      ) {
-        return 'id613002203036_5_bot';
-      }
-      return null;
-    }),
   };
   const maxChatAdminRosterSyncService = {
     scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
@@ -63,15 +121,18 @@ describe('WebhookService', () => {
     jest.clearAllMocks();
     maxBotLinkService.bindChatToBot.mockReset();
     maxBotLinkService.bindChatToBot.mockResolvedValue(undefined);
+    maxBotLinkService.bindDiscoveredChatBots.mockReset();
+    maxBotLinkService.bindDiscoveredChatBots.mockResolvedValue(null);
     maxBotLinkService.getStoredChatPrimaryBotId.mockReset();
     maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(null);
     maxBotLinkService.observeStoredChatBotWebhook.mockReset();
     maxBotLinkService.observeStoredChatBotWebhook.mockResolvedValue(undefined);
     maxBotLinkService.markChatBotRemoved.mockReset();
     maxBotLinkService.markChatBotRemoved.mockResolvedValue(undefined);
+    maxBotLinkService.recordBotAccessProbe.mockReset();
+    maxBotLinkService.recordBotAccessProbe.mockResolvedValue(true);
     maxBotLinkService.reconcileChatPrimaryByAccess.mockReset();
     maxBotLinkService.reconcileChatPrimaryByAccess.mockResolvedValue(null);
-    maxBotLinkService.resolveBotIdFromUserId.mockClear();
     maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockReset();
     maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockResolvedValue(true);
   });
@@ -616,7 +677,7 @@ describe('WebhookService', () => {
     expect(handshake.handleWebhookUpdate).not.toHaveBeenCalled();
   });
 
-  it('stages a user-scoped managed entity bootstrap for Старт messages before deferred handshake completes', async () => {
+  it('stages a user-scoped managed entity bootstrap for Старт messages asynchronously', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-start-bootstrap' }),
@@ -663,6 +724,11 @@ describe('WebhookService', () => {
       duplicate: false,
     });
 
+    expect(chatContextCache.upsertManagedEntitiesRecentBootstrap).not.toHaveBeenCalled();
+    expect(handshake.handleWebhookUpdate).not.toHaveBeenCalled();
+
+    await flushDeferredWebhookWork();
+
     expect(chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
       expect.objectContaining({
         id: '-100',
@@ -673,10 +739,6 @@ describe('WebhookService', () => {
       expect.any(Number),
       'admin-1',
     );
-    expect(handshake.handleWebhookUpdate).not.toHaveBeenCalled();
-
-    await flushDeferredWebhookWork();
-
     expect(handshake.handleWebhookUpdate).toHaveBeenCalledWith(update);
   });
 
@@ -1114,12 +1176,12 @@ describe('WebhookService', () => {
 
     expect(membershipQuery).toBeDefined();
     expect(extractSqlText(membershipQuery)).toContain('WITH incoming');
-    expect(extractSqlText(membershipQuery)).toContain(
-      'UPDATE "chat_membership_activity_events" AS existing',
-    );
-    expect(extractSqlText(membershipQuery)).toContain('ON CONFLICT DO NOTHING');
+    expect(extractSqlText(membershipQuery)).toContain('ON CONFLICT ("dedupe_key") DO UPDATE SET');
     expect(extractSqlText(membershipQuery)).toContain(
       "COALESCE(BTRIM(existing.\"sender_name\"), '') = ''",
+    );
+    expect(extractSqlText(membershipQuery)).toContain(
+      'GREATEST(existing."event_at", EXCLUDED."event_at")',
     );
     expect(extractSqlText(membershipQuery)).toMatch(/::timestamp\(3\)[\s\S]*::timestamp\(3\)/u);
     expect(snapshotQuery).toBeDefined();
@@ -1134,14 +1196,11 @@ describe('WebhookService', () => {
     );
   });
 
-  it('best-effort invalidates membership cache for join and leave events after webhook persistence', async () => {
+  it('best-effort invalidates remote membership lookups for join and leave events', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-3b' }),
         updateMany: jest.fn(),
-      },
-      managedEntityAccessEdge: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const config = {
@@ -1203,23 +1262,404 @@ describe('WebhookService', () => {
     expect(membershipLookup.invalidateMemberships).toHaveBeenNthCalledWith(2, 'chat-1', [
       'user-10',
     ]);
-    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('commits membership activity, denial, and allowlist cleanup before publishing cache epochs', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const eventAt = new Date('2026-07-20T10:00:00.123Z');
+    const chatContextCache = {
+      applyAdminAccessEpochMutation: jest.fn(async ({ userId }: { userId: string }) => {
+        fixture.operations.push(`cache:${userId}`);
+        return true;
+      }),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-atomic-remove',
+          type: 'user_removed',
+          createdAt: eventAt.toISOString(),
+        }),
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(fixture.operations).toEqual([
+      'transaction:start',
+      'chat:create',
+      'chat:lock',
+      'activity:upsert',
+      'edge:deny',
+      'admin:delete',
+      'edge:newer',
+      'admin:newer',
+      'allowlist:delete',
+      'transaction:commit',
+      'cache:user-1',
+      'cache:iduser-1',
+    ]);
+    expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
       where: {
-        chatId: 'chat-1',
-        userId: {
-          in: ['user-10'],
-        },
+        chatId: '-100-membership',
+        userId: { in: ['user-1', 'iduser-1'] },
+        checkedAt: { lte: eventAt },
       },
       data: expect.objectContaining({
         state: 'USER_DENIED',
-        userRole: 'MEMBER',
-        botRole: 'UNKNOWN',
-        expiresAt: null,
+        checkedAt: eventAt,
         deniedReason: 'webhook_user_removed',
-        source: 'webhook_user_removed',
       }),
     });
-    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+    expect(fixture.tx.managedEntityAdminMember.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-100-membership',
+        userId: { in: ['user-1', 'iduser-1'] },
+        checkedAt: { lte: eventAt },
+      },
+    });
+    expect(fixture.tx.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-100-membership',
+        userId: { in: ['user-1', 'iduser-1'] },
+      },
+    });
+    expect(chatContextCache.applyAdminAccessEpochMutation.mock.calls.map(([args]) => args)).toEqual(
+      [
+        {
+          chatId: '-100-membership',
+          userId: 'user-1',
+          state: 'user_denied',
+          eventAt,
+        },
+        {
+          chatId: '-100-membership',
+          userId: 'iduser-1',
+          state: 'user_denied',
+          eventAt,
+        },
+      ],
+    );
+  });
+
+  it('preserves allowlist and cache state for every alias family with newer granted evidence', async () => {
+    const fixture = createAtomicMembershipFixture({
+      newerGrantedUserIds: ['iduser-1'],
+      newerAdminUserIds: ['user-2'],
+    });
+    const eventAt = new Date('2026-07-20T10:01:00.000Z');
+    const chatContextCache = {
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    await service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-old-remove',
+        type: 'user_removed',
+        createdAt: eventAt.toISOString(),
+        userIds: ['user-1', 'user-2', 'user-3'],
+      }),
+      '127.0.0.1',
+    );
+
+    const allVariants = ['user-1', 'iduser-1', 'user-2', 'iduser-2', 'user-3', 'iduser-3'];
+    expect(fixture.tx.managedEntityAccessEdge.findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-100-membership',
+        userId: { in: allVariants },
+        state: 'GRANTED',
+        checkedAt: { gt: eventAt },
+      },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+    expect(fixture.tx.managedEntityAdminMember.findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-100-membership',
+        userId: { in: allVariants },
+        checkedAt: { gt: eventAt },
+      },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+    expect(fixture.tx.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-100-membership',
+        userId: { in: ['user-3', 'iduser-3'] },
+      },
+    });
+    expect(
+      chatContextCache.applyAdminAccessEpochMutation.mock.calls.map(([args]) => args.userId),
+    ).toEqual(['user-3', 'iduser-3']);
+  });
+
+  it('keeps committed membership denial when cache epoch publication fails', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const chatContextCache = {
+      applyAdminAccessEpochMutation: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-remove-cache-failure',
+          type: 'user_removed',
+          createdAt: '2026-07-20T10:02:00.000Z',
+        }),
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(fixture.operations).toContain('transaction:commit');
+    expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.chatAdminAllowlist.deleteMany).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not hold webhook preparation indefinitely on a pending cache epoch mutation', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const neverSettles = new Promise<boolean>(() => undefined);
+    const chatContextCache = {
+      applyAdminAccessEpochMutation: jest.fn().mockReturnValue(neverSettles),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    let guardTimer: NodeJS.Timeout | null = null;
+    const outcome = await Promise.race([
+      service
+        .ingest(
+          buildMembershipUpdate({
+            updateId: 'u-remove-pending-cache',
+            type: 'user_removed',
+            createdAt: '2026-07-20T10:02:01.000Z',
+          }),
+          '127.0.0.1',
+        )
+        .then((result) => ({ kind: 'accepted' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        guardTimer = setTimeout(() => resolve({ kind: 'timeout' }), 750);
+      }),
+    ]);
+    if (guardTimer) {
+      clearTimeout(guardTimer);
+    }
+
+    expect(outcome).toEqual({
+      kind: 'accepted',
+      result: { accepted: true, duplicate: false },
+    });
+    expect(fixture.operations).toContain('transaction:commit');
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('resets prior admin evidence when user_added starts a new membership session', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const chatContextCache = {
+      applyAdminAccessEpochMutation: jest.fn(async ({ userId }: { userId: string }) => {
+        fixture.operations.push(`cache:${userId}`);
+        return true;
+      }),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    await service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-atomic-add',
+        type: 'user_added',
+        createdAt: '2026-07-20T10:03:00.000Z',
+      }),
+      '127.0.0.1',
+    );
+
+    expect(fixture.operations).toEqual([
+      'transaction:start',
+      'chat:create',
+      'chat:lock',
+      'activity:upsert',
+      'edge:deny',
+      'admin:delete',
+      'edge:newer',
+      'admin:newer',
+      'allowlist:delete',
+      'transaction:commit',
+      'cache:user-1',
+      'cache:iduser-1',
+    ]);
+    expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          state: 'USER_DENIED',
+          deniedReason: 'webhook_user_added',
+          source: 'webhook_user_added',
+        }),
+      }),
+    );
+    expect(fixture.tx.managedEntityAdminMember.deleteMany).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-100-membership',
+        userId: { in: ['user-1', 'iduser-1'] },
+      },
+    });
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves a grant newer than user_added for the full MAX id alias family', async () => {
+    const fixture = createAtomicMembershipFixture({
+      newerGrantedUserIds: ['iduser-1'],
+    });
+    const chatContextCache = {
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    await service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-add-before-newer-grant',
+        type: 'user_added',
+        createdAt: '2026-07-20T10:03:01.000Z',
+      }),
+      '127.0.0.1',
+    );
+
+    expect(fixture.tx.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+  });
+
+  it('advances the shared semantic removal row across rapid remove-add-remove updates', async () => {
+    const fixture = createAtomicMembershipFixture();
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+    );
+
+    await service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-rapid-remove-1',
+        type: 'user_removed',
+        createdAt: '2026-07-20T10:04:00.100Z',
+      }),
+      '127.0.0.1',
+    );
+    await service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-rapid-add',
+        type: 'user_added',
+        createdAt: '2026-07-20T10:04:00.500Z',
+      }),
+      '127.0.0.1',
+    );
+    await service.ingest(
+      buildMembershipUpdate({
+        updateId: 'u-rapid-remove-2',
+        type: 'user_removed',
+        createdAt: '2026-07-20T10:04:00.900Z',
+      }),
+      '127.0.0.1',
+    );
+
+    const projectionQueries = fixture.tx.$executeRaw.mock.calls.map(([query]) => query);
+    const projectionValues = projectionQueries.map(extractSqlValues);
+    expect(projectionValues.map((values) => values[1])).toEqual([
+      'membership:user_removed:-100-membership:user-1:2026-07-20T10:04:00.000Z',
+      'membership:user_added:-100-membership:user-1:2026-07-20T10:04:00.000Z',
+      'membership:user_removed:-100-membership:user-1:2026-07-20T10:04:00.000Z',
+    ]);
+    expect(projectionValues.map((values) => values[7])).toEqual([
+      new Date('2026-07-20T10:04:00.100Z'),
+      new Date('2026-07-20T10:04:00.500Z'),
+      new Date('2026-07-20T10:04:00.900Z'),
+    ]);
+    expect(projectionQueries.every((query) => extractSqlText(query).includes('GREATEST'))).toBe(
+      true,
+    );
+  });
+
+  it('repairs duplicate user_removed receipts through the atomic denial transition', async () => {
+    const fixture = createAtomicMembershipFixture();
+    fixture.prisma.webhookEvent.create.mockRejectedValueOnce({ code: 'P2002' });
+    const chatContextCache = {
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+    };
+    const service = new WebhookService(
+      fixture.prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    await expect(
+      service.ingest(
+        buildMembershipUpdate({
+          updateId: 'u-duplicate-remove',
+          type: 'user_removed',
+          createdAt: '2026-07-20T10:05:00.000Z',
+        }),
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: true });
+
+    expect(fixture.prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledTimes(1);
+    expect(fixture.tx.chatAdminAllowlist.deleteMany).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
   });
 
   it('persists admin read models for membership and managed-entities activity when projection tables are available', async () => {
@@ -1752,6 +2192,75 @@ describe('WebhookService', () => {
     );
   });
 
+  it('routes a trusted bot removal through access-loss cleanup without marking it twice', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-removal-cleanup' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const managedEntityAccessLossService = {
+      recordManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        nextOwnerBotId: 'bot-2',
+      }),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+      undefined,
+      undefined,
+      managedEntityAccessLossService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-removed-cleanup',
+          type: 'bot_removed',
+          botId: 'bot-1',
+          eventTimestampSource: 'payload',
+          message: {
+            messageId: 'bot_removed:u-bot-removed-cleanup',
+            chatId: '-100-removal-cleanup',
+            chatTitle: 'Shared chat',
+            entityType: 'chat',
+            senderId: 'admin-1',
+            text: '',
+            createdAt: lifecycleEventAt.toISOString(),
+          },
+        } as MaxUpdate,
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledTimes(1);
+    expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: '-100-removal-cleanup',
+      title: 'Shared chat',
+      entityType: ChatEntityType.CHAT,
+      botId: 'bot-1',
+      reason: 'bot_removed',
+      source: 'webhook_bot_removed',
+      lifecycleEventAt,
+      lifecycleEventType: 'bot_removed',
+      lifecycleSource: 'webhook',
+      cachePublicationWaitMs: 100,
+    });
+    expect(maxBotLinkService.markChatBotRemoved).not.toHaveBeenCalled();
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100-removal-cleanup',
+        botIds: ['bot-1'],
+        source: 'webhook_bot_removed',
+      }),
+    );
+  });
+
   it('keeps a lifecycle receipt retryable when removal persistence fails', async () => {
     const prisma = {
       webhookEvent: {
@@ -1845,7 +2354,7 @@ describe('WebhookService', () => {
     expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalled();
   });
 
-  it('marks the removed bot from MAX bot_removed payload when another bot receives the event', async () => {
+  it('parses an official bot_removed actor payload and removes the authenticated ingress bot', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-4b' }),
@@ -1860,61 +2369,74 @@ describe('WebhookService', () => {
       prisma as never,
       config as never,
       maxBotLinkService as never,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+    const update = new WebhookParser().parse(
+      {
+        update_id: 'u-bot-removed-official-1',
+        update_type: 'bot_removed',
+        chat_id: -73729721862151,
+        chat: {
+          chat_id: -73729721862151,
+          chat_type: 'chat',
+          title: 'Пантера',
+        },
+        user: {
+          user_id: 900001,
+          first_name: 'Иван',
+          last_name: 'Администратор',
+        },
+        timestamp: '2026-05-10T02:10:01.411Z',
+      },
+      { botId: 'id613002203036_bot' },
     );
 
-    await expect(
-      service.ingest(
-        {
-          updateId: 'u-bot-removed-cross-bot-1',
-          type: 'bot_removed',
-          botId: 'id613002203036_bot',
-          message: {
-            messageId: 'bot_removed:u-bot-removed-cross-bot-1',
-            chatId: '-73729721862151',
-            chatTitle: 'Пантера',
-            entityType: 'chat',
-            senderId: '214634783',
-            senderName: 'Майор Максимова',
-            text: '',
-            createdAt: new Date('2026-05-10T02:10:01.411Z').toISOString(),
-          },
-          raw: {
-            update_type: 'bot_removed',
-            chat_id: -73729721862151,
-            user_id: 214634782,
-            bot_id: 'id613002203036_bot',
-            user: {
-              user_id: 214634783,
-              username: 'id613002203036_4_bot',
-              name: 'Майор Максимова',
-              is_bot: true,
-            },
-          },
-        },
-        '127.0.0.1',
-      ),
-    ).resolves.toEqual({ accepted: true, duplicate: false });
+    expect(update.message).toEqual(
+      expect.objectContaining({
+        senderId: '900001',
+        senderName: 'Иван Администратор',
+      }),
+    );
+    expect(update.membership).toEqual({
+      action: 'removed',
+      memberUserIds: ['id613002203036_bot'],
+    });
+    await expect(service.ingest(update, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
 
     expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: '-73729721862151',
         title: 'Пантера',
         entityType: 'CHAT',
-        botId: 'id613002203036_4_bot',
+        botId: 'id613002203036_bot',
+      }),
+    );
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-73729721862151',
+        botIds: ['id613002203036_bot'],
+        source: 'webhook_bot_removed',
       }),
     );
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           normalizedPayload: expect.objectContaining({
+            botId: 'id613002203036_bot',
             executionOwnerBotId: 'id613002203036_bot',
+            message: expect.objectContaining({ senderId: '900001' }),
           }),
         }),
       }),
     );
   });
 
-  it('resolves bot_removed for a later extra bot from the raw removed user identity', async () => {
+  it('does not let a bot-like human actor redirect bot_removed away from the ingress bot', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-4bb' }),
@@ -1924,7 +2446,7 @@ describe('WebhookService', () => {
     const config = {
       get: jest.fn().mockReturnValue(1),
     };
-    maxBotLinkService.markChatBotRemoved.mockResolvedValueOnce('bot-1');
+    maxBotLinkService.markChatBotRemoved.mockResolvedValueOnce(null);
     const service = new WebhookService(
       prisma as never,
       config as never,
@@ -1934,16 +2456,16 @@ describe('WebhookService', () => {
     await expect(
       service.ingest(
         {
-          updateId: 'u-bot-removed-cross-bot-5',
+          updateId: 'u-bot-removed-actor-looks-like-bot',
           type: 'bot_removed',
           botId: 'bot-1',
           message: {
-            messageId: 'bot_removed:u-bot-removed-cross-bot-5',
+            messageId: 'bot_removed:u-bot-removed-actor-looks-like-bot',
             chatId: '-73729721862152',
             chatTitle: 'Shared N-way chat',
             entityType: 'chat',
             senderId: '5005',
-            senderName: 'Bot Five',
+            senderName: 'Human actor',
             text: '',
             createdAt: new Date('2026-05-10T02:12:01.411Z').toISOString(),
           },
@@ -1955,7 +2477,7 @@ describe('WebhookService', () => {
               user_id: '5005',
               username: 'bot-5',
               name: 'Bot Five',
-              is_bot: true,
+              is_bot: false,
             },
           },
         },
@@ -1969,7 +2491,7 @@ describe('WebhookService', () => {
         chatId: '-73729721862152',
         title: 'Shared N-way chat',
         entityType: 'CHAT',
-        botId: 'bot-5',
+        botId: 'bot-1',
       }),
     );
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
@@ -1977,14 +2499,13 @@ describe('WebhookService', () => {
         data: expect.objectContaining({
           normalizedPayload: expect.objectContaining({
             botId: 'bot-1',
-            executionOwnerBotId: 'bot-1',
           }),
         }),
       }),
     );
   });
 
-  it('does not fall back to the receiving bot when bot_removed payload is ambiguous', async () => {
+  it('uses the authenticated bot subject even when bot_removed actor details are sparse', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-4c' }),
@@ -2033,7 +2554,57 @@ describe('WebhookService', () => {
         chatId: '-73729721862151',
         title: 'Пантера',
         entityType: 'CHAT',
-        botId: null,
+        botId: 'id613002203036_bot',
+      }),
+    );
+  });
+
+  it('observes extended terminal lifecycle updates without enforcing them in shadow mode', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-shadow-bot-stopped' }),
+        updateMany: jest.fn(),
+      },
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('bot-1');
+    const service = new WebhookService(
+      prisma as never,
+      {
+        get: jest.fn((key: string, fallback?: unknown) =>
+          key === 'MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE' ? 'shadow' : fallback,
+        ),
+      } as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-shadow-bot-stopped',
+          type: 'bot_stopped',
+          botId: 'bot-1',
+          eventTimestampSource: 'payload',
+          message: {
+            messageId: 'bot_stopped:u-shadow-bot-stopped',
+            chatId: '-100-shadow-lifecycle',
+            entityType: 'chat',
+            senderId: 'user-1',
+            text: '',
+            createdAt: '2026-07-10T12:00:00.123Z',
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.markChatBotRemoved).not.toHaveBeenCalled();
+    expect(maxBotLinkService.getStoredChatPrimaryBotId).toHaveBeenCalledWith(
+      '-100-shadow-lifecycle',
+      { bypassCache: true },
+    );
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'evt-shadow-bot-stopped' }),
       }),
     );
   });
@@ -2133,11 +2704,10 @@ describe('WebhookService', () => {
     );
   });
 
-  it('reopens a removed route only after a second live probe persists evidence past the lifecycle watermark', async () => {
+  it('runs a second accepted live probe after storing the binding lifecycle watermark', async () => {
     const chatId = '-100-live-probe-recovery';
     const botId = 'id613002203036_4_bot';
     const eventOrder: string[] = [];
-    let membershipExists = false;
     let confirmedAfterLifecycle = false;
     let routingState = 'NO_ELIGIBLE_BOT';
     let lifecycleEventAt: Date | null = null;
@@ -2147,25 +2717,6 @@ describe('WebhookService', () => {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-live-probe-recovery' }),
         updateMany: jest.fn(),
-      },
-      chatBotMembership: {
-        updateMany: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          if (!('botAccessState' in data)) {
-            return { count: 0 };
-          }
-          eventOrder.push(membershipExists ? 'persist-confirmed-access' : 'persist-before-bind');
-          if (!membershipExists) {
-            return { count: 0 };
-          }
-          persistedAccessData = data;
-          const checkedAt = data.botAccessCheckedAt;
-          confirmedAfterLifecycle =
-            data.botAccessState === 'CONFIRMED_ADMIN' &&
-            checkedAt instanceof Date &&
-            lifecycleEventAt instanceof Date &&
-            checkedAt.getTime() >= lifecycleEventAt.getTime();
-          return { count: 1 };
-        }),
       },
     };
     const config = {
@@ -2186,10 +2737,27 @@ describe('WebhookService', () => {
     maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce(null);
     maxBotLinkService.bindChatToBot.mockImplementationOnce(async (params) => {
       eventOrder.push('bind-lifecycle');
-      membershipExists = true;
       lifecycleEventAt = params.lifecycleEventAt;
       return botId;
     });
+    maxBotLinkService.recordBotAccessProbe.mockImplementation(
+      async ({ access, checkedAt, source }) => {
+        eventOrder.push(lifecycleEventAt ? 'persist-confirmed-access' : 'persist-before-bind');
+        if (lifecycleEventAt) {
+          persistedAccessData = {
+            botAccessState: access ? 'CONFIRMED_ADMIN' : 'DENIED',
+            botAccessCheckedAt: checkedAt,
+            botAccessExpiresAt: new Date(checkedAt.getTime() + 60_000),
+            botAccessSource: source,
+          };
+          confirmedAfterLifecycle =
+            access !== null &&
+            lifecycleEventAt instanceof Date &&
+            checkedAt.getTime() >= lifecycleEventAt.getTime();
+        }
+        return true;
+      },
+    );
     maxBotLinkService.reconcileChatPrimaryByAccess.mockImplementation(async () => {
       eventOrder.push('reconcile-route');
       if (confirmedAfterLifecycle) {
@@ -2253,6 +2821,221 @@ describe('WebhookService', () => {
       }),
     );
     expect(routingState).toBe('READY');
+  });
+
+  it('does not bind a stale successful probe when bot removal wins during the request', async () => {
+    const chatId = '-100-live-probe-removal-race';
+    const botId = 'id613002203036_4_bot';
+    const probeStartedAt = new Date('2026-07-10T12:00:00.000Z');
+    const probeCompletedAt = new Date('2026-07-10T12:00:30.000Z');
+    let releaseProbe!: (access: {
+      userId: string;
+      isAdmin: boolean;
+      isOwner: boolean;
+      permissions: string[];
+    }) => void;
+    let reportProbeStarted!: () => void;
+    const probeStarted = new Promise<void>((resolve) => {
+      reportProbeStarted = resolve;
+    });
+    const probeResult = new Promise<{
+      userId: string;
+      isAdmin: boolean;
+      isOwner: boolean;
+      permissions: string[];
+    }>((resolve) => {
+      releaseProbe = resolve;
+    });
+    const prisma = {
+      webhookEvent: {
+        create: jest
+          .fn()
+          .mockResolvedValueOnce({ id: 'evt-live-probe-race-message' })
+          .mockResolvedValueOnce({ id: 'evt-live-probe-race-removal' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn(() => {
+        reportProbeStarted();
+        return probeResult;
+      }),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce(null);
+    maxBotLinkService.markChatBotRemoved.mockResolvedValueOnce(null);
+    maxBotLinkService.recordBotAccessProbe.mockResolvedValueOnce(false);
+
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(probeStartedAt);
+      const service = new WebhookService(
+        prisma as never,
+        { get: jest.fn().mockReturnValue(1) } as never,
+        maxBotLinkService as never,
+        undefined,
+        maxClient as never,
+      );
+      const cacheKey = `${chatId}:${botId}`;
+      (service as any).botSelfAccessCache.set(cacheKey, {
+        canHandleUserFacing: true,
+        checkedAtMs: probeStartedAt.getTime() - 1,
+        expiresAtMs: probeCompletedAt.getTime() + 60_000,
+      });
+
+      const messageIngest = service.ingest(
+        {
+          updateId: 'u-live-probe-race-message',
+          type: 'message_created',
+          botId,
+          message: {
+            messageId: 'mid-live-probe-race-message',
+            chatId,
+            chatTitle: 'Lifecycle race',
+            entityType: 'chat',
+            senderId: 'user-1',
+            text: 'hello',
+            createdAt: probeStartedAt.toISOString(),
+          },
+        },
+        '127.0.0.1',
+      );
+      await probeStarted;
+
+      jest.setSystemTime(probeCompletedAt);
+      await expect(
+        service.ingest(
+          {
+            updateId: 'u-live-probe-race-removal',
+            type: 'bot_removed',
+            botId,
+            eventTimestampSource: 'payload',
+            message: {
+              messageId: 'bot_removed:u-live-probe-race-removal',
+              chatId,
+              chatTitle: 'Lifecycle race',
+              entityType: 'chat',
+              senderId: 'admin-1',
+              text: '',
+              createdAt: probeCompletedAt.toISOString(),
+            },
+          },
+          '127.0.0.1',
+        ),
+      ).resolves.toEqual({ accepted: true, duplicate: false });
+
+      releaseProbe({
+        userId: botId,
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      });
+      await expect(messageIngest).resolves.toEqual({ accepted: true, duplicate: false });
+
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+        chatId,
+        botId,
+        access: expect.objectContaining({ isAdmin: true }),
+        source: 'webhook_owner_failover',
+        checkedAt: probeStartedAt,
+        allowMembershipRecovery: true,
+      });
+      expect(maxBotLinkService.markChatBotRemoved.mock.invocationCallOrder[0]).toBeLessThan(
+        maxBotLinkService.recordBotAccessProbe.mock.invocationCallOrder[0] ??
+          Number.MAX_SAFE_INTEGER,
+      );
+      expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+      expect((service as any).botSelfAccessCache.has(cacheKey)).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not return an old terminal denial when newer accepted evidence supersedes it', async () => {
+    const chatId = '-100-live-probe-denial-race';
+    const botId = 'id613002203036_4_bot';
+    const denialStartedAt = new Date('2026-07-10T13:00:00.000Z');
+    const newerEvidenceAt = new Date('2026-07-10T13:00:01.000Z');
+    let rejectProbe!: (error: unknown) => void;
+    let reportProbeStarted!: () => void;
+    const probeStarted = new Promise<void>((resolve) => {
+      reportProbeStarted = resolve;
+    });
+    const probeResult = new Promise<never>((_resolve, reject) => {
+      rejectProbe = reject;
+    });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn(() => {
+        reportProbeStarted();
+        return probeResult;
+      }),
+    };
+    maxBotLinkService.recordBotAccessProbe.mockResolvedValueOnce(false);
+
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(denialStartedAt);
+      const service = new WebhookService(
+        { webhookEvent: {} } as never,
+        { get: jest.fn() } as never,
+        maxBotLinkService as never,
+        undefined,
+        maxClient as never,
+      );
+      const cacheKey = `${chatId}:${botId}`;
+      const refresh = (service as any).getBotSelfModerationAccessState(chatId, botId, {
+        bypassCache: true,
+      });
+      await probeStarted;
+
+      jest.setSystemTime(newerEvidenceAt);
+      (service as any).cacheBotSelfAccessState(cacheKey, true, newerEvidenceAt.getTime());
+      rejectProbe({ response: { status: 403 }, message: 'chat denied' });
+
+      await expect(refresh).resolves.toBeNull();
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+        chatId,
+        botId,
+        access: null,
+        source: 'webhook_owner_failover',
+        checkedAt: denialStartedAt,
+        allowMembershipRecovery: false,
+      });
+      expect((service as any).readCachedBotSelfAccess(cacheKey)).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not cache or return live access when fenced persistence fails', async () => {
+    const chatId = '-100-live-probe-persist-error';
+    const botId = 'id613002203036_4_bot';
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: botId,
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      }),
+    };
+    maxBotLinkService.recordBotAccessProbe.mockRejectedValueOnce(new Error('database unavailable'));
+    const service = new WebhookService(
+      { webhookEvent: {} } as never,
+      { get: jest.fn() } as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const cacheKey = `${chatId}:${botId}`;
+    (service as any).botSelfAccessCache.set(cacheKey, {
+      canHandleUserFacing: true,
+      checkedAtMs: Date.now() - 1,
+      expiresAtMs: Date.now() + 60_000,
+    });
+
+    await expect(
+      (service as any).getBotSelfModerationAccessState(chatId, botId, { bypassCache: true }),
+    ).resolves.toBeNull();
+    expect((service as any).botSelfAccessCache.has(cacheKey)).toBe(false);
   });
 
   it('defers ordinary message owner failover to an async live recheck when only the current owner snapshot is stale', async () => {
@@ -2350,7 +3133,7 @@ describe('WebhookService', () => {
         allowReassign: true,
       }),
     );
-    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(2);
   });
 
   it('defers execution owner live refresh for group admin moderation commands until after persist', async () => {
@@ -2445,6 +3228,7 @@ describe('WebhookService', () => {
       '-73729721862151',
       expect.objectContaining({
         botId: 'id613002203036_bot',
+        bypassCache: true,
         trafficClass: 'interactive',
         timeoutMs: 900,
       }),
@@ -2456,7 +3240,7 @@ describe('WebhookService', () => {
         allowReassign: true,
       }),
     );
-    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(2);
   });
 
   it('defers execution owner live refresh for custom linked admin commands', async () => {
@@ -2723,6 +3507,7 @@ describe('WebhookService', () => {
       '-73729721862151',
       expect.objectContaining({
         botId: 'id613002203036_4_bot',
+        bypassCache: true,
         trafficClass: 'interactive',
         timeoutMs: 900,
       }),
@@ -2734,7 +3519,7 @@ describe('WebhookService', () => {
         allowReassign: true,
       }),
     );
-    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(2);
   });
 
   it('defers membership churn owner live refresh until after persist', async () => {
@@ -2852,7 +3637,7 @@ describe('WebhookService', () => {
         allowReassign: true,
       }),
     );
-    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the current owner on ordinary message updates without running a live failover check', async () => {
@@ -3260,7 +4045,7 @@ describe('WebhookService', () => {
     );
   });
 
-  it('stages bot_added chats in the inline recent bootstrap cache before deferred read-model writes finish', async () => {
+  it('does not delay bot_added acknowledgement on a pending recent-bootstrap cache write', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-7-cache' }),
@@ -3270,8 +4055,12 @@ describe('WebhookService', () => {
     const config = {
       get: jest.fn().mockReturnValue(1),
     };
+    let releaseBootstrap: (() => void) | undefined;
+    const pendingBootstrap = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
     const chatContextCache = {
-      upsertManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue(undefined),
+      upsertManagedEntitiesRecentBootstrap: jest.fn().mockReturnValue(pendingBootstrap),
     };
     const service = new WebhookService(
       prisma as never,
@@ -3303,6 +4092,8 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    expect(chatContextCache.upsertManagedEntitiesRecentBootstrap).not.toHaveBeenCalled();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
       {
         id: '-100128',
@@ -3317,6 +4108,71 @@ describe('WebhookService', () => {
       },
       15 * 60,
       'user-77',
+    );
+    releaseBootstrap?.();
+    await pendingBootstrap;
+  });
+
+  it('parses an official bot_added actor payload and sends the hint through the ingress bot', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-official-bot-added-hint' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'hint-1', url: null }),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      { get: jest.fn().mockReturnValue(1) } as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const update = new WebhookParser().parse(
+      {
+        update_id: 'u-official-bot-added-hint',
+        update_type: 'bot_added',
+        chat_id: -100129,
+        chat: {
+          chat_id: -100129,
+          chat_type: 'chat',
+          title: 'Чат с подсказкой',
+        },
+        user: {
+          user_id: 900002,
+          first_name: 'Анна',
+          last_name: 'Администратор',
+        },
+        timestamp: '2026-04-03T12:03:00.000Z',
+      },
+      { botId: 'id613002203036_bot' },
+    );
+
+    expect(update.message).toEqual(
+      expect.objectContaining({
+        senderId: '900002',
+        senderName: 'Анна Администратор',
+      }),
+    );
+    expect(update.membership).toEqual({
+      action: 'added',
+      memberUserIds: ['id613002203036_bot'],
+    });
+    await expect(service.ingest(update, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '-100129',
+      expect.stringContaining('Чат почти подключен'),
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: 'Проверить подключение' })]],
+      }),
+      expect.objectContaining({ botId: 'id613002203036_bot' }),
     );
   });
 
@@ -3732,7 +4588,7 @@ describe('WebhookService', () => {
     ]);
   });
 
-  it('sends one Старт hint for mirrored bot_added deliveries of the same added bot', async () => {
+  it('does not reinterpret a bot_added actor as a shared subject across ingress bots', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-7-mirrored-bot-hint' }),
@@ -3794,10 +4650,11 @@ describe('WebhookService', () => {
     });
     await flushDeferredWebhookWork();
 
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateWithId.mock.calls[0]?.[3]?.botId).toBe(
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateWithId.mock.calls.map((call) => call[3]?.botId)).toEqual([
       'id613070470872_5_bot',
-    );
+      'id613070470872_6_bot',
+    ]);
   });
 
   it('uses channel wording in the Старт hint after channel bot_added webhooks', async () => {

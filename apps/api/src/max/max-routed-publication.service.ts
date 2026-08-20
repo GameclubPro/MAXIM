@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import {
   MaxActionDispatchService,
@@ -14,6 +14,7 @@ import type {
   MaxSendMessageOptions,
 } from './max-client.service';
 import { MaxClientService } from './max-client.service';
+import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
 
 export type MaxRoutedPublicationRoutePurpose = 'send_message' | 'channel_poll';
 
@@ -58,6 +59,8 @@ export class MaxRoutedPublicationService {
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly maxActionDispatchService: MaxActionDispatchService,
     private readonly maxClientService: MaxClientService,
+    @Optional()
+    private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
   ) {}
 
   async publish(request: MaxRoutedPublicationRequest): Promise<MaxRoutedPublicationResult> {
@@ -231,11 +234,13 @@ export class MaxRoutedPublicationService {
     });
     const probeCandidateBotIds = this.normalizeBotIds(probeRoute.candidateBotIds);
     if (probeCandidateBotIds.length === 0) {
-      return emptyRoute;
+      return this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
     }
 
     let refreshedRoute = emptyRoute;
+    let routeReadAfterLastCandidate = false;
     for (const botId of probeCandidateBotIds) {
+      routeReadAfterLastCandidate = false;
       const stale = await this.maxBotLinkService.isBotAccessSnapshotStale({
         chatId,
         botId,
@@ -245,6 +250,7 @@ export class MaxRoutedPublicationService {
         continue;
       }
 
+      const accessProbeStartedAt = new Date();
       try {
         const access = await this.maxClientService.getCurrentChatMemberAccess(chatId, {
           botId,
@@ -254,13 +260,76 @@ export class MaxRoutedPublicationService {
           sourceTag: request.sourceTag,
           ...(request.timeoutMs ? { timeoutMs: request.timeoutMs } : {}),
         });
-        await this.maxBotLinkService.recordBotAccessProbe({
+        const persisted = await this.maxBotLinkService.recordBotAccessProbe({
           chatId,
           botId,
           access,
           source: 'managed_poll_route_hydration',
+          checkedAt: accessProbeStartedAt,
         });
+        if (!persisted) {
+          refreshedRoute = await this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
+          routeReadAfterLastCandidate = true;
+          if (this.normalizeBotIds(refreshedRoute.candidateBotIds).length > 0) {
+            return refreshedRoute;
+          }
+          continue;
+        }
       } catch (error: unknown) {
+        const lastErrorCode = this.resolveTerminalAccessLookupErrorCode(error);
+        if (lastErrorCode) {
+          try {
+            await this.maxBotLinkService.recordBotAccessProbe({
+              chatId,
+              botId,
+              access: null,
+              source: 'managed_poll_route_hydration',
+              checkedAt: accessProbeStartedAt,
+              lastErrorCode,
+            });
+          } catch (persistenceError: unknown) {
+            this.logger.warn(
+              {
+                chatId,
+                botId,
+                error:
+                  persistenceError instanceof Error
+                    ? persistenceError.message
+                    : String(persistenceError),
+              },
+              'Failed to persist a terminal managed poll route access probe',
+            );
+          }
+          try {
+            await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost({
+              chatId,
+              botId,
+              operation: 'lookup',
+              source: 'managed_poll_route_hydration',
+              error,
+              lifecycleEventAt: accessProbeStartedAt,
+              lifecycleEventType: 'live_probe',
+              lifecycleSource: 'live_probe',
+            });
+          } catch (persistenceError: unknown) {
+            this.logger.warn(
+              {
+                chatId,
+                botId,
+                error:
+                  persistenceError instanceof Error
+                    ? persistenceError.message
+                    : String(persistenceError),
+              },
+              'Failed to record terminal managed poll access loss',
+            );
+          }
+          refreshedRoute = await this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
+          routeReadAfterLastCandidate = true;
+          if (this.normalizeBotIds(refreshedRoute.candidateBotIds).length > 0) {
+            return refreshedRoute;
+          }
+        }
         this.logger.warn(
           {
             chatId,
@@ -273,11 +342,14 @@ export class MaxRoutedPublicationService {
       }
 
       refreshedRoute = await this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
+      routeReadAfterLastCandidate = true;
       if (this.normalizeBotIds(refreshedRoute.candidateBotIds).length > 0) {
         return refreshedRoute;
       }
     }
-    return refreshedRoute;
+    return routeReadAfterLastCandidate
+      ? refreshedRoute
+      : this.maxBotLinkService.resolveBotRouteForManagedPoll({ chatId });
   }
 
   private normalizeBotIds(values: readonly unknown[]): string[] {
@@ -286,5 +358,24 @@ export class MaxRoutedPublicationService {
         values.map((value) => (typeof value === 'string' ? value.trim() : '')).filter(Boolean),
       ),
     );
+  }
+
+  private resolveTerminalAccessLookupErrorCode(error: unknown): string | null {
+    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    if (
+      typeof code === 'string' &&
+      ['access.denied', 'chat.denied', 'chat.not.found'].includes(code.trim())
+    ) {
+      return code.trim();
+    }
+
+    const status = (error as { response?: { status?: unknown } })?.response?.status;
+    if (status === 403) {
+      return 'access.denied';
+    }
+    if (status === 404) {
+      return 'chat.not.found';
+    }
+    return null;
   }
 }

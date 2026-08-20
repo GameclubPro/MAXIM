@@ -160,6 +160,7 @@ function createMaxBotLinkMock(
     getValidationTokens: jest.fn().mockReturnValue([token]),
     resolveBotIdForRead: jest.fn().mockResolvedValue(resolvedBotId),
     resolveBotIdForSend: jest.fn().mockResolvedValue(resolvedBotId),
+    resolveBotIdForModerationAction: jest.fn().mockResolvedValue(resolvedBotId),
     resolveBotId: jest.fn().mockResolvedValue(resolvedBotId),
     resolveContactIdSync: jest.fn((botId?: string | null) =>
       botId === resolvedBotId || botId == null ? contactId : null,
@@ -468,6 +469,196 @@ describe('ManagedGiveawayService', () => {
         }),
       }),
     );
+  });
+
+  it('routes legacy giveaway message deletes through explicit delete-capable bots', async () => {
+    const deleteAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(deleteAttemptStartedAt);
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock();
+    const managedEntityAccessLossService = createManagedEntityAccessLossMock();
+    const deleteError = createMaxApiError(403, 'Forbidden', 'chat.denied');
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      { getChannelSettings: jest.fn().mockResolvedValue({}) } as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+      managedEntityAccessLossService as never,
+    );
+
+    prisma.managedGiveaway.findFirst.mockResolvedValue(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'legacy-publication-1',
+        publicationBotId: null,
+        resultsMessageId: 'legacy-results-1',
+        resultsBotId: null,
+      }),
+    );
+    maxBotLinkService.resolveBotIdForModerationAction
+      .mockResolvedValueOnce('publication-delete-bot')
+      .mockResolvedValueOnce('results-delete-bot')
+      .mockResolvedValueOnce('results-delete-bot');
+    maxClient.deleteMessage.mockResolvedValueOnce(undefined).mockRejectedValueOnce(deleteError);
+
+    await expect(
+      service.deleteManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel'),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(maxBotLinkService.resolveBotIdForModerationAction).toHaveBeenNthCalledWith(1, {
+      chatId: 'source-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    expect(maxBotLinkService.resolveBotIdForModerationAction).toHaveBeenNthCalledWith(2, {
+      chatId: 'source-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    expect(maxBotLinkService.resolveBotIdForModerationAction).toHaveBeenNthCalledWith(3, {
+      chatId: 'source-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(
+      1,
+      'source-1',
+      'legacy-publication-1',
+      expectManagedGiveawaySendOptions({ immediate: true, botId: 'publication-delete-bot' }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(
+      2,
+      'source-1',
+      'legacy-results-1',
+      expectManagedGiveawaySendOptions({ immediate: true, botId: 'results-delete-bot' }),
+    );
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'source-1',
+      botId: 'results-delete-bot',
+      entityType: ChatEntityType.CHANNEL,
+      source: 'managed_giveaway:results:delete',
+      operation: 'delete',
+      error: deleteError,
+      lifecycleEventAt: deleteAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    });
+    expect(prisma.managedGiveaway.delete).not.toHaveBeenCalled();
+  });
+
+  it('retries a persisted giveaway message delete through a survivor after terminal origin loss', async () => {
+    const deleteAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(deleteAttemptStartedAt);
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock();
+    const managedEntityAccessLossService = createManagedEntityAccessLossMock();
+    const terminalError = createMaxApiError(403, 'Forbidden', 'chat.denied');
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      { getChannelSettings: jest.fn().mockResolvedValue({}) } as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+      managedEntityAccessLossService as never,
+    );
+
+    prisma.managedGiveaway.findFirst.mockResolvedValue(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        publicationBotId: 'origin-bot',
+      }),
+    );
+    prisma.managedGiveaway.delete.mockResolvedValue(createGiveaway());
+    maxClient.deleteMessage.mockRejectedValueOnce(terminalError).mockResolvedValueOnce(undefined);
+    maxBotLinkService.resolveBotIdForModerationAction.mockResolvedValueOnce('survivor-bot');
+
+    await service.deleteManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
+
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(
+      1,
+      'source-1',
+      'publication-1',
+      expectManagedGiveawaySendOptions({ immediate: true, botId: 'origin-bot' }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(
+      2,
+      'source-1',
+      'publication-1',
+      expectManagedGiveawaySendOptions({ immediate: true, botId: 'survivor-bot' }),
+    );
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'source-1',
+      botId: 'origin-bot',
+      entityType: ChatEntityType.CHANNEL,
+      source: 'managed_giveaway:publication:delete',
+      operation: 'delete',
+      error: terminalError,
+      lifecycleEventAt: deleteAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    });
+    expect(maxBotLinkService.resolveBotIdForModerationAction).toHaveBeenCalledWith({
+      chatId: 'source-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    expect(prisma.managedGiveaway.delete).toHaveBeenCalledWith({
+      where: { id: 'giveaway-1' },
+    });
+  });
+
+  it('keeps survivor route lookup failures inside the managed giveaway delete error boundary', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock();
+    const managedEntityAccessLossService = createManagedEntityAccessLossMock();
+    const terminalError = createMaxApiError(403, 'Forbidden', 'chat.denied');
+    const survivorLookupError = new Error('route database unavailable');
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      { getChannelSettings: jest.fn().mockResolvedValue({}) } as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+      managedEntityAccessLossService as never,
+    );
+    const warnSpy = jest.spyOn((service as any).logger, 'warn');
+
+    prisma.managedGiveaway.findFirst.mockResolvedValue(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        publicationBotId: 'origin-bot',
+      }),
+    );
+    maxClient.deleteMessage.mockRejectedValueOnce(terminalError);
+    maxBotLinkService.resolveBotIdForModerationAction.mockRejectedValueOnce(survivorLookupError);
+
+    await expect(
+      service.deleteManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel'),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        giveawayId: 'giveaway-1',
+        messageId: 'publication-1',
+        botId: 'origin-bot',
+        err: survivorLookupError.message,
+      }),
+      'Failed to resolve a survivor bot for managed giveaway message delete',
+    );
+    expect(prisma.managedGiveaway.delete).not.toHaveBeenCalled();
   });
 
   it('treats already missing giveaway publication messages as deleted', async () => {
@@ -1162,6 +1353,35 @@ describe('ManagedGiveawayService', () => {
     });
   });
 
+  it('does not let a stale giveaway read route overwrite the persisted primary bot', async () => {
+    const prisma = createPrismaMock();
+    const maxBotLinkService = createMaxBotLinkMock({ resolvedBotId: 'stale-read-bot' });
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+    prisma.managedGiveaway.findUnique.mockResolvedValue(
+      createGiveaway({ publicationMessageId: 'publication-1' }),
+    );
+
+    await service.getPublicGiveaway('giveaway-1', user);
+
+    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
+    expect(upsert?.create).toEqual(
+      expect.objectContaining({
+        botId: 'stale-read-bot',
+        primaryBotId: 'stale-read-bot',
+      }),
+    );
+    expect(upsert?.update).not.toHaveProperty('botId');
+    expect(upsert?.update).not.toHaveProperty('primaryBotId');
+  });
+
   it('rejects participation for an unpublished giveaway id', async () => {
     const prisma = createPrismaMock();
     const service = new ManagedGiveawayService(
@@ -1460,6 +1680,8 @@ describe('ManagedGiveawayService', () => {
   });
 
   it('records MAX access loss when publishing giveaway results is denied', async () => {
+    const maxSendAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(maxSendAttemptStartedAt);
     const prisma = createPrismaMock();
     const maxClient = createMaxClientMock();
     const maxBotLinkService = createMaxBotLinkMock();
@@ -1517,6 +1739,9 @@ describe('ManagedGiveawayService', () => {
       source: 'managed_giveaway:results',
       operation: 'send',
       error,
+      lifecycleEventAt: maxSendAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
     expect(prisma.managedGiveaway.update).not.toHaveBeenCalled();
   });
@@ -2645,6 +2870,75 @@ describe('ManagedGiveawayService', () => {
     expect(replacementSendLockKey).not.toBe('managed-giveaway:results:giveaway-1');
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ['chat.denied', createMaxApiError(403, 'Forbidden', 'chat.denied')],
+    ['chat.not.found', createMaxApiError(404, 'Chat not found', 'chat.not.found')],
+  ])(
+    'records terminal %s from results verification without replacing the original edit failure',
+    async (_label, lookupError) => {
+      const editAttemptStartedAt = new Date('2026-08-20T12:10:00.123Z');
+      const lookupAttemptStartedAt = new Date('2026-08-20T12:10:01.456Z');
+      jest.useFakeTimers().setSystemTime(editAttemptStartedAt);
+
+      const prisma = createPrismaMock();
+      const maxClient = createMaxClientMock();
+      const managedEntityAccessLossService = createManagedEntityAccessLossMock();
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        maxClient as never,
+        { invalidate: jest.fn() } as never,
+        {} as never,
+        createConfigMock() as never,
+        undefined,
+        createMaxBotLinkMock() as never,
+        managedEntityAccessLossService as never,
+      );
+      const giveaway = createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        resultsMessageId: 'results-verification-denied-1',
+        resultsBotId: 'results-author-bot',
+        winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+      });
+      const editError = createMaxApiError(404, 'Message not found', 'message.not.found');
+      maxClient.editMessageInlineKeyboard.mockImplementation(async () => {
+        jest.setSystemTime(lookupAttemptStartedAt);
+        throw editError;
+      });
+      maxClient.getExactMessagePresence.mockRejectedValue(lookupError);
+
+      await expect((service as any).republishGiveawayResults(giveaway)).resolves.toBe(false);
+
+      expect(
+        managedEntityAccessLossService.recordIfManagedEntityAccessLost,
+      ).toHaveBeenNthCalledWith(1, {
+        chatId: 'source-1',
+        botId: 'results-author-bot',
+        entityType: ChatEntityType.CHANNEL,
+        source: 'managed_giveaway:results:verification',
+        operation: 'lookup',
+        error: lookupError,
+        lifecycleEventAt: lookupAttemptStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+      expect(
+        managedEntityAccessLossService.recordIfManagedEntityAccessLost,
+      ).toHaveBeenNthCalledWith(2, {
+        chatId: 'source-1',
+        botId: 'results-author-bot',
+        entityType: ChatEntityType.CHANNEL,
+        source: 'managed_giveaway:results',
+        operation: 'edit',
+        error: editError,
+        lifecycleEventAt: editAttemptStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+      expect(prisma.managedGiveaway.updateMany).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['rate limit', createMaxApiError(429, 'Too many requests')],

@@ -34,6 +34,8 @@ import type { MaxBotLifecycleState } from './max-bot-config.util';
 
 const BOT_OWNERSHIP_FOUNDATION_STATUS_KEY = 'system:bot-ownership:foundation:v1';
 const BOT_OWNERSHIP_FOUNDATION_LOCK_KEY = 'system:bot-ownership:foundation:repair-lock:v1';
+const RELEASE_BOT_OWNERSHIP_FOUNDATION_LOCK_SCRIPT =
+  'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end';
 const LOCAL_CACHE_TTL_MS = 2_000;
 
 type BotOwnershipRebalanceMode = 'off' | 'shadow' | 'canary' | 'on';
@@ -71,7 +73,13 @@ type MembershipRecord = {
   botAccessState: ChatBotAccessState;
   botAccessCheckedAt: Date | null;
   botAccessExpiresAt: Date | null;
+  botAccessSource: string | null;
   permissionsSnapshot: unknown | null;
+};
+
+type MembershipAccessEpoch = {
+  checkedAt: Date;
+  source: string;
 };
 
 type RepairSignal = {
@@ -320,6 +328,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botAccessState: true,
           botAccessCheckedAt: true,
           botAccessExpiresAt: true,
+          botAccessSource: true,
           permissionsSnapshot: true,
         },
         orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
@@ -374,120 +383,72 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         continue;
       }
 
-      const operations: Prisma.PrismaPromise<unknown>[] = [];
-      const chatUpdateData: Prisma.ChatUpdateInput = {};
-      let plannedOwnershipMove = false;
       if (repair.nextPrimaryBotId) {
         const desiredPrimaryBotId = repair.nextPrimaryBotId;
-        if (chat.primaryBotId !== desiredPrimaryBotId || chat.botId !== desiredPrimaryBotId) {
-          chatUpdateData.primaryBotId = desiredPrimaryBotId;
-          chatUpdateData.botId = desiredPrimaryBotId;
-          chatUpdateData.routingVersion = { increment: 1 };
-          if (chat.primaryBotId && chat.primaryBotId !== desiredPrimaryBotId) {
-            plannedOwnershipMove = true;
-          }
-        }
-
-        operations.push(
-          this.prisma.chatBotMembership.updateMany({
-            where: {
-              chatId: chat.id,
-              botId: { in: [desiredPrimaryBotId] },
-              status: ChatBotMembershipStatus.ACTIVE,
-            },
-            data: {
-              role: ChatBotMembershipRole.PRIMARY,
-            },
-          }),
-        );
-
-        if (repair.activeKnownStandbyBotIds.length > 0) {
-          operations.push(
-            this.prisma.chatBotMembership.updateMany({
-              where: {
-                chatId: chat.id,
-                botId: { in: repair.activeKnownStandbyBotIds },
-                status: ChatBotMembershipStatus.ACTIVE,
-              },
-              data: {
-                role: ChatBotMembershipRole.STANDBY,
-              },
-            }),
+        if (!repair.expectedAccessEpoch) {
+          this.logger.debug(
+            { chatId: chat.id, botId: desiredPrimaryBotId },
+            'Skipped bot ownership repair without a durable access epoch',
           );
+          continue;
         }
-      } else if (repair.clearPrimary && (chat.primaryBotId || chat.botId)) {
-        chatUpdateData.primaryBotId = null;
-        chatUpdateData.botId = null;
-        chatUpdateData.routingVersion = { increment: 1 };
-
-        if (repair.activeKnownStandbyBotIds.length > 0) {
-          operations.push(
-            this.prisma.chatBotMembership.updateMany({
-              where: {
-                chatId: chat.id,
-                botId: { in: repair.activeKnownStandbyBotIds },
-                status: ChatBotMembershipStatus.ACTIVE,
-              },
-              data: {
-                role: ChatBotMembershipRole.STANDBY,
-              },
-            }),
+        const selected = await this.maxBotLinkService.selectChatPrimaryBot({
+          chatId: chat.id,
+          botId: desiredPrimaryBotId,
+          ...(repair.nextTitle ? { title: repair.nextTitle } : {}),
+          entityType: chat.entityType,
+          expectedRoutingVersion: chat.routingVersion,
+          expectedAccessEpoch: repair.expectedAccessEpoch,
+        });
+        if (!selected) {
+          this.logger.debug(
+            { chatId: chat.id, botId: desiredPrimaryBotId, routingVersion: chat.routingVersion },
+            'Skipped stale or ineligible bot ownership repair under route lock',
           );
+          continue;
         }
+        appliedChanges += 1;
+        if (chat.primaryBotId && chat.primaryBotId !== desiredPrimaryBotId) {
+          appliedMoves += 1;
+        }
+        continue;
       }
+
+      let changed = false;
       if (repair.nextTitle) {
-        chatUpdateData.title = repair.nextTitle;
-      }
-      if (operations.length > 0 && Object.keys(chatUpdateData).length === 0) {
-        chatUpdateData.routingVersion = { increment: 1 };
-      }
-      if (Object.keys(chatUpdateData).length > 0) {
-        operations.push(
-          this.prisma.chat.update({
+        try {
+          await this.prisma.chat.update({
             where: {
               id: chat.id,
               routingVersion: chat.routingVersion,
             },
-            data: chatUpdateData,
-          }),
-        );
-      }
-
-      if (operations.length > 0) {
-        try {
-          await this.prisma.$transaction(operations);
+            data: { title: repair.nextTitle },
+          });
         } catch (error: unknown) {
           if (this.isRoutingVersionConflict(error)) {
             this.logger.debug(
               { chatId: chat.id, routingVersion: chat.routingVersion },
-              'Skipped stale bot ownership repair after routing version changed',
+              'Skipped stale bot ownership title repair after routing version changed',
             );
             continue;
           }
           throw error;
         }
-        appliedChanges += operations.length;
-        if (plannedOwnershipMove) {
-          appliedMoves += 1;
+        appliedChanges += 1;
+        changed = true;
+      }
+
+      if (repair.clearPrimary || shouldApplyRoutingState) {
+        const routingResult = await this.maxBotLinkService.reconcileChatRoutingState({
+          chatId: chat.id,
+        });
+        if (routingResult?.changed) {
+          appliedChanges += 1;
+          changed = true;
         }
       }
-
-      const routingResult = shouldApplyRoutingState
-        ? await this.maxBotLinkService.reconcileChatRoutingState?.({ chatId: chat.id })
-        : null;
-      if (routingResult?.changed) {
-        appliedChanges += 1;
-      }
-      if (operations.length === 0 && !routingResult?.changed) {
+      if (!changed) {
         continue;
-      }
-
-      if (routingResult?.routingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
-        this.maxBotLinkService.forgetChatBotBinding(chat.id);
-      } else if (repair.nextPrimaryBotId) {
-        this.maxBotLinkService.rememberChatBotBinding(chat.id, repair.nextPrimaryBotId);
-      } else if (repair.clearPrimary) {
-        this.maxBotLinkService.forgetChatBotBinding(chat.id);
       }
     }
 
@@ -504,10 +465,10 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     repairSignal: RepairSignal | null = null,
   ): {
     nextPrimaryBotId: string | null;
+    expectedAccessEpoch: MembershipAccessEpoch | null;
     clearPrimary: boolean;
     nextTitle: string | null;
     nextRoutingState: ChatRoutingState;
-    activeKnownStandbyBotIds: string[];
   } | null {
     const primaryKnown = this.readKnownBotId(chat.primaryBotId, knownBotIds);
     const rawPrimaryEligible = this.readKnownBotId(chat.primaryBotId, eligiblePrimaryBotIds);
@@ -649,10 +610,6 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       return null;
     }
 
-    const activeKnownStandbyBotIds = activeKnownMemberships
-      .filter((membership) => !nextPrimaryBotId || membership.botId !== nextPrimaryBotId)
-      .map((membership) => membership.botId);
-
     const shouldRepairOwnership = Boolean(
       nextPrimaryBotId &&
       (chat.primaryBotId !== nextPrimaryBotId ||
@@ -685,10 +642,15 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
 
     return {
       nextPrimaryBotId,
+      expectedAccessEpoch: nextPrimaryBotId
+        ? this.readMembershipAccessEpoch(
+            activeEligibleMemberships.find((membership) => membership.botId === nextPrimaryBotId) ??
+              null,
+          )
+        : null,
       clearPrimary,
       nextTitle,
       nextRoutingState,
-      activeKnownStandbyBotIds,
     };
   }
 
@@ -929,6 +891,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botAccessState: true,
           botAccessCheckedAt: true,
           botAccessExpiresAt: true,
+          botAccessSource: true,
           permissionsSnapshot: true,
         },
       }),
@@ -1334,10 +1297,12 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
 
   private async releaseRepairLock(token: string): Promise<void> {
     try {
-      const currentToken = await this.redis.get(BOT_OWNERSHIP_FOUNDATION_LOCK_KEY);
-      if (currentToken === token) {
-        await this.redis.del(BOT_OWNERSHIP_FOUNDATION_LOCK_KEY);
-      }
+      await this.redis.eval(
+        RELEASE_BOT_OWNERSHIP_FOUNDATION_LOCK_SCRIPT,
+        1,
+        BOT_OWNERSHIP_FOUNDATION_LOCK_KEY,
+        token,
+      );
     } catch (error: unknown) {
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
@@ -1359,6 +1324,19 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       }
     }
     return grouped;
+  }
+
+  private readMembershipAccessEpoch(
+    membership: MembershipRecord | null,
+  ): MembershipAccessEpoch | null {
+    const source = membership?.botAccessSource ?? '';
+    if (!membership?.botAccessCheckedAt || !source.trim()) {
+      return null;
+    }
+    return {
+      checkedAt: membership.botAccessCheckedAt,
+      source,
+    };
   }
 
   private readKnownBotId(

@@ -1,11 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
 import {
-  ChatBotMembershipRole,
-  ChatBotMembershipStatus,
   ChatEntityType,
   ManagedEntityAccessRole,
   ManagedEntityAccessState,
+  Prisma,
 } from '../prisma/prisma-client';
 import {
   ChatContextCacheService,
@@ -14,7 +13,6 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import type { MaxChatMemberAccess } from './max-client.service';
-import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 
 export const MANAGED_ENTITY_HANDSHAKE_SOURCE = 'handshake_start';
 
@@ -34,6 +32,10 @@ export type ManagedEntityAccessWriteContext = {
   createdAt: string | null;
 };
 
+type ManagedBotChatCatalogClient = {
+  managedBotChatCatalog?: Prisma.TransactionClient['managedBotChatCatalog'];
+};
+
 @Injectable()
 export class ManagedEntityAccessWriter {
   constructor(
@@ -42,7 +44,43 @@ export class ManagedEntityAccessWriter {
     private readonly chatContextCache: ChatContextCacheService,
   ) {}
 
-  async bootstrapChat(context: ManagedEntityAccessWriteContext): Promise<void> {
+  async bootstrapChat(
+    context: ManagedEntityAccessWriteContext,
+    botAccess: MaxChatMemberAccess,
+    probeStartedAt: Date,
+  ): Promise<boolean> {
+    await this.ensureChatBinding(context);
+    const accessPersisted = await this.maxBotLinkService.recordBotAccessProbe({
+      chatId: context.chatId,
+      botId: context.botId,
+      access: botAccess,
+      source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
+      checkedAt: probeStartedAt,
+      allowMembershipRecovery: true,
+    });
+    if (!accessPersisted) {
+      return false;
+    }
+
+    const persisted = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.lockCurrentProbe(tx, context, probeStartedAt))) {
+        return false;
+      }
+
+      await this.upsertManagedBotChatCatalog(
+        context,
+        tx as ManagedBotChatCatalogClient,
+        probeStartedAt,
+      );
+      return true;
+    });
+    if (persisted) {
+      await this.publishRecentBootstrap(context);
+    }
+    return persisted;
+  }
+
+  private async ensureChatBinding(context: ManagedEntityAccessWriteContext): Promise<void> {
     await this.maxBotLinkService.bindDiscoveredChatBots({
       chatId: context.chatId,
       primaryBotId: context.botId,
@@ -50,16 +88,15 @@ export class ManagedEntityAccessWriter {
       title: context.title,
       entityType: context.prismaEntityType,
     });
+  }
 
-    const catalog = (
-      this.prisma as PrismaService & {
-        managedBotChatCatalog?: {
-          upsert?: (args: unknown) => Promise<unknown>;
-        };
-      }
-    ).managedBotChatCatalog;
+  private async upsertManagedBotChatCatalog(
+    context: ManagedEntityAccessWriteContext,
+    client: ManagedBotChatCatalogClient,
+    observedAt: Date,
+  ): Promise<void> {
+    const catalog = client.managedBotChatCatalog;
     if (typeof catalog?.upsert === 'function') {
-      const now = new Date();
       await catalog.upsert({
         where: {
           botId_chatId: {
@@ -76,7 +113,7 @@ export class ManagedEntityAccessWriter {
           avatarUrl: context.avatarUrl ?? null,
           status: 'ACTIVE',
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
-          lastSeenAt: now,
+          lastSeenAt: observedAt,
         },
         update: {
           entityType: context.prismaEntityType,
@@ -85,11 +122,13 @@ export class ManagedEntityAccessWriter {
           ...(context.avatarUrl !== undefined ? { avatarUrl: context.avatarUrl } : {}),
           status: 'ACTIVE',
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
-          lastSeenAt: now,
+          lastSeenAt: observedAt,
         },
       });
     }
+  }
 
+  private async publishRecentBootstrap(context: ManagedEntityAccessWriteContext): Promise<void> {
     await this.chatContextCache.upsertManagedEntitiesRecentBootstrap(
       this.buildChatSummary(context),
       HANDSHAKE_BOOTSTRAP_TTL_SEC,
@@ -101,51 +140,44 @@ export class ManagedEntityAccessWriter {
     context: ManagedEntityAccessWriteContext & { senderId: string },
     botAccess: MaxChatMemberAccess,
     userAccess: MaxChatMemberAccess,
-  ): Promise<boolean> {
-    await this.bootstrapChat(context);
-
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + HANDSHAKE_ACCESS_EDGE_GRANTED_TTL_MS);
-    const botAccessSnapshot = buildBotAccessSnapshotPersistence(botAccess, {
+    probeStartedAt: Date,
+  ): Promise<boolean | null> {
+    await this.ensureChatBinding(context);
+    const accessPersisted = await this.maxBotLinkService.recordBotAccessProbe({
+      chatId: context.chatId,
+      botId: context.botId,
+      access: botAccess,
       source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
-      now,
+      checkedAt: probeStartedAt,
+      allowMembershipRecovery: true,
     });
-    const existing = await this.prisma.managedEntityAccessEdge.findUnique({
-      where: {
-        chatId_userId_botId: {
-          chatId: context.chatId,
-          userId: context.senderId,
-          botId: context.botId,
-        },
-      },
-      select: { state: true },
-    });
+    if (!accessPersisted) {
+      return null;
+    }
 
-    await this.prisma.$transaction([
-      this.prisma.chatBotMembership.upsert({
+    const expiresAt = new Date(probeStartedAt.getTime() + HANDSHAKE_ACCESS_EDGE_GRANTED_TTL_MS);
+    const wasConnected = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.lockCurrentProbe(tx, context, probeStartedAt))) {
+        return null;
+      }
+
+      const existing = await tx.managedEntityAccessEdge.findUnique({
         where: {
-          chatId_botId: {
+          chatId_userId_botId: {
             chatId: context.chatId,
+            userId: context.senderId,
             botId: context.botId,
           },
         },
-        create: {
-          chatId: context.chatId,
-          botId: context.botId,
-          role: ChatBotMembershipRole.PRIMARY,
-          status: ChatBotMembershipStatus.ACTIVE,
-          ...botAccessSnapshot,
-          lastSeenAt: now,
-          lastWebhookAt: now,
-        },
-        update: {
-          status: ChatBotMembershipStatus.ACTIVE,
-          ...botAccessSnapshot,
-          lastSeenAt: now,
-          lastWebhookAt: now,
-        },
-      }),
-      this.prisma.chatAdminAllowlist.upsert({
+        select: { state: true },
+      });
+
+      await this.upsertManagedBotChatCatalog(
+        context,
+        tx as ManagedBotChatCatalogClient,
+        probeStartedAt,
+      );
+      await tx.chatAdminAllowlist.upsert({
         where: {
           chatId_userId: {
             chatId: context.chatId,
@@ -157,8 +189,8 @@ export class ManagedEntityAccessWriter {
           userId: context.senderId,
         },
         update: {},
-      }),
-      this.prisma.managedEntityAdminMember.upsert({
+      });
+      await tx.managedEntityAdminMember.upsert({
         where: {
           chatId_userId_observedByBotId: {
             chatId: context.chatId,
@@ -173,7 +205,7 @@ export class ManagedEntityAccessWriter {
           entityType: context.prismaEntityType,
           role: this.toAccessRole(userAccess),
           permissions: this.normalizePermissions(userAccess.permissions),
-          checkedAt: now,
+          checkedAt: probeStartedAt,
           expiresAt,
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
         },
@@ -181,12 +213,12 @@ export class ManagedEntityAccessWriter {
           entityType: context.prismaEntityType,
           role: this.toAccessRole(userAccess),
           permissions: this.normalizePermissions(userAccess.permissions),
-          checkedAt: now,
+          checkedAt: probeStartedAt,
           expiresAt,
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
         },
-      }),
-      this.prisma.managedEntityAccessEdge.upsert({
+      });
+      await tx.managedEntityAccessEdge.upsert({
         where: {
           chatId_userId_botId: {
             chatId: context.chatId,
@@ -202,7 +234,7 @@ export class ManagedEntityAccessWriter {
           state: ManagedEntityAccessState.GRANTED,
           userRole: this.toAccessRole(userAccess),
           botRole: this.toAccessRole(botAccess),
-          checkedAt: now,
+          checkedAt: probeStartedAt,
           expiresAt,
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
         },
@@ -211,7 +243,7 @@ export class ManagedEntityAccessWriter {
           state: ManagedEntityAccessState.GRANTED,
           userRole: this.toAccessRole(userAccess),
           botRole: this.toAccessRole(botAccess),
-          checkedAt: now,
+          checkedAt: probeStartedAt,
           expiresAt,
           deniedReason: null,
           lastMaxErrorCode: null,
@@ -219,8 +251,8 @@ export class ManagedEntityAccessWriter {
           lastMaxStatusCode: null,
           source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
         },
-      }),
-      this.prisma.managedEntityLocalActivity.upsert({
+      });
+      await tx.managedEntityLocalActivity.upsert({
         where: {
           userId_chatId: {
             userId: context.senderId,
@@ -234,39 +266,210 @@ export class ManagedEntityAccessWriter {
           chatTitle: context.title,
           sourceEventType: MANAGED_ENTITY_HANDSHAKE_SOURCE,
           botId: context.botId,
-          lastEventAt: now,
+          lastEventAt: probeStartedAt,
         },
         update: {
           entityType: context.prismaEntityType,
           chatTitle: context.title,
           sourceEventType: MANAGED_ENTITY_HANDSHAKE_SOURCE,
           botId: context.botId,
-          lastEventAt: now,
+          lastEventAt: probeStartedAt,
         },
-      }),
-    ]);
+      });
+
+      return existing?.state === ManagedEntityAccessState.GRANTED;
+    });
+    if (wasConnected === null) {
+      return null;
+    }
+
     await this.maxBotLinkService.reconcileChatPrimaryByAccess?.({
       chatId: context.chatId,
       title: context.title,
       entityType: context.prismaEntityType,
     });
+    if (!(await this.publishGrantedCaches(context, probeStartedAt))) {
+      await this.compensateSupersededGrant(context, probeStartedAt);
+      return null;
+    }
 
-    await Promise.all([
-      this.chatContextCache.setAdminAccess(context.chatId, context.senderId, 'granted'),
-      this.chatContextCache.rememberChatAdminUser(context.chatId, context.senderId),
-    ]);
-
-    return existing?.state === ManagedEntityAccessState.GRANTED;
+    return wasConnected;
   }
 
-  async patchUserVisibleState(
+  private async publishGrantedCaches(
     context: ManagedEntityAccessWriteContext & { senderId: string },
+    probeStartedAt: Date,
+  ): Promise<boolean> {
+    const stillCurrent = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.lockCurrentProbe(tx, context, probeStartedAt))) {
+        return false;
+      }
+      return true;
+    });
+    if (!stillCurrent) {
+      return false;
+    }
+
+    return this.chatContextCache.applyAdminAccessEpochMutation({
+      chatId: context.chatId,
+      userId: context.senderId,
+      state: 'granted',
+      eventAt: probeStartedAt,
+      publishedSummary: this.buildPublishedSnapshotUpsert(context),
+      publishedSnapshotTtlSec: HANDSHAKE_PUBLISHED_SNAPSHOT_TTL_SEC,
+      recentBootstrapSummary: this.buildChatSummary(context),
+      recentBootstrapTtlSec: HANDSHAKE_BOOTSTRAP_TTL_SEC,
+    });
+  }
+
+  private async lockCurrentProbe(
+    tx: Prisma.TransactionClient,
+    context: ManagedEntityAccessWriteContext,
+    probeStartedAt: Date,
+  ): Promise<boolean> {
+    const lockedChats = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT chat."id"
+      FROM "chats" AS chat
+      WHERE chat."id" = ${context.chatId}
+      FOR UPDATE OF chat
+    `;
+    if (lockedChats.length !== 1) {
+      return false;
+    }
+
+    const userIdVariants = this.buildUserIdVariants(context.senderId);
+    const userActivityFence =
+      userIdVariants.length > 0
+        ? Prisma.sql`
+            AND NOT EXISTS (
+              SELECT 1
+              FROM "chat_membership_activity_events" AS activity
+              WHERE activity."chat_id" = ${context.chatId}
+                AND activity."user_id" IN (${Prisma.join(userIdVariants)})
+                AND activity."event_type" IN ('user_added', 'user_removed')
+                AND activity."event_at" >= ${probeStartedAt}
+            )
+          `
+        : Prisma.empty;
+    // FLAG: Match both MAX id forms; webhook activity stores the exact payload form only.
+    const lockedMemberships = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT membership."id"
+      FROM "chat_bot_memberships" AS membership
+      WHERE membership."chat_id" = ${context.chatId}
+        AND membership."bot_id" = ${context.botId}
+        AND membership."status"::text = 'ACTIVE'
+        AND membership."bot_access_checked_at" = ${probeStartedAt}
+        AND membership."bot_access_source" = ${MANAGED_ENTITY_HANDSHAKE_SOURCE}
+        AND membership."bot_access_state"::text IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER')
+        AND (
+          membership."lifecycle_event_at" IS NULL
+          OR membership."lifecycle_event_at" < ${probeStartedAt}
+          OR (
+            membership."lifecycle_event_at" = ${probeStartedAt}
+            AND membership."lifecycle_event_type" = 'live_probe'
+            AND membership."lifecycle_source" = 'live_probe'
+          )
+        )
+        ${userActivityFence}
+      LIMIT 1
+      FOR UPDATE OF membership
+    `;
+    if (lockedMemberships.length !== 1) {
+      return false;
+    }
+
+    if (userIdVariants.length === 0) {
+      return true;
+    }
+
+    // FLAG: Any newer verdict for the same MAX identity supersedes this handshake probe.
+    const newerAccessEdge = await tx.managedEntityAccessEdge.findFirst({
+      where: {
+        chatId: context.chatId,
+        userId: { in: userIdVariants },
+        checkedAt: { gt: probeStartedAt },
+      },
+      select: { checkedAt: true },
+    });
+    return newerAccessEdge === null;
+  }
+
+  private async compensateSupersededGrant(
+    context: ManagedEntityAccessWriteContext & { senderId: string },
+    probeStartedAt: Date,
   ): Promise<void> {
-    await this.chatContextCache.upsertManagedEntityPublishedSnapshot(
-      context.senderId,
-      this.buildPublishedSnapshotUpsert(context),
-      HANDSHAKE_PUBLISHED_SNAPSHOT_TTL_SEC,
-    );
+    await this.prisma.$transaction(async (tx) => {
+      // FLAG: Serialize compensation with removal/recovery so no stale cache write can finish last.
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${context.chatId}
+        FOR UPDATE OF chat
+      `;
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT membership."id"
+        FROM "chat_bot_memberships" AS membership
+        WHERE membership."chat_id" = ${context.chatId}
+          AND membership."bot_id" = ${context.botId}
+        LIMIT 1
+        FOR UPDATE OF membership
+      `;
+      await Promise.all([
+        tx.managedEntityAccessEdge.updateMany({
+          where: {
+            chatId: context.chatId,
+            userId: context.senderId,
+            botId: context.botId,
+            state: ManagedEntityAccessState.GRANTED,
+            checkedAt: probeStartedAt,
+          },
+          data: {
+            state: ManagedEntityAccessState.BOT_DENIED,
+            botRole: ManagedEntityAccessRole.MEMBER,
+            checkedAt: probeStartedAt,
+            expiresAt: null,
+            deniedReason: 'bot_access_probe_superseded',
+            source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
+          },
+        }),
+        tx.managedEntityAdminMember.deleteMany({
+          where: {
+            chatId: context.chatId,
+            userId: context.senderId,
+            observedByBotId: context.botId,
+            checkedAt: probeStartedAt,
+          },
+        }),
+      ]);
+
+      const [newerGrant, newerAdmin] = await Promise.all([
+        tx.managedEntityAccessEdge.findFirst({
+          where: {
+            chatId: context.chatId,
+            userId: { in: this.buildUserIdVariants(context.senderId) },
+            state: ManagedEntityAccessState.GRANTED,
+            checkedAt: { gt: probeStartedAt },
+          },
+          select: { userId: true },
+        }),
+        tx.managedEntityAdminMember.findFirst({
+          where: {
+            chatId: context.chatId,
+            userId: { in: this.buildUserIdVariants(context.senderId) },
+            checkedAt: { gt: probeStartedAt },
+          },
+          select: { userId: true },
+        }),
+      ]);
+      if (!newerGrant && !newerAdmin) {
+        await tx.chatAdminAllowlist.deleteMany({
+          where: {
+            chatId: context.chatId,
+            userId: { in: this.buildUserIdVariants(context.senderId) },
+          },
+        });
+      }
+    });
   }
 
   private buildPublishedSnapshotUpsert(
@@ -300,6 +503,21 @@ export class ManagedEntityAccessWriter {
       sharedMode: 'owned',
       channelOverview: null,
     };
+  }
+
+  private buildUserIdVariants(value: string | null | undefined): string[] {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (!normalized) {
+      return [];
+    }
+    return Array.from(
+      new Set([
+        normalized,
+        normalized.startsWith('id') && normalized.length > 2
+          ? normalized.slice(2)
+          : `id${normalized}`,
+      ]),
+    );
   }
 
   private toAccessRole(access: MaxChatMemberAccess): ManagedEntityAccessRole {

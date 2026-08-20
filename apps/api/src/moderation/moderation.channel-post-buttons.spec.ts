@@ -279,7 +279,7 @@ describe('ModerationService channel auto post buttons', () => {
             postSuggestionsButtonText: 'Прислать новость',
             commentsEnabled: true,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {
@@ -423,7 +423,7 @@ describe('ModerationService channel auto post buttons', () => {
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {
@@ -1038,10 +1038,7 @@ describe('ModerationService channel auto post buttons', () => {
           try {
             await options.beforeEditMutation?.();
           } catch (error: unknown) {
-            throw markMaxPreDispatchGuardRejected(
-              error,
-              MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
-            );
+            throw markMaxPreDispatchGuardRejected(error, MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE);
           }
           maxEditStarted = true;
         },
@@ -1102,7 +1099,7 @@ describe('ModerationService channel auto post buttons', () => {
             postSuggestionsButtonText: 'Предложить пост',
             commentsEnabled: true,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {
@@ -1188,7 +1185,7 @@ describe('ModerationService channel auto post buttons', () => {
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {
@@ -1266,7 +1263,7 @@ describe('ModerationService channel auto post buttons', () => {
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {
@@ -1515,7 +1512,7 @@ describe('ModerationService channel auto post buttons', () => {
             commentsEnabled: false,
             postSignatureEnabled: true,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {
@@ -1796,7 +1793,7 @@ describe('ModerationService channel auto post buttons', () => {
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {
@@ -1857,7 +1854,7 @@ describe('ModerationService channel auto post buttons', () => {
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: false,
           },
-          admins: [],
+          admins: [{ userId: 'admin-1' }],
         }),
       },
       auditLog: {

@@ -25,6 +25,62 @@ import {
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 
 describe('ModerationService', () => {
+  it('fails closed for an official callback whose source message was deleted', async () => {
+    const update = new WebhookParser().parse(
+      {
+        update_type: 'message_callback',
+        timestamp: 1772249118580,
+        callback: {
+          timestamp: 1772249118580,
+          callback_id: 'callback-deleted-message-1',
+          payload: 'pc2|broadcast_send',
+          user: { user_id: 891 },
+        },
+        message: null,
+        user_locale: 'ru-RU',
+      },
+      { botId: 'bot-1' },
+    );
+    const maxClient = {
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+    };
+    const privateControlService = {
+      handleUpdate: jest.fn().mockResolvedValue(undefined),
+    };
+    const managedPollService = {
+      tryHandleCallback: jest.fn().mockResolvedValue(false),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      privateControlService as never,
+    );
+    (service as any).managedPollService = managedPollService;
+
+    await expect(service.handleUpdate(update)).resolves.toBeUndefined();
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-deleted-message-1',
+      'Кнопка устарела',
+      undefined,
+      expect.objectContaining({
+        botId: 'bot-1',
+        ignoreFailureMetricStatuses: expect.any(Array),
+      }),
+    );
+    expect(privateControlService.handleUpdate).not.toHaveBeenCalled();
+    expect(managedPollService.tryHandleCallback).not.toHaveBeenCalled();
+
+    await expect(service.handleUpdate({ ...update, botId: undefined })).resolves.toBeUndefined();
+    expect(maxClient.answerCallback).toHaveBeenCalledTimes(1);
+  });
+
   it('delivers an official pure forward from the persisted worker to private control', async () => {
     const update = new WebhookParser().parse(
       {

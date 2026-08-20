@@ -3545,8 +3545,10 @@ export class ModerationDeleteIntentService {
     botId: string,
     heartbeat: IntentLeaseHeartbeat,
   ): Promise<'refreshed' | 'denied' | 'unknown'> {
+    let accessProbeStartedAt: Date | null = null;
     try {
       await this.assertLeaseForExternalCall(heartbeat);
+      accessProbeStartedAt = new Date();
       const access = await this.maxClient.getCurrentChatMemberAccess(intent.chatId, {
         botId,
         bypassCache: true,
@@ -3556,29 +3558,34 @@ export class ModerationDeleteIntentService {
         timeoutMs: this.deleteTimeoutMs,
         ignoreFailureMetricStatuses: [403, 404],
       });
-      await this.maxBotLinkService.recordBotAccessProbe({
+      const persisted = await this.maxBotLinkService.recordBotAccessProbe({
         chatId: intent.chatId,
         botId,
         access,
         source: 'moderation_delete_intent_probe',
+        checkedAt: accessProbeStartedAt,
         allowMembershipRecovery:
           this.resolveEffectiveRoutingPolicy(intent) === 'origin_only' &&
           intent.originBotId === botId,
       });
-      return 'refreshed';
+      return persisted ? 'refreshed' : 'unknown';
     } catch (error: unknown) {
       if (error instanceof ModerationDeleteIntentLeaseLostError) {
         throw error;
       }
       const details = this.describeError(error, 'delete_access_probe_failed');
       if (details.statusCode === 401 || details.statusCode === 403 || details.statusCode === 404) {
-        await this.maxBotLinkService.recordBotAccessProbe({
+        if (!accessProbeStartedAt) {
+          return 'unknown';
+        }
+        const persisted = await this.maxBotLinkService.recordBotAccessProbe({
           chatId: intent.chatId,
           botId,
           access: null,
           source: 'moderation_delete_intent_probe_denied',
+          checkedAt: accessProbeStartedAt,
         });
-        return 'denied';
+        return persisted ? 'denied' : 'unknown';
       }
       return 'unknown';
     }

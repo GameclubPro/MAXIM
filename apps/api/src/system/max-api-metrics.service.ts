@@ -35,9 +35,13 @@ export type MaxApiRateLimitSnapshot = MaxApiTrafficSnapshot & {
 export type MaxApiBotRateLimitSnapshot = MaxApiRateLimitSnapshot;
 export type MaxApiStackRateLimitSnapshot = MaxApiRateLimitSnapshot;
 
-export type MaxApiRateLimitOutcomeCounts = {
+export type MaxApiRateLimitOutcomeTotals = {
   internalLimiterRejects: number;
   external429: number;
+};
+
+export type MaxApiRateLimitOutcomeCounts = MaxApiRateLimitOutcomeTotals & {
+  trafficClasses: Record<MaxApiTrafficClass, MaxApiRateLimitOutcomeTotals>;
 };
 
 export type MaxApiRateLimitOutcomeSnapshot = {
@@ -232,8 +236,10 @@ export class MaxApiMetricsService implements OnModuleDestroy {
           : (bots.get(entry.scope) ?? this.createRateLimitOutcomeCounts());
       if (entry.origin === 'internal_limiter') {
         target.internalLimiterRejects += count;
+        target.trafficClasses[entry.trafficClass].internalLimiterRejects += count;
       } else {
         target.external429 += count;
+        target.trafficClasses[entry.trafficClass].external429 += count;
       }
       if (entry.scope !== 'stack') {
         bots.set(entry.scope, target);
@@ -511,6 +517,18 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   }
 
   private createRateLimitOutcomeCounts(): MaxApiRateLimitOutcomeCounts {
+    return {
+      internalLimiterRejects: 0,
+      external429: 0,
+      trafficClasses: {
+        critical: this.createRateLimitOutcomeTotals(),
+        interactive: this.createRateLimitOutcomeTotals(),
+        background: this.createRateLimitOutcomeTotals(),
+      },
+    };
+  }
+
+  private createRateLimitOutcomeTotals(): MaxApiRateLimitOutcomeTotals {
     return {
       internalLimiterRejects: 0,
       external429: 0,

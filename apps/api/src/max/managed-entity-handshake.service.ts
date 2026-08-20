@@ -60,7 +60,6 @@ type ManagedEntityHandshakeContext = {
   commandMessageId: string | null;
   interactionMessageId: string | null;
   interaction: 'in_chat' | 'forwarded_private';
-  bypassAccessCache: boolean;
 };
 
 @Injectable()
@@ -154,7 +153,6 @@ export class ManagedEntityHandshakeService {
         commandMessageId: null,
         interactionMessageId: candidate.incomingMessageId,
         interaction: 'forwarded_private',
-        bypassAccessCache: true,
       };
 
       return this.processContext(context, true);
@@ -207,13 +205,14 @@ export class ManagedEntityHandshakeService {
     }
 
     try {
+      const probeStartedAt = new Date();
       const botAccess = await this.maxClient.getCurrentChatMemberAccess(context.chatId, {
         botId: context.botId,
         trafficClass: 'interactive',
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
         timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
-        ...(context.bypassAccessCache ? { bypassCache: true } : {}),
+        bypassCache: true,
         ignoreFailureMetricStatuses: [403, 404],
       });
       if (!this.isAdminOrOwner(botAccess)) {
@@ -241,7 +240,14 @@ export class ManagedEntityHandshakeService {
       }
 
       if (!context.senderId) {
-        await this.accessWriter.bootstrapChat(this.toWriteContext(context));
+        const bootstrapped = await this.accessWriter.bootstrapChat(
+          this.toWriteContext(context),
+          botAccess,
+          probeStartedAt,
+        );
+        if (!bootstrapped) {
+          return this.handleSupersededProbe(context);
+        }
         await this.replySafely(
           context,
           'Бот видит этот канал. Откройте мини-приложение от имени администратора, чтобы привязать доступ.',
@@ -264,7 +270,7 @@ export class ManagedEntityHandshakeService {
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
           timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
-          ...(context.bypassAccessCache ? { bypassCache: true } : {}),
+          bypassCache: true,
           ignoreFailureMetricStatuses: [403, 404],
         },
       );
@@ -286,8 +292,11 @@ export class ManagedEntityHandshakeService {
         writeContext,
         botAccess,
         userAccess,
+        probeStartedAt,
       );
-      await this.accessWriter.patchUserVisibleState(writeContext);
+      if (wasConnected === null) {
+        return this.handleSupersededProbe(context);
+      }
       await this.refreshRosterSync(context);
       await this.deleteCommandMessageSafely(context, botAccess);
       await this.replySafely(
@@ -332,6 +341,25 @@ export class ManagedEntityHandshakeService {
       );
       return 'failed';
     }
+  }
+
+  private async handleSupersededProbe(
+    context: ManagedEntityHandshakeContext,
+  ): Promise<ManagedEntityHandshakeResult> {
+    this.releaseRateLimitSlot(context);
+    await this.recordOutcome(
+      context,
+      ManagedEntityHandshakeOutcomeStatus.FAILED,
+      'bot_access_probe_superseded',
+    );
+    this.logOutcome(context, 'bot_access_probe_superseded');
+    await this.replySafely(
+      context,
+      context.interaction === 'forwarded_private'
+        ? 'Доступ изменился во время проверки. Перешлите сообщение еще раз.'
+        : 'Доступ изменился во время проверки. Отправьте «Старт» еще раз.',
+    );
+    return 'failed';
   }
 
   private buildContext(update: MaxUpdate): ManagedEntityHandshakeContext | null {
@@ -388,7 +416,6 @@ export class ManagedEntityHandshakeService {
       interactionMessageId:
         updateType === 'message_created' ? update.message?.messageId?.trim() || null : null,
       interaction: 'in_chat',
-      bypassAccessCache: false,
     };
   }
 

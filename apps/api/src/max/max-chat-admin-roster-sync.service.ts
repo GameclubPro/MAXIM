@@ -1,13 +1,16 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import { createHash, randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
-import { ChatBotMembershipStatus, ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
-import type { Queue } from 'bullmq';
 import {
-  ChatContextCacheService,
-  type ManagedEntitiesPublishedSnapshot,
-} from '../chat-context/chat-context-cache.service';
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatCatalogKind,
+  ChatEntityType,
+  Prisma,
+} from '../prisma/prisma-client';
+import type { Queue } from 'bullmq';
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -15,7 +18,6 @@ import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-cl
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canDiscoverChatsForBotState } from './max-bot-state.util';
-import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 import {
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
   type MaxChatAdminRosterSyncJob,
@@ -47,6 +49,27 @@ type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';
 type ManagedEntityAccessEdgeClient = {
   upsert?: (args: unknown) => Promise<unknown>;
   updateMany?: (args: unknown) => Promise<unknown>;
+};
+type RosterPersistenceClient = Pick<
+  Prisma.TransactionClient,
+  | '$queryRaw'
+  | 'chat'
+  | 'chatAdminAllowlist'
+  | 'chatBotMembership'
+  | 'managedEntityAccessEdge'
+  | 'managedEntityAdminMember'
+>;
+type PersistedRosterChanges = {
+  adminUserIds: string[];
+  removedUserIds: string[];
+};
+type BotAccessEpoch = {
+  botId: string;
+  accessState: ChatBotAccessState;
+  probeStartedAt: Date;
+};
+type RosterAccessEpoch = BotAccessEpoch & {
+  botRole: ManagedEntityAccessRoleValue;
 };
 type ResolvedRosterCandidates = {
   botIds: string[];
@@ -324,10 +347,11 @@ export class MaxChatAdminRosterSyncService {
 
     const candidateResolution = await this.resolveCandidateBotIds(normalized);
     const candidateBotIds = candidateResolution.botIds;
-    const deniedBotIds: string[] = [];
+    const deniedBotEpochs: BotAccessEpoch[] = [];
     let rosterAccess: {
       botId: string;
       access: { isAdmin: boolean; isOwner: boolean; permissions?: readonly string[] };
+      probeStartedAt: Date;
     } | null = null;
     let recoverableError: unknown = null;
     let attemptedCandidate = false;
@@ -347,25 +371,61 @@ export class MaxChatAdminRosterSyncService {
         continue;
       }
 
+      let accessProbeStartedAt: Date | null = null;
       try {
         attemptedCandidate = true;
         const requestOptions = this.buildChatAdminRosterReadOptions(normalized, botId);
+        accessProbeStartedAt = new Date();
         const access = await this.maxClient.getCurrentChatMemberAccess(
           normalized.chatId,
           requestOptions,
         );
-        await this.persistBotSelfAccessSnapshot(normalized, botId, access);
-
-        if (!access.isAdmin && !access.isOwner) {
-          deniedBotIds.push(botId);
+        const persisted = await this.persistBotSelfAccessSnapshot(
+          normalized,
+          botId,
+          access,
+          accessProbeStartedAt,
+        );
+        if (!persisted) {
+          recoverableError ??= new Error(
+            `Bot access probe was superseded before roster sync persisted it (${botId})`,
+          );
           continue;
         }
 
-        rosterAccess ??= { botId, access };
+        if (!access.isAdmin && !access.isOwner) {
+          deniedBotEpochs.push({
+            botId,
+            accessState: ChatBotAccessState.CONFIRMED_MEMBER,
+            probeStartedAt: accessProbeStartedAt,
+          });
+          continue;
+        }
+
+        rosterAccess ??= { botId, access, probeStartedAt: accessProbeStartedAt };
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
-          await this.persistBotSelfAccessSnapshot(normalized, botId, null);
-          deniedBotIds.push(botId);
+          if (!accessProbeStartedAt) {
+            recoverableError ??= error;
+            continue;
+          }
+          const persisted = await this.persistBotSelfAccessSnapshot(
+            normalized,
+            botId,
+            null,
+            accessProbeStartedAt,
+          );
+          if (!persisted) {
+            recoverableError ??= new Error(
+              `Bot access denial was superseded before roster sync persisted it (${botId})`,
+            );
+            continue;
+          }
+          deniedBotEpochs.push({
+            botId,
+            accessState: ChatBotAccessState.DENIED,
+            probeStartedAt: accessProbeStartedAt,
+          });
           this.markTerminalBotBackoff(normalized.chatId, botId);
           continue;
         }
@@ -389,11 +449,19 @@ export class MaxChatAdminRosterSyncService {
         normalized.chatId,
         this.buildChatAdminRosterReadOptions(normalized, rosterAccess.botId),
       );
-      await this.syncAllowlist(normalized, adminUserIds, {
+      const rosterPersisted = await this.syncAllowlist(normalized, adminUserIds, {
         botId: rosterAccess.botId,
         botRole: this.resolveManagedEntityAccessRole(rosterAccess.access),
+        accessState: rosterAccess.access.isOwner
+          ? ChatBotAccessState.CONFIRMED_OWNER
+          : ChatBotAccessState.CONFIRMED_ADMIN,
+        probeStartedAt: rosterAccess.probeStartedAt,
       });
-      await this.markCatalogManagedAfterConfirmedRoster(normalized);
+      if (!rosterPersisted) {
+        throw new Error(
+          `Admin roster access epoch was superseded before sync completion (${rosterAccess.botId})`,
+        );
+      }
       await this.reconcileNightModeAfterConfirmedAccess(normalized.chatId, rosterAccess.botId);
     }
 
@@ -443,11 +511,25 @@ export class MaxChatAdminRosterSyncService {
     }
 
     if (!candidateResolution.completeEnoughForGlobalDeny) {
-      await this.recordIncompleteCandidateBotDeny(normalized.chatId, deniedBotIds);
+      await this.recordIncompleteCandidateBotDeny(
+        normalized.chatId,
+        deniedBotEpochs.map((epoch) => epoch.botId),
+      );
       return false;
     }
 
-    await this.clearAllowlist(normalized.chatId, 'bot_denied');
+    const deniedBotIds = new Set(deniedBotEpochs.map((epoch) => epoch.botId));
+    if (candidateBotIds.some((botId) => !deniedBotIds.has(botId))) {
+      await this.recordIncompleteCandidateBotDeny(normalized.chatId, [...deniedBotIds]);
+      return false;
+    }
+
+    const cleared = await this.clearAllowlist(normalized.chatId, 'bot_denied', deniedBotEpochs);
+    if (!cleared) {
+      throw new Error(
+        `Bot denial epochs were superseded before roster cleanup (${normalized.chatId})`,
+      );
+    }
     return false;
   }
 
@@ -690,11 +772,8 @@ export class MaxChatAdminRosterSyncService {
   private async syncAllowlist(
     job: MaxChatAdminRosterSyncJob,
     adminUserIds: readonly string[],
-    accessContext: {
-      botId: string;
-      botRole: ManagedEntityAccessRoleValue;
-    },
-  ): Promise<void> {
+    accessContext: RosterAccessEpoch,
+  ): Promise<boolean> {
     const chatId = job.chatId;
     const normalizedAdminUserIds = Array.from(
       new Set(
@@ -703,208 +782,568 @@ export class MaxChatAdminRosterSyncService {
           .filter((userId): userId is string => Boolean(userId)),
       ),
     );
-    const existingRows = await this.prisma.chatAdminAllowlist.findMany({
-      where: {
-        chatId,
-      },
-      select: {
-        userId: true,
-      },
-    });
-    const existingUserIds = new Set(
-      existingRows
-        .map((row) => this.readTrimmedString(row.userId))
-        .filter((userId): userId is string => Boolean(userId)),
-    );
-    const nextUserIds = new Set(normalizedAdminUserIds);
-    const usersToAdd = normalizedAdminUserIds.filter((userId) => !existingUserIds.has(userId));
-    const usersToRemove = [...existingUserIds].filter((userId) => !nextUserIds.has(userId));
-
-    if (usersToAdd.length > 0) {
-      if (typeof this.prisma.chatAdminAllowlist.createMany === 'function') {
-        await this.prisma.chatAdminAllowlist.createMany({
-          data: usersToAdd.map((userId) => ({
-            chatId,
-            userId,
-          })),
-          skipDuplicates: true,
-        });
-      } else {
-        await Promise.all(
-          usersToAdd.map((userId) =>
-            this.prisma.chatAdminAllowlist.upsert({
-              where: {
-                chatId_userId: {
-                  chatId,
-                  userId,
-                },
-              },
-              create: {
-                chatId,
-                userId,
-              },
-              update: {},
-            }),
-          ),
-        );
+    const remoteAdminUserIdByIdentity = new Map<string, string>();
+    for (const userId of normalizedAdminUserIds) {
+      const identityKey = this.buildUserIdIdentityKey(userId);
+      if (identityKey && !remoteAdminUserIdByIdentity.has(identityKey)) {
+        remoteAdminUserIdByIdentity.set(identityKey, userId);
       }
     }
+    const persisted = await this.prisma.$transaction(
+      async (tx): Promise<PersistedRosterChanges | null> => {
+        const lockedChat = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chat."id"
+          FROM "chats" AS chat
+          WHERE chat."id" = ${chatId}
+          FOR UPDATE OF chat
+        `);
+        if (lockedChat.length !== 1) {
+          return null;
+        }
 
-    if (usersToRemove.length > 0) {
-      await this.prisma.chatAdminAllowlist.deleteMany({
-        where: {
-          chatId,
-          userId: {
-            in: usersToRemove,
+        // FLAG: Roster grants are valid only for the exact probe epoch under parent-first locks.
+        const lockedMembership = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT membership."id"
+          FROM "chat_bot_memberships" AS membership
+          WHERE membership."chat_id" = ${chatId}
+            AND membership."bot_id" = ${accessContext.botId}
+          LIMIT 1
+          FOR UPDATE OF membership
+        `);
+        if (lockedMembership.length !== 1) {
+          return null;
+        }
+
+        const membership = await tx.chatBotMembership.findUnique({
+          where: {
+            chatId_botId: {
+              chatId,
+              botId: accessContext.botId,
+            },
           },
-        },
-      });
+          select: {
+            status: true,
+            botAccessState: true,
+            botAccessCheckedAt: true,
+            botAccessSource: true,
+            lifecycleEventAt: true,
+            lifecycleEventType: true,
+            lifecycleSource: true,
+          },
+        });
+        if (!this.isAcceptedBotAccessEpoch(membership, accessContext)) {
+          return null;
+        }
+
+        const existingRows = await tx.chatAdminAllowlist.findMany({
+          where: { chatId },
+          select: { userId: true },
+        });
+        const existingUserIds = new Set(
+          existingRows
+            .map((row) => this.readTrimmedString(row.userId))
+            .filter((userId): userId is string => Boolean(userId)),
+        );
+        const existingUserIdByIdentity = new Map<string, string>();
+        for (const userId of existingUserIds) {
+          const identityKey = this.buildUserIdIdentityKey(userId);
+          if (identityKey && !existingUserIdByIdentity.has(identityKey)) {
+            existingUserIdByIdentity.set(identityKey, userId);
+          }
+        }
+        const candidateUserIds = Array.from(
+          new Set([...normalizedAdminUserIds, ...existingUserIds]),
+        );
+        const identitiesByVariant = new Map<string, Set<string>>();
+        for (const userId of candidateUserIds) {
+          const identityKey = this.buildUserIdIdentityKey(userId);
+          if (!identityKey) {
+            continue;
+          }
+          for (const variant of this.buildUserIdVariants(userId)) {
+            const identities = identitiesByVariant.get(variant) ?? new Set<string>();
+            identities.add(identityKey);
+            identitiesByVariant.set(variant, identities);
+          }
+        }
+        const variants = [...identitiesByVariant.keys()];
+        const accessEvidenceUserIds = Array.from(new Set([...candidateUserIds, ...variants]));
+        const [membershipEvents, newerAccessEdges, newerAdminMembers] = await Promise.all([
+          variants.length > 0
+            ? tx.$queryRaw<Array<{ userId: string }>>(Prisma.sql`
+                SELECT DISTINCT activity."user_id" AS "userId"
+                FROM "chat_membership_activity_events" AS activity
+                WHERE activity."chat_id" = ${chatId}
+                  AND activity."user_id" IN (${Prisma.join(variants)})
+                  AND activity."event_type" IN ('user_added', 'user_removed')
+                  AND activity."event_at" >= ${accessContext.probeStartedAt}
+              `)
+            : Promise.resolve([]),
+          tx.managedEntityAccessEdge.findMany({
+            where: {
+              chatId,
+              userId: { in: accessEvidenceUserIds },
+              checkedAt: { gt: accessContext.probeStartedAt },
+            },
+            select: { userId: true },
+          }),
+          tx.managedEntityAdminMember.findMany({
+            where: {
+              chatId,
+              userId: { in: accessEvidenceUserIds },
+              checkedAt: { gt: accessContext.probeStartedAt },
+            },
+            select: { userId: true },
+          }),
+        ]);
+        const protectedIdentityKeys = new Set<string>();
+        for (const row of [...membershipEvents, ...newerAccessEdges, ...newerAdminMembers]) {
+          const normalizedUserId = this.readTrimmedString(row.userId)?.toLowerCase();
+          if (!normalizedUserId) {
+            continue;
+          }
+          for (const identityKey of identitiesByVariant.get(normalizedUserId) ?? []) {
+            protectedIdentityKeys.add(identityKey);
+          }
+        }
+        const grantCandidates = [...remoteAdminUserIdByIdentity.entries()]
+          .filter(([identityKey]) => !protectedIdentityKeys.has(identityKey))
+          .map(([identityKey, remoteUserId]) => ({
+            identityKey,
+            userId: existingUserIdByIdentity.get(identityKey) ?? remoteUserId,
+          }));
+        const usersToGrant = grantCandidates.map((candidate) => candidate.userId);
+        const usersToAdd = grantCandidates
+          .filter((candidate) => !existingUserIdByIdentity.has(candidate.identityKey))
+          .map((candidate) => candidate.userId);
+        const usersToRemove = [...existingUserIds].filter((userId) => {
+          const identityKey = this.buildUserIdIdentityKey(userId);
+          return Boolean(
+            identityKey &&
+            !remoteAdminUserIdByIdentity.has(identityKey) &&
+            !protectedIdentityKeys.has(identityKey),
+          );
+        });
+        const source = job.source ?? 'admin_roster_sync';
+
+        if (usersToAdd.length > 0) {
+          await tx.chatAdminAllowlist.createMany({
+            data: usersToAdd.map((userId) => ({ chatId, userId })),
+            skipDuplicates: true,
+          });
+        }
+        if (usersToRemove.length > 0) {
+          await tx.chatAdminAllowlist.deleteMany({
+            where: {
+              chatId,
+              userId: { in: usersToRemove },
+            },
+          });
+        }
+
+        await this.upsertManagedEntityAccessEdges(
+          {
+            chatId,
+            userIds: usersToGrant,
+            botId: accessContext.botId,
+            entityType: job.entityType ?? null,
+            state: 'GRANTED',
+            userRole: 'ADMIN',
+            botRole: accessContext.botRole,
+            source,
+            checkedAt: accessContext.probeStartedAt,
+          },
+          tx,
+        );
+        await this.upsertManagedEntityAdminMembers(
+          {
+            chatId,
+            userIds: usersToGrant,
+            botId: accessContext.botId,
+            entityType: job.entityType ?? null,
+            role: 'ADMIN',
+            source,
+            checkedAt: accessContext.probeStartedAt,
+          },
+          tx,
+        );
+        await this.markManagedEntityAccessEdgesDenied(
+          {
+            chatId,
+            userIds: usersToRemove,
+            botId: accessContext.botId,
+            state: 'USER_DENIED',
+            deniedReason: 'user_removed_from_admin_roster',
+            source,
+            checkedAt: accessContext.probeStartedAt,
+          },
+          tx,
+        );
+        await this.expireManagedEntityAdminMembers(
+          {
+            chatId,
+            userIds: usersToRemove,
+            botId: accessContext.botId,
+            source,
+            checkedAt: accessContext.probeStartedAt,
+          },
+          tx,
+        );
+
+        if (!this.isUnsupportedManagedRosterSyncChat(chatId, job.entityType ?? null)) {
+          const entityType = job.entityType ? this.toPrismaEntityType(job.entityType) : null;
+          await tx.chat.update({
+            where: { id: chatId },
+            data: {
+              catalogKind: ChatCatalogKind.MANAGED,
+              ...(entityType ? { entityType } : {}),
+            },
+          });
+        }
+
+        return {
+          adminUserIds: usersToGrant,
+          removedUserIds: usersToRemove,
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+    if (!persisted) {
+      return false;
+    }
+    return this.publishRosterCachesForAcceptedEpoch(job, accessContext, persisted);
+  }
+
+  private isAcceptedBotAccessEpoch(
+    membership: {
+      status: ChatBotMembershipStatus;
+      botAccessState: ChatBotAccessState;
+      botAccessCheckedAt: Date | null;
+      botAccessSource: string | null;
+      lifecycleEventAt: Date | null;
+      lifecycleEventType: string | null;
+      lifecycleSource: string | null;
+    } | null,
+    accessContext: BotAccessEpoch,
+  ): boolean {
+    if (
+      !membership ||
+      membership.status !== ChatBotMembershipStatus.ACTIVE ||
+      membership.botAccessState !== accessContext.accessState ||
+      membership.botAccessCheckedAt?.getTime() !== accessContext.probeStartedAt.getTime() ||
+      membership.botAccessSource !== 'admin_roster_sync'
+    ) {
+      return false;
     }
 
-    await this.chatContextCache.replaceChatAdminUsers(chatId, normalizedAdminUserIds);
-
-    await Promise.all(
-      normalizedAdminUserIds.map((userId) =>
-        this.chatContextCache.setAdminAccess(chatId, userId, 'granted'),
-      ),
-    );
-    await Promise.all(
-      usersToRemove.map((userId) =>
-        this.chatContextCache.setAdminAccess(chatId, userId, 'user_denied'),
-      ),
-    );
-    await this.upsertManagedEntityAccessEdges({
-      chatId,
-      userIds: normalizedAdminUserIds,
-      botId: accessContext.botId,
-      entityType: job.entityType ?? null,
-      state: 'GRANTED',
-      userRole: 'ADMIN',
-      botRole: accessContext.botRole,
-      source: job.source ?? 'admin_roster_sync',
-    });
-    await this.upsertManagedEntityAdminMembers({
-      chatId,
-      userIds: normalizedAdminUserIds,
-      botId: accessContext.botId,
-      entityType: job.entityType ?? null,
-      role: 'ADMIN',
-      source: job.source ?? 'admin_roster_sync',
-    });
-    await this.markManagedEntityAccessEdgesDenied({
-      chatId,
-      userIds: usersToRemove,
-      botId: accessContext.botId,
-      state: 'USER_DENIED',
-      deniedReason: 'user_removed_from_admin_roster',
-      source: job.source ?? 'admin_roster_sync',
-    });
-    await this.expireManagedEntityAdminMembers({
-      chatId,
-      userIds: usersToRemove,
-      botId: accessContext.botId,
-      source: job.source ?? 'admin_roster_sync',
-    });
-
-    await this.patchManagedEntitiesPublishedSnapshots({
-      chatId,
-      entityTypeHint: job.entityType ?? null,
-      titleHint: job.title ?? null,
-      userIdsToUpsert: normalizedAdminUserIds,
-      userIdsToRemove: usersToRemove,
-    });
-    await this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(
-      chatId,
-      job.entityType ?? null,
+    const lifecycleEventAt = membership.lifecycleEventAt;
+    if (!lifecycleEventAt || lifecycleEventAt.getTime() < accessContext.probeStartedAt.getTime()) {
+      return true;
+    }
+    return (
+      lifecycleEventAt.getTime() === accessContext.probeStartedAt.getTime() &&
+      membership.lifecycleEventType === 'live_probe' &&
+      membership.lifecycleSource === 'live_probe'
     );
   }
 
-  private async markCatalogManagedAfterConfirmedRoster(
-    job: Pick<MaxChatAdminRosterSyncJob, 'chatId' | 'entityType'>,
-  ): Promise<void> {
-    const chatId = this.readTrimmedString(job.chatId);
-    if (!chatId || this.isUnsupportedManagedRosterSyncChat(chatId, job.entityType ?? null)) {
-      return;
+  private async publishRosterCachesForAcceptedEpoch(
+    job: MaxChatAdminRosterSyncJob,
+    accessContext: RosterAccessEpoch,
+    persisted: PersistedRosterChanges,
+  ): Promise<boolean> {
+    const cacheMutationUsers = await this.prisma.$transaction(
+      async (tx) => {
+        // FLAG: Resolve current cache intent under the parent lock, then release SQL before Redis.
+        const lockedChat = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chat."id"
+          FROM "chats" AS chat
+          WHERE chat."id" = ${job.chatId}
+          FOR UPDATE OF chat
+        `);
+        if (lockedChat.length !== 1) {
+          return null;
+        }
+        const lockedMembership = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT membership."id"
+          FROM "chat_bot_memberships" AS membership
+          WHERE membership."chat_id" = ${job.chatId}
+            AND membership."bot_id" = ${accessContext.botId}
+          LIMIT 1
+          FOR UPDATE OF membership
+        `);
+        if (lockedMembership.length !== 1) {
+          return null;
+        }
+
+        const membership = await tx.chatBotMembership.findUnique({
+          where: {
+            chatId_botId: {
+              chatId: job.chatId,
+              botId: accessContext.botId,
+            },
+          },
+          select: {
+            status: true,
+            botAccessState: true,
+            botAccessCheckedAt: true,
+            botAccessSource: true,
+            lifecycleEventAt: true,
+            lifecycleEventType: true,
+            lifecycleSource: true,
+          },
+        });
+        if (!this.isAcceptedBotAccessEpoch(membership, accessContext)) {
+          return null;
+        }
+
+        const userIds = Array.from(
+          new Set([...persisted.adminUserIds, ...persisted.removedUserIds]),
+        );
+        const [allowlistRows, newerGrantedEdges, newerAdminMembers] = await Promise.all([
+          tx.chatAdminAllowlist.findMany({
+            where: { chatId: job.chatId, userId: { in: userIds } },
+            select: { userId: true },
+          }),
+          tx.managedEntityAccessEdge.findMany({
+            where: {
+              chatId: job.chatId,
+              userId: { in: persisted.removedUserIds },
+              state: 'GRANTED',
+              checkedAt: { gt: accessContext.probeStartedAt },
+            },
+            select: { userId: true },
+          }),
+          tx.managedEntityAdminMember.findMany({
+            where: {
+              chatId: job.chatId,
+              userId: { in: persisted.removedUserIds },
+              checkedAt: { gt: accessContext.probeStartedAt },
+            },
+            select: { userId: true },
+          }),
+        ]);
+        const allowlisted = new Set(allowlistRows.map((row) => row.userId));
+        const newerEvidence = new Set([
+          ...newerGrantedEdges.map((row) => row.userId),
+          ...newerAdminMembers.map((row) => row.userId),
+        ]);
+        return {
+          grantedUserIds: persisted.adminUserIds.filter((userId) => allowlisted.has(userId)),
+          deniedUserIds: persisted.removedUserIds.filter(
+            (userId) => !allowlisted.has(userId) && !newerEvidence.has(userId),
+          ),
+        };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        timeout: 15_000,
+      },
+    );
+    if (!cacheMutationUsers) {
+      return false;
     }
 
-    try {
-      const entityType = job.entityType ? this.toPrismaEntityType(job.entityType) : null;
-      await this.prisma.chat.update({
-        where: { id: chatId },
-        data: {
-          catalogKind: ChatCatalogKind.MANAGED,
-          ...(entityType ? { entityType } : {}),
-        },
-      });
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to mark chat catalog kind as managed after confirmed roster sync',
-      );
-    }
+    const snapshotChat = await this.loadManagedEntitySnapshotPatchChat(
+      job.chatId,
+      job.entityType ?? null,
+      job.title ?? null,
+    );
+    const summary = snapshotChat
+      ? await this.buildManagedEntitySnapshotPatchSummary(snapshotChat)
+      : null;
+    await this.mapWithConcurrencyLimit(
+      cacheMutationUsers.grantedUserIds,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
+      async (userId) => {
+        await this.chatContextCache.applyAdminAccessEpochMutation({
+          chatId: job.chatId,
+          userId,
+          state: 'granted',
+          eventAt: accessContext.probeStartedAt,
+          ...(summary
+            ? {
+                publishedSummary: summary,
+                publishedSnapshotTtlSec: MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+              }
+            : {}),
+        });
+        return null;
+      },
+    );
+    await this.mapWithConcurrencyLimit(
+      cacheMutationUsers.deniedUserIds,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
+      async (userId) => {
+        await this.chatContextCache.applyAdminAccessEpochMutation({
+          chatId: job.chatId,
+          userId,
+          state: 'user_denied',
+          eventAt: accessContext.probeStartedAt,
+        });
+        return null;
+      },
+    );
+    return true;
   }
 
   private async clearAllowlist(
     chatId: string,
     deniedState: 'user_denied' | 'bot_denied',
-  ): Promise<void> {
-    const existingRows = await this.prisma.chatAdminAllowlist.findMany({
-      where: {
-        chatId,
-      },
-      select: {
-        userId: true,
-      },
-    });
-    const existingUserIds = Array.from(
-      new Set(
-        existingRows
-          .map((row) => this.readTrimmedString(row.userId))
-          .filter((userId): userId is string => Boolean(userId)),
-      ),
-    );
-
-    if (existingUserIds.length > 0) {
-      await this.prisma.chatAdminAllowlist.deleteMany({
-        where: {
-          chatId,
-          userId: {
-            in: existingUserIds,
-          },
-        },
-      });
+    denialEpochs: readonly BotAccessEpoch[],
+  ): Promise<boolean> {
+    if (denialEpochs.length === 0) {
+      return false;
     }
 
-    await this.chatContextCache.replaceChatAdminUsers(chatId, []);
-    await Promise.all(
-      existingUserIds.map((userId) =>
-        this.chatContextCache.setAdminAccess(chatId, userId, deniedState),
-      ),
+    const denialAt = new Date(
+      Math.max(...denialEpochs.map((epoch) => epoch.probeStartedAt.getTime())),
     );
-    await this.markManagedEntityAccessEdgesDenied({
-      chatId,
-      userIds: existingUserIds,
-      state: deniedState === 'user_denied' ? 'USER_DENIED' : 'BOT_DENIED',
-      deniedReason: deniedState,
-      source: 'admin_roster_sync_clear',
-    });
-    await this.expireManagedEntityAdminMembers({
-      chatId,
-      userIds: existingUserIds,
-      source: 'admin_roster_sync_clear',
-    });
+    const deniedUserIds = await this.prisma.$transaction(
+      async (tx) => {
+        const lockedChat = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chat."id"
+          FROM "chats" AS chat
+          WHERE chat."id" = ${chatId}
+          FOR UPDATE OF chat
+        `);
+        if (lockedChat.length !== 1) {
+          return null;
+        }
 
-    await this.patchManagedEntitiesPublishedSnapshots({
-      chatId,
-      entityTypeHint: null,
-      titleHint: null,
-      userIdsToUpsert: [],
-      userIdsToRemove: existingUserIds,
-    });
-    await this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(chatId, null);
+        // FLAG: Global denial is valid only while every candidate denial epoch stays current.
+        const lockedMemberships = await tx.$queryRaw<
+          Array<{ botId: string; status: ChatBotMembershipStatus }>
+        >(Prisma.sql`
+          SELECT membership."bot_id" AS "botId", membership."status"
+          FROM "chat_bot_memberships" AS membership
+          WHERE membership."chat_id" = ${chatId}
+          ORDER BY membership."bot_id" ASC, membership."id" ASC
+          FOR UPDATE OF membership
+        `);
+        const deniedBotIds = new Set(denialEpochs.map((epoch) => epoch.botId));
+        const lockedBotIds = new Set(lockedMemberships.map((membership) => membership.botId));
+        const hasNewActiveCandidate = lockedMemberships.some(
+          (membership) =>
+            membership.status === ChatBotMembershipStatus.ACTIVE &&
+            this.resolveDiscoveryBotId(membership.botId) !== null &&
+            !deniedBotIds.has(membership.botId),
+        );
+        if (denialEpochs.some((epoch) => !lockedBotIds.has(epoch.botId)) || hasNewActiveCandidate) {
+          return null;
+        }
+
+        for (const denialEpoch of denialEpochs) {
+          const membership = await tx.chatBotMembership.findUnique({
+            where: {
+              chatId_botId: {
+                chatId,
+                botId: denialEpoch.botId,
+              },
+            },
+            select: {
+              status: true,
+              botAccessState: true,
+              botAccessCheckedAt: true,
+              botAccessSource: true,
+              lifecycleEventAt: true,
+              lifecycleEventType: true,
+              lifecycleSource: true,
+            },
+          });
+          if (!this.isAcceptedBotAccessEpoch(membership, denialEpoch)) {
+            return null;
+          }
+        }
+
+        const existingRows = await tx.chatAdminAllowlist.findMany({
+          where: { chatId },
+          select: { userId: true },
+        });
+        const existingUserIds = Array.from(
+          new Set(
+            existingRows
+              .map((row) => this.readTrimmedString(row.userId))
+              .filter((userId): userId is string => Boolean(userId)),
+          ),
+        );
+        const [newerGrantedEdges, newerAdminMembers] = await Promise.all([
+          tx.managedEntityAccessEdge.findMany({
+            where: {
+              chatId,
+              userId: { in: existingUserIds },
+              state: 'GRANTED',
+              checkedAt: { gt: denialAt },
+            },
+            select: { userId: true },
+          }),
+          tx.managedEntityAdminMember.findMany({
+            where: {
+              chatId,
+              userId: { in: existingUserIds },
+              checkedAt: { gt: denialAt },
+            },
+            select: { userId: true },
+          }),
+        ]);
+        const protectedUserIds = new Set([
+          ...newerGrantedEdges.map((row) => row.userId),
+          ...newerAdminMembers.map((row) => row.userId),
+        ]);
+        const usersToDeny = existingUserIds.filter((userId) => !protectedUserIds.has(userId));
+        if (usersToDeny.length > 0) {
+          await tx.chatAdminAllowlist.deleteMany({
+            where: {
+              chatId,
+              userId: { in: usersToDeny },
+            },
+          });
+        }
+        await this.markManagedEntityAccessEdgesDenied(
+          {
+            chatId,
+            userIds: usersToDeny,
+            state: deniedState === 'user_denied' ? 'USER_DENIED' : 'BOT_DENIED',
+            deniedReason: deniedState,
+            source: 'admin_roster_sync_clear',
+            checkedAt: denialAt,
+          },
+          tx,
+        );
+        await this.expireManagedEntityAdminMembers(
+          {
+            chatId,
+            userIds: usersToDeny,
+            source: 'admin_roster_sync_clear',
+            checkedAt: denialAt,
+          },
+          tx,
+        );
+
+        return usersToDeny;
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        timeout: 15_000,
+      },
+    );
+    if (!deniedUserIds) {
+      return false;
+    }
+    await this.mapWithConcurrencyLimit(
+      deniedUserIds,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
+      async (userId) => {
+        await this.chatContextCache.applyAdminAccessEpochMutation({
+          chatId,
+          userId,
+          state: deniedState,
+          eventAt: denialAt,
+        });
+        return null;
+      },
+    );
+    return true;
   }
 
   private async recordIncompleteCandidateBotDeny(
@@ -934,8 +1373,10 @@ export class MaxChatAdminRosterSyncService {
     );
   }
 
-  private getManagedEntityAccessEdgeClient(): ManagedEntityAccessEdgeClient | null {
-    const client = (this.prisma as unknown as { managedEntityAccessEdge?: unknown })
+  private getManagedEntityAccessEdgeClient(
+    persistenceClient: PrismaService | RosterPersistenceClient = this.prisma,
+  ): ManagedEntityAccessEdgeClient | null {
+    const client = (persistenceClient as unknown as { managedEntityAccessEdge?: unknown })
       .managedEntityAccessEdge;
     if (!client || typeof client !== 'object') {
       return null;
@@ -947,20 +1388,24 @@ export class MaxChatAdminRosterSyncService {
       : null;
   }
 
-  private async upsertManagedEntityAdminMembers(params: {
-    chatId: string;
-    userIds: readonly string[];
-    botId: string;
-    entityType: ManagedEntityType | null;
-    role: Exclude<ManagedEntityAccessRoleValue, 'MEMBER' | 'UNKNOWN'>;
-    source: string;
-  }): Promise<void> {
+  private async upsertManagedEntityAdminMembers(
+    params: {
+      chatId: string;
+      userIds: readonly string[];
+      botId: string;
+      entityType: ManagedEntityType | null;
+      role: Exclude<ManagedEntityAccessRoleValue, 'MEMBER' | 'UNKNOWN'>;
+      source: string;
+      checkedAt?: Date;
+    },
+    persistenceClient: PrismaService | RosterPersistenceClient = this.prisma,
+  ): Promise<void> {
     if (!params.entityType) {
       return;
     }
 
     const client = (
-      this.prisma as PrismaService & {
+      persistenceClient as (PrismaService | RosterPersistenceClient) & {
         managedEntityAdminMember?: {
           upsert?: (args: unknown) => Promise<unknown>;
         };
@@ -984,7 +1429,7 @@ export class MaxChatAdminRosterSyncService {
           .filter((userId): userId is string => Boolean(userId)),
       ),
     );
-    const now = new Date();
+    const now = params.checkedAt ?? new Date();
     const expiresAt = new Date(now.getTime() + MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS);
     await this.mapWithConcurrencyLimit(
       userIds,
@@ -1022,14 +1467,18 @@ export class MaxChatAdminRosterSyncService {
     );
   }
 
-  private async expireManagedEntityAdminMembers(params: {
-    chatId: string;
-    userIds: readonly string[];
-    botId?: string | null;
-    source: string;
-  }): Promise<void> {
+  private async expireManagedEntityAdminMembers(
+    params: {
+      chatId: string;
+      userIds: readonly string[];
+      botId?: string | null;
+      source: string;
+      checkedAt?: Date;
+    },
+    persistenceClient: PrismaService | RosterPersistenceClient = this.prisma,
+  ): Promise<void> {
     const client = (
-      this.prisma as PrismaService & {
+      persistenceClient as (PrismaService | RosterPersistenceClient) & {
         managedEntityAdminMember?: {
           updateMany?: (args: unknown) => Promise<unknown>;
         };
@@ -1054,6 +1503,7 @@ export class MaxChatAdminRosterSyncService {
     const botId = params.botId
       ? (this.maxBotRegistry.getBotById(params.botId)?.id ?? this.readTrimmedString(params.botId))
       : null;
+    const checkedAt = params.checkedAt ?? new Date();
     await client.updateMany({
       where: {
         chatId,
@@ -1061,9 +1511,10 @@ export class MaxChatAdminRosterSyncService {
           in: userIds,
         },
         ...(botId ? { observedByBotId: botId } : {}),
+        checkedAt: { lte: checkedAt },
       },
       data: {
-        expiresAt: new Date(),
+        expiresAt: checkedAt,
         source: params.source,
       },
     });
@@ -1082,17 +1533,21 @@ export class MaxChatAdminRosterSyncService {
     return 'MEMBER';
   }
 
-  private async upsertManagedEntityAccessEdges(params: {
-    chatId: string;
-    userIds: readonly string[];
-    botId: string;
-    entityType: ManagedEntityType | null;
-    state: 'GRANTED';
-    userRole: ManagedEntityAccessRoleValue;
-    botRole: ManagedEntityAccessRoleValue;
-    source: string;
-  }): Promise<void> {
-    const client = this.getManagedEntityAccessEdgeClient();
+  private async upsertManagedEntityAccessEdges(
+    params: {
+      chatId: string;
+      userIds: readonly string[];
+      botId: string;
+      entityType: ManagedEntityType | null;
+      state: 'GRANTED';
+      userRole: ManagedEntityAccessRoleValue;
+      botRole: ManagedEntityAccessRoleValue;
+      source: string;
+      checkedAt?: Date;
+    },
+    persistenceClient: PrismaService | RosterPersistenceClient = this.prisma,
+  ): Promise<void> {
+    const client = this.getManagedEntityAccessEdgeClient(persistenceClient);
     if (!client?.upsert || !params.entityType) {
       return;
     }
@@ -1111,7 +1566,7 @@ export class MaxChatAdminRosterSyncService {
           .filter((userId): userId is string => Boolean(userId)),
       ),
     );
-    const now = new Date();
+    const now = params.checkedAt ?? new Date();
     const expiresAt = new Date(now.getTime() + MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS);
     await this.mapWithConcurrencyLimit(
       userIds,
@@ -1160,15 +1615,19 @@ export class MaxChatAdminRosterSyncService {
     );
   }
 
-  private async markManagedEntityAccessEdgesDenied(params: {
-    chatId: string;
-    userIds: readonly string[];
-    botId?: string | null;
-    state: 'USER_DENIED' | 'BOT_DENIED';
-    deniedReason: string;
-    source: string;
-  }): Promise<void> {
-    const client = this.getManagedEntityAccessEdgeClient();
+  private async markManagedEntityAccessEdgesDenied(
+    params: {
+      chatId: string;
+      userIds: readonly string[];
+      botId?: string | null;
+      state: 'USER_DENIED' | 'BOT_DENIED';
+      deniedReason: string;
+      source: string;
+      checkedAt?: Date;
+    },
+    persistenceClient: PrismaService | RosterPersistenceClient = this.prisma,
+  ): Promise<void> {
+    const client = this.getManagedEntityAccessEdgeClient(persistenceClient);
     if (!client?.updateMany) {
       return;
     }
@@ -1188,6 +1647,7 @@ export class MaxChatAdminRosterSyncService {
     const botId = params.botId
       ? (this.maxBotRegistry.getBotById(params.botId)?.id ?? this.readTrimmedString(params.botId))
       : null;
+    const checkedAt = params.checkedAt ?? new Date();
     await client.updateMany({
       where: {
         chatId,
@@ -1195,12 +1655,13 @@ export class MaxChatAdminRosterSyncService {
           in: userIds,
         },
         ...(botId ? { botId } : {}),
+        checkedAt: { lte: checkedAt },
       },
       data: {
         state: params.state,
         userRole: params.state === 'USER_DENIED' ? 'MEMBER' : 'UNKNOWN',
         botRole: params.state === 'BOT_DENIED' ? 'MEMBER' : 'UNKNOWN',
-        checkedAt: new Date(),
+        checkedAt,
         expiresAt: null,
         deniedReason: params.deniedReason,
         source: params.source,
@@ -1301,6 +1762,7 @@ export class MaxChatAdminRosterSyncService {
     botId: string,
   ): {
     botId: string;
+    bypassCache: true;
     trafficClass: 'background';
     actionHealthLane: 'background';
     sourceTag: string;
@@ -1315,6 +1777,7 @@ export class MaxChatAdminRosterSyncService {
     ) {
       return {
         botId,
+        bypassCache: true,
         trafficClass: 'background',
         actionHealthLane: CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE,
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
@@ -1324,71 +1787,12 @@ export class MaxChatAdminRosterSyncService {
 
     return {
       botId,
+      bypassCache: true,
       trafficClass: 'background',
       actionHealthLane: CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE,
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
       timeoutMs: CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS,
     };
-  }
-
-  private async patchManagedEntitiesPublishedSnapshots(params: {
-    chatId: string;
-    entityTypeHint: ManagedEntityType | null;
-    titleHint: string | null;
-    userIdsToUpsert: readonly string[];
-    userIdsToRemove: readonly string[];
-  }): Promise<void> {
-    const upsertUserIds = Array.from(
-      new Set(
-        params.userIdsToUpsert
-          .map((userId) => this.readTrimmedString(userId))
-          .filter((userId): userId is string => Boolean(userId)),
-      ),
-    );
-    const removeUserIds = Array.from(
-      new Set(
-        params.userIdsToRemove
-          .map((userId) => this.readTrimmedString(userId))
-          .filter((userId): userId is string => Boolean(userId)),
-      ),
-    );
-    if (upsertUserIds.length === 0 && removeUserIds.length === 0) {
-      return;
-    }
-
-    const snapshotChat = await this.loadManagedEntitySnapshotPatchChat(
-      params.chatId,
-      params.entityTypeHint,
-      params.titleHint,
-    );
-    const entityType = snapshotChat?.entityType ?? params.entityTypeHint;
-    if (!entityType) {
-      return;
-    }
-
-    const summary = snapshotChat
-      ? await this.buildManagedEntitySnapshotPatchSummary(snapshotChat)
-      : null;
-
-    if (summary) {
-      await this.mapWithConcurrencyLimit(
-        upsertUserIds,
-        MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
-        async (userId) => {
-          await this.upsertManagedEntitiesPublishedSnapshotItem(userId, summary);
-          return null;
-        },
-      );
-    }
-
-    await this.mapWithConcurrencyLimit(
-      removeUserIds,
-      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
-      async (userId) => {
-        await this.removeManagedEntitiesPublishedSnapshotItem(userId, entityType, params.chatId);
-        return null;
-      },
-    );
   }
 
   private async loadManagedEntitySnapshotPatchChat(
@@ -1465,185 +1869,6 @@ export class MaxChatAdminRosterSyncService {
     };
   }
 
-  private async upsertManagedEntitiesPublishedSnapshotItem(
-    userId: string,
-    summary: ChatSummary,
-  ): Promise<void> {
-    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
-      userId,
-      summary.entityType,
-    );
-    if (!currentSnapshot) {
-      return;
-    }
-
-    const nextItems = currentSnapshot.items.map((item) => this.cloneManagedEntitySummary(item));
-    const existingIndex = nextItems.findIndex((item) => item.id === summary.id);
-    let changed = false;
-
-    if (existingIndex < 0) {
-      nextItems.unshift(this.cloneManagedEntitySummary(summary));
-      changed = true;
-    } else {
-      const existing = nextItems[existingIndex];
-      const mergedTitle =
-        this.isFallbackTitle(summary.id, existing.title) &&
-        !this.isFallbackTitle(summary.id, summary.title)
-          ? summary.title
-          : existing.title;
-      const mergedLink = existing.link ?? summary.link ?? null;
-      const mergedAvatarUrl = existing.avatarUrl ?? summary.avatarUrl;
-      const mergedPrimaryBotId = existing.primaryBotId ?? summary.primaryBotId ?? null;
-
-      if (
-        mergedTitle !== existing.title ||
-        mergedLink !== (existing.link ?? null) ||
-        mergedAvatarUrl !== existing.avatarUrl ||
-        mergedPrimaryBotId !== (existing.primaryBotId ?? null)
-      ) {
-        nextItems[existingIndex] = {
-          ...existing,
-          title: mergedTitle,
-          link: mergedLink,
-          ...(mergedAvatarUrl ? { avatarUrl: mergedAvatarUrl } : {}),
-          primaryBotId: mergedPrimaryBotId,
-        };
-        changed = true;
-      }
-    }
-
-    if (!changed) {
-      return;
-    }
-
-    await this.writeManagedEntitiesPublishedSnapshot(
-      userId,
-      summary.entityType,
-      currentSnapshot,
-      nextItems,
-    );
-  }
-
-  private async removeManagedEntitiesPublishedSnapshotItem(
-    userId: string,
-    entityType: ManagedEntityType,
-    chatId: string,
-  ): Promise<void> {
-    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
-      userId,
-      entityType,
-    );
-    if (!currentSnapshot) {
-      return;
-    }
-
-    const nextItems = currentSnapshot.items.filter((item) => item.id !== chatId);
-    if (nextItems.length === currentSnapshot.items.length) {
-      return;
-    }
-
-    await this.writeManagedEntitiesPublishedSnapshot(
-      userId,
-      entityType,
-      currentSnapshot,
-      nextItems,
-    );
-  }
-
-  private async writeManagedEntitiesPublishedSnapshot(
-    userId: string,
-    entityType: ManagedEntityType,
-    currentSnapshot: ManagedEntitiesPublishedSnapshot,
-    items: readonly ChatSummary[],
-  ): Promise<void> {
-    const nextSnapshot: ManagedEntitiesPublishedSnapshot = {
-      version: randomUUID(),
-      builtAt: new Date().toISOString(),
-      lastSyncedAt: currentSnapshot.lastSyncedAt,
-      itemCount: items.length,
-      itemsHash: this.buildManagedEntitiesPublishedSnapshotHash(
-        items,
-        currentSnapshot.lastSyncedAt,
-      ),
-      items: items.map((item) => this.cloneManagedEntitySummary(item)),
-    };
-    await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
-      userId,
-      entityType,
-      nextSnapshot,
-      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
-    );
-  }
-
-  private buildManagedEntitiesPublishedSnapshotHash(
-    items: readonly ChatSummary[],
-    lastSyncedAt: string | null,
-  ): string {
-    return createHash('sha256')
-      .update(
-        JSON.stringify({
-          lastSyncedAt,
-          items: items.map((item) => this.serializeManagedEntitySummary(item)),
-        }),
-      )
-      .digest('hex');
-  }
-
-  private serializeManagedEntitySummary(item: ChatSummary): Record<string, unknown> {
-    return {
-      id: item.id,
-      title: item.title,
-      createdAt: item.createdAt,
-      entityType: item.entityType,
-      link: item.link ?? null,
-      avatarUrl: this.readTrimmedString(item.avatarUrl) ?? null,
-      channelOverview: item.channelOverview
-        ? {
-            enabledScenariosCount: item.channelOverview.enabledScenariosCount,
-            commentsEnabled: item.channelOverview.commentsEnabled,
-            postSuggestionsEnabled: item.channelOverview.postSuggestionsEnabled,
-            commentsModerationEnabled: item.channelOverview.commentsModerationEnabled,
-          }
-        : null,
-      primaryBotId: item.primaryBotId ?? null,
-      assignedBots: (item.assignedBots ?? []).map((bot) => ({
-        botId: bot.botId,
-        label: bot.label,
-        role: bot.role,
-        membershipStatus: bot.membershipStatus,
-        lifecycleState: bot.lifecycleState,
-        speechPersona: bot.speechPersona,
-        characterName: bot.characterName ?? null,
-        avatarUrl: bot.avatarUrl ?? null,
-        capabilities: [...bot.capabilities],
-        permissionsSummary: bot.permissionsSummary
-          ? {
-              checkedAt: bot.permissionsSummary.checkedAt ?? null,
-              isAdmin: bot.permissionsSummary.isAdmin,
-              isOwner: bot.permissionsSummary.isOwner,
-              permissions: [...bot.permissionsSummary.permissions],
-            }
-          : null,
-      })),
-      sharedMode: item.sharedMode,
-    };
-  }
-
-  private cloneManagedEntitySummary(item: ChatSummary): ChatSummary {
-    return {
-      ...item,
-      channelOverview: item.channelOverview ? { ...item.channelOverview } : null,
-      assignedBots: Array.isArray(item.assignedBots)
-        ? item.assignedBots.map((bot) => ({ ...bot }))
-        : [],
-    };
-  }
-
-  private isFallbackTitle(chatId: string, title: string): boolean {
-    const normalized = title.trim();
-    return normalized === `Chat ${chatId}` || normalized === `Channel ${chatId}`;
-  }
-
   private async persistBotSelfAccessSnapshot(
     job: Pick<MaxChatAdminRosterSyncJob, 'chatId' | 'title' | 'entityType'>,
     botId: string,
@@ -1652,22 +1877,16 @@ export class MaxChatAdminRosterSyncService {
       isOwner: boolean;
       permissions?: readonly string[];
     } | null,
-  ): Promise<void> {
+    checkedAt: Date,
+  ): Promise<boolean> {
     try {
-      const now = new Date();
-      const snapshot = buildBotAccessSnapshotPersistence(access, {
+      return await this.maxBotLinkService.recordBotAccessProbe({
+        chatId: job.chatId,
+        botId,
+        access,
         source: 'admin_roster_sync',
-        now,
-      });
-      await this.prisma.chatBotMembership.updateMany({
-        where: {
-          chatId: job.chatId,
-          botId,
-        },
-        data: {
-          lastSeenAt: now,
-          ...snapshot,
-        },
+        checkedAt,
+        allowMembershipRecovery: access !== null,
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -1678,6 +1897,7 @@ export class MaxChatAdminRosterSyncService {
         },
         'Failed to persist bot self access snapshot during chat admin roster sync',
       );
+      return false;
     }
   }
 
@@ -1885,6 +2105,29 @@ export class MaxChatAdminRosterSyncService {
 
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private buildUserIdVariants(value: string): string[] {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return [];
+    }
+    return Array.from(
+      new Set([
+        normalized,
+        normalized.startsWith('id') && normalized.length > 2
+          ? normalized.slice(2)
+          : `id${normalized}`,
+      ]),
+    );
+  }
+
+  private buildUserIdIdentityKey(value: string): string | null {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    return normalized.startsWith('id') && normalized.length > 2 ? normalized.slice(2) : normalized;
   }
 
   private resolveDiscoveryBotId(botId: unknown): string | null {

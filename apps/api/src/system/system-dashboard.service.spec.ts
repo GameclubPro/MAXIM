@@ -454,6 +454,10 @@ describe('SystemDashboardService', () => {
           deleteIntentOldestExpiredAgeSec: 259_200,
           deleteIntentRiskCapped: false,
           deleteIntentStaleExpiredInProgressCapped: false,
+          deleteIntentAgedWaitingCapability: 0,
+          deleteIntentAgedWaitingCapabilityChats: 0,
+          deleteIntentOldestWaitingCapabilityAgeSec: 0,
+          deleteIntentAgedWaitingCapabilityCapped: false,
         },
       ]);
     const service = new SystemDashboardService(
@@ -515,7 +519,208 @@ describe('SystemDashboardService', () => {
     expect(deleteIntentSql).toContain('intent.delete_dispatch_started_at is null');
     expect(deleteIntentSql).toContain('intent.lease_expires_at is null');
     expect(deleteIntentSql).toContain('intent.lease_expires_at <= current_timestamp');
-    expect(deleteIntentQuery?.slice(1)).toEqual([1_001, 1_001, 1_000, 1_000, 1_000, 1_000]);
+    expect(deleteIntentSql).toContain('waiting_capability_candidates as');
+    expect(deleteIntentSql).toContain("intent.status = 'WAITING_CAPABILITY'");
+    expect(deleteIntentSql).toContain('intent.retry_until_at > current_timestamp');
+    expect(deleteIntentSql).toContain('intent.first_attempt_at <= ?');
+    expect(deleteIntentSql).toContain('order by intent.next_attempt_at asc, intent.execute_at asc');
+    const deleteIntentParams = deleteIntentQuery?.slice(1) ?? [];
+    expect(deleteIntentParams[2]).toBeInstanceOf(Date);
+    expect(deleteIntentParams.filter((value: unknown) => typeof value === 'number')).toEqual([
+      1_001, 1_001, 1_001, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+    ]);
+  });
+
+  it('warns when active moderation deletions wait for capability longer than five minutes', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-08-20T01:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+    );
+    jest
+      .spyOn(
+        service as unknown as {
+          loadDeliveryLedgerRiskSnapshot: () => Promise<unknown>;
+        },
+        'loadDeliveryLedgerRiskSnapshot',
+      )
+      .mockResolvedValue({
+        checkedAt: '2026-08-20T01:00:00.000Z',
+        actionAmbiguous: 0,
+        actionStaleInProgress: 0,
+        actionStaleRetryable: 0,
+        actionOldestRiskAgeSec: 0,
+        broadcastAmbiguous: 0,
+        broadcastStaleSending: 0,
+        broadcastRiskBroadcasts: 0,
+        broadcastOldestRiskAgeSec: 0,
+        suggestionAmbiguous: 0,
+        suggestionTerminalFailed: 0,
+        suggestionStaleSending: 0,
+        suggestionRiskSuggestions: 0,
+        suggestionOldestRiskAgeSec: 0,
+        deleteIntentSafelyExpirable: 0,
+        deleteIntentStaleExpiredInProgress: 0,
+        deleteIntentOldestExpiredAgeSec: 0,
+        deleteIntentRiskCapped: false,
+        deleteIntentStaleExpiredInProgressCapped: false,
+        deleteIntentAgedWaitingCapability: 23,
+        deleteIntentAgedWaitingCapabilityChats: 3,
+        deleteIntentOldestWaitingCapabilityAgeSec: 1_800,
+        deleteIntentAgedWaitingCapabilityCapped: false,
+      });
+
+    const snapshot = await service.getSnapshot();
+
+    expect(snapshot.summary.status).toBe('warning');
+    expect(snapshot.alerts).toEqual([
+      expect.objectContaining({
+        code: 'moderation-delete-capability-backlog',
+        level: 'warning',
+        detail: expect.stringContaining(
+          '23 delete intents сейчас в WAITING_CAPABILITY, а их первая попытка была больше 5 мин назад',
+        ),
+        recommendedAction: expect.stringContaining('требуется write'),
+      }),
+    ]);
+    expect(snapshot.alerts[0]?.detail).toContain('Затронуто чатов: 3');
+    expect(snapshot.alerts[0]?.detail).toContain(
+      'максимальный возраст от первой попытки: 1800 сек',
+    );
+    expect(snapshot.alerts[0]?.recommendedAction).toContain('unverified 404');
+
+    const subject = service as unknown as {
+      buildDeleteCapabilityBacklogAlert: (
+        input: Record<string, string | number | boolean>,
+      ) => { detail: string } | null;
+    };
+    expect(
+      subject.buildDeleteCapabilityBacklogAlert({
+        checkedAt: '2026-08-20T01:00:00.000Z',
+        actionAmbiguous: 0,
+        actionStaleInProgress: 0,
+        actionStaleRetryable: 0,
+        actionOldestRiskAgeSec: 0,
+        broadcastAmbiguous: 0,
+        broadcastStaleSending: 0,
+        broadcastRiskBroadcasts: 0,
+        broadcastOldestRiskAgeSec: 0,
+        suggestionAmbiguous: 0,
+        suggestionTerminalFailed: 0,
+        suggestionStaleSending: 0,
+        suggestionRiskSuggestions: 0,
+        suggestionOldestRiskAgeSec: 0,
+        deleteIntentSafelyExpirable: 0,
+        deleteIntentStaleExpiredInProgress: 0,
+        deleteIntentOldestExpiredAgeSec: 0,
+        deleteIntentRiskCapped: false,
+        deleteIntentStaleExpiredInProgressCapped: false,
+        deleteIntentAgedWaitingCapability: 1_000,
+        deleteIntentAgedWaitingCapabilityChats: 17,
+        deleteIntentOldestWaitingCapabilityAgeSec: 7_200,
+        deleteIntentAgedWaitingCapabilityCapped: true,
+      })?.detail,
+    ).toContain(
+      '>=1000 delete intents сейчас в WAITING_CAPABILITY, а их первая попытка была больше 5 мин назад. В ограниченной выборке чатов: 17, максимальный возраст от первой попытки: 7200 сек.',
+    );
+  });
+
+  it('warns only after repeated critical internal limiter rejects', async () => {
+    const criticalLimiter = { windowSec: 600, internalRejects: 3 };
+    const getCriticalLimiterSnapshot = jest
+      .fn()
+      .mockResolvedValueOnce(criticalLimiter)
+      .mockRejectedValueOnce(new Error('limiter metrics unavailable'));
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-08-20T01:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      undefined,
+      undefined,
+      {
+        getDashboardBudgetSummary: jest.fn().mockResolvedValue(undefined),
+        getCriticalLimiterSnapshot,
+      } as never,
+    );
+    const loggerWarn = jest
+      .spyOn((service as unknown as { logger: Logger }).logger, 'warn')
+      .mockImplementation();
+
+    const snapshot = await service.getSnapshot();
+
+    expect(snapshot.summary.status).toBe('warning');
+    expect(snapshot.alerts).toEqual([
+      expect.objectContaining({
+        code: 'max-api-critical-limiter-rejects',
+        level: 'warning',
+        detail: '3 critical rejects за 10 мин. (warning threshold 3).',
+      }),
+    ]);
+
+    const subject = service as unknown as {
+      buildCriticalLimiterAlert: (input: { windowSec: number; internalRejects: number }) => unknown;
+    };
+    expect(subject.buildCriticalLimiterAlert({ windowSec: 600, internalRejects: 2 })).toBeNull();
+    expect(subject.buildCriticalLimiterAlert({ windowSec: 1_800, internalRejects: 8 })).toBeNull();
+    expect(subject.buildCriticalLimiterAlert({ windowSec: 1_800, internalRejects: 9 })).toEqual(
+      expect.objectContaining({ code: 'max-api-critical-limiter-rejects' }),
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: { status: 'healthy' },
+      alerts: [],
+    });
+    expect(getCriticalLimiterSnapshot).toHaveBeenCalledTimes(2);
+    expect(loggerWarn).toHaveBeenCalledWith(
+      { err: 'limiter metrics unavailable' },
+      'Critical limiter dashboard snapshot is unavailable; response remains fail-soft',
+    );
   });
 
   it('keeps a healthy dashboard clean when delivery ledger risk aggregates are empty', async () => {

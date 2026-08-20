@@ -111,6 +111,24 @@ describe('channel auto-post runtime', () => {
   });
 
   it.each([
+    ['official post_id', { post_id: 'parent-post-1' }],
+    ['camel-case postId alias', { postId: 'parent-post-1' }],
+  ])('rejects native channel comments from listed-message history using %s', (_label, parent) => {
+    expect(
+      parseChannelAutoPostListedMessage({
+        body: { mid: 'comment-1', text: 'Native comment' },
+        recipient: {
+          chat_id: 'channel-1',
+          chat_type: 'channel',
+          ...parent,
+        },
+        sender: { user_id: 'admin-1' },
+        timestamp: 1_777_000_000_000,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
     ['numeric sender.user_id', { sender: { user_id: 195714583 } }, '195714583'],
     ['sender.userId alias', { sender: { userId: ' user-2 ' } }, 'user-2'],
     ['numeric sender.id alias', { sender: { id: 42 } }, '42'],
@@ -191,7 +209,7 @@ describe('channel auto-post runtime', () => {
     );
   });
 
-  it('detects channel messages and derives button visibility from feature toggles', () => {
+  it('detects channel posts, rejects native comments, and derives button visibility', () => {
     const update = {
       updateId: 'update-1',
       type: 'message_created',
@@ -211,6 +229,28 @@ describe('channel auto-post runtime', () => {
     } as const;
 
     expect(isChannelAutoPostMessage(update)).toBe(true);
+    expect(
+      isChannelAutoPostMessage({
+        ...update,
+        message: { ...update.message, postId: 'channel-post-1' },
+      }),
+    ).toBe(false);
+    for (const parentPostKey of ['post_id', 'postId'] as const) {
+      expect(
+        isChannelAutoPostMessage({
+          ...update,
+          raw: {
+            message: {
+              ...update.raw.message,
+              recipient: {
+                ...update.raw.message.recipient,
+                [parentPostKey]: 'channel-post-1',
+              },
+            },
+          },
+        }),
+      ).toBe(false);
+    }
     expect(extractChannelAutoPostMessageLinkType(update)).toBe('forward');
     expect(resolveChannelAutoPostEventTimestampMs(update, 1)).toBe(
       Date.parse('2026-07-19T10:00:00.000Z'),
@@ -320,6 +360,13 @@ describe('channel auto-post runtime', () => {
         id: 'keyboard',
         timestamp: 102,
         body: { text: 'Done', attachments: [{ type: 'inline_keyboard' }] },
+      },
+      {
+        id: 'comment',
+        timestamp: 102,
+        recipient: { chat_id: 'channel-1', chat_type: 'channel', post_id: 'post-1' },
+        sender_id: 'admin-1',
+        body: { text: 'Native comment' },
       },
       { id: 'non-admin', timestamp: 100, sender_id: 'user-1', body: { text: 'Skip' } },
       { id: 'valid', timestamp: 103, sender_id: 'admin-1', body: { text: 'Publish' } },

@@ -3,6 +3,10 @@ import { MaxActionNoExecutableRouteError } from './max-action-dispatch-error';
 import { MaxRoutedPublicationService } from './max-routed-publication.service';
 
 describe('MaxRoutedPublicationService', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('uses a fresh route while keeping the logical idempotency key bot-independent', async () => {
     const maxBotLinkService = {
       resolveBotRoute: jest.fn().mockResolvedValue({
@@ -222,6 +226,8 @@ describe('MaxRoutedPublicationService', () => {
   });
 
   it('hydrates an unknown poll route candidate before dispatch', async () => {
+    const accessProbeStartedAt = new Date('2026-08-20T10:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(accessProbeStartedAt);
     const emptyRoute = {
       purpose: 'send_message',
       chatId: 'chat-1',
@@ -267,7 +273,10 @@ describe('MaxRoutedPublicationService', () => {
       permissions: ['write'],
     };
     const maxClientService = {
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue(access),
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-08-20T10:00:05.000Z'));
+        return access;
+      }),
       resolveMessageLink: jest.fn(),
     };
     const service = new MaxRoutedPublicationService(
@@ -307,6 +316,7 @@ describe('MaxRoutedPublicationService', () => {
       botId: 'bot-1',
       access,
       source: 'managed_poll_route_hydration',
+      checkedAt: accessProbeStartedAt,
     });
     expect(maxActionDispatchService.execute).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -314,6 +324,151 @@ describe('MaxRoutedPublicationService', () => {
         candidateBotIds: ['bot-1'],
         routing: expect.objectContaining({ purpose: 'channel_poll', routingVersion: 5 }),
       }),
+      {},
+    );
+  });
+
+  it('uses a fresh poll grant persisted between its initial route reads', async () => {
+    const emptyRoute = {
+      purpose: 'send_message',
+      chatId: 'chat-concurrent-poll-grant',
+      primaryBotId: 'bot-1',
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+      routingVersion: 4,
+    };
+    const confirmedRoute = {
+      ...emptyRoute,
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1'],
+      reason: 'primary_confirmed',
+      routingVersion: 5,
+    };
+    const maxBotLinkService = {
+      resolveBotRouteForManagedPoll: jest
+        .fn()
+        .mockResolvedValueOnce(emptyRoute)
+        .mockResolvedValueOnce(confirmedRoute),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        ...emptyRoute,
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        reason: 'primary_confirmed',
+      }),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValue(false),
+      recordBotAccessProbe: jest.fn(),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn().mockResolvedValue({
+        messageId: 'mid-concurrent-poll-grant',
+        url: null,
+        botId: 'bot-1',
+      }),
+    };
+    const maxClientService = {
+      getCurrentChatMemberAccess: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      maxClientService as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'chat-concurrent-poll-grant',
+        logicalIdempotencyKey: 'managed-poll:publish:concurrent-grant',
+        routePurpose: 'channel_poll',
+        text: 'poll',
+        trafficClass: 'interactive',
+        sourceTag: 'managed_poll',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routingVersion: 5,
+      }),
+    );
+
+    expect(maxBotLinkService.resolveBotRouteForManagedPoll).toHaveBeenCalledTimes(2);
+    expect(maxClientService.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(maxActionDispatchService.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1', candidateBotIds: ['bot-1'] }),
+      {},
+    );
+  });
+
+  it('uses a poll grant persisted after an empty general-route read', async () => {
+    const emptyRoute = {
+      purpose: 'send_message',
+      chatId: 'chat-late-poll-grant',
+      primaryBotId: 'bot-1',
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+      routingVersion: 4,
+    };
+    const confirmedRoute = {
+      ...emptyRoute,
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1'],
+      reason: 'primary_confirmed',
+      routingVersion: 5,
+    };
+    const maxBotLinkService = {
+      resolveBotRouteForManagedPoll: jest
+        .fn()
+        .mockResolvedValueOnce(emptyRoute)
+        .mockResolvedValueOnce(confirmedRoute),
+      resolveBotRoute: jest.fn().mockResolvedValue(emptyRoute),
+      isBotAccessSnapshotStale: jest.fn(),
+      recordBotAccessProbe: jest.fn(),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn().mockResolvedValue({
+        messageId: 'mid-late-poll-grant',
+        url: null,
+        botId: 'bot-1',
+      }),
+    };
+    const maxClientService = {
+      getCurrentChatMemberAccess: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      maxClientService as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'chat-late-poll-grant',
+        logicalIdempotencyKey: 'managed-poll:publish:late-grant',
+        routePurpose: 'channel_poll',
+        text: 'poll',
+        trafficClass: 'interactive',
+        sourceTag: 'managed_poll',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routingVersion: 5,
+      }),
+    );
+
+    expect(maxBotLinkService.resolveBotRouteForManagedPoll).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.isBotAccessSnapshotStale).not.toHaveBeenCalled();
+    expect(maxClientService.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxActionDispatchService.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1', candidateBotIds: ['bot-1'] }),
       {},
     );
   });
@@ -422,6 +577,214 @@ describe('MaxRoutedPublicationService', () => {
 
     expect(maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
     expect(maxActionDispatchService.execute).not.toHaveBeenCalled();
+  });
+
+  it('persists a terminal poll access lookup failure before closing the route', async () => {
+    const accessProbeStartedAt = new Date('2026-08-20T10:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(accessProbeStartedAt);
+    const emptyRoute = {
+      purpose: 'send_message',
+      chatId: 'chat-terminal-poll-lookup',
+      primaryBotId: 'bot-1',
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+      routingVersion: 4,
+    };
+    const maxBotLinkService = {
+      resolveBotRouteForManagedPoll: jest.fn().mockResolvedValue(emptyRoute),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        ...emptyRoute,
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+      }),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(true),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn(),
+    };
+    const maxClientService = {
+      getCurrentChatMemberAccess: jest.fn().mockRejectedValue(
+        Object.assign(new Error('chat not found'), {
+          response: { status: 404, data: { code: 'chat.not.found' } },
+        }),
+      ),
+      resolveMessageLink: jest.fn(),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      maxClientService as never,
+      managedEntityAccessLossService as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'chat-terminal-poll-lookup',
+        logicalIdempotencyKey: 'managed-poll:publish:terminal-lookup',
+        routePurpose: 'channel_poll',
+        text: 'poll',
+        trafficClass: 'interactive',
+        sourceTag: 'managed_poll',
+      }),
+    ).rejects.toBeInstanceOf(MaxActionNoExecutableRouteError);
+
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'chat-terminal-poll-lookup',
+      botId: 'bot-1',
+      access: null,
+      source: 'managed_poll_route_hydration',
+      checkedAt: accessProbeStartedAt,
+      lastErrorCode: 'chat.not.found',
+    });
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'chat-terminal-poll-lookup',
+      botId: 'bot-1',
+      operation: 'lookup',
+      source: 'managed_poll_route_hydration',
+      error: expect.objectContaining({ message: 'chat not found' }),
+      lifecycleEventAt: accessProbeStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    });
+    expect(maxBotLinkService.resolveBotRouteForManagedPoll).toHaveBeenCalledTimes(2);
+    expect(maxActionDispatchService.execute).not.toHaveBeenCalled();
+  });
+
+  it('keeps a poll route closed when live access persistence is superseded', async () => {
+    const emptyRoute = {
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      primaryBotId: 'bot-1',
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+      routingVersion: 4,
+    };
+    const maxBotLinkService = {
+      resolveBotRouteForManagedPoll: jest.fn().mockResolvedValue(emptyRoute),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        ...emptyRoute,
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+      }),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn(),
+    };
+    const maxClientService = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-user-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      }),
+      resolveMessageLink: jest.fn(),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      maxClientService as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'chat-1',
+        logicalIdempotencyKey: 'managed-poll:publish:superseded-access',
+        routePurpose: 'channel_poll',
+        text: 'poll',
+        trafficClass: 'interactive',
+        sourceTag: 'managed_poll',
+      }),
+    ).rejects.toBeInstanceOf(MaxActionNoExecutableRouteError);
+
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.resolveBotRouteForManagedPoll).toHaveBeenCalledTimes(2);
+    expect(maxActionDispatchService.execute).not.toHaveBeenCalled();
+  });
+
+  it('uses a newer persisted poll grant when its own access CAS is superseded', async () => {
+    const emptyRoute = {
+      purpose: 'send_message',
+      chatId: 'chat-1',
+      primaryBotId: 'bot-1',
+      botId: null,
+      candidateBotIds: [],
+      reason: null,
+      routingVersion: 4,
+    };
+    const refreshedRoute = {
+      ...emptyRoute,
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1'],
+      reason: 'primary_confirmed',
+      routingVersion: 5,
+    };
+    const maxBotLinkService = {
+      resolveBotRouteForManagedPoll: jest
+        .fn()
+        .mockResolvedValueOnce(emptyRoute)
+        .mockResolvedValueOnce(refreshedRoute),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        ...emptyRoute,
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+      }),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn().mockResolvedValue({
+        messageId: 'poll-message-1',
+        url: null,
+        botId: 'bot-1',
+      }),
+    };
+    const maxClientService = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-user-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      }),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      maxClientService as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'chat-1',
+        logicalIdempotencyKey: 'managed-poll:publish:newer-access',
+        routePurpose: 'channel_poll',
+        text: 'poll',
+        trafficClass: 'interactive',
+        sourceTag: 'managed_poll',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        messageId: 'poll-message-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routingVersion: 5,
+      }),
+    );
+
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.resolveBotRouteForManagedPoll).toHaveBeenCalledTimes(2);
+    expect(maxActionDispatchService.execute).toHaveBeenCalledTimes(1);
   });
 
   it('tries the next unknown poll candidate after the first remains ineligible', async () => {

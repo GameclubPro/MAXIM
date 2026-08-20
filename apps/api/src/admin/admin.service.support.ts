@@ -173,6 +173,7 @@ export type AdminAccessResolution =
       source: 'cache' | 'remote' | 'allowlist_fallback';
       userRole?: ManagedEntityAccessRoleValue;
       botRole?: ManagedEntityAccessRoleValue;
+      probeStartedAt?: Date;
     }
   | {
       status: 'denied';
@@ -180,14 +181,17 @@ export type AdminAccessResolution =
       reason: 'user_not_admin' | 'bot_not_admin';
       userRole?: ManagedEntityAccessRoleValue;
       botRole?: ManagedEntityAccessRoleValue;
+      probeStartedAt?: Date;
     }
   | {
       status: 'unknown';
       error: unknown;
+      probeStartedAt?: Date;
     }
   | {
       status: 'throttled';
       error: unknown;
+      probeStartedAt?: Date;
     };
 
 export type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';

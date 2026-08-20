@@ -201,7 +201,6 @@ export async function applySettingsToAllChats(params: {
             },
           },
           update: {
-            ...botAssignmentData,
             catalogKind: ChatCatalogKind.MANAGED,
             settings: {
               upsert: {
@@ -214,19 +213,6 @@ export async function applySettingsToAllChats(params: {
               },
             },
           },
-        }),
-        params.prisma.chatAdminAllowlist.upsert({
-          where: {
-            chatId_userId: {
-              chatId,
-              userId: params.actorUserId,
-            },
-          },
-          create: {
-            chatId,
-            userId: params.actorUserId,
-          },
-          update: {},
         }),
         params.prisma.auditLog.create({
           data: {

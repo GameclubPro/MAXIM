@@ -10,6 +10,15 @@ import { resolveWeightedRendezvousOwnerBotId } from './max-bot-ownership-assignm
 import { MaxBotOwnershipFoundationService } from './max-bot-ownership-foundation.service';
 
 const redisStore = new Map<string, string>();
+const mockRedisEval = jest.fn(
+  async (_script: string, numberOfKeys: number, key: string, token: string) => {
+    if (numberOfKeys !== 1 || redisStore.get(key) !== token) {
+      return 0;
+    }
+    redisStore.delete(key);
+    return 1;
+  },
+);
 
 jest.mock('ioredis', () => ({
   __esModule: true,
@@ -27,6 +36,7 @@ jest.mock('ioredis', () => ({
       redisStore.delete(key);
       return 1;
     }),
+    eval: mockRedisEval,
     quit: jest.fn().mockResolvedValue(undefined),
   })),
 }));
@@ -54,6 +64,7 @@ type MembershipRow = {
   botAccessState?: ChatBotAccessState;
   botAccessCheckedAt?: Date | null;
   botAccessExpiresAt?: Date | null;
+  botAccessSource?: string | null;
   permissionsSnapshot?: unknown | null;
 };
 
@@ -83,6 +94,7 @@ function createPrismaMock(params: {
   const webhookSignals = params.webhookSignals ?? [];
 
   return {
+    __state: { chats, memberships },
     chat: {
       findMany: jest.fn(async () =>
         chats.map((chat) => ({
@@ -144,18 +156,32 @@ function createPrismaMock(params: {
               : snapshot?.isAdmin === true
                 ? ChatBotAccessState.CONFIRMED_ADMIN
                 : ChatBotAccessState.UNKNOWN;
+          const snapshotCheckedAt =
+            typeof snapshot?.checkedAt === 'string' &&
+            Number.isFinite(Date.parse(snapshot.checkedAt))
+              ? new Date(snapshot.checkedAt)
+              : null;
           return {
             chatId: membership.chatId,
             botId: membership.botId,
             role: membership.role,
             status: membership.status,
             botAccessState: membership.botAccessState ?? inferredConfirmedState,
-            botAccessCheckedAt: membership.botAccessCheckedAt ?? null,
+            botAccessCheckedAt:
+              membership.botAccessCheckedAt === undefined
+                ? snapshotCheckedAt
+                : membership.botAccessCheckedAt,
             botAccessExpiresAt:
               membership.botAccessExpiresAt ??
               (inferredConfirmedState === ChatBotAccessState.UNKNOWN
                 ? null
                 : new Date('2026-05-10T10:05:00.000Z')),
+            botAccessSource:
+              membership.botAccessSource === undefined &&
+              (inferredConfirmedState === ChatBotAccessState.CONFIRMED_ADMIN ||
+                inferredConfirmedState === ChatBotAccessState.CONFIRMED_OWNER)
+                ? 'ownership_foundation_test'
+                : (membership.botAccessSource ?? null),
             permissionsSnapshot: membership.permissionsSnapshot ?? null,
           };
         }),
@@ -187,6 +213,7 @@ function createPrismaMock(params: {
             botAccessState: create.botAccessState,
             botAccessCheckedAt: create.botAccessCheckedAt,
             botAccessExpiresAt: create.botAccessExpiresAt,
+            botAccessSource: create.botAccessSource,
             permissionsSnapshot: create.permissionsSnapshot ?? null,
           });
           return memberships[memberships.length - 1]!;
@@ -270,6 +297,175 @@ function createPrismaMock(params: {
   };
 }
 
+function createMaxBotLinkMock(prisma: ReturnType<typeof createPrismaMock>) {
+  const rememberChatBotBinding = jest.fn();
+  const forgetChatBotBinding = jest.fn();
+  const selectChatPrimaryBot = jest.fn(
+    async ({
+      chatId,
+      botId,
+      title,
+      entityType,
+      expectedRoutingVersion,
+      expectedAccessEpoch,
+    }: {
+      chatId: string;
+      botId: string;
+      title?: string | null;
+      entityType?: ChatEntityType | null;
+      expectedRoutingVersion?: number;
+      expectedAccessEpoch?: { checkedAt: Date; source: string };
+    }) => {
+      const chat = prisma.__state.chats.find((candidate) => candidate.id === chatId) ?? null;
+      if (!chat || (chat.routingVersion ?? 0) !== expectedRoutingVersion) {
+        return false;
+      }
+      const membership = prisma.__state.memberships.find(
+        (candidate) =>
+          candidate.chatId === chatId &&
+          candidate.botId === botId &&
+          candidate.status === ChatBotMembershipStatus.ACTIVE,
+      );
+      const snapshot =
+        membership?.permissionsSnapshot &&
+        typeof membership.permissionsSnapshot === 'object' &&
+        !Array.isArray(membership.permissionsSnapshot)
+          ? (membership.permissionsSnapshot as Record<string, unknown>)
+          : null;
+      const confirmed =
+        membership?.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+        membership?.botAccessState === ChatBotAccessState.CONFIRMED_OWNER ||
+        snapshot?.isAdmin === true ||
+        snapshot?.isOwner === true;
+      const snapshotCheckedAt =
+        typeof snapshot?.checkedAt === 'string' && Number.isFinite(Date.parse(snapshot.checkedAt))
+          ? new Date(snapshot.checkedAt)
+          : null;
+      const currentCheckedAt = membership?.botAccessCheckedAt ?? snapshotCheckedAt;
+      const currentSource =
+        membership?.botAccessSource ?? (confirmed ? 'ownership_foundation_test' : null);
+      if (
+        !membership ||
+        !confirmed ||
+        (expectedAccessEpoch &&
+          (currentCheckedAt?.getTime() !== expectedAccessEpoch.checkedAt.getTime() ||
+            currentSource !== expectedAccessEpoch.source))
+      ) {
+        return false;
+      }
+
+      const routingChanged =
+        chat.botId !== botId ||
+        chat.primaryBotId !== botId ||
+        chat.routingState === ChatRoutingState.NO_ELIGIBLE_BOT ||
+        prisma.__state.memberships.some(
+          (candidate) =>
+            candidate.chatId === chatId &&
+            (candidate.botId === botId
+              ? candidate.role !== ChatBotMembershipRole.PRIMARY
+              : candidate.role === ChatBotMembershipRole.PRIMARY),
+        );
+      for (const candidate of prisma.__state.memberships) {
+        if (candidate.chatId === chatId) {
+          candidate.role =
+            candidate === membership
+              ? ChatBotMembershipRole.PRIMARY
+              : ChatBotMembershipRole.STANDBY;
+        }
+      }
+      chat.botId = botId;
+      chat.primaryBotId = botId;
+      chat.routingState = ChatRoutingState.READY;
+      if (title?.trim()) {
+        chat.title = title.trim();
+      }
+      if (entityType) {
+        chat.entityType = entityType;
+      }
+      if (routingChanged) {
+        chat.routingVersion = (chat.routingVersion ?? 0) + 1;
+      }
+      rememberChatBotBinding(chatId, botId);
+      return true;
+    },
+  );
+  const reconcileChatRoutingState = jest.fn(async ({ chatId }: { chatId: string }) => {
+    const chat = prisma.__state.chats.find((candidate) => candidate.id === chatId) ?? null;
+    if (!chat) {
+      return null;
+    }
+    const activeConfirmed = prisma.__state.memberships.filter((membership) => {
+      if (
+        membership.chatId !== chatId ||
+        membership.status !== ChatBotMembershipStatus.ACTIVE ||
+        membership.botAccessState === ChatBotAccessState.DENIED ||
+        membership.botAccessState === ChatBotAccessState.LOST
+      ) {
+        return false;
+      }
+      const snapshot =
+        membership.permissionsSnapshot &&
+        typeof membership.permissionsSnapshot === 'object' &&
+        !Array.isArray(membership.permissionsSnapshot)
+          ? (membership.permissionsSnapshot as Record<string, unknown>)
+          : null;
+      return (
+        membership.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+        membership.botAccessState === ChatBotAccessState.CONFIRMED_OWNER ||
+        snapshot?.isAdmin === true ||
+        snapshot?.isOwner === true
+      );
+    });
+    const nextPrimary =
+      activeConfirmed.find((membership) => membership.botId === chat.primaryBotId) ??
+      activeConfirmed.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY) ??
+      activeConfirmed[0] ??
+      null;
+    const nextPrimaryBotId = nextPrimary?.botId ?? null;
+    const nextRoutingState = nextPrimary
+      ? ChatRoutingState.READY
+      : ChatRoutingState.NO_ELIGIBLE_BOT;
+    const changed =
+      chat.botId !== nextPrimaryBotId ||
+      chat.primaryBotId !== nextPrimaryBotId ||
+      (chat.routingState ?? ChatRoutingState.READY) !== nextRoutingState ||
+      prisma.__state.memberships.some(
+        (membership) =>
+          membership.chatId === chatId &&
+          (membership === nextPrimary
+            ? membership.role !== ChatBotMembershipRole.PRIMARY
+            : membership.role === ChatBotMembershipRole.PRIMARY),
+      );
+    if (changed) {
+      chat.botId = nextPrimaryBotId;
+      chat.primaryBotId = nextPrimaryBotId;
+      chat.routingState = nextRoutingState;
+      chat.routingVersion = (chat.routingVersion ?? 0) + 1;
+      for (const membership of prisma.__state.memberships) {
+        if (membership.chatId === chatId) {
+          membership.role =
+            membership === nextPrimary
+              ? ChatBotMembershipRole.PRIMARY
+              : ChatBotMembershipRole.STANDBY;
+        }
+      }
+    }
+    if (nextPrimaryBotId) {
+      rememberChatBotBinding(chatId, nextPrimaryBotId);
+    } else {
+      forgetChatBotBinding(chatId);
+    }
+    return { routingState: nextRoutingState, changed };
+  });
+
+  return {
+    rememberChatBotBinding,
+    forgetChatBotBinding,
+    selectChatPrimaryBot,
+    reconcileChatRoutingState,
+  };
+}
+
 function extractSqlText(arg: unknown): string {
   if (Array.isArray(arg)) {
     return arg.map((part) => extractSqlText(part)).join(' ');
@@ -342,6 +538,7 @@ describe('MaxBotOwnershipFoundationService', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-09T10:05:00.000Z'));
     redisStore.clear();
+    mockRedisEval.mockClear();
   });
 
   afterEach(() => {
@@ -378,6 +575,40 @@ describe('MaxBotOwnershipFoundationService', () => {
       enabled: false,
       activeOnThisRole: false,
     });
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not release a repair lock reacquired after the prior token expires', async () => {
+    const prisma = createPrismaMock({ chats: [], memberships: [] });
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock() as never,
+      prisma as never,
+      { getAllBots: jest.fn().mockReturnValue([]) } as never,
+      {} as never,
+    );
+    const lockMethods = service as unknown as {
+      acquireRepairLock: () => Promise<string | null>;
+      releaseRepairLock: (token: string) => Promise<void>;
+    };
+    const lockKey = 'system:bot-ownership:foundation:repair-lock:v1';
+
+    const expiredToken = await lockMethods.acquireRepairLock();
+    expect(expiredToken).not.toBeNull();
+    redisStore.delete(lockKey);
+    const reacquiredToken = await lockMethods.acquireRepairLock();
+    expect(reacquiredToken).not.toBeNull();
+    expect(reacquiredToken).not.toBe(expiredToken);
+
+    await lockMethods.releaseRepairLock(expiredToken!);
+
+    expect(redisStore.get(lockKey)).toBe(reacquiredToken);
+    expect(mockRedisEval).toHaveBeenCalledWith(
+      expect.stringContaining('redis.call("get", KEYS[1])'),
+      1,
+      lockKey,
+      expiredToken,
+    );
 
     await service.onModuleDestroy();
   });
@@ -521,10 +752,7 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       ],
     });
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-      forgetChatBotBinding: jest.fn(),
-    };
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
     const botRegistry = {
       getAllBots: jest.fn().mockReturnValue([
         { id: 'id613002203036_bot', state: 'active' },
@@ -558,52 +786,36 @@ describe('MaxBotOwnershipFoundationService', () => {
     expect(webhookRepairSql).toContain("normalized_payload->'message'->>'chatId'");
     expect(webhookRepairSql).toContain("normalized_payload->>'chatId'");
     expect(webhookRepairSql).toContain('LIMIT 1');
-    expect(prisma.chat.update).not.toHaveBeenCalledWith(
+    expect(maxBotLinkService.selectChatPrimaryBot).not.toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'chat-legacy' }),
+    );
+    expect(maxBotLinkService.selectChatPrimaryBot).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: 'chat-legacy' }),
-        data: expect.objectContaining({
-          primaryBotId: expect.any(String),
-        }),
+        chatId: 'channel-membership',
+        botId: 'id613002203036_bot',
+        expectedRoutingVersion: 0,
       }),
     );
-    expect(prisma.chat.update).toHaveBeenCalledWith(
+    expect(maxBotLinkService.selectChatPrimaryBot).not.toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'chat-local-activity' }),
+    );
+    expect(maxBotLinkService.selectChatPrimaryBot).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: 'channel-membership' }),
-        data: expect.objectContaining({
-          primaryBotId: 'id613002203036_bot',
-          botId: 'id613002203036_bot',
-          routingVersion: { increment: 1 },
-        }),
+        chatId: 'chat-unknown-primary',
+        botId: 'id613002203036_bot',
+        expectedRoutingVersion: 0,
       }),
     );
-    expect(prisma.chat.update).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'chat-local-activity' }),
-        data: expect.objectContaining({
-          primaryBotId: expect.any(String),
-        }),
-      }),
-    );
-    expect(prisma.chat.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'chat-unknown-primary' }),
-        data: expect.objectContaining({
-          primaryBotId: 'id613002203036_bot',
-          botId: 'id613002203036_bot',
-          routingVersion: { increment: 1 },
-        }),
-      }),
-    );
-    expect(prisma.chat.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'chat-ineligible-primary' }),
-        data: expect.objectContaining({
-          primaryBotId: null,
-          botId: null,
-          routingVersion: { increment: 1 },
-        }),
-      }),
-    );
+    expect(maxBotLinkService.reconcileChatRoutingState).toHaveBeenCalledWith({
+      chatId: 'chat-ineligible-primary',
+    });
+    expect(
+      prisma.__state.chats.find((chat) => chat.id === 'chat-ineligible-primary'),
+    ).toMatchObject({
+      primaryBotId: null,
+      botId: null,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+    });
     expect(prisma.chat.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ id: 'chat-webhook-signal' }),
@@ -637,7 +849,7 @@ describe('MaxBotOwnershipFoundationService', () => {
       recoverableLegacyOnly: 0,
       recoverableFromMemberships: 0,
       noEligibleBot: 4,
-      unbound: 3,
+      unbound: 4,
       primaryBotUnknown: 0,
       primaryWithoutActiveMembership: 0,
     });
@@ -676,10 +888,7 @@ describe('MaxBotOwnershipFoundationService', () => {
       ],
     });
 
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-      forgetChatBotBinding: jest.fn(),
-    };
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock() as never,
       prisma as never,
@@ -767,9 +976,7 @@ describe('MaxBotOwnershipFoundationService', () => {
           .fn()
           .mockReturnValue([{ id: 'id613002203036_bot', state: 'active' }]),
       } as never,
-      {
-        rememberChatBotBinding: jest.fn(),
-      } as never,
+      createMaxBotLinkMock(prisma) as never,
     );
 
     await service.onModuleInit();
@@ -835,9 +1042,7 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       ],
     });
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-    };
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
 
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock() as never,
@@ -858,16 +1063,18 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleInit();
     await runDeferredStartupSync();
 
-    expect(prisma.chat.update).toHaveBeenCalledWith(
+    expect(maxBotLinkService.selectChatPrimaryBot).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: 'chat-stronger-standby' }),
-        data: expect.objectContaining({
-          primaryBotId: 'id613002203036_4_bot',
-          botId: 'id613002203036_4_bot',
-          routingVersion: { increment: 1 },
-        }),
+        chatId: 'chat-stronger-standby',
+        botId: 'id613002203036_4_bot',
+        expectedRoutingVersion: 0,
       }),
     );
+    expect(prisma.__state.chats[0]).toMatchObject({
+      primaryBotId: 'id613002203036_4_bot',
+      botId: 'id613002203036_4_bot',
+      routingVersion: 1,
+    });
     expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
       'chat-stronger-standby',
       'id613002203036_4_bot',
@@ -916,9 +1123,7 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       ],
     });
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-    };
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
 
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock() as never,
@@ -939,16 +1144,18 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleInit();
     await runDeferredStartupSync();
 
-    expect(prisma.chat.update).toHaveBeenCalledWith(
+    expect(maxBotLinkService.selectChatPrimaryBot).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: 'chat-denied-primary-repair' }),
-        data: expect.objectContaining({
-          primaryBotId: 'id613002203036_4_bot',
-          botId: 'id613002203036_4_bot',
-          routingVersion: { increment: 1 },
-        }),
+        chatId: 'chat-denied-primary-repair',
+        botId: 'id613002203036_4_bot',
+        expectedRoutingVersion: 0,
       }),
     );
+    expect(prisma.__state.chats[0]).toMatchObject({
+      primaryBotId: 'id613002203036_4_bot',
+      botId: 'id613002203036_4_bot',
+      routingVersion: 1,
+    });
     expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
       'chat-denied-primary-repair',
       'id613002203036_4_bot',
@@ -979,10 +1186,7 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       ],
     });
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-      forgetChatBotBinding: jest.fn(),
-    };
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
 
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock() as never,
@@ -999,13 +1203,14 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleInit();
     await runDeferredStartupSync();
 
-    expect(prisma.chat.update).toHaveBeenCalledWith({
-      where: expect.objectContaining({ id: 'chat-removed-primary' }),
-      data: {
-        primaryBotId: null,
-        botId: null,
-        routingVersion: { increment: 1 },
-      },
+    expect(maxBotLinkService.reconcileChatRoutingState).toHaveBeenCalledWith({
+      chatId: 'chat-removed-primary',
+    });
+    expect(prisma.__state.chats[0]).toMatchObject({
+      primaryBotId: null,
+      botId: null,
+      routingVersion: 1,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
     });
     expect(prisma.chatBotMembership.upsert).not.toHaveBeenCalled();
     expect(maxBotLinkService.rememberChatBotBinding).not.toHaveBeenCalled();
@@ -1066,10 +1271,7 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       ],
     });
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-    };
-
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock() as never,
       prisma as never,
@@ -1149,11 +1351,12 @@ describe('MaxBotOwnershipFoundationService', () => {
       state: 'active',
       ownershipWeight: 1,
     }));
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock({ BOT_OWNERSHIP_REBALANCE_MODE: 'shadow' }) as never,
       prisma as never,
       { getAllBots: jest.fn().mockReturnValue(bots) } as never,
-      { rememberChatBotBinding: jest.fn() } as never,
+      maxBotLinkService as never,
     );
 
     await service.onModuleInit();
@@ -1198,11 +1401,7 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       ],
     });
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-      forgetChatBotBinding: jest.fn(),
-      reconcileChatRoutingState: jest.fn(),
-    };
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock({ BOT_OWNERSHIP_REBALANCE_MODE: 'shadow' }) as never,
       prisma as never,
@@ -1263,6 +1462,7 @@ describe('MaxBotOwnershipFoundationService', () => {
         permissionsSnapshot,
       })),
     });
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock({
         BOT_OWNERSHIP_REBALANCE_MODE: 'on',
@@ -1278,24 +1478,134 @@ describe('MaxBotOwnershipFoundationService', () => {
           })),
         ),
       } as never,
-      { rememberChatBotBinding: jest.fn() } as never,
+      maxBotLinkService as never,
     );
 
     await service.onModuleInit();
     await runDeferredStartupSync();
     const snapshot = await service.getSnapshot(0);
 
-    expect(prisma.chat.update).toHaveBeenCalledWith(
+    expect(maxBotLinkService.selectChatPrimaryBot).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: chatId }),
-        data: expect.objectContaining({
-          primaryBotId: 'bot-2',
-          botId: 'bot-2',
-          routingVersion: { increment: 1 },
-        }),
+        chatId,
+        botId: 'bot-2',
+        expectedRoutingVersion: 0,
       }),
     );
+    expect(prisma.__state.chats[0]).toMatchObject({
+      primaryBotId: 'bot-2',
+      botId: 'bot-2',
+      routingVersion: 1,
+    });
     expect(snapshot.repair.lastAppliedMoves).toBe(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects an ownership plan after the selected access epoch changes', async () => {
+    process.env.APP_ROLE = 'admin';
+    const plannedCheckedAt = new Date('2026-05-09T10:04:00.000Z');
+    const newerCheckedAt = new Date('2026-05-09T10:04:30.000Z');
+    const chat: ChatRow = {
+      id: 'access-epoch-race',
+      entityType: ChatEntityType.CHAT,
+      botId: 'bot-1',
+      primaryBotId: 'bot-1',
+      catalogKind: ChatCatalogKind.MANAGED,
+      routingVersion: 7,
+    };
+    const memberships: MembershipRow[] = [
+      {
+        chatId: chat.id,
+        botId: 'bot-1',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: plannedCheckedAt,
+        botAccessExpiresAt: new Date('2026-05-09T10:19:00.000Z'),
+        botAccessSource: 'admin_roster_sync',
+        permissionsSnapshot: {
+          checkedAt: plannedCheckedAt.toISOString(),
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['write', 'delete_messages'],
+        },
+      },
+      {
+        chatId: chat.id,
+        botId: 'bot-2',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_OWNER,
+        botAccessCheckedAt: plannedCheckedAt,
+        botAccessExpiresAt: new Date('2026-05-09T10:19:00.000Z'),
+        botAccessSource: 'admin_roster_sync',
+        permissionsSnapshot: {
+          checkedAt: plannedCheckedAt.toISOString(),
+          isAdmin: true,
+          isOwner: true,
+          permissions: ['write', 'delete_messages'],
+        },
+      },
+    ];
+    const prisma = createPrismaMock({ chats: [chat], memberships });
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
+    const applySelection = maxBotLinkService.selectChatPrimaryBot.getMockImplementation();
+    if (!applySelection) {
+      throw new Error('Missing selectChatPrimaryBot test implementation');
+    }
+    maxBotLinkService.selectChatPrimaryBot.mockImplementationOnce(async (params) => {
+      expect(params).toEqual(
+        expect.objectContaining({
+          chatId: chat.id,
+          botId: 'bot-2',
+          expectedRoutingVersion: 7,
+          expectedAccessEpoch: {
+            checkedAt: plannedCheckedAt,
+            source: 'admin_roster_sync',
+          },
+        }),
+      );
+      const candidate = memberships[1]!;
+      candidate.botAccessState = ChatBotAccessState.CONFIRMED_ADMIN;
+      candidate.botAccessCheckedAt = newerCheckedAt;
+      candidate.botAccessExpiresAt = new Date('2026-05-09T10:19:30.000Z');
+      candidate.botAccessSource = 'routed_action_preflight';
+      candidate.permissionsSnapshot = {
+        checkedAt: newerCheckedAt.toISOString(),
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      };
+      return applySelection(params);
+    });
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock({ BOT_OWNERSHIP_REBALANCE_MODE: 'on' }) as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([
+          { id: 'bot-1', state: 'active', ownershipWeight: 1 },
+          { id: 'bot-2', state: 'active', ownershipWeight: 1 },
+        ]),
+      } as never,
+      maxBotLinkService as never,
+    );
+
+    await service.onModuleInit();
+    await runDeferredStartupSync();
+    const snapshot = await service.getSnapshot(0);
+
+    expect(chat).toMatchObject({
+      botId: 'bot-1',
+      primaryBotId: 'bot-1',
+      routingVersion: 7,
+    });
+    expect(memberships.map((membership) => membership.role)).toEqual([
+      ChatBotMembershipRole.PRIMARY,
+      ChatBotMembershipRole.STANDBY,
+    ]);
+    expect(maxBotLinkService.rememberChatBotBinding).not.toHaveBeenCalled();
+    expect(snapshot.repair.lastAppliedMoves).toBe(0);
 
     await service.onModuleDestroy();
   });
@@ -1336,17 +1646,12 @@ describe('MaxBotOwnershipFoundationService', () => {
       permissionsSnapshot,
     }));
     const prisma = createPrismaMock({ chats: [chat], memberships });
-    prisma.chatBotMembership.updateMany.mockResolvedValue({ count: 0 });
-    prisma.chat.update.mockImplementationOnce(async ({ where }) => {
+    const maxBotLinkService = createMaxBotLinkMock(prisma);
+    maxBotLinkService.selectChatPrimaryBot.mockImplementationOnce(async (params) => {
+      expect(params.expectedRoutingVersion).toBe(4);
       chat.routingVersion = 5;
-      const error = new Error(`Chat ${where.id} routing version changed`);
-      (error as Error & { code?: string }).code = 'P2025';
-      throw error;
+      return false;
     });
-    const maxBotLinkService = {
-      rememberChatBotBinding: jest.fn(),
-      forgetChatBotBinding: jest.fn(),
-    };
     const service = new MaxBotOwnershipFoundationService(
       createConfigMock({ BOT_OWNERSHIP_REBALANCE_MODE: 'on' }) as never,
       prisma as never,
@@ -1366,10 +1671,8 @@ describe('MaxBotOwnershipFoundationService', () => {
     await runDeferredStartupSync();
     const snapshot = await service.getSnapshot(0);
 
-    expect(prisma.chat.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: chatId, routingVersion: 4 },
-      }),
+    expect(maxBotLinkService.selectChatPrimaryBot).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId, botId: 'bot-2', expectedRoutingVersion: 4 }),
     );
     expect(chat).toEqual(
       expect.objectContaining({

@@ -837,8 +837,6 @@ describe('AdminSettingsService chat rules', () => {
       },
       update: {
         catalogKind: 'MANAGED',
-        botId: 'bot-1',
-        primaryBotId: 'bot-1',
         settings: {
           upsert: {
             update: {},
@@ -878,7 +876,10 @@ describe('AdminSettingsService chat rules', () => {
     expect(
       legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings,
     ).toHaveBeenCalledWith(expect.objectContaining({ antiSpamEnabled: false }));
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    const settingsUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'chat-1',
+    )?.[0];
+    expect(settingsUpsert).toEqual(
       expect.objectContaining({
         where: { id: 'chat-1' },
         create: expect.objectContaining({
@@ -891,8 +892,6 @@ describe('AdminSettingsService chat rules', () => {
           },
         }),
         update: expect.objectContaining({
-          botId: 'bot-1',
-          primaryBotId: 'bot-1',
           settings: {
             upsert: {
               update: expect.objectContaining({
@@ -906,6 +905,8 @@ describe('AdminSettingsService chat rules', () => {
         }),
       }),
     );
+    expect(settingsUpsert?.update).not.toHaveProperty('botId');
+    expect(settingsUpsert?.update).not.toHaveProperty('primaryBotId');
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: {
         chatId: 'chat-1',
@@ -1230,7 +1231,10 @@ describe('AdminSettingsService chat rules', () => {
     expect(legacyAdminService.resolveChannelSettingsWriteBotAssignmentData).toHaveBeenCalledWith(
       'channel-1',
     );
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    const channelSettingsUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'channel-1',
+    )?.[0];
+    expect(channelSettingsUpsert).toEqual(
       expect.objectContaining({
         where: { id: 'channel-1' },
         create: expect.objectContaining({
@@ -1244,8 +1248,6 @@ describe('AdminSettingsService chat rules', () => {
           },
         }),
         update: expect.objectContaining({
-          botId: 'bot-1',
-          primaryBotId: 'bot-1',
           channelSettings: {
             upsert: {
               update: expect.objectContaining({
@@ -1261,6 +1263,8 @@ describe('AdminSettingsService chat rules', () => {
         }),
       }),
     );
+    expect(channelSettingsUpsert?.update).not.toHaveProperty('botId');
+    expect(channelSettingsUpsert?.update).not.toHaveProperty('primaryBotId');
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: {
         chatId: 'channel-1',
@@ -1507,7 +1511,10 @@ describe('AdminSettingsService chat rules', () => {
     );
     expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith('chat-1');
     expect(legacyAdminService.resolveSettingsApplyBotAssignmentData).toHaveBeenCalledWith('chat-2');
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    const targetSettingsUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'chat-2',
+    )?.[0];
+    expect(targetSettingsUpsert).toEqual(
       expect.objectContaining({
         where: { id: 'chat-2' },
         create: expect.objectContaining({
@@ -1520,8 +1527,6 @@ describe('AdminSettingsService chat rules', () => {
           },
         }),
         update: expect.objectContaining({
-          botId: 'bot-1',
-          primaryBotId: 'bot-1',
           settings: {
             upsert: {
               update: expect.objectContaining({
@@ -1535,19 +1540,9 @@ describe('AdminSettingsService chat rules', () => {
         }),
       }),
     );
-    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
-      where: {
-        chatId_userId: {
-          chatId: 'chat-2',
-          userId: 'admin-1',
-        },
-      },
-      create: {
-        chatId: 'chat-2',
-        userId: 'admin-1',
-      },
-      update: {},
-    });
+    expect(targetSettingsUpsert?.update).not.toHaveProperty('botId');
+    expect(targetSettingsUpsert?.update).not.toHaveProperty('primaryBotId');
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: {
         chatId: 'chat-2',

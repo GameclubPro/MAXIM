@@ -37,9 +37,22 @@ export type ManagedEntitiesPublishedSnapshot = {
   itemsHash: string;
   items: ChatSummary[];
 };
+export type ManagedEntitiesPublishedSnapshotWriteOptions = {
+  expectedVersion: string | null;
+};
 export type ManagedEntityPublishedSnapshotUpsert = Omit<ChatSummary, 'link' | 'avatarUrl'> & {
   link?: ChatSummary['link'];
   avatarUrl?: ChatSummary['avatarUrl'];
+};
+export type AdminAccessEpochMutation = {
+  chatId: string;
+  userId: string;
+  state: ChatAdminAccessState;
+  eventAt: Date;
+  publishedSummary?: ManagedEntityPublishedSnapshotUpsert & { entityType: ManagedEntityType };
+  publishedSnapshotTtlSec?: number;
+  recentBootstrapSummary?: ChatSummary;
+  recentBootstrapTtlSec?: number;
 };
 export type ManagedEntitiesPublishedDiff = {
   baseVersion: string;
@@ -57,8 +70,72 @@ type LocalChatContextCacheEntry = {
   value: ChatContext;
   expiresAtMs: number;
 };
+type OpaqueRedisMutation = {
+  expectedRaw: string | null;
+  action: 'keep' | 'set' | 'delete';
+  nextRaw: string;
+  ttlSec: number;
+};
 
 const CHAT_CONTEXT_INVALIDATION_CHANNEL = 'chat:context:invalidate:v1';
+
+const SET_MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_CAS_SCRIPT = `
+-- operation:managed_entities_published_snapshot_set_cas
+local current = redis.call('GET', KEYS[1])
+if (ARGV[1] == '1' and current ~= ARGV[2]) or
+   (ARGV[1] == '0' and current ~= false) then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[4])
+return 1
+`;
+
+const UPSERT_MANAGED_ENTITIES_RECENT_BOOTSTRAP_CAS_SCRIPT = `
+-- operation:managed_entities_recent_bootstrap_upsert_cas
+local global = redis.call('GET', KEYS[1])
+if (ARGV[1] == '1' and global ~= ARGV[2]) or
+   (ARGV[1] == '0' and global ~= false) then
+  return 0
+end
+
+if ARGV[4] == '1' then
+  local user_scoped = redis.call('GET', KEYS[2])
+  if (ARGV[5] == '1' and user_scoped ~= ARGV[6]) or
+     (ARGV[5] == '0' and user_scoped ~= false) then
+    return 0
+  end
+end
+
+redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[8])
+redis.call('SET', KEYS[3], '1', 'EX', ARGV[8])
+if ARGV[4] == '1' then
+  redis.call('SET', KEYS[2], ARGV[7], 'EX', ARGV[8])
+  redis.call('SADD', KEYS[4], ARGV[9])
+  redis.call('EXPIRE', KEYS[4], ARGV[8])
+end
+return 1
+`;
+
+const REMOVE_MANAGED_ENTITIES_RECENT_BOOTSTRAP_CAS_SCRIPT = `
+-- operation:managed_entities_recent_bootstrap_remove_cas
+local current = redis.call('GET', KEYS[1])
+if (ARGV[1] == '1' and current ~= ARGV[2]) or
+   (ARGV[1] == '0' and current ~= false) then
+  return 0
+end
+
+if ARGV[3] == 'set' then
+  redis.call('SET', KEYS[1], ARGV[4], 'EX', ARGV[5])
+elseif ARGV[3] == 'delete' then
+  redis.call('DEL', KEYS[1])
+end
+if ARGV[6] == 'global' then
+  redis.call('DEL', KEYS[2])
+else
+  redis.call('SREM', KEYS[3], ARGV[7])
+end
+return 1
+`;
 
 // Keep both tabs consistent without decoding snapshot JSON in Redis. Redis 7 lua-cjson encodes an
 // empty JSON array as an object after a decode/encode round trip, so the snapshots stay opaque.
@@ -86,6 +163,109 @@ end
 return 1
 `;
 
+// FLAG: Access state and every user-visible derivative advance under the same event epoch. Keep
+// snapshot JSON opaque: Redis cjson turns nested empty arrays into objects on a decode/encode pass.
+const APPLY_ADMIN_ACCESS_EPOCH_MUTATION_SCRIPT = `
+local incoming_timestamp = tonumber(ARGV[1])
+local incoming_priority = tonumber(ARGV[2])
+local current_epoch = redis.call('GET', KEYS[1])
+if current_epoch then
+  local separator = string.find(current_epoch, ':', 1, true)
+  if separator then
+    local current_timestamp = tonumber(string.sub(current_epoch, 1, separator - 1))
+    local current_priority = tonumber(string.sub(current_epoch, separator + 1))
+    if current_timestamp and current_priority and
+       (current_timestamp > incoming_timestamp or
+        (current_timestamp == incoming_timestamp and current_priority > incoming_priority)) then
+      return 0
+    end
+  end
+end
+
+local opaque_keys = { KEYS[3], KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[9], KEYS[10] }
+local argument_offset = 9
+local function matches(actual, expected_exists, expected)
+  if expected_exists == '1' then
+    return actual == expected
+  end
+  return actual == false
+end
+
+for index, key in ipairs(opaque_keys) do
+  local offset = argument_offset + ((index - 1) * 5)
+  if not matches(redis.call('GET', key), ARGV[offset], ARGV[offset + 1]) then
+    return -1
+  end
+end
+
+for index, key in ipairs(opaque_keys) do
+  local offset = argument_offset + ((index - 1) * 5)
+  local expected_exists = ARGV[offset]
+  local action = ARGV[offset + 2]
+  if action == 'set' then
+    if expected_exists == '1' then
+      redis.call('SET', key, ARGV[offset + 3], 'KEEPTTL')
+    else
+      redis.call('SET', key, ARGV[offset + 3], 'EX', ARGV[offset + 4])
+    end
+  elseif action == 'delete' then
+    redis.call('DEL', key)
+  end
+end
+
+redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[47])
+redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[5])
+redis.call('INCR', KEYS[4])
+
+local recent_mode = ARGV[44]
+local recent_entity_type = ARGV[46]
+if recent_mode == 'grant' then
+  if recent_entity_type == 'chat' then
+    redis.call('SADD', KEYS[11], ARGV[6])
+    redis.call('EXPIRE', KEYS[11], ARGV[45])
+    redis.call('SET', KEYS[13], '1', 'EX', ARGV[45])
+  elseif recent_entity_type == 'channel' then
+    redis.call('SADD', KEYS[12], ARGV[6])
+    redis.call('EXPIRE', KEYS[12], ARGV[45])
+    redis.call('SET', KEYS[14], '1', 'EX', ARGV[45])
+  end
+elseif recent_mode == 'deny' then
+  redis.call('SREM', KEYS[11], ARGV[6])
+  redis.call('SREM', KEYS[12], ARGV[6])
+end
+
+redis.call('PUBLISH', ARGV[7], ARGV[8])
+return 1
+`;
+
+const WRITE_CHAT_CONTEXT_AT_REVISION_SCRIPT = `
+local revision = redis.call('GET', KEYS[1]) or '0'
+if revision ~= ARGV[1] then
+  return 0
+end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+return 1
+`;
+
+const PATCH_CHAT_CONTEXT_CAS_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+local revision = redis.call('GET', KEYS[2]) or '0'
+if current == false or current ~= ARGV[1] or revision ~= ARGV[2] then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[3], 'KEEPTTL')
+redis.call('INCR', KEYS[2])
+redis.call('PUBLISH', ARGV[4], ARGV[5])
+return 1
+`;
+
+const INVALIDATE_CHAT_CONTEXT_SCRIPT = `
+redis.call('INCR', KEYS[1])
+redis.call('DEL', KEYS[2])
+redis.call('PUBLISH', ARGV[1], ARGV[2])
+return 1
+`;
+
 @Injectable()
 export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
@@ -97,11 +277,16 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private static readonly ADMIN_ACCESS_GRANTED_TTL_SEC = 15 * 60;
   private static readonly ADMIN_ACCESS_DENIED_TTL_SEC = 60;
   private static readonly ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS = 100;
+  private static readonly ACCESS_EPOCH_TTL_SEC = 30 * 24 * 60 * 60;
+  private static readonly ACCESS_EPOCH_CAS_MAX_ATTEMPTS = 16;
+  private static readonly CHAT_CONTEXT_REVISION_LOAD_MAX_ATTEMPTS = 8;
+  private static readonly DEFAULT_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
   private static readonly DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC = 6 * 60 * 60;
   private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS = 500;
   private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_ITEMS = 100;
   private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS = 64;
+  private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_CAS_MAX_ATTEMPTS = 16;
   private static readonly MANAGED_ENTITY_PUBLISHED_SNAPSHOT_CAS_MAX_ATTEMPTS = 16;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
@@ -167,6 +352,14 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
   static adminAccessKey(chatId: string, userId: string): string {
     return `chat:admin-access:v2:${chatId}:${userId}`;
+  }
+
+  static adminAccessEpochKey(chatId: string, userId: string): string {
+    return `chat:admin-access-epoch:v1:${chatId}:${userId}`;
+  }
+
+  static chatContextRevisionKey(chatId: string): string {
+    return `chat:context-revision:v1:${chatId}`;
   }
 
   static adminLookupBackoffKey(chatId: string): string {
@@ -274,12 +467,19 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const normalizedTitle = chatTitle?.trim() || null;
+    const expectedEpoch = this.readChatContextEpoch(chatId);
     const localCached = this.readLocalChatContext(chatId);
     if (localCached) {
-      return this.reconcileCachedChatTitle(chatId, localCached, normalizedTitle);
+      const reconciled = this.reconcileCachedChatTitle(
+        chatId,
+        localCached,
+        normalizedTitle,
+        expectedEpoch,
+      );
+      return this.readChatContextEpoch(chatId) === expectedEpoch
+        ? reconciled
+        : this.getChatContext(chatId, normalizedTitle);
     }
-
-    const expectedEpoch = this.readChatContextEpoch(chatId);
 
     const existingLoad = this.chatContextInFlightLoads.get(chatId);
     if (existingLoad) {
@@ -287,7 +487,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       if (this.readChatContextEpoch(chatId) !== expectedEpoch) {
         return this.getChatContext(chatId, normalizedTitle);
       }
-      return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle);
+      return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle, expectedEpoch);
     }
 
     const loadPromise = this.loadCachedOrSource(chatId, normalizedTitle, expectedEpoch).finally(
@@ -302,7 +502,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     if (this.readChatContextEpoch(chatId) !== expectedEpoch) {
       return this.getChatContext(chatId, normalizedTitle);
     }
-    return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle);
+    return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle, expectedEpoch);
   }
 
   async invalidate(chatId: string) {
@@ -312,15 +512,14 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.applyLocalInvalidation(normalizedChatId);
-    await Promise.all([
-      this.redis.del(ChatContextCacheService.cacheKey(normalizedChatId)),
-      this.redis.publish(
-        CHAT_CONTEXT_INVALIDATION_CHANNEL,
-        JSON.stringify({
-          chatId: normalizedChatId,
-        }),
-      ),
-    ]);
+    await this.redis.eval(
+      INVALIDATE_CHAT_CONTEXT_SCRIPT,
+      2,
+      ChatContextCacheService.chatContextRevisionKey(normalizedChatId),
+      ChatContextCacheService.cacheKey(normalizedChatId),
+      CHAT_CONTEXT_INVALIDATION_CHANNEL,
+      JSON.stringify({ chatId: normalizedChatId }),
+    );
   }
 
   async getAdminAccess(chatId: string, userId: string): Promise<ChatAdminAccessState | null> {
@@ -372,6 +571,158 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async applyAdminAccessEpochMutation(params: AdminAccessEpochMutation): Promise<boolean> {
+    const chatId = params.chatId.trim();
+    const userId = params.userId.trim();
+    const eventAtMs = params.eventAt.getTime();
+    if (!chatId || !userId || !Number.isSafeInteger(eventAtMs) || eventAtMs < 0) {
+      return false;
+    }
+
+    const priority = params.state === 'granted' ? 0 : 1;
+    const publishedSnapshotTtlSec = this.readPositiveInt(
+      params.publishedSnapshotTtlSec,
+      ChatContextCacheService.DEFAULT_PUBLISHED_SNAPSHOT_TTL_SEC,
+    );
+    const recentBootstrapTtlSec = this.readPositiveInt(
+      params.recentBootstrapTtlSec,
+      ChatContextCacheService.DEFAULT_PUBLISHED_SNAPSHOT_TTL_SEC,
+    );
+    const contextKey = ChatContextCacheService.cacheKey(chatId);
+    const publishedChatKey = ChatContextCacheService.managedEntitiesPublishedSnapshotKey(
+      userId,
+      'chat',
+    );
+    const publishedChannelKey = ChatContextCacheService.managedEntitiesPublishedSnapshotKey(
+      userId,
+      'channel',
+    );
+    const recentGlobalChatKey = ChatContextCacheService.managedEntitiesRecentBootstrapKey('chat');
+    const recentUserChatKey = ChatContextCacheService.managedEntitiesRecentBootstrapUserKey(
+      'chat',
+      userId,
+    );
+    const recentGlobalChannelKey =
+      ChatContextCacheService.managedEntitiesRecentBootstrapKey('channel');
+    const recentUserChannelKey = ChatContextCacheService.managedEntitiesRecentBootstrapUserKey(
+      'channel',
+      userId,
+    );
+    const opaqueKeys = [
+      contextKey,
+      publishedChatKey,
+      publishedChannelKey,
+      recentGlobalChatKey,
+      recentUserChatKey,
+      recentGlobalChannelKey,
+      recentUserChannelKey,
+    ] as const;
+
+    for (
+      let attempt = 0;
+      attempt < ChatContextCacheService.ACCESS_EPOCH_CAS_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const [
+        contextRaw,
+        publishedChatRaw,
+        publishedChannelRaw,
+        recentGlobalChatRaw,
+        recentUserChatRaw,
+        recentGlobalChannelRaw,
+        recentUserChannelRaw,
+      ] = await this.redis.mget(...opaqueKeys);
+      const contextMutation = this.buildAdminAccessChatContextMutation(
+        contextRaw,
+        userId,
+        params.state === 'granted',
+      );
+      const [publishedChatMutation, publishedChannelMutation] =
+        this.buildAdminAccessPublishedSnapshotMutations({
+          chatId,
+          state: params.state,
+          summary: params.publishedSummary,
+          chatRaw: publishedChatRaw,
+          channelRaw: publishedChannelRaw,
+          ttlSec: publishedSnapshotTtlSec,
+        });
+      const [
+        recentGlobalChatMutation,
+        recentUserChatMutation,
+        recentGlobalChannelMutation,
+        recentUserChannelMutation,
+      ] = this.buildAdminAccessRecentBootstrapMutations({
+        chatId,
+        userId,
+        state: params.state,
+        summary: params.recentBootstrapSummary,
+        globalChatRaw: recentGlobalChatRaw,
+        userChatRaw: recentUserChatRaw,
+        globalChannelRaw: recentGlobalChannelRaw,
+        userChannelRaw: recentUserChannelRaw,
+        ttlSec: recentBootstrapTtlSec,
+      });
+      const opaqueMutations = [
+        contextMutation,
+        publishedChatMutation,
+        publishedChannelMutation,
+        recentGlobalChatMutation,
+        recentUserChatMutation,
+        recentGlobalChannelMutation,
+        recentUserChannelMutation,
+      ];
+      const recentMode =
+        params.state !== 'granted' ? 'deny' : params.recentBootstrapSummary ? 'grant' : 'keep';
+      const recentEntityType = params.recentBootstrapSummary?.entityType ?? 'none';
+      const result = Number(
+        await this.redis.eval(
+          APPLY_ADMIN_ACCESS_EPOCH_MUTATION_SCRIPT,
+          14,
+          ChatContextCacheService.adminAccessEpochKey(chatId, userId),
+          ChatContextCacheService.adminAccessKey(chatId, userId),
+          contextKey,
+          ChatContextCacheService.chatContextRevisionKey(chatId),
+          publishedChatKey,
+          publishedChannelKey,
+          recentGlobalChatKey,
+          recentUserChatKey,
+          recentGlobalChannelKey,
+          recentUserChannelKey,
+          ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(chatId, 'chat'),
+          ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(chatId, 'channel'),
+          ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'chat'),
+          ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'channel'),
+          String(eventAtMs),
+          String(priority),
+          `${eventAtMs}:${priority}`,
+          params.state,
+          String(this.resolveAdminAccessTtlSec(params.state)),
+          userId,
+          CHAT_CONTEXT_INVALIDATION_CHANNEL,
+          JSON.stringify({ chatId }),
+          ...opaqueMutations.flatMap((mutation) => this.serializeOpaqueRedisMutation(mutation)),
+          recentMode,
+          String(recentBootstrapTtlSec),
+          recentEntityType,
+          String(ChatContextCacheService.ACCESS_EPOCH_TTL_SEC),
+        ),
+      );
+      if (result === 1) {
+        this.applyLocalInvalidation(chatId);
+        return true;
+      }
+      if (result === 0) {
+        return false;
+      }
+    }
+
+    throw new Error(`Admin access epoch mutation conflicted repeatedly for chat ${chatId}`);
+  }
+
+  async clearAdminAccess(chatId: string, userId: string): Promise<void> {
+    await this.redis.del(ChatContextCacheService.adminAccessKey(chatId, userId));
+  }
+
   async getAdminLookupBackoffRemainingMs(chatId: string): Promise<number> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
@@ -403,47 +754,34 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   }
 
   async rememberChatAdminUser(chatId: string, userId: string): Promise<void> {
+    await this.rememberChatAdminUserInternal(chatId, userId, false);
+  }
+
+  async rememberChatAdminUserFenced(chatId: string, userId: string): Promise<void> {
+    await this.rememberChatAdminUserInternal(chatId, userId, true);
+  }
+
+  private async rememberChatAdminUserInternal(
+    chatId: string,
+    userId: string,
+    awaitRedisWrite: boolean,
+  ): Promise<void> {
     const normalizedChatId = chatId.trim();
     const normalizedUserId = userId.trim();
     if (!normalizedChatId || !normalizedUserId) {
       return;
     }
-
-    const localCached = this.readLocalChatContext(normalizedChatId);
-    if (localCached) {
-      const nextValue = this.appendChatAdminUser(localCached, normalizedUserId);
-      if (nextValue !== localCached) {
-        this.writeLocalChatContext(normalizedChatId, nextValue);
-        this.writeChatContextToRedis(normalizedChatId, nextValue);
-      }
-      return;
-    }
-
-    const cached = await this.readRedisStringWithin(
-      ChatContextCacheService.cacheKey(normalizedChatId),
-      ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
+    const operation = this.patchChatContextInRedis(normalizedChatId, (context) =>
+      this.appendChatAdminUser(context, normalizedUserId),
     );
-    if (!cached) {
+    if (awaitRedisWrite) {
+      await operation;
       return;
     }
-
-    try {
-      const parsed = JSON.parse(cached) as ChatContext;
-      const nextValue = this.appendChatAdminUser(parsed, normalizedUserId);
-      if (nextValue !== parsed) {
-        this.writeLocalChatContext(normalizedChatId, nextValue);
-        this.writeChatContextToRedis(normalizedChatId, nextValue);
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: normalizedChatId,
-          userId: normalizedUserId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to patch chat admin user into cached chat context',
-      );
-    }
+    void this.runRedisWriteWithin(
+      operation,
+      ChatContextCacheService.CHAT_CONTEXT_REDIS_WRITE_TIMEOUT_MS,
+    );
   }
 
   async replaceChatAdminUsers(chatId: string, userIds: readonly string[]): Promise<void> {
@@ -475,41 +813,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       };
     };
 
-    const localCached = this.readLocalChatContext(normalizedChatId);
-    if (localCached) {
-      const nextValue = patchContext(localCached);
-      if (nextValue !== localCached) {
-        this.writeLocalChatContext(normalizedChatId, nextValue);
-        this.writeChatContextToRedis(normalizedChatId, nextValue);
-      }
-      return;
-    }
-
-    const cached = await this.readRedisStringWithin(
-      ChatContextCacheService.cacheKey(normalizedChatId),
-      ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
-    );
-    if (!cached) {
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(cached) as ChatContext;
-      const nextValue = patchContext(parsed);
-      if (nextValue !== parsed) {
-        this.writeLocalChatContext(normalizedChatId, nextValue);
-        this.writeChatContextToRedis(normalizedChatId, nextValue);
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: normalizedChatId,
-          adminUserIds: normalizedUserIds,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to replace chat admin users in cached chat context',
-      );
-    }
+    await this.patchChatContextInRedis(normalizedChatId, patchContext);
   }
 
   private resolveAdminAccessTtlSec(state: ChatAdminAccessState): number {
@@ -843,13 +1147,25 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     entityType: ManagedEntityType,
     snapshot: ManagedEntitiesPublishedSnapshot,
     ttlSec: number,
-  ): Promise<void> {
-    await this.redis.set(
-      ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, entityType),
+    options: ManagedEntitiesPublishedSnapshotWriteOptions,
+  ): Promise<boolean> {
+    const key = ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, entityType);
+    const currentRaw = await this.redis.get(key);
+    const currentVersion = this.parseManagedEntitiesPublishedSnapshot(currentRaw)?.version ?? null;
+    if (currentVersion !== options.expectedVersion) {
+      return false;
+    }
+
+    const committed = await this.redis.eval(
+      SET_MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_CAS_SCRIPT,
+      1,
+      key,
+      currentRaw === null ? '0' : '1',
+      currentRaw ?? '',
       JSON.stringify(snapshot),
-      'EX',
-      ttlSec,
+      String(Math.max(1, Math.trunc(ttlSec))),
     );
+    return Number(committed) === 1;
   }
 
   async upsertManagedEntityPublishedSnapshot(
@@ -985,12 +1301,383 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private serializeOpaqueRedisMutation(mutation: OpaqueRedisMutation): string[] {
+    return [
+      mutation.expectedRaw === null ? '0' : '1',
+      mutation.expectedRaw ?? '',
+      mutation.action,
+      mutation.nextRaw,
+      String(mutation.ttlSec),
+    ];
+  }
+
+  private buildOpaqueRedisMutation(
+    expectedRaw: string | null,
+    nextRaw: string | null | undefined,
+    ttlSec: number,
+  ): OpaqueRedisMutation {
+    if (nextRaw === undefined || nextRaw === expectedRaw) {
+      return { expectedRaw, action: 'keep', nextRaw: '', ttlSec };
+    }
+    if (nextRaw === null) {
+      return { expectedRaw, action: 'delete', nextRaw: '', ttlSec };
+    }
+    return { expectedRaw, action: 'set', nextRaw, ttlSec };
+  }
+
+  private buildAdminAccessChatContextMutation(
+    raw: string | null,
+    userId: string,
+    granted: boolean,
+  ): OpaqueRedisMutation {
+    if (!raw) {
+      return this.buildOpaqueRedisMutation(
+        raw,
+        undefined,
+        ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
+      );
+    }
+    try {
+      const context = JSON.parse(raw) as ChatContext;
+      if (!context || !Array.isArray(context.adminUserIds)) {
+        return this.buildOpaqueRedisMutation(
+          raw,
+          undefined,
+          ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
+        );
+      }
+      const adminUserIds = Array.from(
+        new Set(
+          context.adminUserIds
+            .map((candidate) => (typeof candidate === 'string' ? candidate.trim() : ''))
+            .filter((candidate) => candidate.length > 0),
+        ),
+      );
+      const userIdFamily = new Set(this.buildUserIdVariants(userId));
+      const familyIndexes = adminUserIds
+        .map((candidate, index) => (userIdFamily.has(candidate.toLowerCase()) ? index : -1))
+        .filter((index) => index >= 0);
+      if ((!granted && familyIndexes.length === 0) || (granted && familyIndexes.length === 1)) {
+        return this.buildOpaqueRedisMutation(
+          raw,
+          undefined,
+          ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
+        );
+      }
+      const withoutFamily = adminUserIds.filter(
+        (candidate) => !userIdFamily.has(candidate.toLowerCase()),
+      );
+      const nextAdminUserIds = granted ? [...withoutFamily, userId] : withoutFamily;
+      return this.buildOpaqueRedisMutation(
+        raw,
+        JSON.stringify({ ...context, adminUserIds: nextAdminUserIds }),
+        ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
+      );
+    } catch {
+      return this.buildOpaqueRedisMutation(
+        raw,
+        undefined,
+        ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
+      );
+    }
+  }
+
+  private buildAdminAccessPublishedSnapshotMutations(params: {
+    chatId: string;
+    state: ChatAdminAccessState;
+    summary?: ManagedEntityPublishedSnapshotUpsert & { entityType: ManagedEntityType };
+    chatRaw: string | null;
+    channelRaw: string | null;
+    ttlSec: number;
+  }): [OpaqueRedisMutation, OpaqueRedisMutation] {
+    const chatSnapshot = this.parseManagedEntitiesPublishedSnapshot(params.chatRaw);
+    const channelSnapshot = this.parseManagedEntitiesPublishedSnapshot(params.channelRaw);
+    const chatWithoutEntity = this.removeManagedEntityFromSnapshot(chatSnapshot, params.chatId);
+    const channelWithoutEntity = this.removeManagedEntityFromSnapshot(
+      channelSnapshot,
+      params.chatId,
+    );
+    const versionBase = `access:${params.chatId}:${randomUUID()}`;
+    const builtAt = new Date().toISOString();
+
+    const buildRemovedRaw = (
+      snapshot: ManagedEntitiesPublishedSnapshot | null,
+      remaining: ChatSummary[],
+      previous: ChatSummary | null,
+      suffix: string,
+    ): string | null | undefined => {
+      if (!previous || !snapshot) {
+        return undefined;
+      }
+      return remaining.length === 0
+        ? null
+        : JSON.stringify(
+            this.buildManagedEntitiesPublishedSnapshot(
+              snapshot,
+              remaining,
+              `${versionBase}:${suffix}`,
+              builtAt,
+            ),
+          );
+    };
+
+    if (params.state !== 'granted' || !params.summary) {
+      if (params.state === 'granted') {
+        return [
+          this.buildOpaqueRedisMutation(params.chatRaw, undefined, params.ttlSec),
+          this.buildOpaqueRedisMutation(params.channelRaw, undefined, params.ttlSec),
+        ];
+      }
+      return [
+        this.buildOpaqueRedisMutation(
+          params.chatRaw,
+          buildRemovedRaw(
+            chatSnapshot,
+            chatWithoutEntity.items,
+            chatWithoutEntity.previous,
+            'chat-remove',
+          ),
+          params.ttlSec,
+        ),
+        this.buildOpaqueRedisMutation(
+          params.channelRaw,
+          buildRemovedRaw(
+            channelSnapshot,
+            channelWithoutEntity.items,
+            channelWithoutEntity.previous,
+            'channel-remove',
+          ),
+          params.ttlSec,
+        ),
+      ];
+    }
+
+    const summary = params.summary;
+    const targetSnapshot = summary.entityType === 'chat' ? chatSnapshot : channelSnapshot;
+    const targetWithoutEntity =
+      summary.entityType === 'chat' ? chatWithoutEntity : channelWithoutEntity;
+    const oppositeSnapshot = summary.entityType === 'chat' ? channelSnapshot : chatSnapshot;
+    const oppositeWithoutEntity =
+      summary.entityType === 'chat' ? channelWithoutEntity : chatWithoutEntity;
+    const previous = targetWithoutEntity.previous ?? oppositeWithoutEntity.previous;
+    const nextSummary: ChatSummary = {
+      ...summary,
+      id: params.chatId,
+      link: summary.link === undefined ? (previous?.link ?? null) : summary.link,
+    };
+    if (summary.avatarUrl === undefined && previous?.avatarUrl !== undefined) {
+      nextSummary.avatarUrl = previous.avatarUrl;
+    }
+    const nextTarget = JSON.stringify(
+      this.buildManagedEntitiesPublishedSnapshot(
+        targetSnapshot,
+        [nextSummary, ...targetWithoutEntity.items],
+        `${versionBase}:${summary.entityType}-upsert`,
+        builtAt,
+      ),
+    );
+    const nextOpposite = buildRemovedRaw(
+      oppositeSnapshot,
+      oppositeWithoutEntity.items,
+      oppositeWithoutEntity.previous,
+      summary.entityType === 'chat' ? 'channel-remove' : 'chat-remove',
+    );
+    const targetMutation = this.buildOpaqueRedisMutation(
+      summary.entityType === 'chat' ? params.chatRaw : params.channelRaw,
+      nextTarget,
+      params.ttlSec,
+    );
+    const oppositeMutation = this.buildOpaqueRedisMutation(
+      summary.entityType === 'chat' ? params.channelRaw : params.chatRaw,
+      nextOpposite,
+      params.ttlSec,
+    );
+    return summary.entityType === 'chat'
+      ? [targetMutation, oppositeMutation]
+      : [oppositeMutation, targetMutation];
+  }
+
+  private buildAdminAccessRecentBootstrapMutations(params: {
+    chatId: string;
+    userId: string;
+    state: ChatAdminAccessState;
+    summary?: ChatSummary;
+    globalChatRaw: string | null;
+    userChatRaw: string | null;
+    globalChannelRaw: string | null;
+    userChannelRaw: string | null;
+    ttlSec: number;
+  }): [OpaqueRedisMutation, OpaqueRedisMutation, OpaqueRedisMutation, OpaqueRedisMutation] {
+    const buildForType = (
+      entityType: ManagedEntityType,
+      globalRaw: string | null,
+      userRaw: string | null,
+    ): [OpaqueRedisMutation, OpaqueRedisMutation] => {
+      const global = this.parseManagedEntitiesRecentBootstrapRaw(globalRaw);
+      const user = this.parseManagedEntitiesRecentBootstrapRaw(userRaw);
+      if (params.state === 'granted' && params.summary?.entityType === entityType) {
+        const previousGlobal = global.find((entry) => entry.id.trim() === params.chatId);
+        const previousUser = user.find((entry) => entry.id.trim() === params.chatId);
+        const mergedUserIds = Array.from(
+          new Set([
+            params.userId,
+            ...(previousGlobal?.bootstrapUserIds ?? [])
+              .map((candidate) => candidate.trim())
+              .filter((candidate) => candidate.length > 0),
+          ]),
+        ).slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS);
+        const globalEntry: ManagedEntitiesRecentBootstrapEntry = {
+          ...params.summary,
+          bootstrapUserIds: mergedUserIds,
+        };
+        const userEntry = this.ensureRecentBootstrapEntryUser(
+          previousUser ? { ...previousUser, ...params.summary } : globalEntry,
+          params.userId,
+        );
+        const nextGlobal = [
+          globalEntry,
+          ...global.filter((entry) => entry.id.trim() !== params.chatId),
+        ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS);
+        const nextUser = [
+          userEntry,
+          ...user.filter((entry) => entry.id.trim() !== params.chatId),
+        ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_ITEMS);
+        return [
+          this.buildOpaqueRedisMutation(globalRaw, JSON.stringify(nextGlobal), params.ttlSec),
+          this.buildOpaqueRedisMutation(userRaw, JSON.stringify(nextUser), params.ttlSec),
+        ];
+      }
+
+      if (params.state === 'granted' && params.summary) {
+        return this.buildRecentBootstrapUserRemovalMutations(
+          globalRaw,
+          userRaw,
+          global,
+          user,
+          params.chatId,
+          params.userId,
+          params.ttlSec,
+        );
+      }
+      if (params.state === 'granted') {
+        return [
+          this.buildOpaqueRedisMutation(globalRaw, undefined, params.ttlSec),
+          this.buildOpaqueRedisMutation(userRaw, undefined, params.ttlSec),
+        ];
+      }
+      return this.buildRecentBootstrapUserRemovalMutations(
+        globalRaw,
+        userRaw,
+        global,
+        user,
+        params.chatId,
+        params.userId,
+        params.ttlSec,
+      );
+    };
+
+    const [globalChat, userChat] = buildForType('chat', params.globalChatRaw, params.userChatRaw);
+    const [globalChannel, userChannel] = buildForType(
+      'channel',
+      params.globalChannelRaw,
+      params.userChannelRaw,
+    );
+    return [globalChat, userChat, globalChannel, userChannel];
+  }
+
+  private buildRecentBootstrapUserRemovalMutations(
+    globalRaw: string | null,
+    userRaw: string | null,
+    global: ManagedEntitiesRecentBootstrapSnapshot,
+    user: ManagedEntitiesRecentBootstrapSnapshot,
+    chatId: string,
+    userId: string,
+    ttlSec: number,
+  ): [OpaqueRedisMutation, OpaqueRedisMutation] {
+    let globalChanged = false;
+    const nextGlobal = global.map((entry) => {
+      if (entry.id.trim() !== chatId || !entry.bootstrapUserIds?.includes(userId)) {
+        return entry;
+      }
+      globalChanged = true;
+      const bootstrapUserIds = entry.bootstrapUserIds.filter((candidate) => candidate !== userId);
+      if (bootstrapUserIds.length === 0) {
+        const withoutUsers: ManagedEntitiesRecentBootstrapSnapshot[number] = { ...entry };
+        delete withoutUsers.bootstrapUserIds;
+        return withoutUsers;
+      }
+      return { ...entry, bootstrapUserIds };
+    });
+    const nextUser = user.filter((entry) => entry.id.trim() !== chatId);
+    return [
+      this.buildOpaqueRedisMutation(
+        globalRaw,
+        globalChanged ? JSON.stringify(nextGlobal) : undefined,
+        ttlSec,
+      ),
+      this.buildOpaqueRedisMutation(
+        userRaw,
+        nextUser.length === user.length
+          ? undefined
+          : nextUser.length > 0
+            ? JSON.stringify(nextUser)
+            : null,
+        ttlSec,
+      ),
+    ];
+  }
+
+  private parseManagedEntitiesRecentBootstrapRaw(
+    raw: string | null,
+  ): ManagedEntitiesRecentBootstrapSnapshot {
+    if (!raw) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return this.isManagedEntitiesRecentBootstrapSnapshot(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private buildUserIdVariants(value: string): string[] {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return [];
+    }
+    return Array.from(
+      new Set([
+        normalized,
+        normalized.startsWith('id') && normalized.length > 2
+          ? normalized.slice(2)
+          : `id${normalized}`,
+      ]),
+    );
+  }
+
   async clearManagedEntitiesPublishedSnapshot(
     userId: string,
     entityType: ManagedEntityType,
   ): Promise<void> {
     await this.redis.del(
       ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, entityType),
+    );
+  }
+
+  async clearManagedEntitiesPublishedSnapshotsForUsers(userIds: readonly string[]): Promise<void> {
+    const normalizedUserIds = Array.from(
+      new Set(userIds.map((userId) => userId.trim()).filter((userId) => userId.length > 0)),
+    );
+    if (normalizedUserIds.length === 0) {
+      return;
+    }
+
+    await this.redis.del(
+      ...normalizedUserIds.flatMap((userId) => [
+        ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, 'chat'),
+        ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, 'channel'),
+      ]),
     );
   }
 
@@ -1129,37 +1816,19 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     userId?: string | null,
   ): Promise<void> {
     const normalizedChatId = item.id.trim();
-    if (!normalizedChatId) {
+    const normalizedTtlSec = Math.trunc(ttlSec);
+    if (!normalizedChatId || normalizedTtlSec <= 0) {
       return;
     }
 
     const entityType = item.entityType;
-    const current = await this.getManagedEntitiesRecentBootstrapFromKey(
-      ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType),
-      { entityType },
-    );
-    const existing = current.find((entry) => entry.id.trim() === normalizedChatId) ?? null;
     const normalizedUserId =
       typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : null;
-    const mergedBootstrapUserIds = Array.from(
-      new Set([
-        ...(normalizedUserId ? [normalizedUserId] : []),
-        ...(existing?.bootstrapUserIds ?? [])
-          .map((value) =>
-            typeof value === 'string' && value.trim().length > 0 ? value.trim() : null,
-          )
-          .filter((value): value is string => Boolean(value)),
-      ]),
-    ).slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS);
-    const nextEntry: ManagedEntitiesRecentBootstrapEntry = {
-      ...item,
-      ...(mergedBootstrapUserIds.length > 0 ? { bootstrapUserIds: mergedBootstrapUserIds } : {}),
-    };
-    const next = [
-      nextEntry,
-      ...current.filter((entry) => entry.id.trim() !== normalizedChatId),
-    ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS);
-
+    const globalKey = ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType);
+    const userKey = ChatContextCacheService.managedEntitiesRecentBootstrapUserKey(
+      entityType,
+      normalizedUserId ?? '__none__',
+    );
     const indexKey = ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(
       normalizedChatId,
       entityType,
@@ -1168,37 +1837,67 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       normalizedChatId,
       entityType,
     );
-    const pipeline = this.redis
-      .multi()
-      .set(
-        ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType),
-        JSON.stringify(next),
-        'EX',
-        ttlSec,
-      )
-      .set(indexKey, '1', 'EX', ttlSec);
 
-    if (normalizedUserId) {
-      const userKey = ChatContextCacheService.managedEntitiesRecentBootstrapUserKey(
-        entityType,
-        normalizedUserId,
+    for (
+      let attempt = 0;
+      attempt < ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_CAS_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const [globalRaw, userRaw] = await this.redis.mget(globalKey, userKey);
+      const current = this.parseManagedEntitiesRecentBootstrapRaw(globalRaw);
+      const existing = current.find((entry) => entry.id.trim() === normalizedChatId) ?? null;
+      const mergedBootstrapUserIds = Array.from(
+        new Set([
+          ...(normalizedUserId ? [normalizedUserId] : []),
+          ...(existing?.bootstrapUserIds ?? [])
+            .map((value) =>
+              typeof value === 'string' && value.trim().length > 0 ? value.trim() : null,
+            )
+            .filter((value): value is string => Boolean(value)),
+        ]),
+      ).slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS);
+      const nextEntry: ManagedEntitiesRecentBootstrapEntry = {
+        ...item,
+        ...(mergedBootstrapUserIds.length > 0 ? { bootstrapUserIds: mergedBootstrapUserIds } : {}),
+      };
+      const next = [
+        nextEntry,
+        ...current.filter((entry) => entry.id.trim() !== normalizedChatId),
+      ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS);
+      const currentUserScoped = normalizedUserId
+        ? this.parseManagedEntitiesRecentBootstrapRaw(userRaw)
+        : [];
+      const nextUserScoped = normalizedUserId
+        ? [
+            this.ensureRecentBootstrapEntryUser(nextEntry, normalizedUserId),
+            ...currentUserScoped.filter((entry) => entry.id.trim() !== normalizedChatId),
+          ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_ITEMS)
+        : [];
+      const committed = await this.redis.eval(
+        UPSERT_MANAGED_ENTITIES_RECENT_BOOTSTRAP_CAS_SCRIPT,
+        4,
+        globalKey,
+        userKey,
+        indexKey,
+        chatUsersKey,
+        globalRaw === null ? '0' : '1',
+        globalRaw ?? '',
+        JSON.stringify(next),
+        normalizedUserId ? '1' : '0',
+        userRaw === null ? '0' : '1',
+        userRaw ?? '',
+        JSON.stringify(nextUserScoped),
+        String(normalizedTtlSec),
+        normalizedUserId ?? '',
       );
-      const currentUserScoped = await this.getManagedEntitiesRecentBootstrapFromKey(userKey, {
-        entityType,
-        userId: normalizedUserId,
-      });
-      const nextUserEntry = this.ensureRecentBootstrapEntryUser(nextEntry, normalizedUserId);
-      const nextUserScoped = [
-        nextUserEntry,
-        ...currentUserScoped.filter((entry) => entry.id.trim() !== normalizedChatId),
-      ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_ITEMS);
-      pipeline
-        .set(userKey, JSON.stringify(nextUserScoped), 'EX', ttlSec)
-        .sadd(chatUsersKey, normalizedUserId)
-        .expire(chatUsersKey, ttlSec);
+      if (Number(committed) === 1) {
+        return;
+      }
     }
 
-    await pipeline.exec();
+    throw new Error(
+      `Managed entities recent bootstrap update conflicted repeatedly for chat ${normalizedChatId}`,
+    );
   }
 
   async removeManagedEntitiesRecentBootstrap(
@@ -1216,31 +1915,48 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     const key = normalizedUserId
       ? ChatContextCacheService.managedEntitiesRecentBootstrapUserKey(entityType, normalizedUserId)
       : ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType);
-    const current = await this.getManagedEntitiesRecentBootstrapFromKey(key, {
-      entityType,
-      userId: normalizedUserId,
-    });
-    if (current.length === 0 || current.every((entry) => entry.id.trim() !== normalizedChatId)) {
-      return;
-    }
-
-    const next = current.filter((entry) => entry.id.trim() !== normalizedChatId);
     const indexKey = ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(
       normalizedChatId,
       entityType,
     );
+    const chatUsersKey = ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(
+      normalizedChatId,
+      entityType,
+    );
 
-    const pipeline = this.redis.multi();
-    if (!normalizedUserId) {
-      pipeline.del(indexKey);
+    for (
+      let attempt = 0;
+      attempt < ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_CAS_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const raw = await this.redis.get(key);
+      const current = this.parseManagedEntitiesRecentBootstrapRaw(raw);
+      const next = current.filter((entry) => entry.id.trim() !== normalizedChatId);
+      const changed = next.length !== current.length;
+      const remainingTtlSec = changed && next.length > 0 ? await this.redis.ttl(key) : 1;
+      const action = !changed ? 'keep' : next.length > 0 ? 'set' : 'delete';
+      const committed = await this.redis.eval(
+        REMOVE_MANAGED_ENTITIES_RECENT_BOOTSTRAP_CAS_SCRIPT,
+        3,
+        key,
+        indexKey,
+        chatUsersKey,
+        raw === null ? '0' : '1',
+        raw ?? '',
+        action,
+        changed && next.length > 0 ? JSON.stringify(next) : '',
+        String(remainingTtlSec > 0 ? remainingTtlSec : 1),
+        normalizedUserId ? 'user' : 'global',
+        normalizedUserId ?? '',
+      );
+      if (Number(committed) === 1) {
+        return;
+      }
     }
-    if (next.length > 0) {
-      const ttlSec = await this.redis.ttl(key);
-      pipeline.set(key, JSON.stringify(next), 'EX', ttlSec > 0 ? ttlSec : 1);
-    } else {
-      pipeline.del(key);
-    }
-    await pipeline.exec();
+
+    throw new Error(
+      `Managed entities recent bootstrap removal conflicted repeatedly for chat ${normalizedChatId}`,
+    );
   }
 
   async clearManagedEntitiesRecentBootstrapForChat(
@@ -1281,7 +1997,6 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
             this.removeManagedEntitiesRecentBootstrap(currentEntityType, normalizedChatId, userId),
           ),
       ]);
-      await this.redis.del(chatUsersKey);
     }
   }
 
@@ -1362,40 +2077,55 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     expectedEpoch?: number,
   ): Promise<ChatContext> {
     const title = chatTitle?.trim();
-    let chat = await this.findChatContextRow(chatId);
-    if (!chat?.settings) {
-      chat = await this.initializeChatContextRow(chatId, title);
+    for (
+      let attempt = 0;
+      attempt < ChatContextCacheService.CHAT_CONTEXT_REVISION_LOAD_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      // FLAG: Capture the distributed generation before the DB read. A membership mutation bumps
+      // it atomically, so an older full-context load can never restore stale adminUserIds.
+      const expectedRevision = await this.readChatContextRevision(chatId);
+      let chat = await this.findChatContextRow(chatId);
+      if (!chat?.settings) {
+        chat = await this.initializeChatContextRow(chatId, title);
+      }
+
+      if (!chat) {
+        throw new Error(`Chat context missing for chat ${chatId}`);
+      }
+      if (!chat.settings) {
+        throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
+      }
+
+      this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.primaryBotId ?? chat.botId);
+      const resolvedTitle = title || chat.title;
+      if (title && chat.title !== title) {
+        void this.persistTitle(chatId, title);
+      }
+
+      const value: ChatContext = {
+        chatId: chat.id,
+        title: resolvedTitle,
+        settings: chat.settings,
+        domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
+        adminUserIds: (chat.admins ?? []).map((item) => item.userId),
+        rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
+        rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
+      };
+
+      if (expectedEpoch !== undefined && this.readChatContextEpoch(chatId) !== expectedEpoch) {
+        return value;
+      }
+      if (!(await this.writeChatContextAtRevision(chatId, value, expectedRevision))) {
+        continue;
+      }
+      if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
+        this.writeLocalChatContext(chatId, value);
+      }
+      return value;
     }
 
-    if (!chat) {
-      throw new Error(`Chat context missing for chat ${chatId}`);
-    }
-
-    if (!chat.settings) {
-      throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
-    }
-
-    this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.primaryBotId ?? chat.botId);
-    const resolvedTitle = title || chat.title;
-    if (title && chat.title !== title) {
-      void this.persistTitle(chatId, title);
-    }
-
-    const value: ChatContext = {
-      chatId: chat.id,
-      title: resolvedTitle,
-      settings: chat.settings,
-      domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
-      adminUserIds: (chat.admins ?? []).map((item) => item.userId),
-      rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
-      rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
-    };
-
-    if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
-      this.writeLocalChatContext(chatId, value);
-      this.writeChatContextToRedis(chatId, value);
-    }
-    return value;
+    throw new Error(`Chat context revision changed repeatedly while loading chat ${chatId}`);
   }
 
   private async loadCachedOrSource(
@@ -1411,7 +2141,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     if (cached && this.readChatContextEpoch(chatId) === expectedEpoch) {
       try {
         const parsed = JSON.parse(cached) as ChatContext;
-        return this.reconcileCachedChatTitle(chatId, parsed, normalizedTitle);
+        return this.reconcileCachedChatTitle(chatId, parsed, normalizedTitle, expectedEpoch);
       } catch (error: unknown) {
         this.logger.warn(
           { chatId, err: error instanceof Error ? error.message : String(error) },
@@ -1536,9 +2266,12 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     value: ChatContext,
     normalizedTitle: string | null,
+    expectedEpoch?: number,
   ): ChatContext {
     if (!normalizedTitle || value.title === normalizedTitle) {
-      this.writeLocalChatContext(chatId, value);
+      if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
+        this.writeLocalChatContext(chatId, value);
+      }
       return value;
     }
 
@@ -1546,8 +2279,16 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       ...value,
       title: normalizedTitle,
     };
-    this.writeLocalChatContext(chatId, nextValue);
-    this.writeChatContextToRedis(chatId, nextValue);
+    if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
+      this.writeLocalChatContext(chatId, nextValue);
+    }
+    void this.runRedisWriteWithin(
+      this.patchChatContextInRedis(chatId, (current) => ({
+        ...current,
+        title: normalizedTitle,
+      })),
+      ChatContextCacheService.CHAT_CONTEXT_REDIS_WRITE_TIMEOUT_MS,
+    );
     void this.persistTitle(chatId, normalizedTitle);
     return nextValue;
   }
@@ -1837,16 +2578,77 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private writeChatContextToRedis(chatId: string, value: ChatContext): void {
-    void this.runRedisWriteWithin(
-      this.redis.set(
-        ChatContextCacheService.cacheKey(chatId),
-        JSON.stringify(value),
-        'EX',
-        ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
-      ),
-      ChatContextCacheService.CHAT_CONTEXT_REDIS_WRITE_TIMEOUT_MS,
+  private async readChatContextRevision(chatId: string): Promise<string> {
+    const raw = await this.redis.get(ChatContextCacheService.chatContextRevisionKey(chatId));
+    if (!raw) {
+      return '0';
+    }
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? String(parsed) : '0';
+  }
+
+  private async writeChatContextAtRevision(
+    chatId: string,
+    value: ChatContext,
+    expectedRevision: string,
+  ): Promise<boolean> {
+    const committed = await this.redis.eval(
+      WRITE_CHAT_CONTEXT_AT_REVISION_SCRIPT,
+      2,
+      ChatContextCacheService.chatContextRevisionKey(chatId),
+      ChatContextCacheService.cacheKey(chatId),
+      expectedRevision,
+      JSON.stringify(value),
+      String(ChatContextCacheService.CHAT_CONTEXT_TTL_SEC),
     );
+    return Number(committed) === 1;
+  }
+
+  private async patchChatContextInRedis(
+    chatId: string,
+    patch: (current: ChatContext) => ChatContext,
+  ): Promise<void> {
+    const cacheKey = ChatContextCacheService.cacheKey(chatId);
+    for (
+      let attempt = 0;
+      attempt < ChatContextCacheService.ACCESS_EPOCH_CAS_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const [raw, revisionRaw] = await this.redis.mget(
+        cacheKey,
+        ChatContextCacheService.chatContextRevisionKey(chatId),
+      );
+      if (!raw) {
+        return;
+      }
+      const expectedRevision = revisionRaw ?? '0';
+      let current: ChatContext;
+      try {
+        current = JSON.parse(raw) as ChatContext;
+      } catch {
+        return;
+      }
+      const next = patch(current);
+      if (next === current) {
+        return;
+      }
+      const committed = await this.redis.eval(
+        PATCH_CHAT_CONTEXT_CAS_SCRIPT,
+        2,
+        cacheKey,
+        ChatContextCacheService.chatContextRevisionKey(chatId),
+        raw,
+        expectedRevision,
+        JSON.stringify(next),
+        CHAT_CONTEXT_INVALIDATION_CHANNEL,
+        JSON.stringify({ chatId }),
+      );
+      if (Number(committed) === 1) {
+        this.applyLocalInvalidation(chatId);
+        return;
+      }
+    }
+    throw new Error(`Chat context patch conflicted repeatedly for chat ${chatId}`);
   }
 
   private async readRedisStringWithin(key: string, maxWaitMs: number): Promise<string | null> {

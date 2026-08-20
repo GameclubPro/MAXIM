@@ -1025,46 +1025,88 @@ export class ManagedGiveawayService {
   ): Promise<void> {
     const messages = this.collectGiveawayPublishedMessages(giveaway);
     for (const message of messages) {
-      try {
-        await this.maxClient.deleteMessage(giveaway.sourceChatId, message.messageId, {
-          immediate: true,
-          ...buildManagedGiveawayMaxApiOptions(source, 'delete', message.botId),
-        });
-      } catch (error: unknown) {
-        const classification = classifyMaxTerminalChatActionError(error);
-        if (classification?.kind === 'message_not_found') {
-          this.logger.debug(
+      let deleteBotId = message.botId;
+      const attemptedBotIds = new Set<string>();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let deleteAttemptStartedAt: Date | null = null;
+        try {
+          if (!deleteBotId) {
+            deleteBotId = await this.resolveGiveawayDeleteBotId(giveaway.sourceChatId);
+          }
+          if (!deleteBotId || attemptedBotIds.has(deleteBotId)) {
+            throw new Error('No MAX bot with delete_message capability is available');
+          }
+          attemptedBotIds.add(deleteBotId);
+          deleteAttemptStartedAt = new Date();
+          await this.maxClient.deleteMessage(giveaway.sourceChatId, message.messageId, {
+            immediate: true,
+            ...buildManagedGiveawayMaxApiOptions(source, 'delete', deleteBotId),
+          });
+          break;
+        } catch (error: unknown) {
+          const classification = deleteAttemptStartedAt
+            ? classifyMaxTerminalChatActionError(error)
+            : null;
+          if (classification?.kind === 'message_not_found') {
+            this.logger.debug(
+              {
+                giveawayId: giveaway.id,
+                messageId: message.messageId,
+                kind: message.kind,
+                botId: deleteBotId,
+              },
+              'Managed giveaway published message was already missing during delete',
+            );
+            break;
+          }
+
+          if (deleteAttemptStartedAt) {
+            await this.recordManagedGiveawayMaxAccessLoss({
+              giveaway,
+              botId: deleteBotId,
+              source: `managed_giveaway:${message.kind}:delete`,
+              operation: 'delete',
+              lifecycleEventAt: deleteAttemptStartedAt,
+              error,
+            });
+          }
+
+          if (classification?.kind === 'managed_entity_access_lost' && attempt === 0) {
+            try {
+              const survivorBotId = await this.resolveGiveawayDeleteBotId(giveaway.sourceChatId);
+              if (survivorBotId && !attemptedBotIds.has(survivorBotId)) {
+                deleteBotId = survivorBotId;
+                continue;
+              }
+            } catch (survivorError: unknown) {
+              this.logger.warn(
+                {
+                  giveawayId: giveaway.id,
+                  messageId: message.messageId,
+                  kind: message.kind,
+                  botId: deleteBotId,
+                  err:
+                    survivorError instanceof Error ? survivorError.message : String(survivorError),
+                },
+                'Failed to resolve a survivor bot for managed giveaway message delete',
+              );
+            }
+          }
+
+          this.logger.warn(
             {
               giveawayId: giveaway.id,
               messageId: message.messageId,
               kind: message.kind,
-              botId: message.botId,
+              botId: deleteBotId,
+              err: error instanceof Error ? error.message : String(error),
             },
-            'Managed giveaway published message was already missing during delete',
+            'Failed to delete managed giveaway published message',
           );
-          continue;
+          throw new BadRequestException(
+            'Не удалось удалить опубликованные сообщения розыгрыша в MAX. Повторите позже или проверьте права бота.',
+          );
         }
-
-        await this.recordManagedGiveawayMaxAccessLoss({
-          giveaway,
-          botId: message.botId ?? null,
-          source: `managed_giveaway:${message.kind}:delete`,
-          operation: 'delete',
-          error,
-        });
-        this.logger.warn(
-          {
-            giveawayId: giveaway.id,
-            messageId: message.messageId,
-            kind: message.kind,
-            botId: message.botId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to delete managed giveaway published message',
-        );
-        throw new BadRequestException(
-          'Не удалось удалить опубликованные сообщения розыгрыша в MAX. Повторите позже или проверьте права бота.',
-        );
       }
     }
   }
@@ -1079,7 +1121,7 @@ export class ManagedGiveawayService {
     }> = [];
     const seenMessageIds = new Set<string>();
     const publicationBotId = this.normalizeNonEmptyString(giveaway.publicationBotId);
-    const resultsBotId = this.normalizeNonEmptyString(giveaway.resultsBotId) ?? publicationBotId;
+    const resultsBotId = this.normalizeNonEmptyString(giveaway.resultsBotId);
     const push = (
       kind: 'publication' | 'results',
       messageId: string | null,
@@ -2955,6 +2997,7 @@ export class ManagedGiveawayService {
     }
 
     let publicationBotId: string | undefined;
+    let editAttemptStartedAt: Date | null = null;
     try {
       publicationBotId =
         this.normalizeNonEmptyString(giveaway.publicationBotId) ??
@@ -2962,6 +3005,7 @@ export class ManagedGiveawayService {
       if (status === ManagedGiveawayStatus.CANCELED) {
         const button = await this.buildGiveawayOpenButton(giveaway);
         const options = button ? { buttons: [[button]] } : undefined;
+        editAttemptStartedAt = new Date();
         if (publicationBotId) {
           await this.maxClient.editMessageInlineKeyboard(
             giveaway.sourceChatId,
@@ -2985,6 +3029,7 @@ export class ManagedGiveawayService {
       if (status === ManagedGiveawayStatus.ACTIVE) {
         const button = await this.buildGiveawayEntryButton(giveaway);
         const options = button ? { buttons: [[button]] } : undefined;
+        editAttemptStartedAt = new Date();
         if (publicationBotId) {
           await this.maxClient.editMessageInlineKeyboard(
             giveaway.sourceChatId,
@@ -3007,6 +3052,7 @@ export class ManagedGiveawayService {
 
       const button = await this.buildGiveawayOpenButton(giveaway);
       const options = button ? { buttons: [[button]] } : undefined;
+      editAttemptStartedAt = new Date();
       if (publicationBotId) {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
@@ -3034,13 +3080,16 @@ export class ManagedGiveawayService {
         },
         'Failed to edit giveaway publication message',
       );
-      await this.recordManagedGiveawayMaxAccessLoss({
-        giveaway,
-        botId: publicationBotId ?? null,
-        source: 'managed_giveaway:publication',
-        operation: 'edit',
-        error,
-      });
+      if (editAttemptStartedAt) {
+        await this.recordManagedGiveawayMaxAccessLoss({
+          giveaway,
+          botId: publicationBotId ?? null,
+          source: 'managed_giveaway:publication',
+          operation: 'edit',
+          lifecycleEventAt: editAttemptStartedAt,
+          error,
+        });
+      }
     }
   }
 
@@ -3328,6 +3377,7 @@ export class ManagedGiveawayService {
 
       let resultsBotId: string | null = null;
       let maxSendAttempted = false;
+      let maxSendAttemptStartedAt: Date | null = null;
       let maxSendAccepted = false;
       let dispatchedResultsBotId: string | null = null;
       try {
@@ -3355,6 +3405,7 @@ export class ManagedGiveawayService {
                 return options ? { options } : {};
               },
               onDispatchAttempt: ({ botId }) => {
+                maxSendAttemptStartedAt = new Date();
                 maxSendAttempted = true;
                 dispatchedResultsBotId = botId;
               },
@@ -3364,6 +3415,7 @@ export class ManagedGiveawayService {
                 await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
                 resultsTextPayload.textFormat,
               );
+              maxSendAttemptStartedAt = new Date();
               maxSendAttempted = true;
               return resultsBotId
                 ? this.maxClient.sendMessageImmediateWithResolvedLink(
@@ -3439,12 +3491,13 @@ export class ManagedGiveawayService {
                 : null,
             },
           });
-          if (!this.maxRoutedPublicationService) {
+          if (!this.maxRoutedPublicationService && maxSendAttemptStartedAt) {
             await this.recordManagedGiveawayMaxAccessLoss({
               giveaway,
               botId: resultsBotId,
               source: 'managed_giveaway:results',
               operation: 'send',
+              lifecycleEventAt: maxSendAttemptStartedAt,
               error,
             });
           }
@@ -3470,6 +3523,7 @@ export class ManagedGiveawayService {
       this.normalizeNonEmptyString(giveaway.resultsBotId) ??
       this.normalizeNonEmptyString(giveaway.publicationBotId) ??
       undefined;
+    let editAttemptStartedAt: Date | null = null;
     try {
       if (!resultsBotId) {
         resultsBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
@@ -3478,6 +3532,7 @@ export class ManagedGiveawayService {
         await this.buildGiveawayResultsMessageOptions(giveaway, resultsBotId),
         resultsTextPayload.textFormat,
       );
+      editAttemptStartedAt = new Date();
       if (resultsBotId) {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
@@ -3515,13 +3570,16 @@ export class ManagedGiveawayService {
         },
         'Failed to refresh giveaway results message',
       );
-      await this.recordManagedGiveawayMaxAccessLoss({
-        giveaway,
-        botId: resultsBotId ?? null,
-        source: 'managed_giveaway:results',
-        operation: 'edit',
-        error,
-      });
+      if (editAttemptStartedAt) {
+        await this.recordManagedGiveawayMaxAccessLoss({
+          giveaway,
+          botId: resultsBotId ?? null,
+          source: 'managed_giveaway:results',
+          operation: 'edit',
+          lifecycleEventAt: editAttemptStartedAt,
+          error,
+        });
+      }
       return false;
     }
   }
@@ -3538,6 +3596,7 @@ export class ManagedGiveawayService {
     }
 
     let presence: 'present' | 'absent';
+    const lookupAttemptStartedAt = new Date();
     try {
       presence = await this.maxClient.getExactMessagePresence(
         params.giveaway.sourceChatId,
@@ -3549,6 +3608,14 @@ export class ManagedGiveawayService {
         },
       );
     } catch (lookupError: unknown) {
+      await this.recordManagedGiveawayMaxAccessLoss({
+        giveaway: params.giveaway,
+        botId: params.resultsBotId,
+        source: 'managed_giveaway:results:verification',
+        operation: 'lookup',
+        lifecycleEventAt: lookupAttemptStartedAt,
+        error: lookupError,
+      });
       this.logger.warn(
         {
           giveawayId: params.giveaway.id,
@@ -3636,7 +3703,8 @@ export class ManagedGiveawayService {
     giveaway: PersistedGiveawayWithRelations;
     botId: string | null;
     source: string;
-    operation: 'send' | 'edit' | 'delete';
+    operation: 'send' | 'edit' | 'delete' | 'lookup';
+    lifecycleEventAt: Date;
     error: unknown;
   }): Promise<void> {
     try {
@@ -3647,6 +3715,9 @@ export class ManagedGiveawayService {
         source: params.source,
         operation: params.operation,
         error: params.error,
+        lifecycleEventAt: params.lifecycleEventAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
       });
       if (result?.recorded) {
         this.logger.warn(
@@ -4723,12 +4794,7 @@ export class ManagedGiveawayService {
         entityType: giveaway.entityType,
         ...(resolvedBotId ? { botId: resolvedBotId, primaryBotId: resolvedBotId } : {}),
       },
-      update: resolvedBotId
-        ? {
-            botId: resolvedBotId,
-            primaryBotId: resolvedBotId,
-          }
-        : {},
+      update: {},
     });
   }
 
@@ -5126,6 +5192,20 @@ export class ManagedGiveawayService {
           ? persisted.botId.trim()
           : null;
     return normalizedBotId ?? undefined;
+  }
+
+  private async resolveGiveawayDeleteBotId(sourceChatId: string): Promise<string | null> {
+    const normalizedSourceChatId = sourceChatId.trim();
+    if (!normalizedSourceChatId) {
+      return null;
+    }
+
+    const botId = await this.maxBotLinkService?.resolveBotIdForModerationAction({
+      chatId: normalizedSourceChatId,
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    return this.normalizeNonEmptyString(botId);
   }
 
   private async resolveGiveawayParticipantClaimBotId(sourceChatId: string): Promise<string | null> {

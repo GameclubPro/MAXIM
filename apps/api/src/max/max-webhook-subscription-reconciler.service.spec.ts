@@ -168,7 +168,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
-  it('keeps extended lifecycle subscription changes read-only in shadow mode', async () => {
+  it('subscribes to extended lifecycle events for observation in shadow mode', async () => {
     process.env.APP_ROLE = 'ingress';
 
     const botRegistry = {
@@ -189,12 +189,20 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
         url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
         maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
       }),
-      listWebhookSubscriptions: jest.fn().mockResolvedValue([
-        {
-          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
-          updateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
-        },
-      ]),
+      listWebhookSubscriptions: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+            updateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ]),
       matchesConfiguredWebhookUrl: jest.fn().mockReturnValue(true),
       deleteWebhookSubscription: jest.fn(),
       ensureWebhookSubscription: jest.fn(),
@@ -213,13 +221,91 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     await service.onModuleInit();
 
-    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
+      [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      expect.objectContaining({ botId: '777000_bot' }),
+    );
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
+    expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'healthy',
+        requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        missingUpdateTypes: [],
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('replaces a full lifecycle subscription with the base set when mode changes to off', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const webhookUrl = 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path';
+    const botRegistry = {
+      getAllBots: jest
+        .fn()
+        .mockReturnValue([{ id: '777000_bot', webhookHeaderSecrets: ['secret-header-current'] }]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-777000_bot'),
+    };
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue(null),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
+        url: webhookUrl,
+        maskedUrl: 'https://major-maksimov.ru/api/webhook/max/777000_bot/***',
+      }),
+      listWebhookSubscriptions: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            url: webhookUrl,
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            url: webhookUrl,
+            updateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ]),
+      matchesConfiguredWebhookUrl: jest.fn().mockReturnValue(true),
+      deleteWebhookSubscription: jest.fn(),
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      createPrismaMock() as never,
+      {
+        get: jest.fn((key: string, fallback?: unknown) =>
+          key === 'MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE' ? 'off' : fallback,
+        ),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
+      [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      expect.objectContaining({
+        botId: '777000_bot',
+        replaceUpdateTypes: true,
+      }),
+    );
     expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
     expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'healthy',
         requiredUpdateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        actualUpdateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES].sort(),
         missingUpdateTypes: [],
+        extraUpdateTypes: [],
       }),
     );
 

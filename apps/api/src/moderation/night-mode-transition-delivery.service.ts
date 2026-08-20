@@ -97,6 +97,7 @@ export class NightModeTransitionDeliveryService {
 
     let sent: { messageId: string | null; botId: string | null };
     let attemptedBotId: string | null = null;
+    let dispatchAttemptStartedAt: Date | null = null;
     try {
       sent = await this.sendNotice({
         chatId: settings.chatId,
@@ -111,8 +112,9 @@ export class NightModeTransitionDeliveryService {
         mediaSettings: settings,
         mediaFieldKey: 'nightModeBotMessageText',
         adapters,
-        onDispatchAttempt: (botId) => {
+        onDispatchAttempt: (botId, startedAt) => {
           attemptedBotId = botId;
+          dispatchAttemptStartedAt = startedAt;
         },
       });
     } catch (error: unknown) {
@@ -121,6 +123,7 @@ export class NightModeTransitionDeliveryService {
         botId: attemptedBotId,
         operation: 'send-close-notice',
         error,
+        lifecycleEventAt: dispatchAttemptStartedAt,
       });
       if (terminalResult) {
         return {
@@ -169,6 +172,7 @@ export class NightModeTransitionDeliveryService {
       });
     let sent: { messageId: string | null; botId: string | null };
     let attemptedBotId: string | null = null;
+    let dispatchAttemptStartedAt: Date | null = null;
     try {
       sent = await this.sendNotice({
         chatId: settings.chatId,
@@ -183,8 +187,9 @@ export class NightModeTransitionDeliveryService {
         mediaSettings: settings,
         mediaFieldKey: 'nightModeOpenMessageText',
         adapters,
-        onDispatchAttempt: (botId) => {
+        onDispatchAttempt: (botId, startedAt) => {
           attemptedBotId = botId;
+          dispatchAttemptStartedAt = startedAt;
         },
       });
     } catch (error: unknown) {
@@ -193,6 +198,7 @@ export class NightModeTransitionDeliveryService {
         botId: attemptedBotId,
         operation: 'send-open-notice',
         error,
+        lifecycleEventAt: dispatchAttemptStartedAt,
       });
       if (terminalResult) {
         return terminalResult;
@@ -222,7 +228,7 @@ export class NightModeTransitionDeliveryService {
     mediaSettings: { botSpeechMedia?: unknown };
     mediaFieldKey: 'nightModeBotMessageText' | 'nightModeOpenMessageText';
     adapters: NightModeTransitionDeliveryAdapters;
-    onDispatchAttempt: (botId: string | null) => void;
+    onDispatchAttempt: (botId: string | null, startedAt: Date) => void;
   }): Promise<{ messageId: string | null; botId: string | null }> {
     const baseOptions = this.withMarkdownMessageOptions(params.messageOptions ?? null);
     const media = this.botSpeechMediaService.resolveMedia(
@@ -252,23 +258,26 @@ export class NightModeTransitionDeliveryService {
           }),
         }),
         onDispatchAttempt: ({ botId }) => {
-          params.onDispatchAttempt(botId);
+          params.onDispatchAttempt(botId, new Date());
         },
       });
     }
 
     const botId = await params.adapters.resolveBotId(params.chatId);
-    params.onDispatchAttempt(botId);
     const messageOptionsWithMedia = await this.botSpeechMediaService.withMediaOptions(
       baseOptions,
       media,
       { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
     );
+    const messageText = params.resolveMessageText?.(botId) ?? params.messageText;
+    const requestOptions = this.buildRequestOptions(botId);
+    const dispatchAttemptStartedAt = new Date();
+    params.onDispatchAttempt(botId, dispatchAttemptStartedAt);
     const sent = await this.maxClient.sendMessageImmediateWithId(
       params.chatId,
-      params.resolveMessageText?.(botId) ?? params.messageText,
+      messageText,
       messageOptionsWithMedia,
-      this.buildRequestOptions(botId),
+      requestOptions,
     );
     return {
       messageId: sent.messageId,
@@ -351,11 +360,14 @@ export class NightModeTransitionDeliveryService {
     }
 
     const botId = persistedOriginBotId ?? (await adapters.resolveBotId(chatId));
+    const requestOptions = {
+      immediate: true,
+      ...this.buildRequestOptions(botId),
+    };
+    let dispatchAttemptStartedAt: Date | null = null;
     try {
-      await this.maxClient.deleteMessage(chatId, messageId, {
-        immediate: true,
-        ...this.buildRequestOptions(botId),
-      });
+      dispatchAttemptStartedAt = new Date();
+      await this.maxClient.deleteMessage(chatId, messageId, requestOptions);
     } catch (error: unknown) {
       const terminalResult = await this.handleTerminalError({
         chatId,
@@ -363,6 +375,7 @@ export class NightModeTransitionDeliveryService {
         messageId,
         operation: 'delete-close-notice',
         error,
+        lifecycleEventAt: dispatchAttemptStartedAt,
       });
       if (terminalResult) {
         return terminalResult;
@@ -378,7 +391,16 @@ export class NightModeTransitionDeliveryService {
     messageId?: string;
     operation: NightModeTransitionDeliveryOperation;
     error: unknown;
+    lifecycleEventAt: Date | null;
   }): Promise<NightModeTransitionProcessResult | null> {
+    if (this.wasManagedEntityAccessLossRecorded(params.error)) {
+      this.logTerminalError(params);
+      return NIGHT_MODE_TRANSITION_PROCESS_STOP;
+    }
+    if (!params.lifecycleEventAt) {
+      return null;
+    }
+
     const classification = classifyMaxTerminalChatActionError(params.error);
     if (!classification) {
       return null;
@@ -407,8 +429,20 @@ export class NightModeTransitionDeliveryService {
       lastMaxErrorCode: classification.code,
       lastMaxErrorMessage: classification.message,
       lastMaxStatusCode: classification.statusCode,
+      lifecycleEventAt: params.lifecycleEventAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
     return NIGHT_MODE_TRANSITION_PROCESS_STOP;
+  }
+
+  private wasManagedEntityAccessLossRecorded(error: unknown): boolean {
+    return (
+      Boolean(error) &&
+      typeof error === 'object' &&
+      (error as { maxManagedEntityAccessLossRecorded?: unknown })
+        .maxManagedEntityAccessLossRecorded === true
+    );
   }
 
   private mapOperation(operation: NightModeTransitionDeliveryOperation): 'send' | 'delete' {

@@ -96,6 +96,11 @@ function readInteger(value: unknown): number | null {
   return Number.isInteger(parsed) ? parsed : null;
 }
 
+function hasNativeChannelParentPost(message: Record<string, unknown> | null): boolean {
+  const recipient = asRecord(message?.recipient);
+  return readIdentifier(recipient?.post_id, recipient?.postId) !== null;
+}
+
 function normalizeMessageMarkup(value: unknown): MaxTextMarkup | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -247,6 +252,10 @@ export function parseChannelAutoPostListedMessage(
   message: Record<string, unknown>,
   expectedChatId?: string,
 ): ChannelAutoPostListedMessage | null {
+  if (hasNativeChannelParentPost(message)) {
+    return null;
+  }
+
   const body = asRecord(message.body);
   const link = asRecord(message.link);
   const messageIdCandidate =
@@ -344,12 +353,20 @@ export function resolveChannelAutoPostEventTimestampMs(
 }
 
 export function isChannelAutoPostMessage(update: MaxUpdate): boolean {
+  if (update.message?.postId !== undefined) {
+    return false;
+  }
+
+  const raw = asRecord(update.raw);
+  const message = raw ? (extractRawMessageNode(raw) ?? raw) : null;
+  if (hasNativeChannelParentPost(message)) {
+    return false;
+  }
+
   if (update.message?.entityType === 'channel') {
     return true;
   }
 
-  const raw = asRecord(update.raw);
-  const message = asRecord(raw?.message);
   const recipient = asRecord(message?.recipient);
   const chat = asRecord(message?.chat);
   const candidates = [

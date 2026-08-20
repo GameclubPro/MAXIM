@@ -103,6 +103,11 @@ describe('MaxApiMetricsService', () => {
         stack: {
           internalLimiterRejects: 0,
           external429: 0,
+          trafficClasses: {
+            critical: { internalLimiterRejects: 0, external429: 0 },
+            interactive: { internalLimiterRejects: 0, external429: 0 },
+            background: { internalLimiterRejects: 0, external429: 0 },
+          },
         },
         bots: {},
       },
@@ -402,15 +407,30 @@ describe('MaxApiMetricsService', () => {
       stack: {
         internalLimiterRejects: 3,
         external429: 6,
+        trafficClasses: {
+          critical: { internalLimiterRejects: 3, external429: 0 },
+          interactive: { internalLimiterRejects: 0, external429: 2 },
+          background: { internalLimiterRejects: 0, external429: 4 },
+        },
       },
       bots: {
         'bot-a': {
           internalLimiterRejects: 3,
           external429: 2,
+          trafficClasses: {
+            critical: { internalLimiterRejects: 3, external429: 0 },
+            interactive: { internalLimiterRejects: 0, external429: 2 },
+            background: { internalLimiterRejects: 0, external429: 0 },
+          },
         },
         'bot-b': {
           internalLimiterRejects: 0,
           external429: 4,
+          trafficClasses: {
+            critical: { internalLimiterRejects: 0, external429: 0 },
+            interactive: { internalLimiterRejects: 0, external429: 0 },
+            background: { internalLimiterRejects: 0, external429: 4 },
+          },
         },
       },
     });

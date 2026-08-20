@@ -246,6 +246,11 @@ import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
 import { createAdminLogsDashboardRuntimeContext } from './admin-logs-dashboard-runtime-context';
 import { AdminManualModerationRuntime } from './admin-manual-moderation-runtime';
 import { createAdminManualModerationRuntimeContext } from './admin-manual-moderation-runtime-context';
+import {
+  AdminManagedEntityAccessRuntime,
+  type PrunePersistedChatAccessOptions,
+} from './admin-managed-entity-access-runtime';
+import { createAdminManagedEntityAccessRuntimeContext } from './admin-managed-entity-access-runtime-context';
 import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
 import { createAdminManagedEntitiesRuntimeContext } from './admin-managed-entities-runtime-context';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
@@ -497,6 +502,7 @@ export type {
 const CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR = Symbol('channelSuggestionAmbiguousSendError');
 const CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY = '__default__';
 const MANUAL_MODERATION_FANOUT_LEDGER_STALE_MS = 10 * 60 * 1000;
+const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_REBUILD_MAX_ATTEMPTS = 3;
 
 type ManualModerationFanoutLedgerOperation =
   | 'SOURCE_CLEANUP'
@@ -629,6 +635,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly manualModerationRuntime = new AdminManualModerationRuntime(
     createAdminManualModerationRuntimeContext(this),
   );
+  private readonly managedEntityAccessRuntime = new AdminManagedEntityAccessRuntime(
+    createAdminManagedEntityAccessRuntimeContext(this),
+  );
   private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(
     createAdminManagedEntitiesRuntimeContext(this),
   );
@@ -686,8 +695,6 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesDiscoveryHeaderPrimeRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesCatalogSyncCursorByScope = new Map<string, number>();
-  private readonly pendingPersistedChatAccessPrunes = new Set<string>();
-  private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
   private managedEntitiesDegradePauseLogAtMs = 0;
   private readonly logsDashboardResponseCache = new Map<
     string,
@@ -1348,26 +1355,9 @@ export class AdminService implements OnModuleDestroy {
           entityType,
           filteredItems,
         );
-      let responseSnapshot = snapshot;
+      const responseSnapshot = snapshot;
       if (!this.haveSameManagedEntityIds(responseItems, runtimeScopedItems)) {
-        try {
-          responseSnapshot = await this.writeManagedEntitiesPublishedSnapshotPatched(
-            userId,
-            entityType,
-            snapshot,
-            responseItems,
-          );
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              entityType,
-              userId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to patch filtered managed entities into published snapshot',
-          );
-          this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
-        }
+        this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
       }
 
       return {
@@ -1757,14 +1747,11 @@ export class AdminService implements OnModuleDestroy {
         },
       });
       const grantedRows = rows.filter((row) => !row.state || row.state === 'GRANTED');
-      const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(
-        grantedRows,
-        {
-          userId,
-          requestedItems: items.length,
-          source: 'strict_access_edges',
-        },
-      );
+      const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(grantedRows, {
+        userId,
+        requestedItems: items.length,
+        source: 'strict_access_edges',
+      });
       const newestUserDeniedAtByChatId = new Map<string, number>();
       for (const row of rows) {
         if (row.state !== 'USER_DENIED') {
@@ -1785,9 +1772,7 @@ export class AdminService implements OnModuleDestroy {
           .filter((row) => {
             const chatId = this.readTrimmedString(row.chatId);
             const botId = this.normalizeManagedEntityAccessBotId(row.botId);
-            const newestUserDeniedAt = chatId
-              ? newestUserDeniedAtByChatId.get(chatId)
-              : undefined;
+            const newestUserDeniedAt = chatId ? newestUserDeniedAtByChatId.get(chatId) : undefined;
             const grantedAt = row.checkedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
             return (
               Boolean(chatId && botId) &&
@@ -2070,151 +2055,16 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<void> {
     if (
       !this.supportsManagedEntitiesPublishedSnapshot(summary.entityType) ||
-      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function' ||
-      typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function'
+      typeof this.chatContextCache.upsertManagedEntityPublishedSnapshot !== 'function'
     ) {
       return;
     }
 
-    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
+    await this.chatContextCache.upsertManagedEntityPublishedSnapshot(
       userId,
-      summary.entityType,
-    );
-    if (!currentSnapshot) {
-      return;
-    }
-
-    const nextItems = currentSnapshot.items.map((item) => this.cloneManagedEntitySummary(item));
-    const existingIndex = nextItems.findIndex((item) => item.id === summary.id);
-    let changed = false;
-
-    if (existingIndex < 0) {
-      nextItems.unshift(this.cloneManagedEntitySummary(summary));
-      changed = true;
-    } else {
-      const existing = nextItems[existingIndex];
-      const mergedTitle =
-        isFallbackTitle(summary.id, existing.title) && !isFallbackTitle(summary.id, summary.title)
-          ? summary.title
-          : existing.title;
-      const mergedLink = existing.link ?? summary.link ?? null;
-      const mergedAvatarUrl = existing.avatarUrl ?? summary.avatarUrl;
-      const mergedPrimaryBotId = existing.primaryBotId ?? summary.primaryBotId ?? null;
-
-      if (
-        mergedTitle !== existing.title ||
-        mergedLink !== (existing.link ?? null) ||
-        mergedAvatarUrl !== existing.avatarUrl ||
-        mergedPrimaryBotId !== (existing.primaryBotId ?? null)
-      ) {
-        nextItems[existingIndex] = {
-          ...existing,
-          title: mergedTitle,
-          link: mergedLink,
-          ...(mergedAvatarUrl ? { avatarUrl: mergedAvatarUrl } : {}),
-          primaryBotId: mergedPrimaryBotId,
-        };
-        changed = true;
-      }
-    }
-
-    if (!changed) {
-      return;
-    }
-
-    await this.writeManagedEntitiesPublishedSnapshotPatched(
-      userId,
-      summary.entityType,
-      currentSnapshot,
-      nextItems,
-    );
-  }
-
-  private async removeManagedEntitiesPublishedSnapshotItem(
-    userId: string,
-    entityType: ManagedEntityType,
-    chatId: string,
-  ): Promise<void> {
-    if (
-      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function' ||
-      typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function'
-    ) {
-      return;
-    }
-
-    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
-      userId,
-      entityType,
-    );
-    if (!currentSnapshot) {
-      return;
-    }
-
-    const nextItems = currentSnapshot.items.filter((item) => item.id !== chatId);
-    if (nextItems.length === currentSnapshot.items.length) {
-      return;
-    }
-
-    await this.writeManagedEntitiesPublishedSnapshotPatched(
-      userId,
-      entityType,
-      currentSnapshot,
-      nextItems,
-    );
-  }
-
-  private async removeManagedEntitiesPublishedSnapshotItemForChat(
-    userId: string,
-    chatId: string,
-  ): Promise<void> {
-    await Promise.all([
-      this.removeManagedEntitiesPublishedSnapshotItem(userId, 'chat', chatId),
-      this.removeManagedEntitiesPublishedSnapshotItem(userId, 'channel', chatId),
-    ]);
-  }
-
-  private async writeManagedEntitiesPublishedSnapshotPatched(
-    userId: string,
-    entityType: ManagedEntityType,
-    currentSnapshot: ManagedEntitiesPublishedSnapshot,
-    items: readonly ChatSummary[],
-  ): Promise<ManagedEntitiesPublishedSnapshot> {
-    if (typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function') {
-      return currentSnapshot;
-    }
-
-    const nextSnapshot: ManagedEntitiesPublishedSnapshot = {
-      version: randomUUID(),
-      builtAt: new Date().toISOString(),
-      lastSyncedAt: currentSnapshot.lastSyncedAt,
-      itemCount: items.length,
-      itemsHash: buildManagedEntitiesPublishedSnapshotHash(items, currentSnapshot.lastSyncedAt),
-      items: items.map((item) => this.cloneManagedEntitySummary(item)),
-    };
-
-    await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
-      userId,
-      entityType,
-      nextSnapshot,
+      this.cloneManagedEntitySummary(summary),
       MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
     );
-
-    const nextDiff = buildManagedEntitiesPublishedSnapshotDiff(currentSnapshot, nextSnapshot);
-    if (
-      nextDiff &&
-      this.managedEntitiesPublishedDiffWriteEnabled &&
-      typeof this.chatContextCache.setManagedEntitiesPublishedDiff === 'function'
-    ) {
-      await this.chatContextCache.setManagedEntitiesPublishedDiff(
-        userId,
-        entityType,
-        nextDiff.baseVersion,
-        nextDiff,
-        MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
-      );
-    }
-
-    return nextSnapshot;
   }
 
   private scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
@@ -2398,90 +2248,108 @@ export class AdminService implements OnModuleDestroy {
     if (
       !this.managedEntitiesPublishedSnapshotWriteEnabled ||
       !this.supportsManagedEntitiesPublishedSnapshot(entityType) ||
+      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function' ||
       typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function'
     ) {
       return;
     }
 
-    const currentSnapshot =
-      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot === 'function'
-        ? await this.chatContextCache.getManagedEntitiesPublishedSnapshot(userId, entityType)
-        : null;
-    const allowlist = await this.listChatsFromAllowlistUncached(userId, entityType, {
-      allowLastSuccessFallback: false,
-    });
-    const edgeItems = await this.listManagedEntitiesFromFreshAccessEdges(
-      userId,
-      entityType,
-      new Set(allowlist.map((item) => item.id)),
-    );
-    const user: AuthUser = {
-      userId,
-      username: null,
-      displayName: null,
-      chatTitle: null,
-    };
-    const revalidated = this.mergeManagedEntityGroups(
-      await this.revalidateCachedManagedEntities(user, allowlist),
-      edgeItems,
-    );
-    const items = await this.attachManagedEntityBotAssignments(
-      await this.hydrateManagedEntities(revalidated),
-    );
-    const lastSyncedAt =
-      (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(userId, entityType)) ?? null;
-    const itemsHash = buildManagedEntitiesPublishedSnapshotHash(items, lastSyncedAt);
-    const nextSnapshot: ManagedEntitiesPublishedSnapshot =
-      currentSnapshot &&
-      currentSnapshot.itemsHash === itemsHash &&
-      currentSnapshot.itemCount === items.length &&
-      currentSnapshot.lastSyncedAt === lastSyncedAt
-        ? {
-            ...currentSnapshot,
-            items: items.map((item) => this.cloneManagedEntitySummary(item)),
-          }
-        : {
-            version: randomUUID(),
-            builtAt: new Date().toISOString(),
-            lastSyncedAt,
-            itemCount: items.length,
-            itemsHash,
-            items: items.map((item) => this.cloneManagedEntitySummary(item)),
-          };
-
-    await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
-      userId,
-      entityType,
-      nextSnapshot,
-      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
-    );
-
-    const nextDiff = buildManagedEntitiesPublishedSnapshotDiff(currentSnapshot, nextSnapshot);
-    if (
-      nextDiff &&
-      this.managedEntitiesPublishedDiffWriteEnabled &&
-      typeof this.chatContextCache.setManagedEntitiesPublishedDiff === 'function'
+    for (
+      let attempt = 1;
+      attempt <= MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_REBUILD_MAX_ATTEMPTS;
+      attempt += 1
     ) {
-      try {
-        await this.chatContextCache.setManagedEntitiesPublishedDiff(
-          userId,
-          entityType,
-          nextDiff.baseVersion,
-          nextDiff,
-          MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            entityType,
-            userId,
-            baseVersion: nextDiff.baseVersion,
-            nextVersion: nextDiff.nextVersion,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Managed entities published diff write failed',
-        );
+      const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
+        userId,
+        entityType,
+      );
+      const allowlist = await this.listChatsFromAllowlistUncached(userId, entityType, {
+        allowLastSuccessFallback: false,
+      });
+      const edgeItems = await this.listManagedEntitiesFromFreshAccessEdges(
+        userId,
+        entityType,
+        new Set(allowlist.map((item) => item.id)),
+      );
+      const user: AuthUser = {
+        userId,
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      };
+      const revalidated = this.mergeManagedEntityGroups(
+        await this.revalidateCachedManagedEntities(user, allowlist),
+        edgeItems,
+      );
+      const items = await this.attachManagedEntityBotAssignments(
+        await this.hydrateManagedEntities(revalidated),
+      );
+      const lastSyncedAt =
+        (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(userId, entityType)) ?? null;
+      const itemsHash = buildManagedEntitiesPublishedSnapshotHash(items, lastSyncedAt);
+      const nextSnapshot: ManagedEntitiesPublishedSnapshot =
+        currentSnapshot &&
+        currentSnapshot.itemsHash === itemsHash &&
+        currentSnapshot.itemCount === items.length &&
+        currentSnapshot.lastSyncedAt === lastSyncedAt
+          ? {
+              ...currentSnapshot,
+              items: items.map((item) => this.cloneManagedEntitySummary(item)),
+            }
+          : {
+              version: randomUUID(),
+              builtAt: new Date().toISOString(),
+              lastSyncedAt,
+              itemCount: items.length,
+              itemsHash,
+              items: items.map((item) => this.cloneManagedEntitySummary(item)),
+            };
+
+      const committed = await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
+        userId,
+        entityType,
+        nextSnapshot,
+        MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+        { expectedVersion: currentSnapshot?.version ?? null },
+      );
+      if (!committed) {
+        if (attempt === MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_REBUILD_MAX_ATTEMPTS) {
+          this.logger.warn(
+            { entityType, userId, attempts: attempt },
+            'Managed entities published snapshot rebuild lost repeated write races',
+          );
+        }
+        continue;
       }
+
+      const nextDiff = buildManagedEntitiesPublishedSnapshotDiff(currentSnapshot, nextSnapshot);
+      if (
+        nextDiff &&
+        this.managedEntitiesPublishedDiffWriteEnabled &&
+        typeof this.chatContextCache.setManagedEntitiesPublishedDiff === 'function'
+      ) {
+        try {
+          await this.chatContextCache.setManagedEntitiesPublishedDiff(
+            userId,
+            entityType,
+            nextDiff.baseVersion,
+            nextDiff,
+            MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              entityType,
+              userId,
+              baseVersion: nextDiff.baseVersion,
+              nextVersion: nextDiff.nextVersion,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Managed entities published diff write failed',
+          );
+        }
+      }
+      return;
     }
   }
 
@@ -3440,6 +3308,7 @@ export class AdminService implements OnModuleDestroy {
     deniedReason?: string | null;
     source: string;
     expiresAt?: Date | null;
+    checkedAt?: Date;
   }): Promise<void> {
     const client = this.getManagedEntityAccessEdgeClient();
     if (!client?.upsert) {
@@ -3453,7 +3322,7 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    const now = new Date();
+    const now = params.checkedAt ?? new Date();
     const expiresAt =
       params.expiresAt === undefined && params.state === 'GRANTED'
         ? new Date(now.getTime() + MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS)
@@ -4012,7 +3881,12 @@ export class AdminService implements OnModuleDestroy {
     preferredBotId?: string | null;
     observedBotIds?: readonly string[] | null;
     source: 'remote_discovery' | 'local_discovery' | 'recent_bot_added_bootstrap';
-  }): Promise<ChatSummary> {
+    probeStartedAt: Date;
+  }): Promise<ChatSummary | null> {
+    if (!Number.isFinite(params.probeStartedAt.getTime())) {
+      return null;
+    }
+
     try {
       const persistedChat = await this.upsertUserChatAccess(
         params.chatId,
@@ -4025,8 +3899,12 @@ export class AdminService implements OnModuleDestroy {
           observedBotIds: params.observedBotIds ?? [],
           titleUpdateMode:
             params.source === 'recent_bot_added_bootstrap' ? 'fallback_only' : 'always',
+          accessProbeStartedAt: params.probeStartedAt,
         },
       );
+      if (!persistedChat) {
+        return null;
+      }
 
       const summary = this.createManagedEntitySummary({
         id: persistedChat.id,
@@ -4038,47 +3916,21 @@ export class AdminService implements OnModuleDestroy {
         primaryBotId:
           this.readTrimmedString(persistedChat.primaryBotId ?? persistedChat.botId) ?? null,
       });
-      const accessEdgeBotIds = Array.from(
-        new Set(
-          [
-            persistedChat.primaryBotId,
-            persistedChat.botId,
-            params.preferredBotId,
-            ...(params.observedBotIds ?? []),
-          ]
-            .map((botId) => this.normalizeManagedEntityAccessBotId(botId))
-            .filter((botId): botId is string => Boolean(botId)),
-        ),
-      );
-      await Promise.all(
-        accessEdgeBotIds.map((botId) =>
-          this.upsertManagedEntityAccessEdge({
-            chatId: summary.id,
-            userId: params.userId,
-            botId,
-            entityType: summary.entityType,
-            state: 'GRANTED',
-            userRole: 'ADMIN',
-            botRole: 'ADMIN',
-            source: params.source,
-          }),
-        ),
-      );
-      this.rememberManagedEntitiesLastSuccessChats(params.userId, [summary]);
-      try {
-        await this.upsertManagedEntitiesPublishedSnapshotItem(params.userId, summary);
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId: summary.id,
-            entityType: summary.entityType,
-            userId: params.userId,
-            source: params.source,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to patch managed entities published snapshot after access discovery',
-        );
+      const cacheApplied = await this.chatContextCache.applyAdminAccessEpochMutation({
+        chatId: summary.id,
+        userId: params.userId,
+        state: 'granted',
+        eventAt: params.probeStartedAt,
+        publishedSummary: summary,
+        publishedSnapshotTtlSec: MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+        recentBootstrapSummary:
+          params.source === 'recent_bot_added_bootstrap' ? summary : undefined,
+      });
+      if (!cacheApplied) {
+        return null;
       }
+
+      this.rememberManagedEntitiesLastSuccessChats(params.userId, [summary]);
 
       if (params.source === 'recent_bot_added_bootstrap') {
         this.scheduleAdminAccessValidationRosterSync(summary.id, summary.entityType);
@@ -4314,7 +4166,7 @@ export class AdminService implements OnModuleDestroy {
         continue;
       }
       if (isUnsupportedManagedChat(chatId, hintedEntityType)) {
-        this.schedulePersistedChatAccessPrune(
+        this.managedEntityAccessRuntime.schedulePersistedChatAccessPrune(
           chatId,
           normalizedUserId,
           'bootstrap_recent_bot_added',
@@ -4354,6 +4206,7 @@ export class AdminService implements OnModuleDestroy {
       attemptedAdminChecks += 1;
       const access = await this.resolveUserAndBotAdminAccess(chatId, normalizedUserId, {
         bypassNegativeCache: true,
+        bypassPositiveCache: true,
         allowPersistedFallback: false,
         entityType: hintedEntityType,
         trafficClass: 'background',
@@ -4394,6 +4247,9 @@ export class AdminService implements OnModuleDestroy {
         }
         continue;
       }
+      if (!access.probeStartedAt) {
+        continue;
+      }
 
       const existing = await managedEntitiesReadPrisma.chat.findUnique({
         where: { id: chatId },
@@ -4426,7 +4282,11 @@ export class AdminService implements OnModuleDestroy {
         title: resolvedTitle,
         entityType: hintedEntityType,
         source: 'recent_bot_added_bootstrap',
+        probeStartedAt: access.probeStartedAt,
       });
+      if (!chat) {
+        continue;
+      }
 
       bootstrapped.push(
         row.user_scoped
@@ -5032,12 +4892,12 @@ export class AdminService implements OnModuleDestroy {
     await mapWithConcurrencyLimit(allowlist, 8, async (chat) => {
       const cachedAccess = (await this.chatContextCache.getAdminAccess?.(chat.id, userId)) ?? null;
       if (cachedAccess === 'user_denied' || cachedAccess === 'bot_denied') {
-        await this.prunePersistedChatAccess(chat.id, userId);
+        await this.managedEntityAccessRuntime.prunePersistedChatAccess(chat.id, userId);
         return null;
       }
 
       if (!candidateChatIds.has(chat.id)) {
-        await this.prunePersistedChatAccess(chat.id, userId);
+        await this.managedEntityAccessRuntime.prunePersistedChatAccess(chat.id, userId);
         return null;
       }
 
@@ -5065,7 +4925,7 @@ export class AdminService implements OnModuleDestroy {
         return null;
       }
 
-      await this.prunePersistedChatAccess(chat.id, userId);
+      await this.managedEntityAccessRuntime.prunePersistedChatAccess(chat.id, userId);
       return null;
     });
   }
@@ -5168,6 +5028,7 @@ export class AdminService implements OnModuleDestroy {
         async (candidate) => {
           const access = await this.resolveUserAndBotAdminAccess(candidate.chatId, user.userId, {
             bypassNegativeCache: true,
+            bypassPositiveCache: true,
             allowPersistedFallback: false,
             entityType: candidate.entityType,
             candidateBotIds: this.resolveManagedEntityDiscoveryBotIds(candidate),
@@ -5187,6 +5048,9 @@ export class AdminService implements OnModuleDestroy {
               chatId: candidate.chatId,
             };
           }
+          if (!access.probeStartedAt) {
+            return null;
+          }
 
           const chat = await this.persistManagedEntityAccessBestEffort({
             chatId: candidate.chatId,
@@ -5198,7 +5062,14 @@ export class AdminService implements OnModuleDestroy {
             preferredBotId: candidate.botId ?? null,
             observedBotIds: candidate.botIds ?? [],
             source: 'local_discovery',
+            probeStartedAt: access.probeStartedAt,
           });
+          if (!chat) {
+            return {
+              kind: 'remove' as const,
+              chatId: candidate.chatId,
+            };
+          }
 
           return {
             kind: 'include' as const,
@@ -5636,6 +5507,7 @@ export class AdminService implements OnModuleDestroy {
           }
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
             bypassNegativeCache: true,
+            bypassPositiveCache: true,
             allowPersistedFallback: false,
             entityType: remoteChat.entityType,
             candidateBotIds: this.resolveManagedEntityDiscoveryBotIds(remoteChat),
@@ -5659,6 +5531,9 @@ export class AdminService implements OnModuleDestroy {
               chatId: remoteChat.chatId,
             };
           }
+          if (!access.probeStartedAt) {
+            return null;
+          }
 
           if (shouldRevalidateCachedChat) {
             cachedById.delete(remoteChat.chatId);
@@ -5675,7 +5550,14 @@ export class AdminService implements OnModuleDestroy {
             preferredBotId: remoteChat.botId ?? null,
             observedBotIds: remoteChat.botIds ?? [],
             source: 'remote_discovery',
+            probeStartedAt: access.probeStartedAt,
           });
+          if (!chat) {
+            return {
+              kind: 'remove' as const,
+              chatId: remoteChat.chatId,
+            };
+          }
 
           return {
             kind: 'include' as const,
@@ -5695,7 +5577,7 @@ export class AdminService implements OnModuleDestroy {
             cachedChatIdsMissingFromRemoteSnapshot,
             LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
             async (chatId) => {
-              await this.prunePersistedChatAccessBestEffort(
+              await this.managedEntityAccessRuntime.prunePersistedChatAccessBestEffort(
                 chatId,
                 user.userId,
                 'fresh_remote_discovery_missing_chat',
@@ -5722,7 +5604,7 @@ export class AdminService implements OnModuleDestroy {
           [...removedChatIds],
           LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
           async (chatId) => {
-            await this.prunePersistedChatAccessBestEffort(
+            await this.managedEntityAccessRuntime.prunePersistedChatAccessBestEffort(
               chatId,
               user.userId,
               'fresh_remote_discovery_denied_chat',
@@ -6833,7 +6715,6 @@ export class AdminService implements OnModuleDestroy {
         },
       },
       update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         settings: {
           upsert: {
             update: {
@@ -10556,7 +10437,6 @@ export class AdminService implements OnModuleDestroy {
         },
       },
       update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         settings: {
           upsert: {
             update: {
@@ -10634,7 +10514,6 @@ export class AdminService implements OnModuleDestroy {
         },
       },
       update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         settings: {
           upsert: {
             update: {
@@ -14176,7 +14055,7 @@ export class AdminService implements OnModuleDestroy {
         title: `Chat ${chatId}`,
         ...this.buildResolvedBotAssignmentData(resolvedBotId),
       },
-      update: this.buildResolvedBotAssignmentData(resolvedBotId),
+      update: {},
     });
 
     await this.prisma.chatAdminAllowlist.upsert({
@@ -14313,14 +14192,25 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (options.syncPersistedAccess !== false) {
-      await this.upsertUserChatAccess(chatId, userId, null, entityType);
-    } else {
-      this.rememberVerifiedChatAdminAccess({
-        chatId,
-        userId,
-        entityType,
-        source: access.source,
+      if (access.source === 'remote' && !access.probeStartedAt) {
+        throw new ServiceUnavailableException(
+          'Не удалось зафиксировать момент проверки прав администратора в MAX. Повторите попытку.',
+        );
+      }
+      const persistedChat = await this.upsertUserChatAccess(chatId, userId, null, entityType, {
+        ...(access.source === 'remote'
+          ? {
+              accessProbeStartedAt: access.probeStartedAt as Date,
+            }
+          : {}),
       });
+      if (!persistedChat) {
+        throw new ServiceUnavailableException(
+          'Проверка прав администратора устарела из-за более нового события MAX. Повторите попытку.',
+        );
+      }
+    } else if (access.source === 'remote') {
+      this.scheduleAdminAccessValidationRosterSync(chatId, entityType);
     }
   }
 
@@ -14628,33 +14518,6 @@ export class AdminService implements OnModuleDestroy {
       allowPersistedFallback: false,
       bypassPositiveCache: true,
     });
-  }
-
-  private rememberVerifiedChatAdminAccess(params: {
-    chatId: string;
-    userId: string;
-    entityType: ManagedEntityType | null;
-    source: 'cache' | 'remote' | 'allowlist_fallback';
-  }): void {
-    void Promise.all([
-      this.chatContextCache.setAdminAccess?.(params.chatId, params.userId, 'granted') ??
-        Promise.resolve(),
-      this.chatContextCache.rememberChatAdminUser?.(params.chatId, params.userId) ??
-        Promise.resolve(),
-    ]).catch((error: unknown) => {
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to remember verified chat admin access after read-only validation',
-      );
-    });
-
-    if (params.source === 'remote') {
-      this.scheduleAdminAccessValidationRosterSync(params.chatId, params.entityType);
-    }
   }
 
   private scheduleAdminAccessValidationRosterSync(
@@ -20202,6 +20065,58 @@ export class AdminService implements OnModuleDestroy {
     target.push(normalizedBotId);
   }
 
+  private async recordManualActionBotAccessProbe(params: {
+    chatId: string;
+    botId: string;
+    access: MaxChatMemberAccess;
+    checkedAt: Date;
+    source: string;
+  }): Promise<boolean> {
+    const linkService = this.maxBotLinkService as
+      | (MaxBotLinkService & {
+          recordBotAccessProbe?: MaxBotLinkService['recordBotAccessProbe'];
+        })
+      | undefined;
+    if (typeof linkService?.recordBotAccessProbe !== 'function') {
+      return true;
+    }
+
+    return linkService.recordBotAccessProbe({
+      chatId: params.chatId,
+      botId: params.botId,
+      access: params.access,
+      source: params.source,
+      checkedAt: params.checkedAt,
+      allowMembershipRecovery: true,
+    });
+  }
+
+  private async isManualActionBotInAuthoritativeRoute(
+    request: MaxBotRouteRequest,
+    botId: string,
+  ): Promise<boolean> {
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (routeRequest: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+      resolveBotRoutes?: (routeRequest: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    const hasResolver =
+      typeof routeResolver?.resolveBotRoute === 'function' ||
+      (request.purpose === 'moderation_action' &&
+        typeof routeResolver?.resolveBotRoutes === 'function');
+    if (!hasResolver) {
+      return true;
+    }
+
+    const route = await this.resolveUnifiedBotRoute(request);
+    if (!route) {
+      return false;
+    }
+    const normalizedBotId = this.normalizeManualModerationBotId(botId);
+    return [route.botId, ...route.candidateBotIds].some(
+      (candidateBotId) => this.normalizeManualModerationBotId(candidateBotId) === normalizedBotId,
+    );
+  }
+
   private async resolveManualModerationActionBotAssignment(
     chatId: string,
     action: ManualModerationBotAction | null,
@@ -20228,12 +20143,33 @@ export class AdminService implements OnModuleDestroy {
         }
       } else {
         try {
+          const probeStartedAt = new Date();
           const access = await maxClientWithAccess.getCurrentChatMemberAccess(normalizedChatId, {
             trafficClass: 'critical',
             actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
             botId: preferredBotId,
+            bypassCache: true,
           });
-          if (this.hasManualModerationBotActionAccess(access, action, entityType)) {
+          const persisted = await this.recordManualActionBotAccessProbe({
+            chatId: normalizedChatId,
+            botId: preferredBotId,
+            access,
+            checkedAt: probeStartedAt,
+            source: 'admin_manual_moderation_preferred',
+          });
+          if (
+            persisted &&
+            this.hasManualModerationBotActionAccess(access, action, entityType) &&
+            (await this.isManualActionBotInAuthoritativeRoute(
+              {
+                purpose: 'moderation_action',
+                chatId: normalizedChatId,
+                action,
+                fallbackToPrimary: true,
+              },
+              preferredBotId,
+            ))
+          ) {
             return preferredBotId;
           }
         } catch (error: unknown) {
@@ -20377,12 +20313,33 @@ export class AdminService implements OnModuleDestroy {
 
     for (const candidateBotId of candidateBotIds) {
       try {
+        const probeStartedAt = new Date();
         const access = await maxClientWithAccess.getCurrentChatMemberAccess(normalizedChatId, {
           trafficClass: 'critical',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId: candidateBotId,
+          bypassCache: true,
         });
-        if (this.hasManualModerationBotActionAccess(access, action, entityType)) {
+        const persisted = await this.recordManualActionBotAccessProbe({
+          chatId: normalizedChatId,
+          botId: candidateBotId,
+          access,
+          checkedAt: probeStartedAt,
+          source: 'admin_manual_moderation_candidate',
+        });
+        if (
+          persisted &&
+          this.hasManualModerationBotActionAccess(access, action, entityType) &&
+          (await this.isManualActionBotInAuthoritativeRoute(
+            {
+              purpose: 'moderation_action',
+              chatId: normalizedChatId,
+              action,
+              fallbackToPrimary: true,
+            },
+            candidateBotId,
+          ))
+        ) {
           await persistRecoveredCandidateIfNeeded(candidateBotId);
           return candidateBotId;
         }
@@ -20454,7 +20411,7 @@ export class AdminService implements OnModuleDestroy {
           entityType,
           ...this.buildResolvedBotAssignmentData(botId),
         },
-        update: this.buildResolvedBotAssignmentData(botId),
+        update: {},
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -20527,12 +20484,28 @@ export class AdminService implements OnModuleDestroy {
     if (persistedBotId) {
       seenBotIds.add(persistedBotId);
       try {
+        const probeStartedAt = new Date();
         const access = await this.maxClient.getCurrentChatMemberAccess(normalizedChatId, {
           trafficClass: 'critical',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId: persistedBotId,
+          bypassCache: true,
         });
-        if (access.isAdmin || access.isOwner) {
+        const persisted = await this.recordManualActionBotAccessProbe({
+          chatId: normalizedChatId,
+          botId: persistedBotId,
+          access,
+          checkedAt: probeStartedAt,
+          source: 'admin_manual_action_persisted',
+        });
+        if (
+          persisted &&
+          (access.isAdmin || access.isOwner) &&
+          (await this.isManualActionBotInAuthoritativeRoute(
+            { purpose: 'read', chatId: normalizedChatId },
+            persistedBotId,
+          ))
+        ) {
           return persistedBotId;
         }
 
@@ -20576,12 +20549,32 @@ export class AdminService implements OnModuleDestroy {
       }
       seenBotIds.add(bot.id);
       try {
+        const probeStartedAt = new Date();
         const access = await this.maxClient.getCurrentChatMemberAccess(normalizedChatId, {
           trafficClass: 'critical',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId: bot.id,
+          bypassCache: true,
         });
+        const persisted = await this.recordManualActionBotAccessProbe({
+          chatId: normalizedChatId,
+          botId: bot.id,
+          access,
+          checkedAt: probeStartedAt,
+          source: 'admin_manual_action_recovery',
+        });
+        if (!persisted) {
+          continue;
+        }
         if (!access.isAdmin && !access.isOwner) {
+          continue;
+        }
+        if (
+          !(await this.isManualActionBotInAuthoritativeRoute(
+            { purpose: 'read', chatId: normalizedChatId },
+            bot.id,
+          ))
+        ) {
           continue;
         }
 
@@ -20601,7 +20594,7 @@ export class AdminService implements OnModuleDestroy {
                 entityType,
                 ...this.buildResolvedBotAssignmentData(bot.id),
               },
-              update: this.buildResolvedBotAssignmentData(bot.id),
+              update: {},
             });
           }
         } catch (persistError: unknown) {
@@ -20995,6 +20988,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     userId: string,
     botId: string | null,
+    probeStartedAt: Date,
     options: {
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
@@ -21011,18 +21005,27 @@ export class AdminService implements OnModuleDestroy {
       } as const;
       const hasRequestOptions = Object.keys(requestOptions).length > 0;
       const normalizedUserId = userId.trim();
+      const userIdVariants =
+        this.managedEntityAccessRuntime.buildAdminAccessUserIdVariants(normalizedUserId);
       const botContactId = this.dialogLinkHelper.resolveBotContactId(botId);
 
       if (typeof this.maxClient.getChatMembersAccess === 'function') {
-        const lookupIds =
-          botContactId && botContactId !== normalizedUserId
-            ? [normalizedUserId, botContactId]
-            : [normalizedUserId];
+        const lookupIds = Array.from(
+          new Set([
+            ...userIdVariants,
+            ...(botContactId && !userIdVariants.includes(botContactId.toLowerCase())
+              ? [botContactId]
+              : []),
+          ]),
+        );
         const accessByUserId = hasRequestOptions
           ? await this.maxClient.getChatMembersAccess(chatId, lookupIds, requestOptions)
           : await this.maxClient.getChatMembersAccess(chatId, lookupIds);
         const botAccess =
-          (botContactId ? (accessByUserId.get(botContactId) ?? null) : null) ??
+          this.managedEntityAccessRuntime.readAdminAccessByUserIdVariants(
+            accessByUserId,
+            botContactId,
+          ) ??
           (hasRequestOptions
             ? await this.maxClient.getCurrentChatMemberAccess(chatId, requestOptions)
             : await this.maxClient.getCurrentChatMemberAccess(chatId));
@@ -21034,12 +21037,16 @@ export class AdminService implements OnModuleDestroy {
             source: 'remote',
             reason: 'bot_not_admin',
             botRole,
+            probeStartedAt,
           };
         }
 
         const userAccess =
-          accessByUserId.get(normalizedUserId) ??
-          (botContactId === normalizedUserId ? botAccess : null);
+          this.managedEntityAccessRuntime.readAdminAccessByUserIdVariants(
+            accessByUserId,
+            normalizedUserId,
+          ) ??
+          (botContactId && userIdVariants.includes(botContactId.toLowerCase()) ? botAccess : null);
         const userRole = this.resolveManagedEntityAccessRole(userAccess);
         if (userAccess?.isAdmin === true || userAccess?.isOwner === true) {
           return {
@@ -21047,6 +21054,7 @@ export class AdminService implements OnModuleDestroy {
             source: 'remote',
             userRole,
             botRole,
+            probeStartedAt,
           };
         }
 
@@ -21056,18 +21064,25 @@ export class AdminService implements OnModuleDestroy {
           reason: 'user_not_admin',
           userRole,
           botRole,
+          probeStartedAt,
         };
       }
 
       const adminIds = hasRequestOptions
         ? await this.maxClient.getChatAdminIds(chatId, requestOptions)
         : await this.maxClient.getChatAdminIds(chatId);
-      return adminIds.includes(userId)
+      const adminUserIdVariants = new Set(
+        adminIds.flatMap((adminId) =>
+          this.managedEntityAccessRuntime.buildAdminAccessUserIdVariants(adminId),
+        ),
+      );
+      return userIdVariants.some((candidate) => adminUserIdVariants.has(candidate))
         ? {
             status: 'granted',
             source: 'remote',
             userRole: 'ADMIN',
             botRole: 'ADMIN',
+            probeStartedAt,
           }
         : {
             status: 'denied',
@@ -21075,12 +21090,14 @@ export class AdminService implements OnModuleDestroy {
             reason: 'user_not_admin',
             userRole: 'MEMBER',
             botRole: 'ADMIN',
+            probeStartedAt,
           };
     } catch (error: unknown) {
       if (isMaxApiThrottleError(error)) {
         return {
           status: 'throttled',
           error,
+          probeStartedAt,
         };
       }
 
@@ -21089,6 +21106,7 @@ export class AdminService implements OnModuleDestroy {
           status: 'denied',
           source: 'remote',
           reason: 'bot_not_admin',
+          probeStartedAt,
         };
       }
 
@@ -21112,6 +21130,7 @@ export class AdminService implements OnModuleDestroy {
       return {
         status: 'unknown',
         error,
+        probeStartedAt,
       };
     }
   }
@@ -21128,6 +21147,7 @@ export class AdminService implements OnModuleDestroy {
       allowPersistedFallback?: boolean;
     } = {},
   ): Promise<AdminAccessResolution> {
+    const probeStartedAt = new Date();
     const discoveryCandidateBotIds = this.normalizeRuntimeManagedEntityBotIds(
       options.candidateBotIds ?? [],
     );
@@ -21138,7 +21158,13 @@ export class AdminService implements OnModuleDestroy {
       new Set([...discoveryCandidateBotIds, ...persistedCandidateBotIds]),
     );
     if (candidateBotIds.length === 0) {
-      const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
+      const resolution = await this.loadRemoteAdminAccessForBot(
+        chatId,
+        userId,
+        null,
+        probeStartedAt,
+        options,
+      );
       if (
         resolution.status === 'denied' &&
         resolution.reason === 'bot_not_admin' &&
@@ -21154,26 +21180,37 @@ export class AdminService implements OnModuleDestroy {
           return edgeResolution;
         }
       }
-      await this.recordRemoteManagedEntityAccessEdge(chatId, userId, null, options, resolution);
-      if (resolution.status === 'granted') {
-        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
-        return resolution;
-      }
 
-      if (resolution.status === 'denied') {
-        await this.chatContextCache.setAdminAccess?.(
+      if (resolution.status === 'granted' || resolution.status === 'denied') {
+        const persisted = await this.recordRemoteManagedEntityAccessEdge(
           chatId,
           userId,
-          resolution.reason === 'user_not_admin' ? 'user_denied' : 'bot_denied',
+          null,
+          options,
+          resolution,
         );
-        if (resolution.reason === 'user_not_admin') {
-          await this.prunePersistedChatAccessBestEffort(
+        if (!persisted) {
+          return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+        }
+        if (resolution.status === 'denied') {
+          const pruned = await this.managedEntityAccessRuntime.prunePersistedChatAccessBestEffort(
             chatId,
             userId,
-            'remote_admin_access:user_denied',
+            resolution.reason === 'user_not_admin'
+              ? 'remote_admin_access:user_denied'
+              : 'remote_admin_access:bot_denied',
+            {
+              eventAt: probeStartedAt,
+              state: resolution.reason === 'user_not_admin' ? 'USER_DENIED' : 'BOT_DENIED',
+              cacheAlreadyPublished: true,
+            },
           );
-        } else {
-          this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
+          if (!pruned) {
+            return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+          }
+        }
+        if (!(await this.publishRemoteAdminAccessEpoch(chatId, userId, resolution))) {
+          return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
         }
       }
 
@@ -21186,10 +21223,27 @@ export class AdminService implements OnModuleDestroy {
     let unknownError: unknown = null;
 
     for (const botId of candidateBotIds) {
-      const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, botId, options);
-      await this.recordRemoteManagedEntityAccessEdge(chatId, userId, botId, options, resolution);
+      const resolution = await this.loadRemoteAdminAccessForBot(
+        chatId,
+        userId,
+        botId,
+        probeStartedAt,
+        options,
+      );
+      const persisted = await this.recordRemoteManagedEntityAccessEdge(
+        chatId,
+        userId,
+        botId,
+        options,
+        resolution,
+      );
+      if (!persisted) {
+        return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+      }
       if (resolution.status === 'granted') {
-        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
+        if (!(await this.publishRemoteAdminAccessEpoch(chatId, userId, resolution))) {
+          return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+        }
         return resolution;
       }
 
@@ -21213,17 +21267,29 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (sawUserDenied) {
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'user_denied');
-      await this.prunePersistedChatAccessBestEffort(
+      const pruned = await this.managedEntityAccessRuntime.prunePersistedChatAccessBestEffort(
         chatId,
         userId,
         'remote_admin_access:user_denied',
+        {
+          eventAt: probeStartedAt,
+          state: 'USER_DENIED',
+          cacheAlreadyPublished: true,
+        },
       );
-      return {
+      if (!pruned) {
+        return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+      }
+      const resolution = {
         status: 'denied',
         source: 'remote',
         reason: 'user_not_admin',
-      };
+        probeStartedAt,
+      } satisfies AdminAccessResolution;
+      if (!(await this.publishRemoteAdminAccessEpoch(chatId, userId, resolution))) {
+        return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+      }
+      return resolution;
     }
 
     if (throttledError) {
@@ -21251,22 +21317,54 @@ export class AdminService implements OnModuleDestroy {
           return edgeResolution;
         }
       }
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
-      this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
-      return {
+      const pruned = await this.managedEntityAccessRuntime.prunePersistedChatAccessBestEffort(
+        chatId,
+        userId,
+        'remote_admin_access:bot_denied',
+        {
+          eventAt: probeStartedAt,
+          state: 'BOT_DENIED',
+          cacheAlreadyPublished: true,
+        },
+      );
+      if (!pruned) {
+        return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+      }
+      const resolution = {
         status: 'denied',
         source: 'remote',
         reason: 'bot_not_admin',
-      };
+        probeStartedAt,
+      } satisfies AdminAccessResolution;
+      if (!(await this.publishRemoteAdminAccessEpoch(chatId, userId, resolution))) {
+        return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+      }
+      return resolution;
     }
 
-    await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
-    this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
-    return {
+    const pruned = await this.managedEntityAccessRuntime.prunePersistedChatAccessBestEffort(
+      chatId,
+      userId,
+      'remote_admin_access:bot_denied',
+      {
+        eventAt: probeStartedAt,
+        state: 'BOT_DENIED',
+        cacheAlreadyPublished: true,
+      },
+    );
+    if (!pruned) {
+      return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+    }
+    const resolution = {
       status: 'denied',
       source: 'remote',
       reason: 'bot_not_admin',
-    };
+      probeStartedAt,
+    } satisfies AdminAccessResolution;
+    if (!(await this.publishRemoteAdminAccessEpoch(chatId, userId, resolution))) {
+      return this.createSupersededRemoteAdminAccessResolution(probeStartedAt);
+    }
+    return resolution;
   }
 
   private async recordRemoteManagedEntityAccessEdge(
@@ -21277,41 +21375,70 @@ export class AdminService implements OnModuleDestroy {
       entityType?: ManagedEntityType;
     },
     resolution: AdminAccessResolution,
-  ): Promise<void> {
-    if (
-      !options.entityType ||
-      resolution.status === 'unknown' ||
-      resolution.status === 'throttled'
-    ) {
-      return;
+  ): Promise<boolean> {
+    if (resolution.status === 'unknown' || resolution.status === 'throttled') {
+      return true;
+    }
+    if (!resolution.probeStartedAt) {
+      return false;
     }
 
-    if (resolution.status === 'granted') {
-      await this.upsertManagedEntityAccessEdge({
-        chatId,
-        userId,
-        botId,
-        entityType: options.entityType,
-        state: 'GRANTED',
-        userRole: resolution.userRole ?? 'ADMIN',
-        botRole: resolution.botRole ?? 'ADMIN',
-        source: 'remote_admin_access',
-      });
-      return;
-    }
-
-    await this.upsertManagedEntityAccessEdge({
+    return this.managedEntityAccessRuntime.persistRemoteManagedEntityAccessEdge({
       chatId,
       userId,
       botId,
       entityType: options.entityType,
-      state: resolution.reason === 'user_not_admin' ? 'USER_DENIED' : 'BOT_DENIED',
-      userRole:
-        resolution.reason === 'user_not_admin' ? (resolution.userRole ?? 'MEMBER') : 'UNKNOWN',
-      botRole: resolution.reason === 'bot_not_admin' ? (resolution.botRole ?? 'MEMBER') : 'ADMIN',
-      deniedReason: resolution.reason,
-      source: 'remote_admin_access',
+      resolution,
+      probeStartedAt: resolution.probeStartedAt,
     });
+  }
+
+  private async publishRemoteAdminAccessEpoch(
+    chatId: string,
+    userId: string,
+    resolution: Extract<AdminAccessResolution, { status: 'granted' | 'denied' }>,
+  ): Promise<boolean> {
+    const probeStartedAt = resolution.probeStartedAt;
+    if (!probeStartedAt) {
+      return false;
+    }
+    if (typeof this.chatContextCache.applyAdminAccessEpochMutation !== 'function') {
+      return true;
+    }
+
+    try {
+      return await this.chatContextCache.applyAdminAccessEpochMutation({
+        chatId,
+        userId,
+        state:
+          resolution.status === 'granted'
+            ? 'granted'
+            : resolution.reason === 'user_not_admin'
+              ? 'user_denied'
+              : 'bot_denied',
+        eventAt: probeStartedAt,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          status: resolution.status,
+          probeStartedAt: probeStartedAt.toISOString(),
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to publish remote admin access epoch',
+      );
+      return false;
+    }
+  }
+
+  private createSupersededRemoteAdminAccessResolution(probeStartedAt: Date): AdminAccessResolution {
+    return {
+      status: 'unknown',
+      error: new Error('Remote admin access probe was superseded'),
+      probeStartedAt,
+    };
   }
 
   private async resolveUserAndBotAdminAccess(
@@ -21447,6 +21574,16 @@ export class AdminService implements OnModuleDestroy {
       if (!(await this.canUsePersistedChatAccessFallback(chatId))) {
         return resolution;
       }
+      if (
+        resolution.probeStartedAt &&
+        !(await this.managedEntityAccessRuntime.isRemoteAdminAccessProbeCurrent(
+          chatId,
+          userId,
+          resolution.probeStartedAt,
+        ))
+      ) {
+        return resolution;
+      }
 
       this.logger.log(
         {
@@ -21478,7 +21615,9 @@ export class AdminService implements OnModuleDestroy {
       const rows = await client.findMany({
         where: {
           chatId,
-          userId,
+          userId: {
+            in: this.managedEntityAccessRuntime.buildAdminAccessUserIdVariants(userId),
+          },
           entityType: toPrismaEntityType(entityType),
           state: 'GRANTED',
           OR: [
@@ -21491,7 +21630,9 @@ export class AdminService implements OnModuleDestroy {
         },
         select: {
           chatId: true,
+          userId: true,
           botId: true,
+          checkedAt: true,
         },
       });
       const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(rows, {
@@ -21499,7 +21640,7 @@ export class AdminService implements OnModuleDestroy {
         requestedItems: 1,
         source: 'admin_access_edge_fallback',
       });
-      const hasActiveGrantedEdge = rows.some((row) => {
+      const activeGrantedEdges = rows.filter((row) => {
         const rowChatId = this.readTrimmedString(row.chatId);
         const botId = this.normalizeManagedEntityAccessBotId(row.botId);
         return (
@@ -21508,11 +21649,32 @@ export class AdminService implements OnModuleDestroy {
           activeMembershipKeys.has(this.buildManagedEntityRepairEdgeKey(rowChatId, botId ?? ''))
         );
       });
-      if (!hasActiveGrantedEdge) {
+      const checkedAt = activeGrantedEdges.reduce<Date | null>((latest, row) => {
+        if (!(row.checkedAt instanceof Date) || !Number.isFinite(row.checkedAt.getTime())) {
+          return latest;
+        }
+        return !latest || row.checkedAt > latest ? row.checkedAt : latest;
+      }, null);
+      if (
+        !checkedAt ||
+        !(await this.managedEntityAccessRuntime.isRemoteAdminAccessProbeCurrent(
+          chatId,
+          userId,
+          checkedAt,
+        ))
+      ) {
         return null;
       }
 
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
+      const cacheApplied = await this.chatContextCache.applyAdminAccessEpochMutation({
+        chatId,
+        userId,
+        state: 'granted',
+        eventAt: checkedAt,
+      });
+      if (!cacheApplied) {
+        return null;
+      }
       this.logger.log(
         {
           chatId,
@@ -22228,111 +22390,12 @@ export class AdminService implements OnModuleDestroy {
     return rows.length > 0;
   }
 
-  private async prunePersistedChatAccess(chatId: string, userId: string): Promise<void> {
-    await this.markManagedEntityAccessEdgesDeniedForUser({
-      chatId,
-      userId,
-      state: 'USER_DENIED',
-      deniedReason: 'persisted_access_pruned',
-      source: 'prune_persisted_chat_access',
-    });
-    await this.prisma.chatAdminAllowlist.deleteMany({
-      where: {
-        chatId,
-        userId,
-      },
-    });
-    this.forgetManagedEntitiesLastSuccessChat(userId, chatId);
-    this.invalidateManagedEntitiesAllowlistCache(userId);
-    const invalidationResults = await Promise.allSettled([
-      this.removeManagedEntitiesPublishedSnapshotItemForChat(userId, chatId),
-      this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(chatId, null) ??
-        Promise.resolve(),
-    ]);
-    for (const result of invalidationResults) {
-      if (result.status === 'fulfilled') {
-        continue;
-      }
-
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          err: result.reason instanceof Error ? result.reason.message : String(result.reason),
-        },
-        'Failed to invalidate managed entities published snapshot after persisted access prune',
-      );
-    }
-  }
-
-  private async prunePersistedChatAccessBestEffort(
+  private prunePersistedChatAccess(
     chatId: string,
     userId: string,
-    source: string,
-  ): Promise<void> {
-    try {
-      await this.prunePersistedChatAccess(chatId, userId);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          source,
-          code:
-            error instanceof Prisma.PrismaClientKnownRequestError
-              ? error.code
-              : ((error as { code?: string } | null)?.code ?? null),
-          err: error instanceof Error ? error.message : String(error),
-        },
-        isPrismaKnownError(error, 'P2024')
-          ? 'Skipped persisted chat access prune because the Prisma pool is saturated'
-          : 'Failed to prune persisted chat access',
-      );
-    }
-  }
-
-  private schedulePersistedChatAccessPrune(
-    chatId: string,
-    userId: string,
-    source: 'bootstrap_recent_bot_added' | 'remote_admin_access',
-  ): void {
-    const normalizedChatId = this.readTrimmedString(chatId);
-    const normalizedUserId = this.readTrimmedString(userId);
-    if (!normalizedChatId || !normalizedUserId) {
-      return;
-    }
-
-    const key = `${normalizedChatId}:${normalizedUserId}`;
-    if (this.pendingPersistedChatAccessPrunes.has(key)) {
-      return;
-    }
-
-    this.pendingPersistedChatAccessPrunes.add(key);
-    this.persistedChatAccessPruneChain = this.persistedChatAccessPruneChain
-      .catch(() => undefined)
-      .then(async () => {
-        try {
-          await this.prunePersistedChatAccess(normalizedChatId, normalizedUserId);
-        } catch (error) {
-          this.logger.warn(
-            {
-              chatId: normalizedChatId,
-              userId: normalizedUserId,
-              source,
-              code:
-                error instanceof Prisma.PrismaClientKnownRequestError
-                  ? error.code
-                  : ((error as { code?: string } | null)?.code ?? null),
-              err: error,
-            },
-            isPrismaKnownError(error, 'P2024')
-              ? 'Skipped persisted chat access prune because the Prisma pool is saturated'
-              : 'Failed to prune persisted chat access',
-          );
-        } finally {
-          this.pendingPersistedChatAccessPrunes.delete(key);
-        }
-      });
+    options: PrunePersistedChatAccessOptions = {},
+  ): Promise<boolean> {
+    return this.managedEntityAccessRuntime.prunePersistedChatAccess(chatId, userId, options);
   }
 
   private async listChatsFromAllowlist(
@@ -23128,6 +23191,7 @@ export class AdminService implements OnModuleDestroy {
       preferredBotId?: string | null;
       observedBotIds?: readonly string[] | null;
       titleUpdateMode?: 'always' | 'fallback_only';
+      accessProbeStartedAt?: Date;
     } = {},
   ) {
     const normalizedTitle = chatTitle?.trim() ? chatTitle.trim() : null;
@@ -23182,7 +23246,7 @@ export class AdminService implements OnModuleDestroy {
         );
       }
     }
-    const persistedChat = await this.prisma.chat.upsert({
+    const chatWrite = {
       where: { id: chatId },
       create: {
         id: chatId,
@@ -23191,7 +23255,6 @@ export class AdminService implements OnModuleDestroy {
         ...(entityType ? { entityType: toPrismaEntityType(entityType) } : {}),
       },
       update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         ...(shouldUpdateTitle
           ? {
               title: nextTitle,
@@ -23199,23 +23262,45 @@ export class AdminService implements OnModuleDestroy {
           : {}),
         ...(updateEntityType && entityType ? { entityType: toPrismaEntityType(entityType) } : {}),
       },
-    });
-
-    await this.prisma.chatAdminAllowlist
-      .upsert({
-        where: {
-          chatId_userId: {
-            chatId,
-            userId,
-          },
-        },
-        create: {
+    } satisfies Prisma.ChatUpsertArgs;
+    const allowlistWrite = {
+      where: {
+        chatId_userId: {
           chatId,
           userId,
         },
-        update: {},
-      })
-      .catch(ignorePrismaUniqueConflict);
+      },
+      create: {
+        chatId,
+        userId,
+      },
+      update: {},
+    } satisfies Prisma.ChatAdminAllowlistUpsertArgs;
+    const persistedChat = options.accessProbeStartedAt
+      ? await this.prisma.$transaction(async (tx) => {
+          const chat = await tx.chat.upsert(chatWrite);
+          if (
+            !(await this.managedEntityAccessRuntime.lockRemoteAdminAccessProbe(
+              tx,
+              chatId,
+              userId,
+              options.accessProbeStartedAt as Date,
+            ))
+          ) {
+            return null;
+          }
+          await tx.chatAdminAllowlist.upsert(allowlistWrite).catch(ignorePrismaUniqueConflict);
+          return chat;
+        })
+      : await this.prisma.chat.upsert(chatWrite).then(async (chat) => {
+          await this.prisma.chatAdminAllowlist
+            .upsert(allowlistWrite)
+            .catch(ignorePrismaUniqueConflict);
+          return chat;
+        });
+    if (!persistedChat) {
+      return null;
+    }
     this.invalidateManagedEntitiesAllowlistCache(userId);
 
     if (typeof this.maxBotLinkService?.bindDiscoveredChatBots === 'function') {

@@ -12,6 +12,7 @@ import {
   expectImmediateKickMember,
   expectImmediateBanMember,
   createMaxApiError,
+  createDeferred,
   createSettings,
   createUpdate,
   createRequiredSubscriptionRedisCounter,
@@ -131,6 +132,7 @@ describe('ModerationService', () => {
             .fn()
             .mockResolvedValueOnce([])
             .mockResolvedValueOnce(['id613002203036_4_bot']),
+          recordBotAccessProbe: jest.fn().mockResolvedValue(true),
           getResolvedBotSync: jest.fn((botId?: string | null) => ({
             id: botId ?? 'id613002203036_bot',
           })),
@@ -167,20 +169,21 @@ describe('ModerationService', () => {
           actionHealthLane: 'background',
           timeoutMs: 1_500,
         });
-        expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledWith({
-          where: {
+        expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+          expect.objectContaining({
             chatId: 'chat-1',
             botId: 'id613002203036_4_bot',
-          },
-          data: expect.objectContaining({
-            lastSeenAt: expect.any(Date),
-            permissionsSnapshot: expect.objectContaining({
+            access: expect.objectContaining({
               isAdmin: true,
               isOwner: false,
               permissions: ['add_remove_members'],
             }),
+            source: 'moderation_action_moderate_member',
+            checkedAt: expect.any(Date),
+            allowMembershipRecovery: false,
           }),
-        });
+        );
+        expect(prisma.chatBotMembership.updateMany).not.toHaveBeenCalled();
         expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
       });
 
@@ -209,6 +212,7 @@ describe('ModerationService', () => {
             .fn()
             .mockResolvedValueOnce([])
             .mockResolvedValueOnce(['id613002203036_4_bot']),
+          recordBotAccessProbe: jest.fn().mockResolvedValue(true),
           getResolvedBotSync: jest.fn((botId?: string | null) => ({
             id: botId ?? 'id613002203036_bot',
           })),
@@ -238,22 +242,78 @@ describe('ModerationService', () => {
           }),
         ).resolves.toBe(true);
 
-        expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledWith({
-          where: {
+        expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+          expect.objectContaining({
             chatId: 'chat-1',
             botId: 'id613002203036_4_bot',
-          },
-          data: expect.objectContaining({
-            lastSeenAt: expect.any(Date),
-            permissionsSnapshot: expect.objectContaining({
+            access: expect.objectContaining({
               isAdmin: true,
               isOwner: false,
               permissions: ['read_all_messages', 'write'],
-              health: 'ok',
             }),
+            source: 'moderation_action_delete_message',
+            checkedAt: expect.any(Date),
+            allowMembershipRecovery: false,
           }),
-        });
+        );
+        expect(prisma.chatBotMembership.updateMany).not.toHaveBeenCalled();
         expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
+      });
+
+      it('does not retry a moderation action when the live probe loses its lifecycle CAS', async () => {
+        const prisma = {
+          chat: {
+            findUnique: jest.fn().mockResolvedValue({
+              entityType: ChatEntityType.CHAT,
+              botMemberships: [{ botId: 'id613002203036_4_bot', status: 'ACTIVE' }],
+            }),
+          },
+        };
+        const maxClient = {
+          getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+            userId: '613002203036_4',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages', 'write'],
+          }),
+        };
+        const maxBotLinkService = {
+          resolveBotIdsForModerationAction: jest
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce(['id613002203036_4_bot']),
+          recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+          getResolvedBotSync: jest.fn((botId?: string | null) => ({
+            id: botId ?? 'id613002203036_bot',
+          })),
+        };
+        const operation = jest.fn().mockResolvedValue(undefined);
+        const service = new ModerationService(
+          prisma as never,
+          {} as never,
+          {} as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+        );
+
+        await expect(
+          (service as any).executeModerationActionWithFallback({
+            chatId: 'chat-1',
+            action: 'delete_message',
+            messageId: 'message-1',
+            operation,
+          }),
+        ).resolves.toBe(false);
+
+        expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+        expect(operation).not.toHaveBeenCalled();
       });
 
       it('keeps stale moderation action backoff out of the hot path and schedules a recheck', async () => {
@@ -351,32 +411,39 @@ describe('ModerationService', () => {
         ).resolves.toBe(true);
       });
 
-      it('does not wait indefinitely for access-loss cleanup after a terminal moderation error', async () => {
+      it('continues to a survivor bot when access-loss persistence exceeds its budget', async () => {
         jest.useFakeTimers();
+        const accessLoss = createDeferred<void>();
         const runtimeDiagnosticsService = {
           recordHotPathStageOutcome: jest.fn(),
           recordProblemChat: jest.fn(),
         };
         const maxBotLinkService = {
-          resolveBotIdsForModerationAction: jest.fn().mockResolvedValue(['id613002203036_bot']),
+          resolveBotIdsForModerationAction: jest
+            .fn()
+            .mockResolvedValue(['id613002203036_bot', 'id613002203036_4_bot']),
           getResolvedBotSync: jest.fn((botId?: string | null) => ({
             id: botId ?? 'id613002203036_bot',
           })),
-        };
-        const managedEntityAccessLossService = {
-          recordIfManagedEntityAccessLost: jest.fn(
+          recordBotAccessProbe: jest.fn(
             () =>
-              new Promise(() => {
-                // Intentionally never resolves.
+              new Promise<boolean>(() => {
+                // Models a snapshot waiting on the same parent Chat lock.
               }),
           ),
+        };
+        const managedEntityAccessLossService = {
+          recordIfManagedEntityAccessLost: jest.fn().mockReturnValue(accessLoss.promise),
         };
         const terminalError = createMaxApiError(
           403,
           'Request failed with status code 403',
           'chat.denied',
         );
-        const operation = jest.fn().mockRejectedValue(terminalError);
+        const operation = jest
+          .fn()
+          .mockRejectedValueOnce(terminalError)
+          .mockResolvedValueOnce(undefined);
         const service = new ModerationService(
           {} as never,
           {} as never,
@@ -406,7 +473,6 @@ describe('ModerationService', () => {
           const resultPromise = (service as any).executeModerationActionWithFallback({
             chatId: 'chat-1',
             action: 'delete_message',
-            explicitBotId: 'id613002203036_bot',
             messageId: 'message-1',
             operation,
           });
@@ -423,9 +489,15 @@ describe('ModerationService', () => {
             source: 'moderation_action:delete_message',
             operation: 'delete',
             error: terminalError,
+            lifecycleEventAt: expect.any(Date),
+            lifecycleEventType: 'live_probe',
+            lifecycleSource: 'live_probe',
           });
 
-          await expect(resultPromise).resolves.toBe(false);
+          await expect(resultPromise).resolves.toBe(true);
+          expect(operation).toHaveBeenNthCalledWith(1, 'id613002203036_bot');
+          expect(operation).toHaveBeenNthCalledWith(2, 'id613002203036_4_bot');
+          expect(maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
           expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
             stage: 'moderation-action-access-loss.deferred',
             outcome: 'skip',
@@ -440,6 +512,18 @@ describe('ModerationService', () => {
             }),
             'Moderation action access-loss recording exceeded hot-path budget; continuing detached',
           );
+
+          accessLoss.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+          expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+            chatId: 'chat-1',
+            botId: 'id613002203036_bot',
+            access: null,
+            source: 'moderation_action_delete_message',
+            checkedAt: expect.any(Date),
+            allowMembershipRecovery: false,
+          });
         } finally {
           debugSpy.mockRestore();
           jest.useRealTimers();
@@ -474,6 +558,7 @@ describe('ModerationService', () => {
             .fn()
             .mockResolvedValueOnce(['id613002203036_bot'])
             .mockResolvedValueOnce(['id613002203036_bot', 'id613002203036_4_bot']),
+          recordBotAccessProbe: jest.fn().mockResolvedValue(true),
           getResolvedBotSync: jest.fn((botId?: string | null) => ({
             id: botId ?? 'id613002203036_bot',
           })),
@@ -560,6 +645,9 @@ describe('ModerationService', () => {
             source: 'moderation_action:moderate_member',
             operation: 'member_moderation',
             error: terminalError,
+            lifecycleEventAt: expect.any(Date),
+            lifecycleEventType: 'live_probe',
+            lifecycleSource: 'live_probe',
           },
         );
         expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
@@ -613,6 +701,7 @@ describe('ModerationService', () => {
             .fn()
             .mockResolvedValueOnce(['id613002203036_bot'])
             .mockResolvedValueOnce(['id613002203036_bot', 'id613002203036_4_bot']),
+          recordBotAccessProbe: jest.fn().mockResolvedValue(true),
           getResolvedBotSync: jest.fn((botId?: string | null) => ({
             id: botId ?? 'id613002203036_bot',
           })),
@@ -3076,15 +3165,162 @@ describe('ModerationService', () => {
         undefined,
         redisCounter as never,
       );
+      const ensureDeleteIntent = jest.spyOn(service as any, 'ensureModerationDeleteIntent');
 
       await service.handleUpdate(createUpdate());
 
       expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+      expect(ensureDeleteIntent).not.toHaveBeenCalled();
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(prisma.violation.create).not.toHaveBeenCalled();
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
       expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [
+        'timeout',
+        Object.assign(new Error('MAX membership lookup timeout'), {
+          code: 'ECONNABORTED',
+        }),
+      ],
+      [
+        'server error',
+        Object.assign(new Error('MAX membership lookup unavailable'), {
+          response: { status: 503 },
+        }),
+      ],
+      [
+        'connection reset',
+        Object.assign(new Error('MAX membership connection reset'), {
+          code: 'ECONNRESET',
+        }),
+      ],
+    ])(
+      'fails open and applies backoff after repeated transient required subscription membership errors: %s',
+      async (_label, transientError) => {
+        const prisma = createPrismaForRequiredSubscription({
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: ['channel-1'],
+          requiredSubscriptionWarnEnabled: true,
+          requiredSubscriptionBanEnabled: true,
+          requiredSubscriptionMuteEnabled: true,
+        });
+        const ruleEngine = {
+          detect: jest.fn().mockResolvedValue({ violations: [] }),
+        };
+        const redisCounter = createRequiredSubscriptionRedisCounter();
+        const maxClient = {
+          hasChatMember: jest.fn().mockRejectedValue(transientError),
+          getChatSnapshot: jest.fn().mockResolvedValue({
+            title: 'Новости MAX',
+            link: 'https://max.ru/channels/news-max',
+            participantsCount: 100,
+            entityType: 'channel',
+          }),
+          deleteMessage: jest.fn(),
+          sendMessage: jest.fn(),
+          kickMember: jest.fn(),
+          banMember: jest.fn(),
+          notifyModerators: jest.fn(),
+          resolveMessageLink: jest.fn().mockResolvedValue(null),
+        };
+
+        const service = new ModerationService(
+          prisma as never,
+          ruleEngine as never,
+          { resolveAction: jest.fn() } as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          redisCounter as never,
+        );
+        const ensureDeleteIntent = jest.spyOn(service as any, 'ensureModerationDeleteIntent');
+
+        await service.handleUpdate(createUpdate());
+
+        expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+        expect(ensureDeleteIntent).not.toHaveBeenCalled();
+        expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+        expect(maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(maxClient.kickMember).not.toHaveBeenCalled();
+        expect(maxClient.banMember).not.toHaveBeenCalled();
+        expect(prisma.violation.create).not.toHaveBeenCalled();
+        expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+        expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+        expect((service as any).requiredSubscriptionMembershipBackoffUntilMs.size).toBe(1);
+      },
+    );
+
+    it('enforces only explicitly missing targets when another membership lookup stays unresolved', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-missing', 'channel-unresolved'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const transientError = Object.assign(new Error('MAX membership lookup timeout'), {
+        code: 'ECONNABORTED',
+      });
+      const maxClient = {
+        hasChatMember: jest.fn((channelId: string) => {
+          if (channelId === 'channel-missing') {
+            return Promise.resolve(false);
+          }
+          return Promise.reject(transientError);
+        }),
+        getChatSnapshot: jest.fn((channelId: string) =>
+          Promise.resolve({
+            title: channelId,
+            link: `https://max.ru/channels/${channelId}`,
+            participantsCount: 100,
+            entityType: 'channel',
+          }),
+        ),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(3);
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create.mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.objectContaining({
+              data: expect.objectContaining({
+                ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',
+                metadata: expect.objectContaining({
+                  missingChannelIds: ['channel-missing'],
+                  unresolvedChannelIds: ['channel-unresolved'],
+                }),
+              }),
+            }),
+          ],
+        ]),
+      );
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
     it('enforces required subscription when the system is under pressure', async () => {
@@ -4094,10 +4330,7 @@ describe('ModerationService', () => {
         status: 'PENDING',
       }),
       ensureAndAttempt: jest.fn(
-        async (
-          _input: unknown,
-          options?: { beforeDeleteMutation?: () => Promise<void> },
-        ) => {
+        async (_input: unknown, options?: { beforeDeleteMutation?: () => Promise<void> }) => {
           await options?.beforeDeleteMutation?.();
           return {
             kind: 'pending',
@@ -4407,6 +4640,9 @@ describe('ModerationService', () => {
       entityType: ChatEntityType.CHANNEL,
       source: 'channel_auto_post:scan',
       operation: 'read',
+      lifecycleEventAt: expect.any(Date),
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
       error: maxError,
     });
   });
@@ -4518,6 +4754,9 @@ describe('ModerationService', () => {
       entityType: ChatEntityType.CHANNEL,
       source: 'channel_auto_post:poll_attach',
       operation: 'edit',
+      lifecycleEventAt: expect.any(Date),
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
       error: maxError,
     });
     expect(prisma.auditLog.create).toHaveBeenCalledWith({

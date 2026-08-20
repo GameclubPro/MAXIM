@@ -36,6 +36,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
   private readonly staleIngressMs: number;
   private readonly requiredUpdateTypes: readonly string[];
   private readonly requiredUpdateTypesSet: ReadonlySet<string>;
+  private readonly replaceUpdateTypes: boolean;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
 
@@ -56,10 +57,11 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     );
     const extendedLifecycleMode = configService.get<string>(
       'MAX_EXTENDED_WEBHOOK_LIFECYCLE_MODE',
-      'on',
+      'shadow',
     );
     this.requiredUpdateTypes = resolveRequiredWebhookUpdateTypes(extendedLifecycleMode);
     this.requiredUpdateTypesSet = new Set(this.requiredUpdateTypes);
+    this.replaceUpdateTypes = extendedLifecycleMode === 'off';
   }
 
   async onModuleInit(): Promise<void> {
@@ -334,6 +336,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     const missingUpdateTypes = this.requiredUpdateTypes.filter(
       (type) => !actualUpdateTypes.includes(type),
     );
+    const extraUpdateTypes = actualUpdateTypes.filter(
+      (type) => !this.requiredUpdateTypesSet.has(type),
+    );
     const previousConfiguredUrl =
       syncState?.configuredUrl && syncState.configuredUrl !== target.url
         ? syncState.configuredUrl
@@ -353,14 +358,20 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         botId: bot.id,
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
         forceUpsert: true,
+        ...(this.replaceUpdateTypes ? { replaceUpdateTypes: true } : {}),
       });
       reconciledAt = new Date().toISOString();
       subscriptionsChanged = true;
-    } else if (!current || missingUpdateTypes.length > 0) {
+    } else if (
+      !current ||
+      missingUpdateTypes.length > 0 ||
+      (this.replaceUpdateTypes && extraUpdateTypes.length > 0)
+    ) {
       await this.maxClient.ensureWebhookSubscription([...this.requiredUpdateTypes], {
         trafficClass: 'background',
         botId: bot.id,
         sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+        ...(this.replaceUpdateTypes ? { replaceUpdateTypes: true } : {}),
       });
       reconciledAt = new Date().toISOString();
       subscriptionsChanged = true;

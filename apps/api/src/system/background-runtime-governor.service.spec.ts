@@ -122,6 +122,7 @@ function createDecisionSnapshotForTest() {
       pauseThreshold: 0.7,
       topBots: [],
     },
+    criticalLimiter: null,
     topSources: [],
     workerSkew: { groupName: null, pressure: 0, totalPressure: 0, share: 0 },
   };
@@ -815,6 +816,25 @@ describe('BackgroundRuntimeGovernorService', () => {
   });
 
   it('keeps dashboard MAX capacity snapshots on the shared default scope', async () => {
+    const getSourceSnapshot = jest.fn().mockResolvedValue({
+      overall: {
+        totalRequests: 10,
+        trafficClasses: {
+          critical: { totalRequests: 1 },
+          interactive: { totalRequests: 3 },
+          background: { totalRequests: 6 },
+        },
+      },
+      sources: {},
+    });
+    const getRateLimitOutcomeSnapshot = jest.fn().mockResolvedValue({
+      windowSec: 600,
+      stack: {
+        trafficClasses: {
+          critical: { internalLimiterRejects: 4 },
+        },
+      },
+    });
     const getStackRateLimitSnapshot = jest
       .fn()
       .mockResolvedValueOnce(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }))
@@ -840,21 +860,12 @@ describe('BackgroundRuntimeGovernorService', () => {
         getEffectiveSnapshot: jest.fn().mockResolvedValue(createDecisionSnapshotForTest().mode),
       } as never,
       {
-        getSourceSnapshot: jest.fn().mockResolvedValue({
-          overall: {
-            totalRequests: 10,
-            trafficClasses: {
-              critical: { totalRequests: 1 },
-              interactive: { totalRequests: 3 },
-              background: { totalRequests: 6 },
-            },
-          },
-          sources: {},
-        }),
+        getSourceSnapshot,
+        getRateLimitOutcomeSnapshot,
         getStackRateLimitSnapshot,
         getBotRateLimitSnapshot,
       } as never,
-      createConfigMock(),
+      createConfigMock({ BACKGROUND_GOVERNOR_SOURCE_WINDOW_SEC: 60 }),
       {
         getBackgroundDecisionSummary: jest.fn().mockResolvedValue({ pauseReasons: [] }),
       } as never,
@@ -869,6 +880,17 @@ describe('BackgroundRuntimeGovernorService', () => {
         topBots: [expect.objectContaining({ botId: 'bot-a', smoothedLoad: 0.1 })],
       },
     });
+    await expect(service.getCriticalLimiterSnapshot()).resolves.toEqual({
+      windowSec: 600,
+      internalRejects: 4,
+    });
+    await expect(service.getCriticalLimiterSnapshot()).resolves.toEqual({
+      windowSec: 600,
+      internalRejects: 4,
+    });
+    expect(getSourceSnapshot).toHaveBeenCalledWith({ windowSec: 60 });
+    expect(getRateLimitOutcomeSnapshot).toHaveBeenCalledTimes(1);
+    expect(getRateLimitOutcomeSnapshot).toHaveBeenCalledWith({ windowSec: 600 });
     expect(getStackRateLimitSnapshot).toHaveBeenNthCalledWith(1, {
       windowSec: 60,
       capacityScope: 'service',
@@ -879,5 +901,54 @@ describe('BackgroundRuntimeGovernorService', () => {
       capacityScope: 'service',
     });
     expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(2, ['bot-a'], { windowSec: 60 });
+  });
+
+  it('reuses the source pressure snapshot for the default critical limiter window', async () => {
+    const getRateLimitOutcomeSnapshot = jest.fn();
+    const service = new BackgroundRuntimeGovernorService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          webhookDefaultWorkerGroups: {},
+          userFacingEffectiveLagSec: 0,
+          effectiveLagSec: 0,
+          bots: {},
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue(createDecisionSnapshotForTest().mode),
+      } as never,
+      {
+        getSourceSnapshot: jest.fn().mockResolvedValue({
+          overall: {
+            totalRequests: 0,
+            trafficClasses: {
+              critical: { totalRequests: 0 },
+              interactive: { totalRequests: 0 },
+              background: { totalRequests: 0 },
+            },
+          },
+          sources: {},
+          rateLimitOutcomes: {
+            windowSec: 600,
+            stack: {
+              trafficClasses: {
+                critical: { internalLimiterRejects: 7 },
+              },
+            },
+          },
+        }),
+        getRateLimitOutcomeSnapshot,
+        getStackRateLimitSnapshot: jest.fn().mockResolvedValue(createStackRateLimitSnapshot()),
+        getBotRateLimitSnapshot: jest.fn().mockResolvedValue({}),
+      } as never,
+      createConfigMock(),
+    );
+    mockSystemPressure(service, { enabled: false });
+
+    await expect(service.getCriticalLimiterSnapshot()).resolves.toEqual({
+      windowSec: 600,
+      internalRejects: 7,
+    });
+    expect(getRateLimitOutcomeSnapshot).not.toHaveBeenCalled();
   });
 });

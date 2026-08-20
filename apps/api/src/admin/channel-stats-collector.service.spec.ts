@@ -1,5 +1,5 @@
 import { MAX_API_SOURCE_TAGS, type MaxChannelMessageSnapshot } from '../max/max-client.service';
-import { MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
+import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
 jest.mock('ioredis', () => ({
@@ -211,7 +211,7 @@ describe('ChannelStatsCollectorService', () => {
     });
 
     expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
-      [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       expect.objectContaining({
         trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,

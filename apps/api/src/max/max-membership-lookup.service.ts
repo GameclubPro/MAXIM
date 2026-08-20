@@ -638,6 +638,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return;
     }
 
+    const probeStartedAt = new Date();
     try {
       const accessByUserId = await this.executeLookupWithGuard(
         async () =>
@@ -674,7 +675,17 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     } catch (error: unknown) {
       const transient = this.isTransientLookupError(error);
       const terminalBackoffMs = this.resolveTerminalChatBackoffMs(batch.policyName);
-      const terminal = terminalBackoffMs > 0 && this.isTerminalChatAccessError(error);
+      const terminalAccess = this.isTerminalChatAccessError(error);
+      const terminal = terminalBackoffMs > 0 && terminalAccess;
+      if (terminalAccess) {
+        await this.persistTerminalBotAccessProbe({
+          chatId: batch.chatId,
+          botId: batch.botId,
+          policyName: batch.policyName,
+          probeStartedAt,
+          error,
+        });
+      }
       let appliedBackoffMs = 0;
       if (terminal) {
         const appliedBackoff = this.applyTerminalChatBackoff(
@@ -738,6 +749,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       }),
     );
     const batchLookupPromise = (async () => {
+      const probeStartedAt = new Date();
       try {
         const accessByUserId = await this.executeLookupWithGuard(
           async () =>
@@ -778,7 +790,17 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       } catch (error: unknown) {
         const transient = this.isTransientLookupError(error);
         const terminalBackoffMs = this.resolveTerminalChatBackoffMs(policyName);
-        const terminal = terminalBackoffMs > 0 && this.isTerminalChatAccessError(error);
+        const terminalAccess = this.isTerminalChatAccessError(error);
+        const terminal = terminalBackoffMs > 0 && terminalAccess;
+        if (terminalAccess) {
+          await this.persistTerminalBotAccessProbe({
+            chatId,
+            botId,
+            policyName,
+            probeStartedAt,
+            error,
+          });
+        }
         let appliedBackoffMs = 0;
         if (terminal) {
           const appliedBackoff = this.applyTerminalChatBackoff(
@@ -863,6 +885,42 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       },
       'Failed to resolve MAX membership',
     );
+  }
+
+  private async persistTerminalBotAccessProbe(params: {
+    chatId: string;
+    botId: string | null;
+    policyName: MaxMembershipLookupPolicy;
+    probeStartedAt: Date;
+    error: unknown;
+  }): Promise<void> {
+    const botId = this.normalizeBotScopedCacheBotId(params.botId);
+    const recordBotAccessProbe = this.maxBotLinkService?.recordBotAccessProbe;
+    if (!botId || typeof recordBotAccessProbe !== 'function') {
+      return;
+    }
+
+    try {
+      await recordBotAccessProbe.call(this.maxBotLinkService, {
+        chatId: params.chatId,
+        botId,
+        access: null,
+        source: `membership_lookup_${params.policyName}`,
+        checkedAt: params.probeStartedAt,
+        lastErrorCode: this.resolveTerminalChatAccessErrorCode(params.error),
+        allowMembershipRecovery: false,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          botId,
+          policyName: params.policyName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist terminal MAX membership lookup bot access',
+      );
+    }
   }
 
   private async resolveLookupBotId(chatId: string): Promise<string | null> {
@@ -1661,6 +1719,15 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private isTerminalChatAccessError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     return status === 403 || status === 404;
+  }
+
+  private resolveTerminalChatAccessErrorCode(error: unknown): string {
+    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    if (typeof code === 'string' && code.trim().length > 0) {
+      return code.trim().toLowerCase();
+    }
+
+    return this.extractStatusCode(error) === 404 ? 'chat.not.found' : 'access.denied';
   }
 
   private isTransientLookupError(error: unknown): boolean {

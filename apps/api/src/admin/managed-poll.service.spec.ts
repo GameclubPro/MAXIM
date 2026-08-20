@@ -1826,6 +1826,84 @@ describe('ManagedPollService callback rendering', () => {
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('channel-1');
   });
 
+  it('records terminal access loss from a missing-publication verification lookup', async () => {
+    const lookupAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(lookupAttemptStartedAt);
+    const missingError = {
+      response: {
+        status: 404,
+        data: { code: 'message.not.found', message: 'Message not found' },
+      },
+    };
+    const lookupError = {
+      response: {
+        status: 403,
+        data: { code: 'chat.denied', message: 'Bot cannot access chat' },
+      },
+    };
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(missingError),
+      getExactMessagePresence: jest.fn().mockRejectedValue(lookupError),
+    };
+    const accessLoss = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        reason: 'bot_denied',
+        recorded: { chatId: 'channel-1' },
+      }),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      {} as never,
+      {} as never,
+      accessLoss as never,
+    );
+    jest.spyOn(service as any, 'loadPollAggregate').mockResolvedValue({
+      id: 'poll-1',
+      chatId: 'channel-1',
+      actorUserId: 'admin-1',
+      chat: { entityType: ChatEntityType.CHANNEL },
+      question: 'Текст администратора',
+      questionFormat: 'plain',
+      status: ManagedPollStatus.ACTIVE,
+      resultOptions: [
+        { id: 'option-1', position: 0, text: 'Да', votes: 0, percent: 0 },
+        { id: 'option-2', position: 1, text: 'Нет', votes: 0, percent: 0 },
+      ],
+      publicationMessageId: 'message-missing',
+      publicationBotId: 'bot-1',
+      publicationUrl: 'https://max.ru/channel/message-missing',
+      renderRevision: 0,
+    });
+
+    try {
+      await expect(
+        (service as any).renderPollPublication('channel-1', 'poll-1', 'background-repair'),
+      ).resolves.toBe(false);
+
+      expect(accessLoss.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+        chatId: 'channel-1',
+        botId: 'bot-1',
+        entityType: ChatEntityType.CHANNEL,
+        source: 'managed_poll:lookup',
+        operation: 'lookup',
+        error: lookupError,
+        lifecycleEventAt: lookupAttemptStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+      expect(prisma.managedPoll.updateMany).toHaveBeenCalledWith({
+        where: { id: 'poll-1', renderRevision: 0 },
+        data: { lastRenderError: 'Message not found' },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('does not report reconciliation success when a newer poll revision wins the CAS', async () => {
     const tx = {
       managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
@@ -3401,6 +3479,87 @@ describe('ManagedPollService publication', () => {
     );
     expect(accessLoss.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
   });
+
+  it('forwards the direct publication attempt epoch on terminal access loss', async () => {
+    const attemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(attemptStartedAt);
+    const terminalError = Object.assign(new Error('Forbidden'), {
+      response: { status: 403, data: { code: 'chat.denied', message: 'Forbidden' } },
+    });
+    const draft = {
+      id: 'poll-1',
+      chatId: 'chat-1',
+      actorUserId: 'admin-1',
+      question: 'Что выбираем?',
+      questionFormat: 'plain',
+      images: [],
+      status: ManagedPollStatus.DRAFT,
+      visibility: ManagedPollVisibility.ANONYMOUS,
+      identitySalt: POLL_IDENTITY_SALT,
+      renderRevision: 0,
+      renderedRevision: 0,
+      renderFormatVersion: POLL_RENDER_FORMAT_VERSION,
+      publicationMessageId: null,
+      publicationBotId: null,
+      publicationUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      lockedAt: null,
+      lockToken: null,
+      lastError: null,
+      lastRenderError: null,
+      createdAt: attemptStartedAt,
+      updatedAt: attemptStartedAt,
+      options: [
+        { id: 'option-1', pollId: 'poll-1', position: 0, text: 'Первый' },
+        { id: 'option-2', pollId: 'poll-1', position: 1, text: 'Второй' },
+      ],
+    };
+    const prisma = {
+      managedPoll: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const maxClient = {
+      sendMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-08-20T12:00:05.000Z'));
+        throw terminalError;
+      }),
+    };
+    const adminService = {
+      assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+      resolveChatPollBotId: jest.fn().mockResolvedValue('bot-1'),
+    };
+    const accessLoss = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ManagedPollService(
+      prisma as never,
+      maxClient as never,
+      adminService as never,
+      {} as never,
+      accessLoss as never,
+    );
+    jest.spyOn(service as any, 'findPoll').mockResolvedValue(draft);
+
+    try {
+      await expect(
+        service.publishChannelPoll('chat-1', 'poll-1', { userId: 'admin-1' } as never, 'chat'),
+      ).rejects.toThrow('Forbidden');
+
+      expect(accessLoss.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        entityType: ChatEntityType.CHAT,
+        source: 'managed_poll:send',
+        operation: 'send',
+        error: terminalError,
+        lifecycleEventAt: attemptStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('ManagedPollService lifecycle', () => {
@@ -3957,6 +4116,7 @@ describe('ManagedPollService admin reads', () => {
 
 describe('ManagedPollService access-loss attribution', () => {
   it('attributes failed chat poll actions to a chat entity', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
     const accessLoss = { recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined) };
     const service = new ManagedPollService(
       {} as never,
@@ -3973,6 +4133,7 @@ describe('ManagedPollService access-loss attribution', () => {
       'edit',
       error,
       'chat',
+      lifecycleEventAt,
     );
 
     expect(accessLoss.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
@@ -3982,6 +4143,9 @@ describe('ManagedPollService access-loss attribution', () => {
       source: 'managed_poll:edit',
       operation: 'edit',
       error,
+      lifecycleEventAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
   });
 });

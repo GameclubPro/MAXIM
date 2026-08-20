@@ -14,13 +14,18 @@ describe('channel settings normalization', () => {
     };
     const updateMany = jest.fn().mockResolvedValue({ count: 0 });
 
+    const upsert = jest.fn().mockResolvedValue({ channelSettings: storedSettings });
     const result = await readChannelSettings({
       prisma: {
-        chat: { upsert: jest.fn().mockResolvedValue({ channelSettings: storedSettings }) },
+        chat: { upsert },
         channelSettings: { updateMany },
       } as never,
       logger: { warn: jest.fn() },
       chatId: 'channel-1',
+      botAssignmentData: {
+        botId: 'stale-bot',
+        primaryBotId: 'stale-bot',
+      },
     });
 
     expect(result.commentsEnabled).toBe(true);
@@ -33,5 +38,11 @@ describe('channel settings normalization', () => {
         postSuggestionsButtonUrl: '',
       }),
     });
+    const upsertArgs = upsert.mock.calls[0]?.[0];
+    expect(upsertArgs?.create).toEqual(
+      expect.objectContaining({ botId: 'stale-bot', primaryBotId: 'stale-bot' }),
+    );
+    expect(upsertArgs?.update).not.toHaveProperty('botId');
+    expect(upsertArgs?.update).not.toHaveProperty('primaryBotId');
   });
 });

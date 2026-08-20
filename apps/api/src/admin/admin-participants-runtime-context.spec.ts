@@ -1,4 +1,50 @@
-import { createAdminParticipantsRuntimeContext } from './admin-participants-runtime-context';
+import { AdminParticipantsRuntime } from './admin-participants-runtime';
+import {
+  createAdminParticipantsRuntimeContext,
+  type AdminParticipantsRuntimeContext,
+} from './admin-participants-runtime-context';
+import { createDeferred, createPrismaMock } from './admin-service-test-support';
+
+const participantAdmin = {
+  userId: 'admin-1',
+  username: null,
+  displayName: null,
+  chatTitle: null,
+};
+
+function createParticipantsRuntimeContext(params: {
+  prisma: ReturnType<typeof createPrismaMock>;
+  maxClient: Record<string, unknown>;
+  accessLossService: Record<string, unknown>;
+}): AdminParticipantsRuntimeContext {
+  return {
+    prisma: params.prisma,
+    maxClient: params.maxClient,
+    logger: { warn: jest.fn(), log: jest.fn() },
+    managedEntityAccessLossService: params.accessLossService,
+    chatParticipantsPageCache: new Map(),
+    assertReadOnlyChatAdmin: jest.fn().mockResolvedValue(undefined),
+    buildParticipantViolationCountWhere: jest.fn(),
+    buildProfileMentionHandoffUrl: jest.fn().mockReturnValue(null),
+    buildUserProfileUrl: jest.fn().mockReturnValue(null),
+    ensureEntityType: jest.fn().mockResolvedValue(undefined),
+    getManagedEntityHeader: jest.fn().mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'chat',
+      participantsCount: 1200,
+    }),
+    normalizeMaxProfileUrl: jest.fn().mockReturnValue(null),
+    prepareManualModerationTarget: jest.fn(),
+    readTrimmedString: jest.fn().mockReturnValue(null),
+    resolveBackgroundReadBotAssignment: jest.fn().mockResolvedValue('bot-2'),
+    resolveParticipantCleanupBotAssignment: jest.fn().mockResolvedValue('bot-2'),
+    resolveLogsDashboardFrom: jest.fn(
+      (_range: unknown, to: Date) => new Date(to.getTime() - 1_000),
+    ),
+    toSafeInteger: jest.fn((value: unknown) => (typeof value === 'number' ? Math.trunc(value) : 0)),
+  } as unknown as AdminParticipantsRuntimeContext;
+}
 
 describe('AdminParticipantsRuntimeContext', () => {
   it('exposes participants infrastructure through typed accessors', () => {
@@ -7,6 +53,7 @@ describe('AdminParticipantsRuntimeContext', () => {
       prisma: { chatSettings: {} },
       maxClient: { getChatMembersPage: jest.fn() },
       logger: { warn: jest.fn(), log: jest.fn() },
+      managedEntityAccessLossService: { recordIfManagedEntityAccessLost: jest.fn() },
       chatParticipantsPageCache: cache,
       assertReadOnlyChatAdmin: jest.fn(),
       buildParticipantViolationCountWhere: jest.fn(),
@@ -26,6 +73,7 @@ describe('AdminParticipantsRuntimeContext', () => {
     expect(context.prisma).toBe(target.prisma);
     expect(context.maxClient).toBe(target.maxClient);
     expect(context.logger).toBe(target.logger);
+    expect(context.managedEntityAccessLossService).toBe(target.managedEntityAccessLossService);
     expect(context.chatParticipantsPageCache).toBe(cache);
   });
 
@@ -142,5 +190,221 @@ describe('AdminParticipantsRuntimeContext', () => {
       new Date('2026-06-22T23:59:59.000Z'),
     );
     expect(context.toSafeInteger(10.8)).toBe(16);
+  });
+});
+
+describe('AdminParticipantsRuntime access-loss probes', () => {
+  it('records delayed terminal roster denial at probe start before returning an empty page', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue({
+      nightModeTimezone: 'Europe/Moscow',
+    });
+
+    const rosterError = Object.assign(new Error('Request failed with status code 403'), {
+      response: {
+        status: 403,
+        data: {
+          code: 'chat.denied',
+          message: 'access denied',
+        },
+      },
+    });
+    const rosterStarted = createDeferred<void>();
+    const delayedRoster = createDeferred<never>();
+    const maxClient = {
+      getChatMembersPage: jest.fn().mockImplementation(() => {
+        rosterStarted.resolve();
+        return delayedRoster.promise;
+      }),
+    };
+    const accessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+    };
+    const runtime = new AdminParticipantsRuntime(
+      createParticipantsRuntimeContext({ prisma, maxClient, accessLossService }),
+    );
+
+    const resultPromise = runtime.getChatParticipantsPage('chat-1', participantAdmin, {
+      limit: 10,
+      range: '7d',
+    });
+    await rosterStarted.promise;
+    const newerLifecycleAt = new Date(Date.now() + 1_000);
+    delayedRoster.reject(rosterError);
+    const result = await resultPromise;
+
+    expect(result).toEqual({
+      items: [],
+      totalCount: 1200,
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
+    expect(prisma.chatParticipantModerationImmunity.findMany).not.toHaveBeenCalled();
+    expect(accessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-2',
+      source: 'admin_participants:roster',
+      operation: 'lookup',
+      error: rosterError,
+      lifecycleEventAt: expect.any(Date),
+      lifecycleEventType: 'live_probe_denied',
+      lifecycleSource: 'live_probe',
+    });
+    const lifecycleEventAt = accessLossService.recordIfManagedEntityAccessLost.mock.calls[0][0]
+      .lifecycleEventAt as Date;
+    expect(lifecycleEventAt.getTime()).toBeLessThan(newerLifecycleAt.getTime());
+  });
+
+  it('uses the failing remote page epoch for a multi-page participant search', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T12:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatSettings.findUnique.mockResolvedValue({
+        nightModeTimezone: 'Europe/Moscow',
+      });
+      const secondPageStartedAt = new Date('2026-08-20T12:00:05.000Z');
+      const rosterError = Object.assign(new Error('Request failed with status code 403'), {
+        response: {
+          status: 403,
+          data: { code: 'chat.denied', message: 'access denied' },
+        },
+      });
+      const maxClient = {
+        getChatMembersPage: jest
+          .fn()
+          .mockImplementationOnce(async () => {
+            jest.setSystemTime(secondPageStartedAt);
+            return {
+              items: [
+                {
+                  userId: 'user-1',
+                  displayName: 'Другой участник',
+                  username: null,
+                  avatarUrl: null,
+                  profileUrl: null,
+                  role: 'member',
+                  isBot: false,
+                },
+              ],
+              nextMarker: 'page-2',
+            };
+          })
+          .mockRejectedValueOnce(rosterError),
+      };
+      const accessLossService = {
+        recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+      };
+      const runtime = new AdminParticipantsRuntime(
+        createParticipantsRuntimeContext({ prisma, maxClient, accessLossService }),
+      );
+
+      await expect(
+        runtime.getChatParticipantsPage('chat-1', participantAdmin, {
+          limit: 10,
+          range: '7d',
+          search: 'needle',
+          roleFilter: 'all',
+        }),
+      ).resolves.toEqual({
+        items: [],
+        totalCount: 1200,
+        hasMore: false,
+        nextCursor: null,
+      });
+
+      expect(maxClient.getChatMembersPage).toHaveBeenCalledTimes(2);
+      expect(accessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: rosterError,
+          lifecycleEventAt: secondPageStartedAt,
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('records a delayed terminal cleanup self-probe at probe start before rethrowing', async () => {
+    const prisma = createPrismaMock();
+    const probeError = Object.assign(new Error('Request failed with status code 404'), {
+      response: {
+        status: 404,
+        data: {
+          code: 'chat.not.found',
+          message: 'chat not found',
+        },
+      },
+    });
+    const probeStarted = createDeferred<void>();
+    const delayedProbe = createDeferred<never>();
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(() => {
+        probeStarted.resolve();
+        return delayedProbe.promise;
+      }),
+      getChatMembersPage: jest.fn(),
+    };
+    const accessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+    };
+    const runtime = new AdminParticipantsRuntime(
+      createParticipantsRuntimeContext({ prisma, maxClient, accessLossService }),
+    );
+
+    const cleanupPromise = runtime.cleanupUnavailableChatParticipants(
+      'chat-1',
+      participantAdmin,
+      {},
+    );
+    await probeStarted.promise;
+    const newerLifecycleAt = new Date(Date.now() + 1_000);
+    delayedProbe.reject(probeError);
+
+    await expect(cleanupPromise).rejects.toBe(probeError);
+    expect(accessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-2',
+      source: 'admin_participants:cleanup_self_probe',
+      operation: 'lookup',
+      error: probeError,
+      lifecycleEventAt: expect.any(Date),
+      lifecycleEventType: 'live_probe_denied',
+      lifecycleSource: 'live_probe',
+    });
+    const lifecycleEventAt = accessLossService.recordIfManagedEntityAccessLost.mock.calls[0][0]
+      .lifecycleEventAt as Date;
+    expect(lifecycleEventAt.getTime()).toBeLessThan(newerLifecycleAt.getTime());
+    expect(maxClient.getChatMembersPage).not.toHaveBeenCalled();
+  });
+
+  it('does not record participant access loss for a transient cleanup self-probe failure', async () => {
+    const prisma = createPrismaMock();
+    const throttleError = Object.assign(new Error('Request failed with status code 429'), {
+      response: {
+        status: 429,
+        data: {
+          code: 'rate.limit',
+          message: 'too many requests',
+        },
+      },
+    });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockRejectedValue(throttleError),
+      getChatMembersPage: jest.fn(),
+    };
+    const accessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn(),
+    };
+    const runtime = new AdminParticipantsRuntime(
+      createParticipantsRuntimeContext({ prisma, maxClient, accessLossService }),
+    );
+
+    await expect(
+      runtime.cleanupUnavailableChatParticipants('chat-1', participantAdmin, {}),
+    ).rejects.toBe(throttleError);
+
+    expect(accessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersPage).not.toHaveBeenCalled();
   });
 });

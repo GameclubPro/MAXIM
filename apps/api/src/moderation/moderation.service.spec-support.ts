@@ -306,6 +306,7 @@ function createModerationServiceWithManualBridge(params: {
   sanctionService: unknown;
   maxClient: unknown;
   manualBridge: unknown;
+  chatContextCache?: unknown;
   maxBotLinkService?: unknown;
   sanctionStateFence?: unknown;
 }) {
@@ -314,7 +315,7 @@ function createModerationServiceWithManualBridge(params: {
     params.ruleEngine as never,
     params.sanctionService as never,
     params.maxClient as never,
-    undefined, // chatContextCache
+    params.chatContextCache as never,
     undefined, // systemModeService
     undefined, // configService
     undefined, // redisCounter

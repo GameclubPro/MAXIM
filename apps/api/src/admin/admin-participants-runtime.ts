@@ -83,6 +83,12 @@ export class AdminParticipantsRuntime {
     return this.context.logger;
   }
 
+  private get managedEntityAccessLossService():
+    | AdminParticipantsRuntimeContext['managedEntityAccessLossService']
+    | undefined {
+    return this.context.managedEntityAccessLossService;
+  }
+
   private get chatParticipantsPageCache(): Map<
     string,
     TimedPromiseCacheEntry<ChatParticipantsPage>
@@ -400,11 +406,29 @@ export class AdminParticipantsRuntime {
     chatId: string,
     botId: string,
   ): Promise<void> {
-    const botAccess = await this.maxClient.getCurrentChatMemberAccess(chatId, {
-      trafficClass: 'critical',
-      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-      botId,
-    });
+    const probeStartedAt = new Date();
+    let botAccess: MaxChatMemberAccess;
+    try {
+      botAccess = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+        trafficClass: 'critical',
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        botId,
+      });
+    } catch (error: unknown) {
+      if (this.isTerminalChatParticipantsRosterAccessError(error)) {
+        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost({
+          chatId,
+          botId,
+          source: 'admin_participants:cleanup_self_probe',
+          operation: 'lookup',
+          error,
+          lifecycleEventAt: probeStartedAt,
+          lifecycleEventType: 'live_probe_denied',
+          lifecycleSource: 'live_probe',
+        });
+      }
+      throw error;
+    }
 
     if (botAccess.isOwner) {
       return;
@@ -677,13 +701,38 @@ export class AdminParticipantsRuntime {
     const resolvedBotId = (await this.resolveBackgroundReadBotAssignment(chatId)) ?? null;
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(query.range, now);
+    let rosterProbeStartedAt: Date | null = null;
+    const captureRosterProbeStartedAt = (startedAt: Date) => {
+      rosterProbeStartedAt = startedAt;
+    };
     const membersPagePromise = (
       search || query.roleFilter !== 'all'
-        ? this.searchChatParticipantsMembersPage(chatId, query, search, resolvedBotId)
-        : this.loadChatParticipantsMembersPage(chatId, limit, query.cursor ?? null, resolvedBotId)
-    ).catch((error: unknown) => {
+        ? this.searchChatParticipantsMembersPage(
+            chatId,
+            query,
+            search,
+            resolvedBotId,
+            captureRosterProbeStartedAt,
+          )
+        : this.loadChatParticipantsMembersPage(chatId, limit, query.cursor ?? null, resolvedBotId, {
+            onAttemptStarted: captureRosterProbeStartedAt,
+          })
+    ).catch(async (error: unknown) => {
       if (!this.isTerminalChatParticipantsRosterAccessError(error)) {
         throw error;
+      }
+
+      if (rosterProbeStartedAt) {
+        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost({
+          chatId,
+          botId: resolvedBotId,
+          source: 'admin_participants:roster',
+          operation: 'lookup',
+          error,
+          lifecycleEventAt: rosterProbeStartedAt,
+          lifecycleEventType: 'live_probe_denied',
+          lifecycleSource: 'live_probe',
+        });
       }
 
       this.logger.warn(
@@ -818,8 +867,10 @@ export class AdminParticipantsRuntime {
     resolvedBotId: string | null,
     options: {
       search?: boolean;
+      onAttemptStarted?: (startedAt: Date) => void;
     } = {},
   ): Promise<{ items: MaxChatRosterMember[]; nextMarker: string | null }> {
+    options.onAttemptStarted?.(new Date());
     return this.maxClient.getChatMembersPage(
       chatId,
       {
@@ -871,6 +922,7 @@ export class AdminParticipantsRuntime {
     query: ChatParticipantsQuery,
     search: string,
     resolvedBotId: string | null,
+    onAttemptStarted: (startedAt: Date) => void,
   ): Promise<{ items: MaxChatRosterMember[]; nextMarker: string | null }> {
     const limit = Math.max(1, Math.min(100, query.limit));
     const cursor = this.decodeChatParticipantsSearchCursor(query.cursor, search, query.roleFilter);
@@ -888,7 +940,7 @@ export class AdminParticipantsRuntime {
           100,
           currentMarker,
           resolvedBotId,
-          { search: true },
+          { search: true, onAttemptStarted },
         );
       } catch (error: unknown) {
         if (!this.isTransientChatParticipantsSearchError(error)) {

@@ -5,6 +5,18 @@ import {
 
 describe('MaxChatAdminRosterSyncService', () => {
   function createService() {
+    const latestProbeByMembership = new Map<
+      string,
+      {
+        status: 'ACTIVE' | 'REMOVED';
+        botAccessState: 'CONFIRMED_OWNER' | 'CONFIRMED_ADMIN' | 'CONFIRMED_MEMBER' | 'DENIED';
+        botAccessCheckedAt: Date;
+        botAccessSource: string;
+        lifecycleEventAt: Date | null;
+        lifecycleEventType: string | null;
+        lifecycleSource: string | null;
+      }
+    >();
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -18,16 +30,67 @@ describe('MaxChatAdminRosterSyncService', () => {
       },
       chatBotMembership: {
         findMany: jest.fn().mockResolvedValue([]),
+        findUnique: jest.fn(
+          async ({ where }: { where: { chatId_botId: { chatId: string; botId: string } } }) =>
+            latestProbeByMembership.get(
+              `${where.chatId_botId.chatId}:${where.chatId_botId.botId}`,
+            ) ?? null,
+        ),
+        count: jest.fn(async ({ where }: { where: Record<string, unknown> }) => {
+          const membership = latestProbeByMembership.get(`${where.chatId}:${where.botId}`);
+          const checkedAt = where.botAccessCheckedAt as Date | undefined;
+          return membership &&
+            membership.status === where.status &&
+            membership.botAccessState === where.botAccessState &&
+            membership.botAccessSource === where.botAccessSource &&
+            membership.botAccessCheckedAt.getTime() === checkedAt?.getTime()
+            ? 1
+            : 0;
+        }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       managedEntityAccessEdge: {
         upsert: jest.fn().mockResolvedValue(undefined),
+        findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       managedEntityAdminMember: {
         upsert: jest.fn().mockResolvedValue(undefined),
+        findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
+      $queryRaw: jest.fn(async (query: unknown) => {
+        const statement = query as {
+          strings?: readonly string[];
+          sql?: string;
+          values?: readonly unknown[];
+        };
+        const sql = statement.strings?.join('') ?? statement.sql ?? '';
+        if (sql.includes('FROM "chats"')) {
+          return [{ id: 'chat-lock' }];
+        }
+        if (sql.includes('FROM "chat_membership_activity_events"')) {
+          return [];
+        }
+        const chatId = statement.values?.[0];
+        const requestedBotIds = (statement.values ?? [])
+          .slice(1)
+          .filter((value): value is string => typeof value === 'string');
+        const memberships = [...latestProbeByMembership.entries()]
+          .filter(([key]) => typeof chatId === 'string' && key.startsWith(`${chatId}:`))
+          .map(([key, membership]) => ({
+            id: `membership-lock:${key}`,
+            botId: key.slice(String(chatId).length + 1),
+            status: membership.status,
+          }));
+        return requestedBotIds.length > 0
+          ? memberships.filter((membership) => requestedBotIds.includes(membership.botId))
+          : memberships;
+      }),
+      $transaction: jest.fn(
+        async <T>(callback: (transaction: unknown) => Promise<T>): Promise<T> => callback(prisma),
+      ),
     };
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn(),
@@ -36,6 +99,32 @@ describe('MaxChatAdminRosterSyncService', () => {
     };
     const maxBotLinkService = {
       bindDiscoveredChatBots: jest.fn().mockResolvedValue('bot-1'),
+      recordBotAccessProbe: jest.fn(
+        async (params: {
+          chatId: string;
+          botId: string;
+          access: { isAdmin?: boolean; isOwner?: boolean } | null;
+          source: string;
+          checkedAt: Date;
+        }) => {
+          latestProbeByMembership.set(`${params.chatId}:${params.botId}`, {
+            status: 'ACTIVE',
+            botAccessState: params.access?.isOwner
+              ? 'CONFIRMED_OWNER'
+              : params.access?.isAdmin
+                ? 'CONFIRMED_ADMIN'
+                : params.access
+                  ? 'CONFIRMED_MEMBER'
+                  : 'DENIED',
+            botAccessCheckedAt: params.checkedAt,
+            botAccessSource: params.source,
+            lifecycleEventAt: null,
+            lifecycleEventType: null,
+            lifecycleSource: null,
+          });
+          return true;
+        },
+      ),
       reconcileChatPrimaryByAccess: jest.fn().mockResolvedValue('bot-1'),
     };
     const maxBotRegistry = {
@@ -57,6 +146,11 @@ describe('MaxChatAdminRosterSyncService', () => {
       isManagedRefreshSourceBackoffActive: jest.fn().mockResolvedValue(false),
       getManagedRefreshSourceBackoffRemainingMs: jest.fn().mockResolvedValue(0),
       activateManagedRefreshSourceBackoff: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+      invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesPublishedSnapshotsForUsers: jest.fn().mockResolvedValue(undefined),
+      clearAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
     };
     const queue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -85,6 +179,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       chatContextCache,
       queue,
       nightModeTransitionScheduler,
+      latestProbeByMembership,
     };
   }
 
@@ -320,10 +415,9 @@ describe('MaxChatAdminRosterSyncService', () => {
       chatContextCache,
       nightModeTransitionScheduler,
     } = createService();
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
-      { userId: 'user-1' },
-      { userId: 'user-3' },
-    ]);
+    prisma.chatAdminAllowlist.findMany
+      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-3' }])
+      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }]);
     maxClient.getCurrentChatMemberAccess.mockResolvedValue({
       userId: 'bot-user-1',
       isAdmin: true,
@@ -364,17 +458,33 @@ describe('MaxChatAdminRosterSyncService', () => {
         },
       },
     });
-    expect(chatContextCache.replaceChatAdminUsers).toHaveBeenCalledWith('-100123', [
-      'user-1',
-      'user-2',
-    ]);
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100123', 'user-1', 'granted');
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100123', 'user-2', 'granted');
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith(
-      '-100123',
-      'user-3',
-      'user_denied',
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(3);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100123',
+        userId: 'user-1',
+        state: 'granted',
+        eventAt: new Date('2026-05-14T09:00:00.000Z'),
+      }),
     );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100123',
+        userId: 'user-2',
+        state: 'granted',
+        eventAt: new Date('2026-05-14T09:00:00.000Z'),
+      }),
+    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100123',
+        userId: 'user-3',
+        state: 'user_denied',
+        eventAt: new Date('2026-05-14T09:00:00.000Z'),
+      }),
+    );
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
     expect(prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -415,13 +525,14 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
     expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
+        where: expect.objectContaining({
           chatId: '-100123',
           userId: {
             in: ['user-3'],
           },
           botId: 'bot-1',
-        },
+          checkedAt: { lte: new Date('2026-05-14T09:00:00.000Z') },
+        }),
         data: expect.objectContaining({
           state: 'USER_DENIED',
           deniedReason: 'user_removed_from_admin_roster',
@@ -450,12 +561,112 @@ describe('MaxChatAdminRosterSyncService', () => {
         entityType: 'CHAT',
       },
     });
-    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
-      '-100123',
-      'chat',
-    );
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).not.toHaveBeenCalled();
     expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('-100123');
   });
+
+  it('keeps one access identity when MAX returns an id-prefixed alias', async () => {
+    const { service, prisma, maxClient, chatContextCache } = createService();
+    prisma.chatAdminAllowlist.findMany
+      .mockResolvedValueOnce([{ userId: '123' }])
+      .mockResolvedValueOnce([{ userId: '123' }]);
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['id123']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100-roster-alias',
+        botIds: ['bot-1'],
+        title: 'Alias chat',
+        entityType: 'chat',
+      }),
+    ).resolves.toBe(true);
+
+    expect(prisma.chatAdminAllowlist.createMany).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId_botId: {
+            chatId: '-100-roster-alias',
+            userId: '123',
+            botId: 'bot-1',
+          },
+        },
+      }),
+    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100-roster-alias',
+        userId: '123',
+        state: 'granted',
+      }),
+    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100-roster-alias',
+        userId: 'id123',
+        state: 'user_denied',
+      }),
+    );
+  });
+
+  it.each(['USER_DENIED', 'BOT_DENIED'] as const)(
+    'does not restore a stale roster grant over a newer %s edge',
+    async (newerState) => {
+      const { service, prisma, maxClient, chatContextCache } = createService();
+      prisma.managedEntityAccessEdge.findMany.mockImplementation(
+        async (args: {
+          where?: {
+            userId?: { in?: string[] };
+            checkedAt?: { gt?: Date };
+            state?: string;
+          };
+        }) => {
+          const where = args.where;
+          if (
+            where?.checkedAt?.gt &&
+            where.userId?.in?.includes('user-1') &&
+            (where.state === undefined || where.state === newerState)
+          ) {
+            return [{ userId: 'user-1', state: newerState }];
+          }
+          return [];
+        },
+      );
+      maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+        userId: 'bot-user-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['delete_messages'],
+      });
+      maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+      await expect(
+        service.processJob({
+          chatId: `-100-roster-newer-${newerState.toLowerCase()}`,
+          botIds: ['bot-1'],
+          title: 'Newer edge chat',
+          entityType: 'chat',
+        }),
+      ).resolves.toBe(true);
+
+      expect(prisma.chatAdminAllowlist.createMany).not.toHaveBeenCalled();
+      expect(prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(prisma.managedEntityAdminMember.upsert).not.toHaveBeenCalled();
+      expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+      const supersedingEdgeQuery = prisma.managedEntityAccessEdge.findMany.mock.calls.find(
+        ([args]) => args?.where?.userId?.in?.includes('user-1'),
+      )?.[0];
+      expect(supersedingEdgeQuery?.where).not.toHaveProperty('state');
+    },
+  );
 
   it('refreshes every assigned bot self-access snapshot but fetches the admin roster once', async () => {
     const { service, prisma, maxClient, maxBotLinkService } = createService();
@@ -493,11 +704,25 @@ describe('MaxChatAdminRosterSyncService', () => {
       'bot-2',
       'bot-3',
     ]);
-    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(3);
+    expect(
+      maxClient.getCurrentChatMemberAccess.mock.calls.every(
+        (call) => call[1]?.bypassCache === true,
+      ),
+    ).toBe(true);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(3);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100-shared-access',
+        botId: 'bot-1',
+        access: expect.objectContaining({ isAdmin: true }),
+        source: 'admin_roster_sync',
+        allowMembershipRecovery: true,
+      }),
+    );
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
       '-100-shared-access',
-      expect.objectContaining({ botId: 'bot-1' }),
+      expect.objectContaining({ botId: 'bot-1', bypassCache: true }),
     );
     expect(maxBotLinkService.reconcileChatPrimaryByAccess).toHaveBeenCalledTimes(1);
   });
@@ -636,14 +861,77 @@ describe('MaxChatAdminRosterSyncService', () => {
         },
       },
     });
-    expect(chatContextCache.replaceChatAdminUsers).toHaveBeenCalledWith('-100124', []);
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100124', 'user-7', 'bot_denied');
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100124', 'user-8', 'bot_denied');
-    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
-      '-100124',
-      null,
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100124',
+        userId: 'user-7',
+        state: 'bot_denied',
+        eventAt: expect.any(Date),
+      }),
     );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100124',
+        userId: 'user-8',
+        state: 'bot_denied',
+        eventAt: expect.any(Date),
+      }),
+    );
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).not.toHaveBeenCalled();
     expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
+  it('does not clear the allowlist when a new active bot appears after candidate resolution', async () => {
+    const {
+      service,
+      prisma,
+      maxClient,
+      maxBotLinkService,
+      maxBotRegistry,
+      chatContextCache,
+      latestProbeByMembership,
+    } = createService();
+    maxBotRegistry.getDiscoveryBots.mockReturnValue([{ id: 'bot-1', state: 'active' }]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }]);
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    });
+    maxBotLinkService.reconcileChatPrimaryByAccess.mockImplementationOnce(async () => {
+      latestProbeByMembership.set('-100-new-candidate:bot-2', {
+        status: 'ACTIVE',
+        botAccessState: 'CONFIRMED_ADMIN',
+        botAccessCheckedAt: new Date(),
+        botAccessSource: 'concurrent_bot_added',
+        lifecycleEventAt: new Date(),
+        lifecycleEventType: 'bot_added',
+        lifecycleSource: 'webhook',
+      });
+      return 'bot-2';
+    });
+
+    await expect(
+      service.processJob({
+        chatId: '-100-new-candidate',
+        botIds: ['bot-1'],
+        title: 'Concurrent bot add',
+        entityType: 'chat',
+      }),
+    ).rejects.toThrow('Bot denial epochs were superseded before roster cleanup');
+
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAdminMember.updateMany).not.toHaveBeenCalled();
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalledWith(
+      '-100-new-candidate',
+      [],
+    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
   });
 
   it('keeps allowlist repairable without writing fresh bot-scoped denied visibility edges when candidates are incomplete', async () => {
@@ -688,6 +976,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       'user-7',
       'bot_denied',
     );
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
     expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
     expect(prisma.managedEntityAdminMember.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({
@@ -731,6 +1020,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
     expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
     expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
     expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
   });
 
@@ -773,7 +1063,7 @@ describe('MaxChatAdminRosterSyncService', () => {
 
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledTimes(1);
-    expect(chatContextCache.replaceChatAdminUsers).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces managed_refresh source pressure as a delayed backoff instead of a failure', async () => {
@@ -865,7 +1155,147 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
     expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
     expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalledWith('-100125', []);
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
     expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
+  it('authorizes removal recovery only after a successful live roster probe', async () => {
+    const { service, maxClient, maxBotLinkService } = createService();
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100-removed-roster',
+        botIds: ['bot-1'],
+        title: 'Removed roster chat',
+        entityType: 'chat',
+        source: 'webhook_bot_removed',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100-removed-roster',
+        botIds: ['bot-1'],
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100-removed-roster',
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100-removed-roster',
+        botId: 'bot-1',
+        access: expect.objectContaining({ isAdmin: true }),
+        allowMembershipRecovery: true,
+      }),
+    );
+  });
+
+  it('does not run roster side effects when the access probe CAS is superseded', async () => {
+    const {
+      service,
+      prisma,
+      maxClient,
+      maxBotLinkService,
+      maxBotRegistry,
+      chatContextCache,
+      nightModeTransitionScheduler,
+    } = createService();
+    maxBotRegistry.getDiscoveryBots.mockReturnValue([{ id: 'bot-1', state: 'active' }]);
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+    maxBotLinkService.recordBotAccessProbe.mockResolvedValue(false);
+
+    await expect(
+      service.processJob({
+        chatId: '-100-superseded-roster',
+        botIds: ['bot-1'],
+        title: 'Superseded roster chat',
+        entityType: 'chat',
+        source: 'webhook_bot_removed',
+      }),
+    ).rejects.toThrow('superseded');
+
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.createMany).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAdminMember.upsert).not.toHaveBeenCalled();
+    expect(prisma.chat.update).not.toHaveBeenCalled();
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
+  it('uses probe start as the recovery boundary when a removal arrives in flight', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const { service, maxClient, maxBotLinkService } = createService();
+      let resolveAccess!: (value: {
+        userId: string;
+        isAdmin: boolean;
+        isOwner: boolean;
+        permissions: string[];
+      }) => void;
+      let markRequestStarted!: () => void;
+      const requestStarted = new Promise<void>((resolve) => {
+        markRequestStarted = resolve;
+      });
+      const accessResult = new Promise<{
+        userId: string;
+        isAdmin: boolean;
+        isOwner: boolean;
+        permissions: string[];
+      }>((resolve) => {
+        resolveAccess = resolve;
+      });
+      maxClient.getCurrentChatMemberAccess.mockImplementation(() => {
+        markRequestStarted();
+        return accessResult;
+      });
+      maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+      const processing = service.processJob({
+        chatId: '-100-in-flight-removal',
+        botIds: ['bot-1'],
+        title: 'In-flight removal chat',
+        entityType: 'chat',
+        source: 'webhook_bot_removed',
+      });
+      await requestStarted;
+      jest.setSystemTime(new Date('2026-05-14T09:00:30.000Z'));
+      resolveAccess({
+        userId: 'bot-user-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      });
+
+      await expect(processing).resolves.toBe(true);
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: '-100-in-flight-removal',
+          botId: 'bot-1',
+          checkedAt: new Date('2026-05-14T09:00:00.000Z'),
+          allowMembershipRecovery: true,
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('keeps non-webhook roster sync reads on the background traffic lane', async () => {
@@ -1073,10 +1503,9 @@ describe('MaxChatAdminRosterSyncService', () => {
 
   it('pushes allowlist changes into existing published snapshots for affected admins', async () => {
     const { service, prisma, maxClient, chatContextCache } = createService();
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
-      { userId: 'user-1' },
-      { userId: 'user-3' },
-    ]);
+    prisma.chatAdminAllowlist.findMany
+      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-3' }])
+      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }]);
     prisma.chat.findUnique.mockResolvedValue({
       title: 'Snapshot chat',
       entityType: 'CHAT',
@@ -1166,32 +1595,36 @@ describe('MaxChatAdminRosterSyncService', () => {
       }),
     ).resolves.toBe(true);
 
-    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledTimes(2);
-    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenNthCalledWith(
-      1,
-      'user-1',
-      'chat',
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(3);
+    for (const userId of ['user-1', 'user-2']) {
+      expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: '-100126',
+          userId,
+          state: 'granted',
+          eventAt: expect.any(Date),
+          publishedSummary: expect.objectContaining({
+            id: '-100126',
+            title: 'Snapshot chat',
+            entityType: 'chat',
+          }),
+          publishedSnapshotTtlSec: 604800,
+        }),
+      );
+    }
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
       expect.objectContaining({
-        itemCount: 2,
-        items: expect.arrayContaining([
-          expect.objectContaining({ id: '-100126', title: 'Snapshot chat' }),
-        ]),
+        chatId: '-100126',
+        userId: 'user-3',
+        state: 'user_denied',
+        eventAt: expect.any(Date),
       }),
-      604800,
     );
-    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenNthCalledWith(
-      2,
-      'user-3',
-      'chat',
-      expect.objectContaining({
-        itemCount: 1,
-        items: [expect.objectContaining({ id: '-100999' })],
-      }),
-      604800,
-    );
+    expect(chatContextCache.getManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
   });
 
-  it('does not create first published snapshots during roster sync', async () => {
+  it('atomically creates a first published snapshot during roster sync', async () => {
     const { service, prisma, maxClient, chatContextCache } = createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }]);
     prisma.chat.findUnique.mockResolvedValue({
@@ -1221,10 +1654,145 @@ describe('MaxChatAdminRosterSyncService', () => {
       }),
     ).resolves.toBe(true);
 
-    expect(chatContextCache.getManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
-      'user-1',
-      'chat',
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100127',
+        userId: 'user-1',
+        state: 'granted',
+        publishedSummary: expect.objectContaining({
+          id: '-100127',
+          title: 'New chat',
+          entityType: 'chat',
+        }),
+        publishedSnapshotTtlSec: 604800,
+      }),
     );
+    expect(chatContextCache.getManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
     expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('rejects a roster result when bot removal supersedes its accepted probe before persistence', async () => {
+    const {
+      service,
+      prisma,
+      maxClient,
+      chatContextCache,
+      nightModeTransitionScheduler,
+      latestProbeByMembership,
+    } = createService();
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    let releaseRoster!: () => void;
+    const rosterGate = new Promise<void>((resolve) => {
+      releaseRoster = resolve;
+    });
+    let markRosterRequested!: () => void;
+    const rosterRequested = new Promise<void>((resolve) => {
+      markRosterRequested = resolve;
+    });
+    maxClient.getChatAdminIds.mockImplementation(async () => {
+      markRosterRequested();
+      await rosterGate;
+      return ['user-1'];
+    });
+
+    const processing = service.processJob({
+      chatId: '-100-roster-removed-before-persist',
+      botIds: ['bot-1'],
+      title: 'Removed roster chat',
+      entityType: 'chat',
+      source: 'webhook_membership_churn',
+    });
+    await rosterRequested;
+    const membershipKey = '-100-roster-removed-before-persist:bot-1';
+    const acceptedProbe = latestProbeByMembership.get(membershipKey);
+    if (!acceptedProbe) {
+      throw new Error('accepted probe fixture state missing');
+    }
+    latestProbeByMembership.set(membershipKey, {
+      ...acceptedProbe,
+      status: 'REMOVED',
+      botAccessState: 'DENIED',
+      lifecycleEventAt: new Date(acceptedProbe.botAccessCheckedAt.getTime() + 1),
+      lifecycleEventType: 'bot_removed',
+      lifecycleSource: 'webhook',
+    });
+    releaseRoster();
+
+    await expect(processing).rejects.toThrow(
+      'Admin roster access epoch was superseded before sync completion (bot-1)',
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.createMany).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(prisma.managedEntityAdminMember.upsert).not.toHaveBeenCalled();
+    expect(prisma.chat.update).not.toHaveBeenCalled();
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
+  it('does not publish roster caches when removal wins after the database commit', async () => {
+    const { service, prisma, maxClient, chatContextCache, latestProbeByMembership } =
+      createService();
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+    const originalTransaction = prisma.$transaction.getMockImplementation();
+    if (!originalTransaction) {
+      throw new Error('transaction fixture implementation missing');
+    }
+    let transactionCalls = 0;
+    prisma.$transaction.mockImplementation(async (...args) => {
+      transactionCalls += 1;
+      const result = await originalTransaction(...args);
+      if (transactionCalls === 1) {
+        const membershipKey = '-100-roster-removed-before-cache:bot-1';
+        const acceptedProbe = latestProbeByMembership.get(membershipKey);
+        if (!acceptedProbe) {
+          throw new Error('accepted probe fixture state missing');
+        }
+        latestProbeByMembership.set(membershipKey, {
+          ...acceptedProbe,
+          status: 'REMOVED',
+          botAccessState: 'DENIED',
+          lifecycleEventAt: new Date(acceptedProbe.botAccessCheckedAt.getTime() + 1),
+          lifecycleEventType: 'bot_removed',
+          lifecycleSource: 'webhook',
+        });
+      }
+      return result;
+    });
+
+    await expect(
+      service.processJob({
+        chatId: '-100-roster-removed-before-cache',
+        botIds: ['bot-1'],
+        title: 'Removed cache chat',
+        entityType: 'chat',
+        source: 'webhook_membership_churn',
+      }),
+    ).rejects.toThrow('Admin roster access epoch was superseded before sync completion (bot-1)');
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.managedEntityAdminMember.upsert).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).not.toHaveBeenCalled();
   });
 });

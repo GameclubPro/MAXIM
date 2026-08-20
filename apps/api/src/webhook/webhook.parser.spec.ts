@@ -158,20 +158,29 @@ describe('WebhookParser', () => {
   });
 
   it('extracts channel entityType from bot_added is_channel payloads without explicit chat type', () => {
-    const parsed = parser.parse({
-      update_type: 'bot_added',
-      chat_id: '-100777',
-      is_channel: true,
-      user: {
-        user_id: 'user-channel-1',
-        first_name: 'MAX',
-        last_name: 'Admin',
+    const parsed = parser.parse(
+      {
+        update_type: 'bot_added',
+        chat_id: '-100777',
+        is_channel: true,
+        user: {
+          user_id: 'user-channel-1',
+          first_name: 'Иван',
+          last_name: 'Администратор',
+        },
+        timestamp: '2026-04-21T10:15:00.000Z',
       },
-      timestamp: '2026-04-21T10:15:00.000Z',
-    });
+      { botId: 'managed-bot-1' },
+    );
 
     expect(parsed.message?.chatId).toBe('-100777');
     expect(parsed.message?.entityType).toBe('channel');
+    expect(parsed.message?.senderId).toBe('user-channel-1');
+    expect(parsed.message?.senderName).toBe('Иван Администратор');
+    expect(parsed.membership).toEqual({
+      action: 'added',
+      memberUserIds: ['managed-bot-1'],
+    });
     expect(parsed.eventTimestampSource).toBe('payload');
   });
 
@@ -1186,29 +1195,109 @@ describe('WebhookParser', () => {
     });
   });
 
-  it('builds normalized message for bot_removed update without message payload', () => {
-    const parsed = parser.parse({
-      update_id: 'upd-bot-removed-1',
-      update_type: 'bot_removed',
-      chat_id: -123456789,
-      chat: {
+  it('keeps the human bot_removed actor separate from the authenticated bot subject', () => {
+    const parsed = parser.parse(
+      {
+        update_id: 'upd-bot-removed-1',
+        update_type: 'bot_removed',
         chat_id: -123456789,
-        chat_type: 'channel',
+        chat: {
+          chat_id: -123456789,
+          chat_type: 'channel',
+        },
+        user: {
+          user_id: 890,
+          first_name: 'Иван',
+          last_name: 'Администратор',
+        },
+        timestamp: 1772249118580,
       },
-      user: {
-        user_id: 890,
-        first_name: 'Bot',
-        last_name: 'Removed',
-      },
-      timestamp: 1772249118580,
-    });
+      { botId: 'managed-bot-2' },
+    );
 
     expect(parsed.type).toBe('bot_removed');
     expect(parsed.message?.messageId).toBe('bot_removed:upd-bot-removed-1');
     expect(parsed.message?.chatId).toBe('-123456789');
     expect(parsed.message?.entityType).toBe('channel');
     expect(parsed.message?.senderId).toBe('890');
-    expect(parsed.message?.senderName).toBe('Bot Removed');
+    expect(parsed.message?.senderName).toBe('Иван Администратор');
+    expect(parsed.membership).toEqual({
+      action: 'removed',
+      memberUserIds: ['managed-bot-2'],
+    });
+  });
+
+  it.each([
+    ['post_id', 'native-post-1'],
+    ['postId', 'native-post-2'],
+  ])('normalizes message.recipient.%s as message.postId', (field, postId) => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        body: { mid: `comment-${postId}`, text: 'Комментарий' },
+        recipient: {
+          chat_id: -123456789,
+          chat_type: 'channel',
+          [field]: postId,
+        },
+        sender: { user_id: 891 },
+        timestamp: 1772249118580,
+      },
+    });
+
+    expect(parsed.message?.postId).toBe(postId);
+  });
+
+  it('normalizes the official top-level message_removed post_id', () => {
+    const parsed = parser.parse({
+      update_type: 'message_removed',
+      timestamp: 1772249118580,
+      message_id: 'removed-comment-1',
+      chat_id: -123456789,
+      user_id: 891,
+      post_id: 'native-post-removed-1',
+    });
+
+    expect(parsed.message).toMatchObject({
+      messageId: 'removed-comment-1',
+      postId: 'native-post-removed-1',
+      chatId: '-123456789',
+      senderId: '891',
+    });
+  });
+
+  it('accepts the official message_callback shape when its source message was deleted', () => {
+    const parsed = parser.parse(
+      {
+        update_type: 'message_callback',
+        timestamp: 1772249118580,
+        callback: {
+          timestamp: 1772249118580,
+          callback_id: 'callback-deleted-message-1',
+          payload: 'pc2|broadcast_send',
+          user: { user_id: 891 },
+        },
+        message: null,
+        user_locale: 'ru-RU',
+      },
+      { botId: 'managed-bot-1' },
+    );
+
+    expect(parsed).toMatchObject({
+      type: 'message_callback',
+      botId: 'managed-bot-1',
+      eventTimestampSource: 'payload',
+      raw: {
+        callback: {
+          callback_id: 'callback-deleted-message-1',
+          payload: 'pc2|broadcast_send',
+          user: { user_id: 891 },
+        },
+        message: null,
+      },
+    });
+    expect(parsed.updateId).toMatch(/^synthetic:message_callback:/u);
+    expect(parsed.message).toBeUndefined();
   });
 
   it('extracts normalized chat entity type from recipient chat_type', () => {

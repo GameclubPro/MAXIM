@@ -9438,6 +9438,54 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('replaces webhook update types only when exact reconciliation is requested', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              subscriptions: [
+                {
+                  url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+                  update_types: ['message_created', 'message_removed'],
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ data: {} })),
+    };
+    const service = createService(httpService, {
+      APP_BASE_URL: 'https://major-maksimov.ru',
+      MAX_BOT_ID: '777000_bot',
+      MAX_WEBHOOK_SECRET_PATH: 'secret-path',
+      MAX_WEBHOOK_HEADER_SECRET: 'header-secret',
+    });
+
+    const result = await service.ensureWebhookSubscription(['message_created'], {
+      replaceUpdateTypes: true,
+    });
+
+    expect(result).toEqual({
+      url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+      updateTypes: ['message_created'],
+    });
+    expect(httpService.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/subscriptions',
+        data: {
+          url: 'https://major-maksimov.ru/api/webhook/max/777000_bot/secret-path',
+          update_types: ['message_created'],
+          secret: 'header-secret',
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('forces a webhook subscription POST upsert for secret rotation without deleting first', async () => {
     const updateTypes = ['message_created', 'bot_added'];
     const httpService = {

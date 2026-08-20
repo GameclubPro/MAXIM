@@ -313,6 +313,10 @@ function requiredSubscriptionDeleteIntentInput() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('atomically claims the OCR action, materializes its intent and reason, then enqueues after commit', async () => {
     const order: string[] = [];
     const persisted = {
@@ -1537,6 +1541,8 @@ describe('ModerationDeleteIntentService', () => {
   });
 
   it('re-probes an active denied candidate after its per-intent backoff expires', async () => {
+    const accessProbeStartedAt = new Date('2026-08-20T10:20:00.000Z');
+    jest.useFakeTimers().setSystemTime(accessProbeStartedAt);
     const deniedRoute = {
       ...confirmedRoute,
       botId: null,
@@ -1564,11 +1570,14 @@ describe('ModerationDeleteIntentService', () => {
       .fn()
       .mockResolvedValueOnce(deniedRoute)
       .mockResolvedValueOnce(restoredRoute);
-    const getCurrentChatMemberAccess = jest.fn().mockResolvedValue({
-      userId: 'bot-user-1',
-      isAdmin: true,
-      isOwner: false,
-      permissions: ['read_all_messages', 'write'],
+    const getCurrentChatMemberAccess = jest.fn().mockImplementation(async () => {
+      jest.setSystemTime(new Date('2026-08-20T10:20:05.000Z'));
+      return {
+        userId: 'bot-user-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['read_all_messages', 'write'],
+      };
     });
     const { service, maxBotLink } = createService(
       {},
@@ -1604,7 +1613,11 @@ describe('ModerationDeleteIntentService', () => {
       }),
     );
     expect(maxBotLink.recordBotAccessProbe).toHaveBeenCalledWith(
-      expect.objectContaining({ botId: 'bot-1', source: 'moderation_delete_intent_probe' }),
+      expect.objectContaining({
+        botId: 'bot-1',
+        source: 'moderation_delete_intent_probe',
+        checkedAt: accessProbeStartedAt,
+      }),
     );
   });
 

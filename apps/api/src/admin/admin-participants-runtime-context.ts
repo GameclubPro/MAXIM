@@ -6,6 +6,7 @@ import type {
   ManagedEntityType,
 } from '@maxim/contracts';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import type { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import type { MaxClientService } from '../max/max-client.service';
 import type { Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -19,6 +20,7 @@ export type AdminParticipantsRuntimeContext = {
   readonly prisma: PrismaService;
   readonly maxClient: MaxClientService;
   readonly logger: Logger;
+  readonly managedEntityAccessLossService?: ManagedEntityAccessLossService;
   readonly chatParticipantsPageCache: Map<string, TimedPromiseCacheEntry<ChatParticipantsPage>>;
   assertReadOnlyChatAdmin(
     chatId: string,
@@ -84,6 +86,9 @@ export function createAdminParticipantsRuntimeContext(
     },
     get logger(): Logger {
       return typedTarget.logger;
+    },
+    get managedEntityAccessLossService(): ManagedEntityAccessLossService | undefined {
+      return typedTarget.managedEntityAccessLossService;
     },
     get chatParticipantsPageCache(): Map<string, TimedPromiseCacheEntry<ChatParticipantsPage>> {
       return typedTarget.chatParticipantsPageCache;

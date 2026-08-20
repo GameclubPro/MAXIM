@@ -552,6 +552,7 @@ export class ManagedPollService {
     let attempted = false;
     let accepted = false;
     let attemptedPublicationBotId = publicationBotId;
+    let publicationAttemptStartedAt: Date | null = null;
     try {
       const publicationPoll = await this.findPoll(chatId, poll.id);
       const result = buildManagedPollOptionResults(publicationPoll.options, new Map());
@@ -621,6 +622,7 @@ export class ManagedPollService {
           }
           attempted = true;
           attemptedPublicationBotId = botId;
+          publicationAttemptStartedAt = new Date();
         },
         prepareAttemptOptions,
       );
@@ -765,13 +767,19 @@ export class ManagedPollService {
           );
         }
       }
-      if (attempted && !ambiguous) {
+      if (
+        attempted &&
+        publicationAttemptStartedAt &&
+        !ambiguous &&
+        !this.wasManagedEntityAccessLossRecorded(error)
+      ) {
         await this.recordAccessLoss(
           poll,
           attemptedPublicationBotId ?? null,
           'send',
           error,
           entityType,
+          publicationAttemptStartedAt,
         );
       }
       throw new BadRequestException(
@@ -1310,6 +1318,7 @@ export class ManagedPollService {
       }
       const entityType = this.managedEntityTypeFromPrisma(poll.chat.entityType);
       let botId: string | null | undefined = poll.publicationBotId;
+      let editAttemptStartedAt: Date | null = null;
       try {
         const { text, textFormat } = this.buildAuthoredPollMessage(
           poll.question,
@@ -1335,6 +1344,7 @@ export class ManagedPollService {
                 ...(engagementButtons.length > 0 ? { buttons: engagementButtons } : {}),
                 replaceCallbackPayloadPrefixes: callbackPayloadPrefixes,
               };
+        editAttemptStartedAt = new Date();
         await this.maxClient.editMessageInlineKeyboard(
           chatId,
           poll.publicationMessageId,
@@ -1346,6 +1356,7 @@ export class ManagedPollService {
             action === 'background-repair' ? 'background' : 'interactive',
           ),
         );
+        editAttemptStartedAt = null;
         if (engagement.state === 'resolved' && engagement.shouldRecord) {
           await this.recordPollChannelEngagementSafely({
             chatId: poll.chatId,
@@ -1379,7 +1390,16 @@ export class ManagedPollService {
           return true;
         }
         await this.recordPollRenderError(poll.id, poll.renderRevision, chatId, action, error);
-        await this.recordAccessLoss(poll, botId ?? null, 'edit', error, entityType);
+        if (editAttemptStartedAt && !this.wasManagedEntityAccessLossRecorded(error)) {
+          await this.recordAccessLoss(
+            poll,
+            botId ?? null,
+            'edit',
+            error,
+            entityType,
+            editAttemptStartedAt,
+          );
+        }
         if (this.shouldSchedulePollRenderRepair(action)) {
           this.schedulePollRenderRepair(chatId, poll.id);
         }
@@ -1408,6 +1428,7 @@ export class ManagedPollService {
     }
 
     let presence: 'present' | 'absent';
+    const lookupAttemptStartedAt = new Date();
     try {
       presence = await this.maxClient.getExactMessagePresence(
         poll.chatId,
@@ -1419,6 +1440,14 @@ export class ManagedPollService {
         },
       );
     } catch (lookupError: unknown) {
+      await this.recordAccessLoss(
+        poll,
+        botId ?? null,
+        'lookup',
+        lookupError,
+        entityType,
+        lookupAttemptStartedAt,
+      );
       this.logger.warn(
         {
           pollId: poll.id,
@@ -1829,10 +1858,10 @@ export class ManagedPollService {
         if (!resolvedBotId) {
           throw new Error('No bot with send/edit access is available for managed poll publish');
         }
-        await onAttemptBotId?.(resolvedBotId);
         const prepared = prepareAttemptOptions
           ? await prepareAttemptOptions(resolvedBotId)
           : { options, engagementContext: null };
+        await onAttemptBotId?.(resolvedBotId);
         const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
           chatId,
           text,
@@ -2710,9 +2739,10 @@ export class ManagedPollService {
   private async recordAccessLoss(
     poll: Pick<ManagedPoll, 'id' | 'chatId'>,
     botId: string | null,
-    operation: 'send' | 'edit',
+    operation: 'send' | 'edit' | 'lookup',
     error: unknown,
     entityType: ManagedEntityType,
+    lifecycleEventAt: Date,
   ): Promise<void> {
     try {
       await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost({
@@ -2722,6 +2752,9 @@ export class ManagedPollService {
         source: `managed_poll:${operation}`,
         operation,
         error,
+        lifecycleEventAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
       });
     } catch (accessLossError: unknown) {
       this.logger.debug(
@@ -2729,5 +2762,14 @@ export class ManagedPollService {
         'Failed to record managed poll access loss',
       );
     }
+  }
+
+  private wasManagedEntityAccessLossRecorded(error: unknown): boolean {
+    return (
+      Boolean(error) &&
+      typeof error === 'object' &&
+      (error as { maxManagedEntityAccessLossRecorded?: unknown })
+        .maxManagedEntityAccessLossRecorded === true
+    );
   }
 }

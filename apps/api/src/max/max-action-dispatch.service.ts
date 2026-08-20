@@ -39,6 +39,11 @@ type TerminalManagedEntityOutcome =
       reason: string;
     };
 
+type HalfOpenRouteState = {
+  candidateBotIds: Set<string>;
+  retryAt: Date | null;
+};
+
 export type MaxActionDispatchResult = MaxPublishedMessage & {
   botId: string | null;
 };
@@ -140,7 +145,10 @@ export class MaxActionDispatchService {
       allowHalfOpenProbe,
     });
     const candidateBotIds = candidateResolution.candidateBotIds;
-    const halfOpenCandidateBotIds = new Set(candidateResolution.halfOpenCandidateBotIds);
+    const halfOpenRouteState: HalfOpenRouteState = {
+      candidateBotIds: new Set(candidateResolution.halfOpenCandidateBotIds),
+      retryAt: candidateResolution.retryAt,
+    };
     if (this.isRoutedJob(job) && !routedFailoverEnabled && candidateBotIds.length > 1) {
       candidateBotIds.splice(1);
     }
@@ -203,7 +211,7 @@ export class MaxActionDispatchService {
         attemptedBotIds.push(candidateBotId);
       }
 
-      let dispatchAttemptStarted = false;
+      let dispatchAttemptStartedAt: Date | null = null;
       let halfOpenClaimedUntil: Date | null = null;
       const releaseHalfOpenClaim = async () => {
         if (!candidateBotId || !halfOpenClaimedUntil) {
@@ -221,7 +229,8 @@ export class MaxActionDispatchService {
             attemptJob,
             candidateBotIds,
             attemptedBotIds,
-            halfOpenCandidateBotIds.has(candidateBotId),
+            halfOpenRouteState,
+            allowHalfOpenProbe,
           ))
         ) {
           continue;
@@ -241,13 +250,13 @@ export class MaxActionDispatchService {
           };
           await this.actionLedgerService?.recordPrepared?.(attemptJob);
         }
-        if (candidateBotId && halfOpenCandidateBotIds.has(candidateBotId)) {
+        if (candidateBotId && halfOpenRouteState.candidateBotIds.has(candidateBotId)) {
           halfOpenClaimedUntil = await this.claimSendRouteHalfOpen(job, candidateBotId);
           if (!halfOpenClaimedUntil) {
             throw new MaxActionRouteQuarantinedError(
               job.actionType,
               job.chatId,
-              candidateResolution.retryAt ?? new Date(Date.now() + 15 * 60_000),
+              halfOpenRouteState.retryAt ?? new Date(Date.now() + 15 * 60_000),
               [candidateBotId],
             );
           }
@@ -256,7 +265,7 @@ export class MaxActionDispatchService {
           botId: candidateBotId ?? null,
           job: attemptJob,
         });
-        dispatchAttemptStarted = true;
+        dispatchAttemptStartedAt = new Date();
         const executionResult = await this.maxClient.executeActionJob(attemptJob);
         await this.recordLedgerSucceeded(attemptJob);
         if (executionResult) {
@@ -267,7 +276,7 @@ export class MaxActionDispatchService {
         }
         return;
       } catch (error: unknown) {
-        if (!dispatchAttemptStarted) {
+        if (!dispatchAttemptStartedAt) {
           await releaseHalfOpenClaim();
         }
         if (isMaxApiCircuitOpenError(error)) {
@@ -293,7 +302,7 @@ export class MaxActionDispatchService {
           throw error;
         }
 
-        if (!dispatchAttemptStarted) {
+        if (!dispatchAttemptStartedAt) {
           if (
             this.isDefinitivePreparationCandidateRejection(error) &&
             candidateBotIds.length > 0 &&
@@ -322,6 +331,7 @@ export class MaxActionDispatchService {
         const terminalManagedEntityOutcome = await this.resolveTerminalManagedEntityOutcome(
           attemptJob,
           error,
+          dispatchAttemptStartedAt,
         );
         if (terminalManagedEntityOutcome?.kind === 'skipped') {
           await this.recordLedgerSkipped(attemptJob, terminalManagedEntityOutcome.reason);
@@ -555,6 +565,7 @@ export class MaxActionDispatchService {
     job: MaxActionJob,
     remainingCandidateBotIds: string[],
     attemptedBotIds: readonly string[],
+    halfOpenRouteState: HalfOpenRouteState,
     allowHalfOpenProbe = false,
   ): Promise<boolean> {
     const botId = job.botId?.trim() ?? '';
@@ -583,20 +594,66 @@ export class MaxActionDispatchService {
       return true;
     }
 
-    const access = await this.maxClient.getCurrentChatMemberAccess(job.chatId, {
-      botId,
-      bypassCache: true,
-      trafficClass: job.trafficClass ?? 'critical',
-      actionHealthLane: job.actionHealthLane,
-      sourceTag: job.sourceTag ?? 'routed_action_access_preflight',
-      timeoutMs: job.timeoutMs,
-    });
-    await linkService.recordBotAccessProbe({
+    const accessProbeStartedAt = new Date();
+    let access: Awaited<ReturnType<MaxClientService['getCurrentChatMemberAccess']>> | null;
+    let lastErrorCode: string | null = null;
+    let terminalAccessLookupError: unknown | null = null;
+    try {
+      access = await this.maxClient.getCurrentChatMemberAccess(job.chatId, {
+        botId,
+        bypassCache: true,
+        trafficClass: job.trafficClass ?? 'critical',
+        actionHealthLane: job.actionHealthLane,
+        sourceTag: job.sourceTag ?? 'routed_action_access_preflight',
+        timeoutMs: job.timeoutMs,
+      });
+    } catch (error: unknown) {
+      lastErrorCode = this.resolveTerminalAccessLookupErrorCode(error);
+      if (!lastErrorCode) {
+        throw error;
+      }
+      terminalAccessLookupError = error;
+      access = null;
+    }
+    const persisted = await linkService.recordBotAccessProbe({
       chatId: job.chatId,
       botId,
       access,
       source: 'routed_action_preflight',
+      checkedAt: accessProbeStartedAt,
+      ...(lastErrorCode ? { lastErrorCode } : {}),
     });
+    if (terminalAccessLookupError && this.managedEntityAccessLossService) {
+      await this.managedEntityAccessLossService.recordIfManagedEntityAccessLost({
+        chatId: job.chatId,
+        botId,
+        operation: 'lookup',
+        source: 'max_action:routed_access_preflight',
+        error: terminalAccessLookupError,
+        lifecycleEventAt: accessProbeStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+    }
+    if (!persisted) {
+      if (!job.routing) {
+        return false;
+      }
+
+      // Another lifecycle/probe write won the CAS. Re-read its persisted route:
+      // a removal must stay closed, while a newer confirmed grant may proceed.
+      const currentResolution = await this.resolveExecutionCandidateBotIds(job, {
+        enforceFreshRoute: true,
+        allowHalfOpenProbe,
+      });
+      this.replaceHalfOpenRouteState(halfOpenRouteState, currentResolution);
+      this.replaceRemainingCandidates(
+        remainingCandidateBotIds,
+        currentResolution.candidateBotIds,
+        attemptedBotIds,
+      );
+      return currentResolution.candidateBotIds.includes(botId);
+    }
 
     if (!job.routing) {
       return true;
@@ -605,16 +662,9 @@ export class MaxActionDispatchService {
       enforceFreshRoute: true,
       allowHalfOpenProbe,
     });
+    this.replaceHalfOpenRouteState(halfOpenRouteState, refreshedResolution);
     const refreshedCandidates = refreshedResolution.candidateBotIds;
-    for (const refreshedBotId of refreshedCandidates) {
-      if (
-        refreshedBotId !== botId &&
-        !attemptedBotIds.includes(refreshedBotId) &&
-        !remainingCandidateBotIds.includes(refreshedBotId)
-      ) {
-        remainingCandidateBotIds.push(refreshedBotId);
-      }
-    }
+    this.replaceRemainingCandidates(remainingCandidateBotIds, refreshedCandidates, attemptedBotIds);
     if (refreshedCandidates.includes(botId)) {
       return true;
     }
@@ -629,6 +679,30 @@ export class MaxActionDispatchService {
       'Skipped routed MAX action candidate after a fresh access probe removed its capability',
     );
     return false;
+  }
+
+  private replaceRemainingCandidates(
+    remainingCandidateBotIds: string[],
+    authoritativeCandidateBotIds: readonly string[],
+    attemptedBotIds: readonly string[],
+  ): void {
+    const attempted = new Set(attemptedBotIds);
+    remainingCandidateBotIds.splice(
+      0,
+      remainingCandidateBotIds.length,
+      ...authoritativeCandidateBotIds.filter((candidateBotId) => !attempted.has(candidateBotId)),
+    );
+  }
+
+  private replaceHalfOpenRouteState(
+    state: HalfOpenRouteState,
+    resolution: { halfOpenCandidateBotIds: readonly string[]; retryAt: Date | null },
+  ): void {
+    state.candidateBotIds.clear();
+    for (const botId of resolution.halfOpenCandidateBotIds) {
+      state.candidateBotIds.add(botId);
+    }
+    state.retryAt = resolution.retryAt;
   }
 
   private resolveAccessSnapshotMaxAgeMs(actionType: MaxActionJob['actionType']): number | null {
@@ -706,6 +780,7 @@ export class MaxActionDispatchService {
   private async resolveTerminalManagedEntityOutcome(
     job: MaxActionJob,
     error: unknown,
+    dispatchAttemptStartedAt: Date,
   ): Promise<TerminalManagedEntityOutcome | null> {
     if (!this.managedEntityAccessLossService) {
       return null;
@@ -722,6 +797,9 @@ export class MaxActionDispatchService {
       operation,
       source: `max_action:${job.actionType.toLowerCase()}`,
       error,
+      lifecycleEventAt: dispatchAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
 
     if (!result) {
@@ -867,5 +945,24 @@ export class MaxActionDispatchService {
   private extractStatusCode(error: unknown): number | null {
     const statusCode = (error as { response?: { status?: unknown } })?.response?.status;
     return typeof statusCode === 'number' && Number.isInteger(statusCode) ? statusCode : null;
+  }
+
+  private resolveTerminalAccessLookupErrorCode(error: unknown): string | null {
+    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    if (
+      typeof code === 'string' &&
+      ['access.denied', 'chat.denied', 'chat.not.found'].includes(code.trim())
+    ) {
+      return code.trim();
+    }
+
+    const statusCode = this.extractStatusCode(error);
+    if (statusCode === 403) {
+      return 'access.denied';
+    }
+    if (statusCode === 404) {
+      return 'chat.not.found';
+    }
+    return null;
   }
 }

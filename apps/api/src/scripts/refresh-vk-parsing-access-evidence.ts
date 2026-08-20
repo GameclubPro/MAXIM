@@ -221,6 +221,7 @@ async function probeMembership(
   now: () => Date,
 ): Promise<VkParsingAccessEvidenceBotOutcome> {
   try {
+    const checkedAt = now();
     const access = await maxClient.getCurrentChatMemberAccess(chat.id, {
       botId: membership.botId,
       bypassCache: true,
@@ -228,7 +229,6 @@ async function probeMembership(
       sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
       timeoutMs: LIVE_CHECK_TIMEOUT_MS,
     });
-    const checkedAt = now();
     const persistence = buildBotAccessSnapshotPersistence(access, {
       source: VK_PARSING_ACCESS_EVIDENCE_SOURCE,
       now: checkedAt,

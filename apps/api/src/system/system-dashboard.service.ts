@@ -35,6 +35,8 @@ const FAILED_EVENTS_CRITICAL_COUNT = 100;
 const ACTION_RATE_WARNING_THRESHOLD = 0.02;
 const ACTION_RATE_CRITICAL_THRESHOLD = 0.05;
 const ACTION_ERROR_MIN_TOTAL = 100;
+const MAX_API_CRITICAL_LIMITER_WARNING_MIN_REJECTS = 3;
+const MAX_API_CRITICAL_LIMITER_WARNING_BASE_WINDOW_SEC = 10 * 60;
 const DEFAULT_WORKER_SKEW_WARNING_PRESSURE = 4;
 const DEFAULT_WORKER_SKEW_WARNING_RATIO = 0.7;
 const DEFAULT_WORKER_SKEW_CRITICAL_PRESSURE = 8;
@@ -49,6 +51,7 @@ const DELIVERY_LEDGER_STALE_ACTION_MS = 15 * 60_000;
 const DELIVERY_LEDGER_STALE_BROADCAST_SENDING_MS = 5 * 60_000;
 const DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS = 2 * 60_000;
 const DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT = 1_000;
+const DELIVERY_LEDGER_WAITING_CAPABILITY_WARNING_MS = 5 * 60_000;
 const HOT_PATH_SLOW_WARNING_COUNT = 3;
 const HOT_PATH_SLOW_WARNING_MAX_MS = 5_000;
 
@@ -85,6 +88,10 @@ type DeliveryLedgerRiskSnapshot = {
   deleteIntentOldestExpiredAgeSec: number;
   deleteIntentRiskCapped: boolean;
   deleteIntentStaleExpiredInProgressCapped: boolean;
+  deleteIntentAgedWaitingCapability: number;
+  deleteIntentAgedWaitingCapabilityChats: number;
+  deleteIntentOldestWaitingCapabilityAgeSec: number;
+  deleteIntentAgedWaitingCapabilityCapped: boolean;
 };
 
 @Injectable()
@@ -139,18 +146,28 @@ export class SystemDashboardService {
       queues,
       mode,
     });
-    const [runtimeDiagnostics, backgroundBudget, webhookSlo, actionLatency] = await Promise.all([
-      this.runtimeDiagnosticsService?.getDashboardSnapshot(),
-      this.backgroundRuntimeGovernorService?.getDashboardBudgetSummary(),
-      this.webhookSloService?.getSnapshot(),
-      this.actionLatencyService?.getSnapshot().catch((error: unknown) => {
-        this.logger.warn(
-          { err: error instanceof Error ? error.message : String(error) },
-          'Action latency dashboard snapshot is unavailable; response remains fail-soft',
-        );
-        return undefined;
-      }),
-    ]);
+    const [runtimeDiagnostics, backgroundBudget, criticalLimiter, webhookSlo, actionLatency] =
+      await Promise.all([
+        this.runtimeDiagnosticsService?.getDashboardSnapshot(),
+        this.backgroundRuntimeGovernorService?.getDashboardBudgetSummary(),
+        this.backgroundRuntimeGovernorService
+          ?.getCriticalLimiterSnapshot?.()
+          ?.catch((error: unknown) => {
+            this.logger.warn(
+              { err: error instanceof Error ? error.message : String(error) },
+              'Critical limiter dashboard snapshot is unavailable; response remains fail-soft',
+            );
+            return undefined;
+          }),
+        this.webhookSloService?.getSnapshot(),
+        this.actionLatencyService?.getSnapshot().catch((error: unknown) => {
+          this.logger.warn(
+            { err: error instanceof Error ? error.message : String(error) },
+            'Action latency dashboard snapshot is unavailable; response remains fail-soft',
+          );
+          return undefined;
+        }),
+      ]);
     const [vkParsingGuard, deliveryLedgerRisk] = await Promise.all([
       this.loadVkParsingGuardSnapshot(),
       this.loadDeliveryLedgerRiskSnapshot(),
@@ -312,6 +329,11 @@ export class SystemDashboardService {
       alerts.push(webhookSloAlert);
     }
 
+    const criticalLimiterAlert = this.buildCriticalLimiterAlert(criticalLimiter);
+    if (criticalLimiterAlert) {
+      alerts.push(criticalLimiterAlert);
+    }
+
     const vkParsingAlert = this.buildVkParsingHealthAlert(vkParsingGuard);
     if (vkParsingAlert) {
       alerts.push(vkParsingAlert);
@@ -334,6 +356,11 @@ export class SystemDashboardService {
       alerts.push(deliveryLedgerAlert);
     }
 
+    const deleteCapabilityAlert = this.buildDeleteCapabilityBacklogAlert(deliveryLedgerRisk);
+    if (deleteCapabilityAlert) {
+      alerts.push(deleteCapabilityAlert);
+    }
+
     const status = this.resolveStatus({
       mode: mode.mode,
       queueLagSec,
@@ -351,12 +378,14 @@ export class SystemDashboardService {
       hotPathTimeoutWarning: hotPathTimeoutCount > 0,
       hotPathSlowWarning,
       webhookSloStatus: webhookSlo?.status ?? null,
+      criticalLimiterWarning: criticalLimiterAlert !== null,
       vkParsingWarning: vkParsingAlert !== null,
       actionQueueLaneCritical: actionQueueLaneAlert?.level === 'critical',
       actionQueueLaneWarning: actionQueueLaneAlert?.level === 'warning',
       actionLedgerWatchdogCritical: actionLedgerWatchdogAlert?.level === 'critical',
       actionLedgerWatchdogWarning: actionLedgerWatchdogAlert?.level === 'warning',
       deliveryLedgerWarning: deliveryLedgerAlert !== null,
+      deleteCapabilityWarning: deleteCapabilityAlert !== null,
     });
     const queueGroupHealth = buildSystemQueueGroupHealth(queues);
     const runtimeProfile = buildSystemRuntimeProfile(
@@ -436,12 +465,14 @@ export class SystemDashboardService {
     hotPathTimeoutWarning?: boolean;
     hotPathSlowWarning?: boolean;
     webhookSloStatus?: WebhookSloSnapshot['status'] | null;
+    criticalLimiterWarning?: boolean;
     vkParsingWarning?: boolean;
     actionQueueLaneCritical?: boolean;
     actionQueueLaneWarning?: boolean;
     actionLedgerWatchdogCritical?: boolean;
     actionLedgerWatchdogWarning?: boolean;
     deliveryLedgerWarning?: boolean;
+    deleteCapabilityWarning?: boolean;
   }): SystemDashboardStatus {
     if (
       input.mode === 'degrade' ||
@@ -468,10 +499,12 @@ export class SystemDashboardService {
       input.hotPathTimeoutWarning === true ||
       input.hotPathSlowWarning === true ||
       input.webhookSloStatus === 'warning' ||
+      input.criticalLimiterWarning === true ||
       input.vkParsingWarning === true ||
       input.actionQueueLaneWarning === true ||
       input.actionLedgerWatchdogWarning === true ||
-      input.deliveryLedgerWarning === true
+      input.deliveryLedgerWarning === true ||
+      input.deleteCapabilityWarning === true
     ) {
       return 'warning';
     }
@@ -798,6 +831,37 @@ export class SystemDashboardService {
     };
   }
 
+  private buildCriticalLimiterAlert(
+    snapshot:
+      | Awaited<ReturnType<BackgroundRuntimeGovernorService['getCriticalLimiterSnapshot']>>
+      | undefined,
+  ): SystemDashboardAlert | null {
+    if (!snapshot) {
+      return null;
+    }
+
+    const scaledThreshold = Math.ceil(
+      (snapshot.windowSec / MAX_API_CRITICAL_LIMITER_WARNING_BASE_WINDOW_SEC) *
+        MAX_API_CRITICAL_LIMITER_WARNING_MIN_REJECTS,
+    );
+    const warningThreshold = Math.max(
+      MAX_API_CRITICAL_LIMITER_WARNING_MIN_REJECTS,
+      scaledThreshold,
+    );
+    if (snapshot.internalRejects < warningThreshold) {
+      return null;
+    }
+
+    return {
+      code: 'max-api-critical-limiter-rejects',
+      level: 'warning',
+      title: 'Critical MAX-запросы упираются во внутренний limiter',
+      detail: `${snapshot.internalRejects} critical rejects за ${this.formatShortTimeWindow(snapshot.windowSec)} (warning threshold ${warningThreshold}).`,
+      recommendedAction:
+        'Сверьте source tags и чаты в MAX diagnostics, critical action backlog и class/stack capacity. Снижайте конкурирующий interactive/background трафик; не повышайте общий лимит выше документированных 30 rps.',
+    };
+  }
+
   private async loadVkParsingGuardSnapshot(): Promise<VkParsingGuardSnapshot | null> {
     if (!this.prisma) {
       return null;
@@ -925,6 +989,9 @@ export class SystemDashboardService {
     const staleSuggestionSendingSince = new Date(
       checkedAt.getTime() - DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS,
     );
+    const waitingCapabilityAgedSince = new Date(
+      checkedAt.getTime() - DELIVERY_LEDGER_WAITING_CAPABILITY_WARNING_MS,
+    );
     try {
       const [actionRows, broadcastRows, suggestionRows, deleteIntentRows] = await Promise.all([
         this.prisma.$queryRaw<Array<Record<string, unknown>>>`
@@ -1036,6 +1103,21 @@ export class SystemDashboardService {
               )
             order by intent.retry_until_at asc, intent.created_at asc, intent.id asc
             limit ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT + 1}
+          ),
+          waiting_capability_candidates as (
+            select
+              intent.chat_id,
+              intent.first_attempt_at
+            from moderation_delete_intents intent
+            where intent.status = 'WAITING_CAPABILITY'
+              and intent.retry_until_at > current_timestamp
+              and intent.first_attempt_at <= ${waitingCapabilityAgedSince}
+              and intent.remote_delete_succeeded_at is null
+              and intent.remote_delete_succeeded_bot_id is null
+              and intent.delete_dispatch_started_at is null
+              and intent.delete_dispatch_started_bot_id is null
+            order by intent.next_attempt_at asc, intent.execute_at asc
+            limit ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT + 1}
           )
           select
             least(count(*), ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT})::int
@@ -1051,7 +1133,26 @@ export class SystemDashboardService {
             (
               select count(*) > ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT}
               from stale_in_progress_candidates
-            ) as "deleteIntentStaleExpiredInProgressCapped"
+            ) as "deleteIntentStaleExpiredInProgressCapped",
+            (
+              select least(count(*), ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT})::int
+              from waiting_capability_candidates
+            ) as "deleteIntentAgedWaitingCapability",
+            (
+              select least(
+                count(distinct chat_id),
+                ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT}
+              )::int
+              from waiting_capability_candidates
+            ) as "deleteIntentAgedWaitingCapabilityChats",
+            (
+              select extract(epoch from (now() - min(first_attempt_at)))::int
+              from waiting_capability_candidates
+            ) as "deleteIntentOldestWaitingCapabilityAgeSec",
+            (
+              select count(*) > ${DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT}
+              from waiting_capability_candidates
+            ) as "deleteIntentAgedWaitingCapabilityCapped"
           from risk_candidates
         `,
       ]);
@@ -1085,6 +1186,17 @@ export class SystemDashboardService {
         deleteIntentRiskCapped: deleteIntent.deleteIntentRiskCapped === true,
         deleteIntentStaleExpiredInProgressCapped:
           deleteIntent.deleteIntentStaleExpiredInProgressCapped === true,
+        deleteIntentAgedWaitingCapability: this.readNumber(
+          deleteIntent.deleteIntentAgedWaitingCapability,
+        ),
+        deleteIntentAgedWaitingCapabilityChats: this.readNumber(
+          deleteIntent.deleteIntentAgedWaitingCapabilityChats,
+        ),
+        deleteIntentOldestWaitingCapabilityAgeSec: this.readNumber(
+          deleteIntent.deleteIntentOldestWaitingCapabilityAgeSec,
+        ),
+        deleteIntentAgedWaitingCapabilityCapped:
+          deleteIntent.deleteIntentAgedWaitingCapabilityCapped === true,
       };
     } catch {
       return null;
@@ -1132,6 +1244,27 @@ export class SystemDashboardService {
       detail: details.join('; '),
       recommendedAction:
         'Для safely expirable delete-intent дождитесь reconciler и проверьте снижение счётчика. Сверьте MAX/логи/remoteMessageId перед любыми повторами; ambiguous send/delete/member actions и managed broadcast deliveries не ретрайте автоматически.',
+    };
+  }
+
+  private buildDeleteCapabilityBacklogAlert(
+    snapshot: DeliveryLedgerRiskSnapshot | null,
+  ): SystemDashboardAlert | null {
+    if (!snapshot || snapshot.deleteIntentAgedWaitingCapability === 0) {
+      return null;
+    }
+
+    const thresholdMin = DELIVERY_LEDGER_WAITING_CAPABILITY_WARNING_MS / 60_000;
+    const scopeDetail = snapshot.deleteIntentAgedWaitingCapabilityCapped
+      ? `В ограниченной выборке чатов: ${snapshot.deleteIntentAgedWaitingCapabilityChats}, максимальный возраст от первой попытки: ${snapshot.deleteIntentOldestWaitingCapabilityAgeSec} сек.`
+      : `Затронуто чатов: ${snapshot.deleteIntentAgedWaitingCapabilityChats}, максимальный возраст от первой попытки: ${snapshot.deleteIntentOldestWaitingCapabilityAgeSec} сек.`;
+    return {
+      code: 'moderation-delete-capability-backlog',
+      level: 'warning',
+      title: 'Старые удаления ожидают проверки доступности',
+      detail: `${snapshot.deleteIntentAgedWaitingCapabilityCapped ? '>=' : ''}${snapshot.deleteIntentAgedWaitingCapability} delete intents сейчас в WAITING_CAPABILITY, а их первая попытка была больше ${thresholdMin} мин назад. ${scopeDetail}`,
+      recommendedAction:
+        'Проверьте effective delete permission и маршрут доступных ботов (для group chat требуется write), свежесть capability snapshot и unverified 404/message presence. Не удаляйте intents и не повторяйте действия вручную: durable retry продолжит работу после восстановления доступности.',
     };
   }
 

@@ -27,7 +27,7 @@ import {
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
-import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
+import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import {
   ManagedEntityHandshakeService,
   MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
@@ -94,6 +94,13 @@ type MembershipActivityEventModel = {
   }) => Promise<unknown>;
 };
 
+type MembershipTransitionResult = {
+  chatId: string;
+  eventAt: Date;
+  eventType: string;
+  deniedUserIds: string[];
+};
+
 type ManagedEntityLocalActivityProjection = {
   userId: string;
   chatId: string;
@@ -122,6 +129,7 @@ type ChatBotBindingSyncResult = {
 
 type BotSelfAccessCacheEntry = {
   canHandleUserFacing: boolean;
+  checkedAtMs: number | null;
   expiresAtMs: number;
 };
 
@@ -140,6 +148,8 @@ const BOT_ADDED_START_HINT_SEND_TIMEOUT_MS = 1_500;
 const BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
+const MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS = 100;
+const BOT_REMOVED_CACHE_PUBLICATION_WAIT_MS = 100;
 const WEBHOOK_LEGACY_DEDUP_COMPAT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const WEBHOOK_PREPARATION_LEASE_MS = 30_000;
 const MANAGED_ENTITY_ONBOARDING_EPOCH_MS = 15 * 60_000;
@@ -209,6 +219,8 @@ export class WebhookService {
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
     @Optional() private readonly chatContextCache?: ChatContextCacheService,
     @Optional() private readonly managedEntityHandshakeService?: ManagedEntityHandshakeService,
+    @Optional()
+    private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
     this.canonicalExecutionMode = normalizeWebhookCanonicalExecutionMode(
@@ -246,7 +258,7 @@ export class WebhookService {
 
   async repairDuplicateReceiptReadModels(update: MaxUpdate): Promise<void> {
     await Promise.all([
-      this.persistMembershipActivityProjection(update),
+      this.persistMembershipTransition(update),
       this.persistUserDisplayNameSnapshots(update),
     ]);
   }
@@ -502,20 +514,6 @@ export class WebhookService {
         );
       }
     }
-
-    try {
-      await this.invalidateManagedEntityAccessEdgesFromWebhook(update, chatId, memberUserIds);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          updateId: update.updateId,
-          chatId,
-          memberUserIds,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to invalidate managed entity access edges from webhook',
-      );
-    }
   }
 
   private isDirectMembershipChange(update: MaxUpdate): boolean {
@@ -528,54 +526,17 @@ export class WebhookService {
     );
   }
 
-  private async invalidateManagedEntityAccessEdgesFromWebhook(
-    update: MaxUpdate,
+  private async lockChatForUserMembershipFence(
+    tx: Prisma.TransactionClient,
     chatId: string,
-    memberUserIds: readonly string[],
-  ): Promise<void> {
-    if (update.type.trim().toLowerCase() !== 'user_removed') {
-      return;
-    }
-
-    const normalizedUserIds = Array.from(
-      new Set(
-        memberUserIds
-          .map((userId) => userId.trim())
-          .filter((userId): userId is string => userId.length > 0),
-      ),
-    );
-    if (normalizedUserIds.length === 0) {
-      return;
-    }
-
-    const accessEdge = (
-      this.prisma as PrismaService & {
-        managedEntityAccessEdge?: {
-          updateMany?: (args: unknown) => Promise<unknown>;
-        };
-      }
-    ).managedEntityAccessEdge;
-    if (typeof accessEdge?.updateMany !== 'function') {
-      return;
-    }
-
-    await accessEdge.updateMany({
-      where: {
-        chatId,
-        userId: {
-          in: normalizedUserIds,
-        },
-      },
-      data: {
-        state: ManagedEntityAccessState.USER_DENIED,
-        userRole: 'MEMBER',
-        botRole: 'UNKNOWN',
-        checkedAt: new Date(),
-        expiresAt: null,
-        deniedReason: 'webhook_user_removed',
-        source: 'webhook_user_removed',
-      },
-    });
+  ): Promise<boolean> {
+    const lockedChats = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT chat."id"
+      FROM "chats" AS chat
+      WHERE chat."id" = ${chatId}
+      FOR UPDATE OF chat
+    `;
+    return lockedChats.length === 1;
   }
 
   private async persistReceipt(
@@ -720,6 +681,7 @@ export class WebhookService {
     webhookEventId: string,
     update: MaxUpdate,
   ): Promise<{ update: MaxUpdate; executionBotId: string | null }> {
+    await this.persistMembershipTransition(update);
     this.deferBackgroundTask(
       () => this.invalidateMembershipCacheFromWebhook(update),
       'membership cache invalidation',
@@ -727,13 +689,16 @@ export class WebhookService {
     );
     const bindingSync = await this.syncChatBotBindingFromWebhook(update);
     this.attachExecutionOwnerBotId(update, bindingSync.executionOwnerBotId);
-    await this.persistMembershipActivityProjection(update);
     this.deferBackgroundTask(
       () => this.persistAdminReadModels(update),
       'admin read model refresh',
       update,
     );
-    await this.stageManagedEntityPendingBootstrap(update);
+    this.deferBackgroundTask(
+      () => this.stageManagedEntityPendingBootstrap(update),
+      'managed entity pending bootstrap',
+      update,
+    );
     this.schedulePendingExecutionOwnerFailoverRecheck(bindingSync.pendingExecutionOwnerRecheck);
     if (await this.claimManagedEntityOnboardingHint(webhookEventId, update)) {
       this.deferBotAddedStartHint(update);
@@ -906,7 +871,6 @@ export class WebhookService {
 
     const chatId = update.message?.chatId?.trim() ?? '';
     const botId = update.botId?.trim() ?? '';
-    const addedBotId = this.resolveBotAddedMemberBotId(update);
     const entityType = this.readWebhookChatEntityType(update);
     if (
       !chatId ||
@@ -916,10 +880,6 @@ export class WebhookService {
     ) {
       return;
     }
-    if (addedBotId && addedBotId !== botId) {
-      return;
-    }
-
     this.deferBackgroundTask(
       async () => {
         await this.sendBotAddedStartHint(update, chatId, botId, entityType);
@@ -1006,17 +966,6 @@ export class WebhookService {
     }
   }
 
-  private resolveBotAddedMemberBotId(update: MaxUpdate): string | null {
-    if (update.type.trim().toLowerCase() !== 'bot_added') {
-      return null;
-    }
-
-    const memberBotId = update.membership?.memberUserIds?.find(
-      (userId) => userId.trim().length > 0,
-    );
-    return memberBotId?.trim() || null;
-  }
-
   private isExpectedBotAddedStartHintSendFailure(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     if (BOT_ADDED_START_HINT_FAILURE_METRIC_STATUSES.some((expected) => expected === status)) {
@@ -1101,15 +1050,30 @@ export class WebhookService {
         }
 
         const removedBotId = this.resolveRemovedChatBotId(update);
-        const nextOwnerBotId = await this.maxBotLinkService.markChatBotRemoved({
-          chatId,
-          title: update.message?.chatTitle ?? null,
-          entityType,
-          botId: removedBotId,
-          lifecycleEventAt: trustedLifecycleEventAt,
-          lifecycleEventType: normalizedType,
-          lifecycleSource: 'webhook',
-        });
+        const nextOwnerBotId = this.managedEntityAccessLossService
+          ? ((
+              await this.managedEntityAccessLossService.recordManagedEntityAccessLost({
+                chatId,
+                title: update.message?.chatTitle ?? null,
+                entityType,
+                botId: removedBotId,
+                reason: 'bot_removed',
+                source: `webhook_${normalizedType}`,
+                lifecycleEventAt: trustedLifecycleEventAt,
+                lifecycleEventType: normalizedType,
+                lifecycleSource: 'webhook',
+                cachePublicationWaitMs: BOT_REMOVED_CACHE_PUBLICATION_WAIT_MS,
+              })
+            )?.nextOwnerBotId ?? null)
+          : await this.maxBotLinkService.markChatBotRemoved({
+              chatId,
+              title: update.message?.chatTitle ?? null,
+              entityType,
+              botId: removedBotId,
+              lifecycleEventAt: trustedLifecycleEventAt,
+              lifecycleEventType: normalizedType,
+              lifecycleSource: 'webhook',
+            });
         this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
         return this.buildChatBotBindingSyncResult(nextOwnerBotId);
       }
@@ -1243,20 +1207,28 @@ export class WebhookService {
       return null;
     }
 
+    await this.maxBotLinkService.bindDiscoveredChatBots({
+      chatId,
+      primaryBotId: incomingBotId,
+      botIds: [incomingBotId],
+      title: update.message?.chatTitle ?? null,
+      entityType,
+    });
+    const probeStartedAt = new Date();
     const canHandleUserFacing = await this.getBotSelfModerationAccessState(chatId, incomingBotId, {
       bypassCache: true,
+      allowMembershipRecovery: true,
     });
     if (canHandleUserFacing !== true) {
       return null;
     }
 
-    const probeCompletedAt = new Date();
     const boundBotId = await this.maxBotLinkService.bindChatToBot({
       chatId,
       title: update.message?.chatTitle ?? null,
       entityType,
       botId: incomingBotId,
-      lifecycleEventAt: probeCompletedAt,
+      lifecycleEventAt: probeStartedAt,
       lifecycleEventType: 'live_probe',
       lifecycleSource: 'live_probe',
     });
@@ -1315,10 +1287,11 @@ export class WebhookService {
       return params.currentOwnerBotId;
     }
 
+    const incomingProbeStartedAt = new Date();
     const incomingBotCanHandleUserFacing = await this.getBotSelfModerationAccessState(
       params.chatId,
       incomingBotId,
-      { bypassCache: true },
+      { bypassCache: true, allowMembershipRecovery: true },
     );
     if (incomingBotCanHandleUserFacing !== true) {
       return params.currentOwnerBotId;
@@ -1330,7 +1303,7 @@ export class WebhookService {
       entityType: this.readWebhookChatEntityType(params.update),
       botId: incomingBotId,
       allowReassign: true,
-      lifecycleEventAt: new Date(),
+      lifecycleEventAt: incomingProbeStartedAt,
       lifecycleEventType: 'live_probe',
       lifecycleSource: 'live_probe',
     });
@@ -1733,12 +1706,255 @@ export class WebhookService {
     `);
   }
 
-  private async persistMembershipActivityProjection(update: MaxUpdate): Promise<void> {
+  private async persistMembershipTransition(update: MaxUpdate): Promise<void> {
     const projections = this.buildMembershipActivityProjections(update);
     if (projections.length === 0) {
       return;
     }
 
+    if (typeof (this.prisma as { $transaction?: unknown }).$transaction !== 'function') {
+      await this.persistMembershipActivityProjections(projections);
+      return;
+    }
+
+    const transition = await this.prisma.$transaction(async (tx) => {
+      const chatId = projections[0].chatId;
+      await this.ensureMembershipTransitionChat(tx, update, chatId);
+      const chatLocked = await this.lockChatForUserMembershipFence(tx, chatId);
+
+      await this.upsertMembershipActivityProjections(tx, projections);
+      if (!chatLocked) {
+        return null;
+      }
+
+      return {
+        chatId,
+        eventAt: projections[0].eventAt,
+        eventType: projections[0].eventType,
+        deniedUserIds: await this.persistMembershipAccessReset(
+          tx,
+          chatId,
+          projections
+            .map((projection) => projection.userId?.trim() ?? '')
+            .filter((userId): userId is string => userId.length > 0),
+          projections[0].eventAt,
+          projections[0].eventType,
+        ),
+      } satisfies MembershipTransitionResult;
+    });
+
+    if (transition) {
+      await this.applyCommittedMembershipDenials(transition, update);
+    }
+  }
+
+  private async ensureMembershipTransitionChat(
+    tx: Prisma.TransactionClient,
+    update: MaxUpdate,
+    chatId: string,
+  ): Promise<void> {
+    const entityType = this.readWebhookChatEntityType(update);
+    if (entityType !== ChatEntityType.CHANNEL && isPrivateDirectChatId(chatId)) {
+      return;
+    }
+
+    await tx.chat.createMany({
+      data: {
+        id: chatId,
+        title:
+          update.message?.chatTitle?.trim() ||
+          (entityType === ChatEntityType.CHANNEL ? `Channel ${chatId}` : `Chat ${chatId}`),
+        ...(entityType ? { entityType } : {}),
+      },
+      skipDuplicates: true,
+    });
+  }
+
+  private async persistMembershipAccessReset(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    userIds: readonly string[],
+    transitionEventAt: Date,
+    membershipEventType: string,
+  ): Promise<string[]> {
+    const userIdFamilies = userIds
+      .map((userId) => [...this.buildMembershipUserIdVariants(userId)])
+      .filter((variants) => variants.length > 0);
+    const normalizedUserIds = Array.from(new Set(userIdFamilies.flat()));
+    if (normalizedUserIds.length === 0) {
+      return [];
+    }
+
+    await tx.managedEntityAccessEdge.updateMany({
+      where: {
+        chatId,
+        userId: { in: normalizedUserIds },
+        checkedAt: { lte: transitionEventAt },
+      },
+      data: {
+        state: ManagedEntityAccessState.USER_DENIED,
+        userRole: 'MEMBER',
+        botRole: 'UNKNOWN',
+        checkedAt: transitionEventAt,
+        expiresAt: null,
+        deniedReason: `webhook_${membershipEventType}`,
+        source: `webhook_${membershipEventType}`,
+      },
+    });
+    await tx.managedEntityAdminMember.deleteMany({
+      where: {
+        chatId,
+        userId: { in: normalizedUserIds },
+        checkedAt: { lte: transitionEventAt },
+      },
+    });
+
+    const [newerGrantedEdges, newerAdminMembers] = await Promise.all([
+      tx.managedEntityAccessEdge.findMany({
+        where: {
+          chatId,
+          userId: { in: normalizedUserIds },
+          state: ManagedEntityAccessState.GRANTED,
+          checkedAt: { gt: transitionEventAt },
+        },
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
+      tx.managedEntityAdminMember.findMany({
+        where: {
+          chatId,
+          userId: { in: normalizedUserIds },
+          checkedAt: { gt: transitionEventAt },
+        },
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
+    ]);
+    const usersWithNewerGrant = new Set([
+      ...newerGrantedEdges.map(({ userId }) => userId),
+      ...newerAdminMembers.map(({ userId }) => userId),
+    ]);
+    const deniedUserIds = Array.from(
+      new Set(
+        userIdFamilies
+          .filter((variants) => !variants.some((variant) => usersWithNewerGrant.has(variant)))
+          .flat(),
+      ),
+    );
+    if (deniedUserIds.length > 0) {
+      await tx.chatAdminAllowlist.deleteMany({
+        where: {
+          chatId,
+          userId: { in: deniedUserIds },
+        },
+      });
+    }
+
+    return deniedUserIds;
+  }
+
+  private buildMembershipUserIdVariants(value: string | null | undefined): Set<string> {
+    if (typeof value !== 'string') {
+      return new Set<string>();
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return new Set<string>();
+    }
+
+    const variants = new Set<string>([normalized]);
+    if (normalized.startsWith('id') && normalized.length > 2) {
+      variants.add(normalized.slice(2));
+    } else {
+      variants.add(`id${normalized}`);
+    }
+    return variants;
+  }
+
+  private async applyCommittedMembershipDenials(
+    transition: MembershipTransitionResult,
+    update: Pick<MaxUpdate, 'updateId' | 'type'>,
+  ): Promise<void> {
+    const epochCache = this.chatContextCache;
+    if (!epochCache || transition.deniedUserIds.length === 0) {
+      return;
+    }
+
+    const completed = Promise.all(
+      transition.deniedUserIds.map(async (userId) => {
+        try {
+          await epochCache.applyAdminAccessEpochMutation({
+            chatId: transition.chatId,
+            userId,
+            state: 'user_denied',
+            eventAt: transition.eventAt,
+          });
+          return null;
+        } catch (error: unknown) {
+          return { userId, error };
+        }
+      }),
+    );
+    let budgetTimer: NodeJS.Timeout | null = null;
+    const outcome = await Promise.race([
+      completed.then((failures) => ({ kind: 'completed' as const, failures })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        budgetTimer = setTimeout(
+          () => resolve({ kind: 'timeout' }),
+          MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS,
+        );
+      }),
+    ]);
+    if (budgetTimer) {
+      clearTimeout(budgetTimer);
+    }
+
+    if (outcome.kind === 'timeout') {
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          type: update.type,
+          chatId: transition.chatId,
+          userIds: transition.deniedUserIds,
+          waitBudgetMs: MEMBERSHIP_DENIAL_CACHE_WAIT_BUDGET_MS,
+        },
+        'Committed membership denial cache publication exceeded its wait budget',
+      );
+      void completed.then((failures) =>
+        this.logMembershipDenialCacheFailures(failures, transition, update),
+      );
+      return;
+    }
+
+    this.logMembershipDenialCacheFailures(outcome.failures, transition, update);
+  }
+
+  private logMembershipDenialCacheFailures(
+    failures: Array<{ userId: string; error: unknown } | null>,
+    transition: MembershipTransitionResult,
+    update: Pick<MaxUpdate, 'updateId' | 'type'>,
+  ): void {
+    for (const failure of failures) {
+      if (!failure) {
+        continue;
+      }
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          type: update.type,
+          chatId: transition.chatId,
+          userId: failure.userId,
+          err: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        },
+        'Failed to publish committed membership denial to cache',
+      );
+    }
+  }
+
+  private async persistMembershipActivityProjections(
+    projections: readonly MembershipActivityProjection[],
+  ): Promise<void> {
     const rawClient = this.prisma as ManagedEntityLocalActivityRawClient;
     if (typeof rawClient.$executeRaw === 'function') {
       await this.upsertMembershipActivityProjections(
@@ -1753,7 +1969,7 @@ export class WebhookService {
       return;
     }
     await membershipModel.createMany({
-      data: projections,
+      data: [...projections],
       skipDuplicates: true,
     });
   }
@@ -1789,17 +2005,8 @@ export class WebhookService {
           )`,
         ),
       )}
-      ),
-      repaired AS (
-        UPDATE "chat_membership_activity_events" AS existing
-        SET "sender_name" = incoming."sender_name"
-        FROM incoming
-        WHERE existing."dedupe_key" = incoming."dedupe_key"
-          AND COALESCE(BTRIM(existing."sender_name"), '') = ''
-          AND COALESCE(BTRIM(incoming."sender_name"), '') <> ''
-        RETURNING existing."dedupe_key"
       )
-      INSERT INTO "chat_membership_activity_events" (
+      INSERT INTO "chat_membership_activity_events" AS existing (
         "id",
         "dedupe_key",
         "bot_id",
@@ -1821,7 +2028,14 @@ export class WebhookService {
         "event_at",
         "created_at"
       FROM incoming
-      ON CONFLICT DO NOTHING
+      ON CONFLICT ("dedupe_key") DO UPDATE SET
+        "bot_id" = COALESCE(existing."bot_id", EXCLUDED."bot_id"),
+        "sender_name" = CASE
+          WHEN COALESCE(BTRIM(existing."sender_name"), '') = ''
+            THEN EXCLUDED."sender_name"
+          ELSE existing."sender_name"
+        END,
+        "event_at" = GREATEST(existing."event_at", EXCLUDED."event_at")
     `);
   }
 
@@ -2115,7 +2329,7 @@ export class WebhookService {
   private async getBotSelfModerationAccessState(
     chatId: string,
     botId: string,
-    options: { bypassCache?: boolean } = {},
+    options: { bypassCache?: boolean; allowMembershipRecovery?: boolean } = {},
   ): Promise<boolean | null> {
     const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
     if (options.bypassCache !== true) {
@@ -2134,21 +2348,29 @@ export class WebhookService {
       return null;
     }
 
+    const checkedAt = new Date();
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         botId,
+        bypassCache: true,
         trafficClass: 'interactive',
         actionHealthLane: 'background',
         timeoutMs: BOT_SELF_ACCESS_TIMEOUT_MS,
         ignoreFailureMetricStatuses: BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES,
       });
-      return await this.cacheBotSelfAccess(chatId, botId, access);
+      return await this.cacheBotSelfAccess(
+        chatId,
+        botId,
+        access,
+        checkedAt,
+        options.allowMembershipRecovery === true,
+      );
     } catch (error: unknown) {
       if (this.isTerminalBotSelfAccessError(error)) {
-        await this.cacheBotSelfAccess(chatId, botId, null);
-        return false;
+        return await this.cacheBotSelfAccess(chatId, botId, null, checkedAt, false);
       }
 
+      this.discardRejectedBotSelfAccessCache(cacheKey, checkedAt.getTime());
       this.botSelfAccessBackoffUntilMs.set(cacheKey, Date.now() + BOT_SELF_ACCESS_BACKOFF_MS);
       this.logger.debug(
         {
@@ -2185,12 +2407,25 @@ export class WebhookService {
     chatId: string,
     botId: string,
     access: MaxChatMemberAccess | null,
-  ): Promise<boolean> {
+    checkedAt: Date,
+    allowMembershipRecovery: boolean,
+  ): Promise<boolean | null> {
     const canHandleUserFacing = this.canBotHandleUserFacingUpdates(access);
     const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
-    this.cacheBotSelfAccessState(cacheKey, canHandleUserFacing);
+    const persisted = await this.persistBotSelfAccessSnapshot(
+      chatId,
+      botId,
+      access,
+      checkedAt,
+      allowMembershipRecovery,
+    );
+    if (!persisted) {
+      this.discardRejectedBotSelfAccessCache(cacheKey, checkedAt.getTime(), canHandleUserFacing);
+      return null;
+    }
+
+    this.cacheBotSelfAccessState(cacheKey, canHandleUserFacing, checkedAt.getTime());
     this.botSelfAccessBackoffUntilMs.delete(cacheKey);
-    await this.persistBotSelfAccessSnapshot(chatId, botId, access);
     return canHandleUserFacing;
   }
 
@@ -2198,23 +2433,18 @@ export class WebhookService {
     chatId: string,
     botId: string,
     access: MaxChatMemberAccess | null,
-  ): Promise<void> {
+    checkedAt: Date,
+    allowMembershipRecovery: boolean,
+  ): Promise<boolean> {
     try {
-      const snapshot = buildBotAccessSnapshotPersistence(access, {
+      return await this.maxBotLinkService.recordBotAccessProbe({
+        chatId,
+        botId,
+        access,
         source: 'webhook_owner_failover',
+        checkedAt,
+        allowMembershipRecovery,
       });
-      const updated = await this.prisma.chatBotMembership.updateMany({
-        where: {
-          chatId,
-          botId,
-        },
-        data: {
-          ...snapshot,
-        },
-      });
-      if (updated.count > 0) {
-        await this.maxBotLinkService.reconcileChatPrimaryByAccess?.({ chatId });
-      }
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -2224,6 +2454,7 @@ export class WebhookService {
         },
         'Failed to persist bot self access snapshot during webhook owner failover check',
       );
+      return false;
     }
   }
 
@@ -2237,19 +2468,59 @@ export class WebhookService {
     checkedAtMs: number | null = null,
   ): void {
     const now = Date.now();
+    const normalizedCheckedAtMs =
+      typeof checkedAtMs === 'number' && Number.isFinite(checkedAtMs) ? checkedAtMs : null;
+    const existing = this.botSelfAccessCache.get(cacheKey);
+    if (
+      existing &&
+      existing.checkedAtMs !== null &&
+      normalizedCheckedAtMs !== null &&
+      (existing.checkedAtMs > normalizedCheckedAtMs ||
+        (existing.checkedAtMs === normalizedCheckedAtMs &&
+          !existing.canHandleUserFacing &&
+          canHandleUserFacing))
+    ) {
+      return;
+    }
+
     const ttlMs = canHandleUserFacing
       ? BOT_SELF_ACCESS_CACHE_TTL_MS
       : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS;
     const snapshotExpiryMs =
-      typeof checkedAtMs === 'number' && Number.isFinite(checkedAtMs)
-        ? checkedAtMs + BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS - now
+      normalizedCheckedAtMs !== null
+        ? normalizedCheckedAtMs + BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS - now
         : null;
     const cappedTtlMs =
       snapshotExpiryMs === null ? ttlMs : Math.max(1, Math.min(ttlMs, snapshotExpiryMs));
     this.botSelfAccessCache.set(cacheKey, {
       canHandleUserFacing,
+      checkedAtMs: normalizedCheckedAtMs,
       expiresAtMs: now + cappedTtlMs,
     });
+  }
+
+  private discardRejectedBotSelfAccessCache(
+    cacheKey: string,
+    checkedAtMs: number,
+    canHandleUserFacing: boolean | null = null,
+  ): void {
+    const cached = this.botSelfAccessCache.get(cacheKey);
+    if (!cached) {
+      return;
+    }
+
+    if (cached.checkedAtMs !== null && cached.checkedAtMs > checkedAtMs) {
+      return;
+    }
+    if (
+      cached.checkedAtMs === checkedAtMs &&
+      cached.canHandleUserFacing === false &&
+      canHandleUserFacing === true
+    ) {
+      return;
+    }
+
+    this.botSelfAccessCache.delete(cacheKey);
   }
 
   private readCachedBotSelfAccess(cacheKey: string): boolean | null {
@@ -2457,52 +2728,7 @@ export class WebhookService {
   }
 
   private resolveRemovedChatBotId(update: MaxUpdate): string | null {
-    if (update.type.trim().toLowerCase() !== 'bot_removed') {
-      return update.botId?.trim() || null;
-    }
-    const raw = this.asRecord(update.raw);
-    const rawRecords = [
-      this.asRecord(raw?.user),
-      this.asRecord(raw?.member),
-      this.asRecord(raw?.removed_user),
-      this.asRecord(raw?.removedUser),
-      this.asRecord(raw?.bot),
-      raw,
-    ].filter((record): record is Record<string, unknown> => record !== null);
-    const candidateKeys = [
-      'username',
-      'id',
-      'user_id',
-      'userId',
-      'bot_id',
-      'botId',
-      'contact_id',
-      'contactId',
-    ];
-    const candidates = rawRecords.flatMap((record) => candidateKeys.map((key) => record[key]));
-
-    for (const candidate of candidates) {
-      const botId = this.resolveKnownBotIdFromWebhookValue(candidate);
-      if (botId) {
-        return botId;
-      }
-    }
-
-    const senderId = this.readTrimmedString(update.message?.senderId);
-    if (senderId) {
-      return this.resolveKnownBotIdFromWebhookValue(senderId);
-    }
-
-    return null;
-  }
-
-  private resolveKnownBotIdFromWebhookValue(value: unknown): string | null {
-    const rawValue = this.readTrimmedString(value);
-    if (!rawValue) {
-      return null;
-    }
-
-    return this.maxBotLinkService.resolveBotIdFromUserId?.(rawValue) ?? null;
+    return update.botId?.trim() || null;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

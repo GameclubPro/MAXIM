@@ -1,4 +1,6 @@
 import { chatSettingsSchema } from '@maxim/contracts';
+import { ServiceUnavailableException } from '@nestjs/common';
+import { AdminRequiredSubscriptionRuntime } from './admin-required-subscription-runtime';
 import { AdminService } from './admin.service';
 import {
   createChatSummaryFixture,
@@ -8,6 +10,49 @@ import {
   createChatContextCacheMock,
   flushAsyncTasks,
 } from './admin-service-test-support';
+
+function createRequiredSubscriptionService(
+  prisma: ReturnType<typeof createPrismaMock>,
+  maxClient: Record<string, unknown>,
+  chatContextCache = createChatContextCacheMock(),
+  options: {
+    botId?: string;
+    maxBotExecutionPlanner?: Record<string, unknown>;
+  } = {},
+): AdminService {
+  const botId = options.botId ?? '777000_bot';
+  const bot = { id: botId };
+  const maxBotLinkService = {
+    getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+    getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+    resolveBotId: jest.fn().mockResolvedValue(botId),
+    recordBotAccessProbe: jest.fn().mockResolvedValue(true),
+    bindDiscoveredChatBots: jest.fn().mockResolvedValue(botId),
+    resolveContactIdSync: jest.fn().mockReturnValue(null),
+  };
+  const maxBotRegistry = {
+    getBotById: jest.fn((candidateBotId: string | null | undefined) =>
+      candidateBotId === botId ? bot : null,
+    ),
+    getDiscoveryBots: jest.fn().mockReturnValue([bot]),
+    getOperationalBots: jest.fn().mockReturnValue([bot]),
+    getActionableBots: jest.fn().mockReturnValue([bot]),
+  };
+
+  return new AdminService(
+    prisma as never,
+    maxClient as never,
+    chatContextCache as never,
+    createConfigMock({ botId }) as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    maxBotLinkService as never,
+    maxBotRegistry as never,
+    options.maxBotExecutionPlanner as never,
+  );
+}
 
 describe('AdminService required subscription settings', () => {
   const actor = {
@@ -39,12 +84,7 @@ describe('AdminService required subscription settings', () => {
       })),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient);
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
       requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
@@ -111,12 +151,7 @@ describe('AdminService required subscription settings', () => {
         }),
       };
 
-      const service = new AdminService(
-        prisma as never,
-        maxClient as never,
-        createChatContextCacheMock() as never,
-        createConfigMock() as never,
-      );
+      const service = createRequiredSubscriptionService(prisma, maxClient);
       const result = await service.updateSettings('chat-1', actor, {
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
@@ -184,12 +219,7 @@ describe('AdminService required subscription settings', () => {
         }),
       };
 
-      const service = new AdminService(
-        prisma as never,
-        maxClient as never,
-        createChatContextCacheMock() as never,
-        createConfigMock() as never,
-      );
+      const service = createRequiredSubscriptionService(prisma, maxClient);
       const result = await service.updateSettings('chat-1', actor, {
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -259,19 +289,9 @@ describe('AdminService required subscription settings', () => {
       refreshChatBotCapabilitySnapshots: jest.fn().mockResolvedValue(undefined),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      maxBotExecutionPlanner as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache, {
+      maxBotExecutionPlanner,
+    });
 
     await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
@@ -332,12 +352,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'max.ru/channels/partner-news',
@@ -366,6 +381,7 @@ describe('AdminService required subscription settings', () => {
         entityType: 'channel',
         link: 'https://max.ru/channels/partner-news',
         participantsCount: 318,
+        primaryBotId: '777000_bot',
       }),
     );
   });
@@ -407,12 +423,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'max.ru/chats/chat-ext-1',
@@ -435,6 +446,7 @@ describe('AdminService required subscription settings', () => {
         entityType: 'chat',
         link: 'https://max.ru/chats/chat-ext-1',
         participantsCount: 318,
+        primaryBotId: '777000_bot',
       }),
     );
   });
@@ -478,12 +490,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'https://max.ru/channel/partner-feed?from=share',
@@ -546,12 +553,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'https://max.ru/aavtorynok_dnr_lnr',
@@ -616,12 +618,9 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock({ botId: 'id613002203036_bot' }) as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache, {
+      botId: 'id613002203036_bot',
+    });
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'https://max.ru/aavtorynok_dnr_lnr',
@@ -697,12 +696,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'https://max.ru/channels/public-feed/messages/post-42?from=share',
@@ -765,12 +759,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'max.ru/channels/fresh-channel',
@@ -818,12 +807,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'https://max.ru/chats/channel-ext-3/message/100',
@@ -851,6 +835,7 @@ describe('AdminService required subscription settings', () => {
         entityType: 'channel',
         link: null,
         participantsCount: 72,
+        primaryBotId: '777000_bot',
       }),
     );
   });
@@ -878,12 +863,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'https://max.ru/c/-71768670111751/AZzTfJDZAGg',
@@ -929,12 +909,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
       value: 'https://max.ru/chats/chat-ext-1/message/100',
@@ -962,6 +937,7 @@ describe('AdminService required subscription settings', () => {
         entityType: 'chat',
         link: null,
         participantsCount: 72,
+        primaryBotId: '777000_bot',
       }),
     );
   });
@@ -988,12 +964,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient);
 
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
@@ -1032,12 +1003,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient);
 
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
@@ -1054,9 +1020,17 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
-  it('binds an external required subscription channel to the bot that actually has access', async () => {
+  it('binds an external required subscription channel only after its live probe wins the lifecycle CAS', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue(null);
+    const materializedChatIds = new Set<string>();
+    prisma.chat.createMany.mockImplementation(async ({ data }: { data: { id: string } }) => {
+      if (materializedChatIds.has(data.id)) {
+        return { count: 0 };
+      }
+      materializedChatIds.add(data.id);
+      return { count: 1 };
+    });
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -1068,7 +1042,7 @@ describe('AdminService required subscription settings', () => {
           },
         ) => ({
           userId: options?.botId ?? 'unknown',
-          isAdmin: options?.botId === 'id613002203036_4_bot',
+          isAdmin: true,
           isOwner: false,
           permissions: [],
         }),
@@ -1101,6 +1075,12 @@ describe('AdminService required subscription settings', () => {
     };
     const maxBotLinkService = {
       resolveBotId: jest.fn().mockResolvedValue(undefined),
+      recordBotAccessProbe: jest
+        .fn()
+        .mockImplementation(
+          async ({ chatId, botId }: { chatId: string; botId: string }) =>
+            materializedChatIds.has(chatId) && botId === 'id613002203036_4_bot',
+        ),
       bindDiscoveredChatBots: jest.fn().mockResolvedValue('id613002203036_4_bot'),
       resolveContactIdSync: jest.fn((botId?: string | null) => {
         if (botId === 'id613002203036_4_bot') {
@@ -1175,6 +1155,14 @@ describe('AdminService required subscription settings', () => {
       2,
       'channel-ext-2',
       expect.objectContaining({
+        botId: 'id613002203036_bot',
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      3,
+      'channel-ext-2',
+      expect.objectContaining({
         botId: 'id613002203036_4_bot',
         sourceTag: 'required_subscription_metadata',
       }),
@@ -1186,19 +1174,66 @@ describe('AdminService required subscription settings', () => {
         sourceTag: 'required_subscription_metadata',
       }),
     );
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'channel-ext-2' },
-        create: expect.objectContaining({
-          botId: 'id613002203036_4_bot',
-          primaryBotId: 'id613002203036_4_bot',
-        }),
-        update: expect.objectContaining({
-          botId: 'id613002203036_4_bot',
-          primaryBotId: 'id613002203036_4_bot',
-        }),
-      }),
+    const requiredChannelCreateCallIndex = prisma.chat.createMany.mock.calls.findIndex(
+      ([args]) => args?.data?.id === 'channel-ext-2',
     );
+    expect(requiredChannelCreateCallIndex).toBeGreaterThanOrEqual(0);
+    expect(prisma.chat.createMany.mock.calls[requiredChannelCreateCallIndex]).toEqual([
+      {
+        data: {
+          id: 'channel-ext-2',
+          title: 'channel-ext-2',
+        },
+        skipDuplicates: true,
+      },
+    ]);
+    const requiredChannelCreateOrder =
+      prisma.chat.createMany.mock.invocationCallOrder[requiredChannelCreateCallIndex];
+    expect(maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[0]).toBeLessThan(
+      requiredChannelCreateOrder,
+    );
+    expect(requiredChannelCreateOrder).toBeLessThan(
+      maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[1],
+    );
+    expect(maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[1]).toBeLessThan(
+      maxBotLinkService.recordBotAccessProbe.mock.invocationCallOrder[0],
+    );
+    expect(requiredChannelCreateOrder).toBeLessThan(
+      maxBotLinkService.recordBotAccessProbe.mock.invocationCallOrder[0],
+    );
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenNthCalledWith(1, {
+      chatId: 'channel-ext-2',
+      botId: 'id613002203036_bot',
+      access: {
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      },
+      source: 'required_subscription_metadata',
+      checkedAt: expect.any(Date),
+      allowMembershipRecovery: true,
+    });
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenNthCalledWith(2, {
+      chatId: 'channel-ext-2',
+      botId: 'id613002203036_4_bot',
+      access: {
+        userId: 'id613002203036_4_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      },
+      source: 'required_subscription_metadata',
+      checkedAt: expect.any(Date),
+      allowMembershipRecovery: true,
+    });
+    const requiredChannelUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'channel-ext-2',
+    )?.[0];
+    expect(requiredChannelUpsert?.create).not.toHaveProperty('botId');
+    expect(requiredChannelUpsert?.create).not.toHaveProperty('primaryBotId');
+    expect(requiredChannelUpsert?.update).not.toHaveProperty('botId');
+    expect(requiredChannelUpsert?.update).not.toHaveProperty('primaryBotId');
     expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: 'channel-ext-2',
@@ -1216,6 +1251,301 @@ describe('AdminService required subscription settings', () => {
         primaryBotId: 'id613002203036_4_bot',
       }),
     );
+  });
+
+  it('persists non-admin and terminal bot probes without reviving stale lifecycle state', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T10:00:00.000Z'));
+
+    try {
+      const terminalError = Object.assign(new Error('Bot cannot access chat'), {
+        response: {
+          status: 403,
+          data: { code: 'chat.denied', message: 'Bot cannot access chat' },
+        },
+      });
+      const nonAdminAccess = {
+        userId: 'bot-non-admin',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      };
+      const maxClient = {
+        getCurrentChatMemberAccess: jest
+          .fn()
+          .mockResolvedValueOnce(nonAdminAccess)
+          .mockRejectedValueOnce(terminalError),
+      };
+      const maxBotLinkService = {
+        recordBotAccessProbe: jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
+      };
+      const createMany = jest.fn();
+      const runtime = new AdminRequiredSubscriptionRuntime({
+        prisma: { chat: { createMany, findUnique: jest.fn().mockResolvedValue(null) } },
+        maxClient,
+        chatContextCache: {},
+        logger: { warn: jest.fn() },
+        maxBotLinkService,
+        createManagedEntityHeader: jest.fn(),
+        mergeManagedBotChatCatalogRows: jest.fn(),
+        resolveBotAssignment: jest.fn(),
+        resolveCandidateBotIdsForChat: jest
+          .fn()
+          .mockResolvedValue(['bot-non-admin', 'bot-terminal']),
+        refreshManagedEntityBotAccessSnapshots: jest.fn(),
+      } as never);
+
+      await expect(
+        runtime.assertBotCanInspectRequiredSubscriptionChannel('channel-cas'),
+      ).rejects.toThrow(
+        'Бот должен быть администратором этого чата или канала, чтобы проверять подписку.',
+      );
+
+      expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+      expect(createMany).not.toHaveBeenCalled();
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenNthCalledWith(1, {
+        chatId: 'channel-cas',
+        botId: 'bot-non-admin',
+        access: nonAdminAccess,
+        source: 'required_subscription_metadata',
+        checkedAt: new Date('2026-08-20T10:00:00.000Z'),
+        allowMembershipRecovery: false,
+      });
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenNthCalledWith(2, {
+        chatId: 'channel-cas',
+        botId: 'bot-terminal',
+        access: null,
+        source: 'required_subscription_metadata',
+        checkedAt: new Date('2026-08-20T10:00:00.000Z'),
+        lastErrorCode: 'chat.denied',
+        allowMembershipRecovery: false,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('reports probe persistence failures as unavailable after MAX confirms admin access', async () => {
+    const persistenceError = new Error('database unavailable');
+    const createMany = jest.fn().mockResolvedValue({ count: 1 });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-admin',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+    };
+    const maxBotLinkService = {
+      recordBotAccessProbe: jest.fn().mockRejectedValue(persistenceError),
+    };
+    const runtime = new AdminRequiredSubscriptionRuntime({
+      prisma: { chat: { createMany, findUnique: jest.fn().mockResolvedValue(null) } },
+      maxClient,
+      chatContextCache: {},
+      logger: { warn: jest.fn() },
+      maxBotLinkService,
+      createManagedEntityHeader: jest.fn(),
+      mergeManagedBotChatCatalogRows: jest.fn(),
+      resolveBotAssignment: jest.fn(),
+      resolveCandidateBotIdsForChat: jest.fn().mockResolvedValue(['bot-admin']),
+      refreshManagedEntityBotAccessSnapshots: jest.fn(),
+    } as never);
+
+    await expect(
+      runtime.assertBotCanInspectRequiredSubscriptionChannel('channel-persistence-failure'),
+    ).rejects.toThrow('Не удалось проверить права бота в чате или канале MAX.');
+
+    expect(maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[0]).toBeLessThan(
+      createMany.mock.invocationCallOrder[0],
+    );
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists only the decisive post-materialization access epoch for a missing parent', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T10:00:00.000Z'));
+
+    try {
+      const originalPositiveAccess = {
+        userId: 'bot-admin',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      };
+      const decisiveMemberAccess = {
+        userId: 'bot-admin',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      };
+      const maxClient = {
+        getCurrentChatMemberAccess: jest
+          .fn()
+          .mockResolvedValueOnce(originalPositiveAccess)
+          .mockResolvedValueOnce(decisiveMemberAccess),
+      };
+      const createMany = jest.fn().mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-08-20T10:00:01.000Z'));
+        return { count: 1 };
+      });
+      const maxBotLinkService = {
+        recordBotAccessProbe: jest.fn().mockResolvedValue(true),
+      };
+      const runtime = new AdminRequiredSubscriptionRuntime({
+        prisma: { chat: { createMany, findUnique: jest.fn().mockResolvedValue(null) } },
+        maxClient,
+        chatContextCache: {},
+        logger: { warn: jest.fn() },
+        maxBotLinkService,
+        createManagedEntityHeader: jest.fn(),
+        mergeManagedBotChatCatalogRows: jest.fn(),
+        resolveBotAssignment: jest.fn(),
+        resolveCandidateBotIdsForChat: jest.fn().mockResolvedValue(['bot-admin']),
+        refreshManagedEntityBotAccessSnapshots: jest.fn(),
+      } as never);
+
+      await expect(
+        runtime.assertBotCanInspectRequiredSubscriptionChannel('channel-first-parent-race'),
+      ).rejects.toThrow(
+        'Бот должен быть администратором этого чата или канала, чтобы проверять подписку.',
+      );
+
+      expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+      expect(createMany).toHaveBeenCalledTimes(1);
+      expect(maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[0]).toBeLessThan(
+        createMany.mock.invocationCallOrder[0],
+      );
+      expect(createMany.mock.invocationCallOrder[0]).toBeLessThan(
+        maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[1],
+      );
+      expect(maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[1]).toBeLessThan(
+        maxBotLinkService.recordBotAccessProbe.mock.invocationCallOrder[0],
+      );
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+        chatId: 'channel-first-parent-race',
+        botId: 'bot-admin',
+        access: decisiveMemberAccess,
+        source: 'required_subscription_metadata',
+        checkedAt: new Date('2026-08-20T10:00:01.000Z'),
+        allowMembershipRecovery: true,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('persists a decisive terminal probe after materialization without accepting the old grant', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T10:00:00.000Z'));
+
+    try {
+      const terminalError = Object.assign(new Error('Bot cannot access chat'), {
+        response: {
+          status: 403,
+          data: { code: 'chat.denied', message: 'Bot cannot access chat' },
+        },
+      });
+      const maxClient = {
+        getCurrentChatMemberAccess: jest
+          .fn()
+          .mockResolvedValueOnce({
+            userId: 'bot-admin',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['write'],
+          })
+          .mockRejectedValueOnce(terminalError),
+      };
+      const createMany = jest.fn().mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-08-20T10:00:01.000Z'));
+        return { count: 1 };
+      });
+      const maxBotLinkService = {
+        recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+      };
+      const runtime = new AdminRequiredSubscriptionRuntime({
+        prisma: { chat: { createMany, findUnique: jest.fn().mockResolvedValue(null) } },
+        maxClient,
+        chatContextCache: {},
+        logger: { warn: jest.fn() },
+        maxBotLinkService,
+        createManagedEntityHeader: jest.fn(),
+        mergeManagedBotChatCatalogRows: jest.fn(),
+        resolveBotAssignment: jest.fn(),
+        resolveCandidateBotIdsForChat: jest.fn().mockResolvedValue(['bot-admin']),
+        refreshManagedEntityBotAccessSnapshots: jest.fn(),
+      } as never);
+
+      await expect(
+        runtime.assertBotCanInspectRequiredSubscriptionChannel('channel-terminal-race'),
+      ).rejects.toThrow(
+        'Бот должен быть администратором этого чата или канала, чтобы проверять подписку.',
+      );
+
+      expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+      expect(createMany).toHaveBeenCalledTimes(1);
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+      expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+        chatId: 'channel-terminal-race',
+        botId: 'bot-admin',
+        access: null,
+        source: 'required_subscription_metadata',
+        checkedAt: new Date('2026-08-20T10:00:01.000Z'),
+        lastErrorCode: 'chat.denied',
+        allowMembershipRecovery: false,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails closed without probing an implicit default bot when no concrete candidate exists', async () => {
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const runtime = new AdminRequiredSubscriptionRuntime({
+      prisma: { chat: { findUnique: jest.fn(), createMany: jest.fn() } },
+      maxClient,
+      chatContextCache: {},
+      logger: { warn: jest.fn() },
+      maxBotLinkService: { recordBotAccessProbe: jest.fn() },
+      maxBotRegistry: {
+        getBotById: jest.fn().mockReturnValue(null),
+        getDiscoveryBots: jest.fn().mockReturnValue([]),
+      },
+      createManagedEntityHeader: jest.fn(),
+      mergeManagedBotChatCatalogRows: jest.fn(),
+      resolveBotAssignment: jest.fn(),
+      resolveCandidateBotIdsForChat: jest.fn().mockResolvedValue([]),
+      refreshManagedEntityBotAccessSnapshots: jest.fn(),
+    } as never);
+
+    await expect(
+      runtime.assertBotCanInspectRequiredSubscriptionChannel('channel-no-candidate'),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('reports transient MAX snapshot failures as service unavailable after access verification', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '777000',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockRejectedValue({
+        response: { status: 503, data: { message: 'MAX temporarily unavailable' } },
+      }),
+    };
+    const service = createRequiredSubscriptionService(prisma, maxClient);
+
+    await expect(
+      service.resolveRequiredSubscriptionChannelReferenceValue(
+        'https://max.ru/chats/channel-snapshot-transient',
+      ),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
   it('drops required subscription channels the bot cannot verify', async () => {
@@ -1245,12 +1575,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient);
 
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
@@ -1302,12 +1627,7 @@ describe('AdminService required subscription settings', () => {
       })),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
 
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
@@ -1347,12 +1667,7 @@ describe('AdminService required subscription settings', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient);
 
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
@@ -1407,12 +1722,7 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache);
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
       requiredSubscriptionChannelIds: ['channel-1'],
@@ -1426,6 +1736,7 @@ describe('AdminService required subscription settings', () => {
         entityType: 'channel',
         link: null,
         participantsCount: 125,
+        primaryBotId: '777000_bot',
       }),
     );
   });
@@ -1473,19 +1784,9 @@ describe('AdminService required subscription settings', () => {
       }),
     };
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      maxBotExecutionPlanner as never,
-    );
+    const service = createRequiredSubscriptionService(prisma, maxClient, chatContextCache, {
+      maxBotExecutionPlanner,
+    });
     jest.spyOn(service, 'getSettings').mockResolvedValue(
       chatSettingsSchema.parse({
         requiredSubscriptionEnabled: true,
@@ -1509,9 +1810,14 @@ describe('AdminService required subscription settings', () => {
     expect(result.appliedChatIds).toEqual(['chat-1', 'chat-2']);
 
     const chat2Call = prisma.chat.upsert.mock.calls.find(
-      ([args]) => args?.where?.id === 'chat-2',
+      ([args]) =>
+        args?.where?.id === 'chat-2' &&
+        args?.create?.settings?.create &&
+        args?.update?.settings?.upsert,
     )?.[0];
     expect(chat2Call).toBeDefined();
+    expect(chat2Call?.update).not.toHaveProperty('botId');
+    expect(chat2Call?.update).not.toHaveProperty('primaryBotId');
     expect(chat2Call?.create?.settings?.create).toEqual(
       expect.objectContaining({
         requiredSubscriptionEnabled: true,
@@ -1549,6 +1855,7 @@ describe('AdminService required subscription settings', () => {
     );
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-2');
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
 
     await flushAsyncTasks();
 
@@ -1631,7 +1938,10 @@ describe('AdminService required subscription settings', () => {
     expect(result.appliedChatIds).toEqual(['chat-1', 'chat-2']);
 
     const chat2Call = prisma.chat.upsert.mock.calls.find(
-      ([args]) => args?.where?.id === 'chat-2',
+      ([args]) =>
+        args?.where?.id === 'chat-2' &&
+        args?.create?.settings?.create &&
+        args?.update?.settings?.upsert,
     )?.[0];
     expect(chat2Call).toBeDefined();
     expect(chat2Call?.create?.settings?.create).toEqual(
@@ -1700,6 +2010,7 @@ describe('AdminService required subscription settings', () => {
         nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
       }),
     );
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
   it('uses the cached mass-action target set when applying settings to all chats', async () => {

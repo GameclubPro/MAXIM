@@ -22,24 +22,32 @@ import {
 } from './max-bot-access-policy.util';
 import { collectActiveManagedEntityBotMembershipIds } from './managed-entity-bot-access.util';
 import {
+  MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND,
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
-  type MaxChatAdminRosterSyncJob,
+  type ManagedEntityAccessLossCleanupJob,
+  type ManagedEntityAccessLossCleanupReason,
+  type MaxChatAdminRosterQueueJob,
 } from './max-chat-admin-roster-sync.queue';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './managed-entity-access-loss.constants';
 
 const MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
+const MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_DELAY_MS = 45_000;
+const MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_ATTEMPTS = 3;
+const MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_BACKOFF_MS = 15_000;
+const MANAGED_ENTITY_ACCESS_LOSS_REASONS = new Set<ManagedEntityAccessLossReason>([
+  'chat_not_found',
+  'bot_denied',
+  'bot_removed',
+  'chat_inaccessible',
+]);
 const CONFIRMED_BOT_ACCESS_STATES = [
   ChatBotAccessState.CONFIRMED_ADMIN,
   ChatBotAccessState.CONFIRMED_OWNER,
 ] as const;
 
-export type ManagedEntityAccessLossReason =
-  | 'chat_not_found'
-  | 'bot_denied'
-  | 'bot_removed'
-  | 'chat_inaccessible';
+export type ManagedEntityAccessLossReason = ManagedEntityAccessLossCleanupReason;
 
 export type ManagedEntityAccessLossOperation =
   | 'send'
@@ -67,6 +75,10 @@ export type RecordManagedEntityAccessLostParams = {
   lastMaxErrorCode?: string | null;
   lastMaxErrorMessage?: string | null;
   lastMaxStatusCode?: number | null;
+  lifecycleEventAt?: Date | null;
+  lifecycleEventType?: string | null;
+  lifecycleSource?: string | null;
+  cachePublicationWaitMs?: number | null;
 };
 
 export type RecordManagedEntityAccessLostFromErrorParams = Omit<
@@ -101,6 +113,23 @@ export type ManagedEntityAccessLossCleanupResult = {
   removedRosterSyncJobs: number | null;
 };
 
+export type ManagedEntityAccessLossDeferredCleanupResult = {
+  applied: boolean;
+  skippedReason: 'invalid_job' | 'chat_missing' | 'stale_lifecycle' | 'surviving_access' | null;
+  cleanup: ManagedEntityAccessLossCleanupResult;
+};
+
+type ManagedEntityRuntimeCleanupClient = Pick<
+  Prisma.TransactionClient,
+  | 'managedAutopostRule'
+  | 'managedBroadcast'
+  | 'managedBroadcastDelivery'
+  | 'managedBroadcastCalendarReservation'
+  | 'managedBroadcastOccurrence'
+  | 'vkParsingPost'
+  | 'vkParsingSource'
+>;
+
 @Injectable()
 export class ManagedEntityAccessLossService {
   private readonly logger = new Logger(ManagedEntityAccessLossService.name);
@@ -113,7 +142,7 @@ export class ManagedEntityAccessLossService {
     private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
     @Optional()
     @InjectQueue(MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE)
-    private readonly rosterSyncQueue?: Queue<MaxChatAdminRosterSyncJob>,
+    private readonly rosterSyncQueue?: Queue<MaxChatAdminRosterQueueJob>,
     @Optional()
     private readonly maxBotRegistry?: MaxBotRegistryService,
   ) {}
@@ -148,6 +177,10 @@ export class ManagedEntityAccessLossService {
         lastMaxErrorCode: classification.code,
         lastMaxErrorMessage: classification.message,
         lastMaxStatusCode: classification.statusCode,
+        lifecycleEventAt: params.lifecycleEventAt,
+        lifecycleEventType: params.lifecycleEventType,
+        lifecycleSource: params.lifecycleSource,
+        cachePublicationWaitMs: params.cachePublicationWaitMs,
       }),
     };
   }
@@ -170,6 +203,9 @@ export class ManagedEntityAccessLossService {
     const botId = await this.resolveBotId(chatId, params.botId);
     const title = params.title?.trim() || chat?.title || `Chat ${chatId}`;
     const entityType = params.entityType ?? chat?.entityType ?? null;
+    const lifecycleEventAt = this.normalizeDate(params.lifecycleEventAt);
+    const lifecycleEventType = this.readTrimmedString(params.lifecycleEventType) ?? 'bot_removed';
+    const lifecycleSource = this.readTrimmedString(params.lifecycleSource) ?? 'webhook';
     const nextOwnerBotId = botId
       ? await this.maxBotLinkService.markChatBotRemoved({
           chatId,
@@ -181,40 +217,107 @@ export class ManagedEntityAccessLossService {
           lastMaxErrorCode: params.lastMaxErrorCode,
           lastMaxErrorMessage: params.lastMaxErrorMessage,
           lastMaxStatusCode: params.lastMaxStatusCode,
+          ...(lifecycleEventAt
+            ? {
+                lifecycleEventAt,
+                lifecycleEventType,
+                lifecycleSource,
+              }
+            : {}),
         })
       : null;
-    const updatedAccessEdges = botId
-      ? await this.markAccessEdgesBotDenied({
-          chatId,
-          botId,
-          reason: params.reason,
-          source: params.source,
-          lastMaxErrorCode: params.lastMaxErrorCode,
-          lastMaxErrorMessage: params.lastMaxErrorMessage,
-          lastMaxStatusCode: params.lastMaxStatusCode,
-        })
-      : 0;
-    const hasSurvivingBotAccess = await this.hasConfirmedSurvivingBotAccess({
-      chatId,
-      lostBotId: botId,
-      preferredBotId: nextOwnerBotId,
-    });
-    const cleanup = hasSurvivingBotAccess
-      ? this.createEmptyCleanupResult()
-      : await this.cleanupRuntimeWork({
+    const lifecycleFinalization =
+      botId && lifecycleEventAt
+        ? await this.finalizeLifecycleRemoval({
+            chatId,
+            botId,
+            entityType,
+            reason: params.reason,
+            source: params.source,
+            lifecycleEventAt,
+            lifecycleEventType,
+            lifecycleSource,
+            cachePublicationWaitMs: params.cachePublicationWaitMs,
+            lastMaxErrorCode: params.lastMaxErrorCode,
+            lastMaxErrorMessage: params.lastMaxErrorMessage,
+            lastMaxStatusCode: params.lastMaxStatusCode,
+          })
+        : null;
+    const updatedAccessEdges = lifecycleFinalization
+      ? lifecycleFinalization.updatedAccessEdges
+      : botId
+        ? await this.markAccessEdgesBotDenied({
+            chatId,
+            botId,
+            reason: params.reason,
+            source: params.source,
+            lastMaxErrorCode: params.lastMaxErrorCode,
+            lastMaxErrorMessage: params.lastMaxErrorMessage,
+            lastMaxStatusCode: params.lastMaxStatusCode,
+          })
+        : 0;
+    let cleanup = this.createEmptyCleanupResult();
+    if (lifecycleFinalization && botId && lifecycleEventAt) {
+      if (lifecycleFinalization.removalStillCurrent) {
+        if (this.rosterSyncQueue) {
+          await this.enqueueDeferredRuntimeCleanup({
+            chatId,
+            botId,
+            lifecycleEventAt,
+            lifecycleEventType,
+            lifecycleSource,
+            reason: params.reason,
+            source: params.source,
+          });
+        } else {
+          // Queue-less construction is retained for isolated tests and one-off tooling only.
+          const hasSurvivingBotAccess = await this.hasConfirmedSurvivingBotAccess({
+            chatId,
+            // A newer grant may reactivate the same bot after lifecycle finalization.
+            lostBotId: null,
+            preferredBotId: nextOwnerBotId,
+          });
+          if (!hasSurvivingBotAccess) {
+            cleanup = await this.cleanupRuntimeWork({
+              chatId,
+              reason: params.reason,
+              source: params.source,
+            });
+          }
+        }
+      }
+    } else {
+      const hasSurvivingBotAccess = await this.hasConfirmedSurvivingBotAccess({
+        chatId,
+        lostBotId: botId,
+        preferredBotId: nextOwnerBotId,
+      });
+      if (!hasSurvivingBotAccess) {
+        cleanup = await this.cleanupRuntimeWork({
           chatId,
           reason: params.reason,
           source: params.source,
         });
+      }
+    }
 
-    await Promise.all([
-      this.chatContextCache.invalidate(chatId),
-      this.chatContextCache.invalidateManagedEntityHeader?.(chatId),
-      this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat(
-        chatId,
-        mapManagedEntityType(entityType),
-      ),
-    ]);
+    if (!lifecycleFinalization) {
+      await this.awaitCachePublications(
+        [
+          this.chatContextCache.invalidate(chatId),
+          this.chatContextCache.invalidateManagedEntityHeader?.(chatId),
+          this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat(
+            chatId,
+            mapManagedEntityType(entityType),
+          ),
+        ],
+        {
+          chatId,
+          source: params.source,
+          maxWaitMs: params.cachePublicationWaitMs,
+        },
+      );
+    }
 
     this.logger.warn(
       {
@@ -236,6 +339,460 @@ export class ManagedEntityAccessLossService {
       updatedAccessEdges,
       cleanup,
     };
+  }
+
+  private async finalizeLifecycleRemoval(params: {
+    chatId: string;
+    botId: string;
+    entityType: ChatEntityType | null;
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+    lifecycleEventAt: Date;
+    lifecycleEventType: string;
+    lifecycleSource: string;
+    lastMaxErrorCode?: string | null;
+    lastMaxErrorMessage?: string | null;
+    lastMaxStatusCode?: number | null;
+    cachePublicationWaitMs?: number | null;
+  }): Promise<{ updatedAccessEdges: number; removalStillCurrent: boolean }> {
+    const persisted = await this.prisma.$transaction(async (tx) => {
+      // FLAG: Commit lifecycle truth before touching Redis; a cache failure cannot roll back SQL.
+      const chats = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${params.chatId}
+        FOR UPDATE OF chat
+      `;
+      if (chats.length !== 1) {
+        throw new Error('Managed entity chat disappeared during lifecycle cleanup');
+      }
+
+      const memberships = await tx.$queryRaw<
+        Array<{
+          status: string;
+          lifecycleEventAt: Date | null;
+          lifecycleEventType: string | null;
+          lifecycleSource: string | null;
+        }>
+      >`
+        SELECT
+          membership."status"::text AS "status",
+          membership."lifecycle_event_at" AS "lifecycleEventAt",
+          membership."lifecycle_event_type" AS "lifecycleEventType",
+          membership."lifecycle_source" AS "lifecycleSource"
+        FROM "chat_bot_memberships" AS membership
+        WHERE membership."chat_id" = ${params.chatId}
+          AND membership."bot_id" = ${params.botId}
+        LIMIT 1
+        FOR UPDATE OF membership
+      `;
+      const membership = memberships[0] ?? null;
+      if (!membership) {
+        throw new Error('Managed entity membership disappeared during lifecycle cleanup');
+      }
+
+      const affectedEdges = await tx.managedEntityAccessEdge.findMany({
+        where: {
+          chatId: params.chatId,
+          botId: params.botId,
+          checkedAt: { lte: params.lifecycleEventAt },
+        },
+        select: { userId: true },
+      });
+      const affectedUserIds = Array.from(
+        new Set(affectedEdges.map((edge) => edge.userId.trim()).filter(Boolean)),
+      );
+      const updated = await tx.managedEntityAccessEdge.updateMany({
+        where: {
+          chatId: params.chatId,
+          botId: params.botId,
+          checkedAt: { lte: params.lifecycleEventAt },
+        },
+        data: {
+          state: ManagedEntityAccessState.BOT_DENIED,
+          botRole: 'MEMBER',
+          checkedAt: params.lifecycleEventAt,
+          expiresAt: null,
+          deniedReason: params.reason,
+          lastMaxErrorCode: params.lastMaxErrorCode ?? null,
+          lastMaxErrorMessage: params.lastMaxErrorMessage ?? null,
+          lastMaxStatusCode: params.lastMaxStatusCode ?? null,
+          source: params.source,
+        } satisfies Prisma.ManagedEntityAccessEdgeUpdateManyMutationInput,
+      });
+      await Promise.all([
+        tx.managedEntityAdminMember.deleteMany({
+          where: {
+            chatId: params.chatId,
+            observedByBotId: params.botId,
+            checkedAt: { lte: params.lifecycleEventAt },
+          },
+        }),
+        tx.managedBotChatCatalog.updateMany({
+          where: {
+            chatId: params.chatId,
+            botId: params.botId,
+            lastSeenAt: { lte: params.lifecycleEventAt },
+          },
+          data: {
+            status: 'REMOVED',
+            source: params.source,
+            lastSeenAt: params.lifecycleEventAt,
+          },
+        }),
+      ]);
+
+      const removalStillCurrent =
+        membership.status === ChatBotMembershipStatus.REMOVED &&
+        membership.lifecycleEventAt?.getTime() === params.lifecycleEventAt.getTime() &&
+        membership.lifecycleEventType === params.lifecycleEventType &&
+        membership.lifecycleSource === params.lifecycleSource;
+      return {
+        updatedAccessEdges: updated.count,
+        removalStillCurrent,
+        affectedUserIds,
+      };
+    });
+
+    const deniedUserIds = await this.prisma.$transaction(async (tx) => {
+      const chats = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${params.chatId}
+        FOR UPDATE OF chat
+      `;
+      if (chats.length !== 1 || persisted.affectedUserIds.length === 0) {
+        return [];
+      }
+
+      const activeMemberships = await tx.chatBotMembership.findMany({
+        where: {
+          chatId: params.chatId,
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: { in: [...CONFIRMED_BOT_ACCESS_STATES] },
+        },
+        select: { botId: true },
+      });
+      const activeBotIds = activeMemberships.map((membership) => membership.botId);
+      if (activeBotIds.length === 0) {
+        return persisted.affectedUserIds;
+      }
+      const survivingEdges = await tx.managedEntityAccessEdge.findMany({
+        where: {
+          chatId: params.chatId,
+          userId: { in: persisted.affectedUserIds },
+          botId: { in: activeBotIds },
+          state: ManagedEntityAccessState.GRANTED,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        select: { userId: true },
+      });
+      const survivors = new Set(survivingEdges.map((edge) => edge.userId));
+      return persisted.affectedUserIds.filter((userId) => !survivors.has(userId));
+    });
+
+    await this.awaitCachePublications(
+      [
+        this.chatContextCache.invalidate(params.chatId),
+        this.chatContextCache.invalidateManagedEntityHeader?.(params.chatId),
+        ...deniedUserIds.map((userId) =>
+          this.chatContextCache.applyAdminAccessEpochMutation({
+            chatId: params.chatId,
+            userId,
+            state: 'bot_denied',
+            eventAt: params.lifecycleEventAt,
+          }),
+        ),
+      ],
+      {
+        chatId: params.chatId,
+        source: params.source,
+        maxWaitMs: params.cachePublicationWaitMs,
+      },
+    );
+    return {
+      updatedAccessEdges: persisted.updatedAccessEdges,
+      removalStillCurrent: persisted.removalStillCurrent,
+    };
+  }
+
+  async processDeferredRuntimeCleanup(
+    job: ManagedEntityAccessLossCleanupJob,
+  ): Promise<ManagedEntityAccessLossDeferredCleanupResult> {
+    const normalized = this.normalizeDeferredRuntimeCleanupJob(job);
+    if (!normalized) {
+      this.logger.warn(
+        { chatId: job.chatId, botId: job.botId },
+        'Skipped malformed deferred managed entity access-loss cleanup job',
+      );
+      return {
+        applied: false,
+        skippedReason: 'invalid_job',
+        cleanup: this.createEmptyCleanupResult(),
+      };
+    }
+
+    const actionableBotIds = this.maxBotRegistry
+      ? this.maxBotRegistry
+          .getActionableBots()
+          .map((bot) => this.readTrimmedString(bot.id))
+          .filter((botId): botId is string => Boolean(botId))
+      : null;
+    const result = await this.prisma.$transaction(async (tx) => {
+      // FLAG: Access grants and losses serialize on the parent Chat. Keep every destructive SQL
+      // mutation in this transaction so a newer grant cannot commit between the fence and cleanup.
+      const chats = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${normalized.chatId}
+        FOR UPDATE OF chat
+      `;
+      if (chats.length !== 1) {
+        return {
+          applied: false,
+          skippedReason: 'chat_missing' as const,
+          cleanup: this.createEmptyCleanupResult(),
+        };
+      }
+
+      const memberships = await tx.$queryRaw<
+        Array<{
+          status: string;
+          lifecycleEventAt: Date | null;
+          lifecycleEventType: string | null;
+          lifecycleSource: string | null;
+        }>
+      >`
+        SELECT
+          membership."status"::text AS "status",
+          membership."lifecycle_event_at" AS "lifecycleEventAt",
+          membership."lifecycle_event_type" AS "lifecycleEventType",
+          membership."lifecycle_source" AS "lifecycleSource"
+        FROM "chat_bot_memberships" AS membership
+        WHERE membership."chat_id" = ${normalized.chatId}
+          AND membership."bot_id" = ${normalized.botId}
+        LIMIT 1
+        FOR UPDATE OF membership
+      `;
+      const membership = memberships[0] ?? null;
+      const lossIsCurrent =
+        membership?.status === ChatBotMembershipStatus.REMOVED &&
+        membership.lifecycleEventAt?.getTime() === normalized.lifecycleEventAt.getTime() &&
+        membership.lifecycleEventType === normalized.lifecycleEventType &&
+        membership.lifecycleSource === normalized.lifecycleSource;
+      if (!lossIsCurrent) {
+        return {
+          applied: false,
+          skippedReason: 'stale_lifecycle' as const,
+          cleanup: this.createEmptyCleanupResult(),
+        };
+      }
+
+      if (
+        await this.hasFreshActionableSurvivorInTransaction(tx, normalized.chatId, actionableBotIds)
+      ) {
+        return {
+          applied: false,
+          skippedReason: 'surviving_access' as const,
+          cleanup: this.createEmptyCleanupResult(),
+        };
+      }
+
+      const cleanup = this.createEmptyCleanupResult();
+      await this.pauseManagedAutopostRules(normalized, tx);
+      await Promise.all([
+        this.cancelManagedBroadcastRuntime(normalized, cleanup, tx),
+        this.clearVkParsingRuntime(normalized, cleanup, tx),
+      ]);
+      return {
+        applied: true,
+        skippedReason: null,
+        cleanup,
+      };
+    });
+
+    this.logger.log(
+      {
+        chatId: normalized.chatId,
+        botId: normalized.botId,
+        lifecycleEventAt: normalized.lifecycleEventAt.toISOString(),
+        applied: result.applied,
+        skippedReason: result.skippedReason,
+        cleanup: result.cleanup,
+      },
+      'Processed deferred managed entity access-loss runtime cleanup',
+    );
+    return result;
+  }
+
+  private async enqueueDeferredRuntimeCleanup(params: {
+    chatId: string;
+    botId: string;
+    lifecycleEventAt: Date;
+    lifecycleEventType: string;
+    lifecycleSource: string;
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+  }): Promise<boolean> {
+    if (!this.rosterSyncQueue) {
+      return false;
+    }
+
+    const job: ManagedEntityAccessLossCleanupJob = {
+      kind: MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND,
+      chatId: params.chatId,
+      botId: params.botId,
+      lifecycleEventAt: params.lifecycleEventAt.toISOString(),
+      lifecycleEventType: params.lifecycleEventType,
+      lifecycleSource: params.lifecycleSource,
+      reason: params.reason,
+      source: params.source,
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      await this.rosterSyncQueue.add('cleanup-managed-entity-access-loss', job, {
+        jobId: this.buildDeferredRuntimeCleanupJobId(params),
+        delay: MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_DELAY_MS,
+        attempts: MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_ATTEMPTS,
+        backoff: {
+          type: 'fixed',
+          delay: MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_BACKOFF_MS,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      });
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          botId: params.botId,
+          lifecycleEventAt: params.lifecycleEventAt.toISOString(),
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to enqueue deferred managed entity access-loss runtime cleanup; runtime work was preserved',
+      );
+      return false;
+    }
+  }
+
+  private async hasFreshActionableSurvivorInTransaction(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    actionableBotIds: string[] | null,
+  ): Promise<boolean> {
+    if (actionableBotIds && actionableBotIds.length === 0) {
+      return false;
+    }
+
+    const now = new Date();
+    const memberships = await tx.chatBotMembership.findMany({
+      where: {
+        chatId,
+        status: ChatBotMembershipStatus.ACTIVE,
+        ...(actionableBotIds ? { botId: { in: actionableBotIds } } : {}),
+      },
+      select: {
+        botId: true,
+        status: true,
+        permissionsSnapshot: true,
+        botAccessState: true,
+        botAccessExpiresAt: true,
+      },
+    });
+    const activeBotIds = collectActiveManagedEntityBotMembershipIds(memberships, {
+      isRuntimeBotId: (botId) => actionableBotIds === null || actionableBotIds.includes(botId),
+    });
+    if (activeBotIds.size === 0) {
+      return false;
+    }
+
+    const grantedEdge = await tx.managedEntityAccessEdge.findFirst({
+      where: {
+        chatId,
+        botId: { in: [...activeBotIds] },
+        state: ManagedEntityAccessState.GRANTED,
+        OR: [
+          { expiresAt: { gt: now } },
+          {
+            expiresAt: null,
+            checkedAt: {
+              gt: new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
+            },
+          },
+        ],
+      },
+      select: { botId: true },
+    });
+    if (grantedEdge && activeBotIds.has(grantedEdge.botId)) {
+      return true;
+    }
+
+    return memberships.some(
+      (membership) =>
+        activeBotIds.has(membership.botId) && this.membershipHasConfirmedAccess(membership, now),
+    );
+  }
+
+  private normalizeDeferredRuntimeCleanupJob(job: ManagedEntityAccessLossCleanupJob): {
+    chatId: string;
+    botId: string;
+    lifecycleEventAt: Date;
+    lifecycleEventType: string;
+    lifecycleSource: string;
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+  } | null {
+    const chatId = this.readTrimmedString(job.chatId);
+    const botId = this.readTrimmedString(job.botId);
+    const lifecycleEventAtMs = Date.parse(job.lifecycleEventAt);
+    const lifecycleEventType = this.readTrimmedString(job.lifecycleEventType);
+    const lifecycleSource = this.readTrimmedString(job.lifecycleSource);
+    const source = this.readTrimmedString(job.source);
+    if (
+      !chatId ||
+      !botId ||
+      !Number.isFinite(lifecycleEventAtMs) ||
+      !lifecycleEventType ||
+      !lifecycleSource ||
+      !source ||
+      !MANAGED_ENTITY_ACCESS_LOSS_REASONS.has(job.reason)
+    ) {
+      return null;
+    }
+
+    return {
+      chatId,
+      botId,
+      lifecycleEventAt: new Date(lifecycleEventAtMs),
+      lifecycleEventType,
+      lifecycleSource,
+      reason: job.reason,
+      source,
+    };
+  }
+
+  private buildDeferredRuntimeCleanupJobId(params: {
+    chatId: string;
+    botId: string;
+    lifecycleEventAt: Date;
+    lifecycleEventType: string;
+    lifecycleSource: string;
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+  }): string {
+    const identity = Buffer.from(
+      JSON.stringify([
+        params.chatId,
+        params.botId,
+        params.lifecycleEventType,
+        params.lifecycleSource,
+        params.reason,
+        params.source,
+      ]),
+      'utf8',
+    ).toString('base64url');
+    return `managed-entity-access-loss-cleanup__${identity}__${params.lifecycleEventAt.getTime()}`;
   }
 
   private async cleanupRuntimeWork(params: {
@@ -265,16 +822,19 @@ export class ManagedEntityAccessLossService {
     return cleanup;
   }
 
-  private async pauseManagedAutopostRules(params: {
-    chatId: string;
-    reason: ManagedEntityAccessLossReason;
-    source: string;
-  }): Promise<void> {
-    if (typeof this.prisma.managedAutopostRule?.updateMany !== 'function') {
+  private async pauseManagedAutopostRules(
+    params: {
+      chatId: string;
+      reason: ManagedEntityAccessLossReason;
+      source: string;
+    },
+    db: ManagedEntityRuntimeCleanupClient = this.prisma,
+  ): Promise<void> {
+    if (typeof db.managedAutopostRule?.updateMany !== 'function') {
       return;
     }
 
-    await this.prisma.managedAutopostRule.updateMany({
+    await db.managedAutopostRule.updateMany({
       where: {
         sourceChatId: params.chatId,
         status: {
@@ -301,6 +861,77 @@ export class ManagedEntityAccessLossService {
       pausedVkSources: null,
       removedRosterSyncJobs: null,
     };
+  }
+
+  private async awaitCachePublications(
+    operations: Array<Promise<unknown> | undefined>,
+    params: {
+      chatId: string;
+      source: string;
+      maxWaitMs?: number | null;
+    },
+  ): Promise<void> {
+    const pending = Promise.all(
+      operations.filter((operation): operation is Promise<unknown> => Boolean(operation)),
+    );
+    const observed = pending.then(
+      () => ({ status: 'completed' as const }),
+      (error: unknown) => ({ status: 'failed' as const, error }),
+    );
+    const configuredWaitMs = params.maxWaitMs;
+    if (configuredWaitMs === null || configuredWaitMs === undefined) {
+      const outcome = await observed;
+      if (outcome.status === 'failed') {
+        throw outcome.error;
+      }
+      return;
+    }
+
+    const maxWaitMs = Number.isFinite(configuredWaitMs)
+      ? Math.max(0, Math.trunc(configuredWaitMs))
+      : 0;
+    let timeout: NodeJS.Timeout | null = null;
+    const outcome = await Promise.race([
+      observed,
+      new Promise<{ status: 'timed_out' }>((resolve) => {
+        timeout = setTimeout(() => resolve({ status: 'timed_out' }), maxWaitMs);
+        timeout.unref();
+      }),
+    ]);
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    if (outcome.status === 'completed') {
+      return;
+    }
+    if (outcome.status === 'failed') {
+      this.logDeferredCachePublicationFailure(params, outcome.error);
+      return;
+    }
+
+    this.logger.warn(
+      { chatId: params.chatId, source: params.source, maxWaitMs },
+      'Managed entity access-loss cache publication exceeded its wait budget',
+    );
+    void observed.then((deferredOutcome) => {
+      if (deferredOutcome.status === 'failed') {
+        this.logDeferredCachePublicationFailure(params, deferredOutcome.error);
+      }
+    });
+  }
+
+  private logDeferredCachePublicationFailure(
+    params: { chatId: string; source: string },
+    error: unknown,
+  ): void {
+    this.logger.warn(
+      {
+        chatId: params.chatId,
+        source: params.source,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Managed entity access-loss cache publication failed after SQL commit',
+    );
   }
 
   private async hasConfirmedReplacementBotAccess(chatId: string, botId: string): Promise<boolean> {
@@ -541,10 +1172,11 @@ export class ManagedEntityAccessLossService {
       source: string;
     },
     cleanup: ManagedEntityAccessLossCleanupResult,
+    db: ManagedEntityRuntimeCleanupClient = this.prisma,
   ): Promise<void> {
     if (
-      typeof this.prisma.managedBroadcast?.updateMany !== 'function' ||
-      typeof this.prisma.managedBroadcastDelivery?.updateMany !== 'function'
+      typeof db.managedBroadcast?.updateMany !== 'function' ||
+      typeof db.managedBroadcastDelivery?.updateMany !== 'function'
     ) {
       return;
     }
@@ -561,7 +1193,7 @@ export class ManagedEntityAccessLossService {
     ];
 
     const [broadcasts, deliveries, , occurrences] = await Promise.all([
-      this.prisma.managedBroadcast.updateMany({
+      db.managedBroadcast.updateMany({
         where: {
           sourceChatId: params.chatId,
           publicationOccurrenceId: null,
@@ -575,7 +1207,7 @@ export class ManagedEntityAccessLossService {
           lastError,
         },
       }),
-      this.prisma.managedBroadcastDelivery.updateMany({
+      db.managedBroadcastDelivery.updateMany({
         where: {
           targetChatId: params.chatId,
           // FLAG: A concurrent SENDING delivery owns an in-flight MAX result. Its lease owner must
@@ -590,8 +1222,8 @@ export class ManagedEntityAccessLossService {
           lastError,
         },
       }),
-      typeof this.prisma.managedBroadcastCalendarReservation?.deleteMany === 'function'
-        ? this.prisma.managedBroadcastCalendarReservation.deleteMany({
+      typeof db.managedBroadcastCalendarReservation?.deleteMany === 'function'
+        ? db.managedBroadcastCalendarReservation.deleteMany({
             where: {
               OR: [
                 { targetChatId: params.chatId },
@@ -603,8 +1235,8 @@ export class ManagedEntityAccessLossService {
             },
           })
         : Promise.resolve(null),
-      typeof this.prisma.managedBroadcastOccurrence?.updateMany === 'function'
-        ? this.prisma.managedBroadcastOccurrence.updateMany({
+      typeof db.managedBroadcastOccurrence?.updateMany === 'function'
+        ? db.managedBroadcastOccurrence.updateMany({
             where: {
               sourceChatId: params.chatId,
               broadcast: { is: { publicationOccurrenceId: null } },
@@ -629,11 +1261,12 @@ export class ManagedEntityAccessLossService {
       source: string;
     },
     cleanup: ManagedEntityAccessLossCleanupResult,
+    db: ManagedEntityRuntimeCleanupClient = this.prisma,
   ): Promise<void> {
     const lastError = this.buildCleanupReasonMessage(params);
     const [posts, sources] = await Promise.all([
-      typeof this.prisma.vkParsingPost?.updateMany === 'function'
-        ? this.prisma.vkParsingPost.updateMany({
+      typeof db.vkParsingPost?.updateMany === 'function'
+        ? db.vkParsingPost.updateMany({
             where: {
               chatId: params.chatId,
               status: { in: ['NEW', 'FAILED'] },
@@ -656,8 +1289,8 @@ export class ManagedEntityAccessLossService {
             },
           })
         : Promise.resolve(null),
-      typeof this.prisma.vkParsingSource?.updateMany === 'function'
-        ? this.prisma.vkParsingSource.updateMany({
+      typeof db.vkParsingSource?.updateMany === 'function'
+        ? db.vkParsingSource.updateMany({
             where: {
               chatId: params.chatId,
               status: 'ACTIVE',
@@ -772,6 +1405,10 @@ export class ManagedEntityAccessLossService {
 
   private readTrimmedString(value: string | null | undefined): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  private normalizeDate(value: Date | null | undefined): Date | null {
+    return value instanceof Date && Number.isFinite(value.getTime()) ? value : null;
   }
 
   private readCount(value: unknown): number | null {

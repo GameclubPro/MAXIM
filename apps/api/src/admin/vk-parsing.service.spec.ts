@@ -3254,6 +3254,8 @@ describe('VkParsingService', () => {
   });
 
   it('records MAX access loss and clears VK publish queue when a target chat is denied', async () => {
+    const maxSendAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(maxSendAttemptStartedAt);
     const { service, prisma, maxClient, publishQueue, managedEntityAccessLossService } =
       createFixture();
     const source = createSource();
@@ -3319,6 +3321,9 @@ describe('VkParsingService', () => {
       source: 'vk_parsing:publish',
       operation: 'send',
       error,
+      lifecycleEventAt: maxSendAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
     expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({

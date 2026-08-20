@@ -1,4 +1,8 @@
-import { ChatBotMembershipRole, ChatBotMembershipStatus } from '../prisma/prisma-client';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipRole,
+  ChatBotMembershipStatus,
+} from '../prisma/prisma-client';
 import { MaxBotExecutionPlannerService } from './max-bot-execution-planner.service';
 
 type MutableChat = {
@@ -14,6 +18,11 @@ type MutableMembership = {
   status: ChatBotMembershipStatus;
   capabilities: unknown;
   permissionsSnapshot: unknown;
+  botAccessState: ChatBotAccessState;
+  botAccessCheckedAt: Date | null;
+  botAccessExpiresAt: Date | null;
+  botAccessSource: string | null;
+  botAccessLastErrorCode: string | null;
   lastSeenAt: Date | null;
   lastWebhookAt: Date | null;
   createdAt: Date;
@@ -34,6 +43,11 @@ function createFixture() {
       status: ChatBotMembershipStatus.ACTIVE,
       capabilities: [],
       permissionsSnapshot: null,
+      botAccessState: ChatBotAccessState.UNKNOWN,
+      botAccessCheckedAt: null,
+      botAccessExpiresAt: null,
+      botAccessSource: null,
+      botAccessLastErrorCode: null,
       lastSeenAt: new Date('2026-03-31T00:00:00.000Z'),
       lastWebhookAt: new Date('2026-03-31T00:00:00.000Z'),
       createdAt: new Date('2026-03-31T00:00:00.000Z'),
@@ -46,6 +60,11 @@ function createFixture() {
       status: ChatBotMembershipStatus.ACTIVE,
       capabilities: [],
       permissionsSnapshot: null,
+      botAccessState: ChatBotAccessState.UNKNOWN,
+      botAccessCheckedAt: null,
+      botAccessExpiresAt: null,
+      botAccessSource: null,
+      botAccessLastErrorCode: null,
       lastSeenAt: new Date('2026-03-31T00:00:01.000Z'),
       lastWebhookAt: new Date('2026-03-31T00:00:01.000Z'),
       createdAt: new Date('2026-03-31T00:00:01.000Z'),
@@ -58,6 +77,11 @@ function createFixture() {
       status: ChatBotMembershipStatus.ACTIVE,
       capabilities: [],
       permissionsSnapshot: null,
+      botAccessState: ChatBotAccessState.UNKNOWN,
+      botAccessCheckedAt: null,
+      botAccessExpiresAt: null,
+      botAccessSource: null,
+      botAccessLastErrorCode: null,
       lastSeenAt: new Date('2026-03-31T00:00:02.000Z'),
       lastWebhookAt: new Date('2026-03-31T00:00:02.000Z'),
       createdAt: new Date('2026-03-31T00:00:02.000Z'),
@@ -91,6 +115,10 @@ function createFixture() {
               status: membership.status,
               capabilities: membership.capabilities,
               permissionsSnapshot: membership.permissionsSnapshot,
+              botAccessState: membership.botAccessState,
+              botAccessCheckedAt: membership.botAccessCheckedAt,
+              botAccessExpiresAt: membership.botAccessExpiresAt,
+              botAccessSource: membership.botAccessSource,
               lastSeenAt: membership.lastSeenAt,
               lastWebhookAt: membership.lastWebhookAt,
             })),
@@ -112,7 +140,14 @@ function createFixture() {
           where,
           data,
         }: {
-          where: { chatId: string; status?: ChatBotMembershipStatus; botId?: string };
+          where: {
+            chatId: string;
+            status?: ChatBotMembershipStatus;
+            botId?: string;
+            botAccessState?: ChatBotAccessState;
+            botAccessCheckedAt?: Date;
+            botAccessSource?: string;
+          };
           data: Partial<MutableMembership>;
         }) => {
           let count = 0;
@@ -124,6 +159,18 @@ function createFixture() {
               continue;
             }
             if (where.botId && membership.botId !== where.botId) {
+              continue;
+            }
+            if (where.botAccessState && membership.botAccessState !== where.botAccessState) {
+              continue;
+            }
+            if (
+              where.botAccessCheckedAt &&
+              membership.botAccessCheckedAt?.getTime() !== where.botAccessCheckedAt.getTime()
+            ) {
+              continue;
+            }
+            if (where.botAccessSource && membership.botAccessSource !== where.botAccessSource) {
               continue;
             }
             Object.assign(membership, data, { updatedAt: new Date() });
@@ -175,6 +222,92 @@ function createFixture() {
     rememberChatBotBinding: jest.fn(),
     reconcileChatPrimaryByAccess: jest.fn().mockResolvedValue('id613002203036_bot'),
     getEntryBotId: jest.fn(() => 'id613002203036_bot'),
+    recordBotAccessProbe: jest.fn(
+      async ({
+        chatId,
+        botId,
+        access,
+        source,
+        checkedAt,
+        lastErrorCode,
+      }: {
+        chatId: string;
+        botId: string;
+        access: { isAdmin: boolean; isOwner: boolean; permissions?: readonly string[] } | null;
+        source: string;
+        checkedAt: Date;
+        lastErrorCode?: string | null;
+      }) => {
+        const membership = memberships.find(
+          (item) =>
+            item.chatId === chatId &&
+            item.botId === botId &&
+            item.status === ChatBotMembershipStatus.ACTIVE,
+        );
+        if (!membership) {
+          return false;
+        }
+        const permissions = Array.from(
+          new Set((access?.permissions ?? []).map((item) => item.trim()).filter(Boolean)),
+        );
+        membership.permissionsSnapshot = {
+          checkedAt: checkedAt.toISOString(),
+          isAdmin: access?.isAdmin === true,
+          isOwner: access?.isOwner === true,
+          permissions,
+        };
+        membership.botAccessState = !access
+          ? ChatBotAccessState.DENIED
+          : access.isOwner
+            ? ChatBotAccessState.CONFIRMED_OWNER
+            : access.isAdmin
+              ? ChatBotAccessState.CONFIRMED_ADMIN
+              : ChatBotAccessState.CONFIRMED_MEMBER;
+        membership.botAccessCheckedAt = checkedAt;
+        membership.botAccessExpiresAt = new Date(checkedAt.getTime() + 15 * 60_000);
+        membership.botAccessSource = source;
+        membership.botAccessLastErrorCode = lastErrorCode ?? null;
+        return true;
+      },
+    ),
+    selectChatPrimaryBot: jest.fn(
+      async ({
+        chatId,
+        botId,
+        expectedAccessEpoch,
+      }: {
+        chatId: string;
+        botId: string;
+        expectedAccessEpoch?: { checkedAt: Date; source: string };
+      }) => {
+        const membership = memberships.find(
+          (item) =>
+            item.chatId === chatId &&
+            item.botId === botId &&
+            item.status === ChatBotMembershipStatus.ACTIVE,
+        );
+        if (
+          !membership ||
+          (membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+            membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
+          (expectedAccessEpoch &&
+            (membership.botAccessCheckedAt?.getTime() !== expectedAccessEpoch.checkedAt.getTime() ||
+              membership.botAccessSource !== expectedAccessEpoch.source))
+        ) {
+          return false;
+        }
+        for (const item of memberships) {
+          if (item.chatId === chatId) {
+            item.role =
+              item === membership ? ChatBotMembershipRole.PRIMARY : ChatBotMembershipRole.STANDBY;
+          }
+        }
+        chat.botId = botId;
+        chat.primaryBotId = botId;
+        maxBotLinkService.rememberChatBotBinding(chatId, botId);
+        return true;
+      },
+    ),
   };
 
   const bots = [
@@ -207,6 +340,9 @@ function createFixture() {
     isManagedRefreshSourceBackoffActive: jest.fn().mockResolvedValue(false),
     activateManagedRefreshSourceBackoff: jest.fn().mockResolvedValue(undefined),
   };
+  const managedEntityAccessLossService = {
+    recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
+  };
 
   return {
     service: new MaxBotExecutionPlannerService(
@@ -215,6 +351,7 @@ function createFixture() {
       maxBotLinkService as never,
       maxBotRegistry as never,
       chatContextCache as never,
+      managedEntityAccessLossService as never,
     ),
     chat,
     bots,
@@ -223,6 +360,7 @@ function createFixture() {
     maxClient,
     maxBotLinkService,
     chatContextCache,
+    managedEntityAccessLossService,
   };
 }
 
@@ -310,6 +448,11 @@ describe('MaxBotExecutionPlannerService', () => {
           status: ChatBotMembershipStatus.ACTIVE,
           capabilities: [],
           permissionsSnapshot: null,
+          botAccessState: ChatBotAccessState.UNKNOWN,
+          botAccessCheckedAt: null,
+          botAccessExpiresAt: null,
+          botAccessSource: null,
+          botAccessLastErrorCode: null,
           lastSeenAt: timestamp,
           lastWebhookAt: timestamp,
           createdAt: timestamp,
@@ -383,9 +526,61 @@ describe('MaxBotExecutionPlannerService', () => {
       'chat-1',
       'id613002203036_4_bot',
     );
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'id613002203036_4_bot',
+        source: 'execution_planner_primary',
+        allowMembershipRecovery: false,
+      }),
+    );
+    expect(fixture.maxBotLinkService.selectChatPrimaryBot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'id613002203036_4_bot',
+        expectedAccessEpoch: expect.objectContaining({
+          source: 'execution_planner_primary',
+        }),
+      }),
+    );
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot')?.role,
     ).toBe(ChatBotMembershipRole.PRIMARY);
+  });
+
+  it('does not select a primary when removal wins after the access probe', async () => {
+    const fixture = createFixture();
+    const targetMembership = fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    );
+    if (!targetMembership) {
+      throw new Error('standby membership fixture missing');
+    }
+    fixture.maxBotLinkService.selectChatPrimaryBot.mockImplementationOnce(async () => {
+      targetMembership.status = ChatBotMembershipStatus.REMOVED;
+      return false;
+    });
+
+    await expect(
+      fixture.service.setPrimaryBot({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'id613002203036_4_bot',
+      }),
+    ).rejects.toThrow('Доступ бота изменился во время назначения');
+
+    expect(fixture.chat).toMatchObject({
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    expect(targetMembership).toMatchObject({
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.REMOVED,
+    });
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_bot')?.role,
+    ).toBe(ChatBotMembershipRole.PRIMARY);
+    expect(fixture.maxBotLinkService.rememberChatBotBinding).not.toHaveBeenCalled();
   });
 
   it('rejects manual primary selection when the target bot no longer has admin access', async () => {
@@ -492,6 +687,7 @@ describe('MaxBotExecutionPlannerService', () => {
 
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
       botId: 'id613002203036_4_bot',
+      bypassCache: true,
       trafficClass: 'background',
       timeoutMs: 1_500,
       sourceTag: 'managed_refresh',
@@ -591,16 +787,8 @@ describe('MaxBotExecutionPlannerService', () => {
 
     expect(fixture.chatContextCache.isManagedRefreshSourceBackoffActive).toHaveBeenCalledTimes(1);
     expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
-    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          chatId_botId: {
-            chatId: 'chat-1',
-            botId: 'id613002203036_4_bot',
-          },
-        },
-      }),
-    );
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.updateMany).not.toHaveBeenCalled();
   });
 
   it('keeps capabilities unknown instead of clearing them when managed_refresh is deferred without a stored snapshot', async () => {
@@ -625,7 +813,7 @@ describe('MaxBotExecutionPlannerService', () => {
     expect(standbyMembership).toEqual(
       expect.objectContaining({
         capabilities: ['suggestion_delivery'],
-        permissionsSnapshot: expect.anything(),
+        permissionsSnapshot: null,
         botAccessState: 'UNKNOWN',
         botAccessCheckedAt: null,
       }),
@@ -686,21 +874,38 @@ describe('MaxBotExecutionPlannerService', () => {
       expect.anything(),
       'Failed to refresh bot access snapshot for execution planner',
     );
-    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          capabilities: [],
-          botAccessState: 'DENIED',
-          botAccessLastErrorCode: 'chat.denied',
-          permissionsSnapshot: {
-            checkedAt: '2026-05-14T09:10:00.000Z',
-            isAdmin: false,
-            isOwner: false,
-            permissions: [],
-          },
-        }),
-      }),
-    );
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'id613002203036_4_bot',
+      access: null,
+      source: 'execution_planner_refresh',
+      checkedAt: new Date('2026-05-14T09:10:00.000Z'),
+      lastErrorCode: 'chat.denied',
+      allowMembershipRecovery: false,
+    });
+    expect(
+      fixture.managedEntityAccessLossService.recordIfManagedEntityAccessLost,
+    ).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'id613002203036_4_bot',
+      operation: 'lookup',
+      source: 'execution_planner_refresh',
+      error: deniedError,
+      lifecycleEventAt: new Date('2026-05-14T09:10:00.000Z'),
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    });
+    expect(standbyMembership).toMatchObject({
+      capabilities: [],
+      botAccessState: ChatBotAccessState.DENIED,
+      botAccessLastErrorCode: 'chat.denied',
+      permissionsSnapshot: {
+        checkedAt: '2026-05-14T09:10:00.000Z',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      },
+    });
     expect(standbyMembership.capabilities).toEqual([]);
     expect(plan?.sharedMode).toBe('shared-standby');
     expect(
@@ -733,12 +938,13 @@ describe('MaxBotExecutionPlannerService', () => {
     ).rejects.toThrow('подтверждёнными admin/owner');
 
     expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
-    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
-          botAccessState: 'DENIED',
-          botAccessLastErrorCode: 'access.denied',
-        }),
+        chatId: 'chat-1',
+        botId: 'id613002203036_4_bot',
+        access: null,
+        source: 'execution_planner_primary',
+        lastErrorCode: 'access.denied',
       }),
     );
   });
@@ -781,27 +987,26 @@ describe('MaxBotExecutionPlannerService', () => {
       jest.useRealTimers();
     }
 
-    expect(fixture.prisma.chatBotMembership.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          chatId_botId: {
-            chatId: 'chat-1',
-            botId: 'id613002203036_4_bot',
-          },
-        },
-        data: expect.objectContaining({
-          capabilities: [],
-          botAccessState: 'DENIED',
-          botAccessLastErrorCode: 'chat.denied',
-          permissionsSnapshot: {
-            checkedAt: '2026-05-14T09:15:00.000Z',
-            isAdmin: false,
-            isOwner: false,
-            permissions: [],
-          },
-        }),
-      }),
-    );
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'id613002203036_4_bot',
+      access: null,
+      source: 'execution_planner_assist',
+      checkedAt: new Date('2026-05-14T09:15:00.000Z'),
+      lastErrorCode: 'chat.denied',
+      allowMembershipRecovery: false,
+    });
+    expect(standbyMembership).toMatchObject({
+      capabilities: [],
+      botAccessState: ChatBotAccessState.DENIED,
+      botAccessLastErrorCode: 'chat.denied',
+      permissionsSnapshot: {
+        checkedAt: '2026-05-14T09:15:00.000Z',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      },
+    });
     expect(standbyMembership.capabilities).toEqual([]);
   });
 

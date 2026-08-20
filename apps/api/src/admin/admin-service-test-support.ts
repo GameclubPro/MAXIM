@@ -504,6 +504,7 @@ export function createPrismaMock() {
   };
   const prisma = {
     chat: {
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
       upsert: jest.fn().mockResolvedValue({
         id: 'chat-1',
         title: 'Команда MAX',
@@ -518,6 +519,9 @@ export function createPrismaMock() {
         entityType: 'CHAT',
       }),
       count: jest.fn().mockResolvedValue(0),
+    },
+    chatMembershipActivityEvent: {
+      findFirst: jest.fn().mockResolvedValue(null),
     },
     managedBotChatCatalog: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -1016,10 +1020,21 @@ export function createPrismaMock() {
     $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
   };
+  const transactionPrisma = new Proxy(prisma, {
+    get(target, property, receiver) {
+      if (property !== '$queryRaw') {
+        return Reflect.get(target, property, receiver);
+      }
+      return async (...args: unknown[]) =>
+        /FOR UPDATE OF chat/u.test(extractSqlText(args))
+          ? [{ id: 'chat-1' }]
+          : prisma.$queryRaw(...args);
+    },
+  });
   prisma.$transaction = jest.fn(
     (input: unknown[] | ((tx: typeof prisma) => Promise<unknown> | unknown)) => {
       if (typeof input === 'function') {
-        return Promise.resolve(input(prisma));
+        return Promise.resolve(input(transactionPrisma));
       }
       return Promise.all(input as Promise<unknown>[]);
     },
@@ -1610,6 +1625,38 @@ export function createChatContextCacheMock(overrides: Record<string, unknown> = 
     invalidate: jest.fn().mockResolvedValue(undefined),
     getAdminAccess: jest.fn().mockResolvedValue(null),
     setAdminAccess: jest.fn().mockResolvedValue(undefined),
+    applyAdminAccessEpochMutation: jest
+      .fn()
+      .mockImplementation(
+        async (params: {
+          chatId: string;
+          userId: string;
+          state: string;
+          publishedSummary?: ChatSummary;
+        }) => {
+          for (const entityType of ['chat', 'channel']) {
+            const key = buildScopeKey(params.userId, entityType);
+            const current = publishedSnapshotByScope.get(key) as
+              | ({ items: ChatSummary[]; itemCount: number } & Record<string, unknown>)
+              | null
+              | undefined;
+            if (!current || !Array.isArray(current.items)) {
+              continue;
+            }
+            const remaining = current.items.filter((item) => item.id !== params.chatId);
+            const items =
+              params.state === 'granted' && params.publishedSummary?.entityType === entityType
+                ? [params.publishedSummary, ...remaining]
+                : remaining;
+            publishedSnapshotByScope.set(key, {
+              ...current,
+              itemCount: items.length,
+              items,
+            });
+          }
+          return true;
+        },
+      ),
     rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
     getManagedEntityHeader: jest.fn().mockResolvedValue(null),
     setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
@@ -1677,6 +1724,7 @@ export function createChatContextCacheMock(overrides: Record<string, unknown> = 
       .fn()
       .mockImplementation(async (userId: string, entityType: string, snapshot: unknown) => {
         publishedSnapshotByScope.set(buildScopeKey(userId, entityType), snapshot);
+        return true;
       }),
     clearManagedEntitiesPublishedSnapshot: jest
       .fn()
@@ -1695,6 +1743,57 @@ export function createChatContextCacheMock(overrides: Record<string, unknown> = 
           publishedDiffByScope.set(buildDiffScopeKey(userId, entityType, baseVersion), diff);
         },
       ),
+    upsertManagedEntityPublishedSnapshot: jest
+      .fn()
+      .mockImplementation(async (userId: string, summary: ChatSummary) => {
+        const currentKey = buildScopeKey(userId, summary.entityType);
+        const oppositeType = summary.entityType === 'chat' ? 'channel' : 'chat';
+        const oppositeKey = buildScopeKey(userId, oppositeType);
+        const current = publishedSnapshotByScope.get(currentKey) as
+          | ({ items: ChatSummary[]; itemCount: number } & Record<string, unknown>)
+          | null
+          | undefined;
+        const opposite = publishedSnapshotByScope.get(oppositeKey) as
+          | ({ items: ChatSummary[]; itemCount: number } & Record<string, unknown>)
+          | null
+          | undefined;
+        const previous = [...(current?.items ?? []), ...(opposite?.items ?? [])].find(
+          (item) => item.id === summary.id,
+        );
+        const nextSummary: ChatSummary = {
+          ...summary,
+          link: summary.link === undefined ? (previous?.link ?? null) : summary.link,
+        };
+        if (summary.avatarUrl === undefined && previous?.avatarUrl !== undefined) {
+          nextSummary.avatarUrl = previous.avatarUrl;
+        }
+        const items = [
+          nextSummary,
+          ...(current?.items ?? []).filter((item) => item.id !== summary.id),
+        ];
+        publishedSnapshotByScope.set(currentKey, {
+          ...(current ?? {}),
+          version: `test-upsert:${summary.id}`,
+          builtAt: new Date().toISOString(),
+          lastSyncedAt: (current?.lastSyncedAt as string | null | undefined) ?? null,
+          itemCount: items.length,
+          itemsHash: `test-upsert:${summary.id}:${items.length}`,
+          items,
+        });
+
+        if (opposite?.items.some((item) => item.id === summary.id)) {
+          const oppositeItems = opposite.items.filter((item) => item.id !== summary.id);
+          if (oppositeItems.length === 0) {
+            publishedSnapshotByScope.delete(oppositeKey);
+          } else {
+            publishedSnapshotByScope.set(oppositeKey, {
+              ...opposite,
+              itemCount: oppositeItems.length,
+              items: oppositeItems,
+            });
+          }
+        }
+      }),
     getManagedEntitiesRecentBootstrap: jest
       .fn()
       .mockImplementation(async (entityType: string, userId?: string | null) =>
@@ -1760,127 +1859,13 @@ export function createChatContextCacheMock(overrides: Record<string, unknown> = 
   };
 }
 
-export async function flushAsyncTasks() {
-  await new Promise((resolve) => setImmediate(resolve));
-  await Promise.resolve();
-}
-
-export function createDeferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
-
-  return {
-    promise,
-    resolve,
-    reject,
-  };
-}
-
-export function createLocalManagedEntityRow(options: {
-  chatId: string;
-  title: string;
-  entityType: ManagedEntityType;
-  createdAt?: string;
-}) {
-  return {
-    chat_id: options.chatId,
-    chat_title: options.title,
-    chat_type: options.entityType,
-    created_at: new Date(options.createdAt ?? '2026-03-02T10:00:00.000Z'),
-  };
-}
-
-export function decodeBase64UrlJson<T>(value: string): T {
-  return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as T;
-}
-
-export function readButtonUrl(
-  button: { url?: string; webApp?: string } | null | undefined,
-): string {
-  const url = typeof button?.webApp === 'string' ? button.webApp : button?.url;
-  if (typeof url !== 'string' || url.trim().length === 0) {
-    throw new Error('Button URL is missing');
-  }
-
-  return url;
-}
-
-export function readDialogButtonToken(
-  button: { url?: string; webApp?: string } | null | undefined,
-): string {
-  const url = new URL(readButtonUrl(button));
-  const directToken = url.searchParams.get('token');
-  if (directToken) {
-    return directToken;
-  }
-
-  const startParam = url.searchParams.get('startapp');
-  if (!startParam?.startsWith('cd-')) {
-    throw new Error('Dialog launch payload is missing');
-  }
-
-  const launch = decodeBase64UrlJson<{ t: string }>(startParam.slice(3));
-  return launch.t;
-}
-
-export async function publishCommentsDialogToken(
-  service: AdminService,
-  maxClient: { sendMessageImmediateWithResolvedLink: jest.Mock },
-) {
-  await service.publishChannelEngagementMessage(
-    'channel-1',
-    {
-      userId: 'admin-1',
-      username: null,
-      displayName: null,
-      chatTitle: null,
-    },
-    {
-      text: 'Нажмите кнопку ниже.',
-      commentsButtonText: 'Комментарии',
-      suggestButtonText: 'Предложить пост',
-    },
-  );
-
-  const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
-  const commentsButton = options.buttons?.[0]?.[0];
-  return readDialogButtonToken(commentsButton);
-}
-
-export async function publishSuggestDialogToken(
-  service: AdminService,
-  maxClient: { sendMessageImmediateWithResolvedLink: jest.Mock },
-) {
-  await service.publishChannelEngagementMessage(
-    'channel-1',
-    {
-      userId: 'admin-1',
-      username: null,
-      displayName: null,
-      chatTitle: null,
-    },
-    {
-      text: 'Нажмите кнопку ниже.',
-      commentsButtonText: 'Комментарии',
-      suggestButtonText: 'Предложить пост',
-    },
-  );
-
-  const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
-  const suggestButton = options.buttons?.[0]?.[0];
-  const suggestUrl = new URL(readButtonUrl(suggestButton));
-  const suggestStartParam = suggestUrl.searchParams.get('start');
-  if (suggestStartParam) {
-    const parsedSuggestion = service.parseChannelSuggestionStartPayload(suggestStartParam);
-    if (!parsedSuggestion) {
-      throw new Error('Expected bot suggestion start payload');
-    }
-    return parsedSuggestion.token;
-  }
-
-  return readDialogButtonToken(suggestButton);
-}
+export {
+  createDeferred,
+  createLocalManagedEntityRow,
+  decodeBase64UrlJson,
+  flushAsyncTasks,
+  publishCommentsDialogToken,
+  publishSuggestDialogToken,
+  readButtonUrl,
+  readDialogButtonToken,
+} from './admin-service-focused-test-support';

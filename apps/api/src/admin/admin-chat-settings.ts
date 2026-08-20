@@ -51,6 +51,7 @@ export type ChatSettingsCurrentState = Pick<
   | 'nightModeForceCloseUntil'
 >;
 
+// Compatibility data for Chat create branches; existing routes are owned by MaxBotLinkService.
 export type ResolvedBotAssignmentData = {
   botId?: string;
   primaryBotId?: string;
@@ -662,7 +663,6 @@ export async function readChatSettings(params: {
       },
     },
     update: {
-      ...params.botAssignmentData,
       catalogKind: ChatCatalogKind.MANAGED,
       settings: {
         upsert: {
@@ -795,7 +795,6 @@ export async function saveChatSettings(params: {
       },
     },
     update: {
-      ...botAssignmentData,
       catalogKind: ChatCatalogKind.MANAGED,
       settings: {
         upsert: {

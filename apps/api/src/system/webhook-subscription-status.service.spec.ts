@@ -1,8 +1,5 @@
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
-import {
-  MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES,
-  MAX_REQUIRED_WEBHOOK_UPDATE_TYPES,
-} from '../max/max-webhook-subscription.constants';
+import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 
 type RedisMock = {
   get: jest.Mock<Promise<string | null>, [string]>;
@@ -50,7 +47,7 @@ describe('WebhookSubscriptionStatusService', () => {
     redisInstances.length = 0;
   });
 
-  it('uses the base required event list in a pending shadow snapshot', async () => {
+  it('uses the extended event list in a pending shadow snapshot', async () => {
     const service = new WebhookSubscriptionStatusService({
       getOrThrow: jest.fn().mockReturnValue('redis://localhost:6379/0'),
       get: jest.fn().mockReturnValue('shadow'),
@@ -58,15 +55,15 @@ describe('WebhookSubscriptionStatusService', () => {
 
     expect(service.createPendingSnapshot()).toEqual(
       expect.objectContaining({
-        requiredUpdateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
-        missingUpdateTypes: [...MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        missingUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       }),
     );
 
     await service.onModuleDestroy();
   });
 
-  it('uses the extended event list only after canary/on is selected', async () => {
+  it('uses the extended event list when on is selected', async () => {
     const service = new WebhookSubscriptionStatusService({
       getOrThrow: jest.fn().mockReturnValue('redis://localhost:6379/0'),
       get: jest.fn().mockReturnValue('on'),

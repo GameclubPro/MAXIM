@@ -1127,6 +1127,7 @@ export class VkPublishService {
     });
 
     let maxSendAttempted = false;
+    let maxSendAttemptStartedAt: Date | null = null;
     let attemptedBotId: string | null = null;
     let entityType: ChatEntityType | null = null;
     try {
@@ -1188,6 +1189,7 @@ export class VkPublishService {
           return options;
         },
         onAttempt: (botId) => {
+          maxSendAttemptStartedAt = new Date();
           attemptedBotId = botId;
           maxSendAttempted = true;
         },
@@ -1326,6 +1328,13 @@ export class VkPublishService {
               source: 'vk_parsing:publish',
               operation: 'send',
               error,
+              ...(maxSendAttemptStartedAt
+                ? {
+                    lifecycleEventAt: maxSendAttemptStartedAt,
+                    lifecycleEventType: 'live_probe',
+                    lifecycleSource: 'live_probe',
+                  }
+                : {}),
             });
       const accessLossRecorded = routedAccessLossRecorded || Boolean(accessLossResult?.recorded);
       const queueOwnsOrdinaryFailure = Boolean(params.queuedIdempotencyKey);

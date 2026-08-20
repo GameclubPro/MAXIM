@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
-import type { ChatSettings } from '../prisma/prisma-client';
+import { Prisma, type ChatSettings } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { MaxClientService } from '../max/max-client.service';
@@ -33,6 +33,11 @@ type ChatContextCacheWithAdminBatch = ChatContextCacheService & {
     chatId: string,
     userIds: readonly string[],
   ) => Promise<Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>>;
+};
+
+type RemoteChatAdminAccessProbe = {
+  accessStates: Map<string, RemoteChatAdminAccessState>;
+  probeStartedAt: Date;
 };
 
 @Injectable()
@@ -287,6 +292,16 @@ export class ModerationAccessService {
       },
     );
     if (!senderAdminCheck.isAdmin) {
+      if (senderAdminCheck.source === 'local_fallback') {
+        this.logger.debug(
+          {
+            chatId,
+            userId: senderId,
+          },
+          'Skipped destructive bot-account moderation because admin access is unresolved',
+        );
+        return true;
+      }
       return false;
     }
 
@@ -323,10 +338,11 @@ export class ModerationAccessService {
     const cacheKey = this.buildChatAdminAccessLookupKey(chatId, userId);
     const now = Date.now();
     const cached = this.chatAdminAccessCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
+    const fencedSharedCache = this.supportsFencedSharedAdminAccessCache();
+    if (!fencedSharedCache && cached && cached.expiresAt > now) {
       return cached.state;
     }
-    const staleCached = cached?.state ?? null;
+    const staleCached = fencedSharedCache ? null : (cached?.state ?? null);
 
     const cachedFromSharedStore = await this.readChatAdminAccessFromSharedCache(
       chatId,
@@ -336,6 +352,9 @@ export class ModerationAccessService {
     if (cachedFromSharedStore) {
       this.chatAdminLookupBackoffUntilMs.delete(cacheKey);
       return cachedFromSharedStore;
+    }
+    if (fencedSharedCache) {
+      this.chatAdminAccessCache.delete(cacheKey);
     }
 
     const backoffUntilMs = this.chatAdminLookupBackoffUntilMs.get(cacheKey) ?? 0;
@@ -405,12 +424,27 @@ export class ModerationAccessService {
       timeoutMs?: number;
     } = {},
   ): Promise<Map<string, RemoteChatAdminAccessState>> {
+    return (await this.loadRemoteChatAdminAccessProbeBatch(chatId, userIds, options)).accessStates;
+  }
+
+  private async loadRemoteChatAdminAccessProbeBatch(
+    chatId: string,
+    userIds: readonly string[],
+    options: {
+      trafficClass?: 'interactive' | 'background';
+      sourceTag?: string;
+      timeoutMs?: number;
+    } = {},
+  ): Promise<RemoteChatAdminAccessProbe> {
     const normalizedUserIds = Array.from(
       new Set(userIds.map((userId) => userId.trim()).filter((value) => value.length > 0)),
     );
     const results = new Map<string, RemoteChatAdminAccessState>();
     if (normalizedUserIds.length === 0) {
-      return results;
+      return {
+        accessStates: results,
+        probeStartedAt: new Date(),
+      };
     }
 
     const resolvedBotId = await resolveChatReadBotId(
@@ -430,6 +464,7 @@ export class ModerationAccessService {
     const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
 
     if (typeof maxClientWithAccess.getChatMembersAccess === 'function') {
+      const probeStartedAt = new Date();
       const accessByUserId = await this.executeRemoteChatAdminLookupWithGuard(
         () =>
           maxClientWithAccess.getChatMembersAccess!.call(
@@ -452,17 +487,27 @@ export class ModerationAccessService {
         results.set(normalizedUserId, accessState);
       }
 
-      return results;
+      return {
+        accessStates: results,
+        probeStartedAt,
+      };
     }
 
     const getChatAdminIds = maxClientWithAccess.getChatAdminIds;
     if (typeof getChatAdminIds !== 'function') {
-      return results;
+      return {
+        accessStates: results,
+        probeStartedAt: new Date(),
+      };
     }
 
+    const probeStartedAt = new Date();
     const rawAdminUserIds = await getChatAdminIds.call(this.maxClient, chatId, requestOptions);
     if (!Array.isArray(rawAdminUserIds)) {
-      return results;
+      return {
+        accessStates: results,
+        probeStartedAt,
+      };
     }
 
     for (const normalizedUserId of normalizedUserIds) {
@@ -472,7 +517,10 @@ export class ModerationAccessService {
       );
     }
 
-    return results;
+    return {
+      accessStates: results,
+      probeStartedAt,
+    };
   }
 
   shouldForceSynchronousRemoteAdminLookup(
@@ -551,30 +599,35 @@ export class ModerationAccessService {
     return result;
   }
 
-  async persistRemoteAdminGrant(chatId: string, userId: string): Promise<void> {
-    if (typeof this.prisma.chatAdminAllowlist?.upsert !== 'function') {
+  async persistRemoteAdminGrant(
+    chatId: string,
+    userId: string,
+    probeStartedAt = new Date(),
+  ): Promise<void> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
       return;
     }
 
     try {
-      await this.prisma.chatAdminAllowlist.upsert({
-        where: {
-          chatId_userId: {
-            chatId,
-            userId,
-          },
-        },
-        create: {
-          chatId,
-          userId,
-        },
-        update: {},
+      const accessStates = new Map<string, RemoteChatAdminAccessState>([
+        [normalizedUserId, 'granted'],
+      ]);
+      const acceptedUserIds = await this.acceptRemoteChatAdminAccessProbe({
+        chatId,
+        accessStates,
+        probeStartedAt,
       });
-      if (typeof this.chatContextCache?.rememberChatAdminUser === 'function') {
-        await this.chatContextCache.rememberChatAdminUser(chatId, userId);
-      } else {
-        await this.chatContextCache?.invalidate?.(chatId);
+      if (!acceptedUserIds.has(normalizedUserId)) {
+        return;
       }
+
+      await this.publishAcceptedRemoteChatAdminAccess({
+        chatId,
+        userId: normalizedUserId,
+        state: 'granted',
+        probeStartedAt,
+      });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -582,9 +635,89 @@ export class ModerationAccessService {
           userId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to persist remotely confirmed chat admin access',
+        'Failed to publish remotely confirmed chat admin access',
       );
     }
+  }
+
+  private async acceptRemoteChatAdminAccessProbe(params: {
+    chatId: string;
+    accessStates: ReadonlyMap<string, RemoteChatAdminAccessState>;
+    probeStartedAt: Date;
+  }): Promise<Set<string>> {
+    const normalizedEntries = [...params.accessStates.entries()]
+      .map(([userId, state]) => [userId.trim(), state] as const)
+      .filter(([userId]) => userId.length > 0);
+    if (normalizedEntries.length === 0) {
+      return new Set<string>();
+    }
+
+    if (typeof this.prisma.$transaction !== 'function') {
+      return new Set<string>();
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const lockedChats = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${params.chatId}
+        FOR UPDATE OF chat
+      `);
+      if (lockedChats.length !== 1) {
+        return new Set<string>();
+      }
+
+      const variantToUserIds = new Map<string, Set<string>>();
+      for (const [userId] of normalizedEntries) {
+        for (const variant of this.buildUserIdVariants(userId)) {
+          let mappedUserIds = variantToUserIds.get(variant);
+          if (!mappedUserIds) {
+            mappedUserIds = new Set<string>();
+            variantToUserIds.set(variant, mappedUserIds);
+          }
+          mappedUserIds.add(userId);
+        }
+      }
+
+      const userIdVariants = [...variantToUserIds.keys()];
+      const supersedingRows = await tx.$queryRaw<Array<{ userId: string }>>(Prisma.sql`
+        SELECT activity."user_id" AS "userId"
+        FROM "chat_membership_activity_events" AS activity
+        WHERE activity."chat_id" = ${params.chatId}
+          AND activity."user_id" IN (${Prisma.join(userIdVariants)})
+          AND activity."event_type" IN ('user_added', 'user_removed')
+          AND activity."event_at" >= ${params.probeStartedAt}
+      `);
+      const supersededUserIds = new Set<string>();
+      for (const row of supersedingRows) {
+        for (const userId of variantToUserIds.get(row.userId.trim().toLowerCase()) ?? []) {
+          supersededUserIds.add(userId);
+        }
+      }
+
+      const acceptedUserIds = new Set<string>();
+      for (const [userId] of normalizedEntries) {
+        if (supersededUserIds.has(userId)) {
+          continue;
+        }
+        acceptedUserIds.add(userId);
+      }
+      return acceptedUserIds;
+    });
+  }
+
+  private async publishAcceptedRemoteChatAdminAccess(params: {
+    chatId: string;
+    userId: string;
+    state: RemoteChatAdminAccessState;
+    probeStartedAt: Date;
+  }): Promise<boolean> {
+    return this.writeChatAdminAccessToSharedCache(
+      params.chatId,
+      params.userId,
+      params.state,
+      params.probeStartedAt,
+    );
   }
 
   private enqueueChatAdminLookupBatch(
@@ -651,13 +784,39 @@ export class ModerationAccessService {
     }
 
     try {
-      const accessStates = await this.loadRemoteChatAdminAccessBatch(chatId, normalizedUserIds);
+      const probe = await this.loadRemoteChatAdminAccessProbeBatch(chatId, normalizedUserIds);
+      const acceptedUserIds = await this.acceptRemoteChatAdminAccessProbe({
+        chatId,
+        accessStates: probe.accessStates,
+        probeStartedAt: probe.probeStartedAt,
+      });
       this.chatAdminChatBackoffUntilMs.delete(chatId);
 
       for (const lookup of lookups) {
         const normalizedUserId = lookup.userId.trim();
-        const accessState = accessStates.get(normalizedUserId) ?? lookup.staleCached;
+        const probedAccessState = probe.accessStates.get(normalizedUserId) ?? null;
+        if (probedAccessState && !acceptedUserIds.has(normalizedUserId)) {
+          this.chatAdminAccessCache.delete(lookup.cacheKey);
+          lookup.resolve(null);
+          continue;
+        }
+
+        const accessState = probedAccessState ?? lookup.staleCached;
         if (!accessState) {
+          lookup.resolve(null);
+          continue;
+        }
+
+        if (
+          probedAccessState &&
+          !(await this.publishAcceptedRemoteChatAdminAccess({
+            chatId,
+            userId: lookup.userId,
+            state: probedAccessState,
+            probeStartedAt: probe.probeStartedAt,
+          }))
+        ) {
+          this.chatAdminAccessCache.delete(lookup.cacheKey);
           lookup.resolve(null);
           continue;
         }
@@ -667,11 +826,6 @@ export class ModerationAccessService {
           state: accessState,
         });
         this.chatAdminLookupBackoffUntilMs.delete(lookup.cacheKey);
-        void this.writeChatAdminAccessToSharedCache(chatId, lookup.userId, accessState);
-
-        if (accessState === 'granted') {
-          void this.persistRemoteAdminGrant(chatId, lookup.userId);
-        }
 
         lookup.resolve(accessState);
       }
@@ -896,12 +1050,16 @@ export class ModerationAccessService {
 
     for (const normalizedUserId of normalizedUserIds) {
       const variants = userIdVariants.get(normalizedUserId) ?? [];
-      for (const variant of variants) {
-        const cached = variantStates.get(variant);
-        if (cached === 'granted' || cached === 'user_denied') {
-          results.set(normalizedUserId, cached);
-          break;
-        }
+      const cachedStates = variants.map((variant) => variantStates.get(variant));
+      const hasGranted = cachedStates.includes('granted');
+      const hasUserDenied = cachedStates.includes('user_denied');
+      if (hasGranted && !hasUserDenied) {
+        results.set(normalizedUserId, 'granted');
+      } else if (
+        cachedStates.length > 0 &&
+        cachedStates.every((state) => state === 'user_denied')
+      ) {
+        results.set(normalizedUserId, 'user_denied');
       }
     }
 
@@ -912,18 +1070,27 @@ export class ModerationAccessService {
     chatId: string,
     userId: string,
     state: RemoteChatAdminAccessState,
-  ): Promise<void> {
-    const chatContextCache = this.chatContextCache;
-    if (!chatContextCache?.setAdminAccess) {
-      return;
+    probeStartedAt: Date,
+  ): Promise<boolean> {
+    const chatContextCache = this.chatContextCache as ChatContextCacheWithAdminBatch | undefined;
+    if (!chatContextCache || typeof chatContextCache.applyAdminAccessEpochMutation !== 'function') {
+      return state !== 'granted';
     }
 
+    const variants = [...this.buildUserIdVariants(userId)];
     try {
-      await Promise.all(
-        [...this.buildUserIdVariants(userId)].map((variant) =>
-          chatContextCache.setAdminAccess(chatId, variant, state),
-        ),
-      );
+      for (const variant of variants) {
+        const applied = await chatContextCache.applyAdminAccessEpochMutation({
+          chatId,
+          userId: variant,
+          state,
+          eventAt: probeStartedAt,
+        });
+        if (!applied) {
+          return false;
+        }
+      }
+      return true;
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -933,7 +1100,17 @@ export class ModerationAccessService {
         },
         'Failed to write chat admin access to shared cache',
       );
+      return false;
     }
+  }
+
+  private supportsFencedSharedAdminAccessCache(): boolean {
+    const chatContextCache = this.chatContextCache as ChatContextCacheWithAdminBatch | undefined;
+    return (
+      typeof chatContextCache?.applyAdminAccessEpochMutation === 'function' &&
+      (typeof chatContextCache.getAdminAccess === 'function' ||
+        typeof chatContextCache.getAdminAccessBatch === 'function')
+    );
   }
 
   isSenderChatAdmin(adminUserIds: string[] | undefined, userId: string): boolean {

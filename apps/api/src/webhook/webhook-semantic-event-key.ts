@@ -63,7 +63,26 @@ function readCallback(payload: RecordLike): RecordLike | null {
     rawEvent ? asRecord(rawEvent.callback) : null,
     rawEvent ? asRecord(rawEvent.message_callback) : null,
   ];
-  return candidates.find((candidate) => candidate !== null) ?? null;
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const nested = asRecord(candidate.callback);
+    if (nested) {
+      return nested;
+    }
+
+    if (
+      candidate.callback_id !== undefined ||
+      candidate.callbackId !== undefined ||
+      candidate.id !== undefined
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function readUser(payload: RecordLike): RecordLike | null {
@@ -274,6 +293,14 @@ export function buildWebhookSemanticEventKey(payload: unknown): string | null {
   if (chatId && messageId && updateType === 'message_edited') {
     const eventAtIso = hasTrustedEventTimestamp ? readEventTimestampIso(row) : null;
     return eventAtIso ? `message:${updateType}:${chatId}:${messageId}:${eventAtIso}` : null;
+  }
+
+  if (updateType === 'chat_title_changed') {
+    const chatTitle = readString(readMessage(row)?.chatTitle);
+    const eventAtIso = hasTrustedEventTimestamp ? readEventTimestampIso(row) : null;
+    return chatId && chatTitle && eventAtIso
+      ? `chat-title:${chatId}:${eventAtIso}:${chatTitle}`
+      : null;
   }
 
   const callbackId = readCallbackId(row);

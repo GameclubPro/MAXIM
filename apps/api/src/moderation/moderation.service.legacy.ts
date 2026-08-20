@@ -127,12 +127,14 @@ import {
 } from './duplicate-execution-guards';
 import {
   buildModerationMessageViolationProcessingClaimKey,
-  claimPersistedModerationMessageViolation,
   resolveDuplicateMessageActionClaim,
   type DurableModerationMessageActionClaimResult,
-  type ModerationViolationMessageClaimModel,
   type TerminalDuplicateSanctionEventModel,
 } from './moderation-message-action-claim';
+import {
+  claimAndPersistModerationMessageViolation,
+  claimPersistedMessageViolationProcessing,
+} from './moderation-violation-persistence';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
 import { resolveTrustedDuplicateStateRevision } from './duplicate-message-revision';
@@ -1254,8 +1256,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ) {
     if (!update.message) {
       const callbackId = extractMaxCallbackId(update);
-      if (callbackId) {
-        await this.answerCallbackSafe(callbackId, 'Команда принята');
+      if (
+        this.readLowerString(update.type) === 'message_callback' &&
+        callbackId &&
+        this.readString(update.botId)
+      ) {
+        await this.answerCallbackSafe(
+          callbackId,
+          'Кнопка устарела',
+          undefined,
+          this.readString(update.botId) ?? undefined,
+        );
       }
       return;
     }
@@ -2272,29 +2283,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (violationDeleteIntent) {
         await this.ensureModerationDeleteIntent(violationDeleteIntent);
       }
-      const violationClaimed = await this.claimMessageViolationProcessing({
-        chatId,
-        userId: senderId,
-        messageId,
-        ruleCode: topViolation.ruleCode,
-        updateType,
-      });
+      if (!isCommercialReviewOnly) {
+        this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
+      }
+      const violationClaimed = isCommercialReviewOnly
+        ? await this.claimMessageViolationProcessing({
+            chatId,
+            userId: senderId,
+            messageId,
+            ruleCode: topViolation.ruleCode,
+            updateType,
+          })
+        : await claimAndPersistModerationMessageViolation(
+            this.prisma,
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              ruleCode: topViolation.ruleCode,
+              updateType,
+              score: topViolation.score,
+            },
+            (input) => this.claimMessageViolationProcessing(input),
+            (context) => this.logSkippedDuplicateMessageViolation(context),
+            (claimKey, context) => this.markRedisMessageViolationProcessing(claimKey, context),
+          );
       if (!violationClaimed) {
         this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-dedup');
         return;
       }
 
-      if (!isCommercialReviewOnly) {
-        this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
-        await this.prisma.violation.create({
-          data: {
-            chatId,
-            userId: senderId,
-            ruleCode: topViolation.ruleCode,
-            score: topViolation.score,
-          },
-        });
-      }
       if (this.globalSpammerIntelligence && !isCommercialReviewOnly) {
         this.runGlobalSpammerSideEffect(
           { chatId, userId: senderId, messageId, action: 'record-commercial-spammer-observations' },
@@ -5847,7 +5865,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       updateType,
     });
 
-    const persistedClaim = await this.claimPersistedMessageViolationProcessing({
+    const persistedClaim = await claimPersistedMessageViolationProcessing(this.prisma, {
       ...params,
       messageId,
       updateType,
@@ -5865,7 +5883,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
     if (persistedClaim === 'claimed') {
       if (updateType !== 'message_action') {
-        await this.markRedisMessageViolationProcessing(claimKey, {
+        void this.markRedisMessageViolationProcessing(claimKey, {
           chatId: params.chatId,
           userId: params.userId,
           messageId,
@@ -5931,6 +5949,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private async claimAndPersistMessageScopedModerationViolation(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    ruleCode: string;
+    score: number;
+  }): Promise<boolean> {
+    return claimAndPersistModerationMessageViolation(
+      this.prisma,
+      {
+        ...params,
+        updateType: 'message_action',
+      },
+      (input) => this.claimMessageScopedModerationAction(input),
+      (context) => this.logSkippedDuplicateMessageViolation(context),
+      (claimKey, context) => this.markRedisMessageViolationProcessing(claimKey, context),
+    );
+  }
+
   private async claimDuplicateMessageAction(params: {
     chatId: string;
     userId: string;
@@ -5940,31 +5977,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return resolveDuplicateMessageActionClaim({
       ...params,
       ruleCode,
-      claimPersisted: (input) => this.claimPersistedMessageViolationProcessing(input),
+      claimPersisted: (input) => claimPersistedMessageViolationProcessing(this.prisma, input),
       hasLegacyEvent: () =>
         this.hasPersistedBotModerationEventForMessageViolation({ ...params, ruleCode }),
-    });
-  }
-
-  private async claimPersistedMessageViolationProcessing(params: {
-    chatId: string;
-    userId: string;
-    messageId: string;
-    ruleCode: string;
-    updateType: string;
-    dedupeKey: string;
-    resumeKnownActionOwner?: boolean;
-  }): Promise<'claimed' | 'resumed' | 'duplicate' | 'unavailable' | 'unsupported'> {
-    const { resumeKnownActionOwner, ...data } = params;
-    const claimModel = (
-      this.prisma as unknown as {
-        moderationViolationMessageClaim?: PrismaService['moderationViolationMessageClaim'];
-      }
-    ).moderationViolationMessageClaim;
-    return claimPersistedModerationMessageViolation({
-      model: claimModel as unknown as ModerationViolationMessageClaimModel | undefined,
-      data,
-      resumeKnownActionOwner,
     });
   }
 
@@ -7433,6 +7448,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode: string;
     updateType?: string | null;
     dedupeWindowMs?: number;
+    eventScopedDedupe?: boolean;
   }): Promise<boolean> {
     const updateType =
       params.updateType ??
@@ -7440,12 +7456,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? 'service_member'
         : this.readLowerString(params.update.type)) ??
       'service_member';
+    const eventIdentity =
+      params.eventScopedDedupe === false
+        ? null
+        : this.resolveServiceMemberActionEventIdentity(params.update);
     const windowClaim = await this.claimServiceMemberActionWindow({
       chatId: params.chatId,
       userId: params.userId,
       ruleCode: params.ruleCode,
       updateType,
       dedupeWindowMs: params.dedupeWindowMs ?? SERVICE_MEMBER_ACTION_DEDUPE_WINDOW_MS,
+      eventIdentity,
     });
     if (windowClaim === false) {
       return false;
@@ -7454,7 +7475,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.claimMessageViolationProcessing({
       chatId: params.chatId,
       userId: params.userId,
-      messageId: this.buildServiceMemberActionClaimMessageId(params),
+      messageId: this.buildServiceMemberActionClaimMessageId(params, eventIdentity),
       ruleCode: params.ruleCode,
       updateType,
     });
@@ -7466,6 +7487,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode: string;
     updateType: string;
     dedupeWindowMs: number;
+    eventIdentity: string | null;
   }): Promise<boolean | null> {
     if (!Number.isFinite(params.dedupeWindowMs) || params.dedupeWindowMs <= 0) {
       return null;
@@ -7479,7 +7501,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const semanticHash = createHash('sha256')
-      .update(`${params.chatId}:${params.userId}:${params.ruleCode}:${params.updateType}`)
+      .update(
+        [
+          params.chatId,
+          params.userId,
+          params.ruleCode,
+          params.updateType,
+          params.eventIdentity ?? 'member-window',
+        ].join(':'),
+      )
       .digest('hex')
       .slice(0, 32);
     const counterKey = `moderation:service-member-action-window:v1:${params.ruleCode}:${params.updateType}`;
@@ -7534,18 +7564,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return [...userIds].sort();
   }
 
-  private buildServiceMemberActionClaimMessageId(params: {
-    chatId: string;
-    userId: string;
-    update: MaxUpdate;
-    ruleCode: string;
-  }): string {
+  private buildServiceMemberActionClaimMessageId(
+    params: {
+      chatId: string;
+      userId: string;
+      update: MaxUpdate;
+      ruleCode: string;
+    },
+    eventIdentity: string | null,
+  ): string {
     const eventAtIso = this.resolveServiceMemberActionEventIso(params.update);
     const semanticHash = createHash('sha256')
-      .update(`${params.chatId}:${params.userId}:${params.ruleCode}:${eventAtIso}`)
+      .update(`${params.chatId}:${params.userId}:${params.ruleCode}:${eventIdentity ?? eventAtIso}`)
       .digest('hex')
       .slice(0, 32);
-    return `service-member:${semanticHash}:${eventAtIso}`;
+    return eventIdentity
+      ? `service-member:${semanticHash}:update`
+      : `service-member:${semanticHash}:${eventAtIso}`;
+  }
+
+  private resolveServiceMemberActionEventIdentity(update: MaxUpdate): string | null {
+    if (this.readLowerString(update.eventTimestampSource) === 'ingress') {
+      return null;
+    }
+
+    const timestampMs = this.resolveServiceMemberActionTimestampMs(update);
+    return `event-at:${new Date(timestampMs).toISOString()}`;
   }
 
   private resolveServiceMemberActionEventIso(update: MaxUpdate): string {
@@ -7686,6 +7730,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ruleCode: 'GREETING_MESSAGE',
           updateType: 'user_added',
           dedupeWindowMs: GREETING_MESSAGE_DEDUPE_WINDOW_MS,
+          eventScopedDedupe: false,
         }))
       ) {
         continue;
@@ -9876,14 +9921,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
           return !metadata || !metadata.usable;
         });
-    const conservativeRequiredSubscriptionEnforcement = membership.unresolvedChannelIds.length > 0;
     const requiredSubscriptionChannelMetadata = {
       channelIds: requiredChannelIds,
       requiredChannelIds,
       missingChannelIds: membership.missingChannelIds,
       unresolvedChannelIds: membership.unresolvedChannelIds,
       terminalChannelIds: membership.terminalChannelIds,
-      requiredSubscriptionConservativeEnforcement: conservativeRequiredSubscriptionEnforcement,
     };
     const missingChannels = membership.missingChannelIds
       .map((channelId) => resolvedRequiredChannelsById.get(channelId) ?? null)
@@ -9914,11 +9957,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
     await this.ensureModerationDeleteIntent(deleteIntent);
 
-    const claimed = await this.claimMessageScopedModerationAction({
+    const claimed = await this.claimAndPersistMessageScopedModerationViolation({
       chatId: params.chatId,
       userId: params.userId,
       messageId: params.messageId,
       ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+      score: 1,
     });
     if (!claimed) {
       return true;
@@ -9933,15 +9977,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.follow-up');
     const runRequiredSubscriptionFollowUp = async () => {
-      await this.prisma.violation.create({
-        data: {
-          chatId: params.chatId,
-          userId: params.userId,
-          ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-          score: 1,
-        },
-      });
-
       const requiredSubscriptionViolationCount24h =
         await this.countRecentRequiredSubscriptionViolations(params.chatId, params.userId);
       const action = this.resolveRequiredSubscriptionEscalationAction(
@@ -10342,11 +10377,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
     await this.ensureModerationDeleteIntent(deleteIntent);
 
-    const claimed = await this.claimMessageScopedModerationAction({
+    const claimed = await this.claimAndPersistMessageScopedModerationViolation({
       chatId: params.chatId,
       userId: params.userId,
       messageId: params.messageId,
       ruleCode: INVITATION_ACCESS_RULE_CODE,
+      score: 1,
     });
     if (!claimed) {
       return true;
@@ -10355,15 +10391,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const deleteResult = await this.executeModerationDelete(deleteIntent);
     const messageDeleted = deleteResult.gone;
     this.markWebhookHotPathStage(params.hotPathProfile, 'invitation-access.delete');
-
-    await this.prisma.violation.create({
-      data: {
-        chatId: params.chatId,
-        userId: params.userId,
-        ruleCode: INVITATION_ACCESS_RULE_CODE,
-        score: 1,
-      },
-    });
 
     const invitationAccessViolationCount24h = await this.countRecentInvitationAccessViolations(
       params.chatId,
@@ -11012,7 +11039,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         unresolvedChannelIds: unresolvedNonTerminalChannelIds,
         terminalChannelIds: [...terminalChannelIds],
         checkedChannelCount: requiredChannelIds.length,
-        enforcement: 'conservative',
       });
     }
     const unresolvedTerminalChannelIds = unresolvedChannelIds.filter((channelId) =>
@@ -11025,13 +11051,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         unresolvedChannelIds: unresolvedTerminalChannelIds,
         terminalChannelIds: [...terminalChannelIds],
         checkedChannelCount: requiredChannelIds.length,
-        enforcement: 'fail_open',
       });
     }
 
     const missingChannelIds = requiredChannelIds.filter(
-      (channelId) =>
-        membershipsByChannelId.get(channelId) !== true && !terminalChannelIds.has(channelId),
+      (channelId) => membershipsByChannelId.get(channelId) === false,
     );
 
     return {
@@ -11088,7 +11112,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     unresolvedChannelIds: string[];
     terminalChannelIds: string[];
     checkedChannelCount: number;
-    enforcement: 'conservative' | 'fail_open';
   }): void {
     const cacheKey = [
       params.chatId,
@@ -11110,9 +11133,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         terminalChannelIds: params.terminalChannelIds,
         checkedChannelCount: params.checkedChannelCount,
       },
-      params.enforcement === 'conservative'
-        ? 'Required subscription checks remained unresolved after strict retry; enforcing conservatively'
-        : 'Required subscription checks hit terminal target access errors after strict retry; failing open',
+      'Required subscription checks remained unresolved after strict retry; failing open for unresolved targets',
     );
   }
 
@@ -12535,11 +12556,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     callbackId: string,
     notification: string,
     rateLimitEntityId?: string,
+    botId?: string,
   ): Promise<void> {
     try {
       await this.maxClient.answerCallback(callbackId, notification, undefined, {
         ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
         ...(rateLimitEntityId?.trim() ? { rateLimitEntityId: rateLimitEntityId.trim() } : {}),
+        ...(botId?.trim() ? { botId: botId.trim() } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -12977,6 +13000,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botId: string | null;
     source: string;
     operation: 'send' | 'edit' | 'read';
+    lifecycleEventAt: Date;
     error: unknown;
   }): Promise<boolean> {
     try {
@@ -12987,6 +13011,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         source: params.source,
         operation: params.operation,
         error: params.error,
+        lifecycleEventAt: params.lifecycleEventAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
       });
       if (!result?.recorded) {
         return false;
@@ -13161,6 +13188,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         attemptedBotIds.push(candidateBotId);
       }
 
+      const actionStartedAt = new Date();
       try {
         await params.operation(candidateBotId ?? undefined);
         if (candidateBotId) {
@@ -13184,17 +13212,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               chatId: params.chatId,
               action: params.action,
               botId: candidateBotId,
+              actionStartedAt,
               error,
             });
-            await this.persistModerationActionBotAccessSnapshot(
-              params.chatId,
-              candidateBotId,
-              null,
-              {
-                action: params.action,
-                error,
-              },
-            );
           }
           await this.recordModerationActionProblemChat({
             chatId: params.chatId,
@@ -13221,18 +13241,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     action: 'delete_message' | 'moderate_member';
     botId: string;
+    actionStartedAt: Date;
     error: unknown;
   }): Promise<void> {
     let detached = false;
     const operation = Promise.resolve().then(async () => {
-      await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
-        chatId: params.chatId,
-        botId: params.botId,
-        entityType: null,
-        source: `moderation_action:${params.action}`,
-        operation: params.action === 'delete_message' ? 'delete' : 'member_moderation',
-        error: params.error,
-      });
+      try {
+        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+          chatId: params.chatId,
+          botId: params.botId,
+          entityType: null,
+          source: `moderation_action:${params.action}`,
+          operation: params.action === 'delete_message' ? 'delete' : 'member_moderation',
+          error: params.error,
+          lifecycleEventAt: params.actionStartedAt,
+          lifecycleEventType: 'live_probe',
+          lifecycleSource: 'live_probe',
+        });
+      } finally {
+        await this.persistModerationActionBotAccessSnapshot(
+          params.chatId,
+          params.botId,
+          null,
+          params.actionStartedAt,
+          params.action,
+        );
+      }
     });
     operation.catch((error: unknown) => {
       if (!detached) {
@@ -13320,15 +13354,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         .filter((botId) => botId.length > 0),
     );
     for (const botId of candidateBotIds) {
-      if (skippedBackoffClearBotIds.has(botId)) {
+      if (!confirmedBotIds.has(botId)) {
         continue;
       }
-      if (!confirmedBotIds.has(botId)) {
+      if (skippedBackoffClearBotIds.has(botId)) {
         continue;
       }
       await this.clearModerationActionBotBackoff(params.chatId, params.action, botId);
     }
-    return candidateBotIds;
+    return candidateBotIds.filter((botId) => confirmedBotIds.has(botId));
   }
 
   private async refreshModerationActionBotSnapshots(params: {
@@ -13373,6 +13407,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     await Promise.all(
       botIds.map(async (botId) => {
+        const probeStartedAt = new Date();
         try {
           const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
             botId,
@@ -13381,7 +13416,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             actionHealthLane: 'background',
             timeoutMs: MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS,
           });
+          const persisted = await this.persistModerationActionBotAccessSnapshot(
+            chatId,
+            botId,
+            access,
+            probeStartedAt,
+            action,
+          );
           if (
+            persisted &&
             this.hasModerationActionAccess(access, action, {
               requireExplicitPermission: true,
               entityType,
@@ -13389,17 +13432,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ) {
             confirmedBotIds.add(botId);
           }
-          await this.persistModerationActionBotAccessSnapshot(chatId, botId, access, {
-            action,
-            entityType,
-          });
         } catch (error: unknown) {
           if (this.isTerminalModerationActionPermissionError(error)) {
-            await this.persistModerationActionBotAccessSnapshot(chatId, botId, null, {
+            await this.persistModerationActionBotAccessSnapshot(
+              chatId,
+              botId,
+              null,
+              probeStartedAt,
               action,
-              error,
-              entityType,
-            });
+            );
             await this.recordModerationActionProblemChat({
               chatId,
               action,
@@ -13496,26 +13537,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     botId: string,
     access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'> | null,
-    issue?: {
-      action?: 'delete_message' | 'moderate_member';
-      error?: unknown;
-      entityType?: ChatEntityType | null;
-    },
-  ): Promise<void> {
-    if (typeof this.prisma.chatBotMembership?.updateMany !== 'function') {
-      return;
+    probeStartedAt: Date,
+    action: 'delete_message' | 'moderate_member',
+  ): Promise<boolean> {
+    const recordBotAccessProbe = this.maxBotLinkService?.recordBotAccessProbe;
+    if (typeof recordBotAccessProbe !== 'function') {
+      return false;
     }
 
     try {
-      await this.prisma.chatBotMembership.updateMany({
-        where: {
-          chatId,
-          botId,
-        },
-        data: {
-          ...(access ? { lastSeenAt: new Date() } : {}),
-          permissionsSnapshot: this.buildModerationActionAccessSnapshot(access, issue),
-        },
+      return await recordBotAccessProbe.call(this.maxBotLinkService, {
+        chatId,
+        botId,
+        access,
+        source: `moderation_action_${action}`,
+        checkedAt: probeStartedAt,
+        allowMembershipRecovery: false,
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -13526,6 +13563,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to persist bot self access snapshot for moderation action fallback',
       );
+      return false;
     }
   }
 
@@ -13748,47 +13786,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to clear shared moderation action terminal backoff marker',
       );
     }
-  }
-
-  private buildModerationActionAccessSnapshot(
-    access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'> | null,
-    issue?: {
-      action?: 'delete_message' | 'moderate_member';
-      error?: unknown;
-      entityType?: ChatEntityType | null;
-    },
-  ): Prisma.InputJsonValue {
-    const statusCode = issue?.error ? this.extractStatusCode(issue.error) : null;
-    const code = issue?.error ? this.extractMaxErrorCode(issue.error) : null;
-    const message = issue?.error ? this.extractMaxErrorMessage(issue.error) : null;
-    const permissions = this.normalizeModerationActionPermissions(access?.permissions);
-    const actionLimited =
-      Boolean(access && issue?.action) &&
-      !this.hasModerationActionAccess(access, issue?.action ?? 'delete_message', {
-        requireExplicitPermission: true,
-        entityType: issue?.entityType ?? null,
-      });
-
-    return {
-      checkedAt: new Date().toISOString(),
-      isAdmin: access?.isAdmin === true,
-      isOwner: access?.isOwner === true,
-      permissions,
-      health: access ? (actionLimited ? 'action_limited' : 'ok') : 'access_limited',
-      ...(actionLimited && issue?.action ? { missingActions: [issue.action] } : {}),
-      ...(issue?.error
-        ? {
-            lastIssue: {
-              kind: 'terminal_moderation_action',
-              observedAt: new Date().toISOString(),
-              action: issue.action ?? null,
-              statusCode,
-              code,
-              message,
-            },
-          }
-        : {}),
-    } satisfies Prisma.InputJsonValue;
   }
 
   private async recordModerationActionProblemChat(params: {
@@ -14446,7 +14443,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     raw: Record<string, unknown>,
   ): Record<string, unknown> | null {
     const updateType = this.readLowerString(raw.update_type) ?? this.readLowerString(raw.type);
-    if (updateType !== 'user_added' && updateType !== 'bot_added') {
+    // FLAG: In bot_added, MAX `user` is the human actor who added this bot, not the joined member.
+    if (updateType !== 'user_added') {
       return null;
     }
 
@@ -14690,17 +14688,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             maxNewMessagesPerScan: executionPlan.maxNewMessagesPerScan,
           });
         } catch (error: unknown) {
-          const accessLossHandled = await this.recordChannelAutoPostAccessLossIfTerminal({
-            chatId: managedChannel.channelSettings.chatId,
-            botId: null,
-            source: 'channel_auto_post:scan',
-            operation: 'read',
-            error,
-          });
-          if (accessLossHandled) {
-            break;
-          }
-
           this.logger.warn(
             {
               chatId: managedChannel.channelSettings.chatId,
@@ -14808,6 +14795,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       })) ??
       undefined;
     let messages: Awaited<ReturnType<MaxClientService['listMessages']>>;
+    const readAttemptStartedAt = new Date();
     try {
       messages = await this.maxClient.listMessages(chatId, {
         count: 10,
@@ -14822,6 +14810,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           botId: scanBotId ?? null,
           source: 'channel_auto_post:scan',
           operation: 'read',
+          lifecycleEventAt: readAttemptStartedAt,
           error,
         })
       ) {
@@ -15089,6 +15078,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let originalCleanupStatusCode: number | null = null;
     let replacementSendStarted = false;
     let signatureApplied = false;
+    let maxMutationAttemptStartedAt: Date | null = null;
 
     try {
       const preparedText = await prepareChannelAutoPostDecoration({
@@ -15118,6 +15108,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const preserveExistingInlineKeyboard = buttons.length === 0;
 
       if (linkType === 'forward') {
+        maxMutationAttemptStartedAt = new Date();
         const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(
           chatId,
           messageId,
@@ -15217,6 +15208,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       } else {
         try {
+          maxMutationAttemptStartedAt = new Date();
           await this.maxClient.editMessageInlineKeyboard(
             chatId,
             messageId,
@@ -15273,6 +15265,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
             'Failed to merge channel post buttons; retrying with a replacement keyboard',
           );
+          maxMutationAttemptStartedAt = new Date();
           await this.maxClient.editMessageInlineKeyboard(
             chatId,
             messageId,
@@ -15355,11 +15348,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       if (
         source === 'poll' &&
+        maxMutationAttemptStartedAt &&
         (await this.recordChannelAutoPostAccessLossIfTerminal({
           chatId,
           botId: autoAttachBotId,
           source: 'channel_auto_post:poll_attach',
           operation: linkType === 'forward' ? 'send' : 'edit',
+          lifecycleEventAt: maxMutationAttemptStartedAt,
           error,
         }))
       ) {
@@ -17613,7 +17608,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isTransientMaxApiLookupError(error: unknown): boolean {
-    return this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error);
+    if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+      return true;
+    }
+
+    const status = this.extractStatusCode(error);
+    if (status !== null && status >= 500) {
+      return true;
+    }
+
+    const code = (error as { code?: unknown } | null)?.code;
+    return (
+      typeof code === 'string' &&
+      ['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT'].includes(
+        code.trim().toUpperCase(),
+      )
+    );
   }
 
   private normalizeSecret(value: string | undefined): string | null {

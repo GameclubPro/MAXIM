@@ -83,6 +83,16 @@ type ChatBotBindingCacheEntry = {
   expiresAtMs: number;
 };
 
+type BotAccessProbeParams = {
+  chatId: string;
+  botId: string;
+  access: BotAccessSnapshotInput;
+  source: string;
+  checkedAt: Date;
+  lastErrorCode?: string | null;
+  allowMembershipRecovery?: boolean;
+};
+
 export type ChatBotExecutionBinding = {
   chatId: string;
   activeBotId: string | null;
@@ -239,6 +249,10 @@ type ResolvedChatRouteMembership = {
   botAccessState: ChatBotAccessState;
   botAccessCheckedAt: Date | null;
   botAccessExpiresAt: Date | null;
+  botAccessSource: string | null;
+  lifecycleEventAt: Date | null;
+  lifecycleEventType: string | null;
+  lifecycleSource: string | null;
   permissionsSnapshot: unknown;
   capabilities: unknown;
   sendRouteFailureCount: number;
@@ -248,12 +262,15 @@ type ResolvedChatRouteMembership = {
 
 type ResolvedChatRouteState = {
   chatId: string;
+  title: string;
   entityType: ChatEntityType | null;
   routingState: ChatRoutingState;
   hasStoredBotAssignment: boolean;
   storedPrimaryBotId: string | null;
+  storedBotId: string | null;
   primaryBotId: string | null;
   routingVersion: number;
+  allMemberships: ResolvedChatRouteMembership[];
   memberships: ResolvedChatRouteMembership[];
   activeKnownMemberships: ResolvedChatRouteMembership[];
   activeOperationalMemberships: ResolvedChatRouteMembership[];
@@ -263,6 +280,17 @@ type ResolvedChatRouteState = {
 type ChatBotMembershipUpsertResult = {
   active: boolean;
   lifecycleAdvanced: boolean;
+};
+
+type ChatRouteTransactionClient = Pick<
+  Prisma.TransactionClient,
+  'chat' | 'chatBotMembership' | '$queryRaw'
+>;
+
+type LockedChatRouteReconcileResult = {
+  primaryBotId: string | null;
+  routingState: ChatRoutingState;
+  changed: boolean;
 };
 
 @Injectable()
@@ -627,65 +655,191 @@ export class MaxBotLinkService {
     return nowMs - checkedAtMs >= maxAgeMs;
   }
 
-  async recordBotAccessProbe(params: {
-    chatId: string;
-    botId: string;
-    access: BotAccessSnapshotInput;
-    source: string;
-    checkedAt?: Date;
-    allowMembershipRecovery?: boolean;
-  }): Promise<boolean> {
+  async recordBotAccessProbe(params: BotAccessProbeParams): Promise<boolean> {
     const chatId = params.chatId.trim();
     const botId = this.resolveOperationalBotId(params.botId);
     if (!chatId || !botId) {
       return false;
     }
 
-    const checkedAt = params.checkedAt ?? new Date();
-    let result = await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId,
-        status: ChatBotMembershipStatus.ACTIVE,
+    const persisted = await this.prisma.$transaction(
+      async (tx) => {
+        // FLAG: Access probes and destructive lifecycle cleanup serialize on the parent Chat.
+        // Keep this transaction SQL-only; route reconciliation happens after commit.
+        const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chat."id"
+          FROM "chats" AS chat
+          WHERE chat."id" = ${chatId}
+          FOR UPDATE OF chat
+        `);
+        if (locked.length !== 1) {
+          return false;
+        }
+
+        return this.persistBotAccessProbeInTransaction(tx, params, chatId, botId);
       },
-      data: {
-        ...buildBotAccessSnapshotPersistence(params.access, {
-          source: params.source,
-          now: checkedAt,
-        }),
-        lastSeenAt: checkedAt,
-      },
-    });
-    if (result.count === 0 && params.allowMembershipRecovery === true && params.access) {
-      const membership = await this.upsertChatBotMembership(chatId, botId, {
-        role: ChatBotMembershipRole.STANDBY,
-        status: ChatBotMembershipStatus.ACTIVE,
-        lastSeenAt: checkedAt,
-        lifecycleEventAt: checkedAt,
-        lifecycleEventType: 'live_probe',
-        lifecycleSource: 'live_probe',
-        allowReactivation: true,
-      });
-      if (membership.active) {
-        result = await this.prisma.chatBotMembership.updateMany({
-          where: {
-            chatId,
-            botId,
-            status: ChatBotMembershipStatus.ACTIVE,
-          },
-          data: {
-            ...buildBotAccessSnapshotPersistence(params.access, {
-              source: params.source,
-              now: checkedAt,
-            }),
-            lastSeenAt: checkedAt,
-          },
-        });
-      }
-    }
-    if (result.count > 0) {
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+    if (persisted) {
       await this.reconcileChatPrimaryByAccess({ chatId });
     }
+    return persisted;
+  }
+
+  private async persistBotAccessProbeInTransaction(
+    tx: Prisma.TransactionClient,
+    params: BotAccessProbeParams,
+    chatId: string,
+    botId: string,
+  ): Promise<boolean> {
+    const checkedAt = params.checkedAt;
+    const snapshot = {
+      ...buildBotAccessSnapshotPersistence(params.access, {
+        source: params.source,
+        now: checkedAt,
+        lastErrorCode: params.lastErrorCode,
+      }),
+      lastSeenAt: checkedAt,
+    };
+    const accessTimestampFence = params.access
+      ? {
+          OR: [
+            { botAccessCheckedAt: null },
+            { botAccessCheckedAt: { lt: checkedAt } },
+            {
+              botAccessCheckedAt: checkedAt,
+              botAccessState: {
+                notIn: [
+                  ChatBotAccessState.CONFIRMED_MEMBER,
+                  ChatBotAccessState.DENIED,
+                  ChatBotAccessState.LOST,
+                ],
+              },
+            },
+          ],
+        }
+      : {
+          OR: [{ botAccessCheckedAt: null }, { botAccessCheckedAt: { lte: checkedAt } }],
+        };
+    const observationFence = {
+      AND: [
+        accessTimestampFence,
+        {
+          OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lt: checkedAt } }],
+        },
+      ],
+    };
+    const persistActiveSnapshot = () =>
+      tx.chatBotMembership.updateMany({
+        where: {
+          chatId,
+          botId,
+          status: ChatBotMembershipStatus.ACTIVE,
+          ...observationFence,
+        },
+        data: snapshot,
+      });
+
+    let result = await persistActiveSnapshot();
+    if (result.count > 0) {
+      return true;
+    }
+
+    if (params.allowMembershipRecovery !== true || !params.access) {
+      if (params.access) {
+        return false;
+      }
+      const removedAccessEvidence: Partial<typeof snapshot> = { ...snapshot };
+      delete removedAccessEvidence.permissionsSnapshot;
+      delete removedAccessEvidence.permissionsHash;
+      const persistedRemoved = await tx.chatBotMembership.updateMany({
+        where: {
+          chatId,
+          botId,
+          status: ChatBotMembershipStatus.REMOVED,
+          ...observationFence,
+        },
+        data: removedAccessEvidence,
+      });
+      if (persistedRemoved.count === 0) {
+        const created = await tx.chatBotMembership.createMany({
+          data: {
+            chatId,
+            botId,
+            role: ChatBotMembershipRole.STANDBY,
+            status: ChatBotMembershipStatus.REMOVED,
+            ...removedAccessEvidence,
+          },
+          skipDuplicates: true,
+        });
+        if (created.count === 0) {
+          result = await persistActiveSnapshot();
+          if (result.count > 0) {
+            return true;
+          }
+          await tx.chatBotMembership.updateMany({
+            where: {
+              chatId,
+              botId,
+              status: ChatBotMembershipStatus.REMOVED,
+              ...observationFence,
+            },
+            data: removedAccessEvidence,
+          });
+        }
+      }
+      return false;
+    }
+
+    const recoveryFence = {
+      AND: [
+        accessTimestampFence,
+        {
+          OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lt: checkedAt } }],
+        },
+      ],
+    };
+    const recoveryData = {
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      ...snapshot,
+      lastWebhookAt: checkedAt,
+      lifecycleEventAt: checkedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    };
+    const recoverRemovedMembership = () =>
+      tx.chatBotMembership.updateMany({
+        where: {
+          chatId,
+          botId,
+          status: ChatBotMembershipStatus.REMOVED,
+          ...recoveryFence,
+        },
+        data: recoveryData,
+      });
+
+    // FLAG: Recovery and access evidence must commit in one CAS fenced by every newer probe/lifecycle.
+    result = await recoverRemovedMembership();
+    if (result.count === 0) {
+      const created = await tx.chatBotMembership.createMany({
+        data: {
+          chatId,
+          botId,
+          ...recoveryData,
+        },
+        skipDuplicates: true,
+      });
+      if (created.count === 0) {
+        result = await persistActiveSnapshot();
+        if (result.count === 0) {
+          result = await recoverRemovedMembership();
+        }
+      } else {
+        result = created;
+      }
+    }
+
     return result.count > 0;
   }
 
@@ -693,69 +847,28 @@ export class MaxBotLinkService {
     chatId: string;
     forceVersionBump?: boolean;
   }): Promise<ChatRoutingStateReconcileResult | null> {
-    return this.reconcileChatRoutingStateAttempt(
-      params.chatId,
-      2,
-      params.forceVersionBump === true,
-    );
-  }
-
-  private async reconcileChatRoutingStateAttempt(
-    rawChatId: string,
-    attemptsRemaining: number,
-    forceVersionBump: boolean,
-  ): Promise<ChatRoutingStateReconcileResult | null> {
-    const chatId = rawChatId.trim();
+    const chatId = params.chatId.trim();
     if (!chatId) {
       return null;
     }
 
-    const state = await this.loadChatRouteState(chatId);
-    if (!state) {
-      return null;
-    }
-    const nextRoutingState = this.resolvePersistedRoutingState(state);
-    const shouldClearStoredAssignment =
-      nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT && state.hasStoredBotAssignment;
-    if (
-      state.routingState === nextRoutingState &&
-      !shouldClearStoredAssignment &&
-      !forceVersionBump
-    ) {
-      if (nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
-        this.forgetChatBotBinding(chatId);
-      }
-      return { routingState: nextRoutingState, changed: false };
-    }
-
-    const updated = await this.prisma.chat.updateMany({
-      where: {
-        id: chatId,
-        routingState: state.routingState,
-        routingVersion: state.routingVersion,
-      },
-      data: {
-        routingState: nextRoutingState,
-        routingVersion: { increment: 1 },
-        ...(nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT
-          ? { botId: null, primaryBotId: null }
-          : {}),
-      },
+    const reconciled = await this.reconcileLockedChatRoute({
+      chatId,
+      forceVersionBump: params.forceVersionBump === true,
     });
-    if (updated.count === 0 && attemptsRemaining > 1) {
-      return this.reconcileChatRoutingStateAttempt(chatId, attemptsRemaining - 1, forceVersionBump);
-    }
-    if (updated.count === 0) {
-      if (forceVersionBump) {
-        throw new Error(`Chat ${chatId} routing state changed during forced reconciliation`);
-      }
+    if (!reconciled) {
       return null;
     }
 
-    if (nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT) {
+    if (reconciled.primaryBotId) {
+      this.rememberChatBotBinding(chatId, reconciled.primaryBotId);
+    } else {
       this.forgetChatBotBinding(chatId);
     }
-    return { routingState: nextRoutingState, changed: true };
+    return {
+      routingState: reconciled.routingState,
+      changed: reconciled.changed,
+    };
   }
 
   async observeStoredChatBotWebhook(params: {
@@ -765,7 +878,6 @@ export class MaxBotLinkService {
     observedAt?: Date | null;
   }): Promise<void> {
     const chatId = params.chatId.trim();
-    const primaryBotId = this.resolveOperationalBotId(params.primaryBotId);
     const observedBotId = this.resolveOperationalBotId(params.botId);
     if (!chatId || !observedBotId) {
       return;
@@ -785,14 +897,6 @@ export class MaxBotLinkService {
         status: ChatBotMembershipStatus.ACTIVE,
       },
       data: {
-        ...(primaryBotId
-          ? {
-              role:
-                observedBotId === primaryBotId
-                  ? ChatBotMembershipRole.PRIMARY
-                  : ChatBotMembershipRole.STANDBY,
-            }
-          : {}),
         lastSeenAt: now,
         lastWebhookAt: now,
       },
@@ -801,10 +905,6 @@ export class MaxBotLinkService {
       return;
     }
     this.observedWebhookTouchCache.set(cacheKey, nowMs + OBSERVED_WEBHOOK_TOUCH_TTL_MS);
-
-    if (primaryBotId) {
-      this.rememberChatBotBinding(chatId, primaryBotId);
-    }
   }
 
   resolveContactIdSync(botId?: string | null): string | null {
@@ -997,8 +1097,19 @@ export class MaxBotLinkService {
           lifecycleSource: params.lifecycleSource ?? '',
         });
       }
-      this.rememberChatBotBinding(chatId, botId);
-      return membershipResult.active ? botId : null;
+      if (params.lifecycleEventAt) {
+        return this.reconcileChatPrimaryByAccess({
+          chatId,
+          title,
+          entityType,
+        });
+      }
+      if (membershipResult.active) {
+        this.rememberChatBotBinding(chatId, botId);
+        return botId;
+      }
+      this.forgetChatBotBinding(chatId);
+      return null;
     }
 
     const existing = await this.prisma.chat.findUnique({
@@ -1065,17 +1176,11 @@ export class MaxBotLinkService {
       );
     }
 
-    const reconciledPrimaryBotId =
-      nextPrimaryBotId === botId && !incomingMembershipResult.active
-        ? await this.promoteActiveChatBotMembership(chatId, title, entityType)
-        : await this.reconcileChatPrimaryByAccess({
-            chatId,
-            title,
-            entityType,
-          });
-    const resolvedPrimaryBotId =
-      reconciledPrimaryBotId ??
-      (nextPrimaryBotId !== botId || incomingMembershipResult.active ? nextPrimaryBotId : null);
+    const resolvedPrimaryBotId = await this.reconcileChatPrimaryByAccess({
+      chatId,
+      title,
+      entityType,
+    });
     if (resolvedPrimaryBotId) {
       this.rememberChatBotBinding(chatId, resolvedPrimaryBotId);
     } else {
@@ -1110,6 +1215,7 @@ export class MaxBotLinkService {
         botMemberships: {
           select: {
             botId: true,
+            updatedAt: true,
             role: true,
             status: true,
             botAccessState: true,
@@ -1403,20 +1509,11 @@ export class MaxBotLinkService {
     const lifecycleEventAt = params.lifecycleEventAt ?? now;
     const lifecycleEventType = params.lifecycleEventType?.trim() || 'bot_removed';
     const lifecycleSource = params.lifecycleSource?.trim() || 'webhook';
-    const existingChat = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: {
-        catalogKind: true,
-      },
-    });
     const catalogKind = resolveChatCatalogKind({
       chatId,
       entityType: entityType ?? null,
       contextOnlyHint: true,
     });
-    const preserveManagedCatalogKind =
-      existingChat?.catalogKind === ChatCatalogKind.MANAGED &&
-      catalogKind === ChatCatalogKind.CONTEXT_ONLY;
     const accessLossSnapshot =
       params.accessLostReason ||
       params.accessLostSource ||
@@ -1445,60 +1542,62 @@ export class MaxBotLinkService {
       update: {
         title,
         ...(entityType ? { entityType } : {}),
-        ...(preserveManagedCatalogKind ? {} : { catalogKind }),
       },
     });
+    await this.updateChatCatalogKindUnlessManaged(chatId, catalogKind);
 
-    const removed = await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId,
-        OR: [
-          { lifecycleEventAt: null },
-          { lifecycleEventAt: { lt: lifecycleEventAt } },
-          {
-            lifecycleEventAt,
-            status: ChatBotMembershipStatus.ACTIVE,
-          },
-        ],
-      },
-      data: {
-        role: ChatBotMembershipRole.STANDBY,
-        status: ChatBotMembershipStatus.REMOVED,
-        ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
-        lastSeenAt: lifecycleEventAt,
-        lastWebhookAt: lifecycleEventAt,
-        lifecycleEventAt,
-        lifecycleEventType,
-        lifecycleSource,
-      },
+    const removalWhere = {
+      chatId,
+      botId,
+      AND: [
+        {
+          OR: [
+            { lifecycleEventAt: null },
+            { lifecycleEventAt: { lt: lifecycleEventAt } },
+            {
+              lifecycleEventAt,
+              status: ChatBotMembershipStatus.ACTIVE,
+            },
+          ],
+        },
+        {
+          OR: [{ botAccessCheckedAt: null }, { botAccessCheckedAt: { lte: lifecycleEventAt } }],
+        },
+      ],
+    };
+    const removalData = {
+      role: ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.REMOVED,
+      ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
+      lastSeenAt: lifecycleEventAt,
+      lastWebhookAt: lifecycleEventAt,
+      lifecycleEventAt,
+      lifecycleEventType,
+      lifecycleSource,
+    };
+    let removed = await this.prisma.chatBotMembership.updateMany({
+      where: removalWhere,
+      data: removalData,
     });
 
     if (removed.count === 0) {
-      await this.prisma.chatBotMembership.upsert({
-        where: {
-          chatId_botId: {
-            chatId,
-            botId,
-          },
-        },
-        create: {
+      const created = await this.prisma.chatBotMembership.createMany({
+        data: {
           chatId,
           botId,
-          role: ChatBotMembershipRole.STANDBY,
-          status: ChatBotMembershipStatus.REMOVED,
-          ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
-          lastSeenAt: lifecycleEventAt,
-          lastWebhookAt: lifecycleEventAt,
-          lifecycleEventAt,
-          lifecycleEventType,
-          lifecycleSource,
+          ...removalData,
         },
-        update: {},
+        skipDuplicates: true,
       });
+      if (created.count === 0) {
+        removed = await this.prisma.chatBotMembership.updateMany({
+          where: removalWhere,
+          data: removalData,
+        });
+      }
     }
 
-    return this.promoteActiveChatBotMembership(chatId, title, entityType);
+    return this.reconcileChatPrimaryByAccess({ chatId, title, entityType });
   }
 
   async bindDiscoveredChatBots(params: {
@@ -1538,7 +1637,6 @@ export class MaxBotLinkService {
       entityType: entityType ?? null,
       contextOnlyHint: true,
     });
-
     await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
@@ -1554,9 +1652,9 @@ export class MaxBotLinkService {
         title,
         ...(nextPrimaryBotId ? { botId: nextPrimaryBotId, primaryBotId: nextPrimaryBotId } : {}),
         ...(entityType ? { entityType } : {}),
-        catalogKind,
       },
     });
+    await this.updateChatCatalogKindUnlessManaged(chatId, catalogKind);
 
     for (const observedBotId of observedBotIds) {
       await this.upsertChatBotMembership(chatId, observedBotId, {
@@ -1566,10 +1664,7 @@ export class MaxBotLinkService {
             : ChatBotMembershipRole.STANDBY,
         status: ChatBotMembershipStatus.ACTIVE,
         lastSeenAt: now,
-        lifecycleEventAt: now,
-        lifecycleEventType: 'live_probe',
-        lifecycleSource: 'managed_discovery',
-        allowReactivation: true,
+        preserveRemovedMembership: true,
       });
     }
 
@@ -1599,82 +1694,245 @@ export class MaxBotLinkService {
       return null;
     }
 
-    const state = await this.loadChatRouteState(chatId);
-    if (!state) {
-      this.forgetChatBotBinding(chatId);
-      return null;
+    const reconciled = await this.reconcileLockedChatRoute({
+      chatId,
+      title: params.title,
+      entityType: params.entityType,
+    });
+    if (reconciled?.primaryBotId) {
+      this.rememberChatBotBinding(chatId, reconciled.primaryBotId);
+      return reconciled.primaryBotId;
     }
 
-    const nextRoutingState = this.resolvePersistedRoutingState(state);
-    if (nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT || !state.primaryBotId) {
-      await this.reconcileChatRoutingState({ chatId });
-      this.forgetChatBotBinding(chatId);
-      return null;
+    this.forgetChatBotBinding(chatId);
+    return null;
+  }
+
+  async selectChatPrimaryBot(params: {
+    chatId: string;
+    botId: string;
+    title?: string | null;
+    entityType?: ChatEntityType | null;
+    expectedRoutingVersion?: number;
+    expectedAccessEpoch?: {
+      checkedAt: Date;
+      source: string;
+    };
+  }): Promise<boolean> {
+    const chatId = params.chatId.trim();
+    const botId = this.resolveOperationalBotId(params.botId);
+    if (!chatId || !botId) {
+      return false;
     }
 
-    const nextPrimaryBotId =
-      resolvePreferredPrimaryBotId(state.primaryBotId, state.activeActionableMemberships, {
-        requireFreshSnapshotForPromotion: true,
-      }) ?? state.primaryBotId;
-    const activeMemberships = state.activeKnownMemberships;
-    const roleAlreadyConsistent =
-      activeMemberships.some(
-        (membership) =>
+    const reconciled = await this.reconcileLockedChatRoute({
+      chatId,
+      title: params.title,
+      entityType: params.entityType,
+      explicitPrimaryBotId: botId,
+      expectedRoutingVersion: params.expectedRoutingVersion,
+      expectedAccessEpoch: params.expectedAccessEpoch,
+    });
+    if (reconciled?.primaryBotId !== botId) {
+      return false;
+    }
+    this.rememberChatBotBinding(chatId, botId);
+    return true;
+  }
+
+  private async reconcileLockedChatRoute(params: {
+    chatId: string;
+    title?: string | null;
+    entityType?: ChatEntityType | null;
+    forceVersionBump?: boolean;
+    explicitPrimaryBotId?: string;
+    expectedRoutingVersion?: number;
+    expectedAccessEpoch?: {
+      checkedAt: Date;
+      source: string;
+    };
+  }): Promise<LockedChatRouteReconcileResult | null> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chat."id"
+          FROM "chats" AS chat
+          WHERE chat."id" = ${params.chatId}
+          FOR UPDATE OF chat
+        `);
+        if (locked.length !== 1) {
+          return null;
+        }
+
+        // FLAG: Parent-first locking also fences FK-backed inserts; existing rows use one order.
+        await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT membership."id"
+          FROM "chat_bot_memberships" AS membership
+          WHERE membership."chat_id" = ${params.chatId}
+          ORDER BY membership."bot_id" ASC, membership."id" ASC
+          FOR UPDATE OF membership
+        `);
+
+        const state = await this.loadChatRouteState(params.chatId, tx);
+        if (!state) {
+          return null;
+        }
+        if (
+          params.expectedRoutingVersion !== undefined &&
+          state.routingVersion !== params.expectedRoutingVersion
+        ) {
+          return null;
+        }
+
+        const explicitMembership = params.explicitPrimaryBotId
+          ? (state.activeActionableMemberships.find(
+              (membership) => membership.botId === params.explicitPrimaryBotId,
+            ) ?? null)
+          : null;
+        if (
+          params.explicitPrimaryBotId &&
+          (!explicitMembership ||
+            !this.membershipMatchesExpectedAccessEpoch(
+              explicitMembership,
+              params.expectedAccessEpoch,
+            ))
+        ) {
+          return null;
+        }
+
+        const nextRoutingState = params.explicitPrimaryBotId
+          ? ChatRoutingState.READY
+          : this.resolvePersistedRoutingState(state);
+        const preferredPrimaryBotId = params.explicitPrimaryBotId
+          ? params.explicitPrimaryBotId
+          : (resolvePreferredPrimaryBotId(state.primaryBotId, state.activeActionableMemberships, {
+              requireFreshSnapshotForPromotion: true,
+            }) ?? state.primaryBotId);
+        const nextPrimaryBotId =
+          nextRoutingState === ChatRoutingState.NO_ELIGIBLE_BOT ? null : preferredPrimaryBotId;
+        const selectedMembership = nextPrimaryBotId
+          ? (state.activeActionableMemberships.find(
+              (membership) => membership.botId === nextPrimaryBotId,
+            ) ?? null)
+          : null;
+        if (nextPrimaryBotId && !selectedMembership) {
+          throw new Error(
+            `Chat ${params.chatId} selected an ineligible primary during locked reconciliation`,
+          );
+        }
+
+        const rolesConsistent = state.allMemberships.every((membership) =>
+          nextPrimaryBotId &&
           membership.botId === nextPrimaryBotId &&
-          membership.role === ChatBotMembershipRole.PRIMARY,
-      ) &&
-      activeMemberships.every(
-        (membership) =>
-          membership.botId === nextPrimaryBotId ||
-          membership.role !== ChatBotMembershipRole.PRIMARY,
-      );
-    const title = params.title?.trim() || null;
-    const entityType = params.entityType ?? null;
+          membership.status === ChatBotMembershipStatus.ACTIVE
+            ? membership.role === ChatBotMembershipRole.PRIMARY
+            : membership.role !== ChatBotMembershipRole.PRIMARY,
+        );
+        const routeFieldsConsistent =
+          state.storedPrimaryBotId === nextPrimaryBotId &&
+          state.storedBotId === nextPrimaryBotId &&
+          state.routingState === nextRoutingState;
+        const title = params.title?.trim() || null;
+        const entityType = params.entityType ?? null;
+        const metadataChanged =
+          (title !== null && title !== state.title) ||
+          (entityType !== null && entityType !== state.entityType);
+        const routingEpochChanged =
+          params.forceVersionBump === true || !routeFieldsConsistent || !rolesConsistent;
 
-    if (
-      state.storedPrimaryBotId === nextPrimaryBotId &&
-      state.routingState === nextRoutingState &&
-      roleAlreadyConsistent &&
-      !title &&
-      !entityType
-    ) {
-      this.rememberChatBotBinding(chatId, nextPrimaryBotId);
-      return nextPrimaryBotId;
-    }
+        if (!routingEpochChanged && !metadataChanged) {
+          return {
+            primaryBotId: nextPrimaryBotId,
+            routingState: nextRoutingState,
+            changed: false,
+          };
+        }
 
-    await this.prisma.chat.update({
-      where: { id: chatId },
-      data: {
-        ...(title ? { title } : {}),
-        botId: nextPrimaryBotId,
-        primaryBotId: nextPrimaryBotId,
-        routingState: nextRoutingState,
-        ...(entityType ? { entityType } : {}),
-      },
-    });
+        if (routingEpochChanged || metadataChanged) {
+          await tx.chat.update({
+            where: { id: params.chatId },
+            data: {
+              ...(title !== null && title !== state.title ? { title } : {}),
+              ...(entityType !== null && entityType !== state.entityType ? { entityType } : {}),
+              ...(routingEpochChanged
+                ? {
+                    botId: nextPrimaryBotId,
+                    primaryBotId: nextPrimaryBotId,
+                    routingState: nextRoutingState,
+                    routingVersion: { increment: 1 },
+                  }
+                : {}),
+            },
+          });
+        }
 
-    await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-      data: {
-        role: ChatBotMembershipRole.STANDBY,
-      },
-    });
-    await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId: nextPrimaryBotId,
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-      data: {
-        role: ChatBotMembershipRole.PRIMARY,
-      },
-    });
+        if (!rolesConsistent) {
+          await tx.chatBotMembership.updateMany({
+            where: {
+              chatId: params.chatId,
+              role: ChatBotMembershipRole.PRIMARY,
+              ...(nextPrimaryBotId
+                ? {
+                    OR: [
+                      { botId: { not: nextPrimaryBotId } },
+                      { status: { not: ChatBotMembershipStatus.ACTIVE } },
+                    ],
+                  }
+                : {}),
+            },
+            data: { role: ChatBotMembershipRole.STANDBY },
+          });
+          if (nextPrimaryBotId) {
+            const promoted = await tx.chatBotMembership.updateMany({
+              where: {
+                chatId: params.chatId,
+                botId: nextPrimaryBotId,
+                status: ChatBotMembershipStatus.ACTIVE,
+                role: { not: ChatBotMembershipRole.PRIMARY },
+              },
+              data: { role: ChatBotMembershipRole.PRIMARY },
+            });
+            if (
+              selectedMembership?.role !== ChatBotMembershipRole.PRIMARY &&
+              promoted.count !== 1
+            ) {
+              throw new Error(
+                `Chat ${params.chatId} primary membership changed during locked reconciliation`,
+              );
+            }
+          }
+        }
 
-    this.rememberChatBotBinding(chatId, nextPrimaryBotId);
-    return nextPrimaryBotId;
+        const verified = await this.loadChatRouteState(params.chatId, tx);
+        const expectedRoutingVersion = state.routingVersion + (routingEpochChanged ? 1 : 0);
+        const routeVerified = Boolean(
+          verified &&
+          verified.routingVersion === expectedRoutingVersion &&
+          verified.routingState === nextRoutingState &&
+          verified.storedPrimaryBotId === nextPrimaryBotId &&
+          verified.storedBotId === nextPrimaryBotId &&
+          (nextPrimaryBotId === null || verified.primaryBotId === nextPrimaryBotId) &&
+          this.resolvePersistedRoutingState(verified) === nextRoutingState &&
+          verified.allMemberships.every((membership) =>
+            nextPrimaryBotId &&
+            membership.botId === nextPrimaryBotId &&
+            membership.status === ChatBotMembershipStatus.ACTIVE
+              ? membership.role === ChatBotMembershipRole.PRIMARY
+              : membership.role !== ChatBotMembershipRole.PRIMARY,
+          ),
+        );
+        if (!routeVerified) {
+          throw new Error(`Chat ${params.chatId} failed locked route verification`);
+        }
+
+        return {
+          primaryBotId: nextPrimaryBotId,
+          routingState: nextRoutingState,
+          changed: routingEpochChanged,
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
   }
 
   private async resolveDefaultBotRoute(params: {
@@ -2059,15 +2317,19 @@ export class MaxBotLinkService {
     });
   }
 
-  private async loadChatRouteState(chatId: string): Promise<ResolvedChatRouteState | null> {
+  private async loadChatRouteState(
+    chatId: string,
+    client: Pick<ChatRouteTransactionClient, 'chat'> = this.prisma,
+  ): Promise<ResolvedChatRouteState | null> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
       return null;
     }
 
-    const chat = await this.prisma.chat.findUnique({
+    const chat = await client.chat.findUnique({
       where: { id: normalizedChatId },
       select: {
+        title: true,
         entityType: true,
         routingState: true,
         routingVersion: true,
@@ -2081,6 +2343,10 @@ export class MaxBotLinkService {
             botAccessState: true,
             botAccessCheckedAt: true,
             botAccessExpiresAt: true,
+            botAccessSource: true,
+            lifecycleEventAt: true,
+            lifecycleEventType: true,
+            lifecycleSource: true,
             permissionsSnapshot: true,
             capabilities: true,
             sendRouteFailureCount: true,
@@ -2095,7 +2361,8 @@ export class MaxBotLinkService {
       return null;
     }
 
-    const memberships = (chat.botMemberships ?? []).filter((membership) =>
+    const allMemberships = chat.botMemberships ?? [];
+    const memberships = allMemberships.filter((membership) =>
       Boolean(this.botRegistry.getBotById(membership.botId)),
     );
     const activeKnownMemberships = memberships.filter(
@@ -2116,7 +2383,8 @@ export class MaxBotLinkService {
       );
     });
     const accessEligibleActiveActionableMemberships = activeActionableMemberships;
-    const storedPrimaryBotId = this.resolveOperationalBotId(chat.primaryBotId ?? null);
+    const storedPrimaryBotId = chat.primaryBotId ?? null;
+    const storedBotId = chat.botId ?? null;
     const rawStoredExecutableBotId =
       this.resolveExecutableBotId(chat.primaryBotId ?? null) ??
       this.resolveExecutableBotId(chat.botId ?? null);
@@ -2148,12 +2416,15 @@ export class MaxBotLinkService {
 
     return {
       chatId: normalizedChatId,
+      title: chat.title,
       entityType: chat.entityType ?? null,
       routingState: chat.routingState,
       hasStoredBotAssignment: Boolean(chat.primaryBotId || chat.botId),
       storedPrimaryBotId,
+      storedBotId,
       primaryBotId,
       routingVersion: chat.routingVersion,
+      allMemberships,
       memberships,
       activeKnownMemberships,
       activeOperationalMemberships,
@@ -2984,81 +3255,26 @@ export class MaxBotLinkService {
     return MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);
   }
 
-  private async promoteActiveChatBotMembership(
+  private async updateChatCatalogKindUnlessManaged(
     chatId: string,
-    title: string,
-    entityType?: ChatEntityType,
-  ): Promise<string | null> {
-    const memberships = await this.prisma.chatBotMembership.findMany({
-      where: { chatId },
-      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
-      select: {
-        botId: true,
-        role: true,
-        status: true,
-        botAccessState: true,
-        botAccessCheckedAt: true,
-        permissionsSnapshot: true,
-      },
-    });
-
-    const activeMemberships = memberships.filter(
-      (membership) =>
-        membership.status === ChatBotMembershipStatus.ACTIVE &&
-        this.resolveExecutableBotId(membership.botId) &&
-        this.isMembershipRouteAccessEligible(membership),
-    );
-    const accessEligibleActiveMemberships = activeMemberships.filter(
-      (membership) => !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
-    );
-    const nextPrimaryBotId =
-      resolvePreferredPrimaryBotId(null, activeMemberships, {
-        requireFreshSnapshotForPromotion: true,
-      }) ??
-      accessEligibleActiveMemberships.find(
-        (membership) => membership.role === ChatBotMembershipRole.PRIMARY,
-      )?.botId ??
-      accessEligibleActiveMemberships[0]?.botId ??
-      null;
-
-    await this.prisma.chat.update({
-      where: { id: chatId },
-      data: {
-        title,
-        botId: nextPrimaryBotId,
-        primaryBotId: nextPrimaryBotId,
-        routingState: nextPrimaryBotId ? ChatRoutingState.READY : ChatRoutingState.NO_ELIGIBLE_BOT,
-        ...(entityType ? { entityType } : {}),
-      },
-    });
-
-    if (!nextPrimaryBotId) {
-      this.forgetChatBotBinding(chatId);
-      return null;
+    catalogKind: ChatCatalogKind,
+  ): Promise<void> {
+    if (catalogKind === ChatCatalogKind.MANAGED) {
+      await this.prisma.chat.update({
+        where: { id: chatId },
+        data: { catalogKind },
+      });
+      return;
     }
 
-    await this.prisma.chatBotMembership.updateMany({
+    // FLAG: A concurrent confirmed roster promotion must win over discovery/removal metadata.
+    await this.prisma.chat.updateMany({
       where: {
-        chatId,
-        status: ChatBotMembershipStatus.ACTIVE,
+        id: chatId,
+        catalogKind: { not: ChatCatalogKind.MANAGED },
       },
-      data: {
-        role: ChatBotMembershipRole.STANDBY,
-      },
+      data: { catalogKind },
     });
-    await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId: nextPrimaryBotId,
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-      data: {
-        role: ChatBotMembershipRole.PRIMARY,
-      },
-    });
-
-    this.rememberChatBotBinding(chatId, nextPrimaryBotId);
-    return nextPrimaryBotId;
   }
 
   private async upsertChatBotMembership(
@@ -3096,62 +3312,89 @@ export class MaxBotLinkService {
       lifecycleEventType &&
       params.allowReactivation === true
     ) {
-      const existing = await this.prisma.chatBotMembership.findUnique({
-        where: { chatId_botId: { chatId, botId } },
-        select: { id: true },
-      });
-      const updated = await this.prisma.chatBotMembership.updateMany({
-        where: {
-          chatId,
-          botId,
-          OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lt: lifecycleEventAt } }],
-        },
-        data: {
-          role: nextRole,
-          status: ChatBotMembershipStatus.ACTIVE,
-          ...(lifecycleSource === 'live_probe'
-            ? {}
-            : {
-                permissionsSnapshot: Prisma.JsonNull,
-                botAccessState: ChatBotAccessState.UNKNOWN,
-                botAccessCheckedAt: null,
-                botAccessExpiresAt: null,
-                botAccessSource: lifecycleSource,
-                botAccessLastErrorCode: null,
-              }),
-          lastSeenAt: params.lastSeenAt ?? lifecycleEventAt,
-          lastWebhookAt: params.lastWebhookAt ?? lifecycleEventAt,
-          lifecycleEventAt,
-          lifecycleEventType,
-          lifecycleSource,
-        },
+      const reactivationAccessFence =
+        lifecycleSource === 'live_probe'
+          ? {
+              OR: [
+                { botAccessCheckedAt: null },
+                { botAccessCheckedAt: { lt: lifecycleEventAt } },
+                {
+                  botAccessCheckedAt: lifecycleEventAt,
+                  botAccessState: {
+                    in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
+                  },
+                },
+              ],
+            }
+          : {
+              OR: [{ botAccessCheckedAt: null }, { botAccessCheckedAt: { lt: lifecycleEventAt } }],
+            };
+      const reactivationWhere = {
+        chatId,
+        botId,
+        AND: [
+          {
+            OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lt: lifecycleEventAt } }],
+          },
+          reactivationAccessFence,
+        ],
+      };
+      const reactivationData = {
+        role: nextRole,
+        status: ChatBotMembershipStatus.ACTIVE,
+        ...(lifecycleSource === 'live_probe'
+          ? {}
+          : {
+              permissionsSnapshot: Prisma.JsonNull,
+              botAccessState: ChatBotAccessState.UNKNOWN,
+              botAccessCheckedAt: null,
+              botAccessExpiresAt: null,
+              botAccessSource: lifecycleSource,
+              botAccessLastErrorCode: null,
+            }),
+        lastSeenAt: params.lastSeenAt ?? lifecycleEventAt,
+        lastWebhookAt: params.lastWebhookAt ?? lifecycleEventAt,
+        lifecycleEventAt,
+        lifecycleEventType,
+        lifecycleSource,
+      };
+      let updated = await this.prisma.chatBotMembership.updateMany({
+        where: reactivationWhere,
+        data: reactivationData,
       });
       if (updated.count > 0) {
         return { active: true, lifecycleAdvanced: true };
       }
 
-      const membership = await this.prisma.chatBotMembership.upsert({
-        where: {
-          chatId_botId: {
-            chatId,
-            botId,
-          },
-        },
-        create: {
+      // FLAG: Creation races retry the timestamp CAS; equal timestamps remain removal-wins.
+      const created = await this.prisma.chatBotMembership.createMany({
+        data: {
           chatId,
           botId,
-          role: nextRole,
-          status: ChatBotMembershipStatus.ACTIVE,
-          lastSeenAt: params.lastSeenAt ?? lifecycleEventAt,
-          lastWebhookAt: params.lastWebhookAt ?? lifecycleEventAt,
-          lifecycleEventAt,
-          lifecycleEventType,
-          lifecycleSource,
+          ...reactivationData,
         },
-        update: {},
+        skipDuplicates: true,
       });
-      const active = membership.status === ChatBotMembershipStatus.ACTIVE;
-      return { active, lifecycleAdvanced: active && !existing };
+      if (created.count > 0) {
+        return { active: true, lifecycleAdvanced: true };
+      }
+
+      updated = await this.prisma.chatBotMembership.updateMany({
+        where: reactivationWhere,
+        data: reactivationData,
+      });
+      if (updated.count > 0) {
+        return { active: true, lifecycleAdvanced: true };
+      }
+
+      const membership = await this.prisma.chatBotMembership.findUnique({
+        where: { chatId_botId: { chatId, botId } },
+        select: { status: true },
+      });
+      return {
+        active: membership?.status === ChatBotMembershipStatus.ACTIVE,
+        lifecycleAdvanced: false,
+      };
     }
 
     if (
@@ -3288,6 +3531,42 @@ export class MaxBotLinkService {
       membership.botAccessState !== ChatBotAccessState.DENIED &&
       membership.botAccessState !== ChatBotAccessState.LOST &&
       !membershipExplicitlyLacksAccess(membership.permissionsSnapshot)
+    );
+  }
+
+  private membershipMatchesExpectedAccessEpoch(
+    membership: ResolvedChatRouteMembership,
+    expectedAccessEpoch?: { checkedAt: Date; source: string },
+  ): boolean {
+    if (
+      (membership.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+        membership.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
+      !isFreshMembershipAccessSnapshot(
+        normalizeMembershipAccessSnapshot(membership.permissionsSnapshot),
+      ) ||
+      (membership.botAccessExpiresAt !== null &&
+        membership.botAccessExpiresAt.getTime() <= Date.now())
+    ) {
+      return false;
+    }
+    if (!expectedAccessEpoch) {
+      return true;
+    }
+    if (
+      membership.botAccessCheckedAt?.getTime() !== expectedAccessEpoch.checkedAt.getTime() ||
+      membership.botAccessSource !== expectedAccessEpoch.source
+    ) {
+      return false;
+    }
+
+    const lifecycleEventAt = membership.lifecycleEventAt;
+    if (!lifecycleEventAt || lifecycleEventAt.getTime() < expectedAccessEpoch.checkedAt.getTime()) {
+      return true;
+    }
+    return (
+      lifecycleEventAt.getTime() === expectedAccessEpoch.checkedAt.getTime() &&
+      membership.lifecycleEventType === 'live_probe' &&
+      membership.lifecycleSource === 'live_probe'
     );
   }
 }

@@ -40,6 +40,7 @@ import {
   createOldUpdate,
   type MaxUpdate,
 } from './moderation.service.spec-support';
+import { WebhookParser } from '../webhook/webhook.parser';
 
 describe('ModerationService', () => {
   it('caps violation admin recheck wait to the remaining hot-path budget under pressure', () => {
@@ -3136,7 +3137,16 @@ describe('ModerationService', () => {
   });
 
   it('removes bot-authored accounts from group when toggle is enabled', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: 'chat-1' }])
+      .mockResolvedValueOnce([]);
     const prisma = {
+      $transaction: jest
+        .fn()
+        .mockImplementation(async (operation: (tx: unknown) => unknown) =>
+          operation({ $queryRaw: queryRaw }),
+        ),
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
@@ -3173,6 +3183,18 @@ describe('ModerationService', () => {
       kickMember: jest.fn(),
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+    };
+    const chatContextCache = {
+      getChatContext: jest.fn().mockResolvedValue({
+        settings: createSettings({ removeBotsFromGroupEnabled: true }),
+        domainAllowlist: [],
+        adminUserIds: [],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+      getAdminAccessBatch: jest.fn().mockResolvedValue(new Map()),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
     };
 
     const service = new ModerationService(
@@ -3180,6 +3202,7 @@ describe('ModerationService', () => {
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      chatContextCache as never,
     );
     const ensureDeleteIntent = jest
       .spyOn(service as any, 'ensureModerationDeleteIntent')
@@ -3214,7 +3237,16 @@ describe('ModerationService', () => {
   });
 
   it('does not remove bot-authored admin messages when remove-bots toggle is enabled', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: 'chat-1' }])
+      .mockResolvedValueOnce([]);
     const prisma = {
+      $transaction: jest
+        .fn()
+        .mockImplementation(async (operation: (tx: unknown) => unknown) =>
+          operation({ $queryRaw: queryRaw }),
+        ),
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
@@ -3265,12 +3297,24 @@ describe('ModerationService', () => {
         ]),
       ),
     };
+    const chatContextCache = {
+      getChatContext: jest.fn().mockResolvedValue({
+        settings: createSettings({ removeBotsFromGroupEnabled: true }),
+        domainAllowlist: [],
+        adminUserIds: ['admin-1'],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+      getAdminAccessBatch: jest.fn().mockResolvedValue(new Map()),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+    };
 
     const service = new ModerationService(
       prisma as never,
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      chatContextCache as never,
     );
 
     await service.handleUpdate(createBotAuthoredUpdate());
@@ -3361,6 +3405,86 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('does not treat the human bot_added actor as a joined service member', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteSpammersEnabled: true,
+            invitationAccessEnabled: true,
+            invitationAccessRequiredCount: 2,
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      globalSpammer: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      chatInvitationAccessProgress: {
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = { detect: jest.fn() };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    const update = new WebhookParser().parse(
+      {
+        update_id: 'upd-bot-added-human-actor-1',
+        update_type: 'bot_added',
+        chat_id: 'chat-1',
+        user: {
+          user_id: 'admin-actor-1',
+          first_name: 'Иван',
+          last_name: 'Администратор',
+        },
+        timestamp: '2026-08-20T10:00:00.000Z',
+      },
+      { botId: 'managed-bot-1' },
+    );
+
+    expect(update.membership?.memberUserIds).toEqual(['managed-bot-1']);
+    expect(update.message?.senderId).toBe('admin-actor-1');
+
+    await service.handleUpdate(update);
+
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.globalSpammer.findMany).not.toHaveBeenCalled();
+    expect(prisma.chatInvitationAccessProgress.create).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
   it('kicks bots immediately from service join events when toggle is enabled', async () => {
     const prisma = {
       chat: {
@@ -3425,7 +3549,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('dedupes service join bot kicks across multiple bot deliveries', async () => {
+  it('dedupes exact mirrored bot-join deliveries but handles a distinct rejoin in the same second', async () => {
     const claimedKeys = new Set<string>();
     const prisma = {
       chat: {
@@ -3484,7 +3608,7 @@ describe('ModerationService', () => {
       undefined,
       redisCounter as never,
     );
-    const createdAtMs = new Date('2026-04-06T01:09:59.999Z').getTime();
+    const createdAtMs = new Date('2026-04-06T01:10:00.100Z').getTime();
     const createDeliveredJoinUpdate = (
       botId: string,
       updateId: string,
@@ -3523,20 +3647,22 @@ describe('ModerationService', () => {
     };
 
     await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-service-bot-join-bot-1', 0));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-service-bot-join-bot-2', 1));
-    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-service-bot-join-bot-3', 2));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-2', 'upd-service-bot-join-bot-2', 0));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-3', 'upd-service-bot-join-bot-3', 0));
+    await service.handleUpdate(createDeliveredJoinUpdate('bot-1', 'upd-service-bot-rejoin-2', 300));
 
-    expect(maxClient.kickMember).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(1);
+    expect(maxClient.kickMember).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationViolationMessageClaim.createMany).toHaveBeenCalledTimes(2);
     const windowClaimCalls = redisCounter.incrementOncePerMemberWithTtl.mock.calls.filter(
       ([counterKey]) =>
         String(counterKey).startsWith(
           'moderation:service-member-action-window:v1:BOT_ACCOUNT_KICK:service_member',
         ),
     );
-    expect(windowClaimCalls).toHaveLength(3);
-    expect(new Set(windowClaimCalls.map(([, memberKey]) => memberKey)).size).toBe(1);
+    expect(windowClaimCalls).toHaveLength(4);
+    expect(new Set(windowClaimCalls.slice(0, 3).map(([, memberKey]) => memberKey)).size).toBe(1);
+    expect(new Set(windowClaimCalls.map(([, memberKey]) => memberKey)).size).toBe(2);
   });
 
   it('sends greeting message for joined human members when greeting is enabled', async () => {
@@ -6609,7 +6735,7 @@ describe('ModerationService', () => {
       sanctionService as never,
       maxClient as never,
     );
-    const createdAtMs = new Date('2026-04-06T01:00:15.123Z').getTime();
+    const createdAtMs = new Date('2026-04-06T01:00:15.999Z').getTime();
     const createDeliveredJoinUpdate = (
       botId: string,
       updateId: string,
@@ -6651,10 +6777,10 @@ describe('ModerationService', () => {
       createDeliveredJoinUpdate('bot-1', 'upd-service-user-join-bot-1', 0),
     );
     await service.handleUpdate(
-      createDeliveredJoinUpdate('bot-2', 'upd-service-user-join-bot-2', 1),
+      createDeliveredJoinUpdate('bot-2', 'upd-service-user-join-bot-2', 0),
     );
     await service.handleUpdate(
-      createDeliveredJoinUpdate('bot-3', 'upd-service-user-join-bot-3', 2),
+      createDeliveredJoinUpdate('bot-3', 'upd-service-user-join-bot-3', 0),
     );
 
     expect(maxClient.kickMember).toHaveBeenCalledTimes(1);

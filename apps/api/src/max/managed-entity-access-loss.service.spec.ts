@@ -9,6 +9,10 @@ import {
 } from '../prisma/prisma-client';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './managed-entity-access-loss.constants';
 import {
+  MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND,
+  type ManagedEntityAccessLossCleanupJob,
+} from './max-chat-admin-roster-sync.queue';
+import {
   ManagedEntityAccessLossService,
   classifyMaxTerminalChatActionError,
   resolveManagedEntityAccessLossReason,
@@ -29,6 +33,22 @@ function createMaxApiError(status: number, message: string, code?: string): Erro
 function createMaxBotRegistry(botIds: readonly string[]) {
   return {
     getActionableBots: jest.fn().mockReturnValue(botIds.map((id) => ({ id }))),
+  };
+}
+
+function createDeferredCleanupJob(
+  overrides: Partial<ManagedEntityAccessLossCleanupJob> = {},
+): ManagedEntityAccessLossCleanupJob {
+  return {
+    kind: MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND,
+    chatId: 'chat-1',
+    botId: 'bot-1',
+    lifecycleEventAt: '2026-08-20T12:00:00.123Z',
+    lifecycleEventType: 'bot_removed',
+    lifecycleSource: 'webhook',
+    reason: 'bot_removed',
+    source: 'webhook_bot_removed',
+    ...overrides,
   };
 }
 
@@ -177,6 +197,619 @@ describe('classifyMaxTerminalChatActionError', () => {
 });
 
 describe('ManagedEntityAccessLossService', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('forwards the remote probe epoch when recording classified access loss', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    const service = new ManagedEntityAccessLossService({} as never, {} as never, {} as never);
+    const recordManagedEntityAccessLost = jest
+      .spyOn(service, 'recordManagedEntityAccessLost')
+      .mockResolvedValue(null);
+
+    await expect(
+      service.recordIfManagedEntityAccessLost({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        error: createMaxApiError(403, 'Forbidden', 'chat.denied'),
+        operation: 'lookup',
+        source: 'admin_participant_lookup',
+        lifecycleEventAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+        cachePublicationWaitMs: 250,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        reason: 'bot_denied',
+        recorded: null,
+      }),
+    );
+
+    expect(recordManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      entityType: undefined,
+      title: undefined,
+      source: 'admin_participant_lookup',
+      reason: 'bot_denied',
+      lastMaxErrorCode: 'chat.denied',
+      lastMaxErrorMessage: 'forbidden',
+      lastMaxStatusCode: 403,
+      lifecycleEventAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+      cachePublicationWaitMs: 250,
+    });
+  });
+
+  it('finalizes a trusted bot removal once and fences edges and caches by lifecycle time', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(lifecycleEventAt);
+    const transaction = jest.fn();
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Managed chat',
+          entityType: ChatEntityType.CHAT,
+        }),
+      },
+      chatBotMembership: {
+        findUnique: jest.fn().mockResolvedValue({
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: null,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          botAccessExpiresAt: new Date('2026-08-20T12:15:00.000Z'),
+        }),
+        findMany: jest.fn().mockResolvedValue([{ botId: 'bot-2' }]),
+      },
+      managedEntityAccessEdge: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([{ userId: 'admin-1' }, { userId: 'admin-2' }])
+          .mockResolvedValueOnce([{ userId: 'admin-1' }]),
+        findFirst: jest.fn().mockResolvedValue({ botId: 'bot-2' }),
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedEntityAdminMember: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedBotChatCatalog: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ id: 'chat-1' }])
+        .mockResolvedValueOnce([
+          {
+            status: ChatBotMembershipStatus.REMOVED,
+            lifecycleEventAt,
+            lifecycleEventType: 'bot_removed',
+            lifecycleSource: 'webhook',
+          },
+        ])
+        .mockResolvedValueOnce([{ id: 'chat-1' }]),
+      $transaction: transaction,
+    };
+    transaction.mockImplementation(async (callback: (client: typeof prisma) => Promise<unknown>) =>
+      callback(prisma),
+    );
+    const maxBotLinkService = {
+      markChatBotRemoved: jest.fn().mockResolvedValue('bot-2'),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(() => new Promise<void>(() => undefined)),
+      invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesPublishedSnapshotsForUsers: jest.fn().mockResolvedValue(undefined),
+      clearAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      maxBotLinkService as never,
+      chatContextCache as never,
+    );
+
+    const recording = service.recordManagedEntityAccessLost({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      entityType: ChatEntityType.CHAT,
+      reason: 'bot_removed',
+      source: 'webhook_bot_removed',
+      lifecycleEventAt,
+      lifecycleEventType: 'bot_removed',
+      lifecycleSource: 'webhook',
+      cachePublicationWaitMs: 100,
+    });
+    await jest.advanceTimersByTimeAsync(100);
+    await expect(recording).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        nextOwnerBotId: 'bot-2',
+        updatedAccessEdges: 2,
+      }),
+    );
+
+    expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        lifecycleEventAt,
+        lifecycleEventType: 'bot_removed',
+        lifecycleSource: 'webhook',
+      }),
+    );
+    const lockSql = prisma.$queryRaw.mock.calls.map(([query]) =>
+      (query as readonly string[]).join(''),
+    );
+    expect(lockSql).toHaveLength(3);
+    expect(lockSql[0]).toContain('FROM "chats"');
+    expect(lockSql[1]).toContain('FROM "chat_bot_memberships"');
+    expect(lockSql[2]).toContain('FROM "chats"');
+    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        checkedAt: { lte: lifecycleEventAt },
+      },
+      data: expect.objectContaining({
+        state: ManagedEntityAccessState.BOT_DENIED,
+        checkedAt: lifecycleEventAt,
+        expiresAt: null,
+        source: 'webhook_bot_removed',
+      }),
+    });
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'admin-2',
+      state: 'bot_denied',
+      eventAt: lifecycleEventAt,
+    });
+    expect(chatContextCache.clearAdminAccess).not.toHaveBeenCalled();
+    expect(chatContextCache.clearManagedEntitiesPublishedSnapshotsForUsers).not.toHaveBeenCalled();
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).not.toHaveBeenCalled();
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+    expect(prisma.managedEntityAdminMember.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        observedByBotId: 'bot-1',
+        checkedAt: { lte: lifecycleEventAt },
+      },
+    });
+    expect(prisma.managedBotChatCatalog.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ botId: 'bot-1', chatId: 'chat-1' }),
+        data: expect.objectContaining({ status: 'REMOVED', lastSeenAt: lifecycleEventAt }),
+      }),
+    );
+  });
+
+  it('skips runtime cleanup when the same bot recovers after lifecycle finalization', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Managed chat',
+          entityType: ChatEntityType.CHAT,
+        }),
+      },
+    };
+    const maxBotLinkService = {
+      markChatBotRemoved: jest.fn().mockResolvedValue(null),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      maxBotLinkService as never,
+      {} as never,
+    );
+    jest.spyOn(service as any, 'finalizeLifecycleRemoval').mockResolvedValue({
+      updatedAccessEdges: 0,
+      removalStillCurrent: true,
+    });
+    const hasConfirmedSurvivingBotAccess = jest
+      .spyOn(service as any, 'hasConfirmedSurvivingBotAccess')
+      .mockResolvedValue(true);
+    const cleanupRuntimeWork = jest.spyOn(service as any, 'cleanupRuntimeWork');
+
+    await expect(
+      service.recordManagedEntityAccessLost({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'bot_denied',
+        source: 'max_action:send_message',
+        lifecycleEventAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        cleanup: expect.objectContaining({ nightModeJobsCleared: false }),
+      }),
+    );
+
+    expect(hasConfirmedSurvivingBotAccess).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      lostBotId: null,
+      preferredBotId: null,
+    });
+    expect(cleanupRuntimeWork).not.toHaveBeenCalled();
+  });
+
+  it('schedules lifecycle cleanup as a durable delayed job instead of mutating runtime work', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T12:00:01.000Z'));
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Managed chat',
+          entityType: ChatEntityType.CHAT,
+        }),
+      },
+    };
+    const rosterSyncQueue = {
+      add: jest.fn().mockResolvedValue({ id: 'cleanup-job' }),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      { markChatBotRemoved: jest.fn().mockResolvedValue(null) } as never,
+      {} as never,
+      undefined,
+      rosterSyncQueue as never,
+    );
+    jest.spyOn(service as any, 'finalizeLifecycleRemoval').mockResolvedValue({
+      updatedAccessEdges: 1,
+      removalStillCurrent: true,
+    });
+    const cleanupRuntimeWork = jest.spyOn(service as any, 'cleanupRuntimeWork');
+    const hasConfirmedSurvivingBotAccess = jest.spyOn(
+      service as any,
+      'hasConfirmedSurvivingBotAccess',
+    );
+
+    await expect(
+      service.recordManagedEntityAccessLost({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'bot_removed',
+        source: 'webhook_bot_removed',
+        lifecycleEventAt,
+        lifecycleEventType: 'bot_removed',
+        lifecycleSource: 'webhook',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        cleanup: expect.objectContaining({
+          nightModeJobsCleared: false,
+          canceledBroadcasts: null,
+        }),
+      }),
+    );
+
+    expect(rosterSyncQueue.add).toHaveBeenCalledWith(
+      'cleanup-managed-entity-access-loss',
+      {
+        kind: MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND,
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        lifecycleEventAt: lifecycleEventAt.toISOString(),
+        lifecycleEventType: 'bot_removed',
+        lifecycleSource: 'webhook',
+        reason: 'bot_removed',
+        source: 'webhook_bot_removed',
+        createdAt: '2026-08-20T12:00:01.000Z',
+      },
+      expect.objectContaining({
+        jobId: expect.stringMatching(/^managed-entity-access-loss-cleanup__/u),
+        delay: 45_000,
+        attempts: 3,
+        removeOnComplete: true,
+        removeOnFail: false,
+      }),
+    );
+    expect(hasConfirmedSurvivingBotAccess).not.toHaveBeenCalled();
+    expect(cleanupRuntimeWork).not.toHaveBeenCalled();
+  });
+
+  it('preserves runtime work when deferred cleanup enqueue fails', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    const rosterSyncQueue = {
+      add: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+    };
+    const service = new ManagedEntityAccessLossService(
+      {
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            title: 'Managed chat',
+            entityType: ChatEntityType.CHAT,
+          }),
+        },
+      } as never,
+      { markChatBotRemoved: jest.fn().mockResolvedValue(null) } as never,
+      {} as never,
+      undefined,
+      rosterSyncQueue as never,
+    );
+    jest.spyOn(service as any, 'finalizeLifecycleRemoval').mockResolvedValue({
+      updatedAccessEdges: 1,
+      removalStillCurrent: true,
+    });
+    const cleanupRuntimeWork = jest.spyOn(service as any, 'cleanupRuntimeWork');
+
+    await expect(
+      service.recordManagedEntityAccessLost({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'bot_removed',
+        source: 'webhook_bot_removed',
+        lifecycleEventAt,
+        lifecycleEventType: 'bot_removed',
+        lifecycleSource: 'webhook',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        cleanup: expect.objectContaining({ canceledBroadcasts: null }),
+      }),
+    );
+
+    expect(rosterSyncQueue.add).toHaveBeenCalledTimes(1);
+    expect(cleanupRuntimeWork).not.toHaveBeenCalled();
+  });
+
+  it('runs deferred SQL cleanup in the same transaction after the exact loss epoch survives', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T12:00:45.123Z'));
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ id: 'chat-1' }])
+        .mockResolvedValueOnce([
+          {
+            status: ChatBotMembershipStatus.REMOVED,
+            lifecycleEventAt,
+            lifecycleEventType: 'bot_removed',
+            lifecycleSource: 'webhook',
+          },
+        ]),
+      chatBotMembership: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      managedEntityAccessEdge: {
+        findFirst: jest.fn(),
+      },
+      managedAutopostRule: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcast: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedBroadcastCalendarReservation: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn().mockResolvedValue({ count: 3 }),
+      },
+      vkParsingPost: {
+        updateMany: jest.fn().mockResolvedValue({ count: 4 }),
+      },
+      vkParsingSource: {
+        updateMany: jest.fn().mockResolvedValue({ count: 5 }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
+    };
+    const nightModeTransitionScheduler = {
+      clearChatJobs: jest.fn(),
+    };
+    const rosterSyncQueue = {
+      getJob: jest.fn(),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      nightModeTransitionScheduler as never,
+      rosterSyncQueue as never,
+      createMaxBotRegistry(['bot-1', 'bot-2']) as never,
+    );
+
+    await expect(
+      service.processDeferredRuntimeCleanup(createDeferredCleanupJob()),
+    ).resolves.toEqual({
+      applied: true,
+      skippedReason: null,
+      cleanup: {
+        nightModeJobsCleared: false,
+        canceledBroadcasts: 1,
+        canceledBroadcastDeliveries: 2,
+        canceledBroadcastOccurrences: 3,
+        clearedVkPublishPosts: 4,
+        pausedVkSources: 5,
+        removedRosterSyncJobs: null,
+      },
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.managedAutopostRule.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.managedBroadcast.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.vkParsingSource.updateMany).toHaveBeenCalledTimes(1);
+    expect(nightModeTransitionScheduler.clearChatJobs).not.toHaveBeenCalled();
+    expect(rosterSyncQueue.getJob).not.toHaveBeenCalled();
+  });
+
+  it('does not cancel runtime work after a newer same-bot grant supersedes the cleanup epoch', async () => {
+    const lossAt = new Date('2026-08-20T12:00:00.123Z');
+    const grantAt = new Date('2026-08-20T12:00:10.456Z');
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ id: 'chat-1' }])
+        .mockResolvedValueOnce([
+          {
+            status: ChatBotMembershipStatus.ACTIVE,
+            lifecycleEventAt: grantAt,
+            lifecycleEventType: 'bot_added',
+            lifecycleSource: 'webhook',
+          },
+        ]),
+      chatBotMembership: {
+        findMany: jest.fn(),
+      },
+      managedEntityAccessEdge: {
+        findFirst: jest.fn(),
+      },
+      managedAutopostRule: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcast: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcastCalendarReservation: {
+        deleteMany: jest.fn(),
+      },
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn(),
+      },
+      vkParsingPost: {
+        updateMany: jest.fn(),
+      },
+      vkParsingSource: {
+        updateMany: jest.fn(),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      createMaxBotRegistry(['bot-1']) as never,
+    );
+
+    await expect(
+      service.processDeferredRuntimeCleanup(
+        createDeferredCleanupJob({ lifecycleEventAt: lossAt.toISOString() }),
+      ),
+    ).resolves.toEqual({
+      applied: false,
+      skippedReason: 'stale_lifecycle',
+      cleanup: expect.objectContaining({ canceledBroadcasts: null }),
+    });
+
+    expect(tx.chatBotMembership.findMany).not.toHaveBeenCalled();
+    expect(tx.managedAutopostRule.updateMany).not.toHaveBeenCalled();
+    expect(tx.managedBroadcast.updateMany).not.toHaveBeenCalled();
+    expect(tx.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    expect(tx.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(tx.vkParsingSource.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not cancel runtime work while another actionable bot has fresh access', async () => {
+    const lifecycleEventAt = new Date('2026-08-20T12:00:00.123Z');
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ id: 'chat-1' }])
+        .mockResolvedValueOnce([
+          {
+            status: ChatBotMembershipStatus.REMOVED,
+            lifecycleEventAt,
+            lifecycleEventType: 'bot_removed',
+            lifecycleSource: 'webhook',
+          },
+        ]),
+      chatBotMembership: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            botId: 'bot-2',
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: null,
+            botAccessState: null,
+            botAccessExpiresAt: null,
+          },
+        ]),
+      },
+      managedEntityAccessEdge: {
+        findFirst: jest.fn().mockResolvedValue({ botId: 'bot-2' }),
+      },
+      managedAutopostRule: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcast: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn(),
+      },
+      managedBroadcastCalendarReservation: {
+        deleteMany: jest.fn(),
+      },
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn(),
+      },
+      vkParsingPost: {
+        updateMany: jest.fn(),
+      },
+      vkParsingSource: {
+        updateMany: jest.fn(),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      createMaxBotRegistry(['bot-1', 'bot-2']) as never,
+    );
+
+    await expect(
+      service.processDeferredRuntimeCleanup(createDeferredCleanupJob()),
+    ).resolves.toEqual({
+      applied: false,
+      skippedReason: 'surviving_access',
+      cleanup: expect.objectContaining({ canceledBroadcasts: null }),
+    });
+
+    expect(tx.managedEntityAccessEdge.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          botId: { in: ['bot-2'] },
+          state: ManagedEntityAccessState.GRANTED,
+        }),
+      }),
+    );
+    expect(tx.managedAutopostRule.updateMany).not.toHaveBeenCalled();
+    expect(tx.managedBroadcast.updateMany).not.toHaveBeenCalled();
+    expect(tx.vkParsingSource.updateMany).not.toHaveBeenCalled();
+  });
+
   it('marks bot membership removed, denies existing access edges, clears caches and night jobs', async () => {
     const prisma = {
       chat: {
@@ -522,10 +1155,7 @@ describe('ManagedEntityAccessLossService', () => {
       where: {
         targetChatId: 'chat-lost',
         status: {
-          in: [
-            ManagedBroadcastDeliveryStatus.PENDING,
-            ManagedBroadcastDeliveryStatus.FAILED,
-          ],
+          in: [ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.FAILED],
         },
       },
       data: expect.objectContaining({

@@ -2648,6 +2648,7 @@ export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreen
 
 export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),
+  postId: z.string().optional(),
   chatId: z.string(),
   chatTitle: z.string().optional(),
   entityType: z.enum(['chat', 'channel']).optional(),

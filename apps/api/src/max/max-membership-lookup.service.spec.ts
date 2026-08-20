@@ -588,11 +588,14 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
-  it('applies a long chat backoff after terminal background draw access denials', async () => {
+  it('persists a terminal single-user probe without reviving rejected lifecycle state', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:15.000Z'));
 
     const deniedError = Object.assign(new Error('Request failed with status code 403'), {
-      response: { status: 403, data: { message: 'Request failed with status code 403' } },
+      response: {
+        status: 403,
+        data: { code: 'chat.denied', message: 'Request failed with status code 403' },
+      },
     });
     const maxClient = {
       hasChatMember: jest.fn(),
@@ -601,12 +604,20 @@ describe('MaxMembershipLookupService', () => {
         .mockRejectedValueOnce(deniedError)
         .mockResolvedValueOnce(new Map([['user-2', { userId: 'user-2', isAdmin: false }]])),
     };
-    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const maxBotLinkService = {
+      recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
 
     await expect(
       service.getMembership('channel-denied', 'user-1', 'giveaway_draw_background', {
         forceRefresh: true,
         allowStaleOnError: false,
+        botId: 'bot-1',
       }),
     ).resolves.toBeNull();
 
@@ -614,10 +625,21 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-denied', 'user-2', 'giveaway_draw_background', {
         forceRefresh: true,
         allowStaleOnError: false,
+        botId: 'bot-1',
       }),
     ).resolves.toBeNull();
 
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'channel-denied',
+      botId: 'bot-1',
+      access: null,
+      source: 'membership_lookup_giveaway_draw_background',
+      checkedAt: new Date('2026-03-29T10:14:15.000Z'),
+      lastErrorCode: 'chat.denied',
+      allowMembershipRecovery: false,
+    });
     expect(service.getLookupIssue('channel-denied', 'giveaway_draw_background')).toEqual(
       expect.objectContaining({
         chatId: 'channel-denied',
@@ -634,6 +656,7 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-denied', 'user-2', 'giveaway_draw_background', {
         forceRefresh: true,
         allowStaleOnError: false,
+        botId: 'bot-1',
       }),
     ).resolves.toBe(true);
 
@@ -641,55 +664,83 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
-  it('short-circuits terminal required subscription access denials during strict retries', async () => {
+  it('persists a terminal multi-user probe before strict required subscription backoff', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:15:00.000Z'));
 
-    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
-      response: { status: 403, data: { message: 'Request failed with status code 403' } },
+    const deniedError = Object.assign(new Error('Request failed with status code 404'), {
+      response: {
+        status: 404,
+        data: { code: 'chat.not.found', message: 'Request failed with status code 404' },
+      },
     });
     const maxClient = {
       hasChatMember: jest.fn(),
       getChatMembersAccess: jest
         .fn()
         .mockRejectedValueOnce(deniedError)
-        .mockResolvedValueOnce(new Map([['user-2', { userId: 'user-2', isAdmin: false }]])),
+        .mockResolvedValueOnce(new Map([['user-3', { userId: 'user-3', isAdmin: false }]])),
     };
     const runtimeDiagnosticsService = {
       recordMembershipBackoff: jest.fn(),
       recordMembershipIssue: jest.fn(),
+    };
+    const maxBotLinkService = {
+      recordBotAccessProbe: jest.fn().mockResolvedValue(true),
     };
     const service = new MaxMembershipLookupService(
       maxClient as never,
       createConfigMock({
         MAX_MEMBERSHIP_LOOKUP_REQUIRED_SUBSCRIPTION_TERMINAL_BACKOFF_MS: 60_000,
       }) as never,
-      undefined,
+      maxBotLinkService as never,
       undefined,
       runtimeDiagnosticsService as never,
     );
 
     await expect(
-      service.getMembership('channel-denied', 'user-1', 'moderation_required_subscription', {
-        forceRefresh: true,
-        allowStaleOnError: false,
-      }),
-    ).resolves.toBeNull();
+      service.getMemberships(
+        'channel-denied',
+        ['user-1', 'user-2'],
+        'moderation_required_subscription',
+        {
+          forceRefresh: true,
+          allowStaleOnError: false,
+          botId: 'bot-1',
+        },
+      ),
+    ).resolves.toEqual(
+      new Map([
+        ['user-1', null],
+        ['user-2', null],
+      ]),
+    );
 
     await expect(
-      service.getMembership('channel-denied', 'user-2', 'moderation_required_subscription', {
+      service.getMembership('channel-denied', 'user-3', 'moderation_required_subscription', {
         forceRefresh: true,
         allowStaleOnError: false,
+        botId: 'bot-1',
       }),
     ).resolves.toBeNull();
 
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'channel-denied',
+      botId: 'bot-1',
+      access: null,
+      source: 'membership_lookup_moderation_required_subscription',
+      checkedAt: new Date('2026-03-29T10:15:00.000Z'),
+      lastErrorCode: 'chat.not.found',
+      allowMembershipRecovery: false,
+    });
     expect(service.getLookupIssue('channel-denied', 'moderation_required_subscription')).toEqual(
       expect.objectContaining({
         chatId: 'channel-denied',
         policyName: 'moderation_required_subscription',
         kind: 'terminal',
         retryAfterMs: 60_000,
-        statusCode: 403,
+        statusCode: 404,
       }),
     );
     expect(runtimeDiagnosticsService.recordMembershipBackoff).toHaveBeenCalledWith(
@@ -711,9 +762,10 @@ describe('MaxMembershipLookupService', () => {
     jest.advanceTimersByTime(60_001);
 
     await expect(
-      service.getMembership('channel-denied', 'user-2', 'moderation_required_subscription', {
+      service.getMembership('channel-denied', 'user-3', 'moderation_required_subscription', {
         forceRefresh: true,
         allowStaleOnError: false,
+        botId: 'bot-1',
       }),
     ).resolves.toBe(true);
 

@@ -3417,6 +3417,7 @@ export class AdminManagedBroadcastRuntime {
       const sendDeliveryWithBot = async (
         targetChatId: string,
         botId: string | undefined,
+        onAttemptStarted: (startedAt: Date) => void,
       ): Promise<{
         sentMessage: MaxPublishedMessage;
         commentDialogReference: ManagedBroadcastCommentDialogReference | null;
@@ -3456,6 +3457,7 @@ export class AdminManagedBroadcastRuntime {
             maxApiOptions,
             () =>
               this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease),
+            onAttemptStarted,
           );
           return {
             sentMessage,
@@ -3679,6 +3681,7 @@ export class AdminManagedBroadcastRuntime {
 
         let sentMessage: MaxPublishedMessage | null = null;
         let resolvedBotId: string | undefined;
+        let directSendAttemptStartedAt: Date | null = null;
         let commentDialogReference: ManagedBroadcastCommentDialogReference | null = null;
         try {
           await this.heartbeatManagedBroadcastProcessingLock(
@@ -3707,7 +3710,9 @@ export class AdminManagedBroadcastRuntime {
                     botId: resolvedBotId ?? null,
                   },
                 });
-                return sendDeliveryWithBot(delivery.targetChatId, resolvedBotId);
+                return sendDeliveryWithBot(delivery.targetChatId, resolvedBotId, (startedAt) => {
+                  directSendAttemptStartedAt = startedAt;
+                });
               })();
           if (!deliveryAttempt) {
             await cancelPublicationDeliveryBeforeStoppedDispatch(
@@ -3826,16 +3831,20 @@ export class AdminManagedBroadcastRuntime {
             );
             continue;
           }
-          const accessLossResult = this.maxRoutedPublicationService
-            ? null
-            : await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
-                chatId: delivery.targetChatId,
-                botId: resolvedBotId ?? null,
-                entityType: row.entityType,
-                source: 'managed_broadcast:delivery',
-                operation: 'send',
-                error,
-              });
+          const accessLossResult =
+            this.maxRoutedPublicationService || !directSendAttemptStartedAt
+              ? null
+              : await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+                  chatId: delivery.targetChatId,
+                  botId: resolvedBotId ?? null,
+                  entityType: row.entityType,
+                  source: 'managed_broadcast:delivery',
+                  operation: 'send',
+                  error,
+                  lifecycleEventAt: directSendAttemptStartedAt as Date,
+                  lifecycleEventType: 'live_probe',
+                  lifecycleSource: 'live_probe',
+                });
           if (accessLossResult?.recorded) {
             const failedBotIds = new Set<string>(resolvedBotId ? [resolvedBotId] : []);
             let replacementBotId = accessLossResult.recorded.nextOwnerBotId ?? undefined;
@@ -3855,9 +3864,13 @@ export class AdminManagedBroadcastRuntime {
               });
 
               try {
+                directSendAttemptStartedAt = null;
                 const replacementAttempt = await sendDeliveryWithBot(
                   delivery.targetChatId,
                   replacementBotId,
+                  (startedAt) => {
+                    directSendAttemptStartedAt = startedAt;
+                  },
                 );
                 if (!replacementAttempt) {
                   await cancelPublicationDeliveryBeforeStoppedDispatch(
@@ -3901,15 +3914,20 @@ export class AdminManagedBroadcastRuntime {
                   replacementBotId = undefined;
                   break;
                 }
-                replacementAccessResult =
-                  (await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
-                    chatId: delivery.targetChatId,
-                    botId: replacementBotId,
-                    entityType: row.entityType,
-                    source: 'managed_broadcast:delivery_failover',
-                    operation: 'send',
-                    error: replacementError,
-                  })) ?? replacementAccessResult;
+                if (directSendAttemptStartedAt) {
+                  replacementAccessResult =
+                    (await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+                      chatId: delivery.targetChatId,
+                      botId: replacementBotId,
+                      entityType: row.entityType,
+                      source: 'managed_broadcast:delivery_failover',
+                      operation: 'send',
+                      error: replacementError,
+                      lifecycleEventAt: directSendAttemptStartedAt as Date,
+                      lifecycleEventType: 'live_probe',
+                      lifecycleSource: 'live_probe',
+                    })) ?? replacementAccessResult;
+                }
                 replacementBotId = replacementAccessResult.recorded?.nextOwnerBotId ?? undefined;
               }
             }
@@ -6319,6 +6337,7 @@ export class AdminManagedBroadcastRuntime {
     botId?: string,
     maxApiOptions?: ManagedBroadcastMaxApiOptions,
     onProgress?: ManagedBroadcastProgressCallback,
+    onDispatchAttempt?: (startedAt: Date) => void,
   ): Promise<MaxPublishedMessage> {
     let lastError: unknown = null;
     const attempts =
@@ -6330,6 +6349,7 @@ export class AdminManagedBroadcastRuntime {
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
+        onDispatchAttempt?.(new Date());
         const published = botId
           ? await this.maxClient.sendMessageImmediateWithId(chatId, text, options, {
               ...this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),

@@ -44,7 +44,7 @@
 ## Webhooks And Deletion Safety
 
 - `POST /subscriptions` is transport source of truth: public HTTPS on port 443, trusted full-chain TLS, HTTP 200 within 30 seconds, and `X-Max-Bot-Api-Secret` validation when configured.
-- Keep required subscriptions aligned with `src/max/max-webhook-subscription.constants.ts`: `message_created`, `message_edited`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, `bot_started`, and `chat_title_changed`.
+- Keep required subscriptions aligned with `src/max/max-webhook-subscription.constants.ts`: the base set is `message_created`, `message_edited`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, `bot_started`, and `chat_title_changed`. Shadow/canary/on also subscribe to `message_removed`, `bot_stopped`, and `dialog_removed`; shadow records those events without applying terminal lifecycle transitions, while off omits them.
 - `MAX_REQUIRED_WEBHOOK_UPDATE_TYPES` is the product subset of official updates. Add parser, queue, and product handling before subscribing to additional lifecycle events.
 - After changing a webhook host/domain, read `GET /subscriptions` and recreate the target; do not assume its secret binding changed automatically.
 - Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned with the canonical host, currently `https://major-maksimov.ru`.
@@ -102,6 +102,7 @@
 - Missing-edge repair is allowlist-backed, preserves fresh denied state, and queues roster validation. Legacy allowlist rows missing bot ownership fields remain repair candidates.
 - Fresh `bot_added` candidates appear only after MAX confirms both user and runtime-bot admin rights. Settings links come after the `Старт` handshake, not directly from onboarding.
 - A successful handshake keeps the access edge, `ChatBotMembership`, `chat:admin-access` cache, and user snapshot aligned.
+- Membership event time is the durable access epoch in SQL. Capture remote probe start before the MAX lookup, serialize grants against that epoch under the parent `Chat` lock, commit SQL before publishing Redis epoch/CAS mutations, and never await Redis while holding a PostgreSQL lock.
 - Discovery uses `bot_added`, recent bootstrap/activity, allowlist, published snapshots, and targeted checks; never restore `GET /chats`, full bot-chat scans, or launch-context assumptions.
 - When recent hydration resolves better metadata, update the user-scoped published snapshot so home does not retain fallback `Chat <id>` titles.
 - Refresh is asynchronous and entity-type-specific. Diagnose CHAT and CHANNEL independently and trust refresh cursor/state, not only the first response.

@@ -138,7 +138,6 @@ export async function readChannelSettings(params: {
       },
     },
     update: {
-      ...params.botAssignmentData,
       entityType: ChatEntityType.CHANNEL,
       catalogKind: ChatCatalogKind.MANAGED,
       channelSettings: {
@@ -228,7 +227,6 @@ export async function saveChannelSettings(params: {
       },
     },
     update: {
-      ...botAssignmentData,
       entityType: ChatEntityType.CHANNEL,
       catalogKind: ChatCatalogKind.MANAGED,
       channelSettings: {

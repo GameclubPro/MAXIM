@@ -20,10 +20,8 @@ describe('MAX webhook subscription constants', () => {
     );
   });
 
-  it('keeps extended lifecycle events behind canary/on rollout modes', () => {
-    expect(resolveRequiredWebhookUpdateTypes('shadow')).toEqual(
-      MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES,
-    );
+  it('subscribes in shadow for observation while off omits extended lifecycle events', () => {
+    expect(resolveRequiredWebhookUpdateTypes('shadow')).toEqual(MAX_REQUIRED_WEBHOOK_UPDATE_TYPES);
     expect(resolveRequiredWebhookUpdateTypes('off')).toEqual(
       MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES,
     );

@@ -42,8 +42,26 @@ describe('recover-vk-parsing-access-loss script', () => {
   function createFixture(sources = [createSource()]) {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const auditCreate = jest.fn().mockResolvedValue({ id: 'audit-1' });
+    const lockedChat = { id: 'channel-1', routingVersion: 7 };
+    const persistedMembership = {
+      status: ChatBotMembershipStatus.ACTIVE as ChatBotMembershipStatus,
+      botAccessState: 'CONFIRMED_ADMIN',
+      botAccessCheckedAt: fixedNow,
+      botAccessSource: 'vk_parsing_access_loss_recovery',
+      lifecycleEventAt: new Date('2026-07-28T08:00:00.000Z'),
+      lifecycleEventType: 'bot_added',
+      lifecycleSource: 'webhook',
+    };
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async () =>
+        queryRaw.mock.calls.length % 2 === 1 ? [lockedChat] : [{ id: 'membership-1' }],
+      );
+    const membershipFindUnique = jest.fn().mockImplementation(async () => persistedMembership);
     const transaction = jest.fn(async (callback) =>
       callback({
+        $queryRaw: queryRaw,
+        chatBotMembership: { findUnique: membershipFindUnique },
         vkParsingSource: { updateMany },
         auditLog: { create: auditCreate },
       }),
@@ -71,6 +89,7 @@ describe('recover-vk-parsing-access-loss script', () => {
         reason: 'primary_confirmed',
         routingVersion: 7,
       }),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(true),
     };
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
@@ -86,6 +105,10 @@ describe('recover-vk-parsing-access-loss script', () => {
       maxClient,
       updateMany,
       auditCreate,
+      lockedChat,
+      persistedMembership,
+      queryRaw,
+      membershipFindUnique,
       transaction,
     };
   }
@@ -183,6 +206,7 @@ describe('recover-vk-parsing-access-loss script', () => {
     expect(fixture.transaction).not.toHaveBeenCalled();
     expect(fixture.updateMany).not.toHaveBeenCalled();
     expect(fixture.auditCreate).not.toHaveBeenCalled();
+    expect(fixture.maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
   });
 
   it('skips quarantined routes and probes remaining candidates until channel write is live', async () => {
@@ -250,6 +274,7 @@ describe('recover-vk-parsing-access-loss script', () => {
       }),
     );
     expect(fixture.transaction).not.toHaveBeenCalled();
+    expect(fixture.maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
   });
 
   it('applies recovery with a full source CAS, a fresh baseline, and a durable audit', async () => {
@@ -272,6 +297,38 @@ describe('recover-vk-parsing-access-loss script', () => {
         nextAutoPublishEnabledAt: fixedNow.toISOString(),
       }),
     );
+    expect(fixture.maxBotLink.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      botId: 'bot-1',
+      access: {
+        userId: '1001',
+        isOwner: false,
+        isAdmin: true,
+        permissions: ['write'],
+      },
+      source: 'vk_parsing_access_loss_recovery',
+      checkedAt: fixedNow,
+      allowMembershipRecovery: false,
+    });
+    expect(fixture.maxBotLink.resolveBotRoute).toHaveBeenCalledTimes(2);
+    expect(fixture.queryRaw).toHaveBeenCalledTimes(2);
+    expect(fixture.membershipFindUnique).toHaveBeenCalledWith({
+      where: {
+        chatId_botId: {
+          chatId: 'channel-1',
+          botId: 'bot-1',
+        },
+      },
+      select: {
+        status: true,
+        botAccessState: true,
+        botAccessCheckedAt: true,
+        botAccessSource: true,
+        lifecycleEventAt: true,
+        lifecycleEventType: true,
+        lifecycleSource: true,
+      },
+    });
     expect(fixture.updateMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
         id: 'source-1',
@@ -318,6 +375,10 @@ describe('recover-vk-parsing-access-loss script', () => {
           applyAt: fixedNow.toISOString(),
           confirmedBotId: 'bot-1',
           routeReason: 'primary_confirmed',
+          routeRoutingVersion: 7,
+          accessEpochCheckedAt: fixedNow.toISOString(),
+          accessEpochSource: 'vk_parsing_access_loss_recovery',
+          accessEpochState: 'CONFIRMED_ADMIN',
           previousAutoPublishEnabledAt: '2026-06-01T09:00:00.000Z',
           nextAutoPublishEnabledAt: fixedNow.toISOString(),
         }),
@@ -380,6 +441,52 @@ describe('recover-vk-parsing-access-loss script', () => {
 
     expect(summary.casConflicts).toBe(1);
     expect(summary.outcomes[0]?.result).toBe('cas_conflict');
+    expect(fixture.auditCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects recovery when routing changes after the persisted live probe', async () => {
+    const fixture = createFixture();
+    fixture.lockedChat.routingVersion = 8;
+
+    const summary = await runVkAccessLossRecovery(
+      fixture.prisma as never,
+      fixture.maxBotLink,
+      fixture.maxClient,
+      { apply: true, json: false, sourceIds: ['source-1'] },
+      () => fixedNow,
+    );
+
+    expect(summary.casConflicts).toBe(1);
+    expect(summary.outcomes[0]).toEqual(
+      expect.objectContaining({ result: 'cas_conflict', confirmedBotId: 'bot-1' }),
+    );
+    expect(fixture.queryRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.membershipFindUnique).not.toHaveBeenCalled();
+    expect(fixture.updateMany).not.toHaveBeenCalled();
+    expect(fixture.auditCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a late membership removal after the persisted live probe', async () => {
+    const fixture = createFixture();
+    fixture.persistedMembership.status = ChatBotMembershipStatus.REMOVED;
+    fixture.persistedMembership.lifecycleEventAt = new Date('2026-07-28T08:30:01.000Z');
+    fixture.persistedMembership.lifecycleEventType = 'bot_removed';
+
+    const summary = await runVkAccessLossRecovery(
+      fixture.prisma as never,
+      fixture.maxBotLink,
+      fixture.maxClient,
+      { apply: true, json: false, sourceIds: ['source-1'] },
+      () => fixedNow,
+    );
+
+    expect(summary.casConflicts).toBe(1);
+    expect(summary.outcomes[0]).toEqual(
+      expect.objectContaining({ result: 'cas_conflict', confirmedBotId: 'bot-1' }),
+    );
+    expect(fixture.queryRaw).toHaveBeenCalledTimes(2);
+    expect(fixture.membershipFindUnique).toHaveBeenCalledTimes(1);
+    expect(fixture.updateMany).not.toHaveBeenCalled();
     expect(fixture.auditCreate).not.toHaveBeenCalled();
   });
 

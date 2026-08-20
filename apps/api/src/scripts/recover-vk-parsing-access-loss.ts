@@ -6,7 +6,12 @@ import {
   type MaxClientService,
 } from '../max/max-client.service';
 import { normalizePermissionName } from '../max/max-bot-access-policy.util';
-import { ChatBotMembershipStatus, ChatEntityType, Prisma } from '../prisma/prisma-client';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+  Prisma,
+} from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 
 const MAX_SOURCE_IDS = 5;
@@ -14,6 +19,7 @@ const MAX_LIVE_CHECK_TIMEOUT_MS = 5_000;
 const ACCESS_LOSS_ERROR_CODE = 'max.access_lost';
 const RECOVERY_ACTOR_USER_ID = 'system';
 const RECOVERY_AUDIT_ACTION = 'VK_PARSING_RECOVER_ACCESS_LOSS';
+const RECOVERY_ACCESS_SOURCE = 'vk_parsing_access_loss_recovery';
 const SEND_PERMISSION_ALIASES = new Set(['write', 'can_write']);
 
 const RECOVERY_SOURCE_SELECT = {
@@ -87,6 +93,24 @@ type RecoveryRouteSummary = {
   routingVersion: number | null;
 };
 
+type RecoveryAccessEpoch = {
+  botId: string;
+  accessState: ChatBotAccessState;
+  checkedAt: Date;
+  source: string;
+  routingVersion: number;
+};
+
+type RecoveryMembershipEpoch = {
+  status: ChatBotMembershipStatus;
+  botAccessState: ChatBotAccessState;
+  botAccessCheckedAt: Date | null;
+  botAccessSource: string | null;
+  lifecycleEventAt: Date | null;
+  lifecycleEventType: string | null;
+  lifecycleSource: string | null;
+};
+
 export type VkAccessLossRecoveryOutcome = {
   sourceId: string;
   chatId: string;
@@ -119,7 +143,7 @@ export type VkAccessLossRecoverySummary = {
 };
 
 type RecoveryClock = () => Date;
-type RecoveryMaxBotLink = Pick<MaxBotLinkService, 'resolveBotRoute'>;
+type RecoveryMaxBotLink = Pick<MaxBotLinkService, 'recordBotAccessProbe' | 'resolveBotRoute'>;
 type RecoveryMaxClient = Pick<MaxClientService, 'getCurrentChatMemberAccess'>;
 
 function readRequiredValue(argv: readonly string[], index: number, option: string): string {
@@ -221,6 +245,40 @@ function hasLivePublishCapability(
   );
 }
 
+function resolveAccessState(access: MaxChatMemberAccess): ChatBotAccessState {
+  if (access.isOwner) {
+    return ChatBotAccessState.CONFIRMED_OWNER;
+  }
+  return access.isAdmin
+    ? ChatBotAccessState.CONFIRMED_ADMIN
+    : ChatBotAccessState.CONFIRMED_MEMBER;
+}
+
+function isAcceptedRecoveryAccessEpoch(
+  membership: RecoveryMembershipEpoch | null,
+  accessEpoch: RecoveryAccessEpoch,
+): boolean {
+  if (
+    !membership ||
+    membership.status !== ChatBotMembershipStatus.ACTIVE ||
+    membership.botAccessState !== accessEpoch.accessState ||
+    membership.botAccessCheckedAt?.getTime() !== accessEpoch.checkedAt.getTime() ||
+    membership.botAccessSource !== accessEpoch.source
+  ) {
+    return false;
+  }
+
+  const lifecycleEventAt = membership.lifecycleEventAt;
+  if (!lifecycleEventAt || lifecycleEventAt.getTime() < accessEpoch.checkedAt.getTime()) {
+    return true;
+  }
+  return (
+    lifecycleEventAt.getTime() === accessEpoch.checkedAt.getTime() &&
+    membership.lifecycleEventType === 'live_probe' &&
+    membership.lifecycleSource === 'live_probe'
+  );
+}
+
 async function loadRecoverySources(
   prisma: PrismaService,
   options: VkAccessLossRecoveryOptions,
@@ -261,9 +319,12 @@ async function resolveLivePublishBot(
   maxClient: RecoveryMaxClient,
   source: RecoverySource,
   checkedAt: Date,
+  persistAccessEpoch: boolean,
 ): Promise<{
   route: RecoveryRouteSummary | null;
   confirmedBotId: string | null;
+  accessEpoch: RecoveryAccessEpoch | null;
+  casConflict: boolean;
   liveChecks: LiveRouteCheck[];
 }> {
   const resolved = await maxBotLink.resolveBotRoute({
@@ -277,7 +338,13 @@ async function resolveLivePublishBot(
 
   const route = summarizeRoute(resolved);
   if (route.candidateBotIds.length === 0) {
-    return { route, confirmedBotId: null, liveChecks: [] };
+    return {
+      route,
+      confirmedBotId: null,
+      accessEpoch: null,
+      casConflict: false,
+      liveChecks: [],
+    };
   }
 
   const memberships = await prisma.chatBotMembership.findMany({
@@ -326,14 +393,94 @@ async function resolveLivePublishBot(
         liveChecks.push({ botId, result: 'insufficient_access' });
         continue;
       }
+
+      if (!persistAccessEpoch) {
+        liveChecks.push({ botId, result: 'capable' });
+        return {
+          route,
+          confirmedBotId: botId,
+          accessEpoch: null,
+          casConflict: false,
+          liveChecks,
+        };
+      }
+
+      const persisted = await maxBotLink.recordBotAccessProbe({
+        chatId: source.chatId,
+        botId,
+        access,
+        source: RECOVERY_ACCESS_SOURCE,
+        checkedAt,
+        allowMembershipRecovery: false,
+      });
+      if (!persisted) {
+        liveChecks.push({
+          botId,
+          result: 'error',
+          error: 'Live access probe was superseded before recovery',
+        });
+        return {
+          route,
+          confirmedBotId: botId,
+          accessEpoch: null,
+          casConflict: true,
+          liveChecks,
+        };
+      }
+
+      const refreshed = await maxBotLink.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: source.chatId,
+        fallbackToPrimary: true,
+      });
+      if (refreshed.purpose !== 'send_message') {
+        throw new Error(`Expected send_message route, received ${refreshed.purpose}`);
+      }
+      const refreshedRoute = summarizeRoute(refreshed);
+      if (
+        refreshedRoute.routingVersion === null ||
+        !refreshedRoute.candidateBotIds.includes(botId)
+      ) {
+        liveChecks.push({
+          botId,
+          result: 'error',
+          error: 'Send route changed after the live access probe',
+        });
+        return {
+          route: refreshedRoute,
+          confirmedBotId: botId,
+          accessEpoch: null,
+          casConflict: true,
+          liveChecks,
+        };
+      }
+
       liveChecks.push({ botId, result: 'capable' });
-      return { route, confirmedBotId: botId, liveChecks };
+      return {
+        route: refreshedRoute,
+        confirmedBotId: botId,
+        accessEpoch: {
+          botId,
+          accessState: resolveAccessState(access),
+          checkedAt,
+          source: RECOVERY_ACCESS_SOURCE,
+          routingVersion: refreshedRoute.routingVersion,
+        },
+        casConflict: false,
+        liveChecks,
+      };
     } catch (error: unknown) {
       liveChecks.push({ botId, result: 'error', error: normalizeError(error) });
     }
   }
 
-  return { route, confirmedBotId: null, liveChecks };
+  return {
+    route,
+    confirmedBotId: null,
+    accessEpoch: null,
+    casConflict: false,
+    liveChecks,
+  };
 }
 
 async function applyRecovery(
@@ -341,6 +488,7 @@ async function applyRecovery(
   source: RecoverySource,
   route: RecoveryRouteSummary,
   confirmedBotId: string,
+  accessEpoch: RecoveryAccessEpoch,
   applyAt: Date,
 ): Promise<boolean> {
   const previousBaseline = source.autoPublishEnabledAt;
@@ -349,8 +497,51 @@ async function applyRecovery(
   const nextPausedReason = source.autoPublishEnabled ? null : source.autoPublishPausedReason;
 
   return prisma.$transaction(async (tx) => {
-    // FLAG: Every field that recovery relies on or overwrites participates in this CAS. The
-    // updatedAt guard also rejects concurrent admin edits to settings outside this focused set.
+    const lockedChat = await tx.$queryRaw<Array<{ id: string; routingVersion: number }>>(Prisma.sql`
+      SELECT chat."id", chat."routing_version" AS "routingVersion"
+      FROM "chats" AS chat
+      WHERE chat."id" = ${source.chatId}
+      FOR UPDATE OF chat
+    `);
+    if (
+      lockedChat.length !== 1 ||
+      lockedChat[0]?.routingVersion !== accessEpoch.routingVersion
+    ) {
+      return false;
+    }
+
+    // FLAG: Recovery may reopen sync only for the exact live probe epoch and route version.
+    // Parent-first locking serializes this decision with lifecycle removal and route reconciliation.
+    await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT membership."id"
+      FROM "chat_bot_memberships" AS membership
+      WHERE membership."chat_id" = ${source.chatId}
+      ORDER BY membership."bot_id" ASC, membership."id" ASC
+      FOR UPDATE OF membership
+    `);
+    const membership = await tx.chatBotMembership.findUnique({
+      where: {
+        chatId_botId: {
+          chatId: source.chatId,
+          botId: accessEpoch.botId,
+        },
+      },
+      select: {
+        status: true,
+        botAccessState: true,
+        botAccessCheckedAt: true,
+        botAccessSource: true,
+        lifecycleEventAt: true,
+        lifecycleEventType: true,
+        lifecycleSource: true,
+      },
+    });
+    if (!isAcceptedRecoveryAccessEpoch(membership, accessEpoch)) {
+      return false;
+    }
+
+    // Every source field relied on or overwritten participates in this CAS. The updatedAt guard
+    // also rejects concurrent admin edits to settings outside this focused set.
     const updated = await tx.vkParsingSource.updateMany({
       where: {
         id: source.id,
@@ -423,6 +614,9 @@ async function applyRecovery(
           routePrimaryBotId: route.primaryBotId,
           routeCandidateBotIds: route.candidateBotIds,
           routeRoutingVersion: route.routingVersion,
+          accessEpochCheckedAt: accessEpoch.checkedAt.toISOString(),
+          accessEpochSource: accessEpoch.source,
+          accessEpochState: accessEpoch.accessState,
           previousAutoPublishEnabledAt: toIso(previousBaseline),
           nextAutoPublishEnabledAt: toIso(nextBaseline),
           previousAutoPublishPausedAt: toIso(source.autoPublishPausedAt),
@@ -451,7 +645,14 @@ export async function runVkAccessLossRecovery(
   for (const source of sources) {
     let liveRoute: Awaited<ReturnType<typeof resolveLivePublishBot>>;
     try {
-      liveRoute = await resolveLivePublishBot(prisma, maxBotLink, maxClient, source, now());
+      liveRoute = await resolveLivePublishBot(
+        prisma,
+        maxBotLink,
+        maxClient,
+        source,
+        now(),
+        options.apply,
+      );
     } catch (error: unknown) {
       outcomes.push({
         sourceId: source.id,
@@ -470,6 +671,20 @@ export async function runVkAccessLossRecovery(
 
     const applyAt = now();
     const nextBaseline = source.autoPublishEnabled ? applyAt : source.autoPublishEnabledAt;
+    if (liveRoute.casConflict) {
+      outcomes.push({
+        sourceId: source.id,
+        chatId: source.chatId,
+        screenName: source.screenName,
+        result: 'cas_conflict',
+        confirmedBotId: liveRoute.confirmedBotId,
+        previousAutoPublishEnabledAt: toIso(source.autoPublishEnabledAt),
+        nextAutoPublishEnabledAt: toIso(source.autoPublishEnabledAt),
+        route: liveRoute.route,
+        liveChecks: liveRoute.liveChecks,
+      });
+      continue;
+    }
     if (!liveRoute.route || liveRoute.route.candidateBotIds.length === 0) {
       outcomes.push({
         sourceId: source.id,
@@ -515,11 +730,15 @@ export async function runVkAccessLossRecovery(
     }
 
     try {
+      if (!liveRoute.accessEpoch) {
+        throw new Error('Persisted live access epoch is missing for apply recovery');
+      }
       const applied = await applyRecovery(
         prisma,
         source,
         liveRoute.route,
         liveRoute.confirmedBotId,
+        liveRoute.accessEpoch,
         applyAt,
       );
       outcomes.push({

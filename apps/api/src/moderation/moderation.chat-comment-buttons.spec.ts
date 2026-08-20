@@ -282,7 +282,7 @@ function createService(
         settings: chatSettingsSchema.parse(settingsOverrides),
         rules: null,
         domains: [],
-        admins: [],
+        admins: adminUserIds.map((userId) => ({ userId })),
       }),
     },
     auditLog: {

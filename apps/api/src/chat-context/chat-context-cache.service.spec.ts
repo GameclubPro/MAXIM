@@ -49,41 +49,179 @@ jest.mock('ioredis', () => {
         .mockImplementation(async (key: string) => (store.has(key) || sets.has(key) ? 1 : 0)),
       eval: jest
         .fn()
-        .mockImplementation(
-          async (
-            _script: string,
-            _keyCount: number,
-            currentKey: string,
-            oppositeKey: string,
-            expectedCurrentExists: string,
-            expectedCurrent: string,
-            expectedOppositeExists: string,
-            expectedOpposite: string,
-            nextCurrent: string,
-            oppositeAction: string,
-            nextOpposite: string,
-          ) => {
-            const current = store.get(currentKey);
-            const opposite = store.get(oppositeKey);
-            const currentMatches =
-              expectedCurrentExists === '1' ? current === expectedCurrent : current === undefined;
-            const oppositeMatches =
-              expectedOppositeExists === '1'
-                ? opposite === expectedOpposite
-                : opposite === undefined;
-            if (!currentMatches || !oppositeMatches) {
-              return 0;
+        .mockImplementation(async (script: string, keyCount: number, ...input: string[]) => {
+          const keys = input.slice(0, keyCount);
+          const args = input.slice(keyCount);
+          const publish = (channel: string, payload: string) => {
+            for (const subscriber of subscribers) {
+              subscriber(channel, payload);
+            }
+          };
+
+          if (script.includes('incoming_timestamp')) {
+            const incomingTimestamp = Number(args[0]);
+            const incomingPriority = Number(args[1]);
+            const currentEpoch = store.get(keys[0] ?? '');
+            if (currentEpoch) {
+              const [timestamp, priority] = currentEpoch.split(':').map(Number);
+              if (
+                timestamp > incomingTimestamp ||
+                (timestamp === incomingTimestamp && priority > incomingPriority)
+              ) {
+                return 0;
+              }
             }
 
-            store.set(currentKey, nextCurrent);
-            if (oppositeAction === 'set') {
-              store.set(oppositeKey, nextOpposite);
-            } else if (oppositeAction === 'delete') {
-              store.delete(oppositeKey);
+            const opaqueKeyIndexes = [2, 4, 5, 6, 7, 8, 9];
+            for (let index = 0; index < opaqueKeyIndexes.length; index += 1) {
+              const offset = 8 + index * 5;
+              const actual = store.get(keys[opaqueKeyIndexes[index] ?? -1] ?? '');
+              const matches =
+                args[offset] === '1' ? actual === args[offset + 1] : actual === undefined;
+              if (!matches) {
+                return -1;
+              }
+            }
+            for (let index = 0; index < opaqueKeyIndexes.length; index += 1) {
+              const key = keys[opaqueKeyIndexes[index] ?? -1] ?? '';
+              const offset = 8 + index * 5;
+              if (args[offset + 2] === 'set') {
+                store.set(key, args[offset + 3] ?? '');
+              } else if (args[offset + 2] === 'delete') {
+                store.delete(key);
+              }
+            }
+            store.set(keys[0] ?? '', args[2] ?? '');
+            store.set(keys[1] ?? '', args[3] ?? '');
+            store.set(keys[3] ?? '', String(Number(store.get(keys[3] ?? '') ?? '0') + 1));
+            const recentMode = args[43];
+            const recentEntityType = args[45];
+            if (recentMode === 'grant') {
+              const setKey = recentEntityType === 'chat' ? keys[10] : keys[11];
+              if (setKey) {
+                const users = sets.get(setKey) ?? new Set<string>();
+                users.add(args[5] ?? '');
+                sets.set(setKey, users);
+              }
+            } else if (recentMode === 'deny') {
+              sets.get(keys[10] ?? '')?.delete(args[5] ?? '');
+              sets.get(keys[11] ?? '')?.delete(args[5] ?? '');
+            }
+            publish(args[6] ?? '', args[7] ?? '');
+            return 1;
+          }
+
+          if (script.includes('managed_entities_published_snapshot_set_cas')) {
+            const actual = store.get(keys[0] ?? '');
+            const matches = args[0] === '1' ? actual === args[1] : actual === undefined;
+            if (!matches) {
+              return 0;
+            }
+            store.set(keys[0] ?? '', args[2] ?? '');
+            return 1;
+          }
+
+          if (script.includes('managed_entities_recent_bootstrap_upsert_cas')) {
+            const global = store.get(keys[0] ?? '');
+            const globalMatches = args[0] === '1' ? global === args[1] : global === undefined;
+            if (!globalMatches) {
+              return 0;
+            }
+            if (args[3] === '1') {
+              const userScoped = store.get(keys[1] ?? '');
+              const userMatches =
+                args[4] === '1' ? userScoped === args[5] : userScoped === undefined;
+              if (!userMatches) {
+                return 0;
+              }
+            }
+            store.set(keys[0] ?? '', args[2] ?? '');
+            store.set(keys[2] ?? '', '1');
+            if (args[3] === '1') {
+              store.set(keys[1] ?? '', args[6] ?? '');
+              const users = sets.get(keys[3] ?? '') ?? new Set<string>();
+              users.add(args[8] ?? '');
+              sets.set(keys[3] ?? '', users);
             }
             return 1;
-          },
-        ),
+          }
+
+          if (script.includes('managed_entities_recent_bootstrap_remove_cas')) {
+            const actual = store.get(keys[0] ?? '');
+            const matches = args[0] === '1' ? actual === args[1] : actual === undefined;
+            if (!matches) {
+              return 0;
+            }
+            if (args[2] === 'set') {
+              store.set(keys[0] ?? '', args[3] ?? '');
+            } else if (args[2] === 'delete') {
+              store.delete(keys[0] ?? '');
+            }
+            if (args[5] === 'global') {
+              store.delete(keys[1] ?? '');
+            } else {
+              sets.get(keys[2] ?? '')?.delete(args[6] ?? '');
+            }
+            return 1;
+          }
+
+          if (script.includes('revision ~= ARGV[1]')) {
+            if ((store.get(keys[0] ?? '') ?? '0') !== args[0]) {
+              return 0;
+            }
+            store.set(keys[1] ?? '', args[1] ?? '');
+            return 1;
+          }
+          if (script.includes('revision ~= ARGV[2]')) {
+            if (
+              store.get(keys[0] ?? '') !== args[0] ||
+              (store.get(keys[1] ?? '') ?? '0') !== args[1]
+            ) {
+              return 0;
+            }
+            store.set(keys[0] ?? '', args[2] ?? '');
+            store.set(keys[1] ?? '', String(Number(store.get(keys[1] ?? '') ?? '0') + 1));
+            publish(args[3] ?? '', args[4] ?? '');
+            return 1;
+          }
+          if (
+            script.includes("redis.call('INCR', KEYS[1])") &&
+            script.includes("redis.call('DEL', KEYS[2])")
+          ) {
+            store.set(keys[0] ?? '', String(Number(store.get(keys[0] ?? '') ?? '0') + 1));
+            store.delete(keys[1] ?? '');
+            publish(args[0] ?? '', args[1] ?? '');
+            return 1;
+          }
+
+          const [currentKey, oppositeKey] = keys;
+          const [
+            expectedCurrentExists,
+            expectedCurrent,
+            expectedOppositeExists,
+            expectedOpposite,
+            nextCurrent,
+            oppositeAction,
+            nextOpposite,
+          ] = args;
+          const current = store.get(currentKey);
+          const opposite = store.get(oppositeKey);
+          const currentMatches =
+            expectedCurrentExists === '1' ? current === expectedCurrent : current === undefined;
+          const oppositeMatches =
+            expectedOppositeExists === '1' ? opposite === expectedOpposite : opposite === undefined;
+          if (!currentMatches || !oppositeMatches) {
+            return 0;
+          }
+
+          store.set(currentKey, nextCurrent);
+          if (oppositeAction === 'set') {
+            store.set(oppositeKey, nextOpposite);
+          } else if (oppositeAction === 'delete') {
+            store.delete(oppositeKey);
+          }
+          return 1;
+        }),
       publish: jest.fn().mockImplementation(async (channel: string, payload: string) => {
         for (const subscriber of subscribers) {
           subscriber(channel, payload);
@@ -642,7 +780,7 @@ describe('ChatContextCacheService', () => {
       rulesPublishedUrl: null,
       rulesPublishedMessageId: null,
     });
-    expect(redisInstance.get).toHaveBeenCalledTimes(1);
+    expect(redisInstance.get).toHaveBeenCalledTimes(2);
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
   });
@@ -786,10 +924,12 @@ describe('ChatContextCacheService', () => {
     );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
       get: jest.Mock;
-      set: jest.Mock;
+      eval: jest.Mock;
       del: jest.Mock;
     };
-    redisInstance.get.mockResolvedValueOnce(
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    store.set(
+      ChatContextCacheService.cacheKey(chatId),
       JSON.stringify({
         chatId,
         title: 'Chat 1',
@@ -832,14 +972,23 @@ describe('ChatContextCacheService', () => {
         title: 'Fresh title',
       },
     });
-    expect(redisInstance.set).toHaveBeenCalledWith(
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(redisInstance.eval).toHaveBeenCalledWith(
+      expect.stringContaining('revision ~= ARGV[2]'),
+      2,
       ChatContextCacheService.cacheKey(chatId),
+      ChatContextCacheService.chatContextRevisionKey(chatId),
+      expect.stringContaining('"title":"Chat 1"'),
+      '0',
       expect.stringContaining('"title":"Fresh title"'),
-      'EX',
-      60,
+      expect.any(String),
+      expect.any(String),
+    );
+    expect(store.get(ChatContextCacheService.cacheKey(chatId))).toEqual(
+      expect.stringContaining('"title":"Fresh title"'),
     );
     expect(redisInstance.del).not.toHaveBeenCalled();
-    expect(redisInstance.get).toHaveBeenCalledTimes(1);
+    expect(redisInstance.get).toHaveBeenCalledTimes(2);
   });
 
   it('stores admin access decisions in redis with ttl', async () => {
@@ -959,10 +1108,8 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
-      get: jest.Mock;
-      set: jest.Mock;
+      eval: jest.Mock;
     };
-    redisInstance.get.mockResolvedValue(null);
 
     await service.getChatContext(chatId, 'Chat title');
     await service.rememberChatAdminUser(chatId, 'user-2');
@@ -973,11 +1120,16 @@ describe('ChatContextCacheService', () => {
       }),
     );
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
-    expect(redisInstance.set).toHaveBeenCalledWith(
+    expect(redisInstance.eval).toHaveBeenCalledWith(
+      expect.stringContaining('revision ~= ARGV[2]'),
+      2,
       ChatContextCacheService.cacheKey(chatId),
+      ChatContextCacheService.chatContextRevisionKey(chatId),
+      expect.stringContaining('"user-1"'),
+      expect.any(String),
       expect.stringContaining('"user-2"'),
-      'EX',
-      60,
+      expect.any(String),
+      expect.any(String),
     );
   });
 
@@ -1248,8 +1400,7 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results[0].value as {
-      get: jest.Mock;
-      set: jest.Mock;
+      eval: jest.Mock;
     };
     const snapshot = {
       version: 'snapshot-v1',
@@ -1260,15 +1411,21 @@ describe('ChatContextCacheService', () => {
       items: [buildChatSummary('chat-1')],
     };
 
-    await service.setManagedEntitiesPublishedSnapshot('admin-1', 'chat', snapshot, 3600);
-    expect(redisInstance.set).toHaveBeenCalledWith(
+    await expect(
+      service.setManagedEntitiesPublishedSnapshot('admin-1', 'chat', snapshot, 3600, {
+        expectedVersion: null,
+      }),
+    ).resolves.toBe(true);
+    expect(redisInstance.eval).toHaveBeenCalledWith(
+      expect.stringContaining('managed_entities_published_snapshot_set_cas'),
+      1,
       'chat:managed-view-snapshot:v1:chat:admin-1',
+      '0',
+      '',
       JSON.stringify(snapshot),
-      'EX',
-      3600,
+      '3600',
     );
 
-    redisInstance.get.mockResolvedValueOnce(JSON.stringify(snapshot));
     await expect(service.getManagedEntitiesPublishedSnapshot('admin-1', 'chat')).resolves.toEqual(
       snapshot,
     );
@@ -1459,5 +1616,351 @@ describe('ChatContextCacheService', () => {
     await service.clearManagedEntitiesRecentBootstrapForChat('chat-new', 'chat');
 
     await expect(service.getManagedEntitiesRecentBootstrap('chat', 'admin-1')).resolves.toEqual([]);
+  });
+
+  it('merges concurrent standalone recent bootstrap upserts for the same user', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+
+    await Promise.all([
+      service.upsertManagedEntitiesRecentBootstrap(buildChatSummary('chat-a'), 900, 'admin-1'),
+      service.upsertManagedEntitiesRecentBootstrap(buildChatSummary('chat-b'), 900, 'admin-1'),
+    ]);
+
+    const recent = await service.getManagedEntitiesRecentBootstrap('chat', 'admin-1');
+    expect(recent.map((item) => item.id).sort()).toEqual(['chat-a', 'chat-b']);
+  });
+
+  it('preserves a concurrent recent bootstrap upsert while removing another item', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    await service.upsertManagedEntitiesRecentBootstrap(
+      buildChatSummary('chat-remove'),
+      900,
+      'admin-1',
+    );
+    await service.upsertManagedEntitiesRecentBootstrap(
+      buildChatSummary('chat-keep'),
+      900,
+      'admin-1',
+    );
+
+    await Promise.all([
+      service.clearManagedEntitiesRecentBootstrapForChat('chat-remove', 'chat'),
+      service.upsertManagedEntitiesRecentBootstrap(buildChatSummary('chat-new'), 900, 'admin-1'),
+    ]);
+
+    const recent = await service.getManagedEntitiesRecentBootstrap('chat', 'admin-1');
+    expect(recent.map((item) => item.id).sort()).toEqual(['chat-keep', 'chat-new']);
+  });
+
+  it('lets an equal-millisecond removal beat a grant and rejects its delayed replay', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const eventAt = new Date('2026-08-20T10:00:00.123Z');
+
+    await expect(
+      service.applyAdminAccessEpochMutation({
+        chatId: 'chat-epoch',
+        userId: 'user-1',
+        state: 'granted',
+        eventAt,
+        publishedSummary: buildChatSummary('chat-epoch'),
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      service.applyAdminAccessEpochMutation({
+        chatId: 'chat-epoch',
+        userId: 'user-1',
+        state: 'user_denied',
+        eventAt,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      service.applyAdminAccessEpochMutation({
+        chatId: 'chat-epoch',
+        userId: 'user-1',
+        state: 'granted',
+        eventAt,
+        publishedSummary: buildChatSummary('chat-epoch'),
+      }),
+    ).resolves.toBe(false);
+
+    expect(store.get(ChatContextCacheService.adminAccessKey('chat-epoch', 'user-1'))).toBe(
+      'user_denied',
+    );
+    expect(
+      store.has(ChatContextCacheService.managedEntitiesPublishedSnapshotKey('user-1', 'chat')),
+    ).toBe(false);
+  });
+
+  it('accepts a newer grant after an older removal epoch', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+
+    await service.applyAdminAccessEpochMutation({
+      chatId: 'chat-newer-grant',
+      userId: 'user-1',
+      state: 'user_denied',
+      eventAt: new Date('2026-08-20T10:00:00.000Z'),
+    });
+    await expect(
+      service.applyAdminAccessEpochMutation({
+        chatId: 'chat-newer-grant',
+        userId: 'user-1',
+        state: 'granted',
+        eventAt: new Date('2026-08-20T10:00:00.001Z'),
+      }),
+    ).resolves.toBe(true);
+    await expect(service.getAdminAccess('chat-newer-grant', 'user-1')).resolves.toBe('granted');
+  });
+
+  it('removes only the affected published card under a denial epoch', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const other = buildChatSummary('chat-other');
+    await service.setManagedEntitiesPublishedSnapshot(
+      'user-1',
+      'chat',
+      {
+        version: 'before-denial',
+        builtAt: '2026-08-20T09:00:00.000Z',
+        lastSyncedAt: null,
+        itemCount: 2,
+        itemsHash: 'before-denial',
+        items: [buildChatSummary('chat-remove'), other],
+      },
+      3600,
+      { expectedVersion: null },
+    );
+
+    await service.applyAdminAccessEpochMutation({
+      chatId: 'chat-remove',
+      userId: 'user-1',
+      state: 'user_denied',
+      eventAt: new Date('2026-08-20T10:00:00.000Z'),
+    });
+
+    await expect(service.getManagedEntitiesPublishedSnapshot('user-1', 'chat')).resolves.toEqual(
+      expect.objectContaining({ items: [other], itemCount: 1 }),
+    );
+  });
+
+  it('merges concurrent published grants for different chats of the same user', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+
+    await Promise.all([
+      service.applyAdminAccessEpochMutation({
+        chatId: 'chat-a',
+        userId: 'user-1',
+        state: 'granted',
+        eventAt: new Date('2026-08-20T10:00:00.000Z'),
+        publishedSummary: buildChatSummary('chat-a'),
+      }),
+      service.applyAdminAccessEpochMutation({
+        chatId: 'chat-b',
+        userId: 'user-1',
+        state: 'granted',
+        eventAt: new Date('2026-08-20T10:00:00.001Z'),
+        publishedSummary: buildChatSummary('chat-b'),
+      }),
+    ]);
+
+    const snapshot = await service.getManagedEntitiesPublishedSnapshot('user-1', 'chat');
+    expect(snapshot?.items.map((item) => item.id).sort()).toEqual(['chat-a', 'chat-b']);
+  });
+
+  it('rejects a stale full snapshot rebuild after an item-level grant', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const baseSnapshot: ManagedEntitiesPublishedSnapshot = {
+      version: 'full-rebuild-base',
+      builtAt: '2026-08-20T09:00:00.000Z',
+      lastSyncedAt: null,
+      itemCount: 1,
+      itemsHash: 'full-rebuild-base',
+      items: [buildChatSummary('chat-base')],
+    };
+    await service.setManagedEntitiesPublishedSnapshot('user-1', 'chat', baseSnapshot, 3600, {
+      expectedVersion: null,
+    });
+    await service.applyAdminAccessEpochMutation({
+      chatId: 'chat-concurrent-grant',
+      userId: 'user-1',
+      state: 'granted',
+      eventAt: new Date('2026-08-20T10:00:00.000Z'),
+      publishedSummary: buildChatSummary('chat-concurrent-grant'),
+    });
+
+    await expect(
+      service.setManagedEntitiesPublishedSnapshot(
+        'user-1',
+        'chat',
+        {
+          ...baseSnapshot,
+          version: 'stale-full-rebuild',
+          builtAt: '2026-08-20T10:00:01.000Z',
+        },
+        3600,
+        { expectedVersion: baseSnapshot.version },
+      ),
+    ).resolves.toBe(false);
+    const stored = await service.getManagedEntitiesPublishedSnapshot('user-1', 'chat');
+    expect(stored?.items.map((item) => item.id).sort()).toEqual([
+      'chat-base',
+      'chat-concurrent-grant',
+    ]);
+  });
+
+  it('rejects a stale full-context load after an access mutation bumps the revision', async () => {
+    let resolveOldRow!: (value: unknown) => void;
+    const oldRow = new Promise((resolve) => {
+      resolveOldRow = resolve;
+    });
+    const settings = buildSettings('chat-load-race');
+    const staleRow = {
+      id: 'chat-load-race',
+      title: 'Race chat',
+      settings,
+      domains: [],
+      admins: [{ userId: 'user-1' }],
+      rules: null,
+      primaryBotId: '777000_bot',
+      botId: '777000_bot',
+    };
+    const freshRow = { ...staleRow, admins: [] };
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockReturnValueOnce(oldRow).mockResolvedValue(freshRow),
+        upsert: jest.fn(),
+      },
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+
+    const pending = service.getChatContext('chat-load-race');
+    await Promise.resolve();
+    await Promise.resolve();
+    await service.applyAdminAccessEpochMutation({
+      chatId: 'chat-load-race',
+      userId: 'user-1',
+      state: 'user_denied',
+      eventAt: new Date('2026-08-20T10:00:00.000Z'),
+    });
+    resolveOldRow(staleRow);
+
+    await expect(pending).resolves.toEqual(expect.objectContaining({ adminUserIds: [] }));
+    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a denial when a stale context appears after the initial CAS read', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const contextKey = ChatContextCacheService.cacheKey('chat-missing-context-race');
+    const staleContext = {
+      chatId: 'chat-missing-context-race',
+      title: 'Race chat',
+      settings: buildSettings('chat-missing-context-race'),
+      domainAllowlist: [],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    };
+    const redis = (
+      service as unknown as {
+        redis: { eval: jest.Mock<Promise<unknown>, unknown[]> };
+      }
+    ).redis;
+    const evaluate = redis.eval.getMockImplementation() as (...args: unknown[]) => Promise<unknown>;
+    redis.eval.mockImplementationOnce((...args: unknown[]) => {
+      store.set(contextKey, JSON.stringify(staleContext));
+      return evaluate(...args);
+    });
+
+    await expect(
+      service.applyAdminAccessEpochMutation({
+        chatId: 'chat-missing-context-race',
+        userId: 'user-1',
+        state: 'user_denied',
+        eventAt: new Date('2026-08-20T10:00:00.000Z'),
+      }),
+    ).resolves.toBe(true);
+
+    expect(redis.eval).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(store.get(contextKey) ?? 'null')).toEqual(
+      expect.objectContaining({ adminUserIds: [] }),
+    );
+  });
+
+  it('does not let a delayed title patch restore an admin removed from cached context', async () => {
+    const service = new ChatContextCacheService(
+      {} as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const staleContext = {
+      chatId: 'chat-title-race',
+      title: 'Old title',
+      settings: buildSettings('chat-title-race'),
+      domainAllowlist: [],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    };
+    store.set(ChatContextCacheService.cacheKey('chat-title-race'), JSON.stringify(staleContext));
+    await service.applyAdminAccessEpochMutation({
+      chatId: 'chat-title-race',
+      userId: 'user-1',
+      state: 'user_denied',
+      eventAt: new Date('2026-08-20T10:00:00.000Z'),
+    });
+
+    (
+      service as unknown as {
+        reconcileCachedChatTitle: (
+          chatId: string,
+          value: typeof staleContext,
+          title: string,
+        ) => unknown;
+      }
+    ).reconcileCachedChatTitle('chat-title-race', staleContext, 'New title');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const stored = JSON.parse(
+      store.get(ChatContextCacheService.cacheKey('chat-title-race')) ?? 'null',
+    ) as { title: string; adminUserIds: string[] };
+    expect(stored).toEqual(expect.objectContaining({ title: 'New title', adminUserIds: [] }));
   });
 });

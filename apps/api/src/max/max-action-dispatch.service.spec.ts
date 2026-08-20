@@ -26,6 +26,10 @@ function createMaxApiError(status: number, message: string, code?: string): Erro
 }
 
 describe('MaxActionDispatchService', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('executes queued MAX action jobs through the client boundary', async () => {
     const maxClient = {
       executeActionJob: jest.fn().mockResolvedValue(undefined),
@@ -307,9 +311,14 @@ describe('MaxActionDispatchService', () => {
   });
 
   it('records queued send access loss and stops BullMQ retries', async () => {
+    const dispatchAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(dispatchAttemptStartedAt);
     const error = createMaxApiError(403, 'chat denied', 'chat.denied');
     const maxClient = {
-      executeActionJob: jest.fn().mockRejectedValue(error),
+      executeActionJob: jest.fn().mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-08-20T12:00:05.000Z'));
+        throw error;
+      }),
     };
     const managedEntityAccessLossService = {
       recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
@@ -346,6 +355,9 @@ describe('MaxActionDispatchService', () => {
       operation: 'send',
       source: 'max_action:send_message',
       error,
+      lifecycleEventAt: dispatchAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
   });
 
@@ -628,12 +640,17 @@ describe('MaxActionDispatchService', () => {
   });
 
   it('refreshes a routed send snapshot after 30 minutes and skips a bot that lost capability', async () => {
+    const accessProbeStartedAt = new Date('2026-08-20T10:10:00.000Z');
+    jest.useFakeTimers().setSystemTime(accessProbeStartedAt);
     const maxClient = {
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'bot-1',
-        isAdmin: false,
-        isOwner: false,
-        permissions: [],
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(async () => {
+        jest.setSystemTime(new Date('2026-08-20T10:10:05.000Z'));
+        return {
+          userId: 'bot-1',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        };
       }),
       executeActionJob: jest.fn().mockResolvedValue(undefined),
     };
@@ -692,9 +709,422 @@ describe('MaxActionDispatchService', () => {
         chatId: 'chat-1',
         botId: 'bot-1',
         source: 'routed_action_preflight',
+        checkedAt: accessProbeStartedAt,
       }),
     );
     expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-2' }),
+    );
+  });
+
+  it('persists a terminal access lookup failure and dispatches through the surviving route', async () => {
+    const accessProbeStartedAt = new Date('2026-08-20T10:10:00.000Z');
+    jest.useFakeTimers().setSystemTime(accessProbeStartedAt);
+    const lookupFailure = createMaxApiError(404, 'chat not found');
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockRejectedValue(lookupFailure),
+      executeActionJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest
+        .fn()
+        .mockResolvedValueOnce({
+          purpose: 'send_message',
+          chatId: 'chat-lookup-denied',
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          candidateBotIds: ['bot-1', 'bot-2'],
+          reason: 'primary_confirmed',
+        })
+        .mockResolvedValue({
+          purpose: 'send_message',
+          chatId: 'chat-lookup-denied',
+          primaryBotId: 'bot-2',
+          botId: 'bot-2',
+          candidateBotIds: ['bot-2'],
+          reason: 'primary_confirmed',
+        }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(true),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      managedEntityAccessLossService as never,
+      undefined,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-lookup-denied',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1', 'bot-2'],
+        routing: { purpose: 'send_message', primaryBotId: 'bot-1' },
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: 'logical-send-lookup-denied',
+        createdAt: '2026-08-20T10:00:00.000Z',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'chat-lookup-denied',
+      botId: 'bot-1',
+      access: null,
+      source: 'routed_action_preflight',
+      checkedAt: accessProbeStartedAt,
+      lastErrorCode: 'chat.not.found',
+    });
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'chat-lookup-denied',
+      botId: 'bot-1',
+      operation: 'lookup',
+      source: 'max_action:routed_access_preflight',
+      error: lookupFailure,
+      lifecycleEventAt: accessProbeStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
+    });
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-2' }),
+    );
+  });
+
+  it('replaces stale queued candidates after an authoritative route refresh', async () => {
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      executeActionJob: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest
+        .fn()
+        .mockResolvedValueOnce({
+          purpose: 'send_message',
+          chatId: 'chat-authoritative-refresh',
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          candidateBotIds: ['bot-1', 'bot-2'],
+          reason: 'primary_confirmed',
+        })
+        .mockResolvedValue({
+          purpose: 'send_message',
+          chatId: 'chat-authoritative-refresh',
+          primaryBotId: 'bot-3',
+          botId: 'bot-3',
+          candidateBotIds: ['bot-3'],
+          reason: 'primary_confirmed',
+        }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(true),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await service.execute({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-authoritative-refresh',
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1', 'bot-2'],
+      routing: { purpose: 'send_message', primaryBotId: 'bot-1' },
+      text: 'hello',
+      attempt: 1,
+      idempotencyKey: 'logical-send-authoritative-refresh',
+      createdAt: '2026-08-20T10:00:00.000Z',
+    });
+
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-3' }),
+    );
+    expect(maxClient.executeActionJob).not.toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-2' }),
+    );
+  });
+
+  it('uses a newer persisted grant when its own access CAS is superseded', async () => {
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      }),
+      executeActionJob: jest.fn(),
+    };
+    const route = {
+      purpose: 'send_message',
+      chatId: 'chat-superseded-action',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1'],
+      reason: 'primary_confirmed',
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue(route),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-superseded-action',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routing: { purpose: 'send_message', primaryBotId: 'bot-1' },
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: 'logical-send-superseded-access',
+        createdAt: '2026-07-11T10:00:00.000Z',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledTimes(2);
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a routed action closed when a lifecycle write supersedes its access CAS', async () => {
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      }),
+      executeActionJob: jest.fn(),
+    };
+    const route = {
+      purpose: 'send_message',
+      chatId: 'chat-superseded-removal',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1'],
+      reason: 'primary_confirmed',
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest
+        .fn()
+        .mockResolvedValueOnce(route)
+        .mockResolvedValueOnce({
+          ...route,
+          botId: null,
+          candidateBotIds: [],
+          reason: null,
+        }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-superseded-removal',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routing: { purpose: 'send_message', primaryBotId: 'bot-1' },
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: 'logical-send-superseded-removal',
+        createdAt: '2026-07-11T10:00:00.000Z',
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledTimes(2);
+    expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+  });
+
+  it('claims a route that becomes half-open after a persisted access refresh', async () => {
+    const claimedUntil = new Date('2026-08-20T11:00:00.000Z');
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      }),
+      executeActionJob: jest.fn().mockResolvedValue({ messageId: 'message-1', url: null }),
+    };
+    const initialRoute = {
+      purpose: 'send_message',
+      chatId: 'chat-half-open-refresh',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1'],
+      quarantinedCandidateBotIds: [],
+      halfOpenCandidateBotIds: [],
+      retryAt: null,
+      reason: 'primary_confirmed',
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest
+        .fn()
+        .mockResolvedValueOnce(initialRoute)
+        .mockResolvedValueOnce({
+          ...initialRoute,
+          halfOpenCandidateBotIds: ['bot-1'],
+        }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(true),
+      claimSendRouteHalfOpen: jest.fn().mockResolvedValue(claimedUntil),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-half-open-refresh',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routing: {
+          purpose: 'send_message',
+          primaryBotId: 'bot-1',
+          sendRouteHalfOpenProbe: 'publication_exact_verification',
+        },
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: 'logical-send-half-open-refresh',
+        createdAt: '2026-08-20T10:00:00.000Z',
+      }),
+    ).resolves.toEqual({ messageId: 'message-1', url: null, botId: 'bot-1' });
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.claimSendRouteHalfOpen).toHaveBeenCalledWith({
+      chatId: 'chat-half-open-refresh',
+      botId: 'bot-1',
+    });
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1' }),
+    );
+  });
+
+  it('claims a replacement half-open route after its access CAS is superseded', async () => {
+    const claimedUntil = new Date('2026-08-20T11:00:00.000Z');
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+      }),
+      executeActionJob: jest.fn().mockResolvedValue({ messageId: 'message-2', url: null }),
+    };
+    const initialRoute = {
+      purpose: 'send_message',
+      chatId: 'chat-half-open-replacement',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      candidateBotIds: ['bot-1'],
+      quarantinedCandidateBotIds: [],
+      halfOpenCandidateBotIds: [],
+      retryAt: null,
+      reason: 'primary_confirmed',
+    };
+    const refreshedRetryAt = new Date('2026-08-20T10:30:00.000Z');
+    const maxBotLinkService = {
+      resolveBotRoute: jest
+        .fn()
+        .mockResolvedValueOnce(initialRoute)
+        .mockResolvedValueOnce({
+          ...initialRoute,
+          primaryBotId: 'bot-2',
+          botId: 'bot-2',
+          candidateBotIds: ['bot-2'],
+          halfOpenCandidateBotIds: ['bot-2'],
+          retryAt: refreshedRetryAt,
+        }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+      isBotAccessSnapshotStale: jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
+      recordBotAccessProbe: jest.fn().mockResolvedValue(false),
+      claimSendRouteHalfOpen: jest.fn().mockResolvedValue(claimedUntil),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-half-open-replacement',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        routing: {
+          purpose: 'send_message',
+          primaryBotId: 'bot-1',
+          sendRouteHalfOpenProbe: 'publication_exact_verification',
+        },
+        text: 'hello',
+        attempt: 1,
+        idempotencyKey: 'logical-send-half-open-replacement',
+        createdAt: '2026-08-20T10:00:00.000Z',
+      }),
+    ).resolves.toEqual({ messageId: 'message-2', url: null, botId: 'bot-2' });
+
+    expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.claimSendRouteHalfOpen).toHaveBeenCalledWith({
+      chatId: 'chat-half-open-replacement',
+      botId: 'bot-2',
+    });
     expect(maxClient.executeActionJob).toHaveBeenCalledWith(
       expect.objectContaining({ botId: 'bot-2' }),
     );
@@ -1568,6 +1998,8 @@ describe('MaxActionDispatchService', () => {
   });
 
   it('treats queued delete message.not.found as idempotent success', async () => {
+    const dispatchAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(dispatchAttemptStartedAt);
     const error = createMaxApiError(404, 'message not found', 'message.not.found');
     const maxClient = {
       executeActionJob: jest.fn().mockRejectedValue(error),
@@ -1606,6 +2038,9 @@ describe('MaxActionDispatchService', () => {
       operation: 'delete',
       source: 'max_action:delete_message',
       error,
+      lifecycleEventAt: dispatchAttemptStartedAt,
+      lifecycleEventType: 'live_probe',
+      lifecycleSource: 'live_probe',
     });
   });
 

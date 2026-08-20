@@ -1,8 +1,474 @@
+import { ModerationAccessService } from './moderation-access.service';
 import { ModerationService } from './moderation.service';
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
+function readSqlText(value: unknown): string {
+  const sql = value as { strings?: readonly string[] };
+  return sql.strings?.join('?').replace(/\s+/g, ' ').trim() ?? '';
+}
+
+async function waitForMockCall(mock: jest.Mock): Promise<void> {
+  for (let attempt = 0; attempt < 20 && mock.mock.calls.length === 0; attempt += 1) {
+    await Promise.resolve();
+  }
+}
 
 describe('ModerationService chat admin access lookups', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('rejects a delayed remote grant superseded by user removal', async () => {
+    const remoteLookup = createDeferred<Map<string, unknown>>();
+    const allowlistUpsert = jest.fn().mockResolvedValue(undefined);
+    const queryRaw = jest.fn().mockImplementation(async (query: unknown) => {
+      const sql = readSqlText(query);
+      if (sql.includes('FROM "chats" AS chat')) {
+        return [{ id: 'chat-1' }];
+      }
+      if (sql.includes('FROM "chat_membership_activity_events" AS activity')) {
+        return [{ userId: 'user-1' }];
+      }
+      return [];
+    });
+    const transaction = jest.fn().mockImplementation(async (operation: (tx: unknown) => unknown) =>
+      operation({
+        $queryRaw: queryRaw,
+        chatAdminAllowlist: { upsert: allowlistUpsert },
+      }),
+    );
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockReturnValue(remoteLookup.promise),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch: jest.fn().mockResolvedValue(new Map()),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationAccessService(
+      { $transaction: transaction } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    const pending = service.getRemoteChatAdminAccess('chat-1', 'user-1');
+    await waitForMockCall(maxClient.getChatMembersAccess);
+    remoteLookup.resolve(
+      new Map([
+        [
+          'user-1',
+          {
+            userId: 'user-1',
+            isAdmin: true,
+            isOwner: false,
+            permissions: [],
+          },
+        ],
+      ]),
+    );
+
+    await expect(pending).resolves.toBeNull();
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(readSqlText(queryRaw.mock.calls[0]?.[0])).toContain('FOR UPDATE OF chat');
+    expect(readSqlText(queryRaw.mock.calls[1]?.[0])).toContain(
+      `activity."event_type" IN ('user_added', 'user_removed')`,
+    );
+    expect(readSqlText(queryRaw.mock.calls[1]?.[0])).toContain('activity."event_at" >= ?');
+    expect(allowlistUpsert).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(chatContextCache.invalidate).not.toHaveBeenCalled();
+  });
+
+  it('does not leave durable access when a newer negative probe beats an older grant', async () => {
+    jest.useFakeTimers({ now: new Date('2026-08-20T09:00:00.000Z') });
+    const oldGrantLookup = createDeferred<Map<string, unknown>>();
+    const allowlistUpsert = jest.fn().mockResolvedValue(undefined);
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        readSqlText(query).includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [],
+      );
+    const transaction = jest.fn().mockImplementation(async (operation: (tx: unknown) => unknown) =>
+      operation({
+        $queryRaw: queryRaw,
+        chatAdminAllowlist: { upsert: allowlistUpsert },
+      }),
+    );
+    const sharedStates = new Map<string, 'granted' | 'user_denied'>();
+    const sharedEpochs = new Map<string, { eventAtMs: number; priority: number }>();
+    const chatContextCache = {
+      getAdminAccessBatch: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, userIds: readonly string[]) =>
+            new Map(userIds.map((userId) => [userId, sharedStates.get(userId) ?? null] as const)),
+        ),
+      applyAdminAccessEpochMutation: jest
+        .fn()
+        .mockImplementation(
+          async (params: { userId: string; state: 'granted' | 'user_denied'; eventAt: Date }) => {
+            const eventAtMs = params.eventAt.getTime();
+            const priority = params.state === 'granted' ? 0 : 1;
+            const current = sharedEpochs.get(params.userId);
+            if (
+              current &&
+              (current.eventAtMs > eventAtMs ||
+                (current.eventAtMs === eventAtMs && current.priority > priority))
+            ) {
+              return false;
+            }
+            sharedEpochs.set(params.userId, { eventAtMs, priority });
+            sharedStates.set(params.userId, params.state);
+            return true;
+          },
+        ),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const oldGrantClient = {
+      getChatMembersAccess: jest.fn().mockReturnValue(oldGrantLookup.promise),
+    };
+    const oldGrantService = new ModerationAccessService(
+      { $transaction: transaction } as never,
+      oldGrantClient as never,
+      chatContextCache as never,
+    );
+    const newerDenyService = new ModerationAccessService(
+      { $transaction: transaction } as never,
+      { getChatMembersAccess: jest.fn().mockResolvedValue(new Map()) } as never,
+      chatContextCache as never,
+    );
+
+    const oldGrant = oldGrantService.getRemoteChatAdminAccess('chat-1', 'user-1');
+    await waitForMockCall(oldGrantClient.getChatMembersAccess);
+    jest.setSystemTime(new Date('2026-08-20T09:00:01.000Z'));
+    const newerDeny = newerDenyService.getRemoteChatAdminAccess('chat-1', 'user-1');
+    await jest.advanceTimersByTimeAsync(0);
+    await expect(newerDeny).resolves.toBe('user_denied');
+
+    oldGrantLookup.resolve(
+      new Map([
+        [
+          'user-1',
+          {
+            userId: 'user-1',
+            isAdmin: true,
+            isOwner: false,
+            permissions: [],
+          },
+        ],
+      ]),
+    );
+    await jest.advanceTimersByTimeAsync(0);
+
+    await expect(oldGrant).resolves.toBeNull();
+    expect(allowlistUpsert).not.toHaveBeenCalled();
+    expect(sharedStates.get('user-1')).toBe('user_denied');
+    expect(chatContextCache.invalidate).not.toHaveBeenCalled();
+  });
+
+  it('publishes accepted negative lookups through the probe epoch fence', async () => {
+    jest.useFakeTimers({ now: new Date('2026-08-20T09:00:00.000Z') });
+    const probeStartedAt = new Date();
+    const allowlistUpsert = jest.fn().mockResolvedValue(undefined);
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        readSqlText(query).includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [],
+      );
+    const transaction = jest.fn().mockImplementation(async (operation: (tx: unknown) => unknown) =>
+      operation({
+        $queryRaw: queryRaw,
+        chatAdminAllowlist: { upsert: allowlistUpsert },
+      }),
+    );
+    const chatContextCache = {
+      getAdminAccessBatch: jest.fn().mockResolvedValue(new Map()),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationAccessService(
+      { $transaction: transaction } as never,
+      {
+        getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+      } as never,
+      chatContextCache as never,
+    );
+
+    const pending = service.getRemoteChatAdminAccess('chat-1', 'user-1');
+    await jest.advanceTimersByTimeAsync(0);
+
+    await expect(pending).resolves.toBe('user_denied');
+    expect(allowlistUpsert).not.toHaveBeenCalled();
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      state: 'user_denied',
+      eventAt: probeStartedAt,
+    });
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'iduser-1',
+      state: 'user_denied',
+      eventAt: probeStartedAt,
+    });
+  });
+
+  it('keeps a crash-partial grant protective without compensating it to a denial', async () => {
+    const sharedStates = new Map<string, 'granted' | 'user_denied'>();
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        readSqlText(query).includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [],
+      );
+    const applyAdminAccessEpochMutation = jest
+      .fn()
+      .mockImplementation(async (params: { userId: string; state: 'granted' | 'user_denied' }) => {
+        if (params.userId === 'iduser-1') {
+          throw new Error('Redis write failed after the first alias');
+        }
+        sharedStates.set(params.userId, params.state);
+        return true;
+      });
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, userIds: readonly string[]) =>
+            new Map(userIds.map((userId) => [userId, sharedStates.get(userId) ?? null] as const)),
+        ),
+      applyAdminAccessEpochMutation,
+    };
+    const service = new ModerationAccessService(
+      {
+        $transaction: jest
+          .fn()
+          .mockImplementation(async (operation: (tx: unknown) => unknown) =>
+            operation({ $queryRaw: queryRaw }),
+          ),
+      } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    await expect(service.getRemoteChatAdminAccess('chat-1', 'user-1')).resolves.toBeNull();
+    expect(applyAdminAccessEpochMutation).toHaveBeenCalledTimes(2);
+    expect(applyAdminAccessEpochMutation).not.toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'user_denied' }),
+    );
+    expect(sharedStates).toEqual(new Map([['user-1', 'granted']]));
+    await expect(
+      service.getRemoteChatAdminAccess('chat-1', 'user-1', { allowLookup: false }),
+    ).resolves.toBe('granted');
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a crash-partial denial unresolved and skips destructive bot moderation', async () => {
+    const sharedStates = new Map<string, 'granted' | 'user_denied'>();
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        readSqlText(query).includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [],
+      );
+    const applyAdminAccessEpochMutation = jest
+      .fn()
+      .mockImplementation(async (params: { userId: string; state: 'granted' | 'user_denied' }) => {
+        if (params.userId === 'iduser-1') {
+          return false;
+        }
+        sharedStates.set(params.userId, params.state);
+        return true;
+      });
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, userIds: readonly string[]) =>
+            new Map(userIds.map((userId) => [userId, sharedStates.get(userId) ?? null] as const)),
+        ),
+      applyAdminAccessEpochMutation,
+    };
+    const service = new ModerationAccessService(
+      {
+        $transaction: jest
+          .fn()
+          .mockImplementation(async (operation: (tx: unknown) => unknown) =>
+            operation({ $queryRaw: queryRaw }),
+          ),
+      } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    await expect(service.getRemoteChatAdminAccess('chat-1', 'user-1')).resolves.toBeNull();
+    expect(sharedStates).toEqual(new Map([['user-1', 'user_denied']]));
+    await expect(
+      service.getRemoteChatAdminAccess('chat-1', 'user-1', { allowLookup: false }),
+    ).resolves.toBeNull();
+    await expect(
+      service.isOtherBotAdminModerationBypass({
+        chatId: 'chat-1',
+        localAdminUserIds: [],
+        senderId: 'user-1',
+        degradeMode: true,
+        hotChatBackoffActive: false,
+      }),
+    ).resolves.toBe(true);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an unfenced remote grant unresolved instead of recording a denial', async () => {
+    const setAdminAccess = jest.fn().mockResolvedValue(undefined);
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        readSqlText(query).includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [],
+      );
+    const service = new ModerationAccessService(
+      {
+        $transaction: jest.fn().mockImplementation(async (operation: (tx: unknown) => unknown) =>
+          operation({
+            $queryRaw: queryRaw,
+          }),
+        ),
+      } as never,
+      {
+        getChatMembersAccess: jest.fn().mockResolvedValue(
+          new Map([
+            [
+              'user-1',
+              {
+                userId: 'user-1',
+                isAdmin: true,
+                isOwner: false,
+                permissions: [],
+              },
+            ],
+          ]),
+        ),
+      } as never,
+      {
+        getAdminAccessBatch: jest.fn().mockResolvedValue(new Map()),
+        setAdminAccess,
+      } as never,
+    );
+
+    await expect(service.getRemoteChatAdminAccess('chat-1', 'user-1')).resolves.toBeNull();
+    expect(setAdminAccess).not.toHaveBeenCalled();
+  });
+
+  it('skips destructive bot moderation when remote admin evidence cannot be fenced', async () => {
+    const service = new ModerationAccessService(
+      {} as never,
+      {
+        getChatMembersAccess: jest.fn().mockResolvedValue(
+          new Map([
+            [
+              'bot-1',
+              {
+                userId: 'bot-1',
+                isAdmin: true,
+                isOwner: false,
+                permissions: [],
+              },
+            ],
+          ]),
+        ),
+      } as never,
+    );
+
+    await expect(
+      service.isOtherBotAdminModerationBypass({
+        chatId: 'chat-1',
+        localAdminUserIds: [],
+        senderId: 'bot-1',
+        degradeMode: false,
+        hotChatBackoffActive: false,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('rechecks shared state before using a process-local granted result', async () => {
+    let sharedState: 'granted' | 'user_denied' | null = null;
+    const getAdminAccessBatch = jest
+      .fn()
+      .mockImplementation(
+        async (_chatId: string, userIds: readonly string[]) =>
+          new Map(userIds.map((userId) => [userId, sharedState] as const)),
+      );
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        readSqlText(query).includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [],
+      );
+    const transaction = jest.fn().mockImplementation(async (operation: (tx: unknown) => unknown) =>
+      operation({
+        $queryRaw: queryRaw,
+        chatAdminAllowlist: { upsert: jest.fn().mockResolvedValue(undefined) },
+      }),
+    );
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch,
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationAccessService(
+      { $transaction: transaction } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    await expect(service.getRemoteChatAdminAccess('chat-1', 'user-1')).resolves.toBe('granted');
+    sharedState = 'user_denied';
+    await expect(
+      service.getRemoteChatAdminAccess('chat-1', 'user-1', { allowLookup: false }),
+    ).resolves.toBe('user_denied');
+
+    expect(getAdminAccessBatch).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
   });
 
   it('passes a bounded timeout to remote admin access reads', async () => {
@@ -240,7 +706,7 @@ describe('ModerationService chat admin access lookups', () => {
           rulesPublishedMessageId: null,
         }),
         getAdminAccess: jest.fn().mockResolvedValue(null),
-        setAdminAccess: jest.fn().mockResolvedValue(undefined),
+        applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
         invalidate: jest.fn().mockResolvedValue(undefined),
       };
       const configService = {
@@ -311,11 +777,11 @@ describe('ModerationService chat admin access lookups', () => {
         new Map([
           ['user-1', 'granted'],
           ['iduser-1', null],
-          ['user-2', null],
+          ['user-2', 'user_denied'],
           ['iduser-2', 'user_denied'],
         ]),
       ),
-      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
       invalidate: jest.fn().mockResolvedValue(undefined),
     };
     const service = new ModerationService(
@@ -363,6 +829,40 @@ describe('ModerationService chat admin access lookups', () => {
       expect.arrayContaining(['user-1', 'iduser-1', 'user-2', 'iduser-2']),
     );
     expect(chatContextCache.getAdminAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+  });
+
+  it('treats conflicting alias epochs as unresolved and skips destructive bot moderation', async () => {
+    const maxClient = {
+      getChatMembersAccess: jest.fn(),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch: jest.fn().mockResolvedValue(
+        new Map([
+          ['bot-1', 'granted'],
+          ['idbot-1', 'user_denied'],
+        ]),
+      ),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
+    };
+    const service = new ModerationAccessService(
+      {} as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    await expect(
+      service.getRemoteChatAdminAccess('chat-1', 'bot-1', { allowLookup: false }),
+    ).resolves.toBeNull();
+    await expect(
+      service.isOtherBotAdminModerationBypass({
+        chatId: 'chat-1',
+        localAdminUserIds: [],
+        senderId: 'bot-1',
+        degradeMode: true,
+        hotChatBackoffActive: false,
+      }),
+    ).resolves.toBe(true);
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
   });
 
@@ -415,7 +915,7 @@ describe('ModerationService chat admin access lookups', () => {
     const chatContextCache = {
       getAdminAccessBatch: jest.fn().mockResolvedValue(new Map()),
       getAdminAccess: jest.fn(),
-      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(true),
       activateAdminLookupBackoff: jest
         .fn()
         .mockImplementation(async (_chatId: string, ttlSec: number) => {
@@ -515,7 +1015,7 @@ describe('ModerationService chat admin access lookups', () => {
     );
   });
 
-  it('patches cached chat context after persisting a remotely confirmed admin grant', async () => {
+  it('publishes a remote grant without materializing a durable allowlist row', async () => {
     const chatContextCache = {
       rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
       invalidate: jest.fn().mockResolvedValue(undefined),
@@ -524,7 +1024,18 @@ describe('ModerationService chat admin access lookups', () => {
       chatAdminAllowlist: {
         upsert: jest.fn().mockResolvedValue(undefined),
       },
+      $transaction: jest.fn(),
     };
+    const queryRaw = jest
+      .fn()
+      .mockImplementation(async (query: unknown) =>
+        readSqlText(query).includes('FROM "chats" AS chat') ? [{ id: 'chat-1' }] : [],
+      );
+    prisma.$transaction.mockImplementation(async (operation: (tx: unknown) => unknown) =>
+      operation({
+        $queryRaw: queryRaw,
+      }),
+    );
     const service = new ModerationService(
       prisma as never,
       {} as never,
@@ -541,20 +1052,8 @@ describe('ModerationService chat admin access lookups', () => {
       }
     ).persistRemoteAdminGrant('chat-1', 'user-1');
 
-    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
-      where: {
-        chatId_userId: {
-          chatId: 'chat-1',
-          userId: 'user-1',
-        },
-      },
-      create: {
-        chatId: 'chat-1',
-        userId: 'user-1',
-      },
-      update: {},
-    });
-    expect(chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+    expect(chatContextCache.rememberChatAdminUser).not.toHaveBeenCalled();
     expect(chatContextCache.invalidate).not.toHaveBeenCalled();
   });
 });

@@ -245,6 +245,147 @@ describe('NightModeTransitionDeliveryService', () => {
     expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
   });
 
+  it('records a routed terminal send against the dispatch attempt epoch', async () => {
+    const dispatchAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
+    const errorHandledAt = new Date('2026-08-20T12:00:05.456Z');
+    jest.useFakeTimers().setSystemTime(dispatchAttemptStartedAt);
+    const accessLoss = {
+      recordManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        jest.setSystemTime(errorHandledAt);
+        throw createMaxApiError(403, 'Request failed with status code 403');
+      }),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      {
+        sendMessageImmediateWithId: jest.fn(),
+        deleteMessage: jest.fn(),
+      } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+      accessLoss as never,
+      maxRoutedPublicationService as never,
+    );
+
+    try {
+      await expect(
+        service.sendOpenedNotice(
+          createSettings(),
+          {
+            startMinutes: 23 * 60,
+            endMinutes: 8 * 60,
+            timezone: 'Europe/Moscow',
+            sessionKey: 'session-routed-terminal',
+          },
+          createAdapters(),
+        ),
+      ).resolves.toEqual({ shouldEnqueueNext: false });
+
+      expect(accessLoss.recordManagedEntityAccessLost).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        botId: 'bot-routed',
+        reason: 'bot_denied',
+        source: 'night_mode_transition:send-open-notice',
+        lastMaxErrorCode: null,
+        lastMaxErrorMessage: 'request failed with status code 403',
+        lastMaxStatusCode: 403,
+        lifecycleEventAt: dispatchAttemptStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not record access loss for a terminal-shaped pre-dispatch failure', async () => {
+    const preDispatchError = createMaxApiError(403, 'Request failed with status code 403');
+    const accessLoss = {
+      recordManagedEntityAccessLost: jest.fn(),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockRejectedValue(preDispatchError),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      {
+        sendMessageImmediateWithId: jest.fn(),
+        deleteMessage: jest.fn(),
+      } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+      accessLoss as never,
+      maxRoutedPublicationService as never,
+    );
+
+    await expect(
+      service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-routed-pre-dispatch',
+        },
+        createAdapters(),
+      ),
+    ).rejects.toBe(preDispatchError);
+
+    expect(accessLoss.recordManagedEntityAccessLost).not.toHaveBeenCalled();
+  });
+
+  it('does not duplicate routed access loss already recorded by action dispatch', async () => {
+    const terminalError = Object.assign(
+      createMaxApiError(403, 'Request failed with status code 403'),
+      { maxManagedEntityAccessLossRecorded: true },
+    );
+    const accessLoss = {
+      recordManagedEntityAccessLost: jest.fn(),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        throw terminalError;
+      }),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      {
+        sendMessageImmediateWithId: jest.fn(),
+        deleteMessage: jest.fn(),
+      } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+      accessLoss as never,
+      maxRoutedPublicationService as never,
+    );
+
+    await expect(
+      service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-routed-recorded',
+        },
+        createAdapters(),
+      ),
+    ).resolves.toEqual({ shouldEnqueueNext: false });
+
+    expect(accessLoss.recordManagedEntityAccessLost).not.toHaveBeenCalled();
+  });
+
   it('sends a closed notice with markdown, background request options, media adapter, and event', async () => {
     const maxClient = {
       sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),
@@ -425,6 +566,8 @@ describe('NightModeTransitionDeliveryService', () => {
   });
 
   it('records access loss and stops scheduling on terminal send errors', async () => {
+    const dispatchAttemptStartedAt = new Date('2026-08-20T13:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(dispatchAttemptStartedAt);
     const maxClient = {
       sendMessageImmediateWithId: jest
         .fn()
@@ -444,28 +587,35 @@ describe('NightModeTransitionDeliveryService', () => {
       accessLoss as never,
     );
 
-    await expect(
-      service.sendClosedNotice(
-        createSettings(),
-        {
-          startMinutes: 23 * 60,
-          endMinutes: 8 * 60,
-          timezone: 'Europe/Moscow',
-          sessionKey: 'session-1',
-        },
-        createAdapters(),
-      ),
-    ).resolves.toEqual({ shouldEnqueueNext: false, messageId: null, botId: null });
+    try {
+      await expect(
+        service.sendClosedNotice(
+          createSettings(),
+          {
+            startMinutes: 23 * 60,
+            endMinutes: 8 * 60,
+            timezone: 'Europe/Moscow',
+            sessionKey: 'session-1',
+          },
+          createAdapters(),
+        ),
+      ).resolves.toEqual({ shouldEnqueueNext: false, messageId: null, botId: null });
 
-    expect(accessLoss.recordManagedEntityAccessLost).toHaveBeenCalledWith({
-      chatId: 'chat-1',
-      botId: 'bot-1',
-      reason: 'chat_not_found',
-      source: 'night_mode_transition:send-close-notice',
-      lastMaxErrorCode: null,
-      lastMaxErrorMessage: 'request failed with status code 404',
-      lastMaxStatusCode: 404,
-    });
+      expect(accessLoss.recordManagedEntityAccessLost).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'chat_not_found',
+        source: 'night_mode_transition:send-close-notice',
+        lastMaxErrorCode: null,
+        lastMaxErrorMessage: 'request failed with status code 404',
+        lastMaxStatusCode: 404,
+        lifecycleEventAt: dispatchAttemptStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('hands close notice cleanup to a durable origin-only intent in execute rollout', async () => {
@@ -563,6 +713,50 @@ describe('NightModeTransitionDeliveryService', () => {
     await expect(
       service.deleteClosedNotice('chat-1', 'historical-close-1', null, createAdapters()),
     ).rejects.toBe(error);
+  });
+
+  it('records terminal direct deletion against the MAX attempt epoch', async () => {
+    const dispatchAttemptStartedAt = new Date('2026-08-20T14:00:00.123Z');
+    jest.useFakeTimers().setSystemTime(dispatchAttemptStartedAt);
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn(),
+      deleteMessage: jest
+        .fn()
+        .mockRejectedValue(createMaxApiError(404, 'Chat not found', 'chat.not.found')),
+    };
+    const accessLoss = {
+      recordManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+      accessLoss as never,
+    );
+
+    try {
+      await expect(
+        service.deleteClosedNotice('chat-1', 'historical-close-1', null, createAdapters()),
+      ).resolves.toEqual({ shouldEnqueueNext: false });
+
+      expect(accessLoss.recordManagedEntityAccessLost).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'chat_not_found',
+        source: 'night_mode_transition:delete-close-notice',
+        lastMaxErrorCode: 'chat.not.found',
+        lastMaxErrorMessage: 'chat not found',
+        lastMaxStatusCode: 404,
+        lifecycleEventAt: dispatchAttemptStartedAt,
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('keeps direct close-notice deletion as the shadow fallback', async () => {

@@ -10,8 +10,12 @@ import {
 } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
+  extractMaxErrorCode,
+  extractMaxErrorStatus,
   fromPrismaEntityType,
   isBotAdminLookupDeniedError,
+  isMaxApiThrottleError,
+  isMaxApiTimeoutError,
   mapWithConcurrencyLimit,
 } from './admin-legacy-utils';
 import type {
@@ -28,6 +32,11 @@ import {
   mapManagedEntityTypeToChatEntityType,
 } from './admin.service.support';
 import { sanitizePublicManagedEntityHeader } from './admin-managed-entity-header';
+
+type RequiredSubscriptionProbePersistenceResult =
+  | { status: 'persisted' }
+  | { status: 'stale' }
+  | { status: 'unavailable'; error: unknown };
 
 export class AdminRequiredSubscriptionRuntime {
   constructor(private readonly context: AdminRequiredSubscriptionRuntimeContext) {}
@@ -339,6 +348,11 @@ export class AdminRequiredSubscriptionRuntime {
         },
         'Failed to load required subscription entity snapshot',
       );
+      if (this.isTransientRequiredSubscriptionMaxError(error)) {
+        throw new ServiceUnavailableException(
+          'Не удалось загрузить данные чата или канала MAX. Повторите позже.',
+        );
+      }
       throw new BadRequestException(
         'Чат или канал не найден в MAX или бот не имеет к нему доступа.',
       );
@@ -365,12 +379,10 @@ export class AdminRequiredSubscriptionRuntime {
           id: normalizedChatId,
           title: header.title,
           entityType: prismaEntityType,
-          ...(verifiedBotId ? { botId: verifiedBotId, primaryBotId: verifiedBotId } : {}),
         },
         update: {
           title: header.title,
           entityType: prismaEntityType,
-          ...(verifiedBotId ? { botId: verifiedBotId, primaryBotId: verifiedBotId } : {}),
         },
       });
       await this.maxBotLinkService?.bindDiscoveredChatBots?.({
@@ -420,41 +432,126 @@ export class AdminRequiredSubscriptionRuntime {
       ),
     );
 
+    let probeParentEnsured = false;
+    if (candidateBotIds.length > 0) {
+      try {
+        // FLAG: A missing parent cannot retain negative epochs from concurrent probes.
+        // Snapshot existence before the first remote lookup so concurrent inserts still re-probe.
+        probeParentEnsured = Boolean(
+          await this.prisma.chat.findUnique({
+            where: { id: chatId },
+            select: { id: true },
+          }),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to inspect required subscription entity before access verification',
+        );
+        throw new ServiceUnavailableException(
+          'Не удалось проверить права бота в чате или канале MAX. Повторите попытку.',
+        );
+      }
+    }
+
     let serviceFailure: unknown = null;
     for (const botId of candidateBotIds) {
+      let probeStartedAt = new Date();
+      let access: Awaited<ReturnType<MaxClientService['getCurrentChatMemberAccess']>>;
       try {
-        const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
-          trafficClass: 'interactive',
-          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
-          botId,
-        });
-        if (access.isAdmin || access.isOwner) {
-          return botId;
-        }
+        access = await this.probeRequiredSubscriptionBotAccess(chatId, botId);
       } catch (error: unknown) {
-        if (isBotAdminLookupDeniedError(error)) {
+        const terminalErrorCode = this.resolveTerminalBotAccessErrorCode(error);
+        if (terminalErrorCode) {
+          const persistence = await this.persistRequiredSubscriptionBotAccessProbe({
+            chatId,
+            botId,
+            access: null,
+            checkedAt: probeStartedAt,
+            lastErrorCode: terminalErrorCode,
+          });
+          if (persistence.status === 'unavailable') {
+            serviceFailure = serviceFailure ?? persistence.error;
+          }
           continue;
         }
         serviceFailure = serviceFailure ?? error;
+        continue;
+      }
+
+      let hasRequiredAccess = access.isAdmin || access.isOwner;
+      let allowMembershipRecovery = hasRequiredAccess;
+      if (hasRequiredAccess && !probeParentEnsured) {
+        try {
+          // FLAG: recordBotAccessProbe serializes on the parent Chat and rejects missing rows.
+          // Materialize only after MAX proves access, without preselecting a primary bot.
+          await this.prisma.chat.createMany({
+            data: {
+              id: chatId,
+              title: chatId,
+            },
+            skipDuplicates: true,
+          });
+          probeParentEnsured = true;
+        } catch (error: unknown) {
+          serviceFailure = serviceFailure ?? error;
+          this.logger.warn(
+            {
+              chatId,
+              botId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to materialize required subscription entity before access probe persistence',
+          );
+          continue;
+        }
+
+        probeStartedAt = new Date();
+        try {
+          access = await this.probeRequiredSubscriptionBotAccess(chatId, botId);
+        } catch (error: unknown) {
+          const terminalErrorCode = this.resolveTerminalBotAccessErrorCode(error);
+          if (terminalErrorCode) {
+            const persistence = await this.persistRequiredSubscriptionBotAccessProbe({
+              chatId,
+              botId,
+              access: null,
+              checkedAt: probeStartedAt,
+              lastErrorCode: terminalErrorCode,
+            });
+            if (persistence.status === 'unavailable') {
+              serviceFailure = serviceFailure ?? persistence.error;
+            }
+            continue;
+          }
+          serviceFailure = serviceFailure ?? error;
+          continue;
+        }
+        hasRequiredAccess = access.isAdmin || access.isOwner;
+        allowMembershipRecovery = true;
+      }
+      const persistence = await this.persistRequiredSubscriptionBotAccessProbe({
+        chatId,
+        botId,
+        access,
+        checkedAt: probeStartedAt,
+        allowMembershipRecovery,
+      });
+      if (persistence.status === 'unavailable') {
+        serviceFailure = serviceFailure ?? persistence.error;
+      }
+      if (hasRequiredAccess && persistence.status === 'persisted') {
+        return botId;
       }
     }
 
     if (candidateBotIds.length === 0) {
-      try {
-        const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
-          trafficClass: 'interactive',
-          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
-        });
-        if (access.isAdmin || access.isOwner) {
-          return this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ?? null;
-        }
-      } catch (error: unknown) {
-        if (!isBotAdminLookupDeniedError(error)) {
-          serviceFailure = serviceFailure ?? error;
-        }
-      }
+      serviceFailure = new Error(
+        'No configured MAX bot candidate can verify required subscription',
+      );
     }
 
     if (!serviceFailure) {
@@ -472,6 +569,91 @@ export class AdminRequiredSubscriptionRuntime {
     );
     throw new ServiceUnavailableException(
       'Не удалось проверить права бота в чате или канале MAX. Повторите попытку.',
+    );
+  }
+
+  private probeRequiredSubscriptionBotAccess(
+    chatId: string,
+    botId?: string,
+  ): ReturnType<MaxClientService['getCurrentChatMemberAccess']> {
+    return this.maxClient.getCurrentChatMemberAccess(chatId, {
+      trafficClass: 'interactive',
+      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
+      bypassCache: true,
+      ...(botId ? { botId } : {}),
+    });
+  }
+
+  private async persistRequiredSubscriptionBotAccessProbe(params: {
+    chatId: string;
+    botId: string;
+    access: Awaited<ReturnType<MaxClientService['getCurrentChatMemberAccess']>> | null;
+    checkedAt: Date;
+    lastErrorCode?: string;
+    allowMembershipRecovery?: boolean;
+  }): Promise<RequiredSubscriptionProbePersistenceResult> {
+    const recordBotAccessProbe = this.maxBotLinkService?.recordBotAccessProbe;
+    if (typeof recordBotAccessProbe !== 'function') {
+      return {
+        status: 'unavailable',
+        error: new Error('MaxBotLinkService.recordBotAccessProbe is unavailable'),
+      };
+    }
+
+    try {
+      const persisted = await recordBotAccessProbe.call(this.maxBotLinkService, {
+        chatId: params.chatId,
+        botId: params.botId,
+        access: params.access,
+        source: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
+        checkedAt: params.checkedAt,
+        ...(params.lastErrorCode ? { lastErrorCode: params.lastErrorCode } : {}),
+        allowMembershipRecovery: params.allowMembershipRecovery === true,
+      });
+      return { status: persisted ? 'persisted' : 'stale' };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          botId: params.botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist required subscription bot access probe',
+      );
+      return { status: 'unavailable', error };
+    }
+  }
+
+  private resolveTerminalBotAccessErrorCode(error: unknown): string | null {
+    const code = extractMaxErrorCode(error);
+    if (code === 'access.denied' || code === 'chat.denied' || code === 'chat.not.found') {
+      return code;
+    }
+
+    const status = extractMaxErrorStatus(error);
+    if (status === 403 || isBotAdminLookupDeniedError(error)) {
+      return 'access.denied';
+    }
+    return status === 404 ? 'chat.not.found' : null;
+  }
+
+  private isTransientRequiredSubscriptionMaxError(error: unknown): boolean {
+    if (isMaxApiThrottleError(error) || isMaxApiTimeoutError(error)) {
+      return true;
+    }
+
+    const status = extractMaxErrorStatus(error);
+    if (status !== null && status >= 500) {
+      return true;
+    }
+
+    const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code !== 'string') {
+      return false;
+    }
+    return new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT']).has(
+      code.trim().toUpperCase(),
     );
   }
 

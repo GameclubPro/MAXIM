@@ -3,6 +3,7 @@ import { AdminService } from './admin.service';
 import {
   createChatContextCacheMock,
   createConfigMock,
+  createDeferred,
   createPrismaMock,
   flushAsyncTasks,
 } from './admin-service-test-support';
@@ -98,6 +99,30 @@ describe('AdminService admin access validation', () => {
         },
       }),
     );
+  });
+
+  it('fails closed when a newer membership event supersedes the remote grant before allowlist upsert', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    prisma.chatMembershipActivityEvent.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'newer-removal' });
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+
+    expect(prisma.chatMembershipActivityEvent.findFirst).toHaveBeenCalledTimes(2);
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
   it('rechecks stale bot_denied cache before rejecting admin access', async () => {
@@ -227,11 +252,13 @@ describe('AdminService admin access validation', () => {
       }),
     ).rejects.toThrow(ForbiddenException);
     expect((prisma as any).managedEntityAccessEdge.findMany).not.toHaveBeenCalled();
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith(
-      'chat-1',
-      user.userId,
-      'bot_denied',
-    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: user.userId,
+      state: 'bot_denied',
+      eventAt: expect.any(Date),
+    });
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
   });
 
   it('rechecks cached granted access and rejects a removed managed-entity admin', async () => {
@@ -255,13 +282,18 @@ describe('AdminService admin access validation', () => {
     ).rejects.toThrow(ForbiddenException);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith(
-      'chat-1',
-      user.userId,
-      'user_denied',
-    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: user.userId,
+      state: 'user_denied',
+      eventAt: expect.any(Date),
+    });
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1', userId: user.userId },
+      where: {
+        chatId: 'chat-1',
+        userId: { in: ['admin-1', 'idadmin-1'] },
+      },
     });
   });
 
@@ -540,8 +572,14 @@ describe('AdminService admin access validation', () => {
     await expect(service.getEvents('chat-1', user, {})).resolves.toEqual([]);
     await flushAsyncTasks();
 
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'granted');
-    expect(chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('chat-1', 'admin-1');
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'admin-1',
+      state: 'granted',
+      eventAt: expect.any(Date),
+    });
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(chatContextCache.rememberChatAdminUser).not.toHaveBeenCalled();
     expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
       chatId: 'chat-1',
       entityType: null,
@@ -549,5 +587,237 @@ describe('AdminService admin access validation', () => {
       retryUntilMs: null,
     });
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when cache epoch CAS rejects a read-only remote grant', async () => {
+    const prisma = createPrismaMock();
+    prisma.moderationEvent.findMany.mockResolvedValue([]);
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockResolvedValue(null),
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(false),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const maxChatAdminRosterSyncService = {
+      scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+
+    await expect(service.getEvents('chat-1', user, {})).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+    await flushAsyncTasks();
+
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'admin-1',
+      state: 'granted',
+      eventAt: expect.any(Date),
+    });
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(chatContextCache.rememberChatAdminUser).not.toHaveBeenCalled();
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
+  });
+
+  it('matches numeric and id-prefixed aliases in targeted remote admin access', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'id123',
+            {
+              userId: 'id123',
+              isAdmin: true,
+              isOwner: false,
+            },
+          ],
+        ]),
+      ),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '777000',
+        isAdmin: true,
+        isOwner: false,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      (service as any).resolveUserAndBotAdminAccess('chat-1', '123', {
+        allowPersistedFallback: false,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'granted',
+        source: 'remote',
+      }),
+    );
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.arrayContaining(['123', 'id123']),
+      expect.objectContaining({ actionHealthLane: 'background' }),
+    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: '123',
+      state: 'granted',
+      eventAt: expect.any(Date),
+    });
+  });
+
+  it('rejects a delayed remote grant after a newer aliased membership transition', async () => {
+    const prisma = createPrismaMock();
+    const lookup = createDeferred<string[]>();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockReturnValue(lookup.promise),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const pending = (service as any).resolveUserAndBotAdminAccess('chat-1', '123', {
+      allowPersistedFallback: false,
+    });
+    await flushAsyncTasks();
+    prisma.chatMembershipActivityEvent.findFirst.mockResolvedValueOnce({ id: 'newer-removal' });
+    lookup.resolve(['id123']);
+
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({
+        status: 'unknown',
+        error: expect.any(Error),
+      }),
+    );
+    expect(prisma.chatMembershipActivityEvent.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        userId: { in: ['123', 'id123'] },
+        eventType: { in: ['user_added', 'user_removed'] },
+        eventAt: { gte: expect.any(Date) },
+      },
+      select: { id: true },
+    });
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+  });
+
+  it('keeps a P2024 discovery grant in process without publishing it to Redis', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service as any, 'upsertUserChatAccess')
+      .mockRejectedValueOnce({ code: 'P2024', message: 'pool timeout' });
+
+    await expect(
+      (service as any).persistManagedEntityAccessBestEffort({
+        chatId: 'chat-transient',
+        userId: 'admin-1',
+        title: 'Временный чат',
+        entityType: 'chat',
+        createdAtFallback: '2026-05-14T09:00:00.000Z',
+        source: 'local_discovery',
+        probeStartedAt: new Date('2026-05-14T08:59:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      id: 'chat-transient',
+      title: 'Временный чат',
+      entityType: 'chat',
+    });
+
+    expect(
+      (service as any).readManagedEntitiesLastSuccessSnapshot('admin-1', 'chat'),
+    ).toEqual([
+      expect.objectContaining({
+        id: 'chat-transient',
+        title: 'Временный чат',
+        entityType: 'chat',
+      }),
+    ]);
+    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+    expect(chatContextCache.upsertManagedEntityPublishedSnapshot).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('rejects a fresh access-edge fallback when the cache epoch CAS loses', async () => {
+    const prisma = createPrismaMock();
+    const checkedAt = new Date('2026-05-14T08:59:00.000Z');
+    (prisma as any).managedEntityAccessEdge = {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-1',
+          userId: 'id123',
+          botId: 'bot-1',
+          checkedAt,
+        },
+      ]),
+    };
+    (prisma as any).chatBotMembership = {
+      findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-1', botId: 'bot-1' }]),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      applyAdminAccessEpochMutation: jest.fn().mockResolvedValue(false),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'bot-1' }) as never,
+    );
+
+    await expect(
+      (service as any).resolveFreshManagedEntityAccessEdgeFallback('chat-1', '123', 'chat'),
+    ).resolves.toBeNull();
+
+    expect((prisma as any).managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: { in: ['123', 'id123'] },
+        }),
+      }),
+    );
+    expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: '123',
+      state: 'granted',
+      eventAt: checkedAt,
+    });
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
   });
 });
