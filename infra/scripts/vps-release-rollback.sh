@@ -361,6 +361,25 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     local commit_label="$2"
     local migration
     local missing_migrations=()
+    local superseded_migrations=()
+
+    is_applied_migration_superseded_in_source() {
+      local applied_migration="$1"
+      local replacement_migration
+
+      case "$applied_migration" in
+        20260311153000_add_night_mode_open_message_enabled|\
+        20260311160000_add_night_mode_open_message_text)
+          replacement_migration="20260316113000_add_night_mode_open_message"
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+
+      grep -Fxq "$replacement_migration" "$APPLIED_MIGRATIONS_FILE" &&
+        grep -Fxq "$replacement_migration" "$SOURCE_MIGRATIONS_FILE"
+    }
 
     git ls-tree -r --name-only "$commit_sha" -- apps/api/prisma/migrations \
       | sed -n 's#^apps/api/prisma/migrations/\([^/][^/]*\)/migration\.sql$#\1#p' \
@@ -369,7 +388,11 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     while IFS= read -r migration; do
       [[ -n "$migration" ]] || continue
       if ! grep -Fxq "$migration" "$SOURCE_MIGRATIONS_FILE"; then
-        missing_migrations+=("$migration")
+        if is_applied_migration_superseded_in_source "$migration"; then
+          superseded_migrations+=("$migration")
+        else
+          missing_migrations+=("$migration")
+        fi
       fi
     done <"$APPLIED_MIGRATIONS_FILE"
 
@@ -378,6 +401,10 @@ if [[ "$SELECT_API" -eq 1 ]]; then
       printf '  %s\n' "${missing_migrations[@]}" >&2
       echo "Refusing before any container recreate." >&2
       return 1
+    fi
+    if [[ "${#superseded_migrations[@]}" -gt 0 ]]; then
+      echo "$commit_label $commit_sha contains the applied replacement for superseded migrations:"
+      printf '  %s\n' "${superseded_migrations[@]}"
     fi
     echo "Prisma compatibility preflight passed for $commit_label $commit_sha."
   }

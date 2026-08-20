@@ -215,6 +215,18 @@ test('rollback shell is syntactically valid and has no build, migration, or Git-
   assert.match(script, /MAXIM_MINIAPP_MAJOR_IMAGE/u);
   assert.match(script, /MAXIM_ADMIN_IMAGE/u);
   assert.match(script, /ensure_commit_has_applied_migrations/u);
+  assert.match(script, /is_applied_migration_superseded_in_source/u);
+  assert.match(script, /20260311153000_add_night_mode_open_message_enabled/u);
+  assert.match(script, /20260311160000_add_night_mode_open_message_text/u);
+  assert.match(script, /20260316113000_add_night_mode_open_message/u);
+  assert.ok(
+    script.indexOf('grep -Fxq "$replacement_migration" "$APPLIED_MIGRATIONS_FILE"') <
+      script.indexOf('superseded_migrations+=("$migration")'),
+  );
+  assert.ok(
+    script.indexOf('grep -Fxq "$replacement_migration" "$SOURCE_MIGRATIONS_FILE"') <
+      script.indexOf('superseded_migrations+=("$migration")'),
+  );
   assert.match(script, /ROLLBACK_RUNTIME_STARTED=0/u);
   assert.match(script, /ROLLBACK_MANIFEST_RECORDED=0/u);
   assert.match(script, /invalidate_stale_release_inventory/u);
