@@ -786,6 +786,7 @@ describe('MaxBotLinkService', () => {
           isAdmin: true,
           isOwner: false,
           permissions: ['write'],
+          permissionsKnown: true,
         },
         source: 'routed_action_preflight',
         checkedAt: new Date('2026-05-09T10:05:00.000Z'),
@@ -800,6 +801,7 @@ describe('MaxBotLinkService', () => {
         permissionsSnapshot: expect.objectContaining({
           isAdmin: true,
           permissions: ['write'],
+          permissionsKnown: true,
         }),
       }),
     );
@@ -3181,6 +3183,86 @@ describe('MaxBotLinkService', () => {
         fallbackToPrimary: false,
       }),
     ).resolves.toMatchObject({ botId: null, candidateBotIds: [] });
+  });
+
+  it('excludes known empty channel admin rights while preserving legacy and owner routes', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-send-known-empty', {
+      id: 'channel-send-known-empty',
+      title: 'Known read-only channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      entityType: ChatEntityType.CHANNEL,
+    });
+    fixture.chats.set('channel-send-legacy-empty', {
+      id: 'channel-send-legacy-empty',
+      title: 'Legacy permission snapshot',
+      botId: 'id613002203036_4_bot',
+      primaryBotId: 'id613002203036_4_bot',
+      entityType: ChatEntityType.CHANNEL,
+    });
+    fixture.chats.set('channel-send-owner-empty', {
+      id: 'channel-send-owner-empty',
+      title: 'Owner channel',
+      botId: 'id613002203036_5_bot',
+      primaryBotId: 'id613002203036_5_bot',
+      entityType: ChatEntityType.CHANNEL,
+    });
+    fixture.memberships.push(
+      createActiveMembership('channel-send-known-empty', 'id613002203036_bot', 0, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+          permissionsKnown: true,
+        },
+      }),
+      createActiveMembership('channel-send-legacy-empty', 'id613002203036_4_bot', 0, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+        },
+      }),
+      createActiveMembership('channel-send-owner-empty', 'id613002203036_5_bot', 0, {
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: true,
+          permissions: [],
+          permissionsKnown: true,
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: 'channel-send-known-empty',
+      }),
+    ).resolves.toMatchObject({ botId: null, candidateBotIds: [] });
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: 'channel-send-legacy-empty',
+      }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot'],
+      reason: 'primary_soft',
+    });
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'send_message',
+        chatId: 'channel-send-owner-empty',
+      }),
+    ).resolves.toMatchObject({
+      botId: 'id613002203036_5_bot',
+      candidateBotIds: ['id613002203036_5_bot'],
+      reason: 'primary_confirmed',
+    });
   });
 
   it('selects a channel poll bot only with confirmed read-all, write, and edit permissions', async () => {

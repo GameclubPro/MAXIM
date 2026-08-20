@@ -639,7 +639,7 @@ describe('AdminService admin access validation', () => {
     expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
   });
 
-  it('matches numeric and id-prefixed aliases in targeted remote admin access', async () => {
+  it('matches id-prefixed response aliases without sending them to MAX', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
@@ -681,7 +681,7 @@ describe('AdminService admin access validation', () => {
 
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       'chat-1',
-      expect.arrayContaining(['123', 'id123']),
+      ['123', '777000'],
       expect.objectContaining({ actionHealthLane: 'background' }),
     );
     expect(chatContextCache.applyAdminAccessEpochMutation).toHaveBeenCalledWith({
@@ -760,9 +760,7 @@ describe('AdminService admin access validation', () => {
       entityType: 'chat',
     });
 
-    expect(
-      (service as any).readManagedEntitiesLastSuccessSnapshot('admin-1', 'chat'),
-    ).toEqual([
+    expect((service as any).readManagedEntitiesLastSuccessSnapshot('admin-1', 'chat')).toEqual([
       expect.objectContaining({
         id: 'chat-transient',
         title: 'Временный чат',

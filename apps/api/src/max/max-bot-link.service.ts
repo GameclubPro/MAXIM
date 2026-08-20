@@ -3230,11 +3230,21 @@ export class MaxBotLinkService {
     if (
       entityType === ChatEntityType.CHANNEL &&
       snapshot.isAdmin &&
-      snapshot.permissions.length === 0
+      snapshot.permissions.length === 0 &&
+      !this.membershipPermissionsAreKnown(value)
     ) {
       return false;
     }
     return !this.hasConfirmedSendMessageAccess(snapshot, entityType);
+  }
+
+  private membershipPermissionsAreKnown(value: unknown): boolean {
+    return Boolean(
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      (value as Record<string, unknown>).permissionsKnown === true,
+    );
   }
 
   private membershipExplicitlyLacksModerationAction(

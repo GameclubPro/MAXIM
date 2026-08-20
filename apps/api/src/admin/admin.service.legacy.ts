@@ -7218,6 +7218,7 @@ export class AdminService implements OnModuleDestroy {
     let published: Awaited<ReturnType<typeof this.publishStoredChannelSuggestion>>;
     try {
       if (action === 'publish') {
+        const resolvedBotId = await this.resolveChannelSuggestionPublicationBotId(row.chatId);
         const images = await this.channelSuggestionImageRuntime.loadStoredImages(
           row.id,
           canonicalPayload,
@@ -7227,6 +7228,7 @@ export class AdminService implements OnModuleDestroy {
           row.actorUserId,
           canonicalPayload,
           images,
+          resolvedBotId,
         );
       } else {
         const resolvedBotId = await this.resolveDeliveryBotAssignment(row.chatId);
@@ -18860,6 +18862,7 @@ export class AdminService implements OnModuleDestroy {
     actorUserId: string,
     payload: Record<string, unknown>,
     images: ChannelSuggestionImageAsset[],
+    resolvedBotId: string | undefined,
   ): Promise<{
     messageId: string | null;
     url: string | null;
@@ -18871,7 +18874,6 @@ export class AdminService implements OnModuleDestroy {
     botId: string | null;
     authorAttribution: ChannelSuggestionAuthorAttribution;
   }> {
-    const resolvedBotId = await this.resolveDeliveryBotAssignment(chatId);
     const text = this.readRawString(payload.text) ?? '';
     const authorAttribution = await this.resolveChannelSuggestionAuthorAttribution(
       chatId,
@@ -20818,6 +20820,18 @@ export class AdminService implements OnModuleDestroy {
     return (await this.resolveDeliveryBotAssignmentRouteAware(chatId)).botId;
   }
 
+  private async resolveChannelSuggestionPublicationBotId(
+    chatId: string,
+  ): Promise<string | undefined> {
+    const assignment = await this.resolveDeliveryBotAssignmentRouteAware(chatId);
+    if (assignment.routeResolved && !assignment.botId) {
+      throw new ForbiddenException(
+        'Не найден бот MAX с подтвержденным правом публиковать сообщения в этом канале.',
+      );
+    }
+    return assignment.botId;
+  }
+
   private async resolveSendActionBotAssignment(
     chatId: string,
     entityType: ChatEntityType = ChatEntityType.CHAT,
@@ -21011,12 +21025,11 @@ export class AdminService implements OnModuleDestroy {
 
       if (typeof this.maxClient.getChatMembersAccess === 'function') {
         const lookupIds = Array.from(
-          new Set([
-            ...userIdVariants,
-            ...(botContactId && !userIdVariants.includes(botContactId.toLowerCase())
-              ? [botContactId]
-              : []),
-          ]),
+          new Set(
+            [normalizedUserId, botContactId]
+              .map((value) => this.normalizeMaxApiAdminLookupUserId(value))
+              .filter((value): value is string => Boolean(value)),
+          ),
         );
         const accessByUserId = hasRequestOptions
           ? await this.maxClient.getChatMembersAccess(chatId, lookupIds, requestOptions)
@@ -21133,6 +21146,15 @@ export class AdminService implements OnModuleDestroy {
         probeStartedAt,
       };
     }
+  }
+
+  private normalizeMaxApiAdminLookupUserId(value: string | null | undefined): string | null {
+    const normalized = this.readTrimmedString(value)?.toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    return /^id\d+$/.test(normalized) ? normalized.slice(2) : normalized;
   }
 
   private async loadRemoteAdminAccess(

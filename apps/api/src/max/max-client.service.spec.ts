@@ -7429,6 +7429,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       isAdmin: true,
       isOwner: false,
       permissions: ['add_remove_members', 'change_chat_info'],
+      permissionsKnown: true,
     });
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -7436,6 +7437,45 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api2.max.ru/chats/chat-1/members/me',
       }),
     );
+
+    await service.onModuleDestroy();
+  });
+
+  it('distinguishes an explicitly empty permission list from a nullable one', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              user_id: 'bot-1',
+              is_admin: true,
+              permissions: [],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              user_id: 'bot-1',
+              is_admin: true,
+              permissions: null,
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getCurrentChatMemberAccess('channel-known')).resolves.toMatchObject({
+      permissions: [],
+      permissionsKnown: true,
+    });
+    await expect(service.getCurrentChatMemberAccess('channel-legacy')).resolves.toMatchObject({
+      permissions: [],
+      permissionsKnown: false,
+    });
 
     await service.onModuleDestroy();
   });

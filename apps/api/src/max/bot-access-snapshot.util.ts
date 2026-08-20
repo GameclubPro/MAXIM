@@ -7,6 +7,7 @@ export type BotAccessSnapshotInput = {
   isAdmin: boolean;
   isOwner: boolean;
   permissions?: readonly string[];
+  permissionsKnown?: boolean;
 } | null;
 
 export type BotAccessSnapshotPersistence = {
@@ -35,6 +36,7 @@ export function buildBotAccessSnapshotPersistence(
     isAdmin: access?.isAdmin === true,
     isOwner: access?.isOwner === true,
     permissions,
+    permissionsKnown: access?.permissionsKnown === true,
   } satisfies Prisma.InputJsonObject;
 
   return {

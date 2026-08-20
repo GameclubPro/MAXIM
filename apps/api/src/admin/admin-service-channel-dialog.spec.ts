@@ -4425,6 +4425,14 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
       getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
       resolveBotId: jest.fn().mockResolvedValue(undefined),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'channel-bot-2',
+        botId: 'channel-bot-2',
+        candidateBotIds: ['channel-bot-2'],
+        reason: 'primary_confirmed',
+      }),
     };
 
     const service = new AdminService(
@@ -4438,7 +4446,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       undefined,
       maxBotLinkService as never,
     );
-    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-1',
@@ -4486,6 +4493,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         timeoutMs: 10_000,
       }),
     );
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'channel-1',
+    });
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
     expect(maxBotLinkService.getBotTokenSync).toHaveBeenCalledWith('channel-bot-2');
     expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
@@ -4613,6 +4624,115 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('fails before suggestion media preparation when the authoritative send route is empty', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'suggestion-review-no-route-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: 'Пост без исполняемого маршрута',
+        reviewStatus: 'pending',
+      },
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn(),
+    };
+    const maxBotLinkService = createAdminMaxBotLinkMock({
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'channel-bot-2',
+        botId: null,
+        candidateBotIds: [],
+        reason: null,
+      }),
+      resolveBotIdForSend: jest.fn().mockResolvedValue('legacy-default-bot'),
+    });
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+    const loadStoredImages = jest.spyOn(
+      (service as any).channelSuggestionImageRuntime,
+      'loadStoredImages',
+    );
+    const resolveAttachments = jest.spyOn(service as any, 'resolveChannelSuggestionAttachments');
+
+    await expect(
+      service.reviewChannelSuggestionByAdmin(
+        'suggestion-review-no-route-1',
+        {
+          userId: 'admin-1',
+          username: 'chief',
+          displayName: 'Главный редактор',
+          chatTitle: null,
+        },
+        'publish',
+      ),
+    ).rejects.toThrow(
+      'Не найден бот MAX с подтвержденным правом публиковать сообщения в этом канале.',
+    );
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'send_message',
+      chatId: 'channel-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(loadStoredImages).not.toHaveBeenCalled();
+    expect(resolveAttachments).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
+      "'reviewClaimReleasedAt',",
+    );
+    expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps the legacy suggestion delivery fallback when no route resolver is available', async () => {
+    const prisma = createPrismaMock();
+    const resolveBotIdForSend = jest.fn().mockResolvedValue('legacy-channel-bot');
+    const maxBotLinkService = createAdminMaxBotLinkMock({
+      resolveBotRoute: undefined,
+      resolveBotIdForSend,
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      (service as any).resolveChannelSuggestionPublicationBotId('channel-1'),
+    ).resolves.toBe('legacy-channel-bot');
+    expect(resolveBotIdForSend).toHaveBeenCalledWith({ chatId: 'channel-1' });
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+  });
+
   describe('reviewed suggestion author attribution', () => {
     type RemoteAuthorProfile = {
       displayName: string | null;
@@ -4699,6 +4819,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         createChatContextCacheMock() as never,
         createConfigMock() as never,
       );
+      jest
+        .spyOn(service as any, 'resolveChannelSuggestionPublicationBotId')
+        .mockResolvedValue('channel-bot-author');
       jest
         .spyOn(service as any, 'resolveDeliveryBotAssignment')
         .mockResolvedValue('channel-bot-author');
@@ -5393,7 +5516,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
+    jest
+      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotId')
+      .mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-rich-1',
@@ -5517,7 +5642,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
+    jest
+      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotId')
+      .mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-photo-1',

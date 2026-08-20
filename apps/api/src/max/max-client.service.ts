@@ -141,6 +141,7 @@ export type MaxChatMemberAccess = {
   isAdmin: boolean;
   isOwner: boolean;
   permissions: string[];
+  permissionsKnown?: boolean;
 };
 
 export type MaxChatMemberRole = 'owner' | 'admin' | 'member';
@@ -3549,7 +3550,8 @@ export class MaxClientService implements OnModuleDestroy {
       typeof row.isAdmin === 'boolean' &&
       typeof row.isOwner === 'boolean' &&
       Array.isArray(row.permissions) &&
-      row.permissions.every((permission) => typeof permission === 'string')
+      row.permissions.every((permission) => typeof permission === 'string') &&
+      (row.permissionsKnown === undefined || typeof row.permissionsKnown === 'boolean')
     );
   }
 
@@ -3711,6 +3713,7 @@ export class MaxClientService implements OnModuleDestroy {
       isAdmin: isOwner || (row ? this.isChatAdminMemberRow(row) : false),
       isOwner,
       permissions: row ? this.readChatAdminPermissions(row) : [],
+      permissionsKnown: row ? this.hasExplicitChatAdminPermissions(row) : false,
     };
   }
 
@@ -7865,6 +7868,21 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return [...normalized];
+  }
+
+  private hasExplicitChatAdminPermissions(row: Record<string, unknown>): boolean {
+    return [
+      row.permissions,
+      row.rights,
+      row.admin_permissions,
+      row.adminPermissions,
+      row.chat_permissions,
+      row.chatPermissions,
+    ].some(
+      (source) =>
+        Array.isArray(source) ||
+        Boolean(source && typeof source === 'object' && !Array.isArray(source)),
+    );
   }
 
   private readPermissionList(source: unknown): string[] {
