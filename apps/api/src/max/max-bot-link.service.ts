@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import {
   ChatBotAccessState,
   ChatCatalogKind,
@@ -10,6 +10,8 @@ import {
 } from '../prisma/prisma-client';
 import type { ManagedEntityBotCapability } from '@maxim/contracts';
 import { resolveChatCatalogKind } from '../common/chat-catalog-kind.util';
+import { isNightModeTransitionMembershipCandidate } from '../moderation/night-mode-transition-eligibility.util';
+import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-deep-link.util';
 import { MaxBotContextService } from './max-bot-context.service';
@@ -49,6 +51,8 @@ import {
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
+const NIGHT_MODE_RECONCILIATION_RETRY_DELAY_MS = 5_000;
+const NIGHT_MODE_RECONCILIATION_RETRY_BATCH_SIZE = 50;
 const SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD = 2;
 const SEND_ROUTE_OPEN_CIRCUIT_RECHECK_MS = 15 * 60_000;
 const WRITE_MESSAGE_PERMISSION_ALIASES = new Set([
@@ -298,17 +302,33 @@ type LockedChatRouteReconcileResult = {
 };
 
 @Injectable()
-export class MaxBotLinkService {
+export class MaxBotLinkService implements OnModuleDestroy {
   private readonly logger = new Logger(MaxBotLinkService.name);
   private readonly chatBotBindingCache = new Map<string, ChatBotBindingCacheEntry>();
   private readonly observedWebhookTouchCache = new Map<string, number>();
+  private readonly pendingNightModeReconciliations = new Set<string>();
+  private readonly nightModeReconciliationsInFlight = new Map<string, Promise<boolean>>();
+  private nightModeReconciliationRetryTimer: NodeJS.Timeout | null = null;
+  private nightModeReconciliationRetryInProgress = false;
+  private nightModeReconciliationRetryStopped = false;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly botRegistry: MaxBotRegistryService,
     private readonly botContext: MaxBotContextService,
     private readonly moderationDeleteIntentAccessWake: ModerationDeleteIntentAccessWakeService,
+    @Optional()
+    private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
   ) {}
+
+  onModuleDestroy(): void {
+    this.nightModeReconciliationRetryStopped = true;
+    if (this.nightModeReconciliationRetryTimer) {
+      clearTimeout(this.nightModeReconciliationRetryTimer);
+      this.nightModeReconciliationRetryTimer = null;
+    }
+    this.pendingNightModeReconciliations.clear();
+  }
 
   getDefaultBotId(): string {
     return this.botRegistry.getDefaultBot().id;
@@ -710,7 +730,7 @@ export class MaxBotLinkService {
         `,
         );
         if (locked.length !== 1) {
-          return { persisted: false, wake: null };
+          return { persisted: false, wake: null, nightModeAccessActivated: false };
         }
 
         const previous = await tx.chatBotMembership.findUnique({
@@ -733,8 +753,23 @@ export class MaxBotLinkService {
             }
           : null;
         const persisted = await this.persistBotAccessProbeInTransaction(tx, params, chatId, botId);
+        const current = persisted
+          ? await tx.chatBotMembership.findUnique({
+              where: { chatId_botId: { chatId, botId } },
+              select: {
+                status: true,
+                botAccessState: true,
+              },
+            })
+          : null;
         return {
           persisted,
+          nightModeAccessActivated:
+            persisted &&
+            locked[0]!.entityType === ChatEntityType.CHAT &&
+            this.getExecutableBotById(botId) !== null &&
+            !isNightModeTransitionMembershipCandidate({ ...previous, botId }) &&
+            isNightModeTransitionMembershipCandidate({ ...current, botId }),
           wake: persisted
             ? {
                 chatId,
@@ -750,6 +785,9 @@ export class MaxBotLinkService {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
     );
+    if (result.nightModeAccessActivated && this.nightModeTransitionScheduler) {
+      this.pendingNightModeReconciliations.add(chatId);
+    }
     if (result.wake) {
       try {
         await this.moderationDeleteIntentAccessWake.wakeAfterCommittedProbe(result.wake);
@@ -763,7 +801,101 @@ export class MaxBotLinkService {
     if (result.persisted) {
       await this.reconcileChatPrimaryByAccess({ chatId });
     }
+    if (this.nightModeTransitionScheduler && this.pendingNightModeReconciliations.has(chatId)) {
+      await this.reconcilePendingNightModeTransition(chatId);
+    }
     return result.persisted;
+  }
+
+  private async reconcilePendingNightModeTransition(chatId: string): Promise<void> {
+    const existing = this.nightModeReconciliationsInFlight.get(chatId);
+    if (existing) {
+      const reconciled = await existing;
+      if (reconciled && this.pendingNightModeReconciliations.has(chatId)) {
+        await this.reconcilePendingNightModeTransition(chatId);
+      }
+      return;
+    }
+
+    const reconciliation = (async (): Promise<boolean> => {
+      while (
+        this.nightModeTransitionScheduler &&
+        this.pendingNightModeReconciliations.delete(chatId)
+      ) {
+        try {
+          await this.nightModeTransitionScheduler.reconcileChat(chatId);
+        } catch (error: unknown) {
+          if (!this.nightModeReconciliationRetryStopped) {
+            this.pendingNightModeReconciliations.add(chatId);
+            this.schedulePendingNightModeReconciliationRetry();
+          }
+          this.logger.warn(
+            { chatId, err: error instanceof Error ? error.message : String(error) },
+            'Failed to reconcile night mode transitions after access recovery; retry remains pending',
+          );
+          return false;
+        }
+      }
+      return true;
+    })();
+    this.nightModeReconciliationsInFlight.set(chatId, reconciliation);
+    try {
+      const reconciled = await reconciliation;
+      if (!reconciled) {
+        return;
+      }
+    } finally {
+      this.nightModeReconciliationsInFlight.delete(chatId);
+    }
+    if (this.pendingNightModeReconciliations.has(chatId)) {
+      await this.reconcilePendingNightModeTransition(chatId);
+    }
+  }
+
+  private schedulePendingNightModeReconciliationRetry(): void {
+    if (
+      this.nightModeReconciliationRetryStopped ||
+      this.nightModeReconciliationRetryTimer ||
+      this.nightModeReconciliationRetryInProgress ||
+      !this.nightModeTransitionScheduler ||
+      this.pendingNightModeReconciliations.size === 0
+    ) {
+      return;
+    }
+
+    this.nightModeReconciliationRetryTimer = setTimeout(() => {
+      this.nightModeReconciliationRetryTimer = null;
+      void this.retryPendingNightModeReconciliations();
+    }, NIGHT_MODE_RECONCILIATION_RETRY_DELAY_MS);
+    this.nightModeReconciliationRetryTimer.unref();
+  }
+
+  private async retryPendingNightModeReconciliations(): Promise<void> {
+    if (this.nightModeReconciliationRetryStopped || this.nightModeReconciliationRetryInProgress) {
+      return;
+    }
+
+    this.nightModeReconciliationRetryInProgress = true;
+    try {
+      const chatIds = Array.from(this.pendingNightModeReconciliations).slice(
+        0,
+        NIGHT_MODE_RECONCILIATION_RETRY_BATCH_SIZE,
+      );
+      for (const chatId of chatIds) {
+        if (this.nightModeReconciliationRetryStopped) {
+          return;
+        }
+        await this.reconcilePendingNightModeTransition(chatId);
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to drain pending night mode transition reconciliations',
+      );
+    } finally {
+      this.nightModeReconciliationRetryInProgress = false;
+      this.schedulePendingNightModeReconciliationRetry();
+    }
   }
 
   private async persistBotAccessProbeInTransaction(

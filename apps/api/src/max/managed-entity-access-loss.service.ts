@@ -17,10 +17,11 @@ import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import {
-  isFreshMembershipAccessSnapshot,
-  normalizeMembershipAccessSnapshot,
-} from './max-bot-access-policy.util';
-import { collectActiveManagedEntityBotMembershipIds } from './managed-entity-bot-access.util';
+  collectActiveManagedEntityBotMembershipIds,
+  managedEntityBotMembershipAllowsFreshGrantedEdge,
+  managedEntityBotMembershipHasFreshConfirmedAccess,
+  MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
+} from './managed-entity-bot-access.util';
 import {
   MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND,
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
@@ -32,7 +33,6 @@ import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './managed-entity-access-loss.constants';
 
-const MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_DELAY_MS = 45_000;
 const MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_ATTEMPTS = 3;
 const MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_BACKOFF_MS = 15_000;
@@ -617,7 +617,10 @@ export class ManagedEntityAccessLossService {
       const reconciliation = await this.nightModeTransitionScheduler.reconcileChat(
         normalized.chatId,
       );
-      result.cleanup.nightModeJobsCleared = !reconciliation.jobsScheduled;
+      result.cleanup.nightModeJobsCleared =
+        reconciliation.queueAvailable &&
+        reconciliation.scheduleEnabled === false &&
+        reconciliation.passes > 0;
     }
 
     this.logger.log(
@@ -712,34 +715,44 @@ export class ManagedEntityAccessLossService {
     const activeBotIds = collectActiveManagedEntityBotMembershipIds(memberships, {
       isRuntimeBotId: (botId) => actionableBotIds === null || actionableBotIds.includes(botId),
     });
+    const edgeEligibleBotIds = new Set(
+      memberships
+        .filter((membership) => managedEntityBotMembershipAllowsFreshGrantedEdge(membership))
+        .map((membership) => membership.botId)
+        .filter((botId) => activeBotIds.has(botId)),
+    );
     if (activeBotIds.size === 0) {
       return false;
     }
 
-    const grantedEdge = await tx.managedEntityAccessEdge.findFirst({
-      where: {
-        chatId,
-        botId: { in: [...activeBotIds] },
-        state: ManagedEntityAccessState.GRANTED,
-        OR: [
-          { expiresAt: { gt: now } },
-          {
-            expiresAt: null,
-            checkedAt: {
-              gt: new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
+    const grantedEdge =
+      edgeEligibleBotIds.size > 0
+        ? await tx.managedEntityAccessEdge.findFirst({
+            where: {
+              chatId,
+              botId: { in: [...edgeEligibleBotIds] },
+              state: ManagedEntityAccessState.GRANTED,
+              OR: [
+                { expiresAt: { gt: now } },
+                {
+                  expiresAt: null,
+                  checkedAt: {
+                    gt: new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
+                  },
+                },
+              ],
             },
-          },
-        ],
-      },
-      select: { botId: true },
-    });
-    if (grantedEdge && activeBotIds.has(grantedEdge.botId)) {
+            select: { botId: true },
+          })
+        : null;
+    if (grantedEdge && edgeEligibleBotIds.has(grantedEdge.botId)) {
       return true;
     }
 
     return memberships.some(
       (membership) =>
-        activeBotIds.has(membership.botId) && this.membershipHasConfirmedAccess(membership, now),
+        activeBotIds.has(membership.botId) &&
+        managedEntityBotMembershipHasFreshConfirmedAccess(membership, { nowMs: now.getTime() }),
     );
   }
 
@@ -989,11 +1002,13 @@ export class ManagedEntityAccessLossService {
       if (membership?.status !== ChatBotMembershipStatus.ACTIVE) {
         return false;
       }
-      if (grantedEdge) {
+      if (grantedEdge && managedEntityBotMembershipAllowsFreshGrantedEdge(membership)) {
         return true;
       }
 
-      return this.membershipHasConfirmedAccess(membership, now);
+      return managedEntityBotMembershipHasFreshConfirmedAccess(membership, {
+        nowMs: now.getTime(),
+      });
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -1061,14 +1076,20 @@ export class ManagedEntityAccessLossService {
       const activeMembershipBotIds = collectActiveManagedEntityBotMembershipIds(memberships, {
         isRuntimeBotId: (botId) => this.isActionableRuntimeBotId(botId),
       });
+      const edgeEligibleBotIds = new Set(
+        memberships
+          .filter((membership) => managedEntityBotMembershipAllowsFreshGrantedEdge(membership))
+          .map((membership) => membership.botId)
+          .filter((botId) => activeMembershipBotIds.has(botId)),
+      );
       const grantedEdge =
-        activeMembershipBotIds.size > 0 &&
+        edgeEligibleBotIds.size > 0 &&
         typeof this.prisma.managedEntityAccessEdge?.findFirst === 'function'
           ? await this.prisma.managedEntityAccessEdge.findFirst({
               where: {
                 chatId,
                 state: ManagedEntityAccessState.GRANTED,
-                botId: { in: [...activeMembershipBotIds] },
+                botId: { in: [...edgeEligibleBotIds] },
                 OR: [
                   { expiresAt: { gt: now } },
                   {
@@ -1085,14 +1106,16 @@ export class ManagedEntityAccessLossService {
             })
           : null;
 
-      if (grantedEdge && activeMembershipBotIds.has(grantedEdge.botId)) {
+      if (grantedEdge && edgeEligibleBotIds.has(grantedEdge.botId)) {
         return true;
       }
 
       return memberships.some(
         (membership) =>
           activeMembershipBotIds.has(membership.botId) &&
-          this.membershipHasConfirmedAccess(membership, now),
+          managedEntityBotMembershipHasFreshConfirmedAccess(membership, {
+            nowMs: now.getTime(),
+          }),
       );
     } catch (error: unknown) {
       this.logger.debug(
@@ -1105,34 +1128,6 @@ export class ManagedEntityAccessLossService {
       );
       return false;
     }
-  }
-
-  private membershipHasConfirmedAccess(
-    membership: {
-      status?: ChatBotMembershipStatus | string | null;
-      permissionsSnapshot?: unknown;
-      botAccessState?: ChatBotAccessState | string | null;
-      botAccessExpiresAt?: Date | string | null;
-    },
-    now: Date,
-  ): boolean {
-    if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
-      return false;
-    }
-
-    if (
-      CONFIRMED_BOT_ACCESS_STATES.some((state) => state === membership.botAccessState) &&
-      this.isFutureDate(membership.botAccessExpiresAt, now)
-    ) {
-      return true;
-    }
-
-    const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-    return Boolean(
-      snapshot &&
-      isFreshMembershipAccessSnapshot(snapshot, { nowMs: now.getTime() }) &&
-      (snapshot.isAdmin || snapshot.isOwner),
-    );
   }
 
   private getSurvivingActionableBotIds(lostBotId: string | null): string[] | null {
@@ -1157,12 +1152,6 @@ export class ManagedEntityAccessLossService {
     return this.maxBotRegistry.getActionableBots().some((bot) => bot.id === normalizedBotId);
   }
 
-  private isFutureDate(value: Date | string | null | undefined, now: Date): boolean {
-    const timestamp =
-      value instanceof Date ? value.getTime() : typeof value === 'string' ? Date.parse(value) : NaN;
-    return Number.isFinite(timestamp) && timestamp > now.getTime();
-  }
-
   private async clearNightModeJobs(
     chatId: string,
     cleanup: ManagedEntityAccessLossCleanupResult,
@@ -1171,7 +1160,10 @@ export class ManagedEntityAccessLossService {
       return;
     }
     const reconciliation = await this.nightModeTransitionScheduler.reconcileChat(chatId);
-    cleanup.nightModeJobsCleared = !reconciliation.jobsScheduled;
+    cleanup.nightModeJobsCleared =
+      reconciliation.queueAvailable &&
+      reconciliation.scheduleEnabled === false &&
+      reconciliation.passes > 0;
   }
 
   private async cancelManagedBroadcastRuntime(

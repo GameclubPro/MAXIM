@@ -3,8 +3,14 @@ import {
   MaxActionNoExecutableRouteError,
   MaxActionRouteQuarantinedError,
 } from '../max/max-action-dispatch-error';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+} from '../prisma/prisma-client';
 import { NightModeTransitionProcessor } from './night-mode-transition.processor';
 import type { NightModeTransitionJob } from './night-mode-transition.queue';
+import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 
 describe('NightModeTransitionProcessor', () => {
   const buildJob = () =>
@@ -236,7 +242,77 @@ describe('NightModeTransitionProcessor', () => {
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
   });
 
-  it('completes an all-removed transition without entering moderation or MAX routing', async () => {
+  it('continues an expired confirmed route into execution so live preflight can refresh it', async () => {
+    const job = buildJob();
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: false }),
+    };
+    const scheduler = new NightModeTransitionSchedulerService({
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          botMemberships: [
+            {
+              botId: 'bot-1',
+              status: ChatBotMembershipStatus.ACTIVE,
+              botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+              botAccessExpiresAt: new Date('2026-05-30T19:00:00.000Z'),
+            },
+          ],
+        }),
+      },
+    } as never);
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler,
+    );
+
+    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+
+    expect(moderationExecutionService.processNightModeTransitionJob).toHaveBeenCalledWith(job.data);
+  });
+
+  it.each([
+    {
+      name: 'removed membership',
+      membership: {
+        botId: 'bot-1',
+        status: ChatBotMembershipStatus.REMOVED,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+      },
+    },
+    {
+      name: 'explicitly denied membership',
+      membership: {
+        botId: 'bot-1',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.DENIED,
+      },
+    },
+  ])('completes without execution for a $name', async ({ membership }) => {
+    const job = buildJob();
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest.fn(),
+    };
+    const scheduler = new NightModeTransitionSchedulerService({
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          botMemberships: [membership],
+        }),
+      },
+    } as never);
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler,
+    );
+
+    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+  });
+
+  it('completes a transition when no actionable membership candidate remains', async () => {
     const job = buildJob();
     const moderationExecutionService = {
       processNightModeTransitionJob: jest.fn(),

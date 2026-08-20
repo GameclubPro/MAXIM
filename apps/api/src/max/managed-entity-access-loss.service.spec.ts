@@ -611,7 +611,11 @@ describe('ManagedEntityAccessLossService', () => {
       ),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -930,7 +934,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncJob = {
       getState: jest.fn().mockResolvedValue('delayed'),
@@ -1367,7 +1375,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1465,7 +1477,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -1561,7 +1577,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -1661,7 +1681,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1763,7 +1787,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1864,7 +1892,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: true,
+        scheduleEnabled: false,
+        passes: 1,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn(),
@@ -1919,7 +1951,7 @@ describe('ManagedEntityAccessLossService', () => {
     expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
   });
 
-  it('cleans runtime work when surviving bot access proof is stale', async () => {
+  it('does not report night jobs cleared when the queue is unavailable during cleanup', async () => {
     const staleCheckedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1_000).toISOString();
     const prisma = {
       chat: {
@@ -1973,7 +2005,11 @@ describe('ManagedEntityAccessLossService', () => {
       clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const nightModeTransitionScheduler = {
-      reconcileChat: jest.fn().mockResolvedValue({ jobsScheduled: false, passes: 1 }),
+      reconcileChat: jest.fn().mockResolvedValue({
+        queueAvailable: false,
+        scheduleEnabled: null,
+        passes: 0,
+      }),
     };
     const rosterSyncQueue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -1997,7 +2033,7 @@ describe('ManagedEntityAccessLossService', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         cleanup: expect.objectContaining({
-          nightModeJobsCleared: true,
+          nightModeJobsCleared: false,
           canceledBroadcasts: 1,
           canceledBroadcastDeliveries: 2,
           canceledBroadcastOccurrences: 1,

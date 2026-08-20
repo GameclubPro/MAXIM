@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotOwnershipFoundationService } from './max-bot-ownership-foundation.service';
@@ -9,7 +10,7 @@ import { ModerationDeleteIntentAccessWakeService } from './moderation-delete-int
 
 @Global()
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, NightModeTransitionModule],
   providers: [
     MaxBotRegistryService,
     MaxBotContextService,

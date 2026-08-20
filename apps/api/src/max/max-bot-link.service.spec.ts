@@ -463,12 +463,14 @@ function createServiceFixture() {
         },
       ),
       findUnique: jest.fn(
-        async ({ where }: { where: { chatId_botId: { chatId: string; botId: string } } }) =>
-          memberships.find(
+        async ({ where }: { where: { chatId_botId: { chatId: string; botId: string } } }) => {
+          const membership = memberships.find(
             (membership) =>
               membership.chatId === where.chatId_botId.chatId &&
               membership.botId === where.chatId_botId.botId,
-          ) ?? null,
+          );
+          return membership ? structuredClone(membership) : null;
+        },
       ),
       upsert: jest.fn(
         async ({
@@ -613,6 +615,13 @@ function createServiceFixture() {
   const moderationDeleteIntentAccessWake = {
     wakeAfterCommittedProbe: jest.fn().mockResolvedValue(0),
   };
+  const nightModeTransitionScheduler = {
+    reconcileChat: jest.fn().mockResolvedValue({
+      queueAvailable: true,
+      scheduleEnabled: true,
+      passes: 1,
+    }),
+  };
 
   return {
     service: new MaxBotLinkService(
@@ -620,10 +629,12 @@ function createServiceFixture() {
       botRegistry as never,
       botContext as never,
       moderationDeleteIntentAccessWake as never,
+      nightModeTransitionScheduler as never,
     ),
     prisma,
     botContext,
     moderationDeleteIntentAccessWake,
+    nightModeTransitionScheduler,
     bots,
     chats,
     memberships,
@@ -830,6 +841,81 @@ describe('MaxBotLinkService', () => {
         }),
       }),
     );
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
+  it('reconciles night mode only after a fresh actionable access transition commits', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-night-mode-post-commit';
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, {
+        botAccessState: ChatBotAccessState.DENIED,
+        botAccessExpiresAt: null,
+        permissionsSnapshot: {
+          checkedAt: new Date('2026-05-08T09:00:00.000Z').toISOString(),
+          isAdmin: false,
+          isOwner: false,
+        },
+      }),
+    );
+    let transactionCommitted = false;
+    const runTransaction = fixture.prisma.$transaction.getMockImplementation()!;
+    fixture.prisma.$transaction.mockImplementation(async (callback) => {
+      const result = await runTransaction(callback);
+      transactionCommitted = true;
+      return result;
+    });
+    fixture.nightModeTransitionScheduler.reconcileChat.mockImplementation(async () => {
+      expect(transactionCommitted).toBe(true);
+      return {
+        queueAvailable: true,
+        scheduleEnabled: true,
+        passes: 1,
+      };
+    });
+
+    await expect(
+      fixture.service.recordBotAccessProbe({
+        chatId,
+        botId: fixture.bots[0]!.id,
+        access: { isAdmin: true, isOwner: false, permissions: ['write'] },
+        source: 'late_recovery_probe',
+        checkedAt: new Date('2026-05-09T10:05:00.000Z'),
+        allowMembershipRecovery: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith(chatId);
+  });
+
+  it('does not reconcile night mode for an ordinary refresh of already-fresh access', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-night-mode-fresh-refresh';
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, {
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-05-09T10:04:00.000Z'),
+        botAccessExpiresAt: new Date('2026-05-09T10:20:00.000Z'),
+        permissionsSnapshot: {
+          checkedAt: new Date('2026-05-09T10:04:00.000Z').toISOString(),
+          isAdmin: true,
+          isOwner: false,
+        },
+      }),
+    );
+
+    await expect(
+      fixture.service.recordBotAccessProbe({
+        chatId,
+        botId: fixture.bots[0]!.id,
+        access: { isAdmin: true, isOwner: false, permissions: ['write'] },
+        source: 'routine_refresh',
+        checkedAt: new Date('2026-05-09T10:05:00.000Z'),
+        allowMembershipRecovery: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
   it('does not let an older denied probe overwrite a newer confirmed snapshot', async () => {
@@ -1086,6 +1172,144 @@ describe('MaxBotLinkService', () => {
         botAccessSource: 'moderation_delete_intent_probe',
       }),
     );
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith(
+      'chat-access-recovery',
+    );
+  });
+
+  it('creates a missing membership and restores night mode scheduling after late recovery', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-missing-access-recovery';
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: 'Late recovery',
+      botId: null,
+      primaryBotId: null,
+      entityType: ChatEntityType.CHAT,
+      routingState: ChatRoutingState.NO_ELIGIBLE_BOT,
+      routingVersion: 0,
+    });
+
+    await expect(
+      fixture.service.recordBotAccessProbe({
+        chatId,
+        botId: fixture.bots[0]!.id,
+        access: { isAdmin: true, isOwner: false, permissions: ['write'] },
+        source: 'late_final_verify_recovery',
+        checkedAt: new Date('2026-05-09T10:05:00.000Z'),
+        allowMembershipRecovery: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(fixture.memberships).toEqual([
+      expect.objectContaining({
+        chatId,
+        botId: fixture.bots[0]!.id,
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+      }),
+    ]);
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith(chatId);
+  });
+
+  it('retries a failed post-commit night mode reconciliation without another probe', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-night-mode-reconcile-retry';
+    const warnSpy = jest
+      .spyOn((fixture.service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, {
+        botAccessState: ChatBotAccessState.DENIED,
+        botAccessExpiresAt: null,
+        permissionsSnapshot: null,
+      }),
+    );
+    const redisError = new Error('night queue unavailable');
+    fixture.nightModeTransitionScheduler.reconcileChat
+      .mockRejectedValueOnce(redisError)
+      .mockResolvedValueOnce({
+        queueAvailable: true,
+        scheduleEnabled: true,
+        passes: 1,
+      });
+    const probe = {
+      chatId,
+      botId: fixture.bots[0]!.id,
+      access: { isAdmin: true, isOwner: false, permissions: ['write'] },
+      source: 'retryable_late_recovery',
+      checkedAt: new Date('2026-05-09T10:05:00.000Z'),
+      allowMembershipRecovery: true,
+    } as const;
+
+    await expect(fixture.service.recordBotAccessProbe(probe)).resolves.toBe(true);
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledTimes(1);
+    await jest.runOnlyPendingTimersAsync();
+
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      { chatId, err: redisError.message },
+      'Failed to reconcile night mode transitions after access recovery; retry remains pending',
+    );
+  });
+
+  it('unrefs and clears the pending night mode reconciliation retry on shutdown', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'chat-night-mode-reconcile-shutdown';
+    fixture.memberships.push(
+      createActiveMembership(chatId, fixture.bots[0]!.id, 0, {
+        botAccessState: ChatBotAccessState.DENIED,
+        botAccessExpiresAt: null,
+        permissionsSnapshot: null,
+      }),
+    );
+    fixture.nightModeTransitionScheduler.reconcileChat.mockRejectedValue(
+      new Error('night queue unavailable'),
+    );
+
+    await expect(
+      fixture.service.recordBotAccessProbe({
+        chatId,
+        botId: fixture.bots[0]!.id,
+        access: { isAdmin: true, isOwner: false, permissions: ['write'] },
+        source: 'publication_preflight',
+        checkedAt: new Date('2026-05-09T10:05:00.000Z'),
+        allowMembershipRecovery: true,
+      }),
+    ).resolves.toBe(true);
+
+    const retryTimer = (fixture.service as any).nightModeReconciliationRetryTimer as NodeJS.Timeout;
+    expect(retryTimer.hasRef()).toBe(false);
+    expect(jest.getTimerCount()).toBe(1);
+
+    fixture.service.onModuleDestroy();
+    expect(jest.getTimerCount()).toBe(0);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds each autonomous night mode reconciliation retry batch', async () => {
+    const fixture = createServiceFixture();
+    const pending = (
+      fixture.service as unknown as {
+        pendingNightModeReconciliations: Set<string>;
+      }
+    ).pendingNightModeReconciliations;
+    const retry = (
+      fixture.service as unknown as {
+        retryPendingNightModeReconciliations(): Promise<void>;
+      }
+    ).retryPendingNightModeReconciliations.bind(fixture.service);
+    for (let index = 0; index < 51; index += 1) {
+      pending.add(`chat-night-mode-retry-batch-${index}`);
+    }
+
+    await retry();
+
+    expect(fixture.nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledTimes(50);
+    expect(pending).toEqual(new Set(['chat-night-mode-retry-batch-50']));
+    expect(jest.getTimerCount()).toBe(1);
+    fixture.service.onModuleDestroy();
   });
 
   it('keeps a removal that is newer than the live probe observation boundary', async () => {

@@ -1,5 +1,9 @@
 import type { Queue } from 'bullmq';
-import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+} from '../prisma/prisma-client';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import {
   buildNightModeTransitionJobId,
@@ -9,25 +13,123 @@ import {
 
 describe('NightModeTransitionSchedulerService', () => {
   it.each([
-    { name: 'all memberships are removed', counts: [2, 0], expected: false },
-    { name: 'an active membership remains', counts: [2, 1], expected: true },
-    { name: 'the chat is legacy and has no memberships', counts: [0], expected: true },
-  ])('guards transition execution when $name', async ({ counts, expected }) => {
-    const remainingCounts = [...counts];
-    const prisma = {
-      chat: {
-        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHAT }),
-      },
-      chatBotMembership: {
-        count: jest.fn(async () => remainingCounts.shift() ?? 0),
-      },
-    };
-    const service = new NightModeTransitionSchedulerService(prisma as never);
+    {
+      name: 'all memberships are removed',
+      memberships: [{ botId: 'bot-1', status: ChatBotMembershipStatus.REMOVED }],
+      actionableBotIds: ['bot-1'],
+      expected: false,
+    },
+    {
+      name: 'an actionable membership has fresh confirmed access',
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          botAccessExpiresAt: new Date(Date.now() + 60_000),
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: true,
+    },
+    {
+      name: 'an actionable confirmed membership has expired evidence for live refresh',
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          botAccessExpiresAt: new Date(Date.now() - 1),
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: true,
+    },
+    {
+      name: 'only a dormant bot has active membership',
+      memberships: [
+        {
+          botId: 'bot-dormant',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_OWNER,
+          botAccessExpiresAt: new Date(Date.now() + 60_000),
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: false,
+    },
+    {
+      name: 'an actionable unknown membership can reach live refresh',
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.UNKNOWN,
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: true,
+    },
+    {
+      name: 'an actionable stale membership can reach live refresh',
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.STALE,
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: true,
+    },
+    ...[
+      ChatBotAccessState.CONFIRMED_MEMBER,
+      ChatBotAccessState.DENIED,
+      ChatBotAccessState.LOST,
+    ].map((botAccessState) => ({
+      name: `an actionable membership is explicitly ${botAccessState}`,
+      memberships: [
+        {
+          botId: 'bot-1',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState,
+        },
+      ],
+      actionableBotIds: ['bot-1'],
+      expected: false,
+    })),
+    {
+      name: 'the chat is legacy and has no memberships',
+      memberships: [],
+      actionableBotIds: [],
+      expected: true,
+    },
+  ])(
+    'guards transition execution when $name',
+    async ({ memberships, actionableBotIds, expected }) => {
+      const prisma = {
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({
+            entityType: ChatEntityType.CHAT,
+            botMemberships: memberships,
+          }),
+        },
+      };
+      const maxBotRegistry = {
+        getActionableBots: jest.fn().mockReturnValue(actionableBotIds.map((id) => ({ id }))),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        undefined,
+        undefined,
+        maxBotRegistry as never,
+      );
 
-    await expect(service.shouldProcessChatTransitions('chat-1')).resolves.toBe(expected);
+      await expect(service.shouldProcessChatTransitions('chat-1')).resolves.toBe(expected);
 
-    expect(prisma.chatBotMembership.count).toHaveBeenCalledTimes(counts.length);
-  });
+      expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('bootstraps only chats with active bot membership or legacy chats without memberships', async () => {
     const prisma = {
@@ -56,6 +158,14 @@ describe('NightModeTransitionSchedulerService', () => {
                 botMemberships: {
                   some: {
                     status: ChatBotMembershipStatus.ACTIVE,
+                    botAccessState: {
+                      in: [
+                        ChatBotAccessState.UNKNOWN,
+                        ChatBotAccessState.STALE,
+                        ChatBotAccessState.CONFIRMED_ADMIN,
+                        ChatBotAccessState.CONFIRMED_OWNER,
+                      ],
+                    },
                   },
                 },
               },
@@ -72,13 +182,89 @@ describe('NightModeTransitionSchedulerService', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
+  it('does not bootstrap a schedule backed only by a non-actionable bot', async () => {
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-dormant',
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 23 * 60,
+            nightModeEndTimeMinutes: 8 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+          },
+        ]),
+      },
+      chat: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'chat-dormant',
+            entityType: ChatEntityType.CHAT,
+            botMemberships: [
+              {
+                botId: 'bot-dormant',
+                status: ChatBotMembershipStatus.ACTIVE,
+                botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+                botAccessExpiresAt: new Date(Date.now() + 60_000),
+              },
+            ],
+            accessEdges: [],
+          },
+        ]),
+      },
+    };
+    const queue = {
+      add: jest.fn(),
+    };
+    const maxBotRegistry = {
+      getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-actionable' }]),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    await service.bootstrapEnabledChats();
+
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(prisma.chatSettings.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chat: expect.objectContaining({
+            OR: expect.arrayContaining([
+              expect.objectContaining({
+                botMemberships: {
+                  some: {
+                    status: ChatBotMembershipStatus.ACTIVE,
+                    botAccessState: {
+                      in: [
+                        ChatBotAccessState.UNKNOWN,
+                        ChatBotAccessState.STALE,
+                        ChatBotAccessState.CONFIRMED_ADMIN,
+                        ChatBotAccessState.CONFIRMED_OWNER,
+                      ],
+                    },
+                    botId: { in: ['bot-actionable'] },
+                  },
+                },
+              }),
+            ]),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('does not enqueue reconciled settings for chats without active bot membership', async () => {
     const prisma = {
       chat: {
-        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHAT }),
-      },
-      chatBotMembership: {
-        count: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(0),
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          botMemberships: [{ botId: 'bot-1', status: ChatBotMembershipStatus.REMOVED }],
+          accessEdges: [],
+        }),
       },
     };
     const queue = {
@@ -97,33 +283,20 @@ describe('NightModeTransitionSchedulerService', () => {
       nightModeTimezone: 'Europe/Moscow',
     });
 
-    expect(prisma.chat.findUnique).toHaveBeenCalledWith({
-      where: { id: 'chat-removed' },
-      select: {
-        entityType: true,
-      },
-    });
-    expect(prisma.chatBotMembership.count).toHaveBeenNthCalledWith(1, {
-      where: {
-        chatId: 'chat-removed',
-      },
-    });
-    expect(prisma.chatBotMembership.count).toHaveBeenNthCalledWith(2, {
-      where: {
-        chatId: 'chat-removed',
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-    });
+    expect(prisma.chat.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'chat-removed' } }),
+    );
     expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('does not enqueue reconciled settings for channels', async () => {
     const prisma = {
       chat: {
-        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
-      },
-      chatBotMembership: {
-        count: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHANNEL,
+          botMemberships: [],
+          accessEdges: [],
+        }),
       },
     };
     const queue = {
@@ -142,13 +315,9 @@ describe('NightModeTransitionSchedulerService', () => {
       nightModeTimezone: 'Europe/Moscow',
     });
 
-    expect(prisma.chat.findUnique).toHaveBeenCalledWith({
-      where: { id: 'channel-1' },
-      select: {
-        entityType: true,
-      },
-    });
-    expect(prisma.chatBotMembership.count).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'channel-1' } }),
+    );
     expect(queue.add).not.toHaveBeenCalled();
   });
 
@@ -323,7 +492,7 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('requeues a legacy failed current open job after a known pre-send delete rejection', async () => {
+  it('requeues a legacy failed current open job when it vanishes during catch-up removal', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     try {
       const jobId = buildNightModeTransitionJobId(
@@ -337,7 +506,7 @@ describe('NightModeTransitionSchedulerService', () => {
         failedReason: 'user.not.admin',
         data: {},
         getState: jest.fn().mockResolvedValue('failed'),
-        remove: jest.fn().mockResolvedValue(undefined),
+        remove: jest.fn().mockRejectedValue(new Error(`Missing key for job ${jobId}. removeJob`)),
       };
       const prisma = {
         chatSettings: {
@@ -700,6 +869,7 @@ describe('NightModeTransitionSchedulerService', () => {
       const removedSnapshot = {
         entityType: ChatEntityType.CHAT,
         settings,
+        accessEdges: [],
         botMemberships: [
           {
             botId: 'bot-1',
@@ -713,10 +883,14 @@ describe('NightModeTransitionSchedulerService', () => {
       const activeSnapshot = {
         entityType: ChatEntityType.CHAT,
         settings,
+        accessEdges: [],
         botMemberships: [
           {
             botId: 'bot-1',
             status: ChatBotMembershipStatus.ACTIVE,
+            botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+            botAccessExpiresAt: new Date('2026-05-30T21:00:00.000Z'),
+            permissionsSnapshot: null,
             lifecycleEventAt: new Date('2026-05-30T20:00:01.000Z'),
             lifecycleEventType: 'bot_added',
             lifecycleSource: 'webhook',
@@ -750,7 +924,8 @@ describe('NightModeTransitionSchedulerService', () => {
       );
 
       await expect(service.reconcileChat('chat-1')).resolves.toEqual({
-        jobsScheduled: true,
+        queueAvailable: true,
+        scheduleEnabled: true,
         passes: 2,
       });
 
@@ -767,8 +942,187 @@ describe('NightModeTransitionSchedulerService', () => {
     }
   });
 
-  it('propagates a queued-job removal failure from strict reconciliation', async () => {
-    const removeError = new Error('redis remove failed');
+  it('does not repeat reconciliation when fresh access evidence refreshes without changing access', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:40:00.000Z'));
+    try {
+      const settings = {
+        chatId: 'chat-1',
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 8 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const buildSnapshot = (checkedAt: string, expiresAt: string) => ({
+        entityType: ChatEntityType.CHAT,
+        settings,
+        accessEdges: [],
+        botMemberships: [
+          {
+            botId: 'bot-1',
+            status: ChatBotMembershipStatus.ACTIVE,
+            botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+            botAccessExpiresAt: new Date(expiresAt),
+            permissionsSnapshot: {
+              checkedAt,
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['write'],
+            },
+          },
+        ],
+      });
+      const prisma = {
+        chat: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(
+              buildSnapshot('2026-05-30T20:35:00.000Z', '2026-05-30T20:39:00.000Z'),
+            )
+            .mockResolvedValue(
+              buildSnapshot('2026-05-30T20:39:00.000Z', '2026-05-30T21:04:00.000Z'),
+            ),
+        },
+      };
+      const queue = {
+        getJobs: jest.fn().mockResolvedValue([]),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as unknown as Queue<NightModeTransitionJob>,
+      );
+
+      await expect(service.reconcileChat('chat-1')).resolves.toEqual({
+        queueAvailable: true,
+        scheduleEnabled: true,
+        passes: 1,
+      });
+
+      expect(queue.getJobs).toHaveBeenCalledTimes(1);
+      expect(queue.add).toHaveBeenCalledTimes(3);
+      expect(prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('reports an unavailable queue without claiming that jobs were cleared', async () => {
+    const service = new NightModeTransitionSchedulerService({} as never);
+
+    await expect(service.reconcileChat('chat-1')).resolves.toEqual({
+      queueAvailable: false,
+      scheduleEnabled: null,
+      passes: 0,
+    });
+  });
+
+  it('reports an enabled zero-occurrence schedule', async () => {
+    const settings = {
+      chatId: 'chat-1',
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 8 * 60,
+      nightModeEndTimeMinutes: 8 * 60,
+      nightModeTimezone: 'Europe/Moscow',
+    };
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          settings,
+          botMemberships: [],
+          accessEdges: [],
+        }),
+      },
+    };
+    const queue = {
+      getJobs: jest.fn().mockResolvedValue([]),
+      add: jest.fn(),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+    );
+
+    await expect(service.reconcileChat('chat-1')).resolves.toEqual({
+      queueAvailable: true,
+      scheduleEnabled: true,
+      passes: 1,
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('skips a job that vanishes while BullMQ materializes getJobs results', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          settings: null,
+          botMemberships: [{ botId: 'bot-1', status: ChatBotMembershipStatus.REMOVED }],
+          accessEdges: [],
+        }),
+      },
+    };
+    const queue = {
+      getJobs: jest.fn().mockResolvedValue([undefined]),
+      add: jest.fn(),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+    );
+
+    await expect(service.reconcileChat('chat-1')).resolves.toEqual({
+      queueAvailable: true,
+      scheduleEnabled: false,
+      passes: 1,
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('treats BullMQ missing-key removal as an already vanished job', async () => {
+    const snapshot = {
+      entityType: ChatEntityType.CHAT,
+      settings: null,
+      botMemberships: [{ botId: 'bot-1', status: ChatBotMembershipStatus.REMOVED }],
+    };
+    const jobId = buildNightModeTransitionJobId(
+      'chat-1',
+      'close',
+      '2026-05-30T20:00:00.000Z',
+      'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+    );
+    const vanishedJob = {
+      id: jobId,
+      remove: jest.fn().mockRejectedValue(new Error(`Missing key for job ${jobId}. removeJob`)),
+    };
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue(snapshot),
+      },
+    };
+    const queue = {
+      getJobs: jest.fn().mockResolvedValue([vanishedJob]),
+      add: jest.fn(),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+    );
+
+    await expect(service.reconcileChat('chat-1')).resolves.toEqual({
+      queueAvailable: true,
+      scheduleEnabled: false,
+      passes: 1,
+    });
+
+    expect(vanishedJob.remove).toHaveBeenCalledTimes(1);
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('propagates an active-lock removal race from strict reconciliation', async () => {
+    const removeError = new Error(
+      'Job could not be removed because it is locked by another worker',
+    );
     const settings = {
       chatId: 'chat-1',
       nightModeEnabled: true,
@@ -781,6 +1135,7 @@ describe('NightModeTransitionSchedulerService', () => {
         findUnique: jest.fn().mockResolvedValue({
           entityType: ChatEntityType.CHAT,
           settings,
+          accessEdges: [],
           botMemberships: [
             {
               botId: 'bot-1',
