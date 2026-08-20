@@ -231,6 +231,10 @@ import { createAdminChannelDialogMappingRuntimeContext } from './admin-channel-d
 import { AdminChannelSuggestionImageRuntime } from './admin-channel-suggestion-image-runtime';
 import { createAdminChannelSuggestionImageRuntimeContext } from './admin-channel-suggestion-image-runtime-context';
 import {
+  resolveChannelSuggestionMediaPublicationBotId,
+  type ChannelSuggestionPublicationBotAssignment,
+} from './admin-channel-suggestion-media-route';
+import {
   resolveChannelSuggestionActorDisplayName as resolveChannelSuggestionActorDisplayNameValue,
   resolveChannelSuggestionAuthorAttribution as resolveChannelSuggestionAuthorAttributionValue,
 } from './admin-channel-suggestion-author';
@@ -7218,11 +7222,33 @@ export class AdminService implements OnModuleDestroy {
     let published: Awaited<ReturnType<typeof this.publishStoredChannelSuggestion>>;
     try {
       if (action === 'publish') {
-        const resolvedBotId = await this.resolveChannelSuggestionPublicationBotId(row.chatId);
+        const publicationAssignment = await this.resolveChannelSuggestionPublicationBotAssignment(
+          row.chatId,
+        );
         const images = await this.channelSuggestionImageRuntime.loadStoredImages(
           row.id,
           canonicalPayload,
         );
+        const resolvedBotId = await resolveChannelSuggestionMediaPublicationBotId({
+          payload: canonicalPayload,
+          images,
+          assignment: publicationAssignment,
+          loadSentDeliveryBotIds: async () =>
+            (
+              await this.prisma.channelSuggestionAdminDelivery.findMany({
+                where: {
+                  auditLogId: row.id,
+                  status: PrismaChannelSuggestionAdminDeliveryStatus.SENT,
+                },
+                select: { botId: true },
+              })
+            ).map(({ botId }) => botId),
+          onUnavailable: (reason) =>
+            this.logger.warn(
+              { suggestionId: row.id, chatId: row.chatId, reason },
+              'Channel suggestion media token route is unverified',
+            ),
+        });
         published = await this.publishStoredChannelSuggestion(
           row.chatId,
           row.actorUserId,
@@ -20782,13 +20808,12 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async resolveDeliveryBotAssignmentRouteAware(chatId: string): Promise<{
-    botId: string | undefined;
-    routeResolved: boolean;
-  }> {
+  private async resolveDeliveryBotAssignmentRouteAware(
+    chatId: string,
+  ): Promise<ChannelSuggestionPublicationBotAssignment> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
-      return { botId: undefined, routeResolved: false };
+      return { botId: undefined, routeResolved: false, candidateBotIds: [] };
     }
 
     const route = await this.resolveUnifiedBotRoute({
@@ -20796,23 +20821,36 @@ export class AdminService implements OnModuleDestroy {
       chatId: normalizedChatId,
     });
     if (route) {
-      return { botId: route.botId ?? undefined, routeResolved: true };
+      const candidateBotIds = Array.from(
+        new Set(
+          [route.botId, ...(route.candidateBotIds ?? [])]
+            .map((botId) => this.readTrimmedString(botId))
+            .filter((botId): botId is string => Boolean(botId)),
+        ),
+      );
+      return {
+        botId: this.readTrimmedString(route.botId) ?? undefined,
+        routeResolved: true,
+        candidateBotIds,
+      };
     }
-
     const sendBotId = await this.maxBotLinkService?.resolveBotIdForSend?.({
       chatId: normalizedChatId,
     });
     if (sendBotId) {
-      return { botId: sendBotId, routeResolved: false };
+      return { botId: sendBotId, routeResolved: false, candidateBotIds: [sendBotId] };
     }
 
     const persisted = await this.prisma.chat.findUnique({
       where: { id: normalizedChatId },
       select: { primaryBotId: true, botId: true },
     });
+    const persistedBotId =
+      this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId) ?? undefined;
     return {
-      botId: this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId) ?? undefined,
+      botId: persistedBotId,
       routeResolved: false,
+      candidateBotIds: persistedBotId ? [persistedBotId] : [],
     };
   }
 
@@ -20820,16 +20858,16 @@ export class AdminService implements OnModuleDestroy {
     return (await this.resolveDeliveryBotAssignmentRouteAware(chatId)).botId;
   }
 
-  private async resolveChannelSuggestionPublicationBotId(
+  private async resolveChannelSuggestionPublicationBotAssignment(
     chatId: string,
-  ): Promise<string | undefined> {
+  ): Promise<ChannelSuggestionPublicationBotAssignment> {
     const assignment = await this.resolveDeliveryBotAssignmentRouteAware(chatId);
     if (assignment.routeResolved && !assignment.botId) {
       throw new ForbiddenException(
         'Не найден бот MAX с подтвержденным правом публиковать сообщения в этом канале.',
       );
     }
-    return assignment.botId;
+    return assignment;
   }
 
   private async resolveSendActionBotAssignment(

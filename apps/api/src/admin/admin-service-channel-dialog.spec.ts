@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { channelSettingsSchema } from '@maxim/contracts';
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { resolveChannelSuggestionMediaPublicationBotId } from './admin-channel-suggestion-media-route';
 import { AdminService } from './admin.service';
 import {
   AdminServicePrivateAccess,
@@ -4727,10 +4728,321 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     await expect(
-      (service as any).resolveChannelSuggestionPublicationBotId('channel-1'),
-    ).resolves.toBe('legacy-channel-bot');
+      (service as any).resolveChannelSuggestionPublicationBotAssignment('channel-1'),
+    ).resolves.toEqual({
+      botId: 'legacy-channel-bot',
+      routeResolved: false,
+      candidateBotIds: ['legacy-channel-bot'],
+    });
     expect(resolveBotIdForSend).toHaveBeenCalledWith({ chatId: 'channel-1' });
     expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+  });
+
+  describe('reviewed suggestion media token routing', () => {
+    const reviewer = {
+      userId: 'admin-1',
+      username: 'chief',
+      displayName: 'Главный редактор',
+      chatTitle: null,
+    };
+
+    async function seedDeliveryRows(
+      prisma: ReturnType<typeof createPrismaMock>,
+      rows: Array<{
+        adminUserId: string;
+        botId: string | null;
+        status: 'SENT' | 'FAILED' | 'AMBIGUOUS';
+      }>,
+      suggestionId = 'suggestion-media-route-1',
+    ): Promise<void> {
+      await prisma.channelSuggestionAdminDelivery.createMany({
+        data: rows.map((row, index) => ({
+          auditLogId: suggestionId,
+          adminUserId: row.adminUserId,
+          botKey: row.botId ?? `default-${index}`,
+          botId: row.botId,
+          status: row.status,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    it('deduplicates repeated SENT bot evidence and selects that current route candidate', async () => {
+      const loadSentDeliveryBotIds = jest.fn().mockResolvedValue(['media-bot', 'media-bot']);
+
+      await expect(
+        resolveChannelSuggestionMediaPublicationBotId({
+          payload: { mediaPayload: { token: 'video-token-1' } },
+          images: [],
+          assignment: {
+            botId: 'primary-bot',
+            routeResolved: true,
+            candidateBotIds: ['primary-bot', 'media-bot'],
+          },
+          loadSentDeliveryBotIds,
+        }),
+      ).resolves.toBe('media-bot');
+      expect(loadSentDeliveryBotIds).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses token evidence from relation-backed images', async () => {
+      await expect(
+        resolveChannelSuggestionMediaPublicationBotId({
+          payload: {},
+          images: [{ payload: { token: 'relation-image-token-1' } }],
+          assignment: {
+            botId: 'primary-bot',
+            routeResolved: true,
+            candidateBotIds: ['primary-bot', 'relation-media-bot'],
+          },
+          loadSentDeliveryBotIds: async () => ['relation-media-bot'],
+        }),
+      ).resolves.toBe('relation-media-bot');
+    });
+
+    it.each([
+      {
+        name: 'only null delivery evidence',
+        deliveryBotIds: [null],
+        candidates: ['primary-bot'],
+      },
+      {
+        name: 'multiple distinct SENT bots',
+        deliveryBotIds: ['media-bot-1', 'media-bot-2'],
+        candidates: ['primary-bot', 'media-bot-1', 'media-bot-2'],
+      },
+      {
+        name: 'a SENT bot excluded from the executable route',
+        deliveryBotIds: ['quarantined-bot'],
+        candidates: ['primary-bot'],
+      },
+    ])('fails closed for $name', async ({ deliveryBotIds, candidates }) => {
+      await expect(
+        resolveChannelSuggestionMediaPublicationBotId({
+          payload: { mediaPayload: { token: 'video-token-1' } },
+          images: [],
+          assignment: {
+            botId: 'primary-bot',
+            routeResolved: true,
+            candidateBotIds: candidates,
+          },
+          loadSentDeliveryBotIds: async () => deliveryBotIds,
+        }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it('fails token media closed without a modern route resolver', async () => {
+      const loadSentDeliveryBotIds = jest.fn();
+
+      await expect(
+        resolveChannelSuggestionMediaPublicationBotId({
+          payload: { mediaPayload: { token: 'video-token-1' } },
+          images: [],
+          assignment: {
+            botId: 'legacy-bot',
+            routeResolved: false,
+            candidateBotIds: ['legacy-bot'],
+          },
+          loadSentDeliveryBotIds,
+        }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(loadSentDeliveryBotIds).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: 'text-only content',
+        payload: { text: 'Обычная предложка' },
+        images: [],
+      },
+      {
+        name: 'base64 image content',
+        payload: { text: 'Фото' },
+        images: [{ base64: 'aW1hZ2U=', mimeType: 'image/jpeg', fileName: 'photo.jpg' }],
+      },
+    ])('keeps the ordinary route for $name', async ({ payload, images }) => {
+      const loadSentDeliveryBotIds = jest.fn();
+
+      await expect(
+        resolveChannelSuggestionMediaPublicationBotId({
+          payload,
+          images,
+          assignment: {
+            botId: 'legacy-or-primary-bot',
+            routeResolved: false,
+            candidateBotIds: ['legacy-or-primary-bot'],
+          },
+          loadSentDeliveryBotIds,
+        }),
+      ).resolves.toBe('legacy-or-primary-bot');
+      expect(loadSentDeliveryBotIds).not.toHaveBeenCalled();
+    });
+
+    async function createTokenReviewHarness(candidateBotIds: string[], deliveryBotId: string) {
+      const prisma = createPrismaMock();
+      prisma.chat.findUnique.mockResolvedValue({
+        id: 'channel-1',
+        title: 'Новости MAX',
+        entityType: 'CHANNEL',
+      });
+      prisma.channelSettings.findUnique.mockResolvedValue(
+        channelSettingsSchema.parse({
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
+        }),
+      );
+      prisma.auditLog.findFirst.mockResolvedValue({
+        id: 'suggestion-media-route-1',
+        chatId: 'channel-1',
+        actorUserId: 'user-1',
+        payload: {
+          type: 'suggest',
+          actorUserId: 'user-1',
+          authorDisplayName: 'Пользователь',
+          text: 'Видео для канала',
+          mediaType: 'video',
+          mediaPayload: { token: 'video-token-1' },
+          mediaMimeType: 'video/mp4',
+          reviewStatus: 'pending',
+        },
+      });
+      await seedDeliveryRows(prisma, [
+        { adminUserId: 'admin-1', botId: deliveryBotId, status: 'SENT' },
+      ]);
+      const getChatMemberProfiles = jest.fn().mockResolvedValue(new Map());
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getChatMemberProfiles,
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          participantsCount: 1200,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/channels/news-max',
+          lastEventAt: '2026-03-10T12:00:00.000Z',
+          entityType: 'channel',
+        }),
+        sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+          messageId: 'mid-media-route-post-1',
+          url: 'https://max.ru/chats/channel-1/message/media-route-1',
+        }),
+        editMessageInlineKeyboard: jest.fn(),
+      };
+      const resolveBotRoute = jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: candidateBotIds[0] ?? null,
+        botId: candidateBotIds[0] ?? null,
+        candidateBotIds,
+        reason: candidateBotIds.length > 0 ? 'primary_confirmed' : null,
+      });
+      const maxBotLinkService = createAdminMaxBotLinkMock({
+        resolveBotRoute,
+      });
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+      );
+
+      return {
+        getChatMemberProfiles,
+        maxBotLinkService,
+        maxClient,
+        prisma,
+        resolveBotRoute,
+        service,
+      };
+    }
+
+    it('uses the proven media bot for attribution, buttons, publication, and audit', async () => {
+      const {
+        getChatMemberProfiles,
+        maxBotLinkService,
+        maxClient,
+        prisma,
+        resolveBotRoute,
+        service,
+      } = await createTokenReviewHarness(['primary-bot', 'media-bot'], 'media-bot');
+
+      await expect(
+        service.reviewChannelSuggestionByAdmin('suggestion-media-route-1', reviewer, 'publish'),
+      ).resolves.toMatchObject({
+        status: 'reviewed',
+        reviewStatus: 'published',
+      });
+
+      expect(
+        resolveBotRoute.mock.calls.filter(([request]) => request.purpose === 'send_message'),
+      ).toHaveLength(1);
+      expect(prisma.channelSuggestionAdminDelivery.findMany).toHaveBeenCalledWith({
+        where: {
+          auditLogId: 'suggestion-media-route-1',
+          status: 'SENT',
+        },
+        select: { botId: true },
+      });
+      expect(getChatMemberProfiles).toHaveBeenCalledWith(
+        'channel-1',
+        ['user-1'],
+        expect.objectContaining({ botId: 'media-bot' }),
+      );
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'channel-1',
+        expect.stringContaining('Видео для канала'),
+        expect.objectContaining({
+          attachments: [{ type: 'video', payload: { token: 'video-token-1' } }],
+        }),
+        expect.objectContaining({ botId: 'media-bot' }),
+      );
+      expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+        expect.any(String),
+        'media-bot',
+      );
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+            payload: expect.objectContaining({ botId: 'media-bot' }),
+          }),
+        }),
+      );
+    });
+
+    it('releases the review claim before media preparation when the proven bot is not routable', async () => {
+      const { maxClient, prisma, resolveBotRoute, service } = await createTokenReviewHarness(
+        ['primary-bot'],
+        'media-bot',
+      );
+      const loadStoredImages = jest.spyOn(
+        (service as any).channelSuggestionImageRuntime,
+        'loadStoredImages',
+      );
+      const resolveAttachments = jest.spyOn(service as any, 'resolveChannelSuggestionAttachments');
+
+      await expect(
+        service.reviewChannelSuggestionByAdmin('suggestion-media-route-1', reviewer, 'publish'),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+      expect(
+        resolveBotRoute.mock.calls.filter(([request]) => request.purpose === 'send_message'),
+      ).toHaveLength(1);
+      expect(loadStoredImages).toHaveBeenCalledTimes(1);
+      expect(resolveAttachments).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+      expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
+        "'reviewClaimReleasedAt',",
+      );
+      expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
+    });
   });
 
   describe('reviewed suggestion author attribution', () => {
@@ -4820,8 +5132,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         createConfigMock() as never,
       );
       jest
-        .spyOn(service as any, 'resolveChannelSuggestionPublicationBotId')
-        .mockResolvedValue('channel-bot-author');
+        .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
+        .mockResolvedValue({
+          botId: 'channel-bot-author',
+          routeResolved: true,
+          candidateBotIds: ['channel-bot-author'],
+        });
       jest
         .spyOn(service as any, 'resolveDeliveryBotAssignment')
         .mockResolvedValue('channel-bot-author');
@@ -5011,6 +5327,18 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           username: 'anna',
           profileUrl: 'https://max.ru/anna-profile',
         },
+      });
+      await prisma.channelSuggestionAdminDelivery.createMany({
+        data: [
+          {
+            auditLogId: 'suggestion-author-review-1',
+            adminUserId: 'admin-1',
+            botKey: 'channel-bot-author',
+            botId: 'channel-bot-author',
+            status: 'SENT',
+          },
+        ],
+        skipDuplicates: true,
       });
       prisma.channelSuggestionImageAsset.findMany.mockResolvedValue([
         {
@@ -5517,8 +5845,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       createConfigMock() as never,
     );
     jest
-      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotId')
-      .mockResolvedValue('channel-bot-2');
+      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
+      .mockResolvedValue({
+        botId: 'channel-bot-2',
+        routeResolved: true,
+        candidateBotIds: ['channel-bot-2'],
+      });
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-rich-1',
@@ -5643,8 +5975,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       createConfigMock() as never,
     );
     jest
-      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotId')
-      .mockResolvedValue('channel-bot-2');
+      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
+      .mockResolvedValue({
+        botId: 'channel-bot-2',
+        routeResolved: true,
+        candidateBotIds: ['channel-bot-2'],
+      });
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-photo-1',
@@ -5804,6 +6140,25 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
+      .mockResolvedValue({
+        botId: 'channel-bot-2',
+        routeResolved: true,
+        candidateBotIds: ['channel-bot-2'],
+      });
+    await prisma.channelSuggestionAdminDelivery.createMany({
+      data: [
+        {
+          auditLogId: 'suggestion-review-multi-photo-1',
+          adminUserId: 'admin-1',
+          botKey: 'channel-bot-2',
+          botId: 'channel-bot-2',
+          status: 'SENT',
+        },
+      ],
+      skipDuplicates: true,
+    });
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-multi-photo-1',
@@ -5954,6 +6309,25 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
+      .mockResolvedValue({
+        botId: 'channel-bot-2',
+        routeResolved: true,
+        candidateBotIds: ['channel-bot-2'],
+      });
+    await prisma.channelSuggestionAdminDelivery.createMany({
+      data: [
+        {
+          auditLogId: 'suggestion-review-video-1',
+          adminUserId: 'admin-1',
+          botKey: 'channel-bot-2',
+          botId: 'channel-bot-2',
+          status: 'SENT',
+        },
+      ],
+      skipDuplicates: true,
+    });
     const sleepSpy = jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
 
     const result = await service.reviewChannelSuggestionByAdmin(
