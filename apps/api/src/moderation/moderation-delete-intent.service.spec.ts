@@ -39,10 +39,22 @@ type ServiceInternals = {
     intent: Record<string, unknown>,
     heartbeat: { renew: () => Promise<boolean>; stop: () => void },
   ): Promise<unknown>;
+  finishRetryableAttempt(
+    intent: Record<string, unknown>,
+    leaseToken: string,
+    details: {
+      status: string;
+      statusCode: number | null;
+      errorCode: string;
+      message: string;
+      retryDelayMs: number | null;
+    },
+  ): Promise<{ status: string }>;
   recordCandidateFailure(
     intentId: string,
     leaseToken: string,
     botId: string,
+    attemptCount: number,
     details: {
       status: string;
       statusCode: number | null;
@@ -572,6 +584,7 @@ describe('ModerationDeleteIntentService', () => {
       'intent-1',
       'lease-1',
       'bot-1',
+      6,
       {
         status: 'WAITING_CAPABILITY',
         statusCode: null,
@@ -590,6 +603,69 @@ describe('ModerationDeleteIntentService', () => {
     expect(query?.values?.[0]).toBe('bot-1');
     expect(query?.values?.[3]).toBe('missing_chat_delete_permission');
     expect(query?.values?.[4]).toBeNull();
+    expect(
+      Date.parse(String(query?.values?.[2])) - Date.parse(String(query?.values?.[1])),
+    ).toBeGreaterThan(30_000);
+  });
+
+  it('backs capability retries off adaptively up to the shared retry cap', () => {
+    const random = jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    const { service } = createService();
+
+    const result = (service as unknown as ServiceInternals).classifyDeleteError(
+      { response: { status: 404, data: { code: 'message.not.found' } } },
+      7,
+    );
+
+    expect(result.status).toBe('WAITING_CAPABILITY');
+    expect(result.retryDelayMs).toBe(300_000);
+    random.mockRestore();
+  });
+
+  it('keeps a capability wait wakeable until its absolute retry deadline', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T12:00:00.000Z'));
+    const retryUntilAt = new Date('2026-08-20T12:01:00.000Z');
+    const intent = {
+      ...baseIntent,
+      nextAttemptAt: new Date('2026-08-20T11:59:59.000Z'),
+      retryUntilAt,
+      attemptCount: 7,
+    };
+    const persisted = {
+      ...intent,
+      status: 'WAITING_CAPABILITY',
+      nextAttemptAt: retryUntilAt,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const queryRaw = jest.fn().mockResolvedValue([persisted]);
+    const { service, queue } = createService(
+      {},
+      { $executeRaw: executeRaw, $queryRaw: queryRaw },
+    );
+
+    await expect(
+      (service as unknown as ServiceInternals).finishRetryableAttempt(intent, 'lease-1', {
+        status: 'WAITING_CAPABILITY',
+        statusCode: null,
+        errorCode: 'no_delete_capable_bot',
+        message: 'No fresh delete-capable bot',
+        retryDelayMs: 300_000,
+      }),
+    ).resolves.toMatchObject({ status: 'WAITING_CAPABILITY' });
+
+    const query = executeRaw.mock.calls[0]?.[0] as
+      | { strings?: readonly string[]; values?: readonly unknown[] }
+      | undefined;
+    const sql = query?.strings?.join('?') ?? '';
+    expect(sql).toContain('"next_attempt_at" = CASE');
+    expect(sql).toContain('WHEN "next_attempt_at" > "last_attempt_at"');
+    expect(sql).toContain('ELSE LEAST(?, "retry_until_at")');
+    expect(query?.values).toContain('WAITING_CAPABILITY');
+    expect(query?.values).not.toContain('EXPIRED');
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('classifies an outbound timeout as ambiguous', () => {
@@ -702,6 +778,97 @@ describe('ModerationDeleteIntentService', () => {
     expect(normalized.retryUntilAt.getTime()).toBeGreaterThanOrEqual(
       normalized.executeAt.getTime(),
     );
+  });
+
+  it('keeps the full schedule unchanged when the same reason key is replayed', async () => {
+    const originalExecuteAt = new Date(Date.now() + 120_000);
+    const originalNextAttemptAt = new Date(Date.now() + 180_000);
+    const originalRetryUntilAt = new Date(Date.now() + 600_000);
+    const persisted = {
+      ...baseIntent,
+      id: 'existing-intent',
+      status: 'WAITING_CAPABILITY' as const,
+      executeAt: originalExecuteAt,
+      nextAttemptAt: originalNextAttemptAt,
+      retryUntilAt: originalRetryUntilAt,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(0);
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({ $queryRaw: txQueryRaw, $executeRaw: txExecuteRaw }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await service.ensureIntent({
+      chatId: persisted.chatId,
+      messageId: persisted.messageId,
+      reasonKey: 'STOP_WORD:same-reason',
+      ruleCode: 'STOP_WORD_DELETE',
+      executeAt: new Date(Date.now() - 1_000),
+      retryUntilAt: new Date(Date.now() + 3_600_000),
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_only',
+    });
+
+    expect(persisted.executeAt).toBe(originalExecuteAt);
+    expect(persisted.nextAttemptAt).toBe(originalNextAttemptAt);
+    expect(persisted.retryUntilAt).toBe(originalRetryUntilAt);
+    expect(queue.add).not.toHaveBeenCalled();
+    const upsertSql = txQueryRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(upsertSql).toMatch(
+      /"execute_at" = CASE[\s\S]*?ELSE "moderation_delete_intents"\."execute_at"/u,
+    );
+    expect(upsertSql).toMatch(
+      /"next_attempt_at" = CASE[\s\S]*?ELSE "moderation_delete_intents"\."next_attempt_at"/u,
+    );
+    const reasonSql = txExecuteRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(reasonSql).toContain('WITH changed_reason AS');
+    expect(reasonSql).toContain('AND EXISTS (SELECT 1 FROM changed_reason)');
+  });
+
+  it('wakes and extends an existing intent only when a new reason is committed', async () => {
+    const incomingExecuteAt = new Date(Date.now() - 1_000);
+    const incomingRetryUntilAt = new Date(Date.now() + 3_600_000);
+    const persisted = {
+      ...baseIntent,
+      id: 'existing-intent',
+      status: 'WAITING_CAPABILITY' as const,
+      executeAt: new Date(Date.now() + 120_000),
+      nextAttemptAt: new Date(Date.now() + 180_000),
+      retryUntilAt: new Date(Date.now() + 600_000),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
+    const transaction = jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({ $queryRaw: txQueryRaw, $executeRaw: txExecuteRaw }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await service.ensureIntent({
+      chatId: persisted.chatId,
+      messageId: persisted.messageId,
+      reasonKey: 'STOP_WORD:new-reason',
+      ruleCode: 'STOP_WORD_DELETE',
+      executeAt: incomingExecuteAt,
+      retryUntilAt: incomingRetryUntilAt,
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      originBotId: 'bot-1',
+      routingPolicy: 'origin_only',
+    });
+
+    expect(persisted.executeAt).toEqual(incomingExecuteAt);
+    expect(persisted.nextAttemptAt).toEqual(incomingExecuteAt);
+    expect(persisted.retryUntilAt).toEqual(incomingRetryUntilAt);
+    expect(queue.add).toHaveBeenCalledTimes(1);
   });
 
   it('requires a separate canary before user-authored chat deletes can use another bot', () => {
@@ -3786,11 +3953,12 @@ describe('ModerationDeleteIntentService', () => {
       leasedFromStatus: null,
     };
     const txQueryRaw = jest.fn().mockResolvedValue([persisted]);
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
     const transaction = jest.fn(
       async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
         callback({
           $queryRaw: txQueryRaw,
-          $executeRaw: jest.fn().mockResolvedValue(1),
+          $executeRaw: txExecuteRaw,
         }),
     );
     const { service } = createService({}, { $transaction: transaction });
@@ -3815,11 +3983,15 @@ describe('ModerationDeleteIntentService', () => {
     expect(sql).toContain('existing_ocr_reason."rule_code" =');
     expect(sql).toContain('"commercial_ocr_guard_required" = (');
     expect(sql).toContain('"commercial_ocr_deadline_at" = CASE');
-    expect(sql).toContain('LEAST(');
-    expect(sql).toContain('GREATEST(');
     const retryUntilSql = sql.match(/"retry_until_at" = CASE[\s\S]*?END,\s*"completed_at"/u)?.[0];
     expect(retryUntilSql).toContain('THEN GREATEST(');
     expect(retryUntilSql).not.toContain('THEN LEAST(');
+    expect(retryUntilSql).toContain('ELSE "moderation_delete_intents"."retry_until_at"');
+    const reasonSql = txExecuteRaw.mock.calls[0]?.[0]?.strings?.join('?') ?? '';
+    expect(reasonSql).toContain('WITH changed_reason AS');
+    expect(reasonSql).toContain('"execute_at" = LEAST(');
+    expect(reasonSql).toContain('"next_attempt_at" = LEAST(');
+    expect(reasonSql).toContain('"retry_until_at" = GREATEST(');
     expect(query?.values).toContain(COMMERCIAL_OCR_DELETE_RULE_CODE);
   });
 

@@ -131,6 +131,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { isAmbiguousMaxMutationError } from '../max/max-send-ambiguity.util';
+import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import {
   MaxBotLinkService,
   type MaxBotRoute,
@@ -8957,7 +8958,7 @@ export class AdminService implements OnModuleDestroy {
         );
       } catch (error: unknown) {
         lastError = error;
-        if (isMaxApiTimeoutError(error)) {
+        if (wasMaxMessageSendAttempted(error) || isAmbiguousMaxSendError(error)) {
           this.markChannelSuggestionAmbiguousSendError(error);
           throw error;
         }
@@ -10034,8 +10035,7 @@ export class AdminService implements OnModuleDestroy {
       return false;
     }
 
-    const cause =
-      error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
+    const cause = this.readObjectPayloadOrNull(error)?.cause;
     return isAmbiguousMaxMutationError(error) || isAmbiguousMaxMutationError(cause);
   }
 

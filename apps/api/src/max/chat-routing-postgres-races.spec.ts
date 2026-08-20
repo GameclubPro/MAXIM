@@ -13,6 +13,7 @@ import {
 import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MANAGED_ENTITY_ACCESS_LOSS_CLEANUP_JOB_KIND } from './max-chat-admin-roster-sync.queue';
+import { ModerationDeleteIntentAccessWakeService } from './moderation-delete-intent-access-wake.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgresRace = databaseUrl ? describe : describe.skip;
@@ -67,6 +68,7 @@ function createBotLinkService(prisma: PrismaClient, botIds: readonly string[]): 
       getEntryBot: () => bots[0],
     } as never,
     { getActiveBotId: () => null } as never,
+    new ModerationDeleteIntentAccessWakeService(prisma as never),
   );
 }
 

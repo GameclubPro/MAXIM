@@ -785,7 +785,7 @@ export class ModerationDeleteIntentService {
           statusCode: null,
           errorCode: route.capabilityReason || 'no_delete_capable_bot',
           message: `No active bot has fresh confirmed delete permission (${route.capabilityReason})`,
-          retryDelayMs: this.capabilityRetryMs,
+          retryDelayMs: this.capabilityRetryDelayMs(intent.attemptCount),
         });
       }
 
@@ -829,11 +829,17 @@ export class ModerationDeleteIntentService {
               status: waitingForCapability ? 'WAITING_CAPABILITY' : 'AMBIGUOUS',
               errorCode: 'predelete_presence_unknown',
               retryDelayMs: waitingForCapability
-                ? this.capabilityRetryMs
+                ? this.capabilityRetryDelayMs(intent.attemptCount)
                 : this.retryDelayMs(intent.attemptCount),
             };
             await this.refreshCandidateAccess(intent, botId, heartbeat);
-            await this.recordCandidateFailure(intent.id, leaseToken, botId, lastAccessFailure);
+            await this.recordCandidateFailure(
+              intent.id,
+              leaseToken,
+              botId,
+              intent.attemptCount,
+              lastAccessFailure,
+            );
             route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
               chatId: intent.chatId,
               expectedEntityType: intent.entityType,
@@ -960,7 +966,7 @@ export class ModerationDeleteIntentService {
                 status: 'WAITING_CAPABILITY',
                 errorCode: 'delete_404_message_still_present',
                 message: 'MAX still returns the exact message after DELETE returned 404',
-                retryDelayMs: this.capabilityRetryMs,
+                retryDelayMs: this.capabilityRetryDelayMs(intent.attemptCount),
               };
             } else {
               return this.finishRetryableAttempt(
@@ -1001,6 +1007,7 @@ export class ModerationDeleteIntentService {
             intent.id,
             leaseToken,
             botId,
+            intent.attemptCount,
             lastAccessFailure ?? details,
           );
           route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
@@ -1027,7 +1034,7 @@ export class ModerationDeleteIntentService {
           statusCode: null,
           errorCode: 'delete_candidates_exhausted',
           message: 'All fresh delete-capable bot candidates were exhausted',
-          retryDelayMs: this.capabilityRetryMs,
+          retryDelayMs: this.capabilityRetryDelayMs(intent.attemptCount),
         },
       );
     } catch (error: unknown) {
@@ -2059,25 +2066,22 @@ export class ModerationDeleteIntentService {
           "execute_at" = CASE
             WHEN ${shouldPromoteObserved}
             THEN EXCLUDED."execute_at"
-            ELSE LEAST("moderation_delete_intents"."execute_at", EXCLUDED."execute_at")
+            ELSE "moderation_delete_intents"."execute_at"
           END,
           "next_attempt_at" = CASE
             WHEN ${shouldPromoteObserved}
             THEN EXCLUDED."next_attempt_at"
-            ELSE LEAST("moderation_delete_intents"."next_attempt_at", EXCLUDED."next_attempt_at")
+            ELSE "moderation_delete_intents"."next_attempt_at"
           END,
           "retry_until_at" = CASE
-            WHEN ${resultingHasCommercialOcrReason}
+            WHEN ${resultingHasCommercialOcrReason} AND ${shouldPromoteObserved}
             THEN GREATEST(
               "moderation_delete_intents"."retry_until_at",
               EXCLUDED."retry_until_at"
             )
             WHEN ${shouldPromoteObserved}
             THEN EXCLUDED."retry_until_at"
-            ELSE GREATEST(
-              "moderation_delete_intents"."retry_until_at",
-              EXCLUDED."retry_until_at"
-            )
+            ELSE "moderation_delete_intents"."retry_until_at"
           END,
           "completed_at" = CASE
             WHEN ${shouldPromoteObserved}
@@ -2121,24 +2125,48 @@ export class ModerationDeleteIntentService {
         throw new Error('Failed to persist moderation delete intent');
       }
 
-      const reasonChanged = await tx.$executeRaw(Prisma.sql`
-        INSERT INTO "moderation_delete_intent_reasons" (
-          "id", "intent_id", "reason_key", "user_id", "event_type", "rule_code",
-          "masked_excerpt", "score", "metadata", "created_at", "updated_at"
-        ) VALUES (
-          ${reasonId}, ${intent.id}, ${normalized.reasonKey}, ${normalized.event.userId},
-          CAST(${normalized.event.eventType} AS "EventType"), ${normalized.ruleCode},
-          ${normalized.event.maskedExcerpt}, ${normalized.event.score},
-          CAST(${metadataJson} AS JSONB), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      const conflictReasonChanged = await tx.$executeRaw(Prisma.sql`
+        WITH changed_reason AS (
+          INSERT INTO "moderation_delete_intent_reasons" (
+            "id", "intent_id", "reason_key", "user_id", "event_type", "rule_code",
+            "masked_excerpt", "score", "metadata", "created_at", "updated_at"
+          ) VALUES (
+            ${reasonId}, ${intent.id}, ${normalized.reasonKey}, ${normalized.event.userId},
+            CAST(${normalized.event.eventType} AS "EventType"), ${normalized.ruleCode},
+            ${normalized.event.maskedExcerpt}, ${normalized.event.score},
+            CAST(${metadataJson} AS JSONB), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          )
+          ON CONFLICT ("intent_id", "reason_key") DO UPDATE SET
+            "rule_code" = EXCLUDED."rule_code",
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "moderation_delete_intent_reasons"."rule_code" <> EXCLUDED."rule_code"
+            AND EXCLUDED."rule_code" IN (${Prisma.join([
+              ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+            ])})
+          RETURNING 1
         )
-        ON CONFLICT ("intent_id", "reason_key") DO UPDATE SET
-          "rule_code" = EXCLUDED."rule_code",
+        UPDATE "moderation_delete_intents" schedule
+        SET
+          "execute_at" = LEAST(schedule."execute_at", ${normalized.executeAt}),
+          "next_attempt_at" = LEAST(schedule."next_attempt_at", ${normalized.executeAt}),
+          "retry_until_at" = GREATEST(schedule."retry_until_at", ${normalized.retryUntilAt}),
           "updated_at" = CURRENT_TIMESTAMP
-        WHERE "moderation_delete_intent_reasons"."rule_code" <> EXCLUDED."rule_code"
-          AND EXCLUDED."rule_code" IN (${Prisma.join([
-            ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
-          ])})
+        WHERE schedule."id" = ${intent.id}
+          AND schedule."id" <> ${intentId}
+          AND EXISTS (SELECT 1 FROM changed_reason)
       `);
+      const reasonChanged = intent.id === intentId ? 1 : conflictReasonChanged;
+      if (reasonChanged === 1 && intent.id !== intentId) {
+        intent.executeAt = new Date(
+          Math.min(intent.executeAt.getTime(), normalized.executeAt.getTime()),
+        );
+        intent.nextAttemptAt = new Date(
+          Math.min(intent.nextAttemptAt.getTime(), normalized.executeAt.getTime()),
+        );
+        intent.retryUntilAt = new Date(
+          Math.max(intent.retryUntilAt.getTime(), normalized.retryUntilAt.getTime()),
+        );
+      }
       let storedNonCommercialOcrDeleteReason: boolean | undefined;
       let storedReplacementCleanup: boolean | undefined;
       let storedNonChannelReplacementCleanup: boolean | undefined;
@@ -2693,9 +2721,12 @@ export class ModerationDeleteIntentService {
     const hasRemoteSuccessMarker = this.hasRemoteSuccessMarker(intent);
     const hasUnresolvedDispatch = this.hasDeleteDispatchMarker(intent);
     const hasDefinitiveFollowupPending = hasRemoteSuccessMarker || hasUnresolvedDispatch;
+    const waitingForCapability =
+      !hasDefinitiveFollowupPending && details.status === 'WAITING_CAPABILITY';
     const expires =
       !hasDefinitiveFollowupPending &&
-      (details.status === 'EXPIRED' || requestedNextAt >= intent.retryUntilAt);
+      (details.status === 'EXPIRED' ||
+        (!waitingForCapability && requestedNextAt >= intent.retryUntilAt));
     const terminal = !hasDefinitiveFollowupPending && details.status === 'FAILED_TERMINAL';
     const status: ModerationDeleteIntentStatus = hasDefinitiveFollowupPending
       ? 'AMBIGUOUS'
@@ -2708,7 +2739,16 @@ export class ModerationDeleteIntentService {
       UPDATE "moderation_delete_intents"
       SET
         "status" = CAST(${status} AS "ModerationDeleteIntentStatus"),
-        "next_attempt_at" = ${nextAttemptAt},
+        "next_attempt_at" = CASE
+          WHEN ${waitingForCapability}
+          THEN CASE
+            WHEN "next_attempt_at" > "last_attempt_at"
+              AND "retry_until_at" > CURRENT_TIMESTAMP
+            THEN CURRENT_TIMESTAMP
+            ELSE LEAST(${requestedNextAt}, "retry_until_at")
+          END
+          ELSE ${nextAttemptAt}
+        END,
         "last_status_code" = ${details.statusCode},
         "last_error_code" = ${details.errorCode},
         "last_error" = ${details.message.slice(0, 2_000)},
@@ -3642,10 +3682,14 @@ export class ModerationDeleteIntentService {
     intentId: string,
     leaseToken: string,
     botId: string,
+    attemptCount: number,
     details: DeleteErrorDetails,
   ): Promise<void> {
     const failedAt = new Date();
-    const retryAt = new Date(failedAt.getTime() + this.capabilityRetryMs);
+    const retryAt = new Date(
+      failedAt.getTime() +
+        Math.max(this.capabilityRetryDelayMs(attemptCount), details.retryDelayMs ?? 0),
+    );
     await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "moderation_delete_intents"
       SET
@@ -4201,14 +4245,14 @@ export class ModerationDeleteIntentService {
         ...details,
         status: 'WAITING_CAPABILITY',
         errorCode: 'unverified_message_not_found',
-        retryDelayMs: this.capabilityRetryMs,
+        retryDelayMs: this.capabilityRetryDelayMs(attemptCount),
       };
     }
     if (this.isDeleteAccessFailure(details)) {
       return {
         ...details,
         status: 'WAITING_CAPABILITY',
-        retryDelayMs: this.capabilityRetryMs,
+        retryDelayMs: this.capabilityRetryDelayMs(attemptCount),
       };
     }
     if (details.statusCode === 404) {
@@ -4216,7 +4260,7 @@ export class ModerationDeleteIntentService {
         ...details,
         status: 'WAITING_CAPABILITY',
         errorCode: 'unverified_message_not_found',
-        retryDelayMs: this.capabilityRetryMs,
+        retryDelayMs: this.capabilityRetryDelayMs(attemptCount),
       };
     }
     if (details.statusCode === 400 || details.statusCode === 422) {
@@ -4321,6 +4365,10 @@ export class ModerationDeleteIntentService {
     const base = Math.min(this.retryMaxMs, this.retryBaseMs * 2 ** exponent);
     const jitter = 0.8 + Math.random() * 0.4;
     return Math.max(1_000, Math.round(base * jitter));
+  }
+
+  private capabilityRetryDelayMs(attemptCount: number): number {
+    return Math.max(this.capabilityRetryMs, this.retryDelayMs(attemptCount));
   }
 
   private isBotMessageAutoDeleteRetryLimitApplicable(

@@ -11,6 +11,7 @@ import { MaxBotContextService } from '../max/max-bot-context.service';
 import { MaxBotLinkService, type MaxBotRoute } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import type { MaxBotDefinition } from '../max/max-bot-registry.service';
+import { ModerationDeleteIntentAccessWakeService } from '../max/moderation-delete-intent-access-wake.service';
 
 const ROUTE_MATRIX_BOT_IDS = [
   'id613002203036_bot',
@@ -304,9 +305,14 @@ async function runDbSmoke(chatId: string): Promise<SmokeResult> {
   const prisma = createPrismaClient();
   try {
     const registry = new MaxBotRegistryService(createEnvConfigService());
-    const service = new MaxBotLinkService(prisma as never, registry, {
-      getActiveBotId: () => null,
-    } as MaxBotContextService);
+    const service = new MaxBotLinkService(
+      prisma as never,
+      registry,
+      {
+        getActiveBotId: () => null,
+      } as MaxBotContextService,
+      new ModerationDeleteIntentAccessWakeService(prisma as never),
+    );
     const routes = await resolveRouteSet(service, chatId);
     const assertions = [
       assert(
@@ -395,6 +401,7 @@ function createFixture(
       prisma as never,
       registry as never,
       { getActiveBotId: () => null } as MaxBotContextService,
+      new ModerationDeleteIntentAccessWakeService(prisma as never),
     ),
   };
 }

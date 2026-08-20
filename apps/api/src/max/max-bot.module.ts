@@ -5,6 +5,7 @@ import { MaxBotOwnershipFoundationService } from './max-bot-ownership-foundation
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { ChatRoutingReconcileService } from './chat-routing-reconcile.service';
+import { ModerationDeleteIntentAccessWakeService } from './moderation-delete-intent-access-wake.service';
 
 @Global()
 @Module({
@@ -12,6 +13,7 @@ import { ChatRoutingReconcileService } from './chat-routing-reconcile.service';
   providers: [
     MaxBotRegistryService,
     MaxBotContextService,
+    ModerationDeleteIntentAccessWakeService,
     MaxBotLinkService,
     MaxBotOwnershipFoundationService,
     ChatRoutingReconcileService,

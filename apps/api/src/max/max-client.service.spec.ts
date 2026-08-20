@@ -4929,6 +4929,245 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('normalizes whitespace-only queued text when an inline keyboard is present', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: { message_id: 'mid-keyboard-only' },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessage(
+      'chat-1',
+      '   ',
+      {
+        button: {
+          type: 'link',
+          text: 'Открыть',
+          url: 'https://example.com',
+        },
+        textFormat: 'markdown',
+      },
+      { immediate: true },
+    );
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api2.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          text: null,
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Открыть',
+                      url: 'https://example.com/',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('normalizes whitespace-only text before a BullMQ send handoff', async () => {
+    const actionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService, {}, actionQueue);
+
+    await service.sendMessage('chat-1', '   ', {
+      button: {
+        type: 'link',
+        text: 'Открыть',
+        url: 'https://example.com',
+      },
+      textFormat: 'markdown',
+    });
+
+    expect(actionQueue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        text: '',
+        options: expect.objectContaining({ textFormat: 'markdown' }),
+      }),
+      expect.any(Object),
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('normalizes whitespace-only immediate text when an inline keyboard is present', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: { message_id: 'mid-immediate-keyboard-only' },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageImmediateWithId(
+      'chat-1',
+      '   ',
+      {
+        button: {
+          type: 'link',
+          text: 'Открыть',
+          url: 'https://example.com',
+        },
+        textFormat: 'markdown',
+      },
+      {},
+    );
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: null,
+          attachments: expect.any(Array),
+        }),
+      }),
+    );
+    expect(httpService.request.mock.calls[0]?.[0]?.data).not.toHaveProperty('format');
+
+    await service.onModuleDestroy();
+  });
+
+  it('normalizes whitespace-only direct-user text when an inline keyboard is present', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: { message_id: 'mid-user-keyboard-only' },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageImmediateToUser('user-1', '   ', {
+      button: {
+        type: 'link',
+        text: 'Открыть',
+        url: 'https://example.com',
+      },
+      textFormat: 'markdown',
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: { user_id: 'user-1' },
+        data: expect.objectContaining({
+          text: null,
+          attachments: expect.any(Array),
+        }),
+      }),
+    );
+    expect(httpService.request.mock.calls[0]?.[0]?.data).not.toHaveProperty('format');
+
+    await service.onModuleDestroy();
+  });
+
+  it('normalizes whitespace-only custom text when an attachment is present', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.sendCustomMessageImmediate('chat-1', {
+      text: '   ',
+      textFormat: 'markdown',
+      attachments: [{ type: 'image', payload: { token: 'image-token' } }],
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          text: null,
+          attachments: [{ type: 'image', payload: { token: 'image-token' } }],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('preserves a custom link-only message while omitting whitespace text formatting', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+
+    await service.sendCustomMessageImmediate('chat-1', {
+      text: '   ',
+      textFormat: 'markdown',
+      messageLink: { type: 'reply', mid: 'linked-message-1' },
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          text: null,
+          link: { type: 'reply', mid: 'linked-message-1' },
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects a whitespace-only queued message without non-text content before dispatch', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+
+    await expect(service.sendMessage('chat-1', '   ', { textFormat: 'markdown' })).rejects.toThrow(
+      'MAX SEND_MESSAGE payload has no text, attachments, or link',
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects a stale empty queued action before calling MAX', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        text: '   ',
+        options: { textFormat: 'markdown' },
+        attempt: 1,
+        idempotencyKey: 'empty-stale-send',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toThrow('MAX SEND_MESSAGE payload has no text, attachments, or link');
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('preserves invisible non-empty text for an immediate keyboard reply', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

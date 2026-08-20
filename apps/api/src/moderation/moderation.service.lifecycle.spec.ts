@@ -3727,6 +3727,10 @@ describe('ModerationService', () => {
         messageId: 'msg-service-user-join-1',
         ruleCode: 'GREETING_MESSAGE',
         action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          reason: 'Greeting message accepted for delivery',
+          deliveryStatus: 'accepted_for_delivery',
+        }),
       }),
     });
   });
@@ -4010,7 +4014,8 @@ describe('ModerationService', () => {
         userId: 'user-black-2',
         ruleCode: 'GREETING_MESSAGE',
         metadata: expect.objectContaining({
-          reason: 'Greeting message sent for joined member',
+          reason: 'Greeting message accepted for delivery',
+          deliveryStatus: 'accepted_for_delivery',
         }),
       }),
     });
@@ -4091,7 +4096,8 @@ describe('ModerationService', () => {
         ruleCode: 'GREETING_MESSAGE',
         action: SanctionAction.NONE,
         metadata: expect.objectContaining({
-          reason: 'Greeting message sent for joined member',
+          reason: 'Greeting message accepted for delivery',
+          deliveryStatus: 'accepted_for_delivery',
         }),
       }),
     });

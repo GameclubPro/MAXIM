@@ -7768,7 +7768,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             score: 0.2,
             operator: Operator.BOT,
             metadata: {
-              reason: 'Greeting message sent for joined member',
+              reason: 'Greeting message accepted for delivery',
+              deliveryStatus: 'accepted_for_delivery',
             },
           },
         });

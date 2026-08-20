@@ -42,6 +42,10 @@ import {
   MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE,
   MAX_SEND_ROUTE_QUARANTINE_MS,
 } from './max-send-route-health';
+import {
+  ModerationDeleteIntentAccessWakeService,
+  type PreviousBotDeleteAccess,
+} from './moderation-delete-intent-access-wake.service';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
@@ -303,6 +307,7 @@ export class MaxBotLinkService {
     private readonly prisma: PrismaService,
     private readonly botRegistry: MaxBotRegistryService,
     private readonly botContext: MaxBotContextService,
+    private readonly moderationDeleteIntentAccessWake: ModerationDeleteIntentAccessWakeService,
   ) {}
 
   getDefaultBotId(): string {
@@ -692,28 +697,73 @@ export class MaxBotLinkService {
       return false;
     }
 
-    const persisted = await this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
         // FLAG: Access probes and destructive lifecycle cleanup serialize on the parent Chat.
         // Keep this transaction SQL-only; route reconciliation happens after commit.
-        const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT chat."id"
+        const locked = await tx.$queryRaw<Array<{ id: string; entityType: ChatEntityType }>>(
+          Prisma.sql`
+          SELECT chat."id", chat."entity_type" AS "entityType"
           FROM "chats" AS chat
           WHERE chat."id" = ${chatId}
           FOR UPDATE OF chat
-        `);
+        `,
+        );
         if (locked.length !== 1) {
-          return false;
+          return { persisted: false, wake: null };
         }
 
-        return this.persistBotAccessProbeInTransaction(tx, params, chatId, botId);
+        const previous = await tx.chatBotMembership.findUnique({
+          where: { chatId_botId: { chatId, botId } },
+          select: {
+            status: true,
+            botAccessState: true,
+            botAccessCheckedAt: true,
+            botAccessExpiresAt: true,
+            permissionsSnapshot: true,
+          },
+        });
+        const previousAccess: PreviousBotDeleteAccess = previous
+          ? {
+              status: previous.status,
+              botAccessState: previous.botAccessState,
+              botAccessCheckedAt: previous.botAccessCheckedAt,
+              botAccessExpiresAt: previous.botAccessExpiresAt,
+              permissionsSnapshot: previous.permissionsSnapshot,
+            }
+          : null;
+        const persisted = await this.persistBotAccessProbeInTransaction(tx, params, chatId, botId);
+        return {
+          persisted,
+          wake: persisted
+            ? {
+                chatId,
+                botId,
+                entityType: locked[0]!.entityType,
+                source: params.source,
+                checkedAt: params.checkedAt,
+                access: params.access,
+                previousAccess,
+              }
+            : null,
+        };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
     );
-    if (persisted) {
+    if (result.wake) {
+      try {
+        await this.moderationDeleteIntentAccessWake.wakeAfterCommittedProbe(result.wake);
+      } catch (error: unknown) {
+        this.logger.warn(
+          { chatId, botId, err: error instanceof Error ? error.message : String(error) },
+          'Failed to wake moderation delete intents after access recovery; DB sweeper will recover',
+        );
+      }
+    }
+    if (result.persisted) {
       await this.reconcileChatPrimaryByAccess({ chatId });
     }
-    return persisted;
+    return result.persisted;
   }
 
   private async persistBotAccessProbeInTransaction(

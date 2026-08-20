@@ -1003,11 +1003,17 @@ export class MaxClientService implements OnModuleDestroy {
     options?: MaxSendMessageOptions,
     dispatchOptions?: MaxActionDispatchOptions,
   ) {
+    const normalizedText = text.trim().length > 0 ? text : '';
+    const attachments = this.buildMessageAttachments(options);
+    const messageLink = this.buildMessageLinkData(options?.messageLink);
+    if (normalizedText.length === 0 && attachments.length === 0 && !messageLink) {
+      throw new UnrecoverableError('MAX SEND_MESSAGE payload has no text, attachments, or link');
+    }
     await this.dispatchAction(
       {
         actionType: 'SEND_MESSAGE',
         chatId,
-        text,
+        text: normalizedText,
         options,
       },
       dispatchOptions,
@@ -1022,7 +1028,11 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
-    const hasText = text.length > 0;
+    const normalizedText = text.trim().length > 0 ? text : '';
+    const hasText = normalizedText.length > 0;
+    if (!hasText && attachments.length === 0 && !messageLink) {
+      throw new UnrecoverableError('MAX SEND_MESSAGE payload has no text, attachments, or link');
+    }
     const timeoutMs = this.normalizeTimeoutMs(requestOptions.timeoutMs);
     const sendResponse = await this.executeMessageMutation(
       'send',
@@ -1034,7 +1044,7 @@ export class MaxClientService implements OnModuleDestroy {
             chat_id: chatId,
           },
           data: {
-            text: hasText ? text : null,
+            text: hasText ? normalizedText : null,
             ...(hasText && options?.textFormat ? { format: options.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
@@ -1068,6 +1078,11 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
+    const normalizedText = text.trim().length > 0 ? text : '';
+    const hasText = normalizedText.length > 0;
+    if (!hasText && attachments.length === 0 && !messageLink) {
+      throw new UnrecoverableError('MAX SEND_MESSAGE payload has no text, attachments, or link');
+    }
     const timeoutMs = this.normalizeTimeoutMs(requestOptions.timeoutMs);
     const sendResponse = await this.executeMessageMutation(
       'send',
@@ -1079,8 +1094,8 @@ export class MaxClientService implements OnModuleDestroy {
             user_id: userId,
           },
           data: {
-            text,
-            ...(options?.textFormat ? { format: options.textFormat } : {}),
+            text: hasText ? normalizedText : null,
+            ...(hasText && options?.textFormat ? { format: options.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
           },
@@ -1145,10 +1160,12 @@ export class MaxClientService implements OnModuleDestroy {
           .filter((attachment): attachment is Record<string, unknown> => attachment !== null)
       : [];
     const messageLink = this.buildMessageLinkData(payload.messageLink);
-    const hasText = typeof payload.text === 'string';
+    const normalizedText =
+      typeof payload.text === 'string' && payload.text.trim().length > 0 ? payload.text : null;
+    const hasText = normalizedText !== null;
     const timeoutMs = this.normalizeTimeoutMs(normalizedRequestOptions.timeoutMs);
 
-    if (!hasText && attachments.length === 0) {
+    if (!hasText && attachments.length === 0 && !messageLink) {
       throw new Error('MAX custom message payload is empty');
     }
 
@@ -1162,8 +1179,8 @@ export class MaxClientService implements OnModuleDestroy {
             chat_id: chatId,
           },
           data: {
-            text: hasText ? payload.text : null,
-            ...(payload.textFormat ? { format: payload.textFormat } : {}),
+            text: normalizedText,
+            ...(hasText && payload.textFormat ? { format: payload.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
           },
@@ -6481,14 +6498,18 @@ export class MaxClientService implements OnModuleDestroy {
     mutationOptions: MaxApiRequestOptions,
   ): Promise<Record<string, unknown>> {
     const messageLink = this.buildMessageLinkData(action.options?.messageLink);
+    const hasText = typeof action.text === 'string' && action.text.trim().length > 0;
+    if (!hasText && attachments.length === 0 && !messageLink) {
+      throw new UnrecoverableError('MAX SEND_MESSAGE payload has no text, attachments, or link');
+    }
     const sendRequest = () =>
       this.request<Record<string, unknown>>('post', '/messages', {
         params: {
           chat_id: action.chatId,
         },
         data: {
-          text: action.text,
-          ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
+          text: hasText ? action.text : null,
+          ...(hasText && action.options?.textFormat ? { format: action.options.textFormat } : {}),
           ...(messageLink ? { link: messageLink } : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
         },

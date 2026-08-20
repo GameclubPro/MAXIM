@@ -6,6 +6,7 @@ import { MaxBotContextService } from '../max/max-bot-context.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxClientService } from '../max/max-client.service';
+import { ModerationDeleteIntentAccessWakeService } from '../max/moderation-delete-intent-access-wake.service';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ActionHealthService } from '../system/action-health.service';
@@ -24,6 +25,7 @@ import { ActionHealthService } from '../system/action-health.service';
   providers: [
     MaxBotRegistryService,
     MaxBotContextService,
+    ModerationDeleteIntentAccessWakeService,
     MaxBotLinkService,
     ActionHealthService,
     MaxClientService,

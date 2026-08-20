@@ -5643,7 +5643,21 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it('keeps the review claim when channel suggestion publish send times out ambiguously', async () => {
+  it.each([
+    [
+      'times out',
+      Object.assign(new Error('timeout of 12000ms exceeded'), {
+        code: 'ECONNABORTED',
+      }),
+    ],
+    ['resets the connection', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+    ['breaks the pipe', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })],
+    [
+      'returns HTTP 503',
+      Object.assign(new Error('Service unavailable'), { response: { status: 503 } }),
+    ],
+    ['returns no message id', new Error('Ambiguous MAX send response is missing message id')],
+  ])('keeps the review claim when channel suggestion publish %s ambiguously', async (_, sendError) => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -5668,9 +5682,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         reviewStatus: 'pending',
       },
     });
-    const timeoutError = Object.assign(new Error('timeout of 12000ms exceeded'), {
-      code: 'ECONNABORTED',
-    });
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getChatSnapshot: jest.fn().mockResolvedValue({
@@ -5683,7 +5694,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         lastEventAt: '2026-03-10T12:00:00.000Z',
         entityType: 'channel',
       }),
-      sendMessageImmediateWithResolvedLink: jest.fn().mockRejectedValue(timeoutError),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockRejectedValue(sendError),
       editMessageInlineKeyboard: jest.fn(),
     };
     const service = new AdminService(
@@ -5704,7 +5715,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         },
         'publish',
       ),
-    ).rejects.toBe(timeoutError);
+    ).rejects.toBe(sendError);
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);

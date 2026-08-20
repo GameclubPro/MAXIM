@@ -564,7 +564,12 @@ function createServiceFixture() {
         chatId !== null &&
         (chats.has(chatId) || memberships.some((membership) => membership.chatId === chatId));
       if (text.includes('FROM "chats"') && chatId && parentChatExists) {
-        return [{ id: chatId }];
+        return [
+          {
+            id: chatId,
+            entityType: chats.get(chatId)?.entityType ?? ChatEntityType.CHAT,
+          },
+        ];
       }
       return [];
     }),
@@ -605,11 +610,20 @@ function createServiceFixture() {
   const botContext = {
     getActiveBotId: jest.fn((): string | null => null),
   };
+  const moderationDeleteIntentAccessWake = {
+    wakeAfterCommittedProbe: jest.fn().mockResolvedValue(0),
+  };
 
   return {
-    service: new MaxBotLinkService(prisma as never, botRegistry as never, botContext as never),
+    service: new MaxBotLinkService(
+      prisma as never,
+      botRegistry as never,
+      botContext as never,
+      moderationDeleteIntentAccessWake as never,
+    ),
     prisma,
     botContext,
+    moderationDeleteIntentAccessWake,
     bots,
     chats,
     memberships,
@@ -805,6 +819,17 @@ describe('MaxBotLinkService', () => {
         }),
       }),
     );
+    expect(fixture.moderationDeleteIntentAccessWake.wakeAfterCommittedProbe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-access-probe',
+        botId: fixture.bots[0]!.id,
+        entityType: ChatEntityType.CHAT,
+        source: 'routed_action_preflight',
+        previousAccess: expect.objectContaining({
+          botAccessState: ChatBotAccessState.UNKNOWN,
+        }),
+      }),
+    );
   });
 
   it('does not let an older denied probe overwrite a newer confirmed snapshot', async () => {
@@ -984,6 +1009,7 @@ describe('MaxBotLinkService', () => {
 
     expect(fixture.memberships).toHaveLength(0);
     expect(fixture.prisma.chatBotMembership.createMany).not.toHaveBeenCalled();
+    expect(fixture.moderationDeleteIntentAccessWake.wakeAfterCommittedProbe).not.toHaveBeenCalled();
   });
 
   it('does not let a probe from an older lifecycle epoch overwrite a re-added membership', async () => {
