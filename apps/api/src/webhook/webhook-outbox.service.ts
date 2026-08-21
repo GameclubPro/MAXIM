@@ -2,6 +2,10 @@ import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
+import {
+  WebhookCanonicalExecutionService,
+  WebhookTimeoutSettlementCasLostError,
+} from '../moderation/webhook-canonical-execution.service';
 import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
@@ -79,17 +83,88 @@ const WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL = Prisma.raw(`
 const ORDERED_WEBHOOK_UPDATE_TYPE_SQL = Prisma.raw(`
   LOWER(
     COALESCE(
-      NULLIF(BTRIM("normalized_payload"->>'type'), ''),
-      NULLIF(BTRIM("normalized_payload"->>'update_type'), '')
+      NULLIF(BTRIM("webhook_events"."normalized_payload"->>'type'), ''),
+      NULLIF(BTRIM("webhook_events"."normalized_payload"->>'update_type'), '')
     )
   )
 `);
 const ORDERED_WEBHOOK_CHAT_ID_SQL = Prisma.raw(`
   COALESCE(
-    NULLIF(BTRIM("normalized_payload"->'message'->>'chatId'), ''),
-    NULLIF(BTRIM("normalized_payload"->>'chatId'), '')
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->'message'->>'chatId'), ''),
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->>'chatId'), '')
   )
 `);
+const SEMANTIC_WEBHOOK_CHAT_ID_SQL = Prisma.raw(`
+  COALESCE(
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->'message'->>'chatId'), ''),
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->'message'->>'chat_id'), ''),
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->>'chatId'), ''),
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->>'chat_id'), '')
+  )
+`);
+const ORDERED_WEBHOOK_MESSAGE_ID_SQL = Prisma.raw(`
+  COALESCE(
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->'message'->>'messageId'), ''),
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->'message'->>'message_id'), ''),
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->>'messageId'), ''),
+    NULLIF(BTRIM("webhook_events"."normalized_payload"->>'message_id'), '')
+  )
+`);
+const COMPLETED_MESSAGE_CREATED_SEMANTIC_OWNER_SQL = Prisma.sql`
+  ${ORDERED_WEBHOOK_UPDATE_TYPE_SQL} = 'message_created'
+  AND ${SEMANTIC_WEBHOOK_CHAT_ID_SQL} IS NOT NULL
+  AND ${ORDERED_WEBHOOK_MESSAGE_ID_SQL} IS NOT NULL
+  AND "processed_at" IS NULL
+  AND "timeout_quarantine_expires_at" IS NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "webhook_execution_claims" own_claim
+    WHERE own_claim."webhook_event_id" = "webhook_events"."id"
+      AND own_claim."kind" = 'EXECUTION'
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM "webhook_execution_claims" semantic_claim
+    JOIN "webhook_events" semantic_owner
+      ON semantic_owner."id" = semantic_claim."webhook_event_id"
+    WHERE semantic_claim."kind" = 'EXECUTION'
+      AND semantic_claim."semantic_key" = CONCAT(
+        'message:message_created:',
+        ${SEMANTIC_WEBHOOK_CHAT_ID_SQL},
+        ':',
+        ${ORDERED_WEBHOOK_MESSAGE_ID_SQL}
+      )
+      AND semantic_claim."webhook_event_id" <> "webhook_events"."id"
+      AND semantic_claim."status" = 'COMPLETED'::"WebhookExecutionClaimStatus"
+      AND semantic_claim."prepared_at" IS NOT NULL
+      AND semantic_claim."completed_at" IS NOT NULL
+      AND semantic_claim."lease_token" IS NULL
+      AND semantic_claim."lease_expires_at" IS NULL
+      AND semantic_owner."status" = 'PROCESSED'::"WebhookStatus"
+      AND semantic_owner."processed_at" IS NOT NULL
+      AND semantic_owner."error_message" IS NULL
+      AND semantic_owner."next_enqueue_at" IS NULL
+      AND semantic_owner."timeout_quarantine_expires_at" IS NULL
+      AND LOWER(
+        COALESCE(
+          NULLIF(BTRIM(semantic_owner."normalized_payload"->>'type'), ''),
+          NULLIF(BTRIM(semantic_owner."normalized_payload"->>'update_type'), '')
+        )
+      ) = 'message_created'
+      AND COALESCE(
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->'message'->>'chatId'), ''),
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->'message'->>'chat_id'), ''),
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->>'chatId'), ''),
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->>'chat_id'), '')
+      ) = ${SEMANTIC_WEBHOOK_CHAT_ID_SQL}
+      AND COALESCE(
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->'message'->>'messageId'), ''),
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->'message'->>'message_id'), ''),
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->>'messageId'), ''),
+        NULLIF(BTRIM(semantic_owner."normalized_payload"->>'message_id'), '')
+      ) = ${ORDERED_WEBHOOK_MESSAGE_ID_SQL}
+  )
+`;
 const ORDERED_WEBHOOK_HEAD_STATUS_SQL = Prisma.sql`
   (
     "status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
@@ -180,16 +255,35 @@ type ManualClosePriorityCacheEntry = {
 };
 
 type TimeoutExecutionClaim = {
+  id?: string;
+  semanticKey?: string;
+  webhookEventId?: string;
+  executionBotId?: string | null;
+  enforced?: boolean;
   status?: string;
+  preparedAt?: Date | null;
   completedAt?: Date | null;
+  leaseToken?: string | null;
+  leaseExpiresAt?: Date | null;
 };
 
 type WebhookOutboxPersistenceClient = {
   webhookEvent: {
+    findUnique?: (args: unknown) => Promise<{
+      id: string;
+      status: WebhookStatus;
+      normalizedPayload: unknown;
+      errorMessage: string | null;
+      processedAt: Date | null;
+      nextEnqueueAt: Date | null;
+      timeoutQuarantineExpiresAt: Date | null;
+    } | null>;
     updateMany: (args: unknown) => Promise<{ count: number }>;
   };
   webhookExecutionClaim?: {
     findFirst?: (args: unknown) => Promise<TimeoutExecutionClaim | null>;
+    findUnique?: (args: unknown) => Promise<TimeoutExecutionClaim | null>;
+    updateMany?: (args: unknown) => Promise<{ count?: number }>;
   };
 };
 
@@ -219,6 +313,14 @@ function buildEnqueueEligibilitySql(now: Date) {
               AND "kind" = 'EXECUTION'
               AND "status" = 'COMPLETED'::"WebhookExecutionClaimStatus"
           )
+        )
+        OR (
+          "next_enqueue_at" IS NULL
+          AND LEFT(
+            COALESCE("error_message", ''),
+            ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}
+          ) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
+          AND ${COMPLETED_MESSAGE_CREATED_SEMANTIC_OWNER_SQL}
         )
       )
     `,
@@ -1553,41 +1655,66 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     event: WebhookEnqueueCandidate,
   ): Promise<CandidateEnqueueOutcome> {
     const now = new Date();
-    const transition = await this.runInTransaction(async (client) => {
-      const claim =
-        typeof client.webhookExecutionClaim?.findFirst === 'function'
-          ? await client.webhookExecutionClaim.findFirst({
-              where: {
-                webhookEventId: event.id,
-                kind: 'EXECUTION',
-              },
-              orderBy: { createdAt: 'desc' },
-              select: {
-                status: true,
-                completedAt: true,
-              },
-            })
-          : null;
+    let transition: CandidateEnqueueOutcome | null;
+    try {
+      transition = await this.runInTransaction(async (client) => {
+        const claim =
+          typeof client.webhookExecutionClaim?.findFirst === 'function'
+            ? await client.webhookExecutionClaim.findFirst({
+                where: {
+                  webhookEventId: event.id,
+                  kind: 'EXECUTION',
+                },
+                orderBy: { createdAt: 'desc' },
+                select: {
+                  status: true,
+                  completedAt: true,
+                },
+              })
+            : null;
 
-      if (claim?.status === 'COMPLETED') {
-        const repaired = await client.webhookEvent.updateMany({
-          where: this.buildEnqueueStateWhere(event),
-          data: {
-            status: WebhookStatus.PROCESSED,
-            processedAt: claim.completedAt ?? now,
-            queueName: null,
-            nextEnqueueAt: null,
-            timeoutQuarantineExpiresAt: null,
-            errorMessage: null,
-          },
-        });
-        return repaired.count === 1 ? 'terminal' : null;
+        if (claim?.status === 'COMPLETED') {
+          const repaired = await client.webhookEvent.updateMany({
+            where: this.buildEnqueueStateWhere(event),
+            data: {
+              status: WebhookStatus.PROCESSED,
+              processedAt: claim.completedAt ?? now,
+              queueName: null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+              errorMessage: null,
+            },
+          });
+          return repaired.count === 1 ? 'terminal' : null;
+        }
+
+        const mirrorSettlement =
+          await WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient(
+            client,
+            {
+              webhookEvent: { id: event.id },
+              update: event.normalizedPayload,
+              businessLeaseToken: null,
+            },
+            {
+              ...this.buildEnqueueStateWhere(event),
+              processedAt: null,
+            },
+          );
+        if (mirrorSettlement === 'settled') {
+          return 'terminal';
+        }
+
+        // FLAG: A lease deadline cannot prove that detached work stopped. Only the worker that
+        // observed settlement, or a fully proven COMPLETED semantic owner, may release this head.
+        return 'outstanding';
+      });
+    } catch (error: unknown) {
+      if (error instanceof WebhookTimeoutSettlementCasLostError) {
+        return 'outstanding';
       }
-
-      // FLAG: A lease deadline cannot prove that detached work stopped. Only the worker that
-      // observed settlement, or a durably COMPLETED claim, may release this ordered chat head.
-      return 'outstanding';
-    });
+      throw error;
+    }
 
     return transition ?? this.resolveCurrentCandidateOutcome(event.id);
   }

@@ -39,7 +39,7 @@ type WebhookExecutionClaimModel = {
   updateMany?: (args: unknown) => Promise<{ count?: number }>;
 };
 
-type WebhookCanonicalPersistenceClient = {
+export type WebhookCanonicalPersistenceClient = {
   webhookEvent: {
     findUnique?: (args: unknown) => Promise<{
       id: string;
@@ -59,7 +59,7 @@ type OrderedWebhookPredecessor = {
   id: string;
 };
 
-class WebhookTimeoutSettlementCasLostError extends Error {}
+export class WebhookTimeoutSettlementCasLostError extends Error {}
 
 const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
 const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL = Prisma.raw(
@@ -105,7 +105,13 @@ export type WebhookTimeoutSettlementResult =
   | 'duplicate'
   | 'retry';
 
-type WebhookShadowMirrorSettlementResult = 'settled' | 'retry' | 'invalid';
+export type WebhookShadowMirrorSettlementContext = {
+  webhookEvent: Pick<WebhookEvent, 'id'>;
+  update: unknown;
+  businessLeaseToken: string | null;
+};
+
+export type WebhookShadowMirrorSettlementResult = 'settled' | 'retry' | 'invalid';
 
 @Injectable()
 export class WebhookCanonicalExecutionService {
@@ -638,11 +644,12 @@ export class WebhookCanonicalExecutionService {
             },
           });
           if (retainedFence.count === 1) {
-            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
-              client,
-              context,
-              retainedFenceWhere,
-            );
+            const mirrorSettlement =
+              await WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient(
+                client,
+                context,
+                retainedFenceWhere,
+              );
             if (mirrorSettlement === 'settled') {
               return 'duplicate';
             }
@@ -724,11 +731,12 @@ export class WebhookCanonicalExecutionService {
               nextEnqueueAt: null,
               timeoutQuarantineExpiresAt: null,
             };
-            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
-              client,
-              context,
-              freshSettlementWhere,
-            );
+            const mirrorSettlement =
+              await WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient(
+                client,
+                context,
+                freshSettlementWhere,
+              );
             if (mirrorSettlement === 'settled') {
               return 'duplicate';
             }
@@ -826,11 +834,12 @@ export class WebhookCanonicalExecutionService {
             },
           });
           if (retainedFence.count === 1) {
-            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
-              client,
-              context,
-              retainedFenceWhere,
-            );
+            const mirrorSettlement =
+              await WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient(
+                client,
+                context,
+                retainedFenceWhere,
+              );
             if (mirrorSettlement === 'settled') {
               return 'duplicate';
             }
@@ -911,11 +920,12 @@ export class WebhookCanonicalExecutionService {
               nextEnqueueAt: null,
               timeoutQuarantineExpiresAt: null,
             };
-            const mirrorSettlement = await this.trySettleCompletedShadowMirrorWithClient(
-              client,
-              context,
-              freshSettlementWhere,
-            );
+            const mirrorSettlement =
+              await WebhookCanonicalExecutionService.trySettleCompletedShadowMirrorWithClient(
+                client,
+                context,
+                freshSettlementWhere,
+              );
             if (mirrorSettlement === 'settled') {
               return 'duplicate';
             }
@@ -956,9 +966,9 @@ export class WebhookCanonicalExecutionService {
   // FLAG: A shadow mirror can converge only on a fully prepared, completed semantic owner whose
   // persisted payload still derives the same key. Transitional evidence retries under the live hard
   // fence; absent or inconsistent evidence retains a permanent replay fence.
-  private async trySettleCompletedShadowMirrorWithClient(
+  static async trySettleCompletedShadowMirrorWithClient(
     client: WebhookCanonicalPersistenceClient,
-    context: WebhookCanonicalExecutionContext,
+    context: WebhookShadowMirrorSettlementContext,
     mirrorWhere: Prisma.WebhookEventWhereInput,
   ): Promise<WebhookShadowMirrorSettlementResult> {
     if (context.businessLeaseToken !== null) {

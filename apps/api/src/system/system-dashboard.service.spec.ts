@@ -173,6 +173,41 @@ function createHealthyPublishedSuggestionLedgerRow(suggestionId: string, updated
   };
 }
 
+function paginateSuggestionLedgerRows<T extends { ledgerId: string; updatedAt: Date }>(
+  rows: T[],
+  queryArgs: unknown[],
+): T[] {
+  const values = readRawSqlValues(queryArgs);
+  const limit = values.at(-1);
+  const afterLedgerId = values.at(-2);
+  if (typeof limit !== 'number') {
+    throw new Error('Suggestion ledger page query is missing its numeric limit');
+  }
+  const ordered = [...rows].sort(
+    (left, right) =>
+      right.updatedAt.getTime() - left.updatedAt.getTime() ||
+      right.ledgerId.localeCompare(left.ledgerId),
+  );
+  const start =
+    typeof afterLedgerId === 'string'
+      ? ordered.findIndex((row) => row.ledgerId === afterLedgerId) + 1
+      : 0;
+  return ordered.slice(start, start + limit);
+}
+
+function readRawSqlValues(queryArgs: unknown[]): unknown[] {
+  const query = queryArgs[0] as { values?: unknown[] } | undefined;
+  return Array.isArray(query?.values) ? query.values : queryArgs.slice(1);
+}
+
+function createSuggestionProtocolPrismaMock(queryRaw: jest.Mock) {
+  const transaction = jest.fn(
+    async (callback: (tx: { $queryRaw: jest.Mock }) => Promise<unknown>) =>
+      callback({ $queryRaw: queryRaw }),
+  );
+  return { $queryRaw: queryRaw, $transaction: transaction };
+}
+
 function createDefaultWorkerGroups(
   overrides: Partial<
     Record<
@@ -729,9 +764,7 @@ describe('SystemDashboardService', () => {
       undefined,
       undefined,
       undefined,
-      {
-        $queryRaw: queryRaw,
-      } as never,
+      createSuggestionProtocolPrismaMock(queryRaw) as never,
     );
 
     const snapshot = await service.getSnapshot();
@@ -783,18 +816,19 @@ describe('SystemDashboardService', () => {
     );
     expect(suggestionPublishingSql).toContain('limit');
 
-    const suggestionLedgerQuery = findQuery(
-      'with suggestion_ledger_risk_candidates as materialized',
-    );
+    const suggestionLedgerQuery = findQuery('with suggestion_ledger_page as materialized');
     const suggestionLedgerSql = extractSqlText(suggestionLedgerQuery);
     expect(suggestionLedgerSql).toContain("ledger.action_type = 'SEND_MESSAGE'");
     expect(suggestionLedgerSql).toContain("ledger.source_tag = 'suggestion_delivery'");
     expect(suggestionLedgerSql).toContain("ledger.job_id like 'channel-suggestion:publish:v1:%'");
+    expect(suggestionLedgerSql).toContain('and ledger.updated_at <=');
+    expect(suggestionLedgerSql.match(/::timestamp\(3\)/gu)).toHaveLength(3);
+    expect(suggestionLedgerSql).toContain('(ledger.updated_at, ledger.id) <');
+    expect(suggestionLedgerSql).toContain('order by ledger.updated_at desc, ledger.id desc');
     expect(suggestionLedgerSql).toContain('left join audit_logs audit');
-    expect(suggestionLedgerSql).toContain('and not coalesce(');
-    expect(suggestionLedgerSql).toContain("audit.payload->>'reviewStatus' = 'published'");
-    expect(suggestionLedgerSql.indexOf('and not coalesce(')).toBeLessThan(
-      suggestionLedgerSql.indexOf('limit'),
+    expect(suggestionLedgerSql).not.toContain('and not coalesce(');
+    expect(suggestionLedgerSql.indexOf('limit')).toBeLessThan(
+      suggestionLedgerSql.indexOf('left join audit_logs audit'),
     );
 
     const deleteIntentQuery = findQuery('with risk_candidates as');
@@ -818,7 +852,7 @@ describe('SystemDashboardService', () => {
     ]);
   });
 
-  it('caps both suggestion protocol audits at 1000 and keeps the truncation visible', async () => {
+  it('caps stale publishing at 1000 while accounting for every bounded ledger row', async () => {
     const auditDate = new Date('2026-08-20T10:00:00.000Z');
     const publishingRows = Array.from({ length: 1_001 }, (_, index) => {
       const suggestionId = `safe-${index}`;
@@ -845,9 +879,17 @@ describe('SystemDashboardService', () => {
         payload: createSuggestionClaimPayload(suggestionId),
       };
     });
-    const prisma = {
-      $queryRaw: jest.fn().mockResolvedValueOnce(publishingRows).mockResolvedValueOnce(ledgerRows),
-    };
+    const queryRaw = jest.fn(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (sql.includes('with publishing_candidates as materialized')) {
+        return publishingRows;
+      }
+      if (sql.includes('with suggestion_ledger_page as materialized')) {
+        return paginateSuggestionLedgerRows(ledgerRows, args);
+      }
+      throw new Error(`Unexpected suggestion protocol query: ${sql}`);
+    });
+    const prisma = createSuggestionProtocolPrismaMock(queryRaw);
     const service = new SystemDashboardService(
       {} as never,
       {} as never,
@@ -868,18 +910,26 @@ describe('SystemDashboardService', () => {
       capped: true,
     });
     expect(protocol.ledgerAudit).toMatchObject({
-      linkedPublishing: 1_000,
-      audited: 1_000,
-      capped: true,
+      linkedPublishing: 1_001,
+      audited: 1_001,
+      capped: false,
+    });
+    expect(
+      protocol.ledgerAudit.missingAudit +
+        protocol.ledgerAudit.pendingAudit +
+        protocol.ledgerAudit.publishedAudit +
+        protocol.ledgerAudit.mismatchedAudit +
+        protocol.ledgerAudit.linkedPublishing,
+    ).toBe(protocol.ledgerAudit.audited);
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: 'RepeatableRead',
+      timeout: 15_000,
     });
     expect((service as any).buildSuggestionPublishingRiskAlert(protocol)).toMatchObject({
       level: 'warning',
       detail: expect.stringContaining('Выборка ограничена'),
     });
-    expect((service as any).buildSuggestionLedgerAuditAlert(protocol)).toMatchObject({
-      level: 'warning',
-      detail: expect.stringContaining('Выборка ограничена'),
-    });
+    expect((service as any).buildSuggestionLedgerAuditAlert(protocol)).toBeNull();
   });
 
   it('filters more than 1000 fresh claims before limiting stale publishing candidates', async () => {
@@ -927,7 +977,7 @@ describe('SystemDashboardService', () => {
             )
             .slice(0, 1_001);
         }
-        if (sql.includes('with suggestion_ledger_risk_candidates as materialized')) {
+        if (sql.includes('with suggestion_ledger_page as materialized')) {
           return [];
         }
         throw new Error(`Unexpected suggestion protocol query: ${sql}`);
@@ -941,7 +991,7 @@ describe('SystemDashboardService', () => {
         undefined,
         undefined,
         undefined,
-        { $queryRaw: queryRaw } as never,
+        createSuggestionProtocolPrismaMock(queryRaw) as never,
       );
 
       const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
@@ -996,8 +1046,8 @@ describe('SystemDashboardService', () => {
       if (sql.includes('with publishing_candidates as materialized')) {
         return [];
       }
-      if (sql.includes('with suggestion_ledger_risk_candidates as materialized')) {
-        return databaseRows.filter((row) => row.auditId === null).slice(0, 1_001);
+      if (sql.includes('with suggestion_ledger_page as materialized')) {
+        return paginateSuggestionLedgerRows(databaseRows, args);
       }
       throw new Error(`Unexpected suggestion protocol query: ${sql}`);
     });
@@ -1010,7 +1060,7 @@ describe('SystemDashboardService', () => {
       undefined,
       undefined,
       undefined,
-      { $queryRaw: queryRaw } as never,
+      createSuggestionProtocolPrismaMock(queryRaw) as never,
     );
 
     const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
@@ -1019,26 +1069,31 @@ describe('SystemDashboardService', () => {
       [...databaseRows]
         .sort(
           (left, right) =>
-            left.updatedAt.getTime() - right.updatedAt.getTime() ||
-            left.ledgerId.localeCompare(right.ledgerId),
+            right.updatedAt.getTime() - left.updatedAt.getTime() ||
+            right.ledgerId.localeCompare(left.ledgerId),
         )
         .slice(0, 1_001),
-    ).not.toContain(orphan);
+    ).toContain(orphan);
     expect(protocol.ledgerAudit).toMatchObject({
       missingAudit: 1,
-      audited: 1,
+      publishedAudit: 1_001,
+      audited: 1_002,
       capped: false,
     });
 
-    const ledgerCall = queryRaw.mock.calls.find((call) =>
-      extractSqlText(call).includes('with suggestion_ledger_risk_candidates as materialized'),
+    const ledgerCalls = queryRaw.mock.calls.filter((call) =>
+      extractSqlText(call).includes('with suggestion_ledger_page as materialized'),
     );
-    const ledgerSql = extractSqlText(ledgerCall);
-    expect(ledgerSql).toContain('and not coalesce(');
-    expect(ledgerSql).toContain("ledger.status = 'SUCCEEDED'");
-    expect(ledgerSql).toContain("audit.payload->>'publishedMessageId' = ledger.remote_message_id");
-    expect(ledgerSql).toContain("ledger.metadata->'ledgerContext'->>'contextDigest'");
-    expect(ledgerSql.indexOf('and not coalesce(')).toBeLessThan(ledgerSql.indexOf('limit'));
+    expect(ledgerCalls).toHaveLength(5);
+    expect(readRawSqlValues(ledgerCalls[1])).toContainEqual(expect.any(Date));
+    expect(readRawSqlValues(ledgerCalls[1])).toContainEqual(
+      expect.stringMatching(/^ledger-healthy-/u),
+    );
+    const ledgerSql = extractSqlText(ledgerCalls[0]);
+    expect(ledgerSql).not.toContain('and not coalesce(');
+    expect(ledgerSql.indexOf('limit')).toBeLessThan(
+      ledgerSql.indexOf('left join audit_logs audit'),
+    );
   });
 
   it('does not cap or warn on healthy published ledger history alone', async () => {
@@ -1053,8 +1108,8 @@ describe('SystemDashboardService', () => {
       if (sql.includes('with publishing_candidates as materialized')) {
         return [];
       }
-      if (sql.includes('with suggestion_ledger_risk_candidates as materialized')) {
-        return healthyHistory.filter(() => false);
+      if (sql.includes('with suggestion_ledger_page as materialized')) {
+        return paginateSuggestionLedgerRows(healthyHistory, args);
       }
       throw new Error(`Unexpected suggestion protocol query: ${sql}`);
     });
@@ -1067,7 +1122,7 @@ describe('SystemDashboardService', () => {
       undefined,
       undefined,
       undefined,
-      { $queryRaw: queryRaw } as never,
+      createSuggestionProtocolPrismaMock(queryRaw) as never,
     );
 
     const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
@@ -1076,13 +1131,208 @@ describe('SystemDashboardService', () => {
     expect(protocol.ledgerAudit).toMatchObject({
       missingAudit: 0,
       pendingAudit: 0,
-      publishedAudit: 0,
+      publishedAudit: 1_500,
       mismatchedAudit: 0,
       linkedPublishing: 0,
-      audited: 0,
+      audited: 1_500,
       capped: false,
     });
     expect((service as any).buildSuggestionLedgerAuditAlert(protocol)).toBeNull();
+  });
+
+  it('keeps a deliberate fail-closed warning and still finds newest risk past the scan cap', async () => {
+    const healthyHistory = Array.from({ length: 2_001 }, (_, index) =>
+      createHealthyPublishedSuggestionLedgerRow(
+        `bounded-healthy-${index}`,
+        new Date('2026-08-20T10:00:00.000Z'),
+      ),
+    );
+    const newestOrphan = {
+      ledgerId: 'ledger-bounded-newest-orphan',
+      updatedAt: new Date('2026-08-21T10:00:00.000Z'),
+      ...createSuggestionLedgerFields('bounded-newest-orphan'),
+      auditId: null,
+      auditChatId: null,
+      actorUserId: null,
+      auditAction: null,
+      payload: null,
+    };
+    const databaseRows = [...healthyHistory, newestOrphan];
+    const queryRaw = jest.fn(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (sql.includes('with publishing_candidates as materialized')) {
+        return [];
+      }
+      if (sql.includes('with suggestion_ledger_page as materialized')) {
+        return paginateSuggestionLedgerRows(databaseRows, args);
+      }
+      throw new Error(`Unexpected suggestion protocol query: ${sql}`);
+    });
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      createSuggestionProtocolPrismaMock(queryRaw) as never,
+    );
+
+    const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
+
+    expect(protocol.ledgerAudit).toMatchObject({
+      missingAudit: 1,
+      publishedAudit: 1_999,
+      audited: 2_000,
+      capped: true,
+    });
+    expect(
+      protocol.ledgerAudit.missingAudit +
+        protocol.ledgerAudit.pendingAudit +
+        protocol.ledgerAudit.publishedAudit +
+        protocol.ledgerAudit.mismatchedAudit +
+        protocol.ledgerAudit.linkedPublishing,
+    ).toBe(protocol.ledgerAudit.audited);
+    const alert = (service as any).buildSuggestionLedgerAuditAlert(protocol);
+    expect(alert).toMatchObject({
+      level: 'warning',
+      detail: expect.stringContaining('Выборка ограничена последними 2000 ledger'),
+      recommendedAction: expect.stringContaining('неполную диагностику'),
+    });
+    expect(alert.detail).toContain('более старая история не проверена');
+    expect(alert.detail).toContain('предупреждение о неполном покрытии');
+    expect(
+      queryRaw.mock.calls.filter((call) =>
+        extractSqlText(call).includes('with suggestion_ledger_page as materialized'),
+      ),
+    ).toHaveLength(8);
+  });
+
+  it('keeps a capped but healthy newest sample in warning instead of claiming full coverage', () => {
+    const service = new SystemDashboardService({} as never, {} as never, createConfigMock());
+    const protocol = {
+      checkedAt: '2026-08-21T10:00:00.000Z',
+      publishing: {
+        safeRelease: 0,
+        completed: 0,
+        manual: 0,
+        legacy: 0,
+        audited: 0,
+        oldestAgeSec: 0,
+        capped: false,
+      },
+      ledgerAudit: {
+        missingAudit: 0,
+        pendingAudit: 0,
+        publishedAudit: 2_000,
+        mismatchedAudit: 0,
+        linkedPublishing: 0,
+        audited: 2_000,
+        oldestAgeSec: 86_400,
+        capped: true,
+      },
+    };
+
+    const alert = (service as any).buildSuggestionLedgerAuditAlert(protocol);
+
+    expect(alert).toMatchObject({
+      level: 'warning',
+      detail: expect.stringContaining('более старая история не проверена'),
+      recommendedAction: expect.stringContaining('неполную диагностику'),
+    });
+    expect(alert.detail).toContain('orphan/mismatch 0');
+  });
+
+  it('classifies a forged context digest in TypeScript instead of filtering it as healthy SQL', async () => {
+    const row = createHealthyPublishedSuggestionLedgerRow(
+      'forged-context',
+      new Date('2026-08-20T10:00:00.000Z'),
+    );
+    const payload = row.payload as Record<string, unknown>;
+    const context = payload.reviewPublicationContext as Record<string, unknown>;
+    const metadata = row.metadata as { ledgerContext: Record<string, unknown> };
+    const forgedDigest = context.contextDigest === '0'.repeat(64) ? '1'.repeat(64) : '0'.repeat(64);
+    const forgedRow = {
+      ...row,
+      payload: {
+        ...payload,
+        reviewPublicationContext: { ...context, contextDigest: forgedDigest },
+      },
+      metadata: {
+        ...metadata,
+        ledgerContext: { ...metadata.ledgerContext, contextDigest: forgedDigest },
+      },
+    };
+    const queryRaw = jest.fn(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (sql.includes('with publishing_candidates as materialized')) {
+        return [];
+      }
+      if (sql.includes('with suggestion_ledger_page as materialized')) {
+        return paginateSuggestionLedgerRows([forgedRow], args);
+      }
+      throw new Error(`Unexpected suggestion protocol query: ${sql}`);
+    });
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      createSuggestionProtocolPrismaMock(queryRaw) as never,
+    );
+
+    const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
+
+    expect(protocol.ledgerAudit).toMatchObject({
+      mismatchedAudit: 1,
+      publishedAudit: 0,
+      audited: 1,
+      capped: false,
+    });
+  });
+
+  it('fails the suggestion protocol snapshot soft when a later ledger page fails', async () => {
+    const healthyHistory = Array.from({ length: 300 }, (_, index) =>
+      createHealthyPublishedSuggestionLedgerRow(
+        `page-failure-${index}`,
+        new Date('2026-08-20T10:00:00.000Z'),
+      ),
+    );
+    let ledgerPageCalls = 0;
+    const queryRaw = jest.fn(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (sql.includes('with publishing_candidates as materialized')) {
+        return [];
+      }
+      if (sql.includes('with suggestion_ledger_page as materialized')) {
+        ledgerPageCalls += 1;
+        if (ledgerPageCalls === 2) {
+          throw new Error('ledger page unavailable');
+        }
+        return paginateSuggestionLedgerRows(healthyHistory, args);
+      }
+      throw new Error(`Unexpected suggestion protocol query: ${sql}`);
+    });
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      createSuggestionProtocolPrismaMock(queryRaw) as never,
+    );
+
+    await expect((service as any).loadSuggestionPublicationProtocolSnapshot()).resolves.toBeNull();
+    expect(ledgerPageCalls).toBe(2);
   });
 
   it('does not warn for fully bound published suggestion ledgers alone', () => {

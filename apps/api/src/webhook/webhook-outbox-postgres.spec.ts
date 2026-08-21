@@ -4,9 +4,12 @@ import {
   createPrismaClient,
   Prisma,
   type PrismaClient,
+  WebhookExecutionClaimStatus,
   WebhookStatus,
 } from '../prisma/prisma-client';
 import { WebhookOutboxService } from './webhook-outbox.service';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgres = databaseUrl ? describe : describe.skip;
@@ -311,5 +314,100 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
         (node) => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'webhook_events',
       ),
     ).toBe(false);
+  });
+
+  it('selects a retained snake-case mirror only from a clean completed semantic owner', async () => {
+    const suffix = randomUUID();
+    const chatId = `outbox-semantic-chat-${suffix}`;
+    const messageId = `outbox-semantic-message-${suffix}`;
+    const ownerId = `outbox-semantic-owner-${suffix}`;
+    const mirrorId = `outbox-semantic-mirror-${suffix}`;
+    const claimId = `outbox-semantic-claim-${suffix}`;
+    const ownerCompletedAt = new Date('2026-08-15T11:00:01.000Z');
+    const now = new Date('2026-08-15T12:00:00.000Z');
+    const mirrorPayload = {
+      update_id: `mirror-update-${suffix}`,
+      bot_id: 'bot-mirror',
+      type: 'message_created',
+      message: { chat_id: chatId, message_id: messageId },
+    };
+    const ownerPayload = {
+      update_id: `owner-update-${suffix}`,
+      bot_id: 'bot-owner',
+      type: 'message_created',
+      message: { chat_id: chatId, message_id: messageId },
+    };
+    const semanticKey = buildWebhookSemanticEventKey(mirrorPayload);
+    if (!semanticKey || semanticKey !== buildWebhookSemanticEventKey(ownerPayload)) {
+      throw new Error('Expected snake-case bot envelopes to share one semantic key');
+    }
+    createdEventIds.push(ownerId, mirrorId);
+
+    await prisma.webhookEvent.createMany({
+      data: [
+        {
+          id: ownerId,
+          dedupKey: `outbox-semantic-owner-dedup-${suffix}`,
+          status: WebhookStatus.PROCESSED,
+          botId: 'bot-owner',
+          rawPayload: {},
+          normalizedPayload: ownerPayload,
+          processedAt: ownerCompletedAt,
+          createdAt: new Date('2026-08-15T11:00:00.000Z'),
+        },
+        {
+          id: mirrorId,
+          dedupKey: `outbox-semantic-mirror-dedup-${suffix}`,
+          status: WebhookStatus.FAILED,
+          botId: 'bot-mirror',
+          queueName: 'moderation-default-2',
+          enqueueAttempts: 1,
+          rawPayload: {},
+          normalizedPayload: mirrorPayload,
+          errorMessage: `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-${suffix}: detached execution failed without a canonical claim`,
+          queuedAt: new Date('2026-08-15T11:00:02.000Z'),
+          createdAt: new Date('2026-08-15T11:00:00.100Z'),
+        },
+      ],
+    });
+    await prisma.webhookExecutionClaim.create({
+      data: {
+        id: claimId,
+        kind: 'EXECUTION',
+        semanticKey,
+        webhookEventId: ownerId,
+        status: WebhookExecutionClaimStatus.READY,
+        preparedAt: new Date('2026-08-15T11:00:00.500Z'),
+        leaseToken: `lease-${suffix}`,
+        leaseExpiresAt: new Date('2026-08-15T11:05:00.000Z'),
+      },
+    });
+
+    const transitionalCandidates = await reader.selectEnqueueCandidates(now);
+    expect(transitionalCandidates.map(({ id }) => id)).not.toContain(mirrorId);
+
+    await prisma.webhookExecutionClaim.update({
+      where: { id: claimId },
+      data: {
+        status: WebhookExecutionClaimStatus.COMPLETED,
+        completedAt: ownerCompletedAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },
+    });
+    const completedCandidates = await reader.selectEnqueueCandidates(now);
+    expect(completedCandidates.map(({ id }) => id)).toContain(mirrorId);
+
+    await prisma.webhookEvent.update({
+      where: { id: ownerId },
+      data: {
+        normalizedPayload: {
+          ...ownerPayload,
+          message: { chat_id: chatId, message_id: `different-${messageId}` },
+        },
+      },
+    });
+    const invalidOwnerCandidates = await reader.selectEnqueueCandidates(now);
+    expect(invalidOwnerCandidates.map(({ id }) => id)).not.toContain(mirrorId);
   });
 });

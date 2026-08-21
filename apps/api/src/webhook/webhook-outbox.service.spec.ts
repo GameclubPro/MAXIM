@@ -245,6 +245,17 @@ function matchesWebhookEventWhere(
     return false;
   }
 
+  const normalizedPayloadFilter = where.normalizedPayload;
+  if (
+    normalizedPayloadFilter &&
+    typeof normalizedPayloadFilter === 'object' &&
+    'equals' in normalizedPayloadFilter &&
+    JSON.stringify(row.normalizedPayload) !==
+      JSON.stringify((normalizedPayloadFilter as { equals: unknown }).equals)
+  ) {
+    return false;
+  }
+
   return true;
 }
 
@@ -793,6 +804,158 @@ function createService(params?: {
   };
 }
 
+type SemanticMirrorCasLoss = 'owner' | 'claim' | 'mirror';
+
+function createCompletedSemanticOwnerFixture(options?: {
+  ownerClaimStatus?: 'COMPLETED' | 'READY';
+  invalidOwnerPayload?: boolean;
+  casLoss?: SemanticMirrorCasLoss;
+}) {
+  const chatId = 'chat-completed-semantic-owner';
+  const messageId = 'message-completed-semantic-owner';
+  const mirrorId = 'evt-completed-semantic-mirror';
+  const ownerId = 'evt-completed-semantic-owner';
+  const ownerCompletedAt = new Date('2026-03-24T00:00:05.000Z');
+  const ownerProcessedAt = new Date('2026-03-24T00:00:05.100Z');
+  const pendingErrorMessage = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:nonce-semantic-mirror: detached execution failed without a canonical claim`;
+  const mirrorPayload = {
+    updateId: 'update-mirror-bot',
+    botId: 'bot-mirror',
+    type: 'message_created',
+    message: { chatId, messageId, senderId: 'user-1' },
+  };
+  const ownerPayload = {
+    updateId: 'update-owner-bot',
+    botId: 'bot-owner',
+    type: 'message_created',
+    message: {
+      chatId,
+      messageId: options?.invalidOwnerPayload ? 'different-owner-message' : messageId,
+      senderId: 'user-1',
+    },
+  };
+  const semanticKey = buildWebhookSemanticEventKey(mirrorPayload);
+  if (!semanticKey) {
+    throw new Error('Expected the mirror fixture to derive a semantic key');
+  }
+
+  const fixture = createService({
+    // The selection mock uses this as the SQL-visible proof. Settlement reads are overridden below.
+    timeoutExecutionClaim: { status: 'COMPLETED', completedAt: ownerCompletedAt },
+    findManyResult: [
+      {
+        id: mirrorId,
+        status: WebhookStatus.FAILED,
+        botId: 'bot-mirror',
+        queueName: resolveDefaultWebhookQueueNameForChatId(chatId),
+        enqueueAttempts: 1,
+        queuedAt: new Date('2026-03-24T00:00:10.000Z'),
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        processedAt: null,
+        errorMessage: pendingErrorMessage,
+        createdAt: new Date('2026-03-24T00:00:01.000Z'),
+        normalizedPayload: mirrorPayload,
+      },
+      {
+        id: ownerId,
+        status: WebhookStatus.PROCESSED,
+        botId: 'bot-owner',
+        queueName: resolveDefaultWebhookQueueNameForChatId(chatId),
+        enqueueAttempts: 1,
+        queuedAt: new Date('2026-03-24T00:00:02.000Z'),
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        processedAt: ownerProcessedAt,
+        errorMessage: null,
+        createdAt: new Date('2026-03-24T00:00:00.000Z'),
+        normalizedPayload: ownerPayload,
+      },
+    ],
+  });
+  const { prisma, webhookRows } = fixture;
+  prisma.webhookExecutionClaim.findFirst.mockResolvedValue(null);
+
+  const ownerClaim = {
+    id: 'claim-completed-semantic-owner',
+    semanticKey,
+    webhookEventId: ownerId,
+    executionBotId: 'bot-owner',
+    enforced: false,
+    status: options?.ownerClaimStatus ?? 'COMPLETED',
+    preparedAt: new Date('2026-03-24T00:00:04.000Z'),
+    completedAt: options?.ownerClaimStatus === 'READY' ? null : ownerCompletedAt,
+    leaseToken: options?.ownerClaimStatus === 'READY' ? 'owner-lease' : null,
+    leaseExpiresAt:
+      options?.ownerClaimStatus === 'READY' ? new Date('2026-03-24T00:05:00.000Z') : null,
+  };
+  const claimFindUnique = jest.fn().mockImplementation(async () => ({ ...ownerClaim }));
+  const claimUpdateMany = jest
+    .fn()
+    .mockImplementation(
+      async (args?: { where?: Record<string, unknown>; data?: Partial<typeof ownerClaim> }) => {
+        if (
+          options?.casLoss === 'claim' ||
+          args?.where?.id !== ownerClaim.id ||
+          args.where.enforced !== ownerClaim.enforced ||
+          args.where.status !== ownerClaim.status
+        ) {
+          return { count: 0 };
+        }
+        Object.assign(ownerClaim, args.data ?? {});
+        return { count: 1 };
+      },
+    );
+  Object.assign(prisma.webhookExecutionClaim, {
+    findUnique: claimFindUnique,
+    updateMany: claimUpdateMany,
+  });
+
+  const applyEventUpdate = createWebhookEventUpdateManyMock(webhookRows);
+  prisma.webhookEvent.updateMany.mockImplementation(async (args) => {
+    const where = (args as { where?: Record<string, unknown> } | undefined)?.where;
+    const data = (args as { data?: { status?: WebhookStatus } } | undefined)?.data;
+    if (
+      (options?.casLoss === 'owner' && where?.id === ownerId) ||
+      (options?.casLoss === 'mirror' &&
+        where?.id === mirrorId &&
+        data?.status === WebhookStatus.DUPLICATE)
+    ) {
+      return { count: 0 };
+    }
+    return applyEventUpdate(args);
+  });
+
+  const transaction = jest.fn(
+    async (operation: (client: typeof prisma) => Promise<unknown>): Promise<unknown> => {
+      const rowSnapshots = webhookRows.map((row) => ({ ...row }));
+      const claimSnapshot = { ...ownerClaim };
+      try {
+        return await operation(prisma);
+      } catch (error: unknown) {
+        rowSnapshots.forEach((snapshot, index) => {
+          Object.assign(webhookRows[index]!, snapshot);
+        });
+        Object.assign(ownerClaim, claimSnapshot);
+        throw error;
+      }
+    },
+  );
+  Object.assign(prisma, { $transaction: transaction });
+
+  return {
+    ...fixture,
+    mirror: webhookRows.find((row) => row.id === mirrorId)!,
+    owner: webhookRows.find((row) => row.id === ownerId)!,
+    ownerClaim,
+    ownerCompletedAt,
+    pendingErrorMessage,
+    claimFindUnique,
+    claimUpdateMany,
+    transaction,
+  };
+}
+
 describe('WebhookOutboxService', () => {
   it('requests FAILED candidates when due or when a completed timeout claim needs repair', async () => {
     const { service, prisma } = createService();
@@ -816,6 +979,33 @@ describe('WebhookOutboxService', () => {
     expect(selectionSql).toContain(`FROM "webhook_execution_claims"`);
     expect(selectionSql).toContain(`"kind" = 'EXECUTION'`);
     expect(selectionSql).toContain(`"status" = 'COMPLETED'::"WebhookExecutionClaimStatus"`);
+    expect(selectionSql).toContain(`FROM "webhook_execution_claims" semantic_claim`);
+    expect(selectionSql).toContain(`JOIN "webhook_events" semantic_owner`);
+    expect(selectionSql).toContain(`semantic_claim."webhook_event_id" <> "webhook_events"."id"`);
+    expect(selectionSql).toContain(`semantic_claim."prepared_at" IS NOT NULL`);
+    expect(selectionSql).toContain(`semantic_claim."completed_at" IS NOT NULL`);
+    expect(selectionSql).toContain(`semantic_claim."lease_token" IS NULL`);
+    expect(selectionSql).toContain(`semantic_owner."status" = 'PROCESSED'::"WebhookStatus"`);
+    const failedCandidatesIndex = selectionSql.indexOf(`failed_candidates AS (`);
+    const staleQueuedCandidatesIndex = selectionSql.indexOf(
+      `stale_user_facing_queued_candidates AS (`,
+    );
+    const failedCandidatesSql = selectionSql.slice(
+      failedCandidatesIndex,
+      staleQueuedCandidatesIndex,
+    );
+    const semanticOwnerPredicateIndex = failedCandidatesSql.indexOf(
+      `FROM "webhook_execution_claims" semantic_claim`,
+    );
+    const failedCandidatesLimitIndex = failedCandidatesSql.indexOf(`LIMIT ?`);
+    expect(failedCandidatesIndex).toBeGreaterThanOrEqual(0);
+    expect(staleQueuedCandidatesIndex).toBeGreaterThan(failedCandidatesIndex);
+    expect(semanticOwnerPredicateIndex).toBeGreaterThanOrEqual(0);
+    expect(failedCandidatesLimitIndex).toBeGreaterThan(semanticOwnerPredicateIndex);
+    expect(selectionSql).toContain(`"webhook_events"."normalized_payload"->'message'->>'chat_id'`);
+    expect(selectionSql).toContain(
+      `"webhook_events"."normalized_payload"->'message'->>'message_id'`,
+    );
   });
 
   it('uses queuedAt as the stale reference and falls back to createdAt only when it is missing', async () => {
@@ -2528,6 +2718,131 @@ describe('WebhookOutboxService', () => {
       'evt-completed-timeout-b',
     ]);
   });
+
+  it('converges a retained no-claim mirror with a different bot envelope on its completed owner', async () => {
+    const {
+      service,
+      queues,
+      webhookService,
+      mirror,
+      owner,
+      ownerClaim,
+      ownerCompletedAt,
+      claimUpdateMany,
+    } = createCompletedSemanticOwnerFixture();
+
+    expect(mirror.normalizedPayload).not.toEqual(owner.normalizedPayload);
+    expect(buildWebhookSemanticEventKey(mirror.normalizedPayload)).toBe(
+      buildWebhookSemanticEventKey(owner.normalizedPayload),
+    );
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(mirror).toEqual(
+      expect.objectContaining({
+        status: WebhookStatus.DUPLICATE,
+        processedAt: ownerCompletedAt,
+        queueName: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: null,
+      }),
+    );
+    expect(owner.status).toBe(WebhookStatus.PROCESSED);
+    expect(ownerClaim.enforced).toBe(true);
+    expect(claimUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: ownerClaim.id,
+          webhookEventId: owner.id,
+          status: 'COMPLETED',
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+        data: expect.objectContaining({ enforced: true, status: 'COMPLETED' }),
+      }),
+    );
+    expect(webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+    for (const queue of Object.values(queues)) {
+      expect(queue.add).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    {
+      caseName: 'the semantic owner claim is transitional',
+      options: { ownerClaimStatus: 'READY' as const },
+    },
+    {
+      caseName: 'the completed owner payload is invalid',
+      options: { invalidOwnerPayload: true },
+    },
+  ])('keeps the retained mirror blocked when $caseName', async ({ options }) => {
+    const {
+      service,
+      prisma,
+      queues,
+      webhookService,
+      mirror,
+      ownerClaim,
+      pendingErrorMessage,
+      claimUpdateMany,
+    } = createCompletedSemanticOwnerFixture(options);
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(mirror).toEqual(
+      expect.objectContaining({
+        status: WebhookStatus.FAILED,
+        processedAt: null,
+        nextEnqueueAt: null,
+        timeoutQuarantineExpiresAt: null,
+        errorMessage: pendingErrorMessage,
+      }),
+    );
+    expect(ownerClaim.enforced).toBe(false);
+    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+    expect(claimUpdateMany).not.toHaveBeenCalled();
+    expect(webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+    for (const queue of Object.values(queues)) {
+      expect(queue.add).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['owner', 'claim', 'mirror'] as const)(
+    'leaves the retained mirror fenced when the %s CAS is lost',
+    async (casLoss) => {
+      const {
+        service,
+        queues,
+        webhookService,
+        mirror,
+        ownerClaim,
+        pendingErrorMessage,
+        transaction,
+      } = createCompletedSemanticOwnerFixture({ casLoss });
+      const originalQueueName = mirror.queueName;
+
+      await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(mirror).toEqual(
+        expect.objectContaining({
+          status: WebhookStatus.FAILED,
+          processedAt: null,
+          queueName: originalQueueName,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          errorMessage: pendingErrorMessage,
+        }),
+      );
+      expect(ownerClaim.enforced).toBe(false);
+      expect(webhookService.preparePersistedWebhookEvent).not.toHaveBeenCalled();
+      for (const queue of Object.values(queues)) {
+        expect(queue.add).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it('never releases an expired timeout quarantine without a completed claim', async () => {
     const chatId = 'chat-timeout-heartbeat-race';
