@@ -228,17 +228,15 @@ export class AdminChannelSuggestionPublicationRuntime {
         'Channel suggestion payload actor differs from audit actor; using audit actor',
       );
     }
-    const {
-      reviewClaimedAt: _reviewClaimedAt,
-      reviewClaimedByUserId: _reviewClaimedByUserId,
-      reviewClaimedByDisplayName: _reviewClaimedByDisplayName,
-      reviewClaimToken: _reviewClaimToken,
-      reviewAction: _reviewAction,
-      reviewPublicationProtocol: _reviewPublicationProtocol,
-      reviewPublicationLedgerJobId: _reviewPublicationLedgerJobId,
-      reviewPublicationContext: _reviewPublicationContext,
-      ...payloadWithoutTransientClaim
-    } = payload;
+    const payloadWithoutTransientClaim = { ...payload };
+    delete payloadWithoutTransientClaim.reviewClaimedAt;
+    delete payloadWithoutTransientClaim.reviewClaimedByUserId;
+    delete payloadWithoutTransientClaim.reviewClaimedByDisplayName;
+    delete payloadWithoutTransientClaim.reviewClaimToken;
+    delete payloadWithoutTransientClaim.reviewAction;
+    delete payloadWithoutTransientClaim.reviewPublicationProtocol;
+    delete payloadWithoutTransientClaim.reviewPublicationLedgerJobId;
+    delete payloadWithoutTransientClaim.reviewPublicationContext;
     const canonicalPayload: Record<string, unknown> = {
       ...payloadWithoutTransientClaim,
       ...(hasActorMismatch
