@@ -61,8 +61,10 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
   ) =>
     client.query(
       `INSERT INTO max_action_ledger (
-        id, job_id, action_type, chat_id, source_tag, metadata
-      ) VALUES ($1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb)`,
+        id, job_id, action_type, chat_id, source_tag, metadata, updated_at
+      ) VALUES (
+        $1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb, CURRENT_TIMESTAMP
+      )`,
       [ledgerId, ledgerJobId, chatId, JSON.stringify(metadata)],
     );
 
@@ -229,8 +231,10 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
       expect(claimed.rowCount).toBe(1);
       await pool.query(
         `INSERT INTO max_action_ledger (
-          id, job_id, action_type, chat_id, source_tag, metadata
-        ) VALUES ($1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb)`,
+          id, job_id, action_type, chat_id, source_tag, metadata, updated_at
+        ) VALUES (
+          $1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb, CURRENT_TIMESTAMP
+        )`,
         [
           `ledger-republish-${randomUUID()}`,
           ledgerJobId,
@@ -262,8 +266,10 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
     const completedLedgerId = `ledger-completed-duplicate-${randomUUID()}`;
     await pool.query(
       `INSERT INTO max_action_ledger (
-        id, job_id, action_type, chat_id, source_tag, metadata
-      ) VALUES ($1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb)`,
+        id, job_id, action_type, chat_id, source_tag, metadata, updated_at
+      ) VALUES (
+        $1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb, CURRENT_TIMESTAMP
+      )`,
       [completedLedgerId, ledgerJobId, chatId, JSON.stringify({ ledgerContext: null })],
     );
     await pool.query(
@@ -295,8 +301,10 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
 
     const duplicate = await pool.query(
       `INSERT INTO max_action_ledger (
-        id, job_id, action_type, chat_id, source_tag, metadata
-      ) VALUES ($1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb)
+        id, job_id, action_type, chat_id, source_tag, metadata, updated_at
+      ) VALUES (
+        $1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb, CURRENT_TIMESTAMP
+      )
       ON CONFLICT (job_id) DO NOTHING
       RETURNING id`,
       [
@@ -312,8 +320,10 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
     await expect(
       pool.query(
         `INSERT INTO max_action_ledger (
-          id, job_id, action_type, chat_id, source_tag, metadata
-        ) VALUES ($1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb)
+          id, job_id, action_type, chat_id, source_tag, metadata, updated_at
+        ) VALUES (
+          $1, $2, 'SEND_MESSAGE', $3, 'suggestion_delivery', $4::jsonb, CURRENT_TIMESTAMP
+        )
         ON CONFLICT (job_id) DO NOTHING`,
         [
           `ledger-orphan-attempt-${randomUUID()}`,
