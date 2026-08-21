@@ -278,6 +278,7 @@ describe('validateEnv boolean parsing', () => {
 
   it('keeps general delete intents off while enabling the narrow replacement cleanup switch', () => {
     const defaults = validateEnv(createValidEnv());
+    expect(defaults.MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE).toBe(2_000);
     expect(defaults.MODERATION_DELETE_INTENT_MODE).toBe('off');
     expect(defaults.MODERATION_DELETE_INTENT_CANARY_CHAT_IDS).toBe('');
     expect(defaults.MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS).toBe('');

@@ -41,6 +41,7 @@ export type ChannelAutoPostLegacyRecoveryAttachInput = {
   source: 'poll';
   senderId: null;
   senderAdminVerified: false;
+  requiredAuthorUserId: null;
 };
 
 type LegacyRecoveryMarkerStore = Pick<
@@ -265,7 +266,23 @@ export class ChannelAutoPostLegacyRecovery {
             source: 'poll',
             senderId: null,
             senderAdminVerified: false,
+            requiredAuthorUserId: null,
           });
+          if (outcome === 'skipped') {
+            const finished = await this.finishWithoutMutation(
+              candidate,
+              'SKIPPED',
+              'MAX post edit skipped because the legacy candidate has no verifiable bot author.',
+              null,
+            );
+            if (finished === 'deferred') {
+              cursorCanAdvance = false;
+              deferReason = 'marker_in_progress';
+              break;
+            }
+            terminalizedCandidates += finished === 'completed' ? 1 : 0;
+            continue;
+          }
           if (outcome === 'in_progress' || outcome === 'noop') {
             cursorCanAdvance = false;
             deferReason = 'marker_in_progress';

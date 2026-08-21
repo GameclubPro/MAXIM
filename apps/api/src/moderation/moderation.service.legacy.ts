@@ -287,6 +287,7 @@ import {
   type ChannelAutoPostAttachOutcome,
   type ChannelAutoPostScanState,
 } from './channel-auto-post-runtime';
+import { ChannelAutoPostMutationGuard } from './channel-auto-post-mutation-guard';
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
 import {
   buildMaxMessageFallbackUrl,
@@ -561,7 +562,6 @@ const SHARED_CHAT_OWNER_EVENT_LOOKUP_LIMIT = 100;
 const WEBHOOK_TIMEOUT_SETTLEMENT_PERSIST_RETRY_MAX_MS = 30_000;
 const WEBHOOK_TIMEOUT_PERSISTENCE_LOG_INTERVAL_MS = 30_000;
 const DUPLICATE_MESSAGE_ACTION_CLAIM_RULE_CODE = 'DUPLICATE_MESSAGE_ACTION';
-const CHANNEL_AUTO_POST_MUTATION_GUARD_TIMEOUT_MS = 2_000;
 
 type ModerationDeleteExecutionResult = {
   accepted: boolean;
@@ -577,6 +577,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
   private readonly replacementAttachMarkerStore: ReplacementAttachMarkerStore;
   private readonly channelAutoPostLegacyRecovery: ChannelAutoPostLegacyRecovery;
+  private readonly channelAutoPostMutationGuard: ChannelAutoPostMutationGuard;
   private readonly destructiveAdminRosterRefreshScheduledAtMs = new Map<string, number>();
   private readonly requiredSubscriptionMembershipCache = new Map<
     string,
@@ -733,6 +734,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly commercialOcrEnqueueService?: CommercialOcrEnqueueService,
   ) {
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
+    this.channelAutoPostMutationGuard = new ChannelAutoPostMutationGuard({
+      maxClient,
+      isCurrentChannelEntity: (chatId) => this.isCurrentChannelEntity(chatId),
+      resolveActionCandidateBotIds: async ({ chatId, action }) =>
+        action === 'delete_message'
+          ? (await this.maxBotLinkService?.resolveDeleteMessageBotRoute?.({
+              chatId,
+              expectedEntityType: ChatEntityType.CHANNEL,
+              requireFreshSnapshot: true,
+            }))?.candidateBotIds ?? []
+          : this.resolveModerationActionBotIds({ chatId, action }),
+      resolveExecutableBotIdentity: (botId) =>
+        this.maxBotLinkService?.getExecutableBotById?.(botId) ?? null,
+    });
     this.channelAutoPostLegacyRecovery = new ChannelAutoPostLegacyRecovery({
       prisma,
       markerStore: this.replacementAttachMarkerStore,
@@ -12977,23 +12992,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private async resolveAutoAttachMutationBotId(params: {
+  private resolveAutoAttachMutationBotId(params: {
     chatId: string;
-    source: 'webhook' | 'poll';
-    action: 'delete_message' | 'edit_message' | 'moderate_member';
-  }): Promise<string | null> {
-    const actionCandidates = await this.resolveModerationActionBotIds({
-      chatId: params.chatId,
-      action: params.action,
-    });
-    const selectedActionBotId = actionCandidates.find(
-      (botId): botId is string => typeof botId === 'string' && botId.trim().length > 0,
-    );
-    if (selectedActionBotId) {
-      return selectedActionBotId.trim();
-    }
-
-    return this.resolveAutoAttachBotId(params.chatId, params.source);
+    action: 'delete_message' | 'edit_message';
+    requiredAuthorUserId?: string | null;
+  }): Promise<{ botId: string | null; requiredAuthorVerified: boolean }> {
+    return this.channelAutoPostMutationGuard.resolveMutationBotRoute(params);
   }
 
   private async recordChannelAutoPostAccessLossIfTerminal(params: {
@@ -14563,18 +14567,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const senderIsOwnBot = senderId ? this.isOwnBotSender(senderId) : false;
     if (
-      (senderId ? this.isOwnBotSender(senderId) : false) ||
-      this.isBotAuthoredMessage(update) ||
-      this.isServiceAuthoredMessage(update)
+      this.isServiceAuthoredMessage(update) ||
+      (this.isBotAuthoredMessage(update) && !senderIsOwnBot)
     ) {
       return;
     }
 
     const eventTimestampMs = resolveChannelAutoPostEventTimestampMs(update);
+    const linkType = extractChannelAutoPostMessageLinkType(update);
+    if (linkType !== 'forward' && !senderIsOwnBot) {
+      this.channelAutoPostScanManager.markWebhookSeen(chatId, messageId, eventTimestampMs);
+      return;
+    }
     let senderAdminVerified = false;
 
-    if (senderId) {
+    if (senderIsOwnBot) {
+      senderAdminVerified = true;
+    } else if (senderId) {
       const mode = await this.resolveSystemModeSnapshot();
       const senderAdminCheck = await this.resolveSenderChatAdminCheck(
         chatId,
@@ -14606,13 +14617,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text: messageText.text,
       textFormat: messageText.textFormat,
-      linkType: extractChannelAutoPostMessageLinkType(update),
+      linkType,
       existingDialogButtonKinds: existingDialogButtons.kinds,
       existingDialogThreadId: existingDialogButtons.threadId,
       managedChannel,
       source: 'webhook',
       senderId,
       senderAdminVerified,
+      requiredAuthorUserId: senderId,
       sourceMessageAt: createdAt,
     });
     if (outcome !== 'in_progress') {
@@ -14823,6 +14835,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       messages,
       adminUserIds: managedChannel.adminUserIds,
+      isRuntimeBotUserId: (senderId) => this.isKnownRuntimeBotUserId(senderId),
       settingsUpdatedAtMs: managedChannel.channelSettings.updatedAt.getTime(),
       maxNewMessagesPerScan,
       attach: (normalized) =>
@@ -14840,6 +14853,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           senderAdminVerified:
             normalized.senderId !== null &&
             managedChannel.adminUserIds.includes(normalized.senderId),
+          requiredAuthorUserId: normalized.senderId,
         }),
     });
   }
@@ -14987,6 +15001,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     source: 'webhook' | 'poll';
     senderId: string | null;
     senderAdminVerified: boolean;
+    requiredAuthorUserId: string | null;
     sourceMessageAt?: string | null;
   }): Promise<ChannelAutoPostAttachOutcome> {
     const {
@@ -15002,6 +15017,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sourceMessageAt,
     } = params;
     if (linkType === 'forward' && (!senderId || !senderAdminVerified)) {
+      return 'skipped';
+    }
+    if (linkType !== 'forward' && !params.requiredAuthorUserId?.trim()) {
       return 'skipped';
     }
     if (linkType === 'forward' && !(await this.isCurrentChannelEntity(chatId))) {
@@ -15020,16 +15038,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (postSignatureEnabled && !this.channelPostSignatureService) {
       this.logger.error(
         { chatId, messageId, source },
-        'Channel post signature service is unavailable for manual post decoration',
+        'Channel post signature service is unavailable for post decoration',
       );
       return 'noop';
     }
 
-    const autoAttachBotId = await this.resolveAutoAttachMutationBotId({
+    const autoAttachRoute = await this.resolveAutoAttachMutationBotId({
       chatId,
-      source,
       action: linkType === 'forward' ? 'delete_message' : 'edit_message',
+      ...(linkType === 'forward' || params.requiredAuthorUserId === undefined
+        ? {}
+        : { requiredAuthorUserId: params.requiredAuthorUserId }),
     });
+    if (!autoAttachRoute.botId || !autoAttachRoute.requiredAuthorVerified) {
+      return 'skipped';
+    }
+    const autoAttachBotId = autoAttachRoute.botId;
     const mutationRequestOptions = {
       trafficClass: 'background',
       actionHealthLane: 'background',
@@ -15122,7 +15146,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
             beforeSend: async () => {
               // FLAG: Re-read MAX and local authorization in the final callback before publishing.
-              await this.assertCurrentChannelForwardMutationAuthorized(
+              await this.channelAutoPostMutationGuard.assertForwardSendAuthorized(
                 chatId,
                 senderId,
                 autoAttachBotId,
@@ -15181,7 +15205,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           const cleanupRequestOptions = {
             ...mutationRequestOptions,
             beforeImmediateDeleteMutation: () =>
-              this.assertCurrentChannelForwardMutationAuthorized(chatId, senderId, autoAttachBotId),
+              this.channelAutoPostMutationGuard.assertForwardDeleteAuthorized(
+                chatId,
+                senderId,
+                autoAttachBotId,
+              ),
           };
           await this.ensureModerationDeleteIntent(cleanupInput, cleanupRequestOptions);
           const cleanup = await this.executeModerationDelete(cleanupInput, cleanupRequestOptions);
@@ -15221,7 +15249,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
               beforeEditMutation: () =>
-                this.assertCurrentChannelMutationTarget(chatId, autoAttachBotId),
+                this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId),
               debugContext: {
                 screen: 'channel-auto-post',
                 action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
@@ -15275,7 +15303,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               buttons: replacementButtons,
               ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
               beforeEditMutation: () =>
-                this.assertCurrentChannelMutationTarget(chatId, autoAttachBotId),
+                this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId),
               debugContext: {
                 screen: 'channel-auto-post',
                 action:
@@ -15498,60 +15526,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       select: { entityType: true },
     });
     return chat?.entityType === ChatEntityType.CHANNEL;
-  }
-
-  private async assertCurrentChannelEntity(chatId: string): Promise<void> {
-    if (!(await this.isCurrentChannelEntity(chatId))) {
-      throw new BadRequestException(
-        `Channel auto-post mutation rejected because ${chatId} is not a channel`,
-      );
-    }
-  }
-
-  private async assertCurrentChannelMutationTarget(
-    chatId: string,
-    botId?: string | null,
-  ): Promise<void> {
-    await this.assertCurrentChannelEntity(chatId);
-    const snapshot = await this.maxClient.getChatSnapshot(chatId, {
-      bypassCache: true,
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-      timeoutMs: CHANNEL_AUTO_POST_MUTATION_GUARD_TIMEOUT_MS,
-      ...(botId ? { botId } : {}),
-    });
-    if (snapshot.entityType !== 'channel') {
-      throw new BadRequestException(
-        `Channel auto-post mutation rejected because MAX classifies ${chatId} as ${snapshot.entityType}`,
-      );
-    }
-  }
-
-  private async assertCurrentChannelForwardMutationAuthorized(
-    chatId: string,
-    senderId: string | null,
-    botId?: string | null,
-  ): Promise<void> {
-    await this.assertCurrentChannelMutationTarget(chatId, botId);
-    if (!senderId) {
-      throw new BadRequestException(
-        `Channel auto-post replacement rejected because ${chatId} has no verified sender`,
-      );
-    }
-    const access = await this.maxClient.getChatMemberAccess(chatId, senderId, {
-      bypassCache: true,
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-      timeoutMs: CHANNEL_AUTO_POST_MUTATION_GUARD_TIMEOUT_MS,
-      ...(botId ? { botId } : {}),
-    });
-    if (access?.isAdmin !== true && access?.isOwner !== true) {
-      throw new BadRequestException(
-        `Channel auto-post replacement rejected because ${senderId} is not a current admin of ${chatId}`,
-      );
-    }
   }
 
   private async loadManagedChannelContext(

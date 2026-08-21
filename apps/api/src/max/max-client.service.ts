@@ -582,6 +582,7 @@ const DEFAULT_MAX_API_CHAT_MEMBER_ACCESS_ADMIN_CACHE_SEC = 300;
 const DEFAULT_MAX_API_CHAT_MEMBER_ACCESS_MEMBER_CACHE_SEC = 45;
 const DEFAULT_MAX_API_CHAT_ADMIN_IDS_CACHE_SEC = 60;
 const DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS = 1_000;
+const DEFAULT_MAX_API_MODERATION_DELETE_RATE_LIMIT_WAIT_MS = 2_000;
 const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
 const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
 const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
@@ -798,6 +799,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly chatMemberAccessMemberCacheTtlSec: number;
   private readonly chatAdminIdsCacheTtlSec: number;
   private readonly criticalRateLimitWaitMs: number;
+  private readonly moderationDeleteRateLimitWaitMs: number;
   private readonly interactiveRateLimitWaitMs: number;
   private readonly backgroundRateLimitWaitMs: number;
   private readonly rateLimitRetryFloorMs: number;
@@ -912,6 +914,11 @@ export class MaxClientService implements OnModuleDestroy {
     this.criticalRateLimitWaitMs = this.readConfigInt(
       configService.get('MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL'),
       DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS,
+      0,
+    );
+    this.moderationDeleteRateLimitWaitMs = this.readConfigInt(
+      configService.get('MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE'),
+      DEFAULT_MAX_API_MODERATION_DELETE_RATE_LIMIT_WAIT_MS,
       0,
     );
     this.interactiveRateLimitWaitMs = this.readConfigInt(
@@ -6862,7 +6869,11 @@ export class MaxClientService implements OnModuleDestroy {
     maxWaitMsOverride?: number,
     messageMutation?: MaxMessageMutationRateLimitScope,
   ) {
-    const configuredMaxWaitMs = this.resolveTrafficClassRateLimitWaitMs(trafficClass);
+    const configuredMaxWaitMs = this.resolveTrafficClassRateLimitWaitMs(
+      trafficClass,
+      sourceTag,
+      messageMutation,
+    );
     const maxWaitMs =
       typeof maxWaitMsOverride === 'number' && Number.isFinite(maxWaitMsOverride)
         ? Math.max(0, Math.min(configuredMaxWaitMs, Math.trunc(maxWaitMsOverride)))
@@ -7210,10 +7221,17 @@ export class MaxClientService implements OnModuleDestroy {
     return Math.max(configuredLimit, Math.max(1, this.globalRpsLimit - reservedForOtherClasses));
   }
 
-  private resolveTrafficClassRateLimitWaitMs(trafficClass: MaxApiTrafficClass): number {
+  private resolveTrafficClassRateLimitWaitMs(
+    trafficClass: MaxApiTrafficClass,
+    sourceTag?: string | null,
+    messageMutation?: MaxMessageMutationRateLimitScope,
+  ): number {
     switch (trafficClass) {
       case 'critical':
-        return this.criticalRateLimitWaitMs;
+        return messageMutation?.operation === 'delete' &&
+          this.normalizeMetricSourceTag(sourceTag) === MAX_API_SOURCE_TAGS.MODERATION_DELETE
+          ? this.moderationDeleteRateLimitWaitMs
+          : this.criticalRateLimitWaitMs;
       case 'background':
         return this.backgroundRateLimitWaitMs;
       case 'interactive':

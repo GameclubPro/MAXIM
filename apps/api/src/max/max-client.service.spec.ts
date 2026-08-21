@@ -8538,6 +8538,125 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('gives moderation deletes a dedicated bounded slot wait without widening critical traffic', async () => {
+    const service = createService(
+      {},
+      {
+        MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '1000',
+        MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE: '2000',
+      },
+    );
+
+    expect(
+      (service as any).resolveTrafficClassRateLimitWaitMs(
+        'critical',
+        MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+        { operation: 'delete', entityId: 'chat-1' },
+      ),
+    ).toBe(2_000);
+    expect(
+      (service as any).resolveTrafficClassRateLimitWaitMs(
+        'critical',
+        MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ),
+    ).toBe(1_000);
+    expect(
+      (service as any).resolveTrafficClassRateLimitWaitMs(
+        'critical',
+        MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
+        { operation: 'delete', entityId: 'chat-1' },
+      ),
+    ).toBe(1_000);
+    expect(
+      (service as any).resolveTrafficClassRateLimitWaitMs(
+        'interactive',
+        MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ),
+    ).toBe(1_500);
+
+    await service.onModuleDestroy();
+  });
+
+  it('uses the dedicated moderation delete budget while keeping the critical limiter deadline', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T09:59:00.000Z'));
+    const service = createService(
+      {},
+      {
+        MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '1000',
+        MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE: '2000',
+        MAX_API_RATE_LIMIT_RETRY_FLOOR_MS: '1',
+      },
+    );
+    const internal = service as any;
+    const reserve = jest.spyOn(internal, 'tryReserveRateLimitSlot');
+    jest.spyOn(internal, 'recordRateLimitUsage').mockResolvedValue(undefined);
+    jest.spyOn(internal, 'recordRateLimitOutcome').mockResolvedValue(undefined);
+
+    reserve
+      .mockResolvedValueOnce({
+        ok: false,
+        retryAfterMs: 1_500,
+        reason: 'MAX API delete message rate limit exceeded for target chat-1',
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const moderationDeleteReservation = internal.reserveRateLimitSlot(
+      '777000_bot',
+      'chat-1',
+      'critical',
+      MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      5_000,
+      { operation: 'delete', entityId: 'chat-1' },
+    );
+
+    await jest.advanceTimersByTimeAsync(1_500);
+    await expect(moderationDeleteReservation).resolves.toBeUndefined();
+
+    reserve.mockReset().mockResolvedValue({
+      ok: false,
+      retryAfterMs: 1_500,
+      reason: 'MAX API delete message rate limit exceeded for target chat-1',
+    });
+    const deadlineBoundDeleteReservation = internal.reserveRateLimitSlot(
+      '777000_bot',
+      'chat-1',
+      'critical',
+      MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      500,
+      { operation: 'delete', entityId: 'chat-1' },
+    );
+    const deadlineBoundDeleteExpectation = expect(
+      deadlineBoundDeleteReservation,
+    ).rejects.toMatchObject({
+      code: 'MAX_API_INTERNAL_RATE_LIMIT',
+      preDispatch: true,
+    });
+
+    await jest.advanceTimersByTimeAsync(500);
+    await deadlineBoundDeleteExpectation;
+
+    reserve.mockReset().mockResolvedValue({
+      ok: false,
+      retryAfterMs: 1_500,
+      reason: 'MAX API critical rate limit exceeded across all bots',
+    });
+    const regularCriticalReservation = internal.reserveRateLimitSlot(
+      '777000_bot',
+      'chat-2',
+      'critical',
+      MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
+      5_000,
+    );
+    const regularCriticalExpectation = expect(regularCriticalReservation).rejects.toMatchObject({
+      code: 'MAX_API_INTERNAL_RATE_LIMIT',
+      preDispatch: true,
+    });
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    await regularCriticalExpectation;
+
+    await service.onModuleDestroy();
+  });
+
   it('shares GCRA stack reservations across service instances and smooths the next slot', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:00:00.000Z'));
     const firstService = createService(

@@ -462,4 +462,27 @@ describe('ChannelAutoPostLegacyRecovery', () => {
       }),
     );
   });
+
+  it('terminalizes a legacy edit when the current guard cannot prove bot authorship', async () => {
+    const harness = createHarness({
+      candidates: [candidate('channel-1')],
+      contextRows: [contextRow('channel-1')],
+    });
+    harness.attach.mockResolvedValue('skipped');
+
+    await expect(harness.runner.runIfDue()).resolves.toEqual(
+      expect.objectContaining({
+        status: 'completed',
+        mutationAttempts: 1,
+        terminalizedCandidates: 1,
+      }),
+    );
+    expect(harness.completeChannelAutoPost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        deliveryMode: 'edit_message',
+        lastError: expect.stringContaining('no verifiable bot author'),
+      }),
+    );
+  });
 });

@@ -4158,7 +4158,7 @@ describe('ModerationService', () => {
     expect((service as any).processManagedChannelAutoPostButtons).toHaveBeenCalledTimes(4);
   });
 
-  it('uses the resolved scan bot when auto-attaching channel buttons during poll repair', async () => {
+  it('uses the executable edit route when auto-attaching channel buttons during poll repair', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
@@ -4170,10 +4170,27 @@ describe('ModerationService', () => {
     };
     const maxClient = {
       getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '990002',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['edit_message'],
+      }),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const maxBotLinkService = {
-      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'channel-1',
+        primaryBotId: 'scan-bot-2',
+        botId: 'scan-bot-2',
+        candidateBotIds: ['scan-bot-2'],
+        reason: 'primary_confirmed',
+        action: 'edit_message',
+      }),
+      getExecutableBotById: jest.fn((botId: string) =>
+        botId === 'scan-bot-2' ? { id: botId, contactId: '990002' } : null,
+      ),
       getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
       buildMiniappStartUrlSync: jest
         .fn()
@@ -4231,13 +4248,17 @@ describe('ModerationService', () => {
         adminUserIds: ['admin-1'],
       },
       source: 'poll',
-      senderId: null,
+      senderId: '990002',
+      requiredAuthorUserId: '990002',
     });
 
-    expect(maxBotLinkService.resolveBotIdForCapability).toHaveBeenCalledWith({
+    expect(maxBotLinkService.resolveBotRoutes).toHaveBeenCalledWith({
+      purpose: 'moderation_action',
       chatId: 'channel-1',
-      capability: 'background_scans',
+      action: 'edit_message',
+      fallbackToPrimary: true,
     });
+    expect(maxBotLinkService.getExecutableBotById).toHaveBeenCalledWith('scan-bot-2');
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-1',
@@ -4289,6 +4310,12 @@ describe('ModerationService', () => {
     };
     const maxClient = {
       getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '990002',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['delete_message', 'write'],
+      }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
         userId: 'admin-1',
         isAdmin: true,
@@ -4312,7 +4339,18 @@ describe('ModerationService', () => {
       deleteMessage: jest.fn(),
     };
     const maxBotLinkService = {
-      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+      resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'channel-1',
+        primaryBotId: 'scan-bot-2',
+        botId: 'scan-bot-2',
+        candidateBotIds: ['scan-bot-2'],
+        reason: 'primary_confirmed',
+        action: 'delete_message',
+      }),
+      getExecutableBotById: jest.fn((botId: string) =>
+        botId === 'scan-bot-2' ? { id: botId, contactId: '990002' } : null,
+      ),
       getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
       buildMiniappStartUrlSync: jest.fn().mockReturnValue('https://max.ru/bot?startapp=comments'),
       buildEntryMiniappStartUrlSync: jest
@@ -4390,6 +4428,7 @@ describe('ModerationService', () => {
     );
     expect(deleteIntents.ensureIntent.mock.calls[0]?.[0]).not.toHaveProperty('sourceMessageAt');
     expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(3);
     expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
       bypassCache: true,
       trafficClass: 'background',
@@ -4397,6 +4436,14 @@ describe('ModerationService', () => {
       sourceTag: 'channel_auto_post',
       timeoutMs: 2_000,
       botId: 'scan-bot-2',
+    });
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
+      botId: 'scan-bot-2',
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
     });
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('channel-1', 'admin-1', {
@@ -4440,7 +4487,11 @@ describe('ModerationService', () => {
         text: 'Forwarded post',
         createdAt: sourceMessageAt,
       },
-      raw: {},
+      raw: {
+        message: {
+          link: { type: 'forward' },
+        },
+      },
     };
 
     await (service as any).handleChannelUpdate(update, {
@@ -4664,10 +4715,27 @@ describe('ModerationService', () => {
     };
     const maxClient = {
       getChatSnapshot: jest.fn().mockResolvedValue({ entityType: 'channel' }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '990002',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['edit_message'],
+      }),
       editMessageInlineKeyboard: jest.fn().mockRejectedValue(maxError),
     };
     const maxBotLinkService = {
-      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+      resolveBotRoutes: jest.fn().mockResolvedValue({
+        purpose: 'moderation_action',
+        chatId: 'channel-1',
+        primaryBotId: 'scan-bot-2',
+        botId: 'scan-bot-2',
+        candidateBotIds: ['scan-bot-2'],
+        reason: 'primary_confirmed',
+        action: 'edit_message',
+      }),
+      getExecutableBotById: jest.fn((botId: string) =>
+        botId === 'scan-bot-2' ? { id: botId, contactId: '990002' } : null,
+      ),
       getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
       buildMiniappStartUrlSync: jest
         .fn()
@@ -4745,7 +4813,8 @@ describe('ModerationService', () => {
         adminUserIds: ['admin-1'],
       },
       source: 'poll',
-      senderId: null,
+      senderId: '990002',
+      requiredAuthorUserId: '990002',
     });
 
     expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
@@ -4762,7 +4831,7 @@ describe('ModerationService', () => {
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'channel-1',
-        actorUserId: 'system',
+        actorUserId: '990002',
         action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
         payload: expect.objectContaining({
           messageId: 'mid-channel-1',

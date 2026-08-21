@@ -53,6 +53,7 @@ type ProcessChannelAutoPostListedMessagesParams = {
   chatId: string;
   messages: readonly Record<string, unknown>[];
   adminUserIds: readonly string[];
+  isRuntimeBotUserId?: (senderId: string) => boolean;
   settingsUpdatedAtMs: number;
   maxNewMessagesPerScan: number;
   attach: (message: ChannelAutoPostListedMessage) => Promise<ChannelAutoPostAttachOutcome>;
@@ -482,6 +483,67 @@ export async function prepareChannelAutoPostDecoration(params: {
   );
 }
 
+export async function resolveChannelAutoPostMutationBotRoute(params: {
+  actionCandidateBotIds: readonly (string | null)[];
+  requiredAuthorUserId?: string | null;
+  resolveExecutableBotIdentity: (
+    botId: string,
+  ) => { botId: string; contactId: string | null } | null;
+}): Promise<{ botId: string | null; requiredAuthorVerified: boolean }> {
+  const requiredAuthorUserId = params.requiredAuthorUserId?.trim() || null;
+  if (params.requiredAuthorUserId !== undefined && !requiredAuthorUserId) {
+    return { botId: null, requiredAuthorVerified: false };
+  }
+  for (const botId of params.actionCandidateBotIds) {
+    if (typeof botId !== 'string' || botId.trim().length === 0) {
+      continue;
+    }
+    const candidateBotId = botId.trim();
+    const identity = params.resolveExecutableBotIdentity(candidateBotId);
+    const executableBotId = identity?.botId.trim() || null;
+    if (!identity || executableBotId !== candidateBotId) {
+      continue;
+    }
+    if (
+      requiredAuthorUserId &&
+      !isMatchingBotIdentity(requiredAuthorUserId, executableBotId, identity.contactId)
+    ) {
+      continue;
+    }
+    return { botId: candidateBotId, requiredAuthorVerified: true };
+  }
+  return { botId: null, requiredAuthorVerified: false };
+}
+
+function isMatchingBotIdentity(userId: string, botId: string, contactId: string | null): boolean {
+  const senderVariants = buildStrictBotIdentityVariants(userId);
+  return [botId, contactId].some((identity) => {
+    if (!identity) {
+      return false;
+    }
+    const identityVariants = buildStrictBotIdentityVariants(identity);
+    return [...senderVariants].some((variant) => identityVariants.has(variant));
+  });
+}
+
+function buildStrictBotIdentityVariants(value: string): Set<string> {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return new Set();
+  }
+  const variants = new Set([normalized]);
+  if (normalized.startsWith('id') && normalized.length > 2) {
+    variants.add(normalized.slice(2));
+  }
+  if (normalized.endsWith('_bot') && normalized.length > 4) {
+    variants.add(normalized.slice(0, -4));
+  }
+  if (normalized.startsWith('id') && normalized.endsWith('_bot') && normalized.length > 6) {
+    variants.add(normalized.slice(2, -4));
+  }
+  return variants;
+}
+
 export class ChannelAutoPostScanManager {
   private readonly now: () => number;
   private cursor = 0;
@@ -640,10 +702,12 @@ export class ChannelAutoPostScanManager {
         continue;
       }
       sawNewMessages = true;
-      if (
-        (normalized.senderId && !params.adminUserIds.includes(normalized.senderId)) ||
-        normalized.timestampMs < params.settingsUpdatedAtMs
-      ) {
+      const senderEligible = params.isRuntimeBotUserId
+        ? normalized.linkType === 'forward'
+          ? normalized.senderId !== null && params.adminUserIds.includes(normalized.senderId)
+          : normalized.senderId !== null && params.isRuntimeBotUserId(normalized.senderId)
+        : !normalized.senderId || params.adminUserIds.includes(normalized.senderId);
+      if (!senderEligible || normalized.timestampMs < params.settingsUpdatedAtMs) {
         scanState = this.advance(scanState, normalized);
         this.states.set(params.chatId, scanState);
         continue;

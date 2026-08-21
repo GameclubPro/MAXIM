@@ -6,6 +6,7 @@ import {
   resolveChannelAutoPostButtonVisibility,
   resolveChannelAutoPostEventTimestampMs,
   resolveChannelAutoPostMessageText,
+  resolveChannelAutoPostMutationBotRoute,
 } from './channel-auto-post-runtime';
 
 function createScanManager(now: () => number, states = new Map()) {
@@ -439,5 +440,105 @@ describe('channel auto-post runtime', () => {
       idleStreak: 0,
       nextScanAtMs: 11_000,
     });
+  });
+
+  it('selects only the edit-capable bot that authored the channel post', async () => {
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: ['bot-a', 'bot-b'],
+        requiredAuthorUserId: '222000',
+        resolveExecutableBotIdentity: (botId) => ({
+          botId,
+          contactId: botId === 'bot-b' ? '222000' : '111000',
+        }),
+      }),
+    ).resolves.toEqual({ botId: 'bot-b', requiredAuthorVerified: true });
+  });
+
+  it('matches an executable bot handle without requiring a contact id', async () => {
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: ['222000_bot'],
+        requiredAuthorUserId: '222000',
+        resolveExecutableBotIdentity: (botId) => ({ botId, contactId: null }),
+      }),
+    ).resolves.toEqual({ botId: '222000_bot', requiredAuthorVerified: true });
+  });
+
+  it('rejects a known fleet author that does not match the executable candidate', async () => {
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: ['bot-a'],
+        requiredAuthorUserId: '222000',
+        resolveExecutableBotIdentity: (botId) => ({ botId, contactId: '111000' }),
+      }),
+    ).resolves.toEqual({ botId: null, requiredAuthorVerified: false });
+  });
+
+  it('rejects a handle-like action candidate that is not executable', async () => {
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: ['222000_bot'],
+        requiredAuthorUserId: '222000',
+        resolveExecutableBotIdentity: () => null,
+      }),
+    ).resolves.toEqual({ botId: null, requiredAuthorVerified: false });
+  });
+
+  it('rejects an executable identity returned for a different fallback bot', async () => {
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: ['stale-bot'],
+        requiredAuthorUserId: '222000',
+        resolveExecutableBotIdentity: () => ({
+          botId: 'entry-bot',
+          contactId: '222000',
+        }),
+      }),
+    ).resolves.toEqual({ botId: null, requiredAuthorVerified: false });
+  });
+
+  it('rejects an implicit null action route without resolving an identity', async () => {
+    const resolveExecutableBotIdentity = jest.fn();
+
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: [null],
+        requiredAuthorUserId: '222000',
+        resolveExecutableBotIdentity,
+      }),
+    ).resolves.toEqual({ botId: null, requiredAuthorVerified: false });
+    expect(resolveExecutableBotIdentity).not.toHaveBeenCalled();
+  });
+
+  it('rejects a known runtime author when the action route has no candidates', async () => {
+    const resolveExecutableBotIdentity = jest.fn();
+
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: [],
+        requiredAuthorUserId: '222000',
+        resolveExecutableBotIdentity,
+      }),
+    ).resolves.toEqual({ botId: null, requiredAuthorVerified: false });
+    expect(resolveExecutableBotIdentity).not.toHaveBeenCalled();
+  });
+
+  it('selects an explicit executable delete route when no author match is required', async () => {
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: ['delete-bot'],
+        resolveExecutableBotIdentity: (botId) => ({ botId, contactId: '900001' }),
+      }),
+    ).resolves.toEqual({ botId: 'delete-bot', requiredAuthorVerified: true });
+  });
+
+  it('rejects an empty delete route without falling back to another bot', async () => {
+    await expect(
+      resolveChannelAutoPostMutationBotRoute({
+        actionCandidateBotIds: [],
+        resolveExecutableBotIdentity: jest.fn(),
+      }),
+    ).resolves.toEqual({ botId: null, requiredAuthorVerified: false });
   });
 });
