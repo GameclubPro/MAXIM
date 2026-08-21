@@ -11,13 +11,13 @@ function createService(
 ) {
   const create = params.create ?? jest.fn().mockResolvedValue({});
   const findFirst = params.findFirst ?? jest.fn().mockResolvedValue(null);
-  const queryRaw = jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]);
+  const executeRaw = jest.fn().mockResolvedValue(0);
   const moderationEvent = {
     create,
     findFirst,
   };
   const transaction = jest.fn(async (operation: (tx: unknown) => Promise<unknown>) =>
-    operation({ moderationEvent, $queryRaw: queryRaw }),
+    operation({ moderationEvent, $executeRaw: executeRaw }),
   );
   const service = new NightModeTransitionEventService(
     {
@@ -31,7 +31,7 @@ function createService(
       getActiveBotId: jest.fn().mockReturnValue(params.activeBotId ?? null),
     } as never,
   );
-  return { service, create, findFirst, queryRaw, transaction };
+  return { service, create, findFirst, executeRaw, transaction };
 }
 
 function extractSqlText(query: unknown): string {
@@ -121,7 +121,7 @@ describe('NightModeTransitionEventService', () => {
 
   it('returns an exact existing close event without creating a duplicate', async () => {
     const findFirst = jest.fn().mockResolvedValue({ id: 'event-existing-1' });
-    const { service, create, queryRaw, transaction } = createService({ findFirst });
+    const { service, create, executeRaw, transaction } = createService({ findFirst });
 
     await expect(
       service.ensureTransitionEvent({
@@ -151,7 +151,7 @@ describe('NightModeTransitionEventService', () => {
       orderBy: { createdAt: 'desc' },
     });
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(extractSqlText(queryRaw.mock.calls[0]?.[0])).toContain(
+    expect(extractSqlText(executeRaw.mock.calls[0]?.[0])).toContain(
       'pg_advisory_xact_lock(hashtextextended(',
     );
     expect(create).not.toHaveBeenCalled();
@@ -192,10 +192,10 @@ describe('NightModeTransitionEventService', () => {
       storedEvent = { id: 'event-serialized-1' };
       return storedEvent;
     });
-    const queryRaw = jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]);
+    const executeRaw = jest.fn().mockResolvedValue(0);
     const tx = {
       moderationEvent: { findFirst, create },
-      $queryRaw: queryRaw,
+      $executeRaw: executeRaw,
     };
     let transactionTail = Promise.resolve();
     const transaction = jest.fn(async (operation: (client: typeof tx) => Promise<unknown>) => {
@@ -231,7 +231,7 @@ describe('NightModeTransitionEventService', () => {
     ).resolves.toEqual([{ id: 'event-serialized-1' }, { id: 'event-serialized-1' }]);
 
     expect(transaction).toHaveBeenCalledTimes(2);
-    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(executeRaw).toHaveBeenCalledTimes(2);
     expect(findFirst).toHaveBeenCalledTimes(2);
     expect(create).toHaveBeenCalledTimes(1);
   });

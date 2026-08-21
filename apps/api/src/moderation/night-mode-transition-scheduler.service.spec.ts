@@ -3441,6 +3441,90 @@ describe('NightModeTransitionSchedulerService', () => {
     );
   });
 
+  it('replaces an existing failed deterministic recovery job and refreshes its registry intent', async () => {
+    const chatId = 'chat-failed-recovery-requeue';
+    const recovery = buildCloseRecoveryA(chatId);
+    const recoveryJobId = buildNightModeTransitionRecoveryJobId(chatId, recovery);
+    const order: string[] = [];
+    const failedJob = {
+      id: recoveryJobId,
+      data: { recoveryOnly: recovery },
+      getState: jest.fn().mockResolvedValue('failed'),
+      remove: jest.fn(async () => {
+        order.push('queue-remove');
+      }),
+    };
+    const prisma = {
+      maxActionLedgerEntry: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'ledger-failed-recovery-requeue',
+            jobId: `night-mode:close:${chatId}:session:${recovery.sessionKey}`,
+            updatedAt: new Date('2026-05-30T20:00:01.000Z'),
+            actionType: 'SEND_MESSAGE',
+            chatId,
+            sourceTag: 'night_mode_transition',
+            status: MaxActionLedgerStatus.SUCCEEDED,
+            ambiguous: false,
+            terminal: true,
+            completedAt: new Date('2026-05-30T20:00:01.000Z'),
+            dispatchToken: 'dispatch-failed-recovery-requeue',
+            dispatchStartedAt: new Date('2026-05-30T20:00:00.000Z'),
+            dispatchBotId: recovery.botId,
+            remoteMessageId: recovery.messageId,
+          },
+        ]),
+      },
+      moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
+      $executeRaw: jest.fn(async (query: unknown) => {
+        const statement = extractSqlText(query);
+        order.push(statement.includes('DELETE FROM') ? 'registry-delete' : 'registry-upsert');
+        return 1;
+      }),
+    };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(failedJob),
+      add: jest.fn(async () => {
+        order.push('queue-add');
+      }),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+      undefined,
+      undefined,
+      { getString: jest.fn().mockResolvedValue(null) } as never,
+    );
+
+    await expect(
+      (
+        service as unknown as {
+          ensureCloseEventRecoveryJob(targetChatId: string): Promise<{ jobId: string | null }>;
+        }
+      ).ensureCloseEventRecoveryJob(chatId),
+    ).resolves.toEqual(expect.objectContaining({ jobId: recoveryJobId }));
+
+    expect(queue.getJob).toHaveBeenCalledWith(recoveryJobId);
+    expect(failedJob.remove).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain(
+      'DELETE FROM "night_mode_transition_scheduled_jobs"',
+    );
+    expect(extractSqlValues(prisma.$executeRaw.mock.calls[0]?.[0])).toEqual([
+      chatId,
+      recoveryJobId,
+    ]);
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
+      'INSERT INTO "night_mode_transition_scheduled_jobs"',
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      NIGHT_MODE_TRANSITION_JOB_NAME,
+      expect.objectContaining({ chatId, recoveryOnly: recovery }),
+      expect.objectContaining({ jobId: recoveryJobId }),
+    );
+    expect(order).toEqual(['queue-remove', 'registry-delete', 'registry-upsert', 'queue-add']);
+  });
+
   it('schedules ledger-backed event recovery for a disabled chat without ChatSettings', async () => {
     const chatId = 'chat-disabled-legacy-ledger';
     const recovery = buildCloseRecoveryA(chatId);
@@ -4202,8 +4286,11 @@ describe('NightModeTransitionSchedulerService', () => {
     );
 
     expect(activeJob.remove).not.toHaveBeenCalled();
-    expect(prisma.$executeRaw).not.toHaveBeenCalled();
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain(
+      'enqueue_night_mode_transition_reconcile_request',
+    );
   });
 
   it('does not fail a completed transition while enqueue-next still observes its active job', async () => {

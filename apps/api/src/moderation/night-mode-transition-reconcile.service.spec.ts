@@ -123,13 +123,16 @@ describe('NightModeTransitionReconcileService', () => {
         scanCalls += 1;
         return [row];
       }
+      return [];
+    });
+    const executeRaw = jest.fn(async () => {
       persistCalls += 1;
       if (persistCalls === 1) {
         throw new Error('request persistence unavailable');
       }
-      return [];
+      return 1;
     });
-    const { service } = createService({ queryRaw });
+    const { service } = createService({ queryRaw, executeRaw });
     const discover = () =>
       (
         service as unknown as {
@@ -169,7 +172,7 @@ describe('NightModeTransitionReconcileService', () => {
       }
       return [];
     });
-    const { service } = createService({ queryRaw });
+    const { prisma, service } = createService({ queryRaw });
     const discover = () =>
       (
         service as unknown as {
@@ -184,7 +187,7 @@ describe('NightModeTransitionReconcileService', () => {
     const scanQueries = queryRaw.mock.calls
       .map((call) => call[0])
       .filter((query) => extractSqlText(query).includes('FROM "max_action_ledger" ledger'));
-    const requestQueries = queryRaw.mock.calls
+    const requestQueries = prisma.$executeRaw.mock.calls
       .map((call) => call[0])
       .filter((query) =>
         extractSqlText(query).includes('enqueue_night_mode_transition_reconcile_request'),
@@ -770,6 +773,8 @@ describe('NightModeTransitionReconcileService', () => {
         .map(([query]) => extractSqlText(query))
         .filter((statement) => statement.includes('WITH expected("chat_id", "generation") AS'));
       expect(heartbeatStatements).toHaveLength(3);
+      expect(heartbeatStatements[0]).toContain('::TEXT');
+      expect(heartbeatStatements[0]).toContain('::BIGINT');
       expect(heartbeatStatements[0]).toContain('request."generation" = expected."generation"');
       expect(heartbeatStatements[0]).toContain('request."lease_token" =');
       expect(heartbeatStatements[0]).toContain('request."lease_expires_at" > CURRENT_TIMESTAMP');

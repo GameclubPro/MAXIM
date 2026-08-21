@@ -2553,10 +2553,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   }
 
   private async requestDurableReconcile(chatId: string): Promise<void> {
-    if (typeof this.prisma.$queryRaw !== 'function') {
+    if (typeof this.prisma.$executeRaw !== 'function') {
       return;
     }
-    await this.prisma.$queryRaw(Prisma.sql`
+    await this.prisma.$executeRaw(Prisma.sql`
       SELECT enqueue_night_mode_transition_reconcile_request(${chatId})
     `);
   }

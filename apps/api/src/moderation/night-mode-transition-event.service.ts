@@ -63,7 +63,7 @@ export class NightModeTransitionEventService {
     // FLAG: The Redis transition lease can expire between the existence read and event insert.
     // This database lock serializes the exact identity even when two former lock owners overlap.
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(Prisma.sql`
+      await tx.$executeRaw(Prisma.sql`
         SELECT pg_advisory_xact_lock(hashtextextended(${lockIdentity}, 0::BIGINT))
       `);
       const existing = await tx.moderationEvent.findFirst({

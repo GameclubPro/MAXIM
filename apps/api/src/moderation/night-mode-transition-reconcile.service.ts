@@ -212,7 +212,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         left.chatId.localeCompare(right.chatId) || left.sessionKey.localeCompare(right.sessionKey),
     );
     if (candidates.length > 0) {
-      await this.prisma.$queryRaw(Prisma.sql`
+      await this.prisma.$executeRaw(Prisma.sql`
         WITH recovery_candidates("chat_id", "session_key", "ledger_job_id") AS (
           VALUES ${Prisma.join(
             candidates.map(
@@ -576,7 +576,9 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
     await this.prisma.$queryRaw(Prisma.sql`
       WITH expected("chat_id", "generation") AS (
         VALUES ${Prisma.join(
-          requests.map((request) => Prisma.sql`(${request.chat_id}, ${request.generation})`),
+          requests.map(
+            (request) => Prisma.sql`(${request.chat_id}::TEXT, ${request.generation}::BIGINT)`,
+          ),
         )}
       )
       UPDATE "night_mode_transition_reconcile_requests" request

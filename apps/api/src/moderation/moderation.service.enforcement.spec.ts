@@ -828,12 +828,12 @@ describe('ModerationService', () => {
           async (
             operation: (tx: {
               moderationEvent: typeof moderationEvent;
-              $queryRaw: jest.Mock;
+              $executeRaw: jest.Mock;
             }) => unknown,
           ) =>
             operation({
               moderationEvent,
-              $queryRaw: jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
+              $executeRaw: jest.fn().mockResolvedValue(0),
             }),
         ),
       };
