@@ -154,6 +154,7 @@ import {
   buildChatAutoCommentAuditId,
   CHANNEL_AUTO_POST_ATTACH_STATUS,
   CHAT_AUTO_COMMENT_ATTACH_STATUS,
+  persistChannelAutoPostPreDispatchFailureEvidence,
   ReplacementAttachMarkerStore,
 } from './replacement-attach-marker.store';
 import {
@@ -15450,7 +15451,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         source,
         botId: autoAttachBotId,
         linkType,
-        lastError: this.extractErrorSummary(error),
+        lastError: persistChannelAutoPostPreDispatchFailureEvidence(
+          error,
+          this.extractErrorSummary(error),
+        ),
         lastStatusCode: status,
       });
       throw error;

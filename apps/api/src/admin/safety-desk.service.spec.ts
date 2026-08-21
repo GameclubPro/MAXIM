@@ -198,7 +198,7 @@ function createFixture() {
     channelAutoPostAttachMarker: {
       aggregate: jest.fn().mockResolvedValue({
         _count: { _all: 0 },
-        _min: { replacementSendStartedAt: null },
+        _min: { replacementSendStartedAt: null, updatedAt: null },
       }),
       findMany: jest.fn().mockResolvedValue([]),
     },
@@ -318,26 +318,47 @@ describe('SafetyDeskService', () => {
       .mockResolvedValueOnce([attentionIntent])
       .mockResolvedValueOnce([completedIntent]);
     const ambiguousStartedAt = new Date(Date.now() - 45_000);
-    prisma.channelAutoPostAttachMarker.aggregate.mockResolvedValue({
-      _count: { _all: 2 },
-      _min: { replacementSendStartedAt: ambiguousStartedAt },
-    });
+    const staleClaimCreatedAt = new Date(Date.now() - 2 * 60 * 60_000);
+    const staleClaimUpdatedAt = new Date(Date.now() - 11 * 60_000);
+    prisma.channelAutoPostAttachMarker.aggregate
+      .mockResolvedValueOnce({
+        _count: { _all: 2 },
+        _min: { replacementSendStartedAt: ambiguousStartedAt },
+      })
+      .mockResolvedValueOnce({
+        _count: { _all: 1 },
+        _min: { updatedAt: staleClaimUpdatedAt },
+      });
     prisma.chatAutoCommentAttachMarker.aggregate.mockResolvedValue({
       _count: { _all: 1 },
       _min: { replacementSendStartedAt: new Date(Date.now() - 20_000) },
     });
-    prisma.channelAutoPostAttachMarker.findMany.mockResolvedValue([
-      {
-        id: 'ambiguous-channel-send-1',
-        chatId: 'channel-1',
-        messageId: 'message-ambiguous-1',
-        botId: 'bot-1',
-        replacementSendStartedAt: ambiguousStartedAt,
-        lastError: '[max.send_ambiguous] request timed out',
-        updatedAt: new Date(Date.now() - 10_000),
-        chat: { title: 'Канал администраторов' },
-      },
-    ]);
+    prisma.channelAutoPostAttachMarker.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'ambiguous-channel-send-1',
+          chatId: 'channel-1',
+          messageId: 'message-ambiguous-1',
+          botId: 'bot-1',
+          replacementSendStartedAt: ambiguousStartedAt,
+          lastError: '[max.send_ambiguous] request timed out',
+          updatedAt: new Date(Date.now() - 10_000),
+          chat: { title: 'Канал администраторов' },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'stale-channel-claim-1',
+          chatId: 'channel-2',
+          messageId: 'message-stale-claim-1',
+          botId: 'bot-2',
+          lockedAt: null,
+          lastError: 'socket hang up',
+          createdAt: staleClaimCreatedAt,
+          updatedAt: staleClaimUpdatedAt,
+          chat: { title: 'Зависший канал' },
+        },
+      ]);
     const oldestNotificationDeadEndAt = new Date(Date.now() - 60_000);
     prisma.managedGiveawayWinnerNotification.groupBy.mockResolvedValue([
       {
@@ -369,8 +390,8 @@ describe('SafetyDeskService', () => {
         due: { count: 2, oldestAt: oldestDue.toISOString() },
         staleLeases: { count: 1 },
         ambiguousSends: {
-          count: 3,
-          oldestAt: ambiguousStartedAt.toISOString(),
+          count: 4,
+          oldestAt: staleClaimUpdatedAt.toISOString(),
         },
         giveawayWinnerNotificationDeadEnds: {
           count: 3,
@@ -413,14 +434,24 @@ describe('SafetyDeskService', () => {
     expect(runtime.items.map((item) => item.status)).toEqual(['WAITING_CAPABILITY', 'SUCCEEDED']);
     expect(runtime.items[1]).toMatchObject({ remoteDeleteSucceededBotId: 'bot-1' });
     expect(runtime.items[1]?.remoteDeleteSucceededAt).not.toBeNull();
-    expect(runtime.ambiguousSends).toEqual([
-      expect.objectContaining({
-        source: 'channel_auto_post',
-        chatId: 'channel-1',
-        messageId: 'message-ambiguous-1',
-        botId: 'bot-1',
-      }),
-    ]);
+    expect(runtime.ambiguousSends).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'channel_auto_post',
+          chatId: 'channel-1',
+          messageId: 'message-ambiguous-1',
+          botId: 'bot-1',
+        }),
+        expect.objectContaining({
+          source: 'channel_auto_post',
+          chatId: 'channel-2',
+          messageId: 'message-stale-claim-1',
+          botId: 'bot-2',
+          startedAt: staleClaimUpdatedAt.toISOString(),
+          lastError: expect.stringContaining('Stale channel auto-post claim'),
+        }),
+      ]),
+    );
     expect(runtime.giveawayWinnerNotificationDeadEnds).toEqual([
       expect.objectContaining({
         notificationId: 'winner-notification-1',
@@ -488,6 +519,39 @@ describe('SafetyDeskService', () => {
           replacementMessageId: null,
           replacementSendStartedAt: { not: null },
         }),
+      }),
+    );
+    expect(prisma.channelAutoPostAttachMarker.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'IN_PROGRESS',
+          replacementMessageId: null,
+          replyMessageId: null,
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              lockedAt: null,
+              updatedAt: { lte: expect.any(Date) },
+            }),
+          ]),
+        }),
+        _count: { _all: true },
+        _min: { updatedAt: true },
+      }),
+    );
+    expect(prisma.channelAutoPostAttachMarker.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'IN_PROGRESS',
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              lockedAt: null,
+              updatedAt: { lte: expect.any(Date) },
+            }),
+          ]),
+        }),
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: 100,
       }),
     );
     expect(prisma.managedGiveawayWinnerNotification.groupBy).toHaveBeenCalledWith({

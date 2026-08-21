@@ -1,10 +1,15 @@
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
+import type { LegacyChannelEditRecoveryCandidate } from './replacement-attach-marker.store';
 
-function candidate(chatId: string, messageId = `message-${chatId}`) {
+function candidate(
+  chatId: string,
+  messageId = `message-${chatId}`,
+  evidence: LegacyChannelEditRecoveryCandidate['evidence'] = 'marker',
+): LegacyChannelEditRecoveryCandidate {
   return {
     chatId,
     messageId,
-    evidence: 'marker' as const,
+    evidence,
     evidenceId: `marker-${chatId}-${messageId}`,
     evidenceAt: new Date('2026-08-09T10:00:00.000Z'),
   };
@@ -31,6 +36,11 @@ function createHarness(options: {
   let nowMs = Date.parse('2026-08-09T12:00:00.000Z');
   const listCandidates = jest.fn().mockResolvedValue({
     candidates: options.candidates ?? [],
+    nextMarkerCursor: {
+      createdAt: new Date('2026-08-09T10:00:00.000Z'),
+      id: 'marker-next',
+    },
+    markerScanExhausted: false,
     nextAuditCursor: {
       createdAt: new Date('2026-08-09T10:30:00.000Z'),
       id: 'audit-next',
@@ -80,7 +90,7 @@ function createHarness(options: {
 }
 
 describe('ChannelAutoPostLegacyRecovery', () => {
-  it('uses a 24-hour bounded page, persists the audit cursor, and sweeps at most every five minutes', async () => {
+  it('uses a seven-day bounded page, persists recovery cursors, and sweeps at most every five minutes', async () => {
     const harness = createHarness({});
 
     await expect(harness.runner.runIfDue()).resolves.toEqual({
@@ -95,8 +105,9 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     expect(harness.listCandidates).toHaveBeenNthCalledWith(1, {
       now: new Date('2026-08-09T12:00:00.000Z'),
       limit: 100,
-      lookbackMs: 24 * 60 * 60_000,
+      lookbackMs: 7 * 24 * 60 * 60_000,
       minimumAgeMs: 5 * 60_000,
+      markerCursor: null,
       auditCursor: null,
     });
 
@@ -117,6 +128,10 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     expect(harness.listCandidates).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
+        markerCursor: {
+          createdAt: new Date('2026-08-09T10:00:00.000Z'),
+          id: 'marker-next',
+        },
         auditCursor: {
           createdAt: new Date('2026-08-09T10:30:00.000Z'),
           id: 'audit-next',
@@ -178,6 +193,7 @@ describe('ChannelAutoPostLegacyRecovery', () => {
       expect.objectContaining({
         messageId: 'message-absent',
         status: 'SKIPPED',
+        lastError: expect.stringContaining('[absent_or_inaccessible]'),
         lastStatusCode: 404,
       }),
     );
@@ -255,6 +271,32 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     expect(harness.claimChannelAutoPost).not.toHaveBeenCalled();
   });
 
+  it('terminalizes a proven historical predispatch claim without replaying an edit', async () => {
+    const harness = createHarness({
+      candidates: [candidate('channel-1', undefined, 'predispatch_marker')],
+      contextRows: [contextRow('channel-1')],
+      lookup: jest.fn().mockResolvedValue([]),
+    });
+
+    await expect(harness.runner.runIfDue()).resolves.toEqual(
+      expect.objectContaining({
+        status: 'completed',
+        remoteLookups: 1,
+        mutationAttempts: 0,
+        terminalizedCandidates: 1,
+      }),
+    );
+    expect(harness.attach).not.toHaveBeenCalled();
+    expect(harness.completeChannelAutoPost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        deliveryMode: 'edit_message',
+        terminalEditAttemptExhausted: true,
+        lastError: expect.stringContaining('historical post author cannot be verified'),
+      }),
+    );
+  });
+
   it('limits mutations to three per sweep and one candidate per channel', async () => {
     const candidates = [
       candidate('channel-1', 'message-channel-1-a'),
@@ -290,11 +332,11 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     await harness.runner.runIfDue();
     expect(harness.listCandidates).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ auditCursor: null }),
+      expect.objectContaining({ markerCursor: null, auditCursor: null }),
     );
   });
 
-  it('defers a transient exact lookup without claiming or advancing the audit cursor', async () => {
+  it('defers a transient exact lookup without claiming or advancing recovery cursors', async () => {
     const transientError = Object.assign(new Error('MAX throttle'), {
       response: { status: 429 },
     });
@@ -329,7 +371,7 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     await harness.runner.runIfDue();
     expect(harness.listCandidates).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ auditCursor: null }),
+      expect.objectContaining({ markerCursor: null, auditCursor: null }),
     );
   });
 
@@ -344,6 +386,11 @@ describe('ChannelAutoPostLegacyRecovery', () => {
           candidate('channel-1', 'message-channel-1-a'),
           candidate('channel-1', 'message-channel-1-b'),
         ],
+        nextMarkerCursor: {
+          createdAt: new Date('2026-08-09T10:00:00.000Z'),
+          id: 'marker-second',
+        },
+        markerScanExhausted: false,
         nextAuditCursor: {
           createdAt: new Date('2026-08-09T10:30:00.000Z'),
           id: 'audit-second',
@@ -352,6 +399,11 @@ describe('ChannelAutoPostLegacyRecovery', () => {
       })
       .mockResolvedValueOnce({
         candidates: [candidate('channel-1', 'message-channel-1-b')],
+        nextMarkerCursor: {
+          createdAt: new Date('2026-08-09T10:00:00.000Z'),
+          id: 'marker-second',
+        },
+        markerScanExhausted: true,
         nextAuditCursor: {
           createdAt: new Date('2026-08-09T10:30:00.000Z'),
           id: 'audit-second',
@@ -376,7 +428,7 @@ describe('ChannelAutoPostLegacyRecovery', () => {
     ]);
     expect(harness.listCandidates).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ auditCursor: null }),
+      expect.objectContaining({ markerCursor: null, auditCursor: null }),
     );
   });
 

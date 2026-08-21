@@ -327,6 +327,15 @@ export class SafetyDeskService {
   async getDeleteRuntime(): Promise<SafetyDeskDeleteRuntimeResponse> {
     const now = new Date();
     const staleSendFenceBefore = new Date(now.getTime() - MAX_SEND_FENCE_STALE_MS);
+    const staleChannelAutoPostClaimWhere = {
+      status: 'IN_PROGRESS' as const,
+      replacementMessageId: null,
+      replyMessageId: null,
+      OR: [
+        { lockedAt: { lte: staleSendFenceBefore } },
+        { lockedAt: null, updatedAt: { lte: staleSendFenceBefore } },
+      ],
+    };
     const openStatuses = [...DELETE_INTENT_OPEN_STATUSES];
     const dueStatuses = [...DELETE_INTENT_DUE_STATUSES];
     const recentStatuses = [...DELETE_INTENT_RECENT_STATUSES];
@@ -339,9 +348,11 @@ export class SafetyDeskService {
       recentRows,
       recentCompletedRows,
       channelAmbiguousReplacementSends,
+      staleChannelAutoPostClaims,
       chatAmbiguousReplacementSends,
       rulesAmbiguousSends,
       recentChannelAmbiguousSends,
+      recentStaleChannelAutoPostClaims,
       recentChatAmbiguousSends,
       recentRulesAmbiguousSends,
       giveawayWinnerNotificationDeadEndGroups,
@@ -405,6 +416,11 @@ export class SafetyDeskService {
         _count: { _all: true },
         _min: { replacementSendStartedAt: true },
       }),
+      this.prisma.channelAutoPostAttachMarker.aggregate({
+        where: staleChannelAutoPostClaimWhere,
+        _count: { _all: true },
+        _min: { updatedAt: true },
+      }),
       this.prisma.chatAutoCommentAttachMarker.aggregate({
         where: {
           status: 'SKIPPED',
@@ -435,6 +451,20 @@ export class SafetyDeskService {
           messageId: true,
           botId: true,
           replacementSendStartedAt: true,
+          lastError: true,
+          updatedAt: true,
+          chat: { select: { title: true } },
+        },
+      }),
+      this.prisma.channelAutoPostAttachMarker.findMany({
+        where: staleChannelAutoPostClaimWhere,
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: AMBIGUOUS_SEND_LIMIT,
+        select: {
+          id: true,
+          chatId: true,
+          messageId: true,
+          botId: true,
           lastError: true,
           updatedAt: true,
           chat: { select: { title: true } },
@@ -525,6 +555,7 @@ export class SafetyDeskService {
     );
     const oldestAmbiguousSendAt = [
       channelAmbiguousReplacementSends._min.replacementSendStartedAt,
+      staleChannelAutoPostClaims._min.updatedAt,
       chatAmbiguousReplacementSends._min.replacementSendStartedAt,
       rulesAmbiguousSends._min.publishSendStartedAt,
     ]
@@ -542,6 +573,22 @@ export class SafetyDeskService {
         detectedAt: row.updatedAt.toISOString(),
         lastError: row.lastError ?? `${MAX_SEND_AMBIGUOUS_ERROR_PREFIX} Unknown send result`,
       })),
+      ...recentStaleChannelAutoPostClaims.map((row) => {
+        const lastError = this.sanitizeSafetyDeskLastError(row.lastError);
+        return {
+          id: `channel_auto_post:${row.id}`,
+          source: 'channel_auto_post' as const,
+          chatId: row.chatId,
+          chatTitle: row.chat.title,
+          messageId: row.messageId,
+          botId: row.botId,
+          startedAt: row.updatedAt.toISOString(),
+          detectedAt: row.updatedAt.toISOString(),
+          lastError: lastError
+            ? `Stale channel auto-post claim: ${lastError}`
+            : 'Stale channel auto-post claim has no durable failure classification.',
+        };
+      }),
       ...recentChatAmbiguousSends.map((row) => ({
         id: `chat_auto_comment:${row.id}`,
         source: 'chat_auto_comment' as const,
@@ -631,6 +678,7 @@ export class SafetyDeskService {
         ambiguousSends: {
           count:
             channelAmbiguousReplacementSends._count._all +
+            staleChannelAutoPostClaims._count._all +
             chatAmbiguousReplacementSends._count._all +
             rulesAmbiguousSends._count._all,
           oldestAt: oldestAmbiguousSendAt?.toISOString() ?? null,

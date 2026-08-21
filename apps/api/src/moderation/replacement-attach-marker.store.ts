@@ -35,7 +35,7 @@ export type ReplacementAttachMarkerClaim =
 export type LegacyChannelEditRecoveryCandidate = {
   chatId: string;
   messageId: string;
-  evidence: 'marker' | 'audit';
+  evidence: 'marker' | 'predispatch_marker' | 'audit';
   evidenceId: string;
   evidenceAt: Date;
 };
@@ -45,8 +45,12 @@ export type LegacyChannelEditRecoveryAuditCursor = {
   id: string;
 };
 
+export type LegacyChannelEditRecoveryMarkerCursor = LegacyChannelEditRecoveryAuditCursor;
+
 export type LegacyChannelEditRecoveryCandidatePage = {
   candidates: LegacyChannelEditRecoveryCandidate[];
+  nextMarkerCursor: LegacyChannelEditRecoveryMarkerCursor | null;
+  markerScanExhausted: boolean;
   nextAuditCursor: LegacyChannelEditRecoveryAuditCursor | null;
   auditScanExhausted: boolean;
 };
@@ -93,6 +97,58 @@ const CHANNEL_EDIT_RECOVERY_MAX_LIMIT = 100;
 const CHANNEL_EDIT_RECOVERY_DEFAULT_LOOKBACK_MS = 72 * 60 * 60_000;
 const CHANNEL_EDIT_RECOVERY_MAX_LOOKBACK_MS = 7 * 24 * 60 * 60_000;
 const CHANNEL_EDIT_RECOVERY_DEFAULT_MINIMUM_AGE_MS = 5 * 60_000;
+const CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_PREFIX = '[channel-auto-post:pre-dispatch:v1]';
+const CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_CODES = [
+  'MAX_API_CIRCUIT_OPEN',
+  'MAX_API_INTERNAL_RATE_LIMIT',
+] as const;
+const CHANNEL_AUTO_POST_PRE_DISPATCH_PROOF_CONSUMED =
+  '[channel-auto-post:pre-dispatch-proof-consumed:v1] Recovery claim acquired; a stale outcome requires verification.';
+const CHANNEL_AUTO_POST_UNVERIFIED_FAILURE_PREFIX = '[channel-auto-post:unverified-failure:v1]';
+const LEGACY_MAX_API_CIRCUIT_OPEN_ERROR = 'MAX API circuit breaker is open';
+
+export function persistChannelAutoPostPreDispatchFailureEvidence(
+  error: unknown,
+  summary: string,
+): string {
+  const code = readProvenMaxPreDispatchFailureCode(error);
+  if (!code) {
+    return hasPersistedChannelAutoPostPreDispatchEvidence(summary)
+      ? `${CHANNEL_AUTO_POST_UNVERIFIED_FAILURE_PREFIX} ${summary}`
+      : summary;
+  }
+  return `${CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_PREFIX}[${code}] ${summary}`;
+}
+
+function hasPersistedChannelAutoPostPreDispatchEvidence(
+  lastError: string | null | undefined,
+): boolean {
+  if (lastError === LEGACY_MAX_API_CIRCUIT_OPEN_ERROR) {
+    return true;
+  }
+  return CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_CODES.some((code) =>
+    lastError?.startsWith(`${CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_PREFIX}[${code}]`),
+  );
+}
+
+function readProvenMaxPreDispatchFailureCode(
+  error: unknown,
+): (typeof CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_CODES)[number] | null {
+  if (
+    !error ||
+    typeof error !== 'object' ||
+    (error as { preDispatch?: unknown }).preDispatch !== true
+  ) {
+    return null;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' &&
+    CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_CODES.includes(
+      code as (typeof CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_CODES)[number],
+    )
+    ? (code as (typeof CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_CODES)[number])
+    : null;
+}
 
 export function buildChatAutoCommentAuditId(markerId: string): string | null {
   const normalized = markerId.trim().toLowerCase();
@@ -145,6 +201,7 @@ export class ReplacementAttachMarkerStore {
       limit?: number;
       lookbackMs?: number;
       minimumAgeMs?: number;
+      markerCursor?: LegacyChannelEditRecoveryMarkerCursor | null;
       auditCursor?: LegacyChannelEditRecoveryAuditCursor | null;
     } = {},
   ): Promise<LegacyChannelEditRecoveryCandidatePage> {
@@ -152,6 +209,8 @@ export class ReplacementAttachMarkerStore {
     if (!delegate?.findMany || (!delegate.create && !delegate.createMany) || !delegate.updateMany) {
       return {
         candidates: [],
+        nextMarkerCursor: params.markerCursor ?? null,
+        markerScanExhausted: true,
         nextAuditCursor: params.auditCursor ?? null,
         auditScanExhausted: true,
       };
@@ -178,7 +237,6 @@ export class ReplacementAttachMarkerStore {
     );
     const windowStart = new Date(now.getTime() - lookbackMs);
     const windowEnd = new Date(now.getTime() - minimumAgeMs);
-    const staleLockBefore = new Date(now.getTime() - ATTACH_LOCK_TTL_MS);
     const enabledChannelFilter = {
       chat: {
         channelSettings: {
@@ -189,14 +247,22 @@ export class ReplacementAttachMarkerStore {
       },
     };
     const markerDelegate = this.prisma.channelAutoPostAttachMarker;
+    const markerCursor = this.normalizeAuditCursor(params.markerCursor, windowStart, windowEnd);
 
     const markerRows = await markerDelegate.findMany({
       where: {
-        deliveryMode: 'edit_message',
         replacementMessageId: null,
         replyMessageId: null,
         replacementSendStartedAt: null,
-        createdAt: { gte: windowStart, lte: windowEnd },
+        createdAt: { gte: windowStart },
+        ...(markerCursor
+          ? {
+              OR: [
+                { createdAt: { gt: markerCursor.createdAt } },
+                { createdAt: markerCursor.createdAt, id: { gt: markerCursor.id } },
+              ],
+            }
+          : {}),
         AND: [
           {
             OR: [{ linkType: null }, { linkType: { not: 'forward' } }],
@@ -205,6 +271,8 @@ export class ReplacementAttachMarkerStore {
             OR: [
               {
                 status: 'SKIPPED',
+                deliveryMode: 'edit_message',
+                createdAt: { lte: windowEnd },
                 OR: [
                   { lastError: null },
                   {
@@ -214,8 +282,17 @@ export class ReplacementAttachMarkerStore {
               },
               {
                 status: 'IN_PROGRESS',
-                lastError: { startsWith: CHANNEL_EDIT_RECOVERY_ERROR_PREFIX },
-                OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+                deliveryMode: null,
+                lockedAt: null,
+                updatedAt: { lte: windowEnd },
+                OR: [
+                  { lastError: LEGACY_MAX_API_CIRCUIT_OPEN_ERROR },
+                  ...CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_CODES.map((code) => ({
+                    lastError: {
+                      startsWith: `${CHANNEL_AUTO_POST_PRE_DISPATCH_FAILURE_PREFIX}[${code}]`,
+                    },
+                  })),
+                ],
               },
             ],
           },
@@ -235,8 +312,19 @@ export class ReplacementAttachMarkerStore {
         chatId: true,
         messageId: true,
         createdAt: true,
+        updatedAt: true,
+        status: true,
+        deliveryMode: true,
+        lastError: true,
       },
     });
+    const lastMarkerRow = markerRows[markerRows.length - 1];
+    const lastMarkerId = this.readNonEmptyString(lastMarkerRow?.id);
+    const nextMarkerCursor =
+      lastMarkerRow?.createdAt instanceof Date && lastMarkerId
+        ? { createdAt: lastMarkerRow.createdAt, id: lastMarkerId }
+        : markerCursor;
+    const markerScanExhausted = markerRows.length < limit;
     const markerCandidates = markerRows.flatMap((row) => {
       const candidate = this.readMarkerRecoveryCandidate(row);
       return candidate ? [candidate] : [];
@@ -267,6 +355,8 @@ export class ReplacementAttachMarkerStore {
     if (candidates.length >= limit) {
       return {
         candidates: candidates.slice(0, limit),
+        nextMarkerCursor,
+        markerScanExhausted,
         nextAuditCursor: params.auditCursor ?? null,
         auditScanExhausted: false,
       };
@@ -343,6 +433,8 @@ export class ReplacementAttachMarkerStore {
 
     return {
       candidates,
+      nextMarkerCursor,
+      markerScanExhausted,
       nextAuditCursor,
       auditScanExhausted: auditRows.length < remainingCapacity,
     };
@@ -623,6 +715,17 @@ export class ReplacementAttachMarkerStore {
     ) {
       return { status: 'in_progress' };
     }
+    const channelPreDispatchRecovery =
+      kind === 'channel_auto_post' &&
+      existing?.status === 'IN_PROGRESS' &&
+      this.hasProvenChannelAutoPostPreDispatchEvidence(existing.lastError);
+    if (
+      kind === 'channel_auto_post' &&
+      existing?.status === 'IN_PROGRESS' &&
+      !channelPreDispatchRecovery
+    ) {
+      return { status: 'in_progress' };
+    }
 
     const recoveryClaim =
       completionState === 'recover_legacy_channel_edit' ||
@@ -676,6 +779,9 @@ export class ReplacementAttachMarkerStore {
           }
         }
       }
+      if (kind === 'channel_auto_post') {
+        return { status: 'in_progress' };
+      }
     }
 
     const claimed = await delegate.updateMany({
@@ -686,10 +792,20 @@ export class ReplacementAttachMarkerStore {
         chatId: params.chatId,
         messageId: params.messageId,
         status: 'IN_PROGRESS',
+        ...(kind === 'channel_auto_post' && existing?.status === 'IN_PROGRESS'
+          ? { lastError: existing.lastError }
+          : {}),
         replacementMessageId: null,
         replyMessageId: null,
         replacementSendStartedAt: null,
-        OR: [{ lockedAt: null }, { lockedAt: { lt: new Date(Date.now() - ATTACH_LOCK_TTL_MS) } }],
+        ...(channelPreDispatchRecovery
+          ? { lockedAt: null }
+          : {
+              OR: [
+                { lockedAt: null },
+                { lockedAt: { lt: new Date(Date.now() - ATTACH_LOCK_TTL_MS) } },
+              ],
+            }),
       },
       data: {
         ...(kind === 'chat_auto_comment' && existingMarkerId && markerId !== existingMarkerId
@@ -700,9 +816,11 @@ export class ReplacementAttachMarkerStore {
         source: params.source,
         botId: params.botId,
         ...(kind === 'channel_auto_post' ? { linkType: params.linkType ?? null } : {}),
-        ...(recoveryClaim
-          ? { lastError: this.withChannelEditRecoveryEvidence(existing?.lastError) }
-          : {}),
+        ...(channelPreDispatchRecovery
+          ? { lastError: CHANNEL_AUTO_POST_PRE_DISPATCH_PROOF_CONSUMED }
+          : recoveryClaim
+            ? { lastError: this.withChannelEditRecoveryEvidence(existing?.lastError) }
+            : {}),
       },
     });
     return claimed.count > 0
@@ -1122,6 +1240,10 @@ export class ReplacementAttachMarkerStore {
     chatId: unknown;
     messageId: unknown;
     createdAt: unknown;
+    updatedAt?: unknown;
+    status?: unknown;
+    deliveryMode?: unknown;
+    lastError?: unknown;
   }): LegacyChannelEditRecoveryCandidate | null {
     const evidenceId = this.readNonEmptyString(row.id);
     const chatId = this.readNonEmptyString(row.chatId);
@@ -1129,12 +1251,20 @@ export class ReplacementAttachMarkerStore {
     if (!evidenceId || !chatId || !messageId || !(row.createdAt instanceof Date)) {
       return null;
     }
+    const preDispatchMarker =
+      row.status === 'IN_PROGRESS' &&
+      row.deliveryMode === null &&
+      this.hasProvenChannelAutoPostPreDispatchEvidence(
+        typeof row.lastError === 'string' ? row.lastError : null,
+      );
+    const evidenceAt =
+      preDispatchMarker && row.updatedAt instanceof Date ? row.updatedAt : row.createdAt;
     return {
       chatId,
       messageId,
-      evidence: 'marker',
+      evidence: preDispatchMarker ? 'predispatch_marker' : 'marker',
       evidenceId,
-      evidenceAt: row.createdAt,
+      evidenceAt,
     };
   }
 
@@ -1254,6 +1384,12 @@ export class ReplacementAttachMarkerStore {
 
   private hasChannelEditRecoveryEvidence(lastError: string | null | undefined): boolean {
     return lastError?.startsWith(CHANNEL_EDIT_RECOVERY_ERROR_PREFIX) === true;
+  }
+
+  private hasProvenChannelAutoPostPreDispatchEvidence(
+    lastError: string | null | undefined,
+  ): boolean {
+    return hasPersistedChannelAutoPostPreDispatchEvidence(lastError);
   }
 
   private withChannelEditRecoveryEvidence(lastError: string | null | undefined): string {

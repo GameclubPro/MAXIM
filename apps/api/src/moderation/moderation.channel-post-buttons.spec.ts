@@ -4310,13 +4310,12 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
   });
 
-  it('keeps transient auto-attach failures retryable and does not advance the scan cursor', async () => {
+  it('records a proven predispatch limiter failure and does not advance the scan cursor', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
 
-    const transientError = Object.assign(new Error('MAX throttle'), {
-      response: {
-        status: 429,
-      },
+    const transientError = Object.assign(new Error('MAX API background rate limit exceeded'), {
+      code: 'MAX_API_INTERNAL_RATE_LIMIT',
+      preDispatch: true,
     });
     const markerRows = new Map<string, any>();
     const prisma = {
@@ -4406,7 +4405,9 @@ describe('ModerationService channel auto post buttons', () => {
         status: 'IN_PROGRESS',
         lockToken: null,
         lockedAt: null,
-        lastStatusCode: 429,
+        lastStatusCode: null,
+        lastError:
+          '[channel-auto-post:pre-dispatch:v1][MAX_API_INTERNAL_RATE_LIMIT] MAX API background rate limit exceeded',
       }),
     );
     expect(prisma.auditLog.create).not.toHaveBeenCalled();

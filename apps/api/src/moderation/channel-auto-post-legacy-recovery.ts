@@ -5,11 +5,12 @@ import type {
   LegacyChannelEditRecoveryAuditCursor,
   LegacyChannelEditRecoveryCandidate,
   LegacyChannelEditRecoveryCandidatePage,
+  LegacyChannelEditRecoveryMarkerCursor,
   ReplacementAttachMarkerStore,
 } from './replacement-attach-marker.store';
 import type { ChannelAutoPostAttachOutcome } from './channel-auto-post-runtime';
 
-const LEGACY_RECOVERY_LOOKBACK_MS = 24 * 60 * 60_000;
+const LEGACY_RECOVERY_LOOKBACK_MS = 7 * 24 * 60 * 60_000;
 const LEGACY_RECOVERY_MINIMUM_AGE_MS = 5 * 60_000;
 const LEGACY_RECOVERY_SWEEP_INTERVAL_MS = 5 * 60_000;
 const LEGACY_RECOVERY_SCAN_LIMIT = 100;
@@ -76,6 +77,7 @@ type FinishWithoutMutationOutcome = 'completed' | 'done' | 'deferred';
 
 export class ChannelAutoPostLegacyRecovery {
   private nextSweepAtMs = 0;
+  private markerCursor: LegacyChannelEditRecoveryMarkerCursor | null = null;
   private auditCursor: LegacyChannelEditRecoveryAuditCursor | null = null;
   private inFlight = false;
 
@@ -113,6 +115,7 @@ export class ChannelAutoPostLegacyRecovery {
           limit: LEGACY_RECOVERY_SCAN_LIMIT,
           lookbackMs: LEGACY_RECOVERY_LOOKBACK_MS,
           minimumAgeMs: LEGACY_RECOVERY_MINIMUM_AGE_MS,
+          markerCursor: this.markerCursor,
           auditCursor: this.auditCursor,
         });
       } catch (error: unknown) {
@@ -214,7 +217,7 @@ export class ChannelAutoPostLegacyRecovery {
           const finished = await this.finishWithoutMutation(
             candidate,
             'SKIPPED',
-            'MAX confirmed that the legacy channel post no longer exists.',
+            '[absent_or_inaccessible] The legacy channel post is absent or inaccessible to the selected MAX bot.',
             404,
           );
           if (finished === 'deferred') {
@@ -231,6 +234,22 @@ export class ChannelAutoPostLegacyRecovery {
         const suggestionsMissing = suggestionsEnabled && !existing.kinds.includes('suggest');
         if (!commentsMissing && !suggestionsMissing) {
           const finished = await this.finishWithoutMutation(candidate, 'SUCCEEDED', null, null);
+          if (finished === 'deferred') {
+            cursorCanAdvance = false;
+            deferReason = 'marker_in_progress';
+            break;
+          }
+          terminalizedCandidates += finished === 'completed' ? 1 : 0;
+          continue;
+        }
+
+        if (candidate.evidence === 'predispatch_marker') {
+          const finished = await this.finishWithoutMutation(
+            candidate,
+            'SKIPPED',
+            'Predispatch channel edit was not replayed because the historical post author cannot be verified.',
+            null,
+          );
           if (finished === 'deferred') {
             cursorCanAdvance = false;
             deferReason = 'marker_in_progress';
@@ -297,6 +316,7 @@ export class ChannelAutoPostLegacyRecovery {
       }
 
       if (cursorCanAdvance) {
+        this.markerCursor = page.markerScanExhausted ? null : page.nextMarkerCursor;
         this.auditCursor = page.nextAuditCursor;
       }
       return {
@@ -388,6 +408,7 @@ export class ChannelAutoPostLegacyRecovery {
         botId: null,
         linkType: null,
         deliveryMode: 'edit_message',
+        ...(status === 'SKIPPED' ? { terminalEditAttemptExhausted: true } : {}),
         lastError,
         lastStatusCode,
       });

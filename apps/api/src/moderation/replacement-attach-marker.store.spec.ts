@@ -1,4 +1,7 @@
-import { ReplacementAttachMarkerStore } from './replacement-attach-marker.store';
+import {
+  persistChannelAutoPostPreDispatchFailureEvidence,
+  ReplacementAttachMarkerStore,
+} from './replacement-attach-marker.store';
 
 type TestMarkerRow = {
   chatId: string;
@@ -43,6 +46,7 @@ function createMarkerDelegate(initial: TestMarkerRow | null = null) {
       for (const field of [
         'status',
         'lockToken',
+        'lockedAt',
         'deliveryMode',
         'replacementMessageId',
         'replyMessageId',
@@ -106,6 +110,79 @@ const channelClaim = {
 };
 
 describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
+  it('persists only explicit MAX circuit and internal-limiter predispatch proofs', () => {
+    expect(
+      persistChannelAutoPostPreDispatchFailureEvidence(
+        {
+          code: 'MAX_API_CIRCUIT_OPEN',
+          preDispatch: true,
+        },
+        'MAX API circuit breaker is open',
+      ),
+    ).toBe(
+      '[channel-auto-post:pre-dispatch:v1][MAX_API_CIRCUIT_OPEN] MAX API circuit breaker is open',
+    );
+    expect(
+      persistChannelAutoPostPreDispatchFailureEvidence(
+        {
+          code: 'MAX_API_INTERNAL_RATE_LIMIT',
+          preDispatch: true,
+        },
+        'MAX API background rate limit exceeded',
+      ),
+    ).toBe(
+      '[channel-auto-post:pre-dispatch:v1][MAX_API_INTERNAL_RATE_LIMIT] MAX API background rate limit exceeded',
+    );
+    expect(
+      persistChannelAutoPostPreDispatchFailureEvidence(
+        { code: 'ECONNRESET', preDispatch: true },
+        'socket hang up',
+      ),
+    ).toBe('socket hang up');
+    expect(
+      persistChannelAutoPostPreDispatchFailureEvidence(
+        { code: 'MAX_API_CIRCUIT_OPEN', preDispatch: false },
+        'untrusted phase',
+      ),
+    ).toBe('untrusted phase');
+    expect(
+      persistChannelAutoPostPreDispatchFailureEvidence(
+        new Error('MAX API circuit breaker is open'),
+        'MAX API circuit breaker is open',
+      ),
+    ).toBe('[channel-auto-post:unverified-failure:v1] MAX API circuit breaker is open');
+    expect(
+      persistChannelAutoPostPreDispatchFailureEvidence(
+        new Error('spoofed proof'),
+        '[channel-auto-post:pre-dispatch:v1][MAX_API_INTERNAL_RATE_LIMIT] spoofed proof',
+      ),
+    ).toBe(
+      '[channel-auto-post:unverified-failure:v1] [channel-auto-post:pre-dispatch:v1][MAX_API_INTERNAL_RATE_LIMIT] spoofed proof',
+    );
+  });
+
+  it('does not reclaim a channel row from a stale snapshot after a create conflict', async () => {
+    const createMany = jest.fn().mockResolvedValue({ count: 0 });
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+      channelAutoPostAttachMarker: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        createMany,
+        updateMany,
+      },
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-create-conflict',
+      }),
+    ).resolves.toEqual({ status: 'in_progress' });
+    expect(createMany).toHaveBeenCalledWith(expect.objectContaining({ skipDuplicates: true }));
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
   it('reclaims a marker-backed skipped edit once and versions a repeated terminal edit failure', async () => {
     const marker = createMarkerDelegate(legacySkippedEdit('message-marker'));
     const auditFindFirst = jest.fn();
@@ -426,6 +503,101 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
     expect(marker.delegate.updateMany).not.toHaveBeenCalled();
   });
 
+  it('does not reclaim a stale channel edit claim without durable predispatch evidence', async () => {
+    const marker = createMarkerDelegate({
+      ...legacySkippedEdit('message-stale-unknown'),
+      status: 'IN_PROGRESS',
+      lockedAt: new Date('2026-08-09T10:00:00.000Z'),
+      deliveryMode: null,
+      lastError: 'socket hang up',
+    });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-stale-unknown',
+      }),
+    ).resolves.toEqual({ status: 'in_progress' });
+    expect(marker.delegate.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'MAX API circuit breaker is open',
+    '[channel-auto-post:pre-dispatch:v1][MAX_API_INTERNAL_RATE_LIMIT] MAX API background rate limit exceeded',
+  ])('reclaims a stale channel claim with proven predispatch evidence: %s', async (lastError) => {
+    const marker = createMarkerDelegate({
+      ...legacySkippedEdit('message-stale-predispatch'),
+      status: 'IN_PROGRESS',
+      lockedAt: null,
+      deliveryMode: null,
+      lastError,
+    });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-stale-predispatch',
+      }),
+    ).resolves.toEqual({
+      status: 'claimed',
+      lockToken: expect.any(String),
+    });
+    expect(marker.delegate.updateMany).toHaveBeenCalledTimes(1);
+    expect(marker.delegate.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ lastError, lockedAt: null }),
+      }),
+    );
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        lastError:
+          '[channel-auto-post:pre-dispatch-proof-consumed:v1] Recovery claim acquired; a stale outcome requires verification.',
+      }),
+    );
+    if (!marker.row) {
+      throw new Error('Expected the reclaimed marker to remain persisted');
+    }
+    marker.row.lockedAt = new Date(0);
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-stale-predispatch',
+      }),
+    ).resolves.toEqual({ status: 'in_progress' });
+    expect(marker.delegate.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not steal a proven predispatch claim that still has a lock owner', async () => {
+    const lastError = 'MAX API circuit breaker is open';
+    const marker = createMarkerDelegate({
+      ...legacySkippedEdit('message-locked-predispatch'),
+      status: 'IN_PROGRESS',
+      lockedAt: new Date('2026-08-09T10:00:00.000Z'),
+      deliveryMode: null,
+      lastError,
+    });
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+      channelAutoPostAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChannelAutoPost({
+        ...channelClaim,
+        messageId: 'message-locked-predispatch',
+      }),
+    ).resolves.toEqual({ status: 'in_progress' });
+    expect(marker.row).toEqual(expect.objectContaining({ lastError }));
+  });
+
   it('lets successful auto-attach evidence win over an older skipped edit audit', async () => {
     const marker = createMarkerDelegate();
     const auditFindFirst = jest.fn().mockResolvedValueOnce({ id: 'successful-auto-attach' });
@@ -550,19 +722,20 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
           evidenceAt: new Date('2026-08-03T10:00:00.000Z'),
         },
       ],
+      nextMarkerCursor: {
+        createdAt: new Date('2026-08-03T10:00:00.000Z'),
+        id: 'marker-oldest',
+      },
+      markerScanExhausted: false,
       nextAuditCursor: null,
       auditScanExhausted: false,
     });
     expect(markerFindMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
-        deliveryMode: 'edit_message',
         replacementMessageId: null,
         replyMessageId: null,
         replacementSendStartedAt: null,
-        createdAt: {
-          gte: new Date('2026-08-02T12:00:00.000Z'),
-          lte: new Date('2026-08-09T11:50:00.000Z'),
-        },
+        createdAt: { gte: new Date('2026-08-02T12:00:00.000Z') },
         chat: {
           channelSettings: {
             is: {
@@ -570,6 +743,17 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
             },
           },
         },
+        AND: expect.arrayContaining([
+          expect.objectContaining({
+            OR: expect.arrayContaining([
+              expect.objectContaining({
+                status: 'SKIPPED',
+                deliveryMode: 'edit_message',
+                createdAt: { lte: new Date('2026-08-09T11:50:00.000Z') },
+              }),
+            ]),
+          }),
+        ]),
       }),
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       take: 1,
@@ -578,6 +762,10 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
         chatId: true,
         messageId: true,
         createdAt: true,
+        updatedAt: true,
+        status: true,
+        deliveryMode: true,
+        lastError: true,
       },
     });
     expect(auditFindMany).toHaveBeenCalledWith(
@@ -631,19 +819,28 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
       }),
     ).resolves.toEqual({
       candidates: [],
+      nextMarkerCursor: {
+        createdAt: new Date('2026-08-09T10:00:00.000Z'),
+        id: 'marker-already-fixed',
+      },
+      markerScanExhausted: false,
       nextAuditCursor: null,
       auditScanExhausted: true,
     });
     expect(auditFindMany).toHaveBeenCalledTimes(2);
   });
 
-  it('includes stale in-progress recovery locks without a send fence', async () => {
+  it('includes only proven predispatch in-progress markers for bounded recovery', async () => {
     const markerFindMany = jest.fn().mockResolvedValue([
       {
         id: 'marker-stale-recovery',
         chatId: 'channel-1',
         messageId: 'message-stale-recovery',
         createdAt: new Date('2026-08-09T10:00:00.000Z'),
+        updatedAt: new Date('2026-08-09T10:30:00.000Z'),
+        status: 'IN_PROGRESS',
+        deliveryMode: null,
+        lastError: 'MAX API circuit breaker is open',
       },
     ]);
     const store = new ReplacementAttachMarkerStore({
@@ -665,7 +862,7 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
         candidates: [
           expect.objectContaining({
             messageId: 'message-stale-recovery',
-            evidence: 'marker',
+            evidence: 'predispatch_marker',
           }),
         ],
       }),
@@ -678,18 +875,169 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
               OR: expect.arrayContaining([
                 expect.objectContaining({
                   status: 'IN_PROGRESS',
-                  lastError: {
-                    startsWith: '[channel-engagement-edit-recovery:v1]',
-                  },
-                  OR: [
-                    { lockedAt: null },
-                    { lockedAt: { lt: new Date('2026-08-09T11:58:00.000Z') } },
-                  ],
+                  deliveryMode: null,
+                  lockedAt: null,
+                  updatedAt: { lte: new Date('2026-08-09T11:55:00.000Z') },
+                  OR: expect.arrayContaining([{ lastError: 'MAX API circuit breaker is open' }]),
                 }),
               ]),
             }),
           ]),
         }),
+      }),
+    );
+  });
+
+  it('ages a proven predispatch marker from its latest release instead of its creation', async () => {
+    const markerRow = {
+      id: 'marker-proof-age',
+      chatId: 'channel-1',
+      messageId: 'message-proof-age',
+      createdAt: new Date('2026-08-09T10:00:00.000Z'),
+      updatedAt: new Date('2026-08-09T11:58:00.000Z'),
+      status: 'IN_PROGRESS',
+      deliveryMode: null,
+      lastError:
+        '[channel-auto-post:pre-dispatch:v1][MAX_API_INTERNAL_RATE_LIMIT] MAX API background rate limit exceeded',
+    };
+    const markerFindMany = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([markerRow]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: jest.fn().mockResolvedValue([]) },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:00:00.000Z'),
+        limit: 1,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ candidates: [] }));
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:05:00.000Z'),
+        limit: 1,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        candidates: [
+          expect.objectContaining({
+            evidence: 'predispatch_marker',
+            evidenceAt: markerRow.updatedAt,
+          }),
+        ],
+      }),
+    );
+    expect(markerFindMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  status: 'IN_PROGRESS',
+                  updatedAt: { lte: new Date('2026-08-09T11:55:00.000Z') },
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(markerFindMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  status: 'IN_PROGRESS',
+                  updatedAt: { lte: new Date('2026-08-09T12:00:00.000Z') },
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it('advances a bounded marker cursor past a full page with successful audit evidence', async () => {
+    const createdAt = new Date('2026-08-09T10:00:00.000Z');
+    const successfulMarkers = Array.from({ length: 100 }, (_, index) => ({
+      id: `marker-${String(index).padStart(3, '0')}`,
+      chatId: `channel-${index}`,
+      messageId: `message-${index}`,
+      createdAt,
+      updatedAt: createdAt,
+    }));
+    const targetMarker = {
+      id: 'marker-target',
+      chatId: 'channel-target',
+      messageId: 'message-target',
+      createdAt: new Date('2026-08-09T10:30:00.000Z'),
+      updatedAt: new Date('2026-08-09T10:30:00.000Z'),
+    };
+    const markerFindMany = jest
+      .fn()
+      .mockResolvedValueOnce(successfulMarkers)
+      .mockResolvedValueOnce([targetMarker]);
+    const auditFindMany = jest
+      .fn()
+      .mockResolvedValueOnce(
+        successfulMarkers.map((marker) => ({
+          chatId: marker.chatId,
+          payload: { messageId: marker.messageId },
+        })),
+      )
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findMany: auditFindMany },
+      channelAutoPostAttachMarker: {
+        findMany: markerFindMany,
+        createMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    } as never);
+
+    const firstPage = await store.listLegacyChannelEditRecoveryCandidates({
+      now: new Date('2026-08-09T12:00:00.000Z'),
+      limit: 100,
+    });
+    expect(firstPage).toEqual(
+      expect.objectContaining({
+        candidates: [],
+        nextMarkerCursor: { createdAt, id: 'marker-099' },
+        markerScanExhausted: false,
+      }),
+    );
+
+    await expect(
+      store.listLegacyChannelEditRecoveryCandidates({
+        now: new Date('2026-08-09T12:05:00.000Z'),
+        limit: 100,
+        markerCursor: firstPage.nextMarkerCursor,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        candidates: [expect.objectContaining({ messageId: 'message-target' })],
+        markerScanExhausted: true,
+      }),
+    );
+    expect(markerFindMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: 'marker-099' } }],
+        }),
+        take: 100,
       }),
     );
   });
@@ -810,6 +1158,8 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
           evidenceAt: new Date('2026-08-07T11:00:00.000Z'),
         },
       ],
+      nextMarkerCursor: null,
+      markerScanExhausted: true,
       nextAuditCursor: {
         createdAt: new Date('2026-08-07T11:00:00.000Z'),
         id: 'audit-2',
@@ -878,10 +1228,7 @@ describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
       1,
       expect.objectContaining({
         where: expect.objectContaining({
-          createdAt: {
-            gte: new Date('2026-08-02T12:00:00.000Z'),
-            lte: new Date('2026-08-09T12:00:00.000Z'),
-          },
+          createdAt: { gte: new Date('2026-08-02T12:00:00.000Z') },
         }),
         take: 100,
       }),
