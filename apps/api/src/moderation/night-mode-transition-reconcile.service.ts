@@ -9,8 +9,10 @@ import type { NightModeTransitionManualReview } from './night-mode-transition-sc
 import { parseNightModeTransitionSessionKey } from './night-mode-transition-time.util';
 
 const NIGHT_MODE_RECONCILE_INTERVAL_MS = 500;
-const NIGHT_MODE_RECONCILE_BATCH_SIZE = 250;
-const NIGHT_MODE_RECONCILE_CONCURRENCY = 8;
+const NIGHT_MODE_RECONCILE_BATCH_SIZE = 16;
+// api-enqueue has four production Prisma connections. Leave capacity for webhook enqueue and
+// the batch heartbeat while durable night-mode recovery drains in the background.
+const NIGHT_MODE_RECONCILE_CONCURRENCY = 2;
 const NIGHT_MODE_RECONCILE_REQUEUE_DELAY_MS = 5_000;
 const NIGHT_MODE_RECONCILE_LEASE_MS = 30_000;
 const NIGHT_MODE_RECONCILE_HEARTBEAT_MS = 10_000;

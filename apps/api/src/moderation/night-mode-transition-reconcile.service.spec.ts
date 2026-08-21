@@ -735,14 +735,22 @@ describe('NightModeTransitionReconcileService', () => {
         markFirstWaveStarted = resolve;
       });
       let firstStartedCount = 0;
+      let activeRepairCount = 0;
+      let maxActiveRepairCount = 0;
       const firstScheduler = {
         repairAccessSchedule: jest.fn(async () => {
           firstStartedCount += 1;
-          if (firstStartedCount === 8) {
+          activeRepairCount += 1;
+          maxActiveRepairCount = Math.max(maxActiveRepairCount, activeRepairCount);
+          if (firstStartedCount === 2) {
             markFirstWaveStarted();
           }
-          await firstWaveGate;
-          return { queueAvailable: true, scheduleEnabled: true, passes: 1 };
+          try {
+            await firstWaveGate;
+            return { queueAvailable: true, scheduleEnabled: true, passes: 1 };
+          } finally {
+            activeRepairCount -= 1;
+          }
         }),
       };
       const secondScheduler = {
@@ -778,6 +786,8 @@ describe('NightModeTransitionReconcileService', () => {
       expect(heartbeatStatements[0]).toContain('request."generation" = expected."generation"');
       expect(heartbeatStatements[0]).toContain('request."lease_token" =');
       expect(heartbeatStatements[0]).toContain('request."lease_expires_at" > CURRENT_TIMESTAMP');
+      const claimValues = extractSqlValues(firstPrisma.$queryRaw.mock.calls[0]?.[0]);
+      expect(claimValues.filter((value) => value === 16)).toHaveLength(2);
 
       await expect(
         (secondService as unknown as { reconcileBatch: () => Promise<number> }).reconcileBatch(),
@@ -788,6 +798,7 @@ describe('NightModeTransitionReconcileService', () => {
       await expect(firstBatch).resolves.toBe(9);
 
       expect(firstScheduler.repairAccessSchedule).toHaveBeenCalledTimes(9);
+      expect(maxActiveRepairCount).toBe(2);
       expect(firstScheduler.repairAccessSchedule).toHaveBeenCalledWith('chat-tail-9', {
         generation: 9n,
         leaseToken: expect.any(String),
