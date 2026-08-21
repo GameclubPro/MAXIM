@@ -33,6 +33,7 @@ DEPLOY_MANIFEST_RECORDED=0
 RECOVERY_BASE_MANIFEST=""
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
+API_READY_TIMEOUT_SEC="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-900}"
 
 SERVICES=()
 if [[ $# -ge 2 ]]; then
@@ -111,6 +112,14 @@ validate_requested_services() {
     fi
   done
   SERVICES=("${validated[@]}")
+}
+
+validate_api_ready_timeout() {
+  if [[ ! "$API_READY_TIMEOUT_SEC" =~ ^[1-9][0-9]{2,3}$ ]] ||
+    ((API_READY_TIMEOUT_SEC < 180 || API_READY_TIMEOUT_SEC > 3600)); then
+    echo "MAXIM_DEPLOY_API_READY_TIMEOUT_SEC must be an integer between 180 and 3600." >&2
+    return 2
+  fi
 }
 
 release_manifest() {
@@ -1150,6 +1159,7 @@ fi
 require_node_24
 require_production_branch_confirmation
 validate_requested_services
+validate_api_ready_timeout
 acquire_deploy_lock
 trap cleanup EXIT
 sync_branch
@@ -1361,9 +1371,10 @@ recreate_service_wave "admin static" "admin-static"
 SMOKE_RESULTS=()
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   wait_for_url "http://127.0.0.1:3001/api/health/live" 180
-  wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
+  # Ingress remains live while consumers are fenced, so real traffic can require a bounded drain.
+  wait_for_url "http://127.0.0.1:3001/api/health/ready" "$API_READY_TIMEOUT_SEC"
   wait_for_url "http://127.0.0.1:3002/api/health/live" 180
-  wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
+  wait_for_url "http://127.0.0.1:3002/api/health/ready" "$API_READY_TIMEOUT_SEC"
   wait_for_url "$PUBLIC_HEALTH_URL/api/health/live" 180
   node scripts/smoke-http.mjs json-ok http://127.0.0.1:3001/api/health/live
   node scripts/smoke-http.mjs json-ok http://127.0.0.1:3001/api/health/ready

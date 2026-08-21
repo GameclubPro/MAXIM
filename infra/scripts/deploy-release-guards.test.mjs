@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -56,6 +57,21 @@ function readShellArray(script, name) {
   return [...match[1].matchAll(/^\s+"([^"]+)"\s*$/gmu)].map((entry) => entry[1]);
 }
 
+function validateApiReadyTimeout(value) {
+  const deploy = read('infra/scripts/vps-pull-build-up.sh');
+  const validation = functionBlock(deploy, 'validate_api_ready_timeout');
+  return spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -euo pipefail\n${validation}\nAPI_READY_TIMEOUT_SEC="$1"\nvalidate_api_ready_timeout`,
+      'ready-timeout-test',
+      value,
+    ],
+    { encoding: 'utf8' },
+  );
+}
+
 test('keeps shared API topology centralized and complete', () => {
   const topology = read('infra/scripts/lib/deploy-topology.sh');
   const monitor = read('infra/scripts/vps-monitor-readonly.sh');
@@ -108,11 +124,14 @@ test('caps json-file logs for stateful services in both Compose topologies', () 
 test('validates deploy targets before synchronization or runtime side effects', () => {
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   const validation = callIndexes(deploy, 'validate_requested_services')[0];
+  const readyTimeoutValidation = callIndexes(deploy, 'validate_api_ready_timeout')[0];
   const nodePreflight = callIndex(deploy, 'require_node_24');
   assert.ok(nodePreflight < callIndex(deploy, 'acquire_deploy_lock'));
   assert.ok(nodePreflight < callIndex(deploy, 'sync_branch'));
   assert.ok(validation < callIndex(deploy, 'acquire_deploy_lock'));
   assert.ok(validation < callIndex(deploy, 'sync_branch'));
+  assert.ok(readyTimeoutValidation < callIndex(deploy, 'acquire_deploy_lock'));
+  assert.ok(readyTimeoutValidation < callIndex(deploy, 'sync_branch'));
   assert.ok(validation < callIndex(deploy, 'stop_conflicting_stacks'));
   assert.match(deploy, /Node 24 is required for production deploy/u);
   assert.match(deploy, /Unknown or unsafe deploy service/u);
@@ -121,6 +140,18 @@ test('validates deploy targets before synchronization or runtime side effects', 
     /MAXIM_EXPECTED_DEPLOY_SHA is required for every mutating production deploy/u,
   );
   assert.match(deploy, /if \[\[ "\$DEPLOY_MODE" == "plan" \]\]/u);
+  assert.match(deploy, /MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-900/u);
+});
+
+test('bounds the post-resume API readiness window without weakening readiness', () => {
+  for (const value of ['180', '900', '3600']) {
+    assert.equal(validateApiReadyTimeout(value).status, 0, value);
+  }
+  for (const value of ['', '0', '0179', '179', '3601', '9999', '-1', '1e3', '900s']) {
+    const result = validateApiReadyTimeout(value);
+    assert.equal(result.status, 2, value);
+    assert.match(result.stderr, /must be an integer between 180 and 3600/u, value);
+  }
 });
 
 test('re-executes deploy entrypoints when the loaded disk-capacity library changes', () => {

@@ -208,6 +208,16 @@ test('normal deploy resumes only after every API role has the target image', () 
     imageFence,
   );
   const staticRecreate = callIndex(deploy, 'recreate_service_wave "major static"', resume);
+  const ingressReady = callIndex(
+    deploy,
+    'wait_for_url "http://127.0.0.1:3001/api/health/ready" "$API_READY_TIMEOUT_SEC"',
+    resume,
+  );
+  const adminReady = callIndex(
+    deploy,
+    'wait_for_url "http://127.0.0.1:3002/api/health/ready" "$API_READY_TIMEOUT_SEC"',
+    resume,
+  );
 
   assert.ok(quiesce < actionRecreate);
   assert.ok(actionRecreate < moderationRecreate);
@@ -215,6 +225,8 @@ test('normal deploy resumes only after every API role has the target image', () 
   assert.ok(enqueueRecreate < imageFence);
   assert.ok(imageFence < resume);
   assert.ok(resume < staticRecreate);
+  assert.ok(resume < ingressReady);
+  assert.ok(resume < adminReady);
   assert.ok(
     callIndex(deploy, 'wait_for_url "http://127.0.0.1:3001/api/health/live" 180', imageFence) <
       resume,
