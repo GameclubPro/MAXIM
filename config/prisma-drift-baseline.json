@@ -1,10 +1,10 @@
 {
   "format": 1,
-  "normalizedSha256": "c64c51d4024ec14492be7b7c31c7b589aed3b1b7c27211d25d04a2e146cf4dfa",
+  "normalizedSha256": "d12bfd089ad289f3d5cb6fa0b5229b385442b736ed1f0eab8c3fab177d2094ee",
   "classifications": {
     "prisma-unrepresentable": {
-      "description": "PostgreSQL INCLUDE columns and partial-index predicates on these indexes are not represented by the current Prisma schema syntax.",
-      "remediation": "Keep the exact reviewed operations until Prisma can model the covering indexes and partial predicates without weakening them."
+      "description": "PostgreSQL INCLUDE columns on these covering indexes are not represented by the current Prisma schema syntax.",
+      "remediation": "Keep the exact reviewed operations until Prisma can model the covering indexes without losing INCLUDE columns."
     },
     "schema-alignment-debt": {
       "description": "Raw SQL retained database defaults and TIMESTAMPTZ semantics that Prisma can represent but the current schema does not declare.",
@@ -24,9 +24,6 @@
         "-- DropIndex\nDROP INDEX \"global_spammer_candidates_last_chat_status_rank_cover_idx\";",
         "-- DropIndex\nDROP INDEX \"global_spammer_candidates_user_metrics_cover_idx\";",
         "-- DropIndex\nDROP INDEX \"global_spammer_candidates_user_status_rank_cover_idx\";",
-        "-- DropIndex\nDROP INDEX \"night_mode_transition_reconcile_due_idx\";",
-        "-- DropIndex\nDROP INDEX \"night_mode_transition_reconcile_manual_idx\";",
-        "-- DropIndex\nDROP INDEX \"night_mode_transition_reconcile_stale_lease_idx\";",
         "-- DropIndex\nDROP INDEX \"spammer_observations_user_diagnostics_cover_idx\";"
       ]
     },
