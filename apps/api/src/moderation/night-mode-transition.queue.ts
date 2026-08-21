@@ -73,7 +73,7 @@ export function buildNightModeTransitionRecoveryJobId(
   chatId: string,
   recovery: NightModeTransitionRecoveryOnly,
 ): string {
-  const digest = createHash('sha1')
+  const digest = createHash('sha256')
     .update(
       [
         chatId.trim(),

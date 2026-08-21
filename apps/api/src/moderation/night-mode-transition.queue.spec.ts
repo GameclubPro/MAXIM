@@ -42,8 +42,12 @@ describe('night mode transition queue', () => {
     };
 
     expect(parseNightModeTransitionRecoveryOnly(job.recoveryOnly)).toEqual(recoveryOnly);
-    expect(buildNightModeTransitionRecoveryJobId(job.chatId, recoveryOnly)).not.toBe(
+    const recoveryJobId = buildNightModeTransitionRecoveryJobId(job.chatId, recoveryOnly);
+    expect(recoveryJobId).not.toBe(
       buildNightModeTransitionJobId(job.chatId, job.transition, job.scheduledFor, job.sessionKey),
+    );
+    expect(recoveryJobId).toBe(
+      'night-mode-transition__3ba2855dd7d11593805afe04781fa9ea35302ee1__recovery__6b98a996fae0ae28869a9e768fa8f9e0de28cd833a5601da78d58beda7a8c868',
     );
   });
 
