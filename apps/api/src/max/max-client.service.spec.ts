@@ -8543,7 +8543,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
       {},
       {
         MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '1000',
-        MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE: '2000',
       },
     );
 
@@ -8553,7 +8552,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         MAX_API_SOURCE_TAGS.MODERATION_DELETE,
         { operation: 'delete', entityId: 'chat-1' },
       ),
-    ).toBe(2_000);
+    ).toBe(2_500);
     expect(
       (service as any).resolveTrafficClassRateLimitWaitMs(
         'critical',
