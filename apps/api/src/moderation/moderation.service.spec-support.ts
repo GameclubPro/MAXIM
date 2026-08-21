@@ -268,6 +268,9 @@ function createRedisCounterMock() {
       locks.add(key);
       return `lock-${key}`;
     }),
+    renewLock: jest.fn(
+      async (key: string, token: string) => locks.has(key) && token === `lock-${key}`,
+    ),
     acquireLockBeforeDeadline: jest.fn(async (key: string) => {
       if (locks.has(key)) {
         return { kind: 'busy' as const };

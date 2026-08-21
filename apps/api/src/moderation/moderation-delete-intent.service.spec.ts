@@ -13,6 +13,11 @@ import {
   PhotoDuplicateDeleteIntentGuardRejectedError,
 } from './moderation-delete-intent.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import {
+  buildNightModeTransitionScheduleFingerprint,
+  buildNightModeTransitionSideEffectFingerprint,
+} from './night-mode-transition-generation.util';
+import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
 
 type ServiceInternals = {
   classifyDeleteError(
@@ -253,6 +258,48 @@ const confirmedRoute = {
     routeEligible: true,
   })),
 } as const;
+
+function nightModeCleanupSettings(overrides: Record<string, unknown> = {}) {
+  return {
+    chatId: 'chat-1',
+    nightModeEnabled: true,
+    nightModeStartTimeMinutes: 23 * 60,
+    nightModeEndTimeMinutes: 8 * 60,
+    nightModeTimezone: 'Europe/Moscow',
+    nightModeBotMessageEnabled: true,
+    nightModeBotMessageText: '',
+    nightModeCommentsEnabled: false,
+    nightModeOpenMessageEnabled: true,
+    nightModeOpenMessageText: '',
+    nightModeBotButtons: null,
+    nightModeBotButtonEnabled: false,
+    nightModeBotButtonUrl: '',
+    nightModeBotButtonText: '',
+    nightModeRulesButtonEnabled: false,
+    commentsEnabled: false,
+    botSpeechStyle: 'ROBOT',
+    botSpeechMedia: null,
+    updatedAt: new Date('2026-05-30T19:00:00.000Z'),
+    chat: { entityType: 'CHAT', rules: null },
+    ...overrides,
+  };
+}
+
+function nightModeCleanupBinding(
+  settings = nightModeCleanupSettings(),
+): NightModeCloseNoticeCleanupBinding {
+  return {
+    version: 1,
+    sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+    scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(settings as never),
+    sideEffectFingerprint: buildNightModeTransitionSideEffectFingerprint(settings as never),
+    event: {
+      id: 'night-close-event-1',
+      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+      messageId: 'message-1',
+    },
+  };
+}
 
 function commercialOcrClaimedIntentInput() {
   const chatId = 'chat-1';
@@ -641,10 +688,7 @@ describe('ModerationDeleteIntentService', () => {
     };
     const executeRaw = jest.fn().mockResolvedValue(1);
     const queryRaw = jest.fn().mockResolvedValue([persisted]);
-    const { service, queue } = createService(
-      {},
-      { $executeRaw: executeRaw, $queryRaw: queryRaw },
-    );
+    const { service, queue } = createService({}, { $executeRaw: executeRaw, $queryRaw: queryRaw });
 
     await expect(
       (service as unknown as ServiceInternals).finishRetryableAttempt(intent, 'lease-1', {
@@ -2152,11 +2196,17 @@ describe('ModerationDeleteIntentService', () => {
   });
 
   it('allows NIGHT_MODE_CLOSE_NOTICE_CLEANUP for a persisted close notice', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    const settings = nightModeCleanupSettings();
+    const binding = nightModeCleanupBinding(settings);
     const cleanupIntent = {
       ...baseIntent,
       messageAuthorKind: 'bot',
       routingPolicy: 'origin_only',
       botMessageAutoDeleteOnly: false,
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      nightModeCloseNoticeCleanupBinding: binding,
     };
     const completedIntent = {
       ...cleanupIntent,
@@ -2178,6 +2228,7 @@ describe('ModerationDeleteIntentService', () => {
         $queryRaw: queryRaw,
         $executeRaw: jest.fn().mockResolvedValue(1),
         moderationEvent: { findFirst: transitionEventLookup },
+        chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
       },
       { deleteMessage },
       { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
@@ -2188,8 +2239,301 @@ describe('ModerationDeleteIntentService', () => {
       confirmed: true,
       status: 'SUCCEEDED',
     });
-    expect(transitionEventLookup).not.toHaveBeenCalled();
+    expect(transitionEventLookup).toHaveBeenCalledTimes(2);
     expect(deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconstructs and CAS-persists an exact legacy unbound night cleanup binding once', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    const settings = nightModeCleanupSettings();
+    const legacyIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      nightModeCloseNoticeCleanupBinding: null,
+    };
+    const exactEvent = {
+      id: 'night-close-event-legacy-1',
+      messageId: legacyIntent.messageId,
+      botId: legacyIntent.originBotId,
+      metadata: {
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      },
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const findMany = jest.fn().mockResolvedValue([exactEvent]);
+    const findFirst = jest.fn().mockResolvedValue({ id: exactEvent.id });
+    const { service } = createService(
+      {},
+      {
+        $executeRaw: executeRaw,
+        moderationEvent: { findMany, findFirst },
+        chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
+      },
+    );
+
+    await expect(
+      (service as any).assertNightModeCloseNoticeCleanupStillAuthorized(legacyIntent),
+    ).resolves.toBeUndefined();
+    await expect(
+      (service as any).assertNightModeCloseNoticeCleanupStillAuthorized(legacyIntent),
+    ).resolves.toBeUndefined();
+
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        botId: 'bot-1',
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        metadata: {
+          path: ['sessionKey'],
+          equals: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+        },
+      },
+      select: { id: true, messageId: true, botId: true, metadata: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 2,
+    });
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    const backfillQuery = executeRaw.mock.calls[0]?.[0];
+    expect(backfillQuery?.strings?.join('?') ?? '').toContain('jsonb_set');
+    expect(backfillQuery?.strings?.join('?') ?? '').toContain('parent."lease_token" =');
+    expect(backfillQuery?.strings?.join('?') ?? '').toContain(
+      'reason."metadata"->\'nightModeCloseNoticeCleanup\' IS NULL',
+    );
+    expect(backfillQuery?.strings?.join('?') ?? '').toContain('"updated_at" = CURRENT_TIMESTAMP');
+    expect(backfillQuery?.values).toEqual(
+      expect.arrayContaining([
+        'intent-1',
+        'lease-1',
+        'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+        expect.stringContaining('night-close-event-legacy-1'),
+      ]),
+    );
+    expect(legacyIntent.nightModeCloseNoticeCleanupBinding).toEqual(
+      expect.objectContaining({
+        version: 1,
+        event: expect.objectContaining({ id: 'night-close-event-legacy-1' }),
+      }),
+    );
+    expect(findFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts a concurrent identical legacy binding backfill after losing the CAS', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    const settings = nightModeCleanupSettings();
+    const binding = nightModeCleanupBinding(settings);
+    const legacyIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      nightModeCloseNoticeCleanupBinding: null,
+    };
+    const executeRaw = jest.fn().mockResolvedValue(0);
+    const { service } = createService(
+      {},
+      {
+        $executeRaw: executeRaw,
+        moderationEvent: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: binding.event.id,
+              messageId: binding.event.messageId,
+              botId: 'bot-1',
+              metadata: { sessionKey: binding.sessionKey },
+            },
+          ]),
+          findFirst: jest.fn().mockResolvedValue({ id: binding.event.id }),
+        },
+        moderationDeleteIntentReason: {
+          findFirst: jest.fn().mockResolvedValue({
+            metadata: {
+              retainedLegacyKey: 'keep-me',
+              nightModeCloseNoticeCleanup: binding,
+            },
+          }),
+        },
+        chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
+      },
+    );
+
+    await expect(
+      (service as any).assertNightModeCloseNoticeCleanupStillAuthorized(legacyIntent),
+    ).resolves.toBeUndefined();
+
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(legacyIntent.nightModeCloseNoticeCleanupBinding).toEqual(binding);
+  });
+
+  it.each([
+    ['missing', []],
+    [
+      'ambiguous',
+      [
+        {
+          id: 'night-close-event-legacy-1',
+          messageId: 'message-1',
+          botId: 'bot-1',
+          metadata: { sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30' },
+        },
+        {
+          id: 'night-close-event-legacy-2',
+          messageId: 'message-1',
+          botId: 'bot-1',
+          metadata: { sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30' },
+        },
+      ],
+    ],
+  ])('rejects an unproven legacy night cleanup with %s event evidence', async (_label, events) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    const executeRaw = jest.fn();
+    const { service, maxClient } = createService(
+      {},
+      {
+        $executeRaw: executeRaw,
+        moderationEvent: {
+          findMany: jest.fn().mockResolvedValue(events),
+          findFirst: jest.fn(),
+        },
+        chatSettings: { findUnique: jest.fn().mockResolvedValue(nightModeCleanupSettings()) },
+      },
+    );
+    const legacyIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      nightModeCloseNoticeCleanupBinding: null,
+    };
+
+    await expect(
+      (service as any).assertNightModeCloseNoticeCleanupStillAuthorized(legacyIntent),
+    ).rejects.toThrow('event proof is missing or ambiguous');
+
+    expect(executeRaw).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps bound night cleanup valid after an unrelated setting update', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    const originalSettings = nightModeCleanupSettings();
+    const currentSettings = {
+      ...originalSettings,
+      antiSpamEnabled: true,
+      updatedAt: new Date('2026-05-31T06:00:00.000Z'),
+    };
+    const cleanupIntent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: false,
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      nightModeCloseNoticeCleanupBinding: nightModeCleanupBinding(originalSettings),
+    };
+    const completedIntent = {
+      ...cleanupIntent,
+      status: 'SUCCEEDED',
+      lastBotId: 'bot-1',
+      succeededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const deleteMessage = jest.fn().mockResolvedValue(undefined);
+    const { service } = createService(
+      {},
+      {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValueOnce([cleanupIntent])
+          .mockResolvedValueOnce([completedIntent]),
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'night-close-event-1' }),
+        },
+        chatSettings: { findUnique: jest.fn().mockResolvedValue(currentSettings) },
+      },
+      { deleteMessage },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      confirmed: true,
+      status: 'SUCCEEDED',
+    });
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['night mode is disabled', { nightModeEnabled: false }],
+    [
+      'the schedule changes',
+      { nightModeStartTimeMinutes: 22 * 60, nightModeEndTimeMinutes: 7 * 60 },
+    ],
+    ['the close notice content changes', { nightModeBotMessageText: 'Updated close notice' }],
+  ])('terminalizes a delayed night cleanup when %s', async (_label, relevantChange) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
+    const originalSettings = nightModeCleanupSettings();
+    const changedSettings = nightModeCleanupSettings({
+      ...relevantChange,
+      updatedAt: new Date('2026-05-31T06:00:00.000Z'),
+    });
+    const intent = {
+      ...baseIntent,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: false,
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      nightModeCloseNoticeCleanupBinding: nightModeCleanupBinding(originalSettings),
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: intent.id }])
+      .mockResolvedValueOnce([intent]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw, $executeRaw: executeRaw }),
+    );
+    const maxHttpDelete = jest.fn();
+    const transitionEventLookup = jest.fn();
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]),
+        $executeRaw: executeRaw,
+        $transaction: transaction,
+        chatSettings: { findUnique: jest.fn().mockResolvedValue(changedSettings) },
+        moderationEvent: { findFirst: transitionEventLookup },
+      },
+      { deleteMessage: maxHttpDelete },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'terminal',
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+
+    expect(maxHttpDelete).not.toHaveBeenCalled();
+    expect(transitionEventLookup).not.toHaveBeenCalled();
+    expect(
+      executeRaw.mock.calls.some((call) =>
+        ((call[0] as { values?: readonly unknown[] }).values ?? []).includes(
+          'night_mode_close_notice_cleanup_stale',
+        ),
+      ),
+    ).toBe(true);
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('refreshes a denied candidate and tries the next freshly capable bot', async () => {
@@ -4178,6 +4522,75 @@ describe('ModerationDeleteIntentService', () => {
         'channel_auto_post_cleanup_entity_mismatch',
         'channel_auto_post_cleanup_sender_not_admin',
       ]),
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({ priority: 1 }),
+    );
+  });
+
+  it('reopens a stale night cleanup when a later independent reason commits', async () => {
+    const independentDeadline = new Date(Date.now() + 120_000);
+    const terminalNightCleanup = {
+      ...baseIntent,
+      entityType: 'CHAT' as const,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      status: 'FAILED_TERMINAL' as const,
+      completedAt: new Date(),
+      lastErrorCode: 'night_mode_close_notice_cleanup_stale',
+      lastError: 'Night mode cleanup generation changed',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      leasedFromStatus: null,
+    };
+    const reopened = {
+      ...terminalNightCleanup,
+      status: 'PENDING' as const,
+      retryUntilAt: independentDeadline,
+      completedAt: null,
+      lastErrorCode: null,
+      lastError: null,
+      nightModeCloseNoticeCleanupOnly: false,
+      nonCommercialOcrDeleteReason: true,
+    };
+    const txQueryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([terminalNightCleanup])
+      .mockResolvedValueOnce([reopened]);
+    const transaction = jest.fn(
+      async (callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => unknown) =>
+        callback({
+          $queryRaw: txQueryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+        }),
+    );
+    const { service, queue } = createService({}, { $transaction: transaction });
+
+    await expect(
+      service.ensureIntent({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        reasonKey: 'independent-delete-after-night-cleanup-stale',
+        ruleCode: 'INDEPENDENT_DELETE',
+        subjectUserId: 'user-1',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        originBotId: 'bot-1',
+        retryUntilAt: independentDeadline,
+      }),
+    ).resolves.toEqual({ intentId: 'intent-1', rollout: 'execute', status: 'PENDING' });
+
+    const reopenQuery = txQueryRaw.mock.calls[1]?.[0];
+    const reopenSql = reopenQuery?.strings?.join('?') ?? '';
+    expect(reopenSql).toContain('"last_error_code" IN');
+    expect(reopenSql).toContain('"remote_delete_succeeded_at" IS NULL');
+    expect(reopenSql).toContain('"delete_dispatch_started_at" IS NULL');
+    expect(reopenQuery?.values).toEqual(
+      expect.arrayContaining(['night_mode_close_notice_cleanup_stale', 'CHAT', 'origin_only']),
     );
     expect(queue.add).toHaveBeenCalledWith(
       'execute-moderation-delete-intent',
@@ -6195,6 +6608,56 @@ describe('ModerationDeleteIntentService', () => {
     const retryQuery = txQueryRaw.mock.calls[0]?.[0];
     expect(retryQuery?.strings?.join('?') ?? '').toContain('"attempt_count" = CASE');
     expect(retryQuery?.values).toContain(true);
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-moderation-delete-intent',
+      { intentId: 'intent-1' },
+      expect.objectContaining({ priority: 1 }),
+    );
+  });
+
+  it('reopens a terminal night-mode cleanup for exact pre-dispatch reconstruction', async () => {
+    const terminal = {
+      ...baseIntent,
+      status: 'FAILED_TERMINAL' as const,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+      leaseToken: null,
+      leaseExpiresAt: null,
+      nightModeCloseNoticeCleanupReason: true,
+      nightModeCloseNoticeCleanupOnly: true,
+      lastErrorCode: 'night_mode_close_notice_cleanup_stale',
+    };
+    const reopened = {
+      ...terminal,
+      status: 'PENDING' as const,
+      completedAt: null,
+      lastErrorCode: null,
+      nextAttemptAt: new Date(),
+      retryUntilAt: new Date(Date.now() + 60_000),
+    };
+    const txQueryRaw = jest.fn().mockResolvedValueOnce([reopened]);
+    const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
+      callback({ $queryRaw: txQueryRaw }),
+    );
+    const { service, queue } = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValue([terminal]),
+        $transaction: transaction,
+      },
+    );
+
+    await expect(
+      service.retryTerminalIntent('intent-1', 'FAILED_TERMINAL', {
+        updatedAt: terminal.updatedAt,
+        attemptCount: terminal.attemptCount,
+      }),
+    ).resolves.toMatchObject({
+      reopened: true,
+      intent: { status: 'PENDING' },
+    });
+
+    expect(transaction).toHaveBeenCalledTimes(1);
     expect(queue.add).toHaveBeenCalledWith(
       'execute-moderation-delete-intent',
       { intentId: 'intent-1' },

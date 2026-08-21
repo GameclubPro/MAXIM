@@ -569,6 +569,88 @@ describe('Prisma migrations', () => {
     expect(compact).not.toMatch(/\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i);
   });
 
+  it('adds a generation-fenced night mode transition reconcile outbox', () => {
+    const schema = readSchema();
+    const migration = readMigration('20260821130000_add_night_mode_transition_reconcile_requests');
+    const acknowledgementMigration = readMigration(
+      '20260821140000_add_night_mode_transition_manual_acknowledgement',
+    );
+    const compact = migration.replace(/\s+/g, ' ').trim();
+    const compactAcknowledgement = acknowledgementMigration.replace(/\s+/g, ' ').trim();
+
+    expect(schema).toContain('model NightModeTransitionReconcileRequest {');
+    expect(schema).toContain('model NightModeTransitionScheduledJob {');
+    expect(schema).toContain('manualAcknowledgedAt     DateTime? @map("manual_acknowledged_at")');
+    expect(compact).toContain('CREATE TABLE "night_mode_transition_reconcile_requests"');
+    expect(compact).toContain('CREATE TABLE "night_mode_transition_scheduled_jobs"');
+    expect(compact).toContain(
+      'CREATE OR REPLACE FUNCTION enqueue_night_mode_transition_reconcile_request',
+    );
+    expect(compact).toContain(
+      '"generation" = "night_mode_transition_reconcile_requests"."generation" + 1',
+    );
+    expect(compact).toContain('"first_requested_at" TIMESTAMP(3) NOT NULL');
+    expect(compact).toContain('"updated_at" TIMESTAMP(3) NOT NULL');
+    expect(compact).not.toContain('"updated_at" TIMESTAMP(3) NOT NULL DEFAULT');
+    expect(compact).not.toContain('TIMESTAMPTZ');
+    expect(compact).toContain('"attempt_count" INTEGER NOT NULL DEFAULT 0');
+    expect(compact).toContain('"manual_blocked_category" TEXT');
+    expect(compact).toContain('"manual_blocked_generation" BIGINT');
+    expect(compact).not.toContain('"manual_acknowledged_at"');
+    expect(compactAcknowledgement).toContain('ADD COLUMN "manual_acknowledged_at" TIMESTAMP(3)');
+    expect(compact).toContain('night_mode_transition_reconcile_manual_block_check');
+    expect(compactAcknowledgement).toContain('night_mode_transition_reconcile_ack_check');
+    expect(compactAcknowledgement).toContain(
+      '"manual_acknowledged_at" IS NULL OR "manual_blocked_at" IS NOT NULL',
+    );
+    expect(compact).toContain('WHERE "manual_blocked_at" IS NULL');
+    expect(compact).toContain('WHERE "manual_blocked_at" IS NOT NULL');
+    expect(compact).not.toContain("clear_manual_scope = 'all'");
+    expect(compact).toContain(
+      '"night_mode_transition_reconcile_requests"."manual_blocked_category" = \'no_fresh_access\'',
+    );
+    expect(compactAcknowledgement).toMatch(
+      /"manual_acknowledged_at" = CASE WHEN clear_manual_scope = 'no_fresh_access' AND "night_mode_transition_reconcile_requests"\."manual_blocked_category" = 'no_fresh_access' THEN NULL ELSE "night_mode_transition_reconcile_requests"\."manual_acknowledged_at" END/u,
+    );
+    expect(compact).not.toContain(
+      'enqueue_night_mode_transition_reconcile_request(NEW."chat_id", \'all\')',
+    );
+    expect(compact).not.toContain(
+      'enqueue_night_mode_transition_reconcile_request(OLD."chat_id", \'all\')',
+    );
+    expect(compact).not.toContain(
+      'enqueue_night_mode_transition_reconcile_request(NEW."id", \'all\')',
+    );
+    expect(compact).toContain(
+      'CREATE TRIGGER chat_settings_enqueue_night_mode_transition_reconcile',
+    );
+    expect(compact).toContain('"night_mode_open_message_enabled"');
+    expect(compact).toContain('"bot_speech_media"');
+    expect(compact).toContain(
+      'CREATE TRIGGER chat_bot_memberships_enqueue_night_mode_transition_reconcile',
+    );
+    expect(compact).not.toContain('"bot_access_checked_at"');
+    expect(compact).toContain('"bot_access_expires_at"');
+    expect(compact).toContain(') IS DISTINCT FROM (');
+    expect(compact).toContain('CREATE INDEX "night_mode_transition_reconcile_manual_idx"');
+    expect(compact).toContain('CREATE INDEX "night_mode_transition_reconcile_stale_lease_idx"');
+    expect(compact).toContain(
+      'WHERE "manual_blocked_at" IS NULL OR "generation" > "manual_blocked_generation"',
+    );
+    expect(compact).toContain(
+      '("manual_blocked_at" IS NULL OR "generation" > "manual_blocked_generation") AND "lease_token" IS NOT NULL',
+    );
+    expect(compact).toContain(
+      'CONSTRAINT "night_mode_transition_scheduled_jobs_pkey" PRIMARY KEY ("chat_id", "job_id")',
+    );
+    expect(compact).toContain(
+      'WHERE settings."night_mode_enabled" = TRUE ON CONFLICT ("chat_id") DO NOTHING',
+    );
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
+
   it('adds a non-destructive routed giveaway send lock discriminator', () => {
     const schema = readSchema();
     const migration = readMigration('20260711130000_managed_giveaway_send_lock_key');

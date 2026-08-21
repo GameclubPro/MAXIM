@@ -27,6 +27,7 @@ import {
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
 } from './max-action-pre-dispatch-guard';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
@@ -749,6 +750,176 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
     expect(httpService.request).not.toHaveBeenCalled();
     expect((service as any).actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('checks the immediate send guard after limiter and dispatch claim before MAX HTTP', async () => {
+    const guardError = new Error('night transition changed while waiting for limiter');
+    const events: string[] = [];
+    let current = true;
+    let releaseLimiter: () => void = () => undefined;
+    const limiterGate = new Promise<void>((resolve) => {
+      releaseLimiter = resolve;
+    });
+    let markLimiterEntered: () => void = () => undefined;
+    const limiterEntered = new Promise<void>((resolve) => {
+      markLimiterEntered = resolve;
+    });
+    const httpService = {
+      request: jest.fn(() => {
+        events.push('max-http');
+        return of({ status: 200, data: { message_id: 'unexpected-message' } });
+      }),
+    };
+    const actionLedgerService = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      claimSendDispatch: jest.fn().mockImplementation(async () => {
+        events.push('send-claim');
+        return { kind: 'claimed', dispatchToken: 'dispatch-token-night-1' };
+      }),
+      completeSendDispatch: jest.fn(),
+      releaseSendDispatch: jest.fn().mockImplementation(async () => {
+        events.push('send-release');
+      }),
+      recordAmbiguousSendDispatch: jest.fn(),
+    };
+    const beforeImmediateSendMutation = jest.fn(async () => {
+      events.push('send-guard');
+      if (!current) {
+        throw guardError;
+      }
+    });
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+    jest.spyOn(service as any, 'reserveRateLimitSlot').mockImplementation(async () => {
+      events.push('limiter-enter');
+      markLimiterEntered();
+      await limiterGate;
+      events.push('limiter-exit');
+    });
+
+    const sending = service.sendMessage('chat-1', 'Night notice', undefined, {
+      immediate: true,
+      botId: '777000_bot',
+      idempotencyKey: 'night-mode:close:chat-1:session:session-guard-1',
+      beforeImmediateSendMutation,
+    });
+    await limiterEntered;
+    expect(actionLedgerService.claimSendDispatch).not.toHaveBeenCalled();
+    expect(beforeImmediateSendMutation).not.toHaveBeenCalled();
+    current = false;
+    releaseLimiter();
+
+    await expect(sending).rejects.toBe(guardError);
+    expect(events).toEqual([
+      'limiter-enter',
+      'limiter-exit',
+      'send-claim',
+      'send-guard',
+      'send-release',
+    ]);
+    expect((guardError as Error & { code?: string }).code).toBe(
+      MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+    );
+    expect(actionLedgerService.releaseSendDispatch).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.completeSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionType: 'SEND_MESSAGE',
+        idempotencyKey: expect.stringMatching(/^max-action__explicit__777000_bot__send_message__/),
+      }),
+      guardError,
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect((service as any).actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects an ephemeral send guard on queued dispatch', async () => {
+    const beforeImmediateSendMutation = jest.fn();
+    const actionQueue = { add: jest.fn(), getJob: jest.fn() };
+    const service = createService({ request: jest.fn() }, {}, actionQueue);
+
+    await expect(
+      service.sendMessage('chat-1', 'hello', undefined, {
+        beforeImmediateSendMutation,
+      }),
+    ).rejects.toThrow('Send mutation guard requires immediate dispatch');
+
+    expect(beforeImmediateSendMutation).not.toHaveBeenCalled();
+    expect(actionQueue.add).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('rejects an immediate send guard for a non-send action', async () => {
+    const beforeImmediateSendMutation = jest.fn();
+    const service = createService({ request: jest.fn() });
+
+    await expect(
+      service.deleteMessage('chat-1', 'mid-delete-with-send-guard', {
+        immediate: true,
+        beforeImmediateSendMutation,
+      }),
+    ).rejects.toThrow('Send mutation guard requires a message send action');
+
+    expect(beforeImmediateSendMutation).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('returns a recovered immediate send without rewriting its terminal ledger state', async () => {
+    const httpService = { request: jest.fn() };
+    const beforeImmediateSendMutation = jest.fn();
+    const actionLedgerService = {
+      isIrreversibleAction: jest.fn().mockReturnValue(true),
+      assertCanEnqueue: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockResolvedValue(undefined),
+      recordFailed: jest.fn().mockResolvedValue(undefined),
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+        remoteMessageId: 'mid-immediate-recovered-1',
+        dispatchBotId: '777000_bot',
+      }),
+      claimSendDispatch: jest.fn(),
+      completeSendDispatch: jest.fn(),
+      releaseSendDispatch: jest.fn(),
+      recordAmbiguousSendDispatch: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.sendMessage('chat-1', 'Night notice', undefined, {
+        immediate: true,
+        botId: '777000_bot',
+        idempotencyKey: 'night-mode:open:chat-1:session:session-recovered-1',
+        beforeImmediateSendMutation,
+      }),
+    ).resolves.toEqual({
+      messageId: 'mid-immediate-recovered-1',
+      url: null,
+      recoveredSendDispatch: {
+        dispatchBotId: '777000_bot',
+      },
+    });
+
+    expect(actionLedgerService.assertCanEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^max-action__explicit__777000_bot__send_message__/),
+      }),
+    );
+    expect(actionLedgerService.recordStarted).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordFailed).not.toHaveBeenCalled();
+    expect(actionLedgerService.claimSendDispatch).not.toHaveBeenCalled();
+    expect(beforeImmediateSendMutation).not.toHaveBeenCalled();
+    expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

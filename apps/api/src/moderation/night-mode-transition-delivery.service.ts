@@ -5,6 +5,9 @@ import {
   type MaxActionDispatchOptions,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import { buildNightModeNoticeIdempotencyKey } from '../max/max-action-idempotency.util';
+import { MaxActionLedgerService } from '../max/max-action-ledger.service';
+import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
 import {
   ManagedEntityAccessLossService,
   classifyMaxTerminalChatActionError,
@@ -22,6 +25,9 @@ import {
   type NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
 import type {
+  NightModeRecoveredCloseNoticeEvent,
+  NightModeRecoverCloseNoticeEventFromLedgerParams,
+  NightModeRecoverCloseNoticeEventParams,
   NightModeTransitionNoticeResult,
   NightModeTransitionRuntimeHooks,
   NightModeTransitionRuntimeSettings,
@@ -32,7 +38,12 @@ import {
   type NightModeTransitionEventParams,
 } from './night-mode-transition-event.service';
 import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
+import { NightModeTransitionStaleStateError } from './night-mode-transition-stale-state-error';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
+import {
+  NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
+  type NightModeCloseNoticeCleanupBinding,
+} from './night-mode-close-notice-cleanup-binding';
 
 export type NightModeTransitionDeliveryOperation =
   | 'send-close-notice'
@@ -68,14 +79,113 @@ export class NightModeTransitionDeliveryService {
     private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
     @Optional()
     private readonly moderationDeleteIntentService?: ModerationDeleteIntentService,
+    @Optional()
+    private readonly maxActionLedgerService?: MaxActionLedgerService,
   ) {}
 
   createHooks(adapters: NightModeTransitionDeliveryAdapters): NightModeTransitionRuntimeHooks {
     return {
-      sendClosedNotice: (settings, snapshot) => this.sendClosedNotice(settings, snapshot, adapters),
-      sendOpenedNotice: (settings, snapshot) => this.sendOpenedNotice(settings, snapshot, adapters),
-      deleteClosedNotice: (chatId, messageId, originBotId) =>
-        this.deleteClosedNotice(chatId, messageId, originBotId, adapters),
+      recoverClosedNoticeEvent: (params) => this.recoverClosedNoticeEvent(params),
+      recoverClosedNoticeEventFromLedger: (params) =>
+        this.recoverClosedNoticeEventFromLedger(params),
+      sendClosedNotice: (settings, snapshot, validateBeforeDispatch) =>
+        this.sendClosedNotice(settings, snapshot, adapters, validateBeforeDispatch),
+      sendOpenedNotice: (settings, snapshot, validateBeforeDispatch) =>
+        this.sendOpenedNotice(settings, snapshot, adapters, validateBeforeDispatch),
+      deleteClosedNotice: (chatId, messageId, originBotId, binding, validateBeforeDispatch) =>
+        this.deleteClosedNotice(
+          chatId,
+          messageId,
+          originBotId,
+          binding,
+          adapters,
+          validateBeforeDispatch,
+        ),
+    };
+  }
+
+  async recoverClosedNoticeEvent(
+    params: NightModeRecoverCloseNoticeEventParams,
+  ): Promise<NightModeRecoveredCloseNoticeEvent> {
+    const expectedJobId = buildNightModeNoticeIdempotencyKey(
+      'close',
+      params.chatId,
+      params.sessionKey,
+    );
+    if (
+      !this.maxActionLedgerService ||
+      typeof this.maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch !==
+        'function'
+    ) {
+      throw new ServiceUnavailableException(
+        `Night mode close-event recovery ledger is unavailable (${expectedJobId})`,
+      );
+    }
+
+    const proof = await this.maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch({
+      chatId: params.chatId,
+      sessionKey: params.sessionKey,
+      messageId: params.messageId,
+      dispatchBotId: params.botId,
+    });
+    if (!proof || proof.jobId !== expectedJobId) {
+      throw new ServiceUnavailableException(
+        `Exact completed night mode close send is not proven (${expectedJobId})`,
+      );
+    }
+
+    return this.ensureRecoveredCloseNoticeEvent(params, proof);
+  }
+
+  async recoverClosedNoticeEventFromLedger(
+    params: NightModeRecoverCloseNoticeEventFromLedgerParams,
+  ): Promise<NightModeRecoveredCloseNoticeEvent | null> {
+    const expectedJobId = buildNightModeNoticeIdempotencyKey(
+      'close',
+      params.chatId,
+      params.sessionKey,
+    );
+    if (
+      !this.maxActionLedgerService ||
+      typeof this.maxActionLedgerService.inspectCompletedNightModeCloseNoticeDispatch !== 'function'
+    ) {
+      throw new ServiceUnavailableException(
+        `Night mode close-event recovery ledger is unavailable (${expectedJobId})`,
+      );
+    }
+
+    const lookup =
+      await this.maxActionLedgerService.inspectCompletedNightModeCloseNoticeDispatch(params);
+    if (lookup.kind === 'missing') {
+      return null;
+    }
+    if (lookup.kind !== 'completed' || lookup.jobId !== expectedJobId) {
+      throw new ServiceUnavailableException(
+        `Night mode close send ledger provenance is unsafe (${expectedJobId})`,
+      );
+    }
+    return this.ensureRecoveredCloseNoticeEvent(params, lookup);
+  }
+
+  private async ensureRecoveredCloseNoticeEvent(
+    params: NightModeRecoverCloseNoticeEventFromLedgerParams,
+    proof: { remoteMessageId: string; dispatchBotId: string },
+  ): Promise<NightModeRecoveredCloseNoticeEvent> {
+    const event = await this.nightModeTransitionEventService.ensureTransitionEvent({
+      chatId: params.chatId,
+      messageId: proof.remoteMessageId,
+      botId: proof.dispatchBotId,
+      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+      sessionKey: params.sessionKey,
+      timezone: params.timezone,
+      startMinutes: params.startMinutes,
+      endMinutes: params.endMinutes,
+    });
+    return {
+      eventId: event.id,
+      sessionKey: params.sessionKey,
+      messageId: proof.remoteMessageId,
+      botId: proof.dispatchBotId,
     };
   }
 
@@ -83,6 +193,7 @@ export class NightModeTransitionDeliveryService {
     settings: NightModeTransitionRuntimeSettings,
     snapshot: NightModeTransitionDeliverySnapshot,
     adapters: NightModeTransitionDeliveryAdapters,
+    validateBeforeDispatch?: () => Promise<boolean>,
   ): Promise<NightModeTransitionNoticeResult> {
     const buildMessageText = (botId?: string | null) =>
       buildNightModeClosedNotice({
@@ -101,7 +212,7 @@ export class NightModeTransitionDeliveryService {
     try {
       sent = await this.sendNotice({
         chatId: settings.chatId,
-        logicalIdempotencyKey: this.buildNoticeIdempotencyKey(
+        logicalIdempotencyKey: buildNightModeNoticeIdempotencyKey(
           'close',
           settings.chatId,
           snapshot.sessionKey,
@@ -112,6 +223,7 @@ export class NightModeTransitionDeliveryService {
         mediaSettings: settings,
         mediaFieldKey: 'nightModeBotMessageText',
         adapters,
+        validateBeforeDispatch,
         onDispatchAttempt: (botId, startedAt) => {
           attemptedBotId = botId;
           dispatchAttemptStartedAt = startedAt;
@@ -160,6 +272,7 @@ export class NightModeTransitionDeliveryService {
     >,
     snapshot: NightModeTransitionDeliverySnapshot,
     adapters: NightModeTransitionDeliveryAdapters,
+    validateBeforeDispatch?: () => Promise<boolean>,
   ): Promise<NightModeTransitionProcessResult> {
     const buildMessageText = (botId?: string | null) =>
       buildNightModeOpenedNotice({
@@ -176,7 +289,7 @@ export class NightModeTransitionDeliveryService {
     try {
       sent = await this.sendNotice({
         chatId: settings.chatId,
-        logicalIdempotencyKey: this.buildNoticeIdempotencyKey(
+        logicalIdempotencyKey: buildNightModeNoticeIdempotencyKey(
           'open',
           settings.chatId,
           snapshot.sessionKey,
@@ -187,6 +300,7 @@ export class NightModeTransitionDeliveryService {
         mediaSettings: settings,
         mediaFieldKey: 'nightModeOpenMessageText',
         adapters,
+        validateBeforeDispatch,
         onDispatchAttempt: (botId, startedAt) => {
           attemptedBotId = botId;
           dispatchAttemptStartedAt = startedAt;
@@ -228,6 +342,7 @@ export class NightModeTransitionDeliveryService {
     mediaSettings: { botSpeechMedia?: unknown };
     mediaFieldKey: 'nightModeBotMessageText' | 'nightModeOpenMessageText';
     adapters: NightModeTransitionDeliveryAdapters;
+    validateBeforeDispatch?: () => Promise<boolean>;
     onDispatchAttempt: (botId: string | null, startedAt: Date) => void;
   }): Promise<{ messageId: string | null; botId: string | null }> {
     const baseOptions = this.withMarkdownMessageOptions(params.messageOptions ?? null);
@@ -260,6 +375,9 @@ export class NightModeTransitionDeliveryService {
         onDispatchAttempt: ({ botId }) => {
           params.onDispatchAttempt(botId, new Date());
         },
+        beforeSendMutation: async () => {
+          await this.assertCurrentTransitionState(params.chatId, params.validateBeforeDispatch);
+        },
       });
     }
 
@@ -270,27 +388,30 @@ export class NightModeTransitionDeliveryService {
       { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
     );
     const messageText = params.resolveMessageText?.(botId) ?? params.messageText;
-    const requestOptions = this.buildRequestOptions(botId);
     const dispatchAttemptStartedAt = new Date();
     params.onDispatchAttempt(botId, dispatchAttemptStartedAt);
-    const sent = await this.maxClient.sendMessageImmediateWithId(
+    const sent = await this.maxClient.sendMessage(
       params.chatId,
       messageText,
       messageOptionsWithMedia,
-      requestOptions,
+      {
+        ...this.buildRequestOptions(botId),
+        immediate: true,
+        idempotencyKey: params.logicalIdempotencyKey,
+        beforeImmediateSendMutation: async () => {
+          await this.assertCurrentTransitionState(params.chatId, params.validateBeforeDispatch);
+        },
+      },
     );
+    if (!sent?.messageId) {
+      throw new Error(
+        `Immediate MAX night mode publication ${params.logicalIdempotencyKey} completed without a message id`,
+      );
+    }
     return {
       messageId: sent.messageId,
       botId,
     };
-  }
-
-  private buildNoticeIdempotencyKey(
-    transition: 'close' | 'open',
-    chatId: string,
-    sessionKey: string,
-  ): string {
-    return `night-mode:${transition}:${chatId}:session:${sessionKey}`;
   }
 
   private async createEvent(params: NightModeTransitionEventParams): Promise<void> {
@@ -322,20 +443,29 @@ export class NightModeTransitionDeliveryService {
     chatId: string,
     messageId: string,
     originBotId: string | null,
+    binding: NightModeCloseNoticeCleanupBinding,
     adapters: NightModeTransitionDeliveryAdapters,
+    validateBeforeDispatch?: () => Promise<boolean>,
   ): Promise<NightModeTransitionProcessResult> {
     const persistedOriginBotId = originBotId?.trim() || null;
     if (this.moderationDeleteIntentService && persistedOriginBotId) {
       try {
+        await this.assertCurrentTransitionState(chatId, validateBeforeDispatch);
         const intent = await this.moderationDeleteIntentService.ensureIntent({
           chatId,
           messageId,
-          reasonKey: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
-          ruleCode: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+          reasonKey: NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
+          ruleCode: NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
           entityType: 'CHAT',
           messageAuthorKind: 'bot',
           originBotId: persistedOriginBotId,
           routingPolicy: 'origin_only',
+          event: {
+            eventType: 'SYSTEM',
+            metadata: {
+              nightModeCloseNoticeCleanup: binding,
+            },
+          },
         });
         if (
           intent.rollout === 'execute' ||
@@ -344,6 +474,9 @@ export class NightModeTransitionDeliveryService {
           return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
         }
       } catch (error: unknown) {
+        if (error instanceof NightModeTransitionStaleStateError) {
+          throw error;
+        }
         if (this.moderationDeleteIntentService.getRolloutForChat(chatId) === 'execute') {
           throw error;
         }
@@ -362,10 +495,14 @@ export class NightModeTransitionDeliveryService {
     const botId = persistedOriginBotId ?? (await adapters.resolveBotId(chatId));
     const requestOptions = {
       immediate: true,
+      beforeImmediateDeleteMutation: async () => {
+        await this.assertCurrentTransitionState(chatId, validateBeforeDispatch);
+      },
       ...this.buildRequestOptions(botId),
     };
     let dispatchAttemptStartedAt: Date | null = null;
     try {
+      await this.assertCurrentTransitionState(chatId, validateBeforeDispatch);
       dispatchAttemptStartedAt = new Date();
       await this.maxClient.deleteMessage(chatId, messageId, requestOptions);
     } catch (error: unknown) {
@@ -385,6 +522,15 @@ export class NightModeTransitionDeliveryService {
     return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
   }
 
+  private async assertCurrentTransitionState(
+    chatId: string,
+    validateBeforeDispatch?: () => Promise<boolean>,
+  ): Promise<void> {
+    if (validateBeforeDispatch && !(await validateBeforeDispatch())) {
+      throw new NightModeTransitionStaleStateError(chatId);
+    }
+  }
+
   private async handleTerminalError(params: {
     chatId: string;
     botId: string | null;
@@ -393,6 +539,9 @@ export class NightModeTransitionDeliveryService {
     error: unknown;
     lifecycleEventAt: Date | null;
   }): Promise<NightModeTransitionProcessResult | null> {
+    if (wasMaxPreDispatchGuardRejected(params.error)) {
+      return null;
+    }
     if (this.wasManagedEntityAccessLossRecorded(params.error)) {
       this.logTerminalError(params);
       return NIGHT_MODE_TRANSITION_PROCESS_STOP;

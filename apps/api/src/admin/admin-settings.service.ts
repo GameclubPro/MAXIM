@@ -514,11 +514,7 @@ export class AdminSettingsService {
       return;
     }
 
-    await this.legacyAdminService.assertManagedEntityAdminAccess(
-      chatId,
-      user.userId,
-      entityType,
-    );
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
   }
 
   async getChannelPostSignature(
@@ -693,17 +689,19 @@ export class AdminSettingsService {
     );
   }
 
-  private async reconcileNightModeTransitions(chatIds: readonly string[]): Promise<void> {
-    try {
-      await this.nightModeTransitionScheduler?.reconcileChats(chatIds);
-    } catch (error: unknown) {
+  private reconcileNightModeTransitions(chatIds: readonly string[]): Promise<void> {
+    // FLAG: Night-mode settings writes enqueue a generation-fenced SQL request in the same DB
+    // transaction. This non-blocking call is only the fast path; the enqueue-role poller owns
+    // durable retry and keeps Redis lock contention out of the committed admin request latency.
+    void this.nightModeTransitionScheduler?.reconcileChats([...chatIds]).catch((error: unknown) => {
       this.logger.warn(
         {
           chatIds,
           error: error instanceof Error ? error.message : String(error),
         },
-        'Failed to reconcile night mode transition jobs after settings update',
+        'Deferred night mode transition jobs to durable reconciliation after settings update',
       );
-    }
+    });
+    return Promise.resolve();
   }
 }

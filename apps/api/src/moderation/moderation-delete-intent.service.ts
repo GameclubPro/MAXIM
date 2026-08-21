@@ -42,6 +42,16 @@ import type {
   ModerationDeleteIntentStatus,
 } from './moderation-delete-intent.types';
 import { NIGHT_MODE_TRANSITION_NOTICE_RULE_CODES } from './night-mode-transition-notice-persistence-error';
+import {
+  NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
+  parseNightModeCloseNoticeCleanupBinding,
+  type NightModeCloseNoticeCleanupBinding,
+} from './night-mode-close-notice-cleanup-binding';
+import {
+  buildNightModeTransitionScheduleFingerprint,
+  buildNightModeTransitionSideEffectFingerprint,
+} from './night-mode-transition-generation.util';
+import { resolveNightModeTransitionSnapshot } from './night-mode-transition-time.util';
 import { LinkHistoryDeleteGuardService } from './link-history-delete-guard.service';
 import {
   LINK_BLOCKED_DELETE_RULE_CODE,
@@ -76,6 +86,7 @@ const DEFAULT_RETENTION_DAYS = 90;
 const BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS = 5;
 const BOT_MESSAGE_AUTO_DELETE_RETRY_LIMIT_ERROR_CODE =
   'bot_message_auto_delete_retry_limit_reached';
+const NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE = 'night_mode_close_notice_cleanup_stale';
 const DELETE_QUEUE_PRIORITY_INTERACTIVE = 1;
 const DELETE_QUEUE_PRIORITY_BACKGROUND = 10;
 const CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE =
@@ -144,6 +155,9 @@ type IntentRow = {
   nonCommercialOcrDeleteReason?: boolean;
   linkFamilyDeleteOnly?: boolean;
   photoDuplicateDeleteOnly?: boolean;
+  nightModeCloseNoticeCleanupReason?: boolean;
+  nightModeCloseNoticeCleanupOnly?: boolean;
+  nightModeCloseNoticeCleanupBinding?: unknown;
 };
 
 type PhotoDuplicateDeleteReasonFence = {
@@ -215,6 +229,15 @@ class ModerationDeleteReasonMissingError extends Error {
   constructor() {
     super('Moderation delete intent has no durable reason');
     this.name = 'ModerationDeleteReasonMissingError';
+  }
+}
+
+class NightModeCloseNoticeCleanupGuardRejectedError extends Error {
+  readonly code = NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'NightModeCloseNoticeCleanupGuardRejectedError';
   }
 }
 
@@ -1603,6 +1626,9 @@ export class ModerationDeleteIntentService {
       // Derived rule classifiers cannot represent a reasonless intent and therefore cannot fence it.
       // FLAG: A channel replacement cleanup must never cross an entity reclassification boundary.
       await this.assertChannelAutoPostCleanupStillAuthorized(intent, botId);
+      // FLAG: A delayed close-notice cleanup is bound to the exact open session, settings
+      // generation and persisted notice event. Re-check all three at the transport-final boundary.
+      await this.assertNightModeCloseNoticeCleanupStillAuthorized(intent);
       const commercialOcrGuardRequired = await this.resolveDeleteIntentCommercialOcrGuard(intent);
       // FLAG: A durable photo-only retry must regain authorization from current chat settings and
       // a fresh shared runtime control immediately before every remote DELETE mutation.
@@ -1694,7 +1720,8 @@ export class ModerationDeleteIntentService {
     if (
       code === 'moderation_delete_reason_missing' ||
       code === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
-      code === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE
+      code === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE ||
+      code === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE
     ) {
       return true;
     }
@@ -1716,6 +1743,190 @@ export class ModerationDeleteIntentService {
       code === 'commercial_ocr_message_changed' ||
       code === 'commercial_ocr_participant_immune'
     );
+  }
+
+  private async assertNightModeCloseNoticeCleanupStillAuthorized(intent: IntentRow): Promise<void> {
+    if (
+      intent.nightModeCloseNoticeCleanupReason !== true ||
+      intent.nightModeCloseNoticeCleanupOnly !== true
+    ) {
+      return;
+    }
+    let binding = parseNightModeCloseNoticeCleanupBinding(
+      intent.nightModeCloseNoticeCleanupBinding,
+    );
+    if (intent.nightModeCloseNoticeCleanupBinding != null && !binding) {
+      throw new NightModeCloseNoticeCleanupGuardRejectedError(
+        'Night mode close notice cleanup lost its exact persisted binding',
+      );
+    }
+
+    const settings = await this.prisma.chatSettings.findUnique({
+      where: { chatId: intent.chatId },
+      include: {
+        chat: {
+          select: {
+            entityType: true,
+            rules: {
+              select: {
+                publishedUrl: true,
+                publishedMessageId: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    const snapshot = settings ? resolveNightModeTransitionSnapshot(settings) : null;
+    if (
+      !settings?.nightModeEnabled ||
+      settings.chat?.entityType !== 'CHAT' ||
+      intent.entityType !== 'CHAT' ||
+      !snapshot ||
+      snapshot.status !== 'open'
+    ) {
+      throw new NightModeCloseNoticeCleanupGuardRejectedError(
+        'Night mode close notice cleanup became stale after disable or reschedule',
+      );
+    }
+
+    if (!binding) {
+      binding = await this.reconstructLegacyNightModeCloseNoticeCleanupBinding(
+        intent,
+        settings,
+        snapshot.sessionKey,
+      );
+    }
+    if (
+      binding.event.messageId !== intent.messageId ||
+      snapshot.sessionKey !== binding.sessionKey ||
+      buildNightModeTransitionScheduleFingerprint(settings) !== binding.scheduleFingerprint ||
+      buildNightModeTransitionSideEffectFingerprint(settings) !== binding.sideEffectFingerprint
+    ) {
+      throw new NightModeCloseNoticeCleanupGuardRejectedError(
+        'Night mode close notice cleanup became stale after disable or reschedule',
+      );
+    }
+
+    const boundEvent = await this.prisma.moderationEvent.findFirst({
+      where: {
+        id: binding.event.id,
+        chatId: intent.chatId,
+        messageId: intent.messageId,
+        botId: intent.originBotId,
+        ruleCode: binding.event.ruleCode,
+        metadata: {
+          path: ['sessionKey'],
+          equals: binding.sessionKey,
+        } satisfies Prisma.JsonFilter,
+      },
+      select: { id: true },
+    });
+    if (!boundEvent) {
+      throw new NightModeCloseNoticeCleanupGuardRejectedError(
+        'Night mode close notice cleanup event binding no longer matches',
+      );
+    }
+  }
+
+  private async reconstructLegacyNightModeCloseNoticeCleanupBinding(
+    intent: IntentRow,
+    settings: Parameters<typeof buildNightModeTransitionSideEffectFingerprint>[0],
+    currentSessionKey: string,
+  ): Promise<NightModeCloseNoticeCleanupBinding> {
+    const originBotId = intent.originBotId?.trim() ?? '';
+    if (!originBotId || typeof this.prisma.moderationEvent?.findMany !== 'function') {
+      throw new NightModeCloseNoticeCleanupGuardRejectedError(
+        'Legacy night mode close notice cleanup has no exact event proof',
+      );
+    }
+    const candidates = await this.prisma.moderationEvent.findMany({
+      where: {
+        chatId: intent.chatId,
+        messageId: intent.messageId,
+        botId: originBotId,
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        metadata: {
+          path: ['sessionKey'],
+          equals: currentSessionKey,
+        } satisfies Prisma.JsonFilter,
+      },
+      select: {
+        id: true,
+        messageId: true,
+        botId: true,
+        metadata: true,
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 2,
+    });
+    const matching = candidates.filter((event) => {
+      const metadata = this.asRecord(event.metadata);
+      return (
+        event.messageId === intent.messageId &&
+        event.botId === originBotId &&
+        this.firstString(metadata?.sessionKey) === currentSessionKey
+      );
+    });
+    if (matching.length !== 1) {
+      throw new NightModeCloseNoticeCleanupGuardRejectedError(
+        'Legacy night mode close notice cleanup event proof is missing or ambiguous',
+      );
+    }
+
+    let binding: NightModeCloseNoticeCleanupBinding = {
+      version: 1,
+      sessionKey: currentSessionKey,
+      scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(settings),
+      sideEffectFingerprint: buildNightModeTransitionSideEffectFingerprint(settings),
+      event: {
+        id: matching[0]!.id,
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        messageId: intent.messageId,
+      },
+    };
+    const persisted = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "moderation_delete_intent_reasons" reason
+      SET
+        "metadata" = jsonb_set(
+          COALESCE(reason."metadata", CAST('{}' AS JSONB)),
+          CAST(ARRAY['nightModeCloseNoticeCleanup'] AS TEXT[]),
+          CAST(${JSON.stringify(binding)} AS JSONB),
+          TRUE
+        ),
+        "updated_at" = CURRENT_TIMESTAMP
+      WHERE reason."intent_id" = ${intent.id}
+        AND reason."rule_code" = ${NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE}
+        AND reason."metadata"->'nightModeCloseNoticeCleanup' IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intents" parent
+          WHERE parent."id" = reason."intent_id"
+            AND parent."status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+            AND parent."lease_token" = ${intent.leaseToken}
+            AND parent."lease_expires_at" > CURRENT_TIMESTAMP
+        )
+    `);
+    if (persisted !== 1) {
+      const existingReason = await this.prisma.moderationDeleteIntentReason.findFirst({
+        where: {
+          intentId: intent.id,
+          ruleCode: NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
+        },
+        select: { metadata: true },
+      });
+      const existingBinding = parseNightModeCloseNoticeCleanupBinding(
+        this.asRecord(existingReason?.metadata)?.nightModeCloseNoticeCleanup,
+      );
+      if (JSON.stringify(existingBinding) !== JSON.stringify(binding)) {
+        throw new NightModeCloseNoticeCleanupGuardRejectedError(
+          'Legacy night mode close notice cleanup binding changed before backfill',
+        );
+      }
+      binding = existingBinding!;
+    }
+    intent.nightModeCloseNoticeCleanupBinding = binding;
+    return binding;
   }
 
   private async assertChannelAutoPostCleanupStillAuthorized(
@@ -2477,12 +2688,14 @@ export class ModerationDeleteIntentService {
         effectiveIntent === intent &&
         initialStatus === 'PENDING' &&
         normalized.ruleCode !== CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP_RULE_CODE &&
+        normalized.ruleCode !== NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE &&
         normalized.entityType !== null &&
         intent.status === 'FAILED_TERMINAL' &&
         (intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
-          intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE)
+          intent.lastErrorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE ||
+          intent.lastErrorCode === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE)
       ) {
-        // FLAG: A later independent reason must not inherit a terminal channel-cleanup mismatch.
+        // FLAG: A later independent reason must not inherit a terminal cleanup-generation mismatch.
         const reopenedRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
           UPDATE "moderation_delete_intents"
           SET
@@ -2516,7 +2729,8 @@ export class ModerationDeleteIntentService {
             AND "status" = CAST('FAILED_TERMINAL' AS "ModerationDeleteIntentStatus")
             AND "last_error_code" IN (
               ${CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE},
-              ${CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE}
+              ${CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE},
+              ${NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE}
             )
             AND "remote_delete_succeeded_at" IS NULL
             AND "remote_delete_succeeded_bot_id" IS NULL
@@ -2807,9 +3021,14 @@ export class ModerationDeleteIntentService {
         const channelCleanupGuardRejected =
           details.errorCode === CHANNEL_AUTO_POST_CLEANUP_ENTITY_MISMATCH_ERROR_CODE ||
           details.errorCode === CHANNEL_AUTO_POST_CLEANUP_SENDER_REJECTED_ERROR_CODE;
+        const nightModeCleanupGuardRejected =
+          details.errorCode === NIGHT_MODE_CLOSE_NOTICE_CLEANUP_STALE_ERROR_CODE;
         const independentReasonExecutable = channelCleanupGuardRejected
           ? this.hasExecutableReasonIgnoringChannelAutoPostCleanup(latest)
-          : this.hasExecutableNonCommercialOcrReason(latest);
+          : nightModeCleanupGuardRejected
+            ? latest.nightModeCloseNoticeCleanupReason === true &&
+              latest.nightModeCloseNoticeCleanupOnly !== true
+            : this.hasExecutableNonCommercialOcrReason(latest);
         const now = Date.now();
         // A fresh independent reason does not inherit the obsolete OCR guard failure or its
         // backoff. Requeue it immediately; the next attempt reloads the mixed durable classifiers.
@@ -4815,6 +5034,37 @@ export class ModerationDeleteIntentService {
             )
         )
       ) AS "photoDuplicateDeleteOnly"
+      ,
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" night_cleanup_reason
+        WHERE night_cleanup_reason."intent_id" = ${intentIdColumn}
+          AND night_cleanup_reason."rule_code" = ${NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE}
+      ) AS "nightModeCloseNoticeCleanupReason"
+      ,
+      (
+        EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" night_cleanup_reason
+          WHERE night_cleanup_reason."intent_id" = ${intentIdColumn}
+            AND night_cleanup_reason."rule_code" = ${NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "moderation_delete_intent_reasons" independent_reason
+          WHERE independent_reason."intent_id" = ${intentIdColumn}
+            AND independent_reason."rule_code" <> ${NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE}
+        )
+      ) AS "nightModeCloseNoticeCleanupOnly"
+      ,
+      (
+        SELECT night_cleanup_reason."metadata"->'nightModeCloseNoticeCleanup'
+        FROM "moderation_delete_intent_reasons" night_cleanup_reason
+        WHERE night_cleanup_reason."intent_id" = ${intentIdColumn}
+          AND night_cleanup_reason."rule_code" = ${NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE}
+        ORDER BY night_cleanup_reason."created_at" ASC, night_cleanup_reason."id" ASC
+        LIMIT 1
+      ) AS "nightModeCloseNoticeCleanupBinding"
     `;
   }
 

@@ -9,18 +9,43 @@ import {
   ChatEntityType,
 } from '../prisma/prisma-client';
 import { NightModeTransitionProcessor } from './night-mode-transition.processor';
-import type { NightModeTransitionJob } from './night-mode-transition.queue';
+import {
+  NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+  NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
+  type NightModeTransitionJob,
+} from './night-mode-transition.queue';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 
 describe('NightModeTransitionProcessor', () => {
-  const buildJob = () =>
+  const closeRecovery = {
+    kind: NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+    version: 1 as const,
+    sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+    messageId: 'close-message-1',
+    botId: 'bot-1',
+    timezone: 'Europe/Moscow',
+    startMinutes: 23 * 60,
+    endMinutes: 8 * 60,
+  };
+  const buildJob = (
+    overrides: {
+      data?: Partial<NightModeTransitionJob>;
+      attemptsMade?: number;
+      attempts?: number;
+      id?: string;
+    } = {},
+  ) =>
     ({
+      id: overrides.id ?? 'night-job-1',
       data: {
         chatId: 'chat-1',
         transition: 'close',
         scheduledFor: '2026-05-30T20:00:00.000Z',
         sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+        ...overrides.data,
       },
+      attemptsMade: overrides.attemptsMade ?? 0,
+      opts: { attempts: overrides.attempts ?? 3 },
       moveToDelayed: jest.fn().mockResolvedValue(undefined),
     }) as unknown as Job<NightModeTransitionJob>;
 
@@ -65,6 +90,49 @@ describe('NightModeTransitionProcessor', () => {
     await processor.process(job);
 
     expect(scheduler.enqueueNextTransitionsForChat).toHaveBeenCalledWith('chat-1');
+  });
+
+  it('retires an already-existing normal Bull job after its exact occurrence is acknowledged', async () => {
+    const job = buildJob({
+      data: {
+        transitionRuntimeVersion: 3,
+        scheduleFingerprint: `sha256:${'a'.repeat(64)}`,
+      },
+    });
+    const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
+    const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      isTransitionManuallyFenced: jest.fn().mockResolvedValue(true),
+      enqueueNextTransitionsForChat: jest.fn(),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job)).resolves.toBeUndefined();
+
+    expect(scheduler.isTransitionManuallyFenced).toHaveBeenCalledWith(job.data, 'night-job-1');
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+    expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
+  });
+
+  it('classifies post-execution scheduling failures for ledger-gated recovery', async () => {
+    const job = buildJob();
+    const schedulerError = new Error('db unavailable');
+    const processor = new NightModeTransitionProcessor(
+      {
+        processNightModeTransitionJob: jest.fn().mockResolvedValue({ shouldEnqueueNext: true }),
+      } as never,
+      {
+        shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+        enqueueNextTransitionsForChat: jest.fn().mockRejectedValue(schedulerError),
+      } as never,
+    );
+
+    await expect(processor.process(job)).rejects.toThrow(
+      `${NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX}: db unavailable`,
+    );
   });
 
   it('delays a no-route transition without scheduling past the missed occurrence', async () => {
@@ -357,5 +425,112 @@ describe('NightModeTransitionProcessor', () => {
     expect(moderationExecutionService.processNightModeTransitionJob).toHaveBeenCalledTimes(1);
     expect(scheduler.shouldProcessChatTransitions).toHaveBeenCalledTimes(2);
     expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('keeps recovery-only work SQL-only and reconciles before Bull completion cleanup', async () => {
+    const order: string[] = [];
+    const job = buildJob({
+      attemptsMade: 4,
+      data: { recoveryOnly: closeRecovery, transition: 'open' },
+    });
+    const moderationExecutionService = {
+      processNightModeTransitionJob: jest.fn(async () => {
+        order.push('recover-event');
+        return { shouldEnqueueNext: true };
+      }),
+    };
+    const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(false),
+      inspectRecoveryOnlyTransition: jest.fn().mockResolvedValue('already_complete'),
+      requestJobReconcile: jest.fn(async () => {
+        order.push('durable-request');
+      }),
+      enqueueNextTransitionsForChat: jest.fn(),
+      completeScheduledJob: jest.fn(async () => {
+        order.push('registry-cleanup');
+      }),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).resolves.toBeUndefined();
+
+    expect(order).toEqual(['recover-event']);
+    expect(scheduler.shouldProcessChatTransitions).not.toHaveBeenCalled();
+    expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
+    expect(scheduler.completeScheduledJob).not.toHaveBeenCalled();
+
+    await expect(processor.onCompleted(job)).resolves.toBeUndefined();
+    expect(order).toEqual(['recover-event', 'durable-request', 'registry-cleanup']);
+    expect(scheduler.completeScheduledJob).toHaveBeenCalledWith(job.data, 'night-job-1');
+  });
+
+  it('never enters runtime when recovery-only proof is no longer exact', async () => {
+    const job = buildJob({ data: { recoveryOnly: closeRecovery, transition: 'open' } });
+    const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
+    const scheduler = {
+      shouldProcessChatTransitions: jest.fn().mockResolvedValue(true),
+      inspectRecoveryOnlyTransition: jest.fn().mockResolvedValue('unsafe'),
+    };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps a completed recovery registry row when post-event reconcile persistence fails', async () => {
+    const job = buildJob({ data: { recoveryOnly: closeRecovery } });
+    const completeScheduledJob = jest.fn();
+    const processor = new NightModeTransitionProcessor(
+      {} as never,
+      {
+        requestJobReconcile: jest.fn().mockRejectedValue(new Error('db unavailable')),
+        completeScheduledJob,
+      } as never,
+    );
+
+    await expect(processor.onCompleted(job)).resolves.toBeUndefined();
+
+    expect(completeScheduledJob).not.toHaveBeenCalled();
+  });
+
+  it('durably requests every real failed event without classifying an ambiguous send', async () => {
+    const job = buildJob({ attemptsMade: 1, attempts: 3 });
+    const ambiguousError = new Error('Ambiguous MAX SEND_MESSAGE transport outcome');
+    const requestJobReconcile = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('db unavailable'))
+      .mockRejectedValueOnce(new Error('db unavailable'))
+      .mockResolvedValue(undefined);
+    const processor = new NightModeTransitionProcessor(
+      {} as never,
+      {
+        requestJobReconcile,
+      } as never,
+    );
+
+    await expect(processor.onFailed(job, ambiguousError)).resolves.toBeUndefined();
+
+    expect(requestJobReconcile).toHaveBeenCalledTimes(3);
+    expect(requestJobReconcile).toHaveBeenNthCalledWith(1, job.data);
+  });
+
+  it('leaves completed registry cleanup to SQL recovery when the listener fails', async () => {
+    const job = buildJob();
+    const completeScheduledJob = jest.fn().mockRejectedValue(new Error('db unavailable'));
+    const processor = new NightModeTransitionProcessor(
+      {} as never,
+      {
+        completeScheduledJob,
+      } as never,
+    );
+
+    await expect(processor.onCompleted(job)).resolves.toBeUndefined();
+    expect(completeScheduledJob).toHaveBeenCalledWith(job.data, 'night-job-1');
   });
 });

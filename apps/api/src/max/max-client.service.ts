@@ -471,6 +471,8 @@ export type MaxActionJob = QueueJobEnvelope<
 export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
+  /** Ephemeral guard evaluated after routing and ledger work, immediately before send HTTP. */
+  beforeImmediateSendMutation?: () => Promise<void>;
   /** Ephemeral guard evaluated after routing and ledger work, immediately before delete HTTP. */
   beforeImmediateDeleteMutation?: () => Promise<void>;
   /** Ephemeral guard evaluated after routing and ledger work, immediately before member HTTP. */
@@ -1022,14 +1024,14 @@ export class MaxClientService implements OnModuleDestroy {
     text: string,
     options?: MaxSendMessageOptions,
     dispatchOptions?: MaxActionDispatchOptions,
-  ) {
+  ): Promise<MaxPublishedMessage | void> {
     const normalizedText = text.trim().length > 0 ? text : '';
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
     if (normalizedText.length === 0 && attachments.length === 0 && !messageLink) {
       throw new UnrecoverableError('MAX SEND_MESSAGE payload has no text, attachments, or link');
     }
-    await this.dispatchAction(
+    return this.dispatchAction(
       {
         actionType: 'SEND_MESSAGE',
         chatId,
@@ -4611,9 +4613,16 @@ export class MaxClientService implements OnModuleDestroy {
   private async dispatchAction(
     payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt' | 'scheduledFor'>,
     options?: MaxActionDispatchOptions,
-  ) {
+  ): Promise<MaxPublishedMessage | void> {
+    const beforeImmediateSendMutation = options?.beforeImmediateSendMutation;
     const beforeImmediateDeleteMutation = options?.beforeImmediateDeleteMutation;
     const beforeImmediateMemberMutation = options?.beforeImmediateMemberMutation;
+    if (beforeImmediateSendMutation && options?.immediate !== true) {
+      throw new Error('Send mutation guard requires immediate dispatch');
+    }
+    if (beforeImmediateSendMutation && payload.actionType !== 'SEND_MESSAGE') {
+      throw new Error('Send mutation guard requires a message send action');
+    }
     if (beforeImmediateDeleteMutation && options?.immediate !== true) {
       throw new Error('Delete mutation guard requires immediate dispatch');
     }
@@ -4735,12 +4744,12 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (immediate) {
-      await this.executeImmediateActionJob(
+      return this.executeImmediateActionJob(
         job,
         beforeImmediateDeleteMutation,
         beforeImmediateMemberMutation,
+        beforeImmediateSendMutation,
       );
-      return;
     }
 
     let actionQueue = this.resolveActionQueue(job);
@@ -5003,16 +5012,22 @@ export class MaxClientService implements OnModuleDestroy {
     job: MaxActionJob,
     beforeDeleteMutation?: () => Promise<void>,
     beforeMemberMutation?: () => Promise<void>,
-  ): Promise<void> {
+    beforeSendMutation?: () => Promise<void>,
+  ): Promise<MaxPublishedMessage | void> {
+    const executionOptions: MaxActionExecutionOptions = {
+      beforeDeleteMutation,
+      beforeMemberMutation,
+      beforeSendMutation,
+    };
     if (!this.actionLedgerService?.isIrreversibleAction(job.actionType)) {
-      await this.executeActionJob(job, { beforeDeleteMutation, beforeMemberMutation });
-      return;
+      return this.executeActionJob(job, executionOptions);
     }
 
     await this.actionLedgerService.assertCanEnqueue(job);
     await this.actionLedgerService.recordStarted(job, new Date(job.createdAt));
+    let result: MaxPublishedMessage | void;
     try {
-      await this.executeActionJob(job, { beforeDeleteMutation, beforeMemberMutation });
+      result = await this.executeActionJob(job, executionOptions);
     } catch (error: unknown) {
       await this.actionLedgerService.recordFailed(job, error).catch((ledgerError: unknown) => {
         this.logger.warn(
@@ -5029,17 +5044,20 @@ export class MaxClientService implements OnModuleDestroy {
       throw error;
     }
 
-    await this.actionLedgerService.recordSucceeded(job).catch((ledgerError: unknown) => {
-      this.logger.warn(
-        {
-          actionType: job.actionType,
-          chatId: job.chatId,
-          botId: job.botId,
-          error: this.extractErrorMessage(ledgerError),
-        },
-        'Failed to record immediate MAX action success in durable ledger',
-      );
-    });
+    if (!result?.recoveredSendDispatch) {
+      await this.actionLedgerService.recordSucceeded(job).catch((ledgerError: unknown) => {
+        this.logger.warn(
+          {
+            actionType: job.actionType,
+            chatId: job.chatId,
+            botId: job.botId,
+            error: this.extractErrorMessage(ledgerError),
+          },
+          'Failed to record immediate MAX action success in durable ledger',
+        );
+      });
+    }
+    return result;
   }
 
   private buildScheduledMemberActionJobId(

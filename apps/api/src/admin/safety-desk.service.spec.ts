@@ -175,6 +175,12 @@ function createFixture() {
   const transaction = jest.fn();
   const prisma = {
     $transaction: transaction,
+    $queryRaw: jest.fn().mockResolvedValue([]),
+    nightModeTransitionReconcileRequest: {
+      findUnique: jest.fn(),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
     vkParsingPost: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn(),
@@ -819,6 +825,41 @@ describe('SafetyDeskService', () => {
     expect(moderationDeleteIntents.retryTerminalIntent).not.toHaveBeenCalled();
   });
 
+  it('reopens a terminal night cleanup for exact guarded execution', async () => {
+    const { moderationDeleteIntents, prisma, service } = createFixture();
+    prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
+      id: 'delete-intent-night-1',
+      chatId: 'channel-1',
+      status: 'FAILED_TERMINAL',
+      updatedAt: new Date('2026-07-16T12:00:00.000Z'),
+      attemptCount: 1,
+      reasons: [{ ruleCode: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP' }],
+    });
+    moderationDeleteIntents.retryTerminalIntent.mockResolvedValue({
+      reopened: true,
+      intent: { id: 'delete-intent-night-1', status: 'PENDING' },
+    });
+    prisma.moderationDeleteIntent.aggregate
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { nextAttemptAt: null } })
+      .mockResolvedValueOnce({ _count: { _all: 0 }, _min: { leaseExpiresAt: null } })
+      .mockResolvedValueOnce({ _min: { createdAt: null } });
+
+    await expect(
+      service.retryDeleteIntent('delete-intent-night-1', 'owner', {
+        expectedStatus: 'FAILED_TERMINAL',
+        expectedUpdatedAt: '2026-07-16T12:00:00.000Z',
+        expectedAttemptCount: 1,
+      }),
+    ).resolves.toMatchObject({ rolloutMode: 'canary' });
+
+    expect(moderationDeleteIntents.retryTerminalIntent).toHaveBeenCalledWith(
+      'delete-intent-night-1',
+      'FAILED_TERMINAL',
+      { updatedAt: new Date('2026-07-16T12:00:00.000Z'), attemptCount: 1 },
+      { actorUserId: 'owner' },
+    );
+  });
+
   it('rejects a stale terminal delete retry without dispatching it', async () => {
     const { moderationDeleteIntents, prisma, service } = createFixture();
     prisma.moderationDeleteIntent.findUnique.mockResolvedValue({
@@ -1331,6 +1372,396 @@ describe('SafetyDeskService', () => {
     );
 
     expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('returns a bounded night-mode runtime view without lease tokens', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    const rows = Array.from({ length: 51 }, (_, index) => ({
+      chatId: `chat-${index + 1}`,
+      chatTitle: `Chat ${index + 1}`,
+      entityType: ChatEntityType.CHAT,
+      generation: BigInt(index + 1),
+      firstRequestedAt: new Date('2026-08-21T09:00:00.000Z'),
+      requestedAt: new Date('2026-08-21T09:30:00.000Z'),
+      attemptCount: 2,
+      lastAttemptAt: new Date('2026-08-21T09:45:00.000Z'),
+      lastErrorCode: 'temporary_error',
+      lastErrorAt: new Date('2026-08-21T09:45:00.000Z'),
+      lastError: 'token=secret https://example.test/path?key=secret',
+      leaseExpiresAt: null,
+      manualBlockedAt: blockedAt,
+      manualBlockedReason: 'Authorization: Bearer secret',
+      manualBlockedCategory: index === 0 ? 'no_fresh_access' : ('unsafe_prior_dispatch' as const),
+      manualBlockedJobId: `job-${index + 1}`,
+      manualBlockedLedgerJobId: index === 0 ? 'ledger-1' : null,
+      manualBlockedSessionKey: 'session-1',
+      manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+      manualBlockedGeneration: BigInt(index + 1),
+      manualAcknowledgedAt: null,
+      state: 'MANUAL_BLOCKED' as const,
+    }));
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          total: 51,
+          due: 0,
+          deferred: 0,
+          leased: 0,
+          staleLeases: 0,
+          manualBlocked: 51,
+          acknowledged: 0,
+          oldestDueAt: null,
+          oldestStaleLeaseAt: null,
+          oldestManualBlockedAt: blockedAt,
+        },
+      ])
+      .mockResolvedValueOnce([
+        { category: 'unsafe_prior_dispatch', count: 50 },
+        { category: 'no_fresh_access', count: 1 },
+      ])
+      .mockResolvedValueOnce(rows);
+
+    const result = await service.getNightModeTransitionRuntime();
+
+    expect(result.items).toHaveLength(50);
+    expect(result.truncated).toBe(true);
+    expect(result.summary).toEqual(
+      expect.objectContaining({
+        total: 51,
+        manualBlocked: 51,
+        oldestManualBlockedAt: blockedAt.toISOString(),
+        categoryCounts: expect.objectContaining({
+          unsafe_prior_dispatch: 50,
+          no_fresh_access: 1,
+        }),
+      }),
+    );
+    expect(result.items[0]).toEqual(
+      expect.objectContaining({
+        generation: '1',
+        manualBlockedGeneration: '1',
+        allowedActions: ['ACKNOWLEDGE', 'RETRY'],
+        lastError: expect.stringContaining('[redacted]'),
+        manualBlockedReason: expect.stringContaining('[redacted]'),
+      }),
+    );
+    expect(result.items[1]?.allowedActions).toEqual(['ACKNOWLEDGE']);
+    expect(result.items.some((item) => 'leaseToken' in item)).toBe(false);
+  });
+
+  it('shows a newer tombstone generation as live work without operator actions', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          total: 1,
+          due: 0,
+          deferred: 0,
+          leased: 1,
+          staleLeases: 0,
+          manualBlocked: 0,
+          acknowledged: 0,
+          oldestDueAt: null,
+          oldestStaleLeaseAt: null,
+          oldestManualBlockedAt: null,
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          chatId: 'chat-live-repair',
+          chatTitle: 'Live repair',
+          entityType: ChatEntityType.CHAT,
+          generation: 8n,
+          firstRequestedAt: new Date('2026-08-21T09:00:00.000Z'),
+          requestedAt: new Date('2026-08-21T09:30:00.000Z'),
+          attemptCount: 3,
+          lastAttemptAt: new Date('2026-08-21T10:01:00.000Z'),
+          lastErrorCode: null,
+          lastErrorAt: null,
+          lastError: null,
+          leaseExpiresAt: new Date('2026-08-21T10:05:00.000Z'),
+          manualBlockedAt: blockedAt,
+          manualBlockedReason: 'preserved exact tombstone',
+          manualBlockedCategory: 'unsafe_prior_dispatch',
+          manualBlockedJobId: 'blocked-job',
+          manualBlockedLedgerJobId: null,
+          manualBlockedSessionKey: 'blocked-session',
+          manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+          manualBlockedGeneration: 7n,
+          manualAcknowledgedAt: blockedAt,
+          state: 'LEASED',
+        },
+      ]);
+
+    const result = await service.getNightModeTransitionRuntime();
+
+    expect(result.summary).toEqual(expect.objectContaining({ leased: 1, manualBlocked: 0 }));
+    expect(result.items[0]).toEqual(
+      expect.objectContaining({
+        generation: '8',
+        manualBlockedGeneration: '7',
+        state: 'LEASED',
+        allowedActions: [],
+        manualAcknowledgedAt: blockedAt.toISOString(),
+        context: expect.objectContaining({ jobId: 'blocked-job' }),
+      }),
+    );
+  });
+
+  it('shows an acknowledged settled tombstone without operator actions', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    const acknowledgedAt = new Date('2026-08-21T10:05:00.000Z');
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          total: 1,
+          due: 0,
+          deferred: 0,
+          leased: 0,
+          staleLeases: 0,
+          manualBlocked: 0,
+          acknowledged: 1,
+          oldestDueAt: null,
+          oldestStaleLeaseAt: null,
+          oldestManualBlockedAt: null,
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          chatId: 'chat-acknowledged',
+          chatTitle: 'Acknowledged repair',
+          entityType: ChatEntityType.CHAT,
+          generation: 8n,
+          firstRequestedAt: new Date('2026-08-21T09:00:00.000Z'),
+          requestedAt: new Date('2026-08-21T09:30:00.000Z'),
+          attemptCount: 3,
+          lastAttemptAt: new Date('2026-08-21T09:45:00.000Z'),
+          lastErrorCode: null,
+          lastErrorAt: null,
+          lastError: null,
+          leaseExpiresAt: null,
+          manualBlockedAt: blockedAt,
+          manualBlockedReason: 'operator reviewed exact occurrence',
+          manualBlockedCategory: 'unsafe_prior_dispatch',
+          manualBlockedJobId: 'blocked-job',
+          manualBlockedLedgerJobId: null,
+          manualBlockedSessionKey: 'blocked-session',
+          manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+          manualBlockedGeneration: 8n,
+          manualAcknowledgedAt: acknowledgedAt,
+          state: 'ACKNOWLEDGED',
+        },
+      ]);
+
+    const result = await service.getNightModeTransitionRuntime();
+
+    expect(result.summary).toEqual(expect.objectContaining({ acknowledged: 1, manualBlocked: 0 }));
+    expect(result.items[0]).toEqual(
+      expect.objectContaining({
+        state: 'ACKNOWLEDGED',
+        manualAcknowledgedAt: acknowledgedAt.toISOString(),
+        allowedActions: [],
+      }),
+    );
+    const itemSql = (prisma.$queryRaw.mock.calls[2]?.[0] as { sql?: string } | undefined)?.sql;
+    expect(itemSql).toMatch(
+      /manual_acknowledged_at" IS NOT NULL THEN 5\s+WHEN request\."lease_token"/u,
+    );
+  });
+
+  it('acknowledges a manual night-mode block with an exact category-aware CAS and audit', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    prisma.nightModeTransitionReconcileRequest.findUnique.mockResolvedValue({
+      generation: 8n,
+      manualBlockedAt: blockedAt,
+      manualBlockedCategory: 'unsafe_prior_dispatch',
+      manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+      manualBlockedGeneration: 8n,
+      manualAcknowledgedAt: null,
+    });
+
+    await service.acknowledgeNightModeTransitionBlock('chat-1', 'owner', {
+      expectedGeneration: '8',
+      expectedManualBlockedGeneration: '8',
+      expectedManualBlockedAt: blockedAt.toISOString(),
+      expectedCategory: 'unsafe_prior_dispatch',
+      expectedFingerprint: `sha256:${'a'.repeat(64)}`,
+      reason: 'Проверено оператором',
+    });
+
+    expect(prisma.nightModeTransitionReconcileRequest.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        chatId: 'chat-1',
+        generation: 8n,
+        manualBlockedGeneration: 8n,
+        manualBlockedCategory: 'unsafe_prior_dispatch',
+        manualAcknowledgedAt: null,
+      }),
+      data: expect.objectContaining({
+        manualAcknowledgedAt: expect.any(Date),
+        leaseToken: null,
+        leaseExpiresAt: null,
+      }),
+    });
+    expect(prisma.nightModeTransitionReconcileRequest.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        actorUserId: 'owner',
+        action: 'SAFETY_DESK_ACK_NIGHT_MODE_RECONCILE',
+      }),
+    });
+  });
+
+  it('retries only no-fresh-access blocks by advancing the durable generation', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    prisma.nightModeTransitionReconcileRequest.findUnique.mockResolvedValue({
+      generation: 8n,
+      manualBlockedAt: blockedAt,
+      manualBlockedCategory: 'no_fresh_access',
+      manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+      manualBlockedGeneration: 8n,
+      manualAcknowledgedAt: null,
+    });
+
+    await service.retryNightModeTransitionBlock('chat-1', 'owner', {
+      expectedGeneration: '8',
+      expectedManualBlockedGeneration: '8',
+      expectedManualBlockedAt: blockedAt.toISOString(),
+      expectedCategory: 'no_fresh_access',
+      expectedFingerprint: `sha256:${'a'.repeat(64)}`,
+      reason: 'Свежий доступ подтверждён',
+    });
+
+    expect(prisma.nightModeTransitionReconcileRequest.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        chatId: 'chat-1',
+        generation: 8n,
+        manualAcknowledgedAt: null,
+      }),
+      data: expect.objectContaining({
+        generation: { increment: 1n },
+        manualBlockedAt: null,
+        manualBlockedCategory: null,
+        manualAcknowledgedAt: null,
+        leaseToken: null,
+      }),
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'SAFETY_DESK_RETRY_NIGHT_MODE_RECONCILE',
+      }),
+    });
+  });
+
+  it('rejects unsafe night-mode retries before any transaction or queue action', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+
+    await expect(
+      service.retryNightModeTransitionBlock('chat-1', 'owner', {
+        expectedGeneration: '8',
+        expectedManualBlockedGeneration: '7',
+        expectedManualBlockedAt: blockedAt.toISOString(),
+        expectedCategory: 'unsafe_prior_provenance',
+        expectedFingerprint: `sha256:${'a'.repeat(64)}`,
+        reason: 'Не повторять автоматически',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.nightModeTransitionReconcileRequest.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale night-mode manual CAS without mutation or audit', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    prisma.nightModeTransitionReconcileRequest.findUnique.mockResolvedValue({
+      generation: 9n,
+      manualBlockedAt: blockedAt,
+      manualBlockedCategory: 'unsafe_prior_dispatch',
+      manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+      manualBlockedGeneration: 7n,
+      manualAcknowledgedAt: null,
+    });
+
+    await expect(
+      service.acknowledgeNightModeTransitionBlock('chat-1', 'owner', {
+        expectedGeneration: '8',
+        expectedManualBlockedGeneration: '7',
+        expectedManualBlockedAt: blockedAt.toISOString(),
+        expectedCategory: 'unsafe_prior_dispatch',
+        expectedFingerprint: `sha256:${'a'.repeat(64)}`,
+        reason: 'Устаревшая вкладка',
+      }),
+    ).rejects.toThrow('Состояние night mode изменилось');
+
+    expect(prisma.nightModeTransitionReconcileRequest.updateMany).not.toHaveBeenCalled();
+    expect(prisma.nightModeTransitionReconcileRequest.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a repeated acknowledgement without mutation or duplicate audit', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    prisma.nightModeTransitionReconcileRequest.findUnique.mockResolvedValue({
+      generation: 8n,
+      manualBlockedAt: blockedAt,
+      manualBlockedCategory: 'unsafe_prior_dispatch',
+      manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+      manualBlockedGeneration: 8n,
+      manualAcknowledgedAt: new Date('2026-08-21T10:05:00.000Z'),
+    });
+
+    await expect(
+      service.acknowledgeNightModeTransitionBlock('chat-1', 'owner', {
+        expectedGeneration: '8',
+        expectedManualBlockedGeneration: '8',
+        expectedManualBlockedAt: blockedAt.toISOString(),
+        expectedCategory: 'unsafe_prior_dispatch',
+        expectedFingerprint: `sha256:${'a'.repeat(64)}`,
+        reason: 'Повторный клик',
+      }),
+    ).rejects.toThrow('Состояние night mode изменилось');
+
+    expect(prisma.nightModeTransitionReconcileRequest.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an acknowledgement that loses the CAS race before writing an audit', async () => {
+    const { prisma, service } = createFixture();
+    const blockedAt = new Date('2026-08-21T10:00:00.000Z');
+    prisma.nightModeTransitionReconcileRequest.findUnique.mockResolvedValue({
+      generation: 8n,
+      manualBlockedAt: blockedAt,
+      manualBlockedCategory: 'unsafe_prior_dispatch',
+      manualBlockedFingerprint: `sha256:${'a'.repeat(64)}`,
+      manualBlockedGeneration: 8n,
+      manualAcknowledgedAt: null,
+    });
+    prisma.nightModeTransitionReconcileRequest.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      service.acknowledgeNightModeTransitionBlock('chat-1', 'owner', {
+        expectedGeneration: '8',
+        expectedManualBlockedGeneration: '8',
+        expectedManualBlockedAt: blockedAt.toISOString(),
+        expectedCategory: 'unsafe_prior_dispatch',
+        expectedFingerprint: `sha256:${'a'.repeat(64)}`,
+        reason: 'Проигранная гонка',
+      }),
+    ).rejects.toThrow('Состояние night mode изменилось');
+
+    expect(prisma.nightModeTransitionReconcileRequest.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 });

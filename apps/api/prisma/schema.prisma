@@ -457,6 +457,47 @@ model ChatRoutingReconcileRequest {
   @@map("chat_routing_reconcile_requests")
 }
 
+model NightModeTransitionReconcileRequest {
+  chatId                   String    @id @map("chat_id")
+  generation               BigInt    @default(1)
+  firstRequestedAt         DateTime  @default(now()) @map("first_requested_at")
+  requestedAt              DateTime  @default(now()) @map("requested_at")
+  attemptCount             Int       @default(0) @map("attempt_count")
+  lastAttemptAt            DateTime? @map("last_attempt_at")
+  lastErrorCode            String?   @map("last_error_code")
+  lastErrorAt              DateTime? @map("last_error_at")
+  lastError                String?   @map("last_error")
+  leaseToken               String?   @map("lease_token")
+  leaseExpiresAt           DateTime? @map("lease_expires_at")
+  manualBlockedAt          DateTime? @map("manual_blocked_at")
+  manualBlockedReason      String?   @map("manual_blocked_reason")
+  manualBlockedCategory    String?   @map("manual_blocked_category")
+  manualBlockedJobId       String?   @map("manual_blocked_job_id")
+  manualBlockedLedgerJobId String?   @map("manual_blocked_ledger_job_id")
+  manualBlockedSessionKey  String?   @map("manual_blocked_session_key")
+  manualBlockedFingerprint String?   @map("manual_blocked_fingerprint")
+  manualBlockedGeneration  BigInt?   @map("manual_blocked_generation")
+  manualAcknowledgedAt     DateTime? @map("manual_acknowledged_at")
+
+  @@map("night_mode_transition_reconcile_requests")
+}
+
+model NightModeTransitionScheduledJob {
+  chatId              String   @map("chat_id")
+  jobId               String   @map("job_id")
+  transition          String
+  sessionKey          String   @map("session_key")
+  scheduledFor        DateTime @map("scheduled_for")
+  scheduleFingerprint String   @map("schedule_fingerprint")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@id([chatId, jobId])
+  @@index([chatId, scheduledFor, jobId], map: "night_mode_transition_scheduled_jobs_chat_due_idx")
+  @@index([scheduledFor, chatId, jobId], map: "night_mode_transition_scheduled_jobs_due_idx")
+  @@map("night_mode_transition_scheduled_jobs")
+}
+
 model ChatParticipantModerationImmunity {
   id                  String    @id @default(cuid())
   chatId              String    @map("chat_id")

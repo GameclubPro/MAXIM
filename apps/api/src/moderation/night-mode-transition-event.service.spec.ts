@@ -6,14 +6,23 @@ function createService(
     botId?: string | null;
     activeBotId?: string | null;
     create?: jest.Mock;
+    findFirst?: jest.Mock;
   } = {},
 ) {
   const create = params.create ?? jest.fn().mockResolvedValue({});
+  const findFirst = params.findFirst ?? jest.fn().mockResolvedValue(null);
+  const queryRaw = jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]);
+  const moderationEvent = {
+    create,
+    findFirst,
+  };
+  const transaction = jest.fn(async (operation: (tx: unknown) => Promise<unknown>) =>
+    operation({ moderationEvent, $queryRaw: queryRaw }),
+  );
   const service = new NightModeTransitionEventService(
     {
-      moderationEvent: {
-        create,
-      },
+      moderationEvent,
+      $transaction: transaction,
     } as never,
     {
       get: jest.fn().mockReturnValue(params.botId),
@@ -22,7 +31,12 @@ function createService(
       getActiveBotId: jest.fn().mockReturnValue(params.activeBotId ?? null),
     } as never,
   );
-  return { service, create };
+  return { service, create, findFirst, queryRaw, transaction };
+}
+
+function extractSqlText(query: unknown): string {
+  const strings = (query as { strings?: readonly string[] } | null)?.strings;
+  return Array.isArray(strings) ? strings.join(' ') : String(query);
 }
 
 describe('NightModeTransitionEventService', () => {
@@ -103,5 +117,122 @@ describe('NightModeTransitionEventService', () => {
       }),
     });
     expect(create.mock.calls[0]?.[0].data).not.toHaveProperty('botId');
+  });
+
+  it('returns an exact existing close event without creating a duplicate', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'event-existing-1' });
+    const { service, create, queryRaw, transaction } = createService({ findFirst });
+
+    await expect(
+      service.ensureTransitionEvent({
+        chatId: ' chat-1 ',
+        messageId: ' message-close-1 ',
+        botId: ' bot-1 ',
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        sessionKey: ' session-1 ',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      }),
+    ).resolves.toEqual({ id: 'event-existing-1' });
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        messageId: 'message-close-1',
+        botId: 'bot-1',
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        metadata: {
+          path: ['sessionKey'],
+          equals: 'session-1',
+        },
+      },
+      select: { id: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(extractSqlText(queryRaw.mock.calls[0]?.[0])).toContain(
+      'pg_advisory_xact_lock(hashtextextended(',
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('creates and returns a missing exact close event', async () => {
+    const create = jest.fn().mockResolvedValue({ id: 'event-created-1' });
+    const { service } = createService({ create });
+
+    await expect(
+      service.ensureTransitionEvent({
+        chatId: 'chat-1',
+        messageId: 'message-close-1',
+        botId: 'bot-1',
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        sessionKey: 'session-1',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      }),
+    ).resolves.toEqual({ id: 'event-created-1' });
+
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'message-close-1',
+        botId: 'bot-1',
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+      }),
+      select: { id: true },
+    });
+  });
+
+  it('serializes overlapping exact ensures so a lost Redis lease cannot duplicate the event', async () => {
+    let storedEvent: { id: string } | null = null;
+    const findFirst = jest.fn(async () => storedEvent);
+    const create = jest.fn(async () => {
+      storedEvent = { id: 'event-serialized-1' };
+      return storedEvent;
+    });
+    const queryRaw = jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]);
+    const tx = {
+      moderationEvent: { findFirst, create },
+      $queryRaw: queryRaw,
+    };
+    let transactionTail = Promise.resolve();
+    const transaction = jest.fn(async (operation: (client: typeof tx) => Promise<unknown>) => {
+      const predecessor = transactionTail;
+      let release: () => void = () => undefined;
+      transactionTail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await predecessor;
+      try {
+        return await operation(tx);
+      } finally {
+        release();
+      }
+    });
+    const service = new NightModeTransitionEventService({
+      moderationEvent: tx.moderationEvent,
+      $transaction: transaction,
+    } as never);
+    const params = {
+      chatId: 'chat-1',
+      messageId: 'message-close-1',
+      botId: 'bot-1',
+      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE' as const,
+      sessionKey: 'session-1',
+      timezone: 'Europe/Moscow',
+      startMinutes: 23 * 60,
+      endMinutes: 8 * 60,
+    };
+
+    await expect(
+      Promise.all([service.ensureTransitionEvent(params), service.ensureTransitionEvent(params)]),
+    ).resolves.toEqual([{ id: 'event-serialized-1' }, { id: 'event-serialized-1' }]);
+
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(findFirst).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });

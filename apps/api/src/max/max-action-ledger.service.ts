@@ -1,9 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { randomUUID } from 'node:crypto';
-import { MaxActionLedgerStatus, Prisma } from '../prisma/prisma-client';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  MaxActionLedgerStatus,
+  Prisma,
+} from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildMaxActionNoExecutableRouteMessage } from './max-action-dispatch-error';
+import { buildNightModeNoticeIdempotencyKey } from './max-action-idempotency.util';
 import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
 import type { MaxActionJob, MaxActionType } from './max-client.service';
 import {
@@ -49,6 +55,9 @@ const MAX_MEMBER_ACTION_FAILURE_ERROR_CODES = {
   KICK_FAILED: 'max_kick_member_failed',
   BAN_FAILED: 'max_ban_member_failed',
 } as const;
+const NIGHT_MODE_TRANSITION_SOURCE_TAG = 'night_mode_transition';
+const NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER =
+  'Night mode open retry prepared after a definitive access rejection';
 
 type MaxActionLedgerMutation = {
   status: MaxActionLedgerStatus;
@@ -100,6 +109,17 @@ export type MaxCompletedSendDispatch = {
   dispatchBotId: string | null;
 };
 
+export type ExactCompletedNightModeCloseNoticeDispatch = {
+  jobId: string;
+  remoteMessageId: string;
+  dispatchBotId: string;
+};
+
+export type NightModeCloseNoticeLedgerLookup =
+  | { kind: 'missing'; jobId: string }
+  | { kind: 'mismatch'; jobId: string }
+  | ({ kind: 'completed' } & ExactCompletedNightModeCloseNoticeDispatch);
+
 export const MAX_SEND_LEDGER_PREPARATION_ERROR_CODES = {
   MISSING_ROW: 'MAX_SEND_LEDGER_PREPARATION_MISSING_ROW',
   TERMINAL_OR_AMBIGUOUS: 'MAX_SEND_LEDGER_PREPARATION_TERMINAL_OR_AMBIGUOUS',
@@ -134,6 +154,128 @@ type MaxSendLedgerPreparationFailure = {
 type MaxSendLedgerPreparationError = UnrecoverableError & {
   code: MaxSendLedgerPreparationErrorCode;
 };
+
+export type NightModeOpenLedgerRecoveryResult =
+  | { kind: 'ready'; jobId: string }
+  | {
+      kind: 'blocked';
+      jobId: string;
+      category: 'no_fresh_access' | 'unsafe_prior_provenance';
+    };
+
+// FLAG: Only a definitive non-delivery with fresh current admin access may become executable
+// again. The marker branch makes the PostgreSQL step replayable after a crash before BullMQ repair.
+export async function prepareDefinitivelyRejectedNightModeOpenRetry(
+  prisma: Pick<PrismaService, '$transaction'>,
+  params: {
+    chatId: string;
+    sessionKey: string;
+    actionableBotIds?: readonly string[] | null;
+  },
+): Promise<NightModeOpenLedgerRecoveryResult> {
+  const chatId = params.chatId.trim();
+  const sessionKey = params.sessionKey.trim();
+  const jobId = buildNightModeNoticeIdempotencyKey('open', chatId, sessionKey);
+  const actionableBotIds = Array.from(
+    new Set((params.actionableBotIds ?? []).map((botId) => botId.trim()).filter(Boolean)),
+  );
+  if (!chatId || !sessionKey || actionableBotIds.length === 0) {
+    return { kind: 'blocked', jobId, category: 'no_fresh_access' };
+  }
+
+  const preparation = await prisma.$transaction(
+    async (tx) => {
+      const now = new Date();
+      const freshAccess = await tx.chatBotMembership.findFirst({
+        where: {
+          chatId,
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: {
+            in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
+          },
+          botAccessCheckedAt: { not: null },
+          botAccessExpiresAt: { gt: now },
+          botId: {
+            in: actionableBotIds,
+          },
+        },
+        select: { id: true },
+      });
+      if (!freshAccess) {
+        return 'no_fresh_access' as const;
+      }
+
+      const result = await tx.maxActionLedgerEntry.updateMany({
+        where: {
+          jobId,
+          actionType: 'SEND_MESSAGE',
+          chatId,
+          sourceTag: NIGHT_MODE_TRANSITION_SOURCE_TAG,
+          ambiguous: false,
+          dispatchToken: null,
+          dispatchStartedAt: null,
+          dispatchBotId: null,
+          remoteMessageId: null,
+          AND: [
+            {
+              OR: [
+                { lastStatusCode: { in: [403, 404] } },
+                {
+                  lastStatusCode: null,
+                  lastErrorCode: {
+                    in: ['access.denied', 'chat.denied', 'chat.not.found'],
+                  },
+                },
+              ],
+            },
+            {
+              OR: [
+                {
+                  status: MaxActionLedgerStatus.FAILED_TERMINAL,
+                  terminal: true,
+                  attemptCount: { gte: 1 },
+                  firstAttemptAt: { not: null },
+                  lastAttemptAt: { not: null },
+                  completedAt: { not: null },
+                },
+                {
+                  status: MaxActionLedgerStatus.ENQUEUED,
+                  terminal: false,
+                  attemptCount: 0,
+                  enqueuedAt: { not: null },
+                  firstAttemptAt: null,
+                  lastAttemptAt: null,
+                  completedAt: null,
+                  lastError: NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER,
+                },
+              ],
+            },
+          ],
+        },
+        data: {
+          status: MaxActionLedgerStatus.ENQUEUED,
+          ambiguous: false,
+          terminal: false,
+          attemptCount: 0,
+          enqueuedAt: now,
+          firstAttemptAt: null,
+          lastAttemptAt: null,
+          completedAt: null,
+          lastError: NIGHT_MODE_OPEN_ACCESS_RECOVERY_MARKER,
+          dispatchToken: null,
+          dispatchStartedAt: null,
+          dispatchBotId: null,
+          remoteMessageId: null,
+        },
+      });
+      return result.count === 1 ? ('ready' as const) : ('unsafe_prior_provenance' as const);
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
+  return preparation === 'ready'
+    ? { kind: 'ready', jobId }
+    : { kind: 'blocked', jobId, category: preparation };
+}
 
 export function markMaxSendDispatchLedgerFinalized<T extends Error>(error: T): T {
   (error as T & MaxSendDispatchLedgerFinalizedError).maxSendDispatchLedgerFinalized = true;
@@ -639,6 +781,91 @@ export class MaxActionLedgerService {
     }
     const state = await this.readSendDispatchState(job.idempotencyKey);
     return this.readCompletedSendDispatchFromState(job, state);
+  }
+
+  // FLAG: Close-event recovery may trust only the raw night-mode ledger identity and the exact
+  // accepted MAX result. A generic completed-send lookup does not prove chat/source provenance.
+  async inspectCompletedNightModeCloseNoticeDispatch(params: {
+    chatId: string;
+    sessionKey: string;
+  }): Promise<NightModeCloseNoticeLedgerLookup> {
+    const chatId = this.nullableString(params.chatId);
+    const sessionKey = this.nullableString(params.sessionKey);
+    const jobId = buildNightModeNoticeIdempotencyKey('close', chatId ?? '', sessionKey ?? '');
+    if (!chatId || !sessionKey) {
+      return { kind: 'mismatch', jobId };
+    }
+
+    const row = await this.prisma.maxActionLedgerEntry.findUnique({
+      where: { jobId },
+      select: {
+        actionType: true,
+        chatId: true,
+        sourceTag: true,
+        status: true,
+        ambiguous: true,
+        terminal: true,
+        completedAt: true,
+        dispatchBotId: true,
+        remoteMessageId: true,
+      },
+    });
+    if (!row) {
+      return { kind: 'missing', jobId };
+    }
+    const remoteMessageId = this.nullableString(row.remoteMessageId);
+    const dispatchBotId = this.nullableString(row.dispatchBotId);
+    if (
+      row.actionType !== 'SEND_MESSAGE' ||
+      row.chatId !== chatId ||
+      row.sourceTag !== NIGHT_MODE_TRANSITION_SOURCE_TAG ||
+      row.status !== MaxActionLedgerStatus.SUCCEEDED ||
+      row.ambiguous ||
+      !row.terminal ||
+      !(row.completedAt instanceof Date) ||
+      !Number.isFinite(row.completedAt.getTime()) ||
+      !remoteMessageId ||
+      !dispatchBotId
+    ) {
+      return { kind: 'mismatch', jobId };
+    }
+
+    return {
+      kind: 'completed',
+      jobId,
+      remoteMessageId,
+      dispatchBotId,
+    };
+  }
+
+  async getExactCompletedNightModeCloseNoticeDispatch(params: {
+    chatId: string;
+    sessionKey: string;
+    messageId: string;
+    dispatchBotId: string;
+  }): Promise<ExactCompletedNightModeCloseNoticeDispatch | null> {
+    const chatId = this.nullableString(params.chatId);
+    const sessionKey = this.nullableString(params.sessionKey);
+    const messageId = this.nullableString(params.messageId);
+    const dispatchBotId = this.nullableString(params.dispatchBotId);
+    if (!chatId || !sessionKey || !messageId || !dispatchBotId) {
+      return null;
+    }
+
+    const lookup = await this.inspectCompletedNightModeCloseNoticeDispatch({ chatId, sessionKey });
+    if (
+      lookup.kind !== 'completed' ||
+      lookup.remoteMessageId !== messageId ||
+      lookup.dispatchBotId !== dispatchBotId
+    ) {
+      return null;
+    }
+
+    return {
+      jobId: lookup.jobId,
+      remoteMessageId: lookup.remoteMessageId,
+      dispatchBotId: lookup.dispatchBotId,
+    };
   }
 
   async releaseSendDispatch(job: MaxActionJob, dispatchToken: string): Promise<void> {

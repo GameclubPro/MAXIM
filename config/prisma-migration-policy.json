@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260821122000_guard_channel_suggestion_publication_ledger_insert",
-  "baselineNamesSha256": "80a6064f924f0a498e56d357b35adb0aa12eb28541bfdca565e4c118cf41be2a",
-  "baselineContentsSha256": "b3b676e3f0faa8aef9bdf17438533a3c6e368598847640c3058b002f62f80488",
+  "baselineThrough": "20260821140000_add_night_mode_transition_manual_acknowledgement",
+  "baselineNamesSha256": "b8474772e19639a99b9eb8566a33b638022ccce1d0b4b4f49b5bc473aee31d23",
+  "baselineContentsSha256": "7ad0a8ef1d613f7bfe56ff4cf67d0ce2cda64e4ffc5e3352e108750e3ac06440",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -51,7 +51,16 @@
       "reason": "Manual review approved an additive BEFORE INSERT trigger that serializes the exact versioned channel-suggestion ledger signature with stale claim release. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic and destructive, but this migration contains no dynamic EXECUTE and drops no schema objects.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Existing and new runtimes create versioned suggestion ledgers only while the exact publishing claim is active; all other max_action_ledger signatures bypass the trigger. After claim finalization, only a row-locked exact terminal-success conflict may reach the caller's ON CONFLICT no-op; every genuinely new row still requires the active claim. The migration does not change stored columns or reads."
+    },
+    "20260821130000_add_night_mode_transition_reconcile_requests": {
+      "reason": "Manual review approved static trigger functions that enqueue generation-fenced night-mode reconciliation requests. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION bodies as dynamic and destructive, but this additive migration contains no dynamic EXECUTE and drops no schema object.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The new tables, functions, indexes, and triggers are additive. Existing runtimes ignore the outbox while its triggers only upsert rows in the new reconcile table; the new runtime starts consuming those rows after the migration completes. DateTime columns use Prisma's PostgreSQL TIMESTAMP(3) mapping, and the scheduled-job writer supplies both required audit timestamps instead of relying on an undeclared updated_at database default. No existing column, constraint, or data contract changes."
     }
   },
-  "nonConcurrentIndexExceptions": {}
+  "nonConcurrentIndexExceptions": {
+    "20260821130000_add_night_mode_transition_reconcile_requests": {
+      "reason": "The index is created immediately after its new empty table and before the bounded enabled-chat backfill, so there is no existing table workload to block and PostgreSQL forbids CREATE INDEX CONCURRENTLY inside Prisma's migration transaction."
+    }
+  }
 }

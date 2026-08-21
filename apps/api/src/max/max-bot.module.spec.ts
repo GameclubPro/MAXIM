@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { NIGHT_MODE_TRANSITION_QUEUE } from '../moderation/night-mode-transition.queue';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
+import { RedisCounterService } from '../moderation/redis-counter.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotModule } from './max-bot.module';
@@ -39,6 +40,8 @@ describe('MaxBotModule', () => {
       .useValue({})
       .overrideProvider(MaxBotOwnershipFoundationService)
       .useValue({})
+      .overrideProvider(RedisCounterService)
+      .useValue({ getString: jest.fn() })
       .overrideProvider(getQueueToken(NIGHT_MODE_TRANSITION_QUEUE))
       .useValue({})
       .compile();
@@ -51,6 +54,9 @@ describe('MaxBotModule', () => {
       expect(
         (scheduler as unknown as { maxBotRegistry?: MaxBotRegistryService }).maxBotRegistry,
       ).toBe(registry);
+      expect((scheduler as unknown as { redisCounter?: RedisCounterService }).redisCounter).toBe(
+        moduleRef.get(RedisCounterService),
+      );
     } finally {
       await moduleRef.close();
     }

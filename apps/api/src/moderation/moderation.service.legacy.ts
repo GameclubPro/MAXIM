@@ -908,6 +908,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.botSpeechMediaService,
         this.nightModeTransitionEventService,
         this.managedEntityAccessLossService,
+        undefined,
+        undefined,
+        this.maxActionLedgerService ?? new MaxActionLedgerService(this.prisma),
       );
     }
     return this.nightModeTransitionDeliveryInstance;

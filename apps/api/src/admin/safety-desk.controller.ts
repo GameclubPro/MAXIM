@@ -17,6 +17,33 @@ export class SafetyDeskController {
     return this.safetyDeskService.getDeleteRuntime();
   }
 
+  @Get('runtime/night-mode-transitions')
+  getNightModeTransitionRuntime() {
+    return this.safetyDeskService.getNightModeTransitionRuntime();
+  }
+
+  @Post('runtime/night-mode-transitions/:chatId/acknowledge')
+  acknowledgeNightModeTransitionBlock(
+    @Param('chatId') chatId: string,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.safetyDeskService.acknowledgeNightModeTransitionBlock(
+      chatId,
+      remoteUser ?? null,
+      body,
+    );
+  }
+
+  @Post('runtime/night-mode-transitions/:chatId/retry')
+  retryNightModeTransitionBlock(
+    @Param('chatId') chatId: string,
+    @Headers('x-remote-user') remoteUser: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.safetyDeskService.retryNightModeTransitionBlock(chatId, remoteUser ?? null, body);
+  }
+
   @Post('runtime/ambiguous-sends/:itemId/allow-retry')
   clearAmbiguousSendFence(
     @Param('itemId') itemId: string,

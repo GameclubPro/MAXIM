@@ -1,8 +1,25 @@
 import { MaxActionNoExecutableRouteError } from '../max/max-action-dispatch-error';
+import {
+  markMaxPreDispatchGuardRejected,
+  MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+} from '../max/max-action-pre-dispatch-guard';
 import { NightModeTransitionDeliveryService } from './night-mode-transition-delivery.service';
 import type { NightModeTransitionDeliveryAdapters } from './night-mode-transition-delivery.service';
 import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
 import type { NightModeTransitionRuntimeSettings } from './night-mode-transition-runtime.service';
+import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
+
+const CLEANUP_BINDING: NightModeCloseNoticeCleanupBinding = {
+  version: 1,
+  sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+  scheduleFingerprint: `sha256:${'a'.repeat(64)}`,
+  sideEffectFingerprint: `sha256:${'b'.repeat(64)}`,
+  event: {
+    id: 'night-close-event-1',
+    ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+    messageId: 'close-message-1',
+  },
+};
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
   return Object.assign(new Error(message), {
@@ -35,6 +52,7 @@ function createSettings(
     commentsEnabled: false,
     botSpeechStyle: 'ROBOT',
     botSpeechMedia: null,
+    updatedAt: new Date('2026-05-30T19:00:00.000Z'),
     chat: {
       rules: null,
     },
@@ -72,9 +90,215 @@ function createEventService() {
 }
 
 describe('NightModeTransitionDeliveryService', () => {
+  it('recovers a close event only from exact completed ledger proof without MAX calls', async () => {
+    const maxClient = {
+      sendMessage: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const eventService = {
+      createTransitionEvent: jest.fn(),
+      ensureTransitionEvent: jest.fn().mockResolvedValue({ id: 'night-close-event-recovered-1' }),
+    };
+    const maxActionLedgerService = {
+      getExactCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue({
+        jobId: 'night-mode:close:chat-1:session:session-1',
+        remoteMessageId: 'mid-close-1',
+        dispatchBotId: 'bot-survivor',
+      }),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {} as never,
+      eventService as never,
+      undefined,
+      undefined,
+      undefined,
+      maxActionLedgerService as never,
+    );
+
+    await expect(
+      service.recoverClosedNoticeEvent({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        messageId: 'mid-close-1',
+        botId: 'bot-survivor',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      }),
+    ).resolves.toEqual({
+      eventId: 'night-close-event-recovered-1',
+      sessionKey: 'session-1',
+      messageId: 'mid-close-1',
+      botId: 'bot-survivor',
+    });
+
+    expect(
+      maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch,
+    ).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      sessionKey: 'session-1',
+      messageId: 'mid-close-1',
+      dispatchBotId: 'bot-survivor',
+    });
+    expect(eventService.ensureTransitionEvent).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      messageId: 'mid-close-1',
+      botId: 'bot-survivor',
+      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+      sessionKey: 'session-1',
+      timezone: 'Europe/Moscow',
+      startMinutes: 23 * 60,
+      endMinutes: 8 * 60,
+    });
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('retains recovery failure when exact completed ledger proof is missing', async () => {
+    const eventService = {
+      createTransitionEvent: jest.fn(),
+      ensureTransitionEvent: jest.fn(),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      { sendMessage: jest.fn(), deleteMessage: jest.fn() } as never,
+      {} as never,
+      eventService as never,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getExactCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue(null),
+      } as never,
+    );
+
+    await expect(
+      service.recoverClosedNoticeEvent({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        messageId: 'mid-close-1',
+        botId: 'bot-1',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      }),
+    ).rejects.toThrow(
+      'Exact completed night mode close send is not proven (night-mode:close:chat-1:session:session-1)',
+    );
+    expect(eventService.ensureTransitionEvent).not.toHaveBeenCalled();
+  });
+
+  it('recovers a markerless close event from an exact completed session ledger', async () => {
+    const eventService = {
+      createTransitionEvent: jest.fn(),
+      ensureTransitionEvent: jest.fn().mockResolvedValue({ id: 'night-close-event-ledger-1' }),
+    };
+    const maxActionLedgerService = {
+      inspectCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue({
+        kind: 'completed',
+        jobId: 'night-mode:close:chat-1:session:session-1',
+        remoteMessageId: 'mid-close-ledger-1',
+        dispatchBotId: 'bot-ledger-1',
+      }),
+    };
+    const maxClient = { sendMessage: jest.fn(), deleteMessage: jest.fn() };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {} as never,
+      eventService as never,
+      undefined,
+      undefined,
+      undefined,
+      maxActionLedgerService as never,
+    );
+
+    await expect(
+      service.recoverClosedNoticeEventFromLedger({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      }),
+    ).resolves.toEqual({
+      eventId: 'night-close-event-ledger-1',
+      sessionKey: 'session-1',
+      messageId: 'mid-close-ledger-1',
+      botId: 'bot-ledger-1',
+    });
+    expect(eventService.ensureTransitionEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        messageId: 'mid-close-ledger-1',
+        botId: 'bot-ledger-1',
+        sessionKey: 'session-1',
+      }),
+    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a missing close ledger from unsafe persisted provenance', async () => {
+    const eventService = {
+      createTransitionEvent: jest.fn(),
+      ensureTransitionEvent: jest.fn(),
+    };
+    const inspectCompletedNightModeCloseNoticeDispatch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'missing',
+        jobId: 'night-mode:close:chat-1:session:session-1',
+      })
+      .mockResolvedValueOnce({
+        kind: 'mismatch',
+        jobId: 'night-mode:close:chat-1:session:session-1',
+      });
+    const service = new NightModeTransitionDeliveryService(
+      { sendMessage: jest.fn(), deleteMessage: jest.fn() } as never,
+      {} as never,
+      eventService as never,
+      undefined,
+      undefined,
+      undefined,
+      { inspectCompletedNightModeCloseNoticeDispatch } as never,
+    );
+    const params = {
+      chatId: 'chat-1',
+      sessionKey: 'session-1',
+      timezone: 'Europe/Moscow',
+      startMinutes: 23 * 60,
+      endMinutes: 8 * 60,
+    };
+
+    await expect(service.recoverClosedNoticeEventFromLedger(params)).resolves.toBeNull();
+    await expect(service.recoverClosedNoticeEventFromLedger(params)).rejects.toThrow(
+      'Night mode close send ledger provenance is unsafe',
+    );
+    expect(eventService.ensureTransitionEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an unavailable recovery ledger as a missing row', async () => {
+    const service = new NightModeTransitionDeliveryService(
+      { sendMessage: jest.fn(), deleteMessage: jest.fn() } as never,
+      {} as never,
+      { createTransitionEvent: jest.fn(), ensureTransitionEvent: jest.fn() } as never,
+    );
+
+    await expect(
+      service.recoverClosedNoticeEventFromLedger({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        timezone: 'Europe/Moscow',
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+      }),
+    ).rejects.toThrow(
+      'Night mode close-event recovery ledger is unavailable (night-mode:close:chat-1:session:session-1)',
+    );
+  });
+
   it('routes a scheduled close notice with a stable session key and bot-scoped media preparation', async () => {
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
       deleteMessage: jest.fn(),
     };
     const botSpeechMediaService = {
@@ -105,7 +329,11 @@ describe('NightModeTransitionDeliveryService', () => {
             imagePayload: { token: 'survivor-upload' },
           }),
         });
-        request.onDispatchAttempt({ botId: 'bot-survivor', job: { ...job, ...prepared } });
+        await request.onDispatchAttempt({ botId: 'bot-survivor', job: { ...job, ...prepared } });
+        await request.beforeSendMutation({
+          botId: 'bot-survivor',
+          job: { ...job, ...prepared },
+        });
         return {
           messageId: 'msg-routed-close-1',
           url: null,
@@ -162,7 +390,7 @@ describe('NightModeTransitionDeliveryService', () => {
     );
     expect(adapters.resolveBotId).not.toHaveBeenCalled();
     expect(adapters.getBotSpeechProfile).toHaveBeenCalledWith('bot-survivor');
-    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(eventService.createTransitionEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: 'chat-1',
@@ -172,11 +400,58 @@ describe('NightModeTransitionDeliveryService', () => {
     );
   });
 
+  it('revalidates state after routed preparation and immediately before MAX dispatch', async () => {
+    const eventService = createEventService();
+    const validateBeforeDispatch = jest.fn().mockResolvedValue(false);
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        await request.prepareAttempt({
+          botId: 'bot-routed',
+          job: { idempotencyKey: request.logicalIdempotencyKey },
+        });
+        await request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        expect(validateBeforeDispatch).not.toHaveBeenCalled();
+        await request.beforeSendMutation({ botId: 'bot-routed', job: {} });
+        throw new Error('unreachable HTTP dispatch');
+      }),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      {
+        sendMessage: jest.fn(),
+        deleteMessage: jest.fn(),
+      } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      eventService as never,
+      undefined,
+      maxRoutedPublicationService as never,
+    );
+
+    await expect(
+      service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-final-dispatch-fence',
+        },
+        createAdapters(),
+        validateBeforeDispatch,
+      ),
+    ).rejects.toThrow('Night mode transition state changed before dispatch (chat-1)');
+
+    expect(validateBeforeDispatch).toHaveBeenCalledTimes(1);
+    expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
+  });
+
   it('fails closed in production when routed publication wiring is missing', async () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
       deleteMessage: jest.fn(),
     };
     const service = new NightModeTransitionDeliveryService(
@@ -203,7 +478,7 @@ describe('NightModeTransitionDeliveryService', () => {
       ).rejects.toThrow(
         'Routed MAX publication service is required for production night mode notices',
       );
-      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
     }
@@ -217,7 +492,7 @@ describe('NightModeTransitionDeliveryService', () => {
     };
     const service = new NightModeTransitionDeliveryService(
       {
-        sendMessageImmediateWithId: jest.fn(),
+        sendMessage: jest.fn(),
         deleteMessage: jest.fn(),
       } as never,
       {
@@ -254,14 +529,15 @@ describe('NightModeTransitionDeliveryService', () => {
     };
     const maxRoutedPublicationService = {
       publish: jest.fn().mockImplementation(async (request: any) => {
-        request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        await request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        await request.beforeSendMutation({ botId: 'bot-routed', job: {} });
         jest.setSystemTime(errorHandledAt);
         throw createMaxApiError(403, 'Request failed with status code 403');
       }),
     };
     const service = new NightModeTransitionDeliveryService(
       {
-        sendMessageImmediateWithId: jest.fn(),
+        sendMessage: jest.fn(),
         deleteMessage: jest.fn(),
       } as never,
       {
@@ -314,7 +590,7 @@ describe('NightModeTransitionDeliveryService', () => {
     };
     const service = new NightModeTransitionDeliveryService(
       {
-        sendMessageImmediateWithId: jest.fn(),
+        sendMessage: jest.fn(),
         deleteMessage: jest.fn(),
       } as never,
       {
@@ -342,6 +618,50 @@ describe('NightModeTransitionDeliveryService', () => {
     expect(accessLoss.recordManagedEntityAccessLost).not.toHaveBeenCalled();
   });
 
+  it('does not record access loss when the final send guard rejects after attempt tracking', async () => {
+    const guardError = markMaxPreDispatchGuardRejected(
+      createMaxApiError(403, 'Validation lookup was denied'),
+      MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+    );
+    const accessLoss = {
+      recordManagedEntityAccessLost: jest.fn(),
+    };
+    const maxRoutedPublicationService = {
+      publish: jest.fn().mockImplementation(async (request: any) => {
+        await request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        throw guardError;
+      }),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      {
+        sendMessage: jest.fn(),
+        deleteMessage: jest.fn(),
+      } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+      accessLoss as never,
+      maxRoutedPublicationService as never,
+    );
+
+    await expect(
+      service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-routed-guard-denied',
+        },
+        createAdapters(),
+      ),
+    ).rejects.toBe(guardError);
+
+    expect(accessLoss.recordManagedEntityAccessLost).not.toHaveBeenCalled();
+  });
+
   it('does not duplicate routed access loss already recorded by action dispatch', async () => {
     const terminalError = Object.assign(
       createMaxApiError(403, 'Request failed with status code 403'),
@@ -352,13 +672,14 @@ describe('NightModeTransitionDeliveryService', () => {
     };
     const maxRoutedPublicationService = {
       publish: jest.fn().mockImplementation(async (request: any) => {
-        request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        await request.onDispatchAttempt({ botId: 'bot-routed', job: {} });
+        await request.beforeSendMutation({ botId: 'bot-routed', job: {} });
         throw terminalError;
       }),
     };
     const service = new NightModeTransitionDeliveryService(
       {
-        sendMessageImmediateWithId: jest.fn(),
+        sendMessage: jest.fn(),
         deleteMessage: jest.fn(),
       } as never,
       {
@@ -388,7 +709,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
   it('sends a closed notice with markdown, background request options, media adapter, and event', async () => {
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),
       deleteMessage: jest.fn(),
     };
     const botSpeechMediaService = {
@@ -428,20 +749,23 @@ describe('NightModeTransitionDeliveryService', () => {
       botId: 'bot-1',
     });
 
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       '🌙 Чат закрыт по расписанию: 23:00-08:00 (Москва). До открытия новые сообщения будут удаляться.',
       expect.objectContaining({
         textFormat: 'markdown',
         imagePayload: { token: 'image-token' },
       }),
-      {
+      expect.objectContaining({
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'night_mode_transition',
         ignoreFailureMetricStatuses: [403, 404],
         botId: 'bot-1',
-      },
+        immediate: true,
+        idempotencyKey: 'night-mode:close:chat-1:session:session-1',
+        beforeImmediateSendMutation: expect.any(Function),
+      }),
     );
     expect(botSpeechMediaService.resolveMedia).toHaveBeenCalledWith(
       expect.objectContaining({ chatId: 'chat-1' }),
@@ -466,7 +790,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
   it('keeps the accepted close notice id when event persistence fails after send', async () => {
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),
       deleteMessage: jest.fn(),
     };
     const botSpeechMediaService = {
@@ -508,12 +832,12 @@ describe('NightModeTransitionDeliveryService', () => {
         endMinutes: 8 * 60,
       },
     });
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('sends an opened notice and creates an open event', async () => {
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-open-1' }),
+      sendMessage: jest.fn().mockResolvedValue({ messageId: 'msg-open-1' }),
       deleteMessage: jest.fn(),
     };
     const botSpeechMediaService = {
@@ -541,7 +865,7 @@ describe('NightModeTransitionDeliveryService', () => {
       ),
     ).resolves.toEqual({ shouldEnqueueNext: true });
 
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Чат снова открыт. Можно отправлять сообщения.',
       expect.objectContaining({ textFormat: 'markdown' }),
@@ -550,6 +874,9 @@ describe('NightModeTransitionDeliveryService', () => {
         actionHealthLane: 'background',
         sourceTag: 'night_mode_transition',
         botId: 'bot-1',
+        immediate: true,
+        idempotencyKey: 'night-mode:open:chat-1:session:session-1',
+        beforeImmediateSendMutation: expect.any(Function),
       }),
     );
     expect(botSpeechMediaService.resolveMedia).toHaveBeenCalledWith(
@@ -565,11 +892,110 @@ describe('NightModeTransitionDeliveryService', () => {
     );
   });
 
+  it('revalidates the direct fallback after limiter interleave at the immediate send hook', async () => {
+    let current = true;
+    let releaseLimiter: () => void = () => undefined;
+    const limiterGate = new Promise<void>((resolve) => {
+      releaseLimiter = resolve;
+    });
+    let markLimiterEntered: () => void = () => undefined;
+    const limiterEntered = new Promise<void>((resolve) => {
+      markLimiterEntered = resolve;
+    });
+    let httpSendCalled = false;
+    const maxClient = {
+      sendMessage: jest.fn(
+        async (
+          _chatId: string,
+          _text: string,
+          _options: unknown,
+          dispatchOptions: {
+            idempotencyKey?: string;
+            beforeImmediateSendMutation?: () => Promise<void>;
+          },
+        ) => {
+          expect(dispatchOptions.idempotencyKey).toBe(
+            'night-mode:open:chat-1:session:session-direct-final-guard',
+          );
+          markLimiterEntered();
+          await limiterGate;
+          await dispatchOptions.beforeImmediateSendMutation?.();
+          httpSendCalled = true;
+          return { messageId: 'unexpected-message' };
+        },
+      ),
+      deleteMessage: jest.fn(),
+    };
+    const eventService = createEventService();
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      eventService as never,
+    );
+    const validateBeforeDispatch = jest.fn(async () => current);
+
+    const delivery = service.sendOpenedNotice(
+      createSettings(),
+      {
+        startMinutes: 23 * 60,
+        endMinutes: 8 * 60,
+        timezone: 'Europe/Moscow',
+        sessionKey: 'session-direct-final-guard',
+      },
+      createAdapters(),
+      validateBeforeDispatch,
+    );
+    await limiterEntered;
+    current = false;
+    releaseLimiter();
+
+    await expect(delivery).rejects.toThrow(
+      'Night mode transition state changed before dispatch (chat-1)',
+    );
+    expect(validateBeforeDispatch).toHaveBeenCalledTimes(1);
+    expect(httpSendCalled).toBe(false);
+    expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the direct immediate send completes without a message id', async () => {
+    const eventService = createEventService();
+    const service = new NightModeTransitionDeliveryService(
+      {
+        sendMessage: jest.fn().mockResolvedValue(undefined),
+        deleteMessage: jest.fn(),
+      } as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      eventService as never,
+    );
+
+    await expect(
+      service.sendOpenedNotice(
+        createSettings(),
+        {
+          startMinutes: 23 * 60,
+          endMinutes: 8 * 60,
+          timezone: 'Europe/Moscow',
+          sessionKey: 'session-missing-message-id',
+        },
+        createAdapters(),
+      ),
+    ).rejects.toThrow(
+      'Immediate MAX night mode publication night-mode:open:chat-1:session:session-missing-message-id completed without a message id',
+    );
+    expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
+  });
+
   it('records access loss and stops scheduling on terminal send errors', async () => {
     const dispatchAttemptStartedAt = new Date('2026-08-20T13:00:00.123Z');
     jest.useFakeTimers().setSystemTime(dispatchAttemptStartedAt);
     const maxClient = {
-      sendMessageImmediateWithId: jest
+      sendMessage: jest
         .fn()
         .mockRejectedValue(createMaxApiError(404, 'Request failed with status code 404')),
       deleteMessage: jest.fn(),
@@ -620,7 +1046,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
   it('hands close notice cleanup to a durable origin-only intent in execute rollout', async () => {
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
       deleteMessage: jest.fn(),
     };
     const eventService = createEventService();
@@ -645,7 +1071,13 @@ describe('NightModeTransitionDeliveryService', () => {
     );
 
     await expect(
-      service.deleteClosedNotice('chat-1', 'close-message-1', 'origin-bot-1', createAdapters()),
+      service.deleteClosedNotice(
+        'chat-1',
+        'close-message-1',
+        'origin-bot-1',
+        CLEANUP_BINDING,
+        createAdapters(),
+      ),
     ).resolves.toEqual({ shouldEnqueueNext: true });
 
     expect(deleteIntents.ensureIntent).toHaveBeenCalledWith({
@@ -657,14 +1089,58 @@ describe('NightModeTransitionDeliveryService', () => {
       messageAuthorKind: 'bot',
       originBotId: 'origin-bot-1',
       routingPolicy: 'origin_only',
+      event: {
+        eventType: 'SYSTEM',
+        metadata: {
+          nightModeCloseNoticeCleanup: CLEANUP_BINDING,
+        },
+      },
     });
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
   });
 
+  it('revalidates state immediately before creating a durable close-notice delete intent', async () => {
+    const maxClient = {
+      sendMessage: jest.fn(),
+      deleteMessage: jest.fn(),
+    };
+    const deleteIntents = {
+      getRolloutForChat: jest.fn().mockReturnValue('execute'),
+      ensureIntent: jest.fn(),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+      undefined,
+      undefined,
+      deleteIntents as never,
+    );
+    const validateBeforeDispatch = jest.fn().mockResolvedValue(false);
+
+    await expect(
+      service.deleteClosedNotice(
+        'chat-1',
+        'close-message-stale-1',
+        'origin-bot-1',
+        CLEANUP_BINDING,
+        createAdapters(),
+        validateBeforeDispatch,
+      ),
+    ).rejects.toThrow('Night mode transition state changed before dispatch (chat-1)');
+
+    expect(validateBeforeDispatch).toHaveBeenCalledTimes(1);
+    expect(deleteIntents.ensureIntent).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
   it('does not create an origin-only intent when a historical close notice has no author bot', async () => {
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
       deleteMessage: jest.fn().mockResolvedValue(undefined),
     };
     const deleteIntents = {
@@ -684,7 +1160,13 @@ describe('NightModeTransitionDeliveryService', () => {
     );
 
     await expect(
-      service.deleteClosedNotice('chat-1', 'historical-close-1', null, createAdapters()),
+      service.deleteClosedNotice(
+        'chat-1',
+        'historical-close-1',
+        null,
+        CLEANUP_BINDING,
+        createAdapters(),
+      ),
     ).resolves.toEqual({ shouldEnqueueNext: true });
 
     expect(deleteIntents.ensureIntent).not.toHaveBeenCalled();
@@ -695,10 +1177,65 @@ describe('NightModeTransitionDeliveryService', () => {
     );
   });
 
+  it('revalidates direct cleanup after limiter interleave and before the HTTP mutation', async () => {
+    let current = true;
+    let releaseLimiter: () => void = () => undefined;
+    const limiterGate = new Promise<void>((resolve) => {
+      releaseLimiter = resolve;
+    });
+    let markLimiterEntered: () => void = () => undefined;
+    const limiterEntered = new Promise<void>((resolve) => {
+      markLimiterEntered = resolve;
+    });
+    let httpDeleteCalled = false;
+    const maxClient = {
+      sendMessage: jest.fn(),
+      deleteMessage: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          options: { beforeImmediateDeleteMutation?: () => Promise<void> },
+        ) => {
+          markLimiterEntered();
+          await limiterGate;
+          await options.beforeImmediateDeleteMutation?.();
+          httpDeleteCalled = true;
+        },
+      ),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      createEventService() as never,
+    );
+    const validateBeforeDispatch = jest.fn(async () => current);
+
+    const cleanup = service.deleteClosedNotice(
+      'chat-1',
+      'historical-close-1',
+      null,
+      CLEANUP_BINDING,
+      createAdapters(),
+      validateBeforeDispatch,
+    );
+    await limiterEntered;
+    current = false;
+    releaseLimiter();
+
+    await expect(cleanup).rejects.toThrow(
+      'Night mode transition state changed before dispatch (chat-1)',
+    );
+    expect(validateBeforeDispatch).toHaveBeenCalledTimes(2);
+    expect(httpDeleteCalled).toBe(false);
+  });
+
   it('does not treat an arbitrary 404 as successful historical notice deletion', async () => {
     const error = createMaxApiError(404, 'Request failed with status code 404');
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
       deleteMessage: jest.fn().mockRejectedValue(error),
     };
     const service = new NightModeTransitionDeliveryService(
@@ -711,7 +1248,13 @@ describe('NightModeTransitionDeliveryService', () => {
     );
 
     await expect(
-      service.deleteClosedNotice('chat-1', 'historical-close-1', null, createAdapters()),
+      service.deleteClosedNotice(
+        'chat-1',
+        'historical-close-1',
+        null,
+        CLEANUP_BINDING,
+        createAdapters(),
+      ),
     ).rejects.toBe(error);
   });
 
@@ -719,7 +1262,7 @@ describe('NightModeTransitionDeliveryService', () => {
     const dispatchAttemptStartedAt = new Date('2026-08-20T14:00:00.123Z');
     jest.useFakeTimers().setSystemTime(dispatchAttemptStartedAt);
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
       deleteMessage: jest
         .fn()
         .mockRejectedValue(createMaxApiError(404, 'Chat not found', 'chat.not.found')),
@@ -739,7 +1282,13 @@ describe('NightModeTransitionDeliveryService', () => {
 
     try {
       await expect(
-        service.deleteClosedNotice('chat-1', 'historical-close-1', null, createAdapters()),
+        service.deleteClosedNotice(
+          'chat-1',
+          'historical-close-1',
+          null,
+          CLEANUP_BINDING,
+          createAdapters(),
+        ),
       ).resolves.toEqual({ shouldEnqueueNext: false });
 
       expect(accessLoss.recordManagedEntityAccessLost).toHaveBeenCalledWith({
@@ -761,7 +1310,7 @@ describe('NightModeTransitionDeliveryService', () => {
 
   it('keeps direct close-notice deletion as the shadow fallback', async () => {
     const maxClient = {
-      sendMessageImmediateWithId: jest.fn(),
+      sendMessage: jest.fn(),
       deleteMessage: jest
         .fn()
         .mockRejectedValue(
@@ -792,7 +1341,13 @@ describe('NightModeTransitionDeliveryService', () => {
     );
 
     await expect(
-      service.deleteClosedNotice('chat-1', 'close-message-1', 'origin-bot-1', createAdapters()),
+      service.deleteClosedNotice(
+        'chat-1',
+        'close-message-1',
+        'origin-bot-1',
+        CLEANUP_BINDING,
+        createAdapters(),
+      ),
     ).resolves.toEqual({ shouldEnqueueNext: true });
 
     expect(deleteIntents.ensureIntent).toHaveBeenCalledWith(

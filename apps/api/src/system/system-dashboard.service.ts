@@ -62,6 +62,8 @@ const DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT = 1_000;
 const DELIVERY_LEDGER_WAITING_CAPABILITY_WARNING_MS = 5 * 60_000;
 const HOT_PATH_SLOW_WARNING_COUNT = 3;
 const HOT_PATH_SLOW_WARNING_MAX_MS = 5_000;
+const NIGHT_MODE_RECONCILE_RISK_LIMIT = 1_000;
+const NIGHT_MODE_RECONCILE_ALERT_GRACE_MS = 60_000;
 
 type VkParsingGuardSnapshot = {
   checkedAt: string;
@@ -168,6 +170,23 @@ type SuggestionLedgerAuditRow = {
   payload: unknown;
 };
 
+type NightModeReconcileRiskSnapshot = {
+  checkedAt: string;
+  manualBlocked: number;
+  unsafePriorDispatch: number;
+  unsafePriorProvenance: number;
+  noFreshAccess: number;
+  failedJobUnclassified: number;
+  agedDue: number;
+  staleLeases: number;
+  oldestManualBlockedAgeSec: number;
+  oldestDueAgeSec: number;
+  oldestStaleLeaseAgeSec: number;
+  manualCapped: boolean;
+  dueCapped: boolean;
+  staleLeaseCapped: boolean;
+};
+
 @Injectable()
 export class SystemDashboardService {
   private readonly logger = new Logger(SystemDashboardService.name);
@@ -242,10 +261,16 @@ export class SystemDashboardService {
           return undefined;
         }),
       ]);
-    const [vkParsingGuard, deliveryLedgerRisk, suggestionPublicationProtocol] = await Promise.all([
+    const [
+      vkParsingGuard,
+      deliveryLedgerRisk,
+      suggestionPublicationProtocol,
+      nightModeReconcileRisk,
+    ] = await Promise.all([
       this.loadVkParsingGuardSnapshot(),
       this.loadDeliveryLedgerRiskSnapshot(),
       this.loadSuggestionPublicationProtocolSnapshot(),
+      this.loadNightModeReconcileRiskSnapshot(),
     ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
@@ -450,6 +475,11 @@ export class SystemDashboardService {
       alerts.push(deleteCapabilityAlert);
     }
 
+    const nightModeReconcileAlert = this.buildNightModeReconcileRiskAlert(nightModeReconcileRisk);
+    if (nightModeReconcileAlert) {
+      alerts.push(nightModeReconcileAlert);
+    }
+
     const status = this.resolveStatus({
       mode: mode.mode,
       queueLagSec,
@@ -477,6 +507,7 @@ export class SystemDashboardService {
       suggestionPublishingWarning:
         suggestionPublishingAlert !== null || suggestionLedgerAuditAlert !== null,
       deleteCapabilityWarning: deleteCapabilityAlert !== null,
+      nightModeReconcileWarning: nightModeReconcileAlert !== null,
     });
     const queueGroupHealth = buildSystemQueueGroupHealth(queues);
     const runtimeProfile = buildSystemRuntimeProfile(
@@ -565,6 +596,7 @@ export class SystemDashboardService {
     deliveryLedgerWarning?: boolean;
     suggestionPublishingWarning?: boolean;
     deleteCapabilityWarning?: boolean;
+    nightModeReconcileWarning?: boolean;
   }): SystemDashboardStatus {
     if (
       input.mode === 'degrade' ||
@@ -597,7 +629,8 @@ export class SystemDashboardService {
       input.actionLedgerWatchdogWarning === true ||
       input.deliveryLedgerWarning === true ||
       input.suggestionPublishingWarning === true ||
-      input.deleteCapabilityWarning === true
+      input.deleteCapabilityWarning === true ||
+      input.nightModeReconcileWarning === true
     ) {
       return 'warning';
     }
@@ -1567,6 +1600,151 @@ export class SystemDashboardService {
     }
   }
 
+  private async loadNightModeReconcileRiskSnapshot(): Promise<NightModeReconcileRiskSnapshot | null> {
+    if (!this.prisma) {
+      return null;
+    }
+    const checkedAt = new Date();
+    const agedBefore = new Date(checkedAt.getTime() - NIGHT_MODE_RECONCILE_ALERT_GRACE_MS);
+    try {
+      const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+        WITH manual_candidates AS (
+          SELECT
+            request."manual_blocked_at",
+            request."manual_blocked_category"
+          FROM "night_mode_transition_reconcile_requests" request
+          WHERE request."manual_blocked_at" IS NOT NULL
+            AND request."generation" = request."manual_blocked_generation"
+            AND request."manual_acknowledged_at" IS NULL
+          ORDER BY
+            request."manual_blocked_at" ASC,
+            request."manual_blocked_category" ASC,
+            request."chat_id" ASC
+          LIMIT ${NIGHT_MODE_RECONCILE_RISK_LIMIT + 1}
+        ),
+        aged_due_candidates AS (
+          SELECT
+            request."first_requested_at",
+            request."requested_at",
+            request."lease_token",
+            request."lease_expires_at"
+          FROM "night_mode_transition_reconcile_requests" request
+          WHERE (
+              request."manual_blocked_at" IS NULL
+              OR request."generation" > request."manual_blocked_generation"
+            )
+            AND request."requested_at" <= ${agedBefore}
+            AND (
+              request."lease_token" IS NULL
+              OR request."lease_expires_at" < ${agedBefore}
+            )
+          ORDER BY
+            request."requested_at" ASC,
+            request."lease_expires_at" ASC NULLS FIRST,
+            request."chat_id" ASC
+          LIMIT ${NIGHT_MODE_RECONCILE_RISK_LIMIT + 1}
+        ),
+        stale_lease_candidates AS (
+          SELECT
+            request."lease_expires_at"
+          FROM "night_mode_transition_reconcile_requests" request
+          WHERE (
+              request."manual_blocked_at" IS NULL
+              OR request."generation" > request."manual_blocked_generation"
+            )
+            AND request."requested_at" <= ${agedBefore}
+            AND request."lease_token" IS NOT NULL
+            AND request."lease_expires_at" < ${agedBefore}
+          ORDER BY
+            request."lease_expires_at" ASC,
+            request."chat_id" ASC
+          LIMIT ${NIGHT_MODE_RECONCILE_RISK_LIMIT + 1}
+        ),
+        manual_summary AS (
+          SELECT
+            COUNT(*)::int AS "manualBlocked",
+            COUNT(*) FILTER (
+              WHERE "manual_blocked_category" = 'unsafe_prior_dispatch'
+            )::int AS "unsafePriorDispatch",
+            COUNT(*) FILTER (
+              WHERE "manual_blocked_category" = 'unsafe_prior_provenance'
+            )::int AS "unsafePriorProvenance",
+            COUNT(*) FILTER (
+              WHERE "manual_blocked_category" = 'no_fresh_access'
+            )::int AS "noFreshAccess",
+            COUNT(*) FILTER (
+              WHERE "manual_blocked_category" = 'failed_job_unclassified'
+            )::int AS "failedJobUnclassified",
+            EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - MIN("manual_blocked_at")))::int
+              AS "oldestManualBlockedAgeSec",
+            COUNT(*) > ${NIGHT_MODE_RECONCILE_RISK_LIMIT} AS "manualCapped"
+          FROM manual_candidates
+        ),
+        due_summary AS (
+          SELECT
+            COUNT(*)::int AS "agedDue",
+            EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - MIN("first_requested_at")))::int
+              AS "oldestDueAgeSec",
+            COUNT(*) > ${NIGHT_MODE_RECONCILE_RISK_LIMIT} AS "dueCapped"
+          FROM aged_due_candidates
+        ),
+        stale_lease_summary AS (
+          SELECT
+            COUNT(*)::int AS "staleLeases",
+            EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - MIN("lease_expires_at")))::int
+              AS "oldestStaleLeaseAgeSec",
+            COUNT(*) > ${NIGHT_MODE_RECONCILE_RISK_LIMIT} AS "staleLeaseCapped"
+          FROM stale_lease_candidates
+        )
+        SELECT
+          manual_summary.*,
+          due_summary.*,
+          stale_lease_summary.*
+        FROM manual_summary
+        CROSS JOIN due_summary
+        CROSS JOIN stale_lease_summary
+      `;
+      const row = rows[0] ?? {};
+      return {
+        checkedAt: checkedAt.toISOString(),
+        manualBlocked: Math.min(
+          this.readNumber(row.manualBlocked),
+          NIGHT_MODE_RECONCILE_RISK_LIMIT,
+        ),
+        unsafePriorDispatch: Math.min(
+          this.readNumber(row.unsafePriorDispatch),
+          NIGHT_MODE_RECONCILE_RISK_LIMIT,
+        ),
+        unsafePriorProvenance: Math.min(
+          this.readNumber(row.unsafePriorProvenance),
+          NIGHT_MODE_RECONCILE_RISK_LIMIT,
+        ),
+        noFreshAccess: Math.min(
+          this.readNumber(row.noFreshAccess),
+          NIGHT_MODE_RECONCILE_RISK_LIMIT,
+        ),
+        failedJobUnclassified: Math.min(
+          this.readNumber(row.failedJobUnclassified),
+          NIGHT_MODE_RECONCILE_RISK_LIMIT,
+        ),
+        agedDue: Math.min(this.readNumber(row.agedDue), NIGHT_MODE_RECONCILE_RISK_LIMIT),
+        staleLeases: Math.min(this.readNumber(row.staleLeases), NIGHT_MODE_RECONCILE_RISK_LIMIT),
+        oldestManualBlockedAgeSec: this.readNumber(row.oldestManualBlockedAgeSec),
+        oldestDueAgeSec: this.readNumber(row.oldestDueAgeSec),
+        oldestStaleLeaseAgeSec: this.readNumber(row.oldestStaleLeaseAgeSec),
+        manualCapped: row.manualCapped === true,
+        dueCapped: row.dueCapped === true,
+        staleLeaseCapped: row.staleLeaseCapped === true,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Night mode reconcile dashboard snapshot is unavailable; response remains fail-soft',
+      );
+      return null;
+    }
+  }
+
   private mapSuggestionPublicationLedger(
     row: SuggestionPublishingAuditRow | SuggestionLedgerAuditRow,
   ): ChannelSuggestionPublicationLedgerRow {
@@ -1601,6 +1779,33 @@ export class SystemDashboardService {
     } else {
       snapshot.mismatchedAudit += 1;
     }
+  }
+
+  private buildNightModeReconcileRiskAlert(
+    snapshot: NightModeReconcileRiskSnapshot | null,
+  ): SystemDashboardAlert | null {
+    if (!snapshot || (snapshot.manualBlocked === 0 && snapshot.agedDue === 0)) {
+      return null;
+    }
+    const manualPrefix = snapshot.manualCapped ? '>=' : '';
+    const duePrefix = snapshot.dueCapped ? '>=' : '';
+    const staleLeasePrefix = snapshot.staleLeaseCapped ? '>=' : '';
+    const details = [
+      snapshot.manualBlocked > 0
+        ? `manual blocked ${manualPrefix}${snapshot.manualBlocked} (unsafe dispatch ${snapshot.unsafePriorDispatch}, unsafe provenance ${snapshot.unsafePriorProvenance}, no fresh access ${snapshot.noFreshAccess}, unclassified ${snapshot.failedJobUnclassified}), oldest ${snapshot.oldestManualBlockedAgeSec} сек`
+        : null,
+      snapshot.agedDue > 0
+        ? `aged due ${duePrefix}${snapshot.agedDue}, stale leases ${staleLeasePrefix}${snapshot.staleLeases}, oldest due ${snapshot.oldestDueAgeSec} сек, oldest stale lease ${snapshot.oldestStaleLeaseAgeSec} сек`
+        : null,
+    ].filter((item): item is string => item !== null);
+    return {
+      code: 'night-mode-transition-reconcile',
+      level: 'warning',
+      title: 'Night mode transitions требуют внимания',
+      detail: details.join('; '),
+      recommendedAction:
+        'Откройте закрытый Safety Desk runtime night-mode-transitions. Unsafe send categories не повторяйте автоматически; сверяйте MAX и ledger перед acknowledge.',
+    };
   }
 
   private buildDeliveryLedgerRiskAlert(

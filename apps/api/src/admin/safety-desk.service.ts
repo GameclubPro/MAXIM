@@ -46,6 +46,7 @@ import {
   MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
   ModerationDeleteIntentService,
 } from '../moderation/moderation-delete-intent.service';
+import { NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE } from '../moderation/night-mode-close-notice-cleanup-binding';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   containsSupportedMarkdownUrl,
@@ -159,6 +160,65 @@ const GIVEAWAY_WINNER_NOTIFICATION_DEAD_END_LIMIT = 50;
 const SAFETY_DESK_LAST_ERROR_LIMIT = 1_000;
 const DELETE_INTENT_REASON_LIMIT = 10;
 const DELETE_INTENT_MEMBERSHIP_LIMIT = 20;
+const NIGHT_MODE_TRANSITION_RUNTIME_LIMIT = 50;
+const NIGHT_MODE_TRANSITION_MANUAL_CATEGORIES = [
+  'unsafe_prior_dispatch',
+  'unsafe_prior_provenance',
+  'no_fresh_access',
+  'failed_job_unclassified',
+] as const;
+type NightModeTransitionManualCategory = (typeof NIGHT_MODE_TRANSITION_MANUAL_CATEGORIES)[number];
+type NightModeTransitionRuntimeState =
+  | 'DUE'
+  | 'DEFERRED'
+  | 'LEASED'
+  | 'STALE_LEASE'
+  | 'MANUAL_BLOCKED'
+  | 'ACKNOWLEDGED';
+type NightModeTransitionRuntimeRow = {
+  chatId: string;
+  chatTitle: string | null;
+  entityType: ChatEntityType | null;
+  generation: bigint;
+  firstRequestedAt: Date;
+  requestedAt: Date;
+  attemptCount: number;
+  lastAttemptAt: Date | null;
+  lastErrorCode: string | null;
+  lastErrorAt: Date | null;
+  lastError: string | null;
+  leaseExpiresAt: Date | null;
+  manualBlockedAt: Date | null;
+  manualBlockedReason: string | null;
+  manualBlockedCategory: NightModeTransitionManualCategory | null;
+  manualBlockedJobId: string | null;
+  manualBlockedLedgerJobId: string | null;
+  manualBlockedSessionKey: string | null;
+  manualBlockedFingerprint: string | null;
+  manualBlockedGeneration: bigint | null;
+  manualAcknowledgedAt: Date | null;
+  state: NightModeTransitionRuntimeState;
+};
+type NightModeTransitionSummaryRow = {
+  total: number;
+  due: number;
+  deferred: number;
+  leased: number;
+  staleLeases: number;
+  manualBlocked: number;
+  acknowledged: number;
+  oldestDueAt: Date | null;
+  oldestStaleLeaseAt: Date | null;
+  oldestManualBlockedAt: Date | null;
+};
+type NightModeTransitionManualActionInput = {
+  generation: bigint;
+  manualBlockedGeneration: bigint;
+  manualBlockedAt: Date;
+  category: NightModeTransitionManualCategory;
+  fingerprint: string;
+  reason: string;
+};
 const DELETE_INTENT_STATUSES = [
   'OBSERVED',
   'PENDING',
@@ -702,6 +762,333 @@ export class SafetyDeskService {
     });
   }
 
+  async getNightModeTransitionRuntime() {
+    const now = new Date();
+    const [summaryRows, categoryRows, rows] = await Promise.all([
+      this.prisma.$queryRaw<NightModeTransitionSummaryRow[]>(Prisma.sql`
+        SELECT
+          COUNT(*)::int AS "total",
+          COUNT(*) FILTER (
+            WHERE (
+                request."manual_blocked_at" IS NULL
+                OR request."generation" > request."manual_blocked_generation"
+              )
+              AND request."requested_at" <= ${now}
+              AND (
+                request."lease_token" IS NULL
+                OR request."lease_expires_at" < ${now}
+              )
+          )::int AS "due",
+          COUNT(*) FILTER (
+            WHERE (
+                request."manual_blocked_at" IS NULL
+                OR request."generation" > request."manual_blocked_generation"
+              )
+              AND request."requested_at" > ${now}
+          )::int AS "deferred",
+          COUNT(*) FILTER (
+            WHERE (
+                request."manual_blocked_at" IS NULL
+                OR request."generation" > request."manual_blocked_generation"
+              )
+              AND request."lease_token" IS NOT NULL
+              AND request."lease_expires_at" >= ${now}
+          )::int AS "leased",
+          COUNT(*) FILTER (
+            WHERE (
+                request."manual_blocked_at" IS NULL
+                OR request."generation" > request."manual_blocked_generation"
+              )
+              AND request."lease_token" IS NOT NULL
+              AND request."lease_expires_at" < ${now}
+          )::int AS "staleLeases",
+          COUNT(*) FILTER (
+            WHERE request."manual_blocked_at" IS NOT NULL
+              AND request."generation" = request."manual_blocked_generation"
+              AND request."manual_acknowledged_at" IS NULL
+          )::int
+            AS "manualBlocked",
+          COUNT(*) FILTER (
+            WHERE request."manual_blocked_at" IS NOT NULL
+              AND request."generation" = request."manual_blocked_generation"
+              AND request."manual_acknowledged_at" IS NOT NULL
+          )::int
+            AS "acknowledged",
+          MIN(request."first_requested_at") FILTER (
+            WHERE (
+                request."manual_blocked_at" IS NULL
+                OR request."generation" > request."manual_blocked_generation"
+              )
+              AND request."requested_at" <= ${now}
+              AND (
+                request."lease_token" IS NULL
+                OR request."lease_expires_at" < ${now}
+              )
+          ) AS "oldestDueAt",
+          MIN(request."lease_expires_at") FILTER (
+            WHERE (
+                request."manual_blocked_at" IS NULL
+                OR request."generation" > request."manual_blocked_generation"
+              )
+              AND request."lease_token" IS NOT NULL
+              AND request."lease_expires_at" < ${now}
+          ) AS "oldestStaleLeaseAt",
+          MIN(request."manual_blocked_at") FILTER (
+            WHERE request."manual_blocked_at" IS NOT NULL
+              AND request."generation" = request."manual_blocked_generation"
+              AND request."manual_acknowledged_at" IS NULL
+          ) AS "oldestManualBlockedAt"
+        FROM "night_mode_transition_reconcile_requests" request
+      `),
+      this.prisma.$queryRaw<Array<{ category: string; count: number }>>(Prisma.sql`
+        SELECT
+          request."manual_blocked_category" AS "category",
+          COUNT(*)::int AS "count"
+        FROM "night_mode_transition_reconcile_requests" request
+        WHERE request."manual_blocked_at" IS NOT NULL
+          AND request."generation" = request."manual_blocked_generation"
+          AND request."manual_acknowledged_at" IS NULL
+        GROUP BY request."manual_blocked_category"
+        ORDER BY COUNT(*) DESC, request."manual_blocked_category" ASC
+      `),
+      this.prisma.$queryRaw<NightModeTransitionRuntimeRow[]>(Prisma.sql`
+        SELECT
+          request."chat_id" AS "chatId",
+          chat."title" AS "chatTitle",
+          chat."entity_type" AS "entityType",
+          request."generation" AS "generation",
+          request."first_requested_at" AS "firstRequestedAt",
+          request."requested_at" AS "requestedAt",
+          request."attempt_count" AS "attemptCount",
+          request."last_attempt_at" AS "lastAttemptAt",
+          request."last_error_code" AS "lastErrorCode",
+          request."last_error_at" AS "lastErrorAt",
+          request."last_error" AS "lastError",
+          request."lease_expires_at" AS "leaseExpiresAt",
+          request."manual_blocked_at" AS "manualBlockedAt",
+          request."manual_blocked_reason" AS "manualBlockedReason",
+          request."manual_blocked_category" AS "manualBlockedCategory",
+          request."manual_blocked_job_id" AS "manualBlockedJobId",
+          request."manual_blocked_ledger_job_id" AS "manualBlockedLedgerJobId",
+          request."manual_blocked_session_key" AS "manualBlockedSessionKey",
+          request."manual_blocked_fingerprint" AS "manualBlockedFingerprint",
+          request."manual_blocked_generation" AS "manualBlockedGeneration",
+          request."manual_acknowledged_at" AS "manualAcknowledgedAt",
+          CASE
+            WHEN request."manual_blocked_at" IS NOT NULL
+              AND request."generation" = request."manual_blocked_generation"
+              AND request."manual_acknowledged_at" IS NULL
+              THEN 'MANUAL_BLOCKED'
+            WHEN request."manual_blocked_at" IS NOT NULL
+              AND request."generation" = request."manual_blocked_generation"
+              AND request."manual_acknowledged_at" IS NOT NULL
+              THEN 'ACKNOWLEDGED'
+            WHEN request."lease_token" IS NOT NULL
+              AND request."lease_expires_at" < ${now} THEN 'STALE_LEASE'
+            WHEN request."lease_token" IS NOT NULL THEN 'LEASED'
+            WHEN request."requested_at" <= ${now} THEN 'DUE'
+            ELSE 'DEFERRED'
+          END AS "state"
+        FROM "night_mode_transition_reconcile_requests" request
+        LEFT JOIN "chats" chat ON chat."id" = request."chat_id"
+        ORDER BY
+          CASE
+            WHEN request."manual_blocked_at" IS NOT NULL
+              AND request."generation" = request."manual_blocked_generation"
+              AND request."manual_acknowledged_at" IS NULL THEN 0
+            WHEN request."manual_blocked_at" IS NOT NULL
+              AND request."generation" = request."manual_blocked_generation"
+              AND request."manual_acknowledged_at" IS NOT NULL THEN 5
+            WHEN request."lease_token" IS NOT NULL
+              AND request."lease_expires_at" < ${now} THEN 1
+            WHEN request."requested_at" <= ${now} THEN 2
+            WHEN request."lease_token" IS NOT NULL THEN 3
+            ELSE 4
+          END ASC,
+          COALESCE(
+            request."manual_blocked_at",
+            request."lease_expires_at",
+            request."first_requested_at"
+          ) ASC,
+          request."chat_id" ASC
+        LIMIT ${NIGHT_MODE_TRANSITION_RUNTIME_LIMIT + 1}
+      `),
+    ]);
+    const summary = summaryRows[0];
+    const categoryCounts = Object.fromEntries(
+      NIGHT_MODE_TRANSITION_MANUAL_CATEGORIES.map((category) => [category, 0]),
+    ) as Record<NightModeTransitionManualCategory, number>;
+    for (const row of categoryRows) {
+      if (this.isNightModeTransitionManualCategory(row.category)) {
+        categoryCounts[row.category] = Math.max(0, Number(row.count) || 0);
+      }
+    }
+    const items = rows.slice(0, NIGHT_MODE_TRANSITION_RUNTIME_LIMIT).map((row) => ({
+      chatId: row.chatId,
+      chatTitle: row.chatTitle,
+      entityType: row.entityType,
+      generation: row.generation.toString(),
+      state: row.state,
+      firstRequestedAt: row.firstRequestedAt.toISOString(),
+      requestedAt: row.requestedAt.toISOString(),
+      attemptCount: row.attemptCount,
+      lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null,
+      lastErrorCode: row.lastErrorCode?.trim().slice(0, 120) || null,
+      lastErrorAt: row.lastErrorAt?.toISOString() ?? null,
+      lastError: this.sanitizeSafetyDeskLastError(row.lastError),
+      leaseExpiresAt: row.leaseExpiresAt?.toISOString() ?? null,
+      manualBlockedAt: row.manualBlockedAt?.toISOString() ?? null,
+      manualBlockedCategory: row.manualBlockedCategory,
+      manualBlockedReason: this.sanitizeSafetyDeskLastError(row.manualBlockedReason),
+      manualBlockedGeneration: row.manualBlockedGeneration?.toString() ?? null,
+      manualAcknowledgedAt: row.manualAcknowledgedAt?.toISOString() ?? null,
+      context: row.manualBlockedAt
+        ? {
+            jobId: row.manualBlockedJobId,
+            ledgerJobId: row.manualBlockedLedgerJobId,
+            sessionKey: row.manualBlockedSessionKey,
+            fingerprint: row.manualBlockedFingerprint,
+          }
+        : null,
+      allowedActions:
+        row.manualBlockedAt &&
+        row.manualBlockedGeneration === row.generation &&
+        row.manualAcknowledgedAt === null
+          ? ['ACKNOWLEDGE', ...(row.manualBlockedCategory === 'no_fresh_access' ? ['RETRY'] : [])]
+          : [],
+    }));
+
+    return {
+      generatedAt: now.toISOString(),
+      summary: {
+        total: Math.max(0, Number(summary?.total) || 0),
+        due: Math.max(0, Number(summary?.due) || 0),
+        deferred: Math.max(0, Number(summary?.deferred) || 0),
+        leased: Math.max(0, Number(summary?.leased) || 0),
+        staleLeases: Math.max(0, Number(summary?.staleLeases) || 0),
+        manualBlocked: Math.max(0, Number(summary?.manualBlocked) || 0),
+        acknowledged: Math.max(0, Number(summary?.acknowledged) || 0),
+        categoryCounts,
+        oldestDueAt: summary?.oldestDueAt?.toISOString() ?? null,
+        oldestStaleLeaseAt: summary?.oldestStaleLeaseAt?.toISOString() ?? null,
+        oldestManualBlockedAt: summary?.oldestManualBlockedAt?.toISOString() ?? null,
+      },
+      items,
+      truncated: rows.length > NIGHT_MODE_TRANSITION_RUNTIME_LIMIT,
+    };
+  }
+
+  async acknowledgeNightModeTransitionBlock(
+    chatId: string,
+    actorUserId: string | null,
+    input: unknown,
+  ) {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      throw new BadRequestException('Укажите chatId night mode запроса.');
+    }
+    const expected = this.parseNightModeTransitionManualActionInput(input);
+    const acknowledgedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const current = await tx.nightModeTransitionReconcileRequest.findUnique({
+        where: { chatId: normalizedChatId },
+      });
+      this.assertNightModeTransitionManualActionMatches(current, expected);
+      const acknowledged = await tx.nightModeTransitionReconcileRequest.updateMany({
+        where: this.buildNightModeTransitionManualActionWhere(normalizedChatId, expected),
+        data: {
+          manualAcknowledgedAt: acknowledgedAt,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (acknowledged.count !== 1) {
+        throw new ConflictException('Состояние night mode изменилось. Обновите Safety Desk.');
+      }
+      await tx.auditLog.create({
+        data: {
+          chatId: normalizedChatId,
+          actorUserId: this.resolveActor(actorUserId),
+          action: 'SAFETY_DESK_ACK_NIGHT_MODE_RECONCILE',
+          payload: this.toJsonInput({
+            operatorReason: expected.reason,
+            generation: expected.generation.toString(),
+            manualBlockedGeneration: expected.manualBlockedGeneration.toString(),
+            manualBlockedAt: expected.manualBlockedAt.toISOString(),
+            acknowledgedAt: acknowledgedAt.toISOString(),
+            category: expected.category,
+            fingerprint: expected.fingerprint,
+          }),
+        },
+      });
+    });
+    return this.getNightModeTransitionRuntime();
+  }
+
+  async retryNightModeTransitionBlock(chatId: string, actorUserId: string | null, input: unknown) {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      throw new BadRequestException('Укажите chatId night mode запроса.');
+    }
+    const expected = this.parseNightModeTransitionManualActionInput(input);
+    if (expected.category !== 'no_fresh_access') {
+      throw new BadRequestException(
+        'Автоповтор разрешён только после восстановления свежего подтверждённого доступа.',
+      );
+    }
+    const requestedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const current = await tx.nightModeTransitionReconcileRequest.findUnique({
+        where: { chatId: normalizedChatId },
+      });
+      this.assertNightModeTransitionManualActionMatches(current, expected);
+      const retried = await tx.nightModeTransitionReconcileRequest.updateMany({
+        where: this.buildNightModeTransitionManualActionWhere(normalizedChatId, expected),
+        data: {
+          generation: { increment: 1n },
+          firstRequestedAt: requestedAt,
+          requestedAt,
+          attemptCount: 0,
+          lastAttemptAt: null,
+          lastErrorCode: null,
+          lastErrorAt: null,
+          lastError: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          manualBlockedAt: null,
+          manualBlockedReason: null,
+          manualBlockedCategory: null,
+          manualBlockedJobId: null,
+          manualBlockedLedgerJobId: null,
+          manualBlockedSessionKey: null,
+          manualBlockedFingerprint: null,
+          manualBlockedGeneration: null,
+          manualAcknowledgedAt: null,
+        },
+      });
+      if (retried.count !== 1) {
+        throw new ConflictException('Состояние night mode изменилось. Обновите Safety Desk.');
+      }
+      await tx.auditLog.create({
+        data: {
+          chatId: normalizedChatId,
+          actorUserId: this.resolveActor(actorUserId),
+          action: 'SAFETY_DESK_RETRY_NIGHT_MODE_RECONCILE',
+          payload: this.toJsonInput({
+            operatorReason: expected.reason,
+            previousGeneration: expected.generation.toString(),
+            nextGeneration: (expected.generation + 1n).toString(),
+            manualBlockedGeneration: expected.manualBlockedGeneration.toString(),
+            manualBlockedAt: expected.manualBlockedAt.toISOString(),
+            category: expected.category,
+            fingerprint: expected.fingerprint,
+          }),
+        },
+      });
+    });
+    return this.getNightModeTransitionRuntime();
+  }
+
   async clearAmbiguousSendFence(
     itemId: string,
     actorUserId: string | null,
@@ -795,7 +1182,12 @@ export class SafetyDeskService {
         attemptCount: true,
         reasons: {
           where: {
-            ruleCode: { in: [...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES] },
+            ruleCode: {
+              in: [
+                ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
+                NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
+              ],
+            },
           },
           select: { ruleCode: true },
         },
@@ -1507,6 +1899,130 @@ export class SafetyDeskService {
       }
     }
     return counts;
+  }
+
+  private isNightModeTransitionManualCategory(
+    value: string,
+  ): value is NightModeTransitionManualCategory {
+    return (NIGHT_MODE_TRANSITION_MANUAL_CATEGORIES as readonly string[]).includes(value);
+  }
+
+  private parseNightModeTransitionManualActionInput(
+    input: unknown,
+  ): NightModeTransitionManualActionInput {
+    const record =
+      input !== null && typeof input === 'object' && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : null;
+    const allowedKeys = new Set([
+      'expectedGeneration',
+      'expectedManualBlockedGeneration',
+      'expectedManualBlockedAt',
+      'expectedCategory',
+      'expectedFingerprint',
+      'reason',
+    ]);
+    if (!record || Object.keys(record).some((key) => !allowedKeys.has(key))) {
+      throw new BadRequestException('Некорректный CAS-запрос night mode.');
+    }
+    const generation = this.parsePositiveBigInt(record.expectedGeneration);
+    const manualBlockedGeneration = this.parsePositiveBigInt(
+      record.expectedManualBlockedGeneration,
+    );
+    const manualBlockedAt = this.parseExactIsoDate(record.expectedManualBlockedAt);
+    const category =
+      typeof record.expectedCategory === 'string' &&
+      this.isNightModeTransitionManualCategory(record.expectedCategory)
+        ? record.expectedCategory
+        : null;
+    const fingerprint =
+      typeof record.expectedFingerprint === 'string' &&
+      /^sha256:[a-f0-9]{64}$/u.test(record.expectedFingerprint)
+        ? record.expectedFingerprint
+        : null;
+    const reason =
+      typeof record.reason === 'string'
+        ? this.sanitizeSafetyDeskLastError(record.reason.slice(0, 500))
+        : null;
+    if (
+      generation === null ||
+      manualBlockedGeneration === null ||
+      !manualBlockedAt ||
+      !category ||
+      !fingerprint ||
+      !reason
+    ) {
+      throw new BadRequestException('Запрос night mode устарел или заполнен не полностью.');
+    }
+    return {
+      generation,
+      manualBlockedGeneration,
+      manualBlockedAt,
+      category,
+      fingerprint,
+      reason,
+    };
+  }
+
+  private parsePositiveBigInt(value: unknown): bigint | null {
+    if (typeof value !== 'string' || !/^[1-9][0-9]{0,19}$/u.test(value)) {
+      return null;
+    }
+    try {
+      return BigInt(value);
+    } catch {
+      return null;
+    }
+  }
+
+  private parseExactIsoDate(value: unknown): Date | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value ? parsed : null;
+  }
+
+  private assertNightModeTransitionManualActionMatches(
+    current: {
+      generation: bigint;
+      manualBlockedAt: Date | null;
+      manualBlockedCategory: string | null;
+      manualBlockedFingerprint: string | null;
+      manualBlockedGeneration: bigint | null;
+      manualAcknowledgedAt: Date | null;
+    } | null,
+    expected: NightModeTransitionManualActionInput,
+  ): void {
+    if (!current) {
+      throw new NotFoundException('Night mode reconcile request не найден.');
+    }
+    if (
+      current.generation !== current.manualBlockedGeneration ||
+      current.manualAcknowledgedAt !== null ||
+      current.generation !== expected.generation ||
+      current.manualBlockedGeneration !== expected.manualBlockedGeneration ||
+      current.manualBlockedAt?.getTime() !== expected.manualBlockedAt.getTime() ||
+      current.manualBlockedCategory !== expected.category ||
+      current.manualBlockedFingerprint !== expected.fingerprint
+    ) {
+      throw new ConflictException('Состояние night mode изменилось. Обновите Safety Desk.');
+    }
+  }
+
+  private buildNightModeTransitionManualActionWhere(
+    chatId: string,
+    expected: NightModeTransitionManualActionInput,
+  ): Prisma.NightModeTransitionReconcileRequestWhereInput {
+    return {
+      chatId,
+      generation: expected.generation,
+      manualBlockedGeneration: expected.manualBlockedGeneration,
+      manualBlockedAt: expected.manualBlockedAt,
+      manualBlockedCategory: expected.category,
+      manualBlockedFingerprint: expected.fingerprint,
+      manualAcknowledgedAt: null,
+    };
   }
 
   private sanitizeSafetyDeskLastError(value: string | null): string | null {

@@ -98,13 +98,100 @@ export type PendingGlobalSpammerExemptionLookupBatch = {
   scheduled: boolean;
 };
 
+export type NightModeCloseNoticeEventRecovery =
+  | {
+      version: 2;
+      pending: true;
+      timezone: string;
+      startMinutes: number;
+      endMinutes: number;
+    }
+  | {
+      version: 'unsupported';
+      pending: true;
+    };
+
 export type NightModeTransitionState = {
   status: 'open' | 'closed';
   sessionKey: string;
   closeNoticeMessageId?: string | null;
   closeNoticeBotId?: string | null;
+  closeNoticeEventRecovery?: NightModeCloseNoticeEventRecovery;
   updatedAt?: string;
 };
+
+// FLAG: Runtime delivery and durable schedule repair must share this key and parser.
+export function buildNightModeTransitionStateKey(chatId: string): string {
+  return `night-mode-transition-state:v1:${chatId}`;
+}
+
+export function parseNightModeTransitionState(value: unknown): NightModeTransitionState | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const status = record.status;
+  const sessionKey = record.sessionKey;
+  if ((status !== 'open' && status !== 'closed') || typeof sessionKey !== 'string') {
+    return null;
+  }
+
+  const closeNoticeMessageId =
+    typeof record.closeNoticeMessageId === 'string' && record.closeNoticeMessageId.trim()
+      ? record.closeNoticeMessageId.trim()
+      : null;
+  const closeNoticeBotId =
+    typeof record.closeNoticeBotId === 'string' && record.closeNoticeBotId.trim()
+      ? record.closeNoticeBotId.trim()
+      : null;
+  const recoveryRecord =
+    record.closeNoticeEventRecovery &&
+    typeof record.closeNoticeEventRecovery === 'object' &&
+    !Array.isArray(record.closeNoticeEventRecovery)
+      ? (record.closeNoticeEventRecovery as Record<string, unknown>)
+      : null;
+  const recoveryTimezone =
+    typeof recoveryRecord?.timezone === 'string' && recoveryRecord.timezone.trim()
+      ? recoveryRecord.timezone.trim()
+      : null;
+  const recoveryStartMinutes = recoveryRecord?.startMinutes;
+  const recoveryEndMinutes = recoveryRecord?.endMinutes;
+  const closeNoticeEventRecovery: NightModeCloseNoticeEventRecovery | null =
+    recoveryRecord?.pending === true
+      ? recoveryRecord.version === 2 &&
+        recoveryTimezone !== null &&
+        typeof recoveryStartMinutes === 'number' &&
+        Number.isInteger(recoveryStartMinutes) &&
+        recoveryStartMinutes >= 0 &&
+        recoveryStartMinutes < 24 * 60 &&
+        typeof recoveryEndMinutes === 'number' &&
+        Number.isInteger(recoveryEndMinutes) &&
+        recoveryEndMinutes >= 0 &&
+        recoveryEndMinutes < 24 * 60
+        ? {
+            version: 2,
+            pending: true,
+            timezone: recoveryTimezone,
+            startMinutes: recoveryStartMinutes,
+            endMinutes: recoveryEndMinutes,
+          }
+        : { version: 'unsupported', pending: true }
+      : null;
+  const updatedAt =
+    typeof record.updatedAt === 'string' && record.updatedAt.trim()
+      ? record.updatedAt.trim()
+      : undefined;
+
+  return {
+    status,
+    sessionKey,
+    closeNoticeMessageId,
+    closeNoticeBotId,
+    ...(closeNoticeEventRecovery ? { closeNoticeEventRecovery } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
+  };
+}
 
 export type WebhookHotPathProfile = {
   startedAtMs: number;

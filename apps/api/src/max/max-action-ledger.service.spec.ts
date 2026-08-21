@@ -3,8 +3,14 @@ import {
   markMaxSendDispatchLedgerFinalized,
   MAX_SEND_LEDGER_PREPARATION_ERROR_CODES,
   MaxActionLedgerService,
+  prepareDefinitivelyRejectedNightModeOpenRetry,
 } from './max-action-ledger.service';
-import { MaxActionLedgerStatus } from '../prisma/prisma-client';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  MaxActionLedgerStatus,
+  Prisma,
+} from '../prisma/prisma-client';
 import type { MaxActionJob } from './max-client.service';
 import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from './max-action-pre-dispatch-guard';
 import {
@@ -46,6 +52,213 @@ function createService(row: unknown = null) {
 describe('MaxActionLedgerService', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('prepares only an exact definitively rejected night-mode open send for retry', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-21T10:00:00.000Z'));
+    const tx = {
+      chatBotMembership: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'membership-1' }),
+      },
+      maxActionLedgerEntry: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+        operation(tx),
+      ),
+    };
+
+    await expect(
+      prepareDefinitivelyRejectedNightModeOpenRetry(prisma as never, {
+        chatId: ' chat-1 ',
+        sessionKey: ' session-1 ',
+        actionableBotIds: [' bot-1 ', 'bot-1'],
+      }),
+    ).resolves.toEqual({
+      kind: 'ready',
+      jobId: 'night-mode:open:chat-1:session:session-1',
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(tx.chatBotMembership.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: {
+          in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
+        },
+        botAccessCheckedAt: { not: null },
+        botAccessExpiresAt: { gt: new Date('2026-08-21T10:00:00.000Z') },
+        botId: { in: ['bot-1'] },
+      },
+      select: { id: true },
+    });
+    expect(tx.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'night-mode:open:chat-1:session:session-1',
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        sourceTag: 'night_mode_transition',
+        ambiguous: false,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+        AND: [
+          {
+            OR: [
+              { lastStatusCode: { in: [403, 404] } },
+              {
+                lastStatusCode: null,
+                lastErrorCode: {
+                  in: ['access.denied', 'chat.denied', 'chat.not.found'],
+                },
+              },
+            ],
+          },
+          {
+            OR: [
+              {
+                status: MaxActionLedgerStatus.FAILED_TERMINAL,
+                terminal: true,
+                attemptCount: { gte: 1 },
+                firstAttemptAt: { not: null },
+                lastAttemptAt: { not: null },
+                completedAt: { not: null },
+              },
+              {
+                status: MaxActionLedgerStatus.ENQUEUED,
+                terminal: false,
+                attemptCount: 0,
+                enqueuedAt: { not: null },
+                firstAttemptAt: null,
+                lastAttemptAt: null,
+                completedAt: null,
+                lastError: 'Night mode open retry prepared after a definitive access rejection',
+              },
+            ],
+          },
+        ],
+      },
+      data: {
+        status: MaxActionLedgerStatus.ENQUEUED,
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 0,
+        enqueuedAt: new Date('2026-08-21T10:00:00.000Z'),
+        firstAttemptAt: null,
+        lastAttemptAt: null,
+        completedAt: null,
+        lastError: 'Night mode open retry prepared after a definitive access rejection',
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      },
+    });
+  });
+
+  it('keeps unknown-code HTTP 403/404 and status-less canonical access codes recoverable', async () => {
+    const tx = {
+      chatBotMembership: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'membership-1' }),
+      },
+      maxActionLedgerEntry: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+        operation(tx),
+      ),
+    };
+
+    await prepareDefinitivelyRejectedNightModeOpenRetry(prisma as never, {
+      chatId: 'chat-1',
+      sessionKey: 'session-1',
+      actionableBotIds: ['bot-1'],
+    });
+
+    const rejectionFilter = tx.maxActionLedgerEntry.updateMany.mock.calls[0]?.[0]?.where?.AND?.[0];
+    expect(rejectionFilter).toEqual({
+      OR: [
+        { lastStatusCode: { in: [403, 404] } },
+        {
+          lastStatusCode: null,
+          lastErrorCode: {
+            in: ['access.denied', 'chat.denied', 'chat.not.found'],
+          },
+        },
+      ],
+    });
+    expect(rejectionFilter.OR[0]).not.toHaveProperty('lastErrorCode');
+    expect(rejectionFilter.OR).not.toContainEqual(
+      expect.objectContaining({ lastStatusCode: { in: expect.arrayContaining([408]) } }),
+    );
+  });
+
+  it.each([
+    ['fresh access is absent', null, { count: 1 }, 'no_fresh_access'],
+    [
+      'the ledger CAS loses a race',
+      { id: 'membership-1' },
+      { count: 0 },
+      'unsafe_prior_provenance',
+    ],
+  ])('fails closed when %s', async (_label, membership, updateResult, category) => {
+    const tx = {
+      chatBotMembership: {
+        findFirst: jest.fn().mockResolvedValue(membership),
+      },
+      maxActionLedgerEntry: {
+        updateMany: jest.fn().mockResolvedValue(updateResult),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+        operation(tx),
+      ),
+    };
+
+    await expect(
+      prepareDefinitivelyRejectedNightModeOpenRetry(prisma as never, {
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        actionableBotIds: ['bot-1'],
+      }),
+    ).resolves.toEqual({
+      kind: 'blocked',
+      jobId: 'night-mode:open:chat-1:session:session-1',
+      category,
+    });
+
+    expect(tx.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(membership ? 1 : 0);
+  });
+
+  it.each([
+    ['an empty registry', []],
+    ['only blank bot ids', [' ', '']],
+    ['an unavailable registry', undefined],
+    ['a null registry snapshot', null],
+  ])('fails closed with %s before opening a transaction', async (_label, actionableBotIds) => {
+    const prisma = { $transaction: jest.fn() };
+
+    await expect(
+      prepareDefinitivelyRejectedNightModeOpenRetry(prisma as never, {
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        actionableBotIds,
+      }),
+    ).resolves.toEqual({
+      kind: 'blocked',
+      jobId: 'night-mode:open:chat-1:session:session-1',
+      category: 'no_fresh_access',
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('recognizes only a succeeded delete as confirmed exact message cleanup', async () => {
@@ -1237,6 +1450,116 @@ describe('MaxActionLedgerService', () => {
     await expect(service.getCompletedSendDispatchResult(createJob())).resolves.toEqual({
       remoteMessageId: 'mid-survivor-1',
       dispatchBotId: 'bot-2',
+    });
+  });
+
+  it('proves a completed close notice only from its exact raw night-mode ledger row', async () => {
+    const completedAt = new Date('2026-08-21T09:01:00.000Z');
+    const { service, prisma } = createService({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      sourceTag: 'night_mode_transition',
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      completedAt,
+      dispatchBotId: 'bot-survivor',
+      remoteMessageId: 'mid-night-close-1',
+    });
+
+    await expect(
+      service.getExactCompletedNightModeCloseNoticeDispatch({
+        chatId: ' chat-1 ',
+        sessionKey: ' session-1 ',
+        messageId: ' mid-night-close-1 ',
+        dispatchBotId: ' bot-survivor ',
+      }),
+    ).resolves.toEqual({
+      jobId: 'night-mode:close:chat-1:session:session-1',
+      remoteMessageId: 'mid-night-close-1',
+      dispatchBotId: 'bot-survivor',
+    });
+    expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith({
+      where: { jobId: 'night-mode:close:chat-1:session:session-1' },
+      select: {
+        actionType: true,
+        chatId: true,
+        sourceTag: true,
+        status: true,
+        ambiguous: true,
+        terminal: true,
+        completedAt: true,
+        dispatchBotId: true,
+        remoteMessageId: true,
+      },
+    });
+  });
+
+  it.each([
+    ['foreign action', { actionType: 'DELETE_MESSAGE' }],
+    ['foreign chat', { chatId: 'chat-2' }],
+    ['foreign source', { sourceTag: 'managed_broadcast' }],
+    ['non-success status', { status: MaxActionLedgerStatus.IN_PROGRESS }],
+    ['ambiguous outcome', { ambiguous: true }],
+    ['non-terminal outcome', { terminal: false }],
+    ['missing completion time', { completedAt: null }],
+    ['foreign message', { remoteMessageId: 'mid-other' }],
+    ['foreign dispatch bot', { dispatchBotId: 'bot-other' }],
+  ])('rejects close-event recovery proof from a %s ledger row', async (_label, override) => {
+    const { service } = createService({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      sourceTag: 'night_mode_transition',
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      completedAt: new Date('2026-08-21T09:01:00.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: 'mid-night-close-1',
+      ...override,
+    });
+
+    await expect(
+      service.getExactCompletedNightModeCloseNoticeDispatch({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+        messageId: 'mid-night-close-1',
+        dispatchBotId: 'bot-1',
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('distinguishes a missing close ledger row from an unsafe persisted row', async () => {
+    const missing = createService(null).service;
+    const unsafe = createService({
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      sourceTag: 'night_mode_transition',
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      completedAt: new Date('2026-08-21T09:01:00.000Z'),
+      dispatchBotId: null,
+      remoteMessageId: 'mid-night-close-1',
+    }).service;
+
+    await expect(
+      missing.inspectCompletedNightModeCloseNoticeDispatch({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+      }),
+    ).resolves.toEqual({
+      kind: 'missing',
+      jobId: 'night-mode:close:chat-1:session:session-1',
+    });
+    await expect(
+      unsafe.inspectCompletedNightModeCloseNoticeDispatch({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+      }),
+    ).resolves.toEqual({
+      kind: 'mismatch',
+      jobId: 'night-mode:close:chat-1:session:session-1',
     });
   });
 

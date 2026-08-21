@@ -1,3 +1,6 @@
+import { execFile } from 'node:child_process';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import { extractSqlText } from '../admin/admin-service-test-support';
@@ -14,6 +17,8 @@ import {
   withChannelSuggestionPublicationContextDigest,
 } from '../admin/admin-channel-suggestion-publication-protocol';
 import { SystemDashboardService } from './system-dashboard.service';
+
+const execFileAsync = promisify(execFile);
 
 function createConfigMock(values: Partial<Record<string, number>> = {}): ConfigService {
   return {
@@ -2752,5 +2757,202 @@ describe('SystemDashboardService', () => {
     });
 
     expect(alert).toBeNull();
+  });
+
+  it('bounds manual, due, and stale-lease reconcile risks independently', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      {
+        manualBlocked: 4,
+        unsafePriorDispatch: 2,
+        unsafePriorProvenance: 1,
+        noFreshAccess: 1,
+        failedJobUnclassified: 0,
+        agedDue: 3,
+        staleLeases: 1,
+        oldestManualBlockedAgeSec: 900,
+        oldestDueAgeSec: 700,
+        oldestStaleLeaseAgeSec: 120,
+        manualCapped: false,
+        dueCapped: true,
+        staleLeaseCapped: false,
+      },
+    ]);
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { $queryRaw: queryRaw } as never,
+    );
+    const subject = service as unknown as {
+      loadNightModeReconcileRiskSnapshot(): Promise<Record<string, unknown> | null>;
+      buildNightModeReconcileRiskAlert(snapshot: Record<string, unknown> | null): {
+        code: string;
+        level: string;
+        detail: string;
+      } | null;
+      resolveStatus(input: Record<string, unknown>): string;
+    };
+
+    const snapshot = await subject.loadNightModeReconcileRiskSnapshot();
+    const alert = subject.buildNightModeReconcileRiskAlert(snapshot);
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        manualBlocked: 4,
+        unsafePriorDispatch: 2,
+        agedDue: 3,
+        staleLeases: 1,
+        manualCapped: false,
+        dueCapped: true,
+        staleLeaseCapped: false,
+      }),
+    );
+    expect(alert).toEqual(
+      expect.objectContaining({
+        code: 'night-mode-transition-reconcile',
+        level: 'warning',
+        detail: expect.stringContaining('unsafe dispatch 2'),
+      }),
+    );
+    expect(alert?.detail).toContain('manual blocked 4');
+    expect(alert?.detail).not.toContain('manual blocked >=4');
+    expect(alert?.detail).toContain('aged due >=3');
+    expect(
+      subject.resolveStatus({
+        mode: 'normal',
+        queueLagSec: 0,
+        failedCount: 0,
+        criticalRate: 0,
+        errorRate: 0,
+        webhookSubscriptionStatus: 'healthy',
+        nightModeReconcileWarning: true,
+      }),
+    ).toBe('warning');
+    const sql = (queryRaw.mock.calls[0]?.[0] as readonly string[]).join('?');
+    expect(sql).toMatch(
+      /WITH manual_candidates AS \([\s\S]+?LIMIT \?\s*\),\s*aged_due_candidates AS \(/u,
+    );
+    expect(sql).toMatch(
+      /aged_due_candidates AS \([\s\S]+?LIMIT \?\s*\),\s*stale_lease_candidates AS \(/u,
+    );
+    expect(sql).toMatch(
+      /stale_lease_candidates AS \([\s\S]+?LIMIT \?\s*\),\s*manual_summary AS \(/u,
+    );
+    expect(sql).toMatch(
+      /manual_blocked_at" IS NOT NULL\s+AND request\."generation" = request\."manual_blocked_generation"\s+AND request\."manual_acknowledged_at" IS NULL/u,
+    );
+    expect(
+      sql.match(/request\."generation" > request\."manual_blocked_generation"/gu),
+    ).toHaveLength(2);
+    expect(queryRaw.mock.calls[0]?.filter((value: unknown) => value === 1_001)).toHaveLength(3);
+    expect(queryRaw.mock.calls[0]?.filter((value: unknown) => value instanceof Date)).toHaveLength(
+      4,
+    );
+
+    const call = queryRaw.mock.calls[0] as unknown as [readonly string[], ...unknown[]];
+    const [strings, ...values] = call;
+    const postgresSql = strings
+      .map((part, index) => `${part}${index < values.length ? `$${index + 1}` : ''}`)
+      .join('');
+    const payload = Buffer.from(
+      JSON.stringify({
+        sql: postgresSql,
+        values: values.map((value) => (value instanceof Date ? value.toISOString() : value)),
+      }),
+    ).toString('base64');
+    const scriptPath = join(__dirname, 'system-dashboard-night-mode-reconcile.pglite.mjs');
+    const { stdout, stderr } = await execFileAsync(process.execPath, [scriptPath, payload], {
+      timeout: 20_000,
+      maxBuffer: 1_000_000,
+    });
+
+    expect(stderr).toBe('');
+    expect(JSON.parse(stdout)).toEqual({ ok: true });
+  }, 30_000);
+
+  it('does not apply the manual reconcile cap marker to an uncapped due snapshot', () => {
+    const service = new SystemDashboardService({} as never, {} as never, createConfigMock());
+    const alert = (
+      service as unknown as {
+        buildNightModeReconcileRiskAlert(snapshot: Record<string, unknown>): {
+          detail: string;
+        } | null;
+      }
+    ).buildNightModeReconcileRiskAlert({
+      checkedAt: '2026-08-21T00:00:00.000Z',
+      manualBlocked: 1_000,
+      unsafePriorDispatch: 1_000,
+      unsafePriorProvenance: 0,
+      noFreshAccess: 0,
+      failedJobUnclassified: 0,
+      agedDue: 1,
+      staleLeases: 0,
+      oldestManualBlockedAgeSec: 900,
+      oldestDueAgeSec: 120,
+      oldestStaleLeaseAgeSec: 0,
+      manualCapped: true,
+      dueCapped: false,
+      staleLeaseCapped: false,
+    });
+
+    expect(alert?.detail).toContain('manual blocked >=1000');
+    expect(alert?.detail).toContain('aged due 1');
+    expect(alert?.detail).not.toContain('aged due >=1');
+  });
+
+  it('reports a stale-lease cap without marking the broader due sample as capped', () => {
+    const service = new SystemDashboardService({} as never, {} as never, createConfigMock());
+    const alert = (
+      service as unknown as {
+        buildNightModeReconcileRiskAlert(snapshot: Record<string, unknown>): {
+          detail: string;
+        } | null;
+      }
+    ).buildNightModeReconcileRiskAlert({
+      checkedAt: '2026-08-21T00:00:00.000Z',
+      manualBlocked: 0,
+      unsafePriorDispatch: 0,
+      unsafePriorProvenance: 0,
+      noFreshAccess: 0,
+      failedJobUnclassified: 0,
+      agedDue: 1_000,
+      staleLeases: 1_000,
+      oldestManualBlockedAgeSec: 0,
+      oldestDueAgeSec: 900,
+      oldestStaleLeaseAgeSec: 700,
+      manualCapped: false,
+      dueCapped: false,
+      staleLeaseCapped: true,
+    });
+
+    expect(alert?.detail).toContain('aged due 1000');
+    expect(alert?.detail).not.toContain('aged due >=1000');
+    expect(alert?.detail).toContain('stale leases >=1000');
+  });
+
+  it('keeps the dashboard fail-soft when night-mode reconcile diagnostics fail', async () => {
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { $queryRaw: jest.fn().mockRejectedValue(new Error('relation unavailable')) } as never,
+    );
+    const subject = service as unknown as {
+      loadNightModeReconcileRiskSnapshot(): Promise<unknown>;
+      buildNightModeReconcileRiskAlert(snapshot: unknown): unknown;
+    };
+
+    await expect(subject.loadNightModeReconcileRiskSnapshot()).resolves.toBeNull();
+    expect(subject.buildNightModeReconcileRiskAlert(null)).toBeNull();
   });
 });

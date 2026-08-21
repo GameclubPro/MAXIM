@@ -24,6 +24,13 @@ export type NightModeTransitionOccurrence = {
   sessionKey: string;
 };
 
+export type ParsedNightModeTransitionSession = {
+  timezone: string;
+  startMinutes: number;
+  endMinutes: number;
+  sessionDateKey: string;
+};
+
 export const NIGHT_MODE_OPEN_CATCH_UP_MAX_AGE_MS = 2 * 60 * 60 * 1_000;
 
 type ZonedDateParts = {
@@ -310,6 +317,50 @@ export function buildNightModeTransitionSessionKey(params: {
     formatMinutesAsTime(params.endMinutes),
     params.sessionDateKey,
   ].join(':');
+}
+
+export function parseNightModeTransitionSessionKey(
+  value: string,
+): ParsedNightModeTransitionSession | null {
+  const match = /^v1:([^:]+):(\d{2}):(\d{2}):(\d{2}):(\d{2}):(\d{4}-\d{2}-\d{2})$/u.exec(
+    value.trim(),
+  );
+  if (!match) {
+    return null;
+  }
+  const [, timezone, startHourRaw, startMinuteRaw, endHourRaw, endMinuteRaw, sessionDateKey] =
+    match;
+  const startHour = Number(startHourRaw);
+  const startMinute = Number(startMinuteRaw);
+  const endHour = Number(endHourRaw);
+  const endMinute = Number(endMinuteRaw);
+  const parsedDate = new Date(`${sessionDateKey}T00:00:00.000Z`);
+  if (
+    !timezone ||
+    normalizeNightModeTimezone(timezone) !== timezone ||
+    startHour > 23 ||
+    startMinute > 59 ||
+    endHour > 23 ||
+    endMinute > 59 ||
+    !Number.isFinite(parsedDate.getTime()) ||
+    parsedDate.toISOString().slice(0, 10) !== sessionDateKey
+  ) {
+    return null;
+  }
+  const parsed = {
+    timezone,
+    startMinutes: startHour * 60 + startMinute,
+    endMinutes: endHour * 60 + endMinute,
+    sessionDateKey,
+  };
+  return buildNightModeTransitionSessionKey(parsed) === value.trim() ? parsed : null;
+}
+
+export function resolveNightModeTransitionSessionCloseAt(sessionKey: string): Date | null {
+  const parsed = parseNightModeTransitionSessionKey(sessionKey);
+  return parsed
+    ? zonedDateTimeToUtc(parsed.sessionDateKey, parsed.startMinutes, parsed.timezone)
+    : null;
 }
 
 function resolveNightModeTransitionSessionDateKey(params: {
