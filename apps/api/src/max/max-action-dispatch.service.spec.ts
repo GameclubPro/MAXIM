@@ -6,6 +6,7 @@ import {
   MaxActionNoExecutableRouteError,
   MaxActionRouteQuarantinedError,
 } from './max-action-dispatch.service';
+import { markMaxPreDispatchGuardRejected } from './max-action-pre-dispatch-guard';
 import { MaxApiCircuitOpenError, type MaxActionJob } from './max-client.service';
 import type { RecordManagedEntityAccessLostFromErrorResult } from './managed-entity-access-loss.service';
 import {
@@ -309,6 +310,217 @@ describe('MaxActionDispatchService', () => {
     expect(actionLedgerService.recordStarted).not.toHaveBeenCalled();
     expect(actionLedgerService.getCompletedSendDispatch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { label: 'another bot', dispatchBotId: 'foreign-bot' },
+    { label: 'no persisted bot', dispatchBotId: null },
+  ])('refuses required-bot recovery bound to $label', async ({ dispatchBotId }) => {
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+        remoteMessageId: 'mid-required-recovered',
+        dispatchBotId,
+      }),
+    };
+    const service = new MaxActionDispatchService(
+      { executeActionJob: jest.fn() } as never,
+      undefined,
+      actionLedgerService as never,
+    );
+
+    await expect(
+      service.recoverCompletedSend({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'channel-1',
+        botId: 'media-bot',
+        routing: { purpose: 'send_message', requiredBotId: 'media-bot' },
+        text: 'video',
+        attempt: 2,
+        idempotencyKey: 'channel-suggestion:publish:v1:suggestion-required-recovery',
+        createdAt: '2026-08-21T00:00:00.000Z',
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it('recovers a completed send only from the exact required persisted bot', async () => {
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue({
+        remoteMessageId: 'mid-required-recovered',
+        dispatchBotId: 'media-bot',
+      }),
+    };
+    const service = new MaxActionDispatchService(
+      { executeActionJob: jest.fn() } as never,
+      undefined,
+      actionLedgerService as never,
+    );
+
+    await expect(
+      service.recoverCompletedSend({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'channel-1',
+        botId: 'foreign-fallback-must-not-be-used',
+        routing: { purpose: 'send_message', requiredBotId: 'media-bot' },
+        text: 'video',
+        attempt: 2,
+        idempotencyKey: 'channel-suggestion:publish:v1:suggestion-required-recovery',
+        createdAt: '2026-08-21T00:00:00.000Z',
+      }),
+    ).resolves.toEqual({
+      messageId: 'mid-required-recovered',
+      url: null,
+      botId: 'media-bot',
+    });
+  });
+
+  it('preserves terminal identity when completion appears before the client early read', async () => {
+    const persistedLedgerContext = Object.freeze({
+      suggestionId: 'suggestion-late-completion',
+      contextDigest: 'persisted-context-digest',
+    });
+    const competingLedgerContext = {
+      suggestionId: 'suggestion-late-completion',
+      contextDigest: 'different-prepared-context-digest',
+    };
+    let completed: {
+      remoteMessageId: string;
+      dispatchBotId: string | null;
+      metadata: unknown;
+    } | null = null;
+    let signalClientReadEntered: (() => void) | undefined;
+    const clientReadEntered = new Promise<void>((resolve) => {
+      signalClientReadEntered = resolve;
+    });
+    let releaseClientRead: (() => void) | undefined;
+    const clientReadBarrier = new Promise<void>((resolve) => {
+      releaseClientRead = resolve;
+    });
+    const httpRequest = jest.fn();
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockImplementation(async () =>
+        completed
+          ? {
+              remoteMessageId: completed.remoteMessageId,
+              dispatchBotId: completed.dispatchBotId,
+            }
+          : null,
+      ),
+      assertCanExecute: jest.fn().mockResolvedValue(undefined),
+      recordStarted: jest.fn().mockResolvedValue(undefined),
+      recordPrepared: jest.fn().mockResolvedValue(undefined),
+      recordSucceeded: jest.fn().mockImplementation(async (attemptJob: MaxActionJob) => {
+        if (completed) {
+          completed.metadata = attemptJob.ledgerContext;
+        }
+      }),
+      recordFailed: jest.fn(),
+    };
+    const maxClient = {
+      executeActionJob: jest.fn().mockImplementation(async (attemptJob: MaxActionJob) => {
+        signalClientReadEntered?.();
+        await clientReadBarrier;
+        const recovered = await actionLedgerService.getCompletedSendDispatchResult(attemptJob);
+        if (!recovered) {
+          await httpRequest();
+          throw new Error('expected the completion barrier to publish a ledger result');
+        }
+        return {
+          messageId: recovered.remoteMessageId,
+          url: null,
+          recoveredSendDispatch: {
+            dispatchBotId: recovered.dispatchBotId,
+          },
+        };
+      }),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      actionLedgerService as never,
+    );
+    const job = {
+      actionType: 'SEND_MESSAGE' as const,
+      chatId: 'channel-1',
+      botId: 'required-bot',
+      routing: { purpose: 'send_message' as const, requiredBotId: 'required-bot' },
+      text: 'original publication',
+      attempt: 2,
+      idempotencyKey: 'channel-suggestion:publish:v1:suggestion-late-completion',
+      createdAt: '2026-08-21T10:00:00.000Z',
+    };
+
+    const execution = service.execute(job, {
+      prepareAttempt: jest.fn().mockResolvedValue({
+        text: 'competing prepared publication',
+        ledgerContext: competingLedgerContext,
+      }),
+    });
+    await clientReadEntered;
+    completed = {
+      remoteMessageId: 'mid-late-completion',
+      dispatchBotId: 'required-bot',
+      metadata: persistedLedgerContext,
+    };
+    releaseClientRead?.();
+
+    await expect(execution).resolves.toEqual({
+      messageId: 'mid-late-completion',
+      url: null,
+      botId: 'required-bot',
+    });
+    expect(actionLedgerService.getCompletedSendDispatchResult).toHaveBeenCalledTimes(2);
+    expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+    expect(completed.metadata).toBe(persistedLedgerContext);
+    expect(completed.metadata).not.toEqual(competingLedgerContext);
+    expect(httpRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'a foreign persisted bot', dispatchBotId: 'foreign-bot' },
+    { label: 'no persisted bot', dispatchBotId: null },
+  ])(
+    'does not mutate terminal metadata for late recovery from $label',
+    async ({ dispatchBotId }) => {
+      const terminalMetadata = { contextDigest: 'immutable-terminal-context' };
+      const actionLedgerService = {
+        getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+        assertCanExecute: jest.fn().mockResolvedValue(undefined),
+        recordStarted: jest.fn().mockResolvedValue(undefined),
+        recordSucceeded: jest.fn().mockImplementation(async () => {
+          terminalMetadata.contextDigest = 'mutated';
+        }),
+        recordFailed: jest.fn(),
+      };
+      const maxClient = {
+        executeActionJob: jest
+          .fn()
+          .mockRejectedValue(
+            new UnrecoverableError(
+              `Completed MAX SEND_MESSAGE late-invalid is not bound to required bot required-bot (${dispatchBotId ?? 'null'})`,
+            ),
+          ),
+      };
+      const service = new MaxActionDispatchService(
+        maxClient as never,
+        undefined,
+        actionLedgerService as never,
+      );
+
+      await expect(
+        service.execute({
+          actionType: 'SEND_MESSAGE',
+          chatId: 'channel-1',
+          botId: 'required-bot',
+          routing: { purpose: 'send_message', requiredBotId: 'required-bot' },
+          text: 'publication',
+          attempt: 2,
+          idempotencyKey: 'late-invalid',
+          createdAt: '2026-08-21T10:00:00.000Z',
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(actionLedgerService.recordSucceeded).not.toHaveBeenCalled();
+      expect(terminalMetadata).toEqual({ contextDigest: 'immutable-terminal-context' });
+    },
+  );
 
   it('records queued send access loss and stops BullMQ retries', async () => {
     const dispatchAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
@@ -1549,6 +1761,132 @@ describe('MaxActionDispatchService', () => {
     );
   });
 
+  it('keeps a required bot constraint when refreshing a routed publication', async () => {
+    const maxClient = {
+      executeActionJob: jest.fn().mockResolvedValue({ messageId: 'mid-required-1', url: null }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'bot-2',
+        botId: 'bot-2',
+        candidateBotIds: ['bot-2', 'media-bot'],
+        reason: 'primary_confirmed',
+        routingVersion: 12,
+      }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'channel-1',
+        botId: 'media-bot',
+        candidateBotIds: ['media-bot'],
+        routing: {
+          purpose: 'send_message',
+          routingVersion: 11,
+          requiredBotId: 'media-bot',
+        },
+        text: 'video',
+        attempt: 1,
+        idempotencyKey: 'channel-suggestion:publish:v1:suggestion-required-1',
+        createdAt: '2026-08-21T00:00:00.000Z',
+      }),
+    ).resolves.toEqual({ messageId: 'mid-required-1', url: null, botId: 'media-bot' });
+
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'media-bot', attemptedBotIds: ['media-bot'] }),
+    );
+  });
+
+  it('does not cross a required bot fence after a definitive access-loss replacement', async () => {
+    const denied = createMaxApiError(403, 'chat denied', 'chat.denied');
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(denied),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        classification: {
+          kind: 'managed_entity_access_lost',
+          reason: 'bot_denied',
+          statusCode: 403,
+          code: 'chat.denied',
+          message: 'chat denied',
+        },
+        reason: 'bot_denied',
+        recorded: {
+          chatId: 'channel-1',
+          botId: 'media-bot',
+          nextOwnerBotId: 'survivor-bot',
+          updatedAccessEdges: 1,
+          cleanup: {
+            nightModeJobsCleared: false,
+            canceledBroadcasts: null,
+            canceledBroadcastDeliveries: null,
+            canceledBroadcastOccurrences: null,
+            clearedVkPublishPosts: null,
+            pausedVkSources: null,
+            removedRosterSyncJobs: null,
+          },
+        },
+      }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'media-bot',
+        botId: 'media-bot',
+        candidateBotIds: ['media-bot', 'survivor-bot'],
+        reason: 'primary_confirmed',
+      }),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      managedEntityAccessLossService as never,
+      undefined,
+      maxBotLinkService as never,
+      {
+        get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+      } as never,
+    );
+
+    await expect(
+      service.execute({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'channel-1',
+        botId: 'media-bot',
+        candidateBotIds: ['media-bot'],
+        routing: {
+          purpose: 'send_message',
+          requiredBotId: 'media-bot',
+        },
+        text: 'video',
+        attempt: 1,
+        idempotencyKey: 'channel-suggestion:publish:v1:suggestion-required-denied',
+        createdAt: '2026-08-21T00:00:00.000Z',
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(maxClient.executeActionJob).toHaveBeenCalledTimes(1);
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'media-bot' }),
+    );
+    expect(maxClient.executeActionJob).not.toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'survivor-bot' }),
+    );
+  });
+
   it('fails closed on a fresh empty managed route even while routed mutations are shadowed', async () => {
     const maxClient = {
       executeActionJob: jest.fn(),
@@ -1838,6 +2176,72 @@ describe('MaxActionDispatchService', () => {
       claimedUntil,
     });
     expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+  });
+
+  it('releases a half-open route when the final send guard rejects before HTTP', async () => {
+    const claimedUntil = new Date('2026-08-21T18:00:00.000Z');
+    const guardError = markMaxPreDispatchGuardRejected(
+      new Error('suggestion claim changed'),
+      'max_send_pre_dispatch_guard_rejected',
+    );
+    const maxClient = {
+      executeActionJob: jest
+        .fn()
+        .mockImplementation(
+          async (_job: unknown, executionOptions: { beforeSendMutation: () => Promise<void> }) => {
+            await executionOptions.beforeSendMutation();
+          },
+        ),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        quarantinedCandidateBotIds: [],
+        halfOpenCandidateBotIds: ['bot-1'],
+        retryAt: null,
+        reason: 'primary_confirmed',
+      }),
+      claimSendRouteHalfOpen: jest.fn().mockResolvedValue(claimedUntil),
+      releaseSendRouteHalfOpen: jest.fn().mockResolvedValue(true),
+      getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.execute(
+        {
+          actionType: 'SEND_MESSAGE',
+          chatId: 'channel-1',
+          routing: {
+            purpose: 'send_message',
+            sendRouteHalfOpenProbe: 'publication_exact_verification',
+          },
+          text: 'publication',
+          attempt: 1,
+          idempotencyKey: 'publication-half-open-send-guard',
+          createdAt: '2026-08-21T12:00:00.000Z',
+        },
+        {
+          prepareAttempt: jest.fn().mockResolvedValue({}),
+          beforeSendMutation: jest.fn().mockRejectedValue(guardError),
+        },
+      ),
+    ).rejects.toBe(guardError);
+
+    expect(maxBotLinkService.releaseSendRouteHalfOpen).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      botId: 'bot-1',
+      claimedUntil,
+    });
   });
 
   it('returns the typed pre-dispatch outcome when every routed candidate is non-executable', async () => {

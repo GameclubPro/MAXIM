@@ -629,4 +629,64 @@ describe('Prisma migrations', () => {
     expect(indexes).toContain('CREATE INDEX CONCURRENTLY');
     expect(indexes).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
   });
+
+  it('keeps suggestion publication observability on concurrent partial indexes', () => {
+    const publishing = readMigration('20260821120000_index_channel_suggestion_publishing_review');
+    const ledger = readMigration(
+      '20260821121000_index_channel_suggestion_publication_ledger_audit',
+    );
+    const compactPublishing = publishing.replace(/\s+/g, ' ').trim();
+    const compactLedger = ledger.replace(/\s+/g, ' ').trim();
+
+    expect(compactPublishing).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "audit_logs_channel_suggestion_publishing_review_created_idx"',
+    );
+    expect(compactPublishing).toContain(
+      `WHERE "action" = 'CHANNEL_DIALOG_SUGGESTION' AND "payload"->>'type' = 'suggest' AND "payload"->>'reviewStatus' = 'publishing'`,
+    );
+    expect(compactLedger).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "max_action_ledger_suggestion_publish_updated_id_idx"',
+    );
+    expect(compactLedger).toContain('ON "max_action_ledger"("updated_at", "id")');
+    expect(compactLedger).toContain(
+      `WHERE "action_type" = 'SEND_MESSAGE' AND "source_tag" = 'suggestion_delivery' AND "job_id" LIKE 'channel-suggestion:publish:v1:%'`,
+    );
+    expect(`${publishing}\n${ledger}`).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
+  });
+
+  it('serializes suggestion ledger inserts with stale claim release at the audit row', () => {
+    const migration = readMigration(
+      '20260821122000_guard_channel_suggestion_publication_ledger_insert',
+    );
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'CREATE TRIGGER "max_action_ledger_channel_suggestion_publication_insert_guard" BEFORE INSERT ON "max_action_ledger"',
+    );
+    expect(compact).toContain("NEW.action_type = 'SEND_MESSAGE'");
+    expect(compact).toContain("NEW.source_tag = 'suggestion_delivery'");
+    expect(compact).toContain("NEW.job_id LIKE 'channel-suggestion:publish:v1:%'");
+    expect(compact).toContain("audit.action = 'CHANNEL_DIALOG_SUGGESTION'");
+    expect(compact).toContain("audit.payload->>'reviewStatus' = 'publishing'");
+    expect(compact).toContain("audit.payload->>'reviewAction' = 'publish'");
+    expect(compact).toContain(
+      "audit.payload->>'reviewPublicationProtocol' = 'max_action_ledger_v1'",
+    );
+    expect(compact).toContain("audit.payload->>'reviewPublicationLedgerJobId' = NEW.job_id");
+    expect(compact).toContain(
+      "NEW.metadata->'ledgerContext'->>'claimToken' = audit.payload->>'reviewClaimToken'",
+    );
+    expect(compact).toContain('FROM public.max_action_ledger existing');
+    expect(compact).toContain("existing.status = 'SUCCEEDED'");
+    expect(compact).toContain("nullif(btrim(existing.remote_message_id), '') IS NOT NULL");
+    expect(compact).toContain('FOR KEY SHARE OF existing');
+    expect(compact).toContain('IF FOUND THEN RETURN NEW; END IF;');
+    expect(compact).toContain('FOR KEY SHARE OF audit');
+    expect(compact.indexOf('FROM public.max_action_ledger existing')).toBeLessThan(
+      compact.indexOf('FROM public.audit_logs audit'),
+    );
+    expect(compact).not.toContain('FOR UPDATE');
+    expect(compact).not.toContain('CREATE INDEX CONCURRENTLY');
+    expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE)\b/i);
+  });
 });

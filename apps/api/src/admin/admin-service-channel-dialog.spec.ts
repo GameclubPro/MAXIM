@@ -57,6 +57,66 @@ async function publishSuggestDialogToken(
   return publishSuggestDialogTokenFromPreparedSettings(...args);
 }
 
+function attachSuggestionPublicationRoute(
+  service: AdminService,
+  maxClient: {
+    sendMessageImmediateWithResolvedLink: jest.Mock;
+  },
+) {
+  const publish = jest.fn().mockImplementation(async (request: any) => {
+    const botId = request.requiredBotId ?? request.preferredBotId ?? '777000_bot';
+    const job = {
+      actionType: 'SEND_MESSAGE',
+      chatId: request.entityId,
+      botId,
+      idempotencyKey: request.logicalIdempotencyKey,
+    };
+    const prepared = await request.prepareAttempt({ botId, job });
+    await request.beforeSendMutation({ botId, job: { ...job, ...prepared } });
+    const sent = await maxClient.sendMessageImmediateWithResolvedLink(
+      request.entityId,
+      prepared.text,
+      prepared.options,
+      {
+        botId,
+        trafficClass: request.trafficClass,
+        actionHealthLane: request.actionHealthLane,
+        sourceTag: request.sourceTag,
+        timeoutMs: request.timeoutMs,
+        ignoreFailureMetricStatuses: request.ignoreFailureMetricStatuses,
+      },
+    );
+    return {
+      ...sent,
+      botId,
+      candidateBotIds: [botId],
+      routingVersion: null,
+    };
+  });
+  (service as any).maxRoutedPublicationService = { publish };
+  return publish;
+}
+
+function readSqlJsonPatch(mock: jest.Mock, requiredKey: string): Record<string, unknown> {
+  for (const call of mock.mock.calls.slice().reverse()) {
+    const values = (call[0] as { values?: unknown[] } | undefined)?.values ?? [];
+    for (const value of values) {
+      if (typeof value !== 'string' || !value.trim().startsWith('{')) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(value) as Record<string, unknown>;
+        if (Object.prototype.hasOwnProperty.call(parsed, requiredKey)) {
+          return parsed;
+        }
+      } catch {
+        // Other SQL string parameters are not JSON patches.
+      }
+    }
+  }
+  throw new Error(`SQL JSON patch with key ${requiredKey} was not found`);
+}
+
 describe('AdminService.publishChannelEngagementMessage', () => {
   it('publishes channel buttons as MAX deep links with a dedicated post thread', async () => {
     const prisma = createPrismaMock();
@@ -1620,8 +1680,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ]);
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
       id: 'suggestion-1',
+      chatId: 'channel-1',
       actorUserId: 'user-1',
-      payload: {},
+      payload: {
+        type: 'suggest',
+        text: 'Есть идея для следующего поста',
+        delivered: false,
+        deliveredToUserId: null,
+        source: 'miniapp_dialog',
+      },
       createdAt: new Date('2026-03-10T12:10:00.000Z'),
     });
     prisma.auditLog.update.mockResolvedValue({
@@ -1752,8 +1819,18 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ]);
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
       id: 'suggestion-image-only-1',
+      chatId: 'channel-1',
       actorUserId: 'user-1',
-      payload: {},
+      payload: {
+        type: 'suggest',
+        text: '',
+        delivered: false,
+        deliveredToUserId: null,
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageFileName: 'suggestion.webp',
+        source: 'miniapp_dialog',
+      },
       createdAt: new Date('2026-03-25T09:10:00.000Z'),
     });
     prisma.auditLog.update.mockResolvedValue({
@@ -1856,8 +1933,20 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ]);
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
       id: 'suggestion-image-dedupe-1',
+      chatId: 'channel-1',
       actorUserId: 'user-1',
-      payload: {},
+      payload: {
+        type: 'suggest',
+        text: '',
+        delivered: false,
+        deliveredToUserId: null,
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageCount: 1,
+        imageFileName: 'suggestion.webp',
+        imageFileNames: ['suggestion.webp'],
+        source: 'miniapp_dialog',
+      },
       createdAt: new Date('2026-03-25T09:11:00.000Z'),
     });
     prisma.auditLog.update.mockResolvedValue({
@@ -2151,30 +2240,27 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
-    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+    const failureSql = extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0]);
+    const failurePatch = readSqlJsonPatch(prisma.$executeRaw, 'deliveryJobLastError');
+    expect(failureSql).toContain("audit.payload->>'reviewStatus'");
+    expect(failureSql).toContain('NOT EXISTS');
+    expect(failureSql).toContain('channel_suggestion_admin_deliveries');
+    expect(failureSql).toContain("'deliveryJobFailureCount'");
+    expect(failurePatch).toEqual(
       expect.objectContaining({
-        where: { id: 'suggestion-timeout-1' },
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            delivered: false,
-            deliveryJobFailureCount: 1,
-            deliveryJobRecoverable: true,
-            deliveryJobLastError: expect.objectContaining({
-              recoverable: true,
-              final: true,
-              attemptsMade: 8,
-              maxAttempts: 8,
-            }),
-          }),
+        delivered: false,
+        deliveryJobRecoverable: true,
+        deliveryJobLastError: expect.objectContaining({
+          recoverable: true,
+          final: true,
+          attemptsMade: 8,
+          maxAttempts: 8,
         }),
       }),
     );
-    const updatedPayload = prisma.auditLog.update.mock.calls[0]?.[0]?.data?.payload as Record<
-      string,
-      unknown
-    >;
-    expect(updatedPayload.deliveryAttemptedAt).toBeUndefined();
-    expect(updatedPayload.deliveryFailures).toBeUndefined();
+    expect(failurePatch.deliveryAttemptedAt).toBeUndefined();
+    expect(failurePatch.deliveryFailures).toBeUndefined();
+    expect(prisma.auditLog.update).not.toHaveBeenCalled();
   });
 
   it('marks terminal suggestion delivery job failures as attempted so recovery does not loop forever', async () => {
@@ -2218,26 +2304,24 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
-    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+    const failurePatch = readSqlJsonPatch(prisma.$executeRaw, 'deliveryJobLastError');
+    expect(failurePatch).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            delivered: false,
-            deliveryAttemptedAt: expect.any(String),
-            deliveryJobRecoverable: false,
-            deliveryFailures: [
-              expect.objectContaining({
-                adminUserId: 'delivery_job',
-                status: 403,
-                code: 'access.denied',
-                terminal: true,
-                message: 'access denied',
-              }),
-            ],
+        delivered: false,
+        deliveryAttemptedAt: expect.any(String),
+        deliveryJobRecoverable: false,
+        deliveryFailures: [
+          expect.objectContaining({
+            adminUserId: 'delivery_job',
+            status: 403,
+            code: 'access.denied',
+            terminal: true,
+            message: 'access denied',
           }),
-        }),
+        ],
       }),
     );
+    expect(prisma.auditLog.update).not.toHaveBeenCalled();
   });
 
   it('retries attempted suggestion delivery when every admin send failed transiently', async () => {
@@ -2306,23 +2390,20 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         trafficClass: 'background',
       }),
     );
-    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+    expect(readSqlJsonPatch(prisma.$queryRaw, 'deliveryAttemptedAt')).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            delivered: true,
-            deliveredToUserId: 'admin-1',
-            deliveries: [
-              expect.objectContaining({
-                adminUserId: 'admin-1',
-                privateChatId: '555001',
-                messageId: 'mid-suggestion-recovered-1',
-              }),
-            ],
+        delivered: true,
+        deliveredToUserId: 'admin-1',
+        deliveries: [
+          expect.objectContaining({
+            adminUserId: 'admin-1',
+            privateChatId: '555001',
+            messageId: 'mid-suggestion-recovered-1',
           }),
-        }),
+        ],
       }),
     );
+    expect(prisma.auditLog.update).not.toHaveBeenCalled();
   });
 
   it('drops mismatched stored author identity during suggestion delivery recovery', async () => {
@@ -3073,17 +3154,11 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({ imagePayload: { token: 'relation-upload-1' } }),
       expect.objectContaining({ trafficClass: 'background' }),
     );
-    const updatedPayload = prisma.auditLog.update.mock.calls.at(-1)?.[0]?.data?.payload as Record<
-      string,
-      unknown
-    >;
-    expect(updatedPayload.images).toEqual([
-      {
-        base64: legacyBase64,
-        mimeType: 'image/jpeg',
-        fileName: 'legacy.jpg',
-      },
-    ]);
+    const deliveryPatch = readSqlJsonPatch(prisma.$queryRaw, 'deliveryAttemptedAt');
+    expect(deliveryPatch.images).toBeUndefined();
+    expect(extractSqlText(prisma.$queryRaw.mock.calls.at(-1)?.[0])).toContain(
+      'audit.payload::jsonb',
+    );
   });
 
   it('falls back to the complete legacy image set when relation rows are partial', async () => {
@@ -3754,21 +3829,17 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         botId: 'id613002203036_bot',
       }),
     );
-    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+    expect(readSqlJsonPatch(prisma.$queryRaw, 'deliveryAttemptedAt')).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            deliveredToUserId: '98315271',
-            deliveredToUserIds: ['98315271'],
-            deliveries: [
-              expect.objectContaining({
-                adminUserId: '98315271',
-                privateChatId: '165176099',
-                messageId: 'mid-suggestion-human-admin-1',
-              }),
-            ],
+        deliveredToUserId: '98315271',
+        deliveredToUserIds: ['98315271'],
+        deliveries: [
+          expect.objectContaining({
+            adminUserId: '98315271',
+            privateChatId: '165176099',
+            messageId: 'mid-suggestion-human-admin-1',
           }),
-        }),
+        ],
       }),
     );
   });
@@ -4045,19 +4116,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         trafficClass: 'background',
       }),
     );
-    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+    expect(readSqlJsonPatch(prisma.$queryRaw, 'deliveryAttemptedAt')).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            deliveries: [
-              expect.objectContaining({
-                adminUserId: '98315271',
-                privateChatId: '777001',
-                messageId: 'mid-suggestion-human-admin-fallback-1',
-              }),
-            ],
+        deliveries: [
+          expect.objectContaining({
+            adminUserId: '98315271',
+            privateChatId: '777001',
+            messageId: 'mid-suggestion-human-admin-fallback-1',
           }),
-        }),
+        ],
       }),
     );
   });
@@ -4184,27 +4251,23 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.anything(),
       'Failed to deliver suggestion to admin private chat',
     );
-    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+    expect(readSqlJsonPatch(prisma.$queryRaw, 'deliveryAttemptedAt')).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            delivered: false,
-            deliveredToUserId: null,
-            deliveredToUserIds: [],
-            deliveries: [],
-            deliveryAttemptedAt: expect.any(String),
-            deliveryFailures: [
-              expect.objectContaining({
-                adminUserId: '98315271',
-                privateChatId: null,
-                status: 403,
-                code: 'access.denied',
-                terminal: true,
-                message: 'access denied',
-              }),
-            ],
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        deliveryAttemptedAt: expect.any(String),
+        deliveryFailures: [
+          expect.objectContaining({
+            adminUserId: '98315271',
+            privateChatId: null,
+            status: 403,
+            code: 'access.denied',
+            terminal: true,
+            message: 'access denied',
           }),
-        }),
+        ],
       }),
     );
   });
@@ -4447,6 +4510,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       undefined,
       maxBotLinkService as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-1',
@@ -4547,43 +4611,19 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(claimSql).toContain("payload->>'reviewStatus'");
     expect(claimSql).toContain("'reviewClaimedAt',");
     expect(claimSql).toContain("'reviewClaimedByUserId',");
+    expect(claimSql).toContain("'reviewClaimToken',");
     expect(claimSql).toContain("'reviewAction',");
+    expect(claimSql).toContain("'reviewPublicationProtocol',");
+    expect(claimSql).toContain('channel-suggestion:publish:v1:suggestion-review-1');
     expect(claimSql.match(/::text/gu)?.length ?? 0).toBeGreaterThanOrEqual(5);
-    expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: 'suggestion-review-1',
-          action: 'CHANNEL_DIALOG_SUGGESTION',
-          payload: {
-            path: ['reviewStatus'],
-            equals: 'publishing',
-          },
-          AND: expect.arrayContaining([
-            {
-              payload: {
-                path: ['reviewClaimedByUserId'],
-                equals: 'admin-1',
-              },
-            },
-            {
-              payload: {
-                path: ['reviewAction'],
-                equals: 'publish',
-              },
-            },
-          ]),
-        }),
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            reviewStatus: 'published',
-            reviewedByUserId: 'admin-1',
-            reviewedByDisplayName: 'Главный редактор',
-            publishedMessageId: 'mid-channel-post-1',
-            publishedUrl: 'https://max.ru/chats/channel-1/message/100',
-          }),
-        }),
-      }),
-    );
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(3);
+    const finalizeSql = extractSqlText(prisma.$executeRaw.mock.calls[2]?.[0]);
+    expect(finalizeSql).toContain("'reviewStatus', 'published'");
+    expect(finalizeSql).toContain("payload->>'reviewClaimToken'");
+    expect(finalizeSql).toContain("payload->'reviewPublicationContext'->>'messageDigest'");
+    expect(finalizeSql).toContain('mid-channel-post-1');
+    expect(finalizeSql).toContain('https://max.ru/chats/channel-1/message/100');
+    expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -4625,7 +4665,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
-  it('fails before suggestion media preparation when the authoritative send route is empty', async () => {
+  it('keeps a versioned claim when the authoritative send route is empty', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -4670,6 +4710,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       undefined,
       maxBotLinkService as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
     const loadStoredImages = jest.spyOn(
       (service as any).channelSuggestionImageRuntime,
       'loadStoredImages',
@@ -4699,9 +4740,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(loadStoredImages).not.toHaveBeenCalled();
     expect(resolveAttachments).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
-    expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
-      "'reviewClaimReleasedAt',",
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain(
+      "'reviewPublicationLedgerJobId',",
     );
     expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
   });
@@ -4955,6 +4996,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         undefined,
         maxBotLinkService as never,
       );
+      attachSuggestionPublicationRoute(service, maxClient);
 
       return {
         getChatMemberProfiles,
@@ -5020,7 +5062,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       );
     });
 
-    it('releases the review claim before media preparation when the proven bot is not routable', async () => {
+    it('keeps the versioned claim when the proven media bot is not routable', async () => {
       const { maxClient, prisma, resolveBotRoute, service } = await createTokenReviewHarness(
         ['primary-bot'],
         'media-bot',
@@ -5041,10 +5083,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect(loadStoredImages).toHaveBeenCalledTimes(1);
       expect(resolveAttachments).not.toHaveBeenCalled();
       expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-      expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
-      expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
-        "'reviewClaimReleasedAt',",
-      );
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
       expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
     });
 
@@ -5060,10 +5099,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
 
       expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-      expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
-      expect(extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0])).toContain(
-        "'reviewClaimReleasedAt',",
-      );
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -5153,6 +5189,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         createChatContextCacheMock() as never,
         createConfigMock() as never,
       );
+      attachSuggestionPublicationRoute(service, maxClient);
       jest
         .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
         .mockResolvedValue({
@@ -5223,17 +5260,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect(maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1]).not.toContain(
         'https://max.ru/stale-anna',
       );
-      expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: {
-            payload: expect.objectContaining({
-              actorUserId,
-              authorDisplayName: 'Анна Каренина',
-              authorMentionDisplayName: 'Анна Каренина',
-            }),
-          },
-        }),
-      );
+      const finalizeSql = extractSqlText(prisma.$executeRaw.mock.calls.at(-1)?.[0]);
+      expect(finalizeSql).toContain(actorUserId);
+      expect(finalizeSql).toContain('Анна Каренина');
+      expect(finalizeSql).toContain("'authorMentionDisplayName'");
       expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2]).toContain(
         `[Анна Каренина](max://user/${actorUserId})`,
       );
@@ -5264,20 +5294,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       const publishedText = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[1];
       expect(publishedText).toBe('От подписчика Канонический автор\n\nТекст предложки');
       expect(publishedText).not.toContain('payload-spoofed-user');
-      expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: {
-            payload: expect.objectContaining({
-              actorUserId,
-              authorDisplayName: 'Канонический автор',
-              authorMentionDisplayName: null,
-              authorUsername: null,
-              authorProfileUrl: null,
-              authorAvatarUrl: null,
-            }),
-          },
-        }),
-      );
+      const finalizeSql = extractSqlText(prisma.$executeRaw.mock.calls.at(-1)?.[0]);
+      expect(finalizeSql).toContain(actorUserId);
+      expect(finalizeSql).toContain('Канонический автор');
+      expect(finalizeSql).toContain("'authorAvatarUrl', null");
     });
 
     it('refreshes author attribution when a suggestion is rejected', async () => {
@@ -5319,19 +5339,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2]).toContain(
         '[Новое Полное Имя](https://max.ru/current-author)',
       );
-      expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: {
-            payload: expect.objectContaining({
-              reviewStatus: 'cancelled',
-              authorDisplayName: 'Новое Полное Имя',
-              authorMentionDisplayName: 'Новое Полное Имя',
-              authorUsername: 'current-author',
-              authorProfileUrl: 'https://max.ru/current-author',
-            }),
-          },
-        }),
-      );
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+      const cancellationSql = extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0]);
+      expect(cancellationSql).toContain("'reviewStatus', 'cancelled'");
+      expect(cancellationSql).toContain('Новое Полное Имя');
+      expect(cancellationSql).toContain('https://max.ru/current-author');
+      expect(cancellationSql).not.toContain("'reviewClaimToken',");
     });
 
     it('uses relation media before legacy payload without copying it into audit JSON', async () => {
@@ -5399,18 +5412,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
         expect.objectContaining({ botId: 'channel-bot-author' }),
       );
-      expect(prisma.auditLog.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: {
-            payload: expect.objectContaining({
-              images: [
-                { payload: { token: 'legacy-author-photo-1' }, mimeType: 'image/jpeg' },
-                { payload: { token: 'legacy-author-photo-2' }, mimeType: 'image/jpeg' },
-              ],
-            }),
-          },
-        }),
-      );
+      const finalizeSql = extractSqlText(prisma.$executeRaw.mock.calls.at(-1)?.[0]);
+      expect(finalizeSql).toContain('SET payload =');
+      expect(finalizeSql).not.toContain("'images',");
     });
 
     it('uses and escapes a direct MAX profile URL in HTML publications', async () => {
@@ -5620,6 +5624,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-race-1',
@@ -5657,77 +5662,79 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       Object.assign(new Error('Service unavailable'), { response: { status: 503 } }),
     ],
     ['returns no message id', new Error('Ambiguous MAX send response is missing message id')],
-  ])('keeps the review claim when channel suggestion publish %s ambiguously', async (_, sendError) => {
-    const prisma = createPrismaMock();
-    prisma.chat.findUnique.mockResolvedValue({
-      id: 'channel-1',
-      title: 'Новости MAX',
-      entityType: 'CHANNEL',
-    });
-    prisma.channelSettings.findUnique.mockResolvedValue(
-      channelSettingsSchema.parse({
-        commentsEnabled: false,
-        postSuggestionsEnabled: false,
-      }),
-    );
-    prisma.auditLog.findFirst.mockResolvedValue({
-      id: 'suggestion-review-timeout-1',
-      chatId: 'channel-1',
-      actorUserId: 'user-1',
-      payload: {
-        type: 'suggest',
-        actorUserId: 'user-1',
-        authorDisplayName: 'Пользователь',
-        text: 'Пост мог быть принят MAX',
-        reviewStatus: 'pending',
-      },
-    });
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getChatSnapshot: jest.fn().mockResolvedValue({
-        chatId: 'channel-1',
+  ])(
+    'keeps the review claim when channel suggestion publish %s ambiguously',
+    async (_, sendError) => {
+      const prisma = createPrismaMock();
+      prisma.chat.findUnique.mockResolvedValue({
+        id: 'channel-1',
         title: 'Новости MAX',
-        participantsCount: 1200,
-        status: 'active',
-        isPublic: true,
-        link: 'https://max.ru/channels/news-max',
-        lastEventAt: '2026-03-10T12:00:00.000Z',
-        entityType: 'channel',
-      }),
-      sendMessageImmediateWithResolvedLink: jest.fn().mockRejectedValue(sendError),
-      editMessageInlineKeyboard: jest.fn(),
-    };
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-
-    await expect(
-      service.reviewChannelSuggestionByAdmin(
-        'suggestion-review-timeout-1',
-        {
-          userId: 'admin-1',
-          username: 'chief',
-          displayName: 'Главный редактор',
-          chatTitle: null,
+        entityType: 'CHANNEL',
+      });
+      prisma.channelSettings.findUnique.mockResolvedValue(
+        channelSettingsSchema.parse({
+          commentsEnabled: false,
+          postSuggestionsEnabled: false,
+        }),
+      );
+      prisma.auditLog.findFirst.mockResolvedValue({
+        id: 'suggestion-review-timeout-1',
+        chatId: 'channel-1',
+        actorUserId: 'user-1',
+        payload: {
+          type: 'suggest',
+          actorUserId: 'user-1',
+          authorDisplayName: 'Пользователь',
+          text: 'Пост мог быть принят MAX',
+          reviewStatus: 'pending',
         },
-        'publish',
-      ),
-    ).rejects.toBe(sendError);
+      });
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          participantsCount: 1200,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/channels/news-max',
+          lastEventAt: '2026-03-10T12:00:00.000Z',
+          entityType: 'channel',
+        }),
+        sendMessageImmediateWithResolvedLink: jest.fn().mockRejectedValue(sendError),
+        editMessageInlineKeyboard: jest.fn(),
+      };
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      attachSuggestionPublicationRoute(service, maxClient);
 
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
-    expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
-  });
+      await expect(
+        service.reviewChannelSuggestionByAdmin(
+          'suggestion-review-timeout-1',
+          {
+            userId: 'admin-1',
+            username: 'chief',
+            displayName: 'Главный редактор',
+            chatTitle: null,
+          },
+          'publish',
+        ),
+      ).rejects.toBe(sendError);
 
-  it('does not mask the publish error when releasing a channel suggestion review claim fails', async () => {
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+      expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the versioned claim when a definitive publish error is returned', async () => {
     const prisma = createPrismaMock();
-    prisma.$executeRaw
-      .mockResolvedValueOnce(1)
-      .mockRejectedValueOnce(new Error('release write failed'));
+    prisma.$executeRaw.mockResolvedValueOnce(1);
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -5773,6 +5780,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
 
     await expect(
       service.reviewChannelSuggestionByAdmin(
@@ -5788,11 +5796,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ).rejects.toBe(publishError);
 
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
-    const releaseSql = extractSqlText(prisma.$executeRaw.mock.calls[1]?.[0]);
-    expect(releaseSql).toContain("'reviewStatus',");
-    expect(releaseSql).toContain("'reviewClaimReleasedAt',");
-    expect(releaseSql).toContain("'reviewLastError',");
-    expect(releaseSql.match(/::text/gu)?.length ?? 0).toBeGreaterThanOrEqual(5);
+    const claimSql = extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0]);
+    expect(claimSql).toContain("'reviewClaimToken',");
+    expect(claimSql).not.toContain("'reviewClaimReleasedAt',");
     expect(prisma.auditLog.updateMany).not.toHaveBeenCalled();
   });
 
@@ -5877,6 +5883,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
     jest
       .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
       .mockResolvedValue({
@@ -6007,6 +6014,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
     jest
       .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
       .mockResolvedValue({
@@ -6173,6 +6181,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
     jest
       .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
       .mockResolvedValue({
@@ -6342,6 +6351,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    attachSuggestionPublicationRoute(service, maxClient);
     jest
       .spyOn(service as any, 'resolveChannelSuggestionPublicationBotAssignment')
       .mockResolvedValue({

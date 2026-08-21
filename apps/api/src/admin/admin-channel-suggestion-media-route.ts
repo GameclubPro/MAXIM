@@ -21,9 +21,7 @@ export async function resolveChannelSuggestionMediaPublicationBotId(params: {
   loadSentDeliveryBotIds: () => Promise<readonly (string | null | undefined)[]>;
   onUnavailable?: (reason: ChannelSuggestionMediaRouteFailureReason) => void;
 }): Promise<string | undefined> {
-  const hasBotScopedToken =
-    Boolean(readPayloadToken(params.payload.mediaPayload)) ||
-    params.images.some((image) => Boolean(readPayloadToken(image.payload)));
+  const hasBotScopedToken = hasChannelSuggestionBotScopedMediaToken(params.payload, params.images);
   if (!hasBotScopedToken) {
     return params.assignment.botId;
   }
@@ -57,6 +55,16 @@ export async function resolveChannelSuggestionMediaPublicationBotId(params: {
   }
 
   return deliveryBotId;
+}
+
+export function hasChannelSuggestionBotScopedMediaToken(
+  payload: Record<string, unknown>,
+  images: readonly ChannelSuggestionImageAsset[],
+): boolean {
+  return (
+    Boolean(readPayloadToken(payload.mediaPayload)) ||
+    images.some((image) => Boolean(readPayloadToken(image.payload)))
+  );
 }
 
 function throwUnavailable(

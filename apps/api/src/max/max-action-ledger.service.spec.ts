@@ -982,20 +982,6 @@ describe('MaxActionLedgerService', () => {
       true,
     ],
     [
-      'the remote message is already completed',
-      {
-        status: MaxActionLedgerStatus.SUCCEEDED,
-        ambiguous: false,
-        terminal: true,
-        dispatchToken: 'completed-token',
-        dispatchStartedAt: new Date('2026-07-13T12:00:00.000Z'),
-        dispatchBotId: 'bot-1',
-        remoteMessageId: 'remote-message-1',
-      },
-      MAX_SEND_LEDGER_PREPARATION_ERROR_CODES.ALREADY_COMPLETED,
-      true,
-    ],
-    [
       'the retained ledger state is otherwise unexpected',
       {
         status: MaxActionLedgerStatus.ENQUEUED,
@@ -1040,6 +1026,56 @@ describe('MaxActionLedgerService', () => {
       });
     },
   );
+
+  it('recovers a completion that appears during duplicate start creation without rewriting it', async () => {
+    const terminalMetadata = Object.freeze({
+      ledgerContext: {
+        suggestionId: 'suggestion-late-start',
+        contextDigest: 'persisted-context-digest',
+      },
+    });
+    const completedRow = {
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'completed-token',
+      dispatchStartedAt: new Date('2026-08-21T10:00:00.000Z'),
+      dispatchBotId: 'required-bot',
+      remoteMessageId: 'mid-late-start',
+      metadata: terminalMetadata,
+    };
+    const { service, prisma } = createService(null);
+    prisma.maxActionLedgerEntry.createMany.mockImplementationOnce(async () => {
+      prisma.maxActionLedgerEntry.findUnique.mockResolvedValue(completedRow);
+      return { count: 0 };
+    });
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValue({ count: 0 });
+    const competingContext = {
+      suggestionId: 'suggestion-late-start',
+      contextDigest: 'different-prepared-context-digest',
+    };
+    const job = createJob({
+      routing: { purpose: 'send_message', requiredBotId: 'required-bot' },
+      ledgerContext: competingContext,
+    });
+
+    await expect(service.recordStarted(job)).resolves.toBeUndefined();
+    await expect(service.recordPrepared(job)).resolves.toBeUndefined();
+
+    expect(prisma.maxActionLedgerEntry.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          jobId: 'job-1',
+          metadata: expect.objectContaining({ ledgerContext: competingContext }),
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(3);
+    expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+    expect(completedRow.metadata).toBe(terminalMetadata);
+    expect(completedRow.metadata.ledgerContext).not.toEqual(competingContext);
+  });
 
   it('does not overwrite a retained SEND_MESSAGE dispatch fence after preparation is blocked', async () => {
     const { service, prisma } = createService({
@@ -1137,8 +1173,54 @@ describe('MaxActionLedgerService', () => {
     await expect(service.claimSendDispatch(createJob(), 'bot-2')).resolves.toEqual({
       kind: 'recovered',
       remoteMessageId: 'mid-remote-1',
+      dispatchBotId: 'bot-1',
     });
     expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { label: 'a foreign bot', dispatchBotId: 'foreign-bot' },
+    { label: 'no persisted bot', dispatchBotId: null },
+  ])('rejects a recovered required-bot claim bound to $label', async ({ dispatchBotId }) => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'completed-token',
+      dispatchStartedAt: new Date('2026-08-21T09:00:00.000Z'),
+      dispatchBotId,
+      remoteMessageId: 'mid-required-1',
+    });
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValueOnce({ count: 0 });
+    const job = createJob({
+      routing: { purpose: 'send_message', requiredBotId: 'required-bot' },
+    });
+
+    await expect(service.claimSendDispatch(job, 'required-bot')).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+  });
+
+  it('recovers a required-bot claim only with the exact persisted dispatch bot', async () => {
+    const { service, prisma } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'completed-token',
+      dispatchStartedAt: new Date('2026-08-21T09:00:00.000Z'),
+      dispatchBotId: 'required-bot',
+      remoteMessageId: 'mid-required-1',
+    });
+    prisma.maxActionLedgerEntry.updateMany.mockResolvedValueOnce({ count: 0 });
+    const job = createJob({
+      routing: { purpose: 'send_message', requiredBotId: 'required-bot' },
+    });
+
+    await expect(service.claimSendDispatch(job, 'required-bot')).resolves.toEqual({
+      kind: 'recovered',
+      remoteMessageId: 'mid-required-1',
+      dispatchBotId: 'required-bot',
+    });
   });
 
   it('recovers the bot that actually authored a completed survivor dispatch', async () => {
@@ -1155,6 +1237,52 @@ describe('MaxActionLedgerService', () => {
     await expect(service.getCompletedSendDispatchResult(createJob())).resolves.toEqual({
       remoteMessageId: 'mid-survivor-1',
       dispatchBotId: 'bot-2',
+    });
+  });
+
+  it.each([
+    { label: 'a foreign bot', dispatchBotId: 'foreign-bot' },
+    { label: 'no persisted bot', dispatchBotId: null },
+  ])('rejects a completed required-bot read bound to $label', async ({ dispatchBotId }) => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'completed-token',
+      dispatchStartedAt: new Date('2026-08-21T09:00:00.000Z'),
+      dispatchBotId,
+      remoteMessageId: 'mid-required-1',
+    });
+
+    await expect(
+      service.getCompletedSendDispatchResult(
+        createJob({
+          routing: { purpose: 'send_message', requiredBotId: 'required-bot' },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it('reads a completed required-bot send only from its exact persisted bot', async () => {
+    const { service } = createService({
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      dispatchToken: 'completed-token',
+      dispatchStartedAt: new Date('2026-08-21T09:00:00.000Z'),
+      dispatchBotId: 'required-bot',
+      remoteMessageId: 'mid-required-1',
+    });
+
+    await expect(
+      service.getCompletedSendDispatchResult(
+        createJob({
+          routing: { purpose: 'send_message', requiredBotId: 'required-bot' },
+        }),
+      ),
+    ).resolves.toEqual({
+      remoteMessageId: 'mid-required-1',
+      dispatchBotId: 'required-bot',
     });
   });
 

@@ -9,6 +9,12 @@ import type {
 } from '@maxim/contracts/system';
 import { MaxBotOwnershipFoundationService } from '../max/max-bot-ownership-foundation.service';
 import {
+  classifyChannelSuggestionPublicationLedgerAudit,
+  classifyChannelSuggestionPublicationRecovery,
+  type ChannelSuggestionPublicationLedgerAuditDecision,
+  type ChannelSuggestionPublicationLedgerRow,
+} from '../admin/admin-channel-suggestion-publication-protocol';
+import {
   MAX_ACTION_BACKGROUND_QUEUE,
   MAX_ACTION_CRITICAL_QUEUE,
   MAX_ACTION_INTERACTIVE_QUEUE,
@@ -50,6 +56,8 @@ const VK_PARSING_PUBLISH_BACKLOG_WARNING_SEC = 10 * 60;
 const DELIVERY_LEDGER_STALE_ACTION_MS = 15 * 60_000;
 const DELIVERY_LEDGER_STALE_BROADCAST_SENDING_MS = 5 * 60_000;
 const DELIVERY_LEDGER_STALE_SUGGESTION_SENDING_MS = 2 * 60_000;
+const SUGGESTION_PUBLICATION_STALE_MS = 15 * 60_000;
+const SUGGESTION_PUBLICATION_AUDIT_LIMIT = 1_000;
 const DELIVERY_LEDGER_DELETE_INTENT_RISK_LIMIT = 1_000;
 const DELIVERY_LEDGER_WAITING_CAPABILITY_WARNING_MS = 5 * 60_000;
 const HOT_PATH_SLOW_WARNING_COUNT = 3;
@@ -92,6 +100,72 @@ type DeliveryLedgerRiskSnapshot = {
   deleteIntentAgedWaitingCapabilityChats: number;
   deleteIntentOldestWaitingCapabilityAgeSec: number;
   deleteIntentAgedWaitingCapabilityCapped: boolean;
+};
+
+type SuggestionPublicationProtocolSnapshot = {
+  checkedAt: string;
+  publishing: {
+    safeRelease: number;
+    completed: number;
+    manual: number;
+    legacy: number;
+    audited: number;
+    oldestAgeSec: number;
+    capped: boolean;
+  };
+  ledgerAudit: {
+    missingAudit: number;
+    pendingAudit: number;
+    publishedAudit: number;
+    mismatchedAudit: number;
+    linkedPublishing: number;
+    audited: number;
+    oldestAgeSec: number;
+    capped: boolean;
+  };
+};
+
+type SuggestionPublishingAuditRow = {
+  suggestionId: string;
+  chatId: string;
+  actorUserId: string;
+  createdAt: Date;
+  claimAt: Date;
+  payload: unknown;
+  jobId: string | null;
+  actionType: string | null;
+  ledgerChatId: string | null;
+  sourceTag: string | null;
+  status: string | null;
+  ambiguous: boolean | null;
+  terminal: boolean | null;
+  dispatchToken: string | null;
+  dispatchStartedAt: Date | null;
+  dispatchBotId: string | null;
+  remoteMessageId: string | null;
+  metadata: unknown;
+};
+
+type SuggestionLedgerAuditRow = {
+  ledgerId: string;
+  updatedAt: Date;
+  jobId: string;
+  actionType: string;
+  ledgerChatId: string;
+  sourceTag: string | null;
+  status: string;
+  ambiguous: boolean;
+  terminal: boolean;
+  dispatchToken: string | null;
+  dispatchStartedAt: Date | null;
+  dispatchBotId: string | null;
+  remoteMessageId: string | null;
+  metadata: unknown;
+  auditId: string | null;
+  auditChatId: string | null;
+  actorUserId: string | null;
+  auditAction: string | null;
+  payload: unknown;
 };
 
 @Injectable()
@@ -168,9 +242,10 @@ export class SystemDashboardService {
           return undefined;
         }),
       ]);
-    const [vkParsingGuard, deliveryLedgerRisk] = await Promise.all([
+    const [vkParsingGuard, deliveryLedgerRisk, suggestionPublicationProtocol] = await Promise.all([
       this.loadVkParsingGuardSnapshot(),
       this.loadDeliveryLedgerRiskSnapshot(),
+      this.loadSuggestionPublicationProtocolSnapshot(),
     ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
@@ -356,6 +431,20 @@ export class SystemDashboardService {
       alerts.push(deliveryLedgerAlert);
     }
 
+    const suggestionPublishingAlert = this.buildSuggestionPublishingRiskAlert(
+      suggestionPublicationProtocol,
+    );
+    if (suggestionPublishingAlert) {
+      alerts.push(suggestionPublishingAlert);
+    }
+
+    const suggestionLedgerAuditAlert = this.buildSuggestionLedgerAuditAlert(
+      suggestionPublicationProtocol,
+    );
+    if (suggestionLedgerAuditAlert) {
+      alerts.push(suggestionLedgerAuditAlert);
+    }
+
     const deleteCapabilityAlert = this.buildDeleteCapabilityBacklogAlert(deliveryLedgerRisk);
     if (deleteCapabilityAlert) {
       alerts.push(deleteCapabilityAlert);
@@ -385,6 +474,8 @@ export class SystemDashboardService {
       actionLedgerWatchdogCritical: actionLedgerWatchdogAlert?.level === 'critical',
       actionLedgerWatchdogWarning: actionLedgerWatchdogAlert?.level === 'warning',
       deliveryLedgerWarning: deliveryLedgerAlert !== null,
+      suggestionPublishingWarning:
+        suggestionPublishingAlert !== null || suggestionLedgerAuditAlert !== null,
       deleteCapabilityWarning: deleteCapabilityAlert !== null,
     });
     const queueGroupHealth = buildSystemQueueGroupHealth(queues);
@@ -472,6 +563,7 @@ export class SystemDashboardService {
     actionLedgerWatchdogCritical?: boolean;
     actionLedgerWatchdogWarning?: boolean;
     deliveryLedgerWarning?: boolean;
+    suggestionPublishingWarning?: boolean;
     deleteCapabilityWarning?: boolean;
   }): SystemDashboardStatus {
     if (
@@ -504,6 +596,7 @@ export class SystemDashboardService {
       input.actionQueueLaneWarning === true ||
       input.actionLedgerWatchdogWarning === true ||
       input.deliveryLedgerWarning === true ||
+      input.suggestionPublishingWarning === true ||
       input.deleteCapabilityWarning === true
     ) {
       return 'warning';
@@ -1203,6 +1296,313 @@ export class SystemDashboardService {
     }
   }
 
+  private async loadSuggestionPublicationProtocolSnapshot(): Promise<SuggestionPublicationProtocolSnapshot | null> {
+    if (!this.prisma) {
+      return null;
+    }
+
+    const checkedAt = new Date();
+    const staleBefore = new Date(checkedAt.getTime() - SUGGESTION_PUBLICATION_STALE_MS);
+    try {
+      const [publishingRows, ledgerRows] = await Promise.all([
+        this.prisma.$queryRaw<SuggestionPublishingAuditRow[]>`
+          with publishing_candidates as materialized (
+            select
+              audit.id as "suggestionId",
+              audit.chat_id as "chatId",
+              audit.actor_user_id as "actorUserId",
+              audit.created_at as "createdAt",
+              claim."claimAt",
+              jsonb_build_object(
+                'type', audit.payload->'type',
+                'reviewStatus', audit.payload->'reviewStatus',
+                'reviewAction', audit.payload->'reviewAction',
+                'reviewPublicationProtocol', audit.payload->'reviewPublicationProtocol',
+                'reviewPublicationLedgerJobId', audit.payload->'reviewPublicationLedgerJobId',
+                'reviewClaimToken', audit.payload->'reviewClaimToken',
+                'reviewClaimedAt', audit.payload->'reviewClaimedAt',
+                'reviewClaimedByUserId', audit.payload->'reviewClaimedByUserId',
+                'reviewClaimedByDisplayName', audit.payload->'reviewClaimedByDisplayName',
+                'reviewPublicationContext', audit.payload->'reviewPublicationContext',
+                'publishedMessageId', audit.payload->'publishedMessageId'
+              ) as payload
+            from audit_logs audit
+            cross join lateral (
+              select case
+                when pg_input_is_valid(
+                  audit.payload->>'reviewClaimedAt',
+                  'timestamp with time zone'
+                )
+                  then (audit.payload->>'reviewClaimedAt')::timestamptz
+                else audit.created_at
+              end as "claimAt"
+            ) claim
+            where audit.action = 'CHANNEL_DIALOG_SUGGESTION'
+              and audit.payload->>'type' = 'suggest'
+              and audit.payload->>'reviewStatus' = 'publishing'
+              and audit.created_at < ${staleBefore}
+              and claim."claimAt" < ${staleBefore}
+            order by claim."claimAt" asc, audit.created_at asc, audit.id asc
+            limit ${SUGGESTION_PUBLICATION_AUDIT_LIMIT + 1}
+          )
+          select
+            publishing.*,
+            ledger.job_id as "jobId",
+            ledger.action_type as "actionType",
+            ledger.chat_id as "ledgerChatId",
+            ledger.source_tag as "sourceTag",
+            ledger.status::text as status,
+            ledger.ambiguous,
+            ledger.terminal,
+            ledger.dispatch_token as "dispatchToken",
+            ledger.dispatch_started_at as "dispatchStartedAt",
+            ledger.dispatch_bot_id as "dispatchBotId",
+            ledger.remote_message_id as "remoteMessageId",
+            ledger.metadata
+          from publishing_candidates publishing
+          left join max_action_ledger ledger
+            on ledger.job_id = 'channel-suggestion:publish:v1:' || publishing."suggestionId"
+          order by
+            publishing."claimAt" asc,
+            publishing."createdAt" asc,
+            publishing."suggestionId" asc
+        `,
+        this.prisma.$queryRaw<SuggestionLedgerAuditRow[]>`
+          with suggestion_ledger_risk_candidates as materialized (
+            select
+              ledger.id as "ledgerId",
+              ledger.updated_at as "updatedAt",
+              ledger.job_id as "jobId",
+              ledger.action_type as "actionType",
+              ledger.chat_id as "ledgerChatId",
+              ledger.source_tag as "sourceTag",
+              ledger.status::text as status,
+              ledger.ambiguous,
+              ledger.terminal,
+              ledger.dispatch_token as "dispatchToken",
+              ledger.dispatch_started_at as "dispatchStartedAt",
+              ledger.dispatch_bot_id as "dispatchBotId",
+              ledger.remote_message_id as "remoteMessageId",
+              ledger.metadata,
+              audit.id as "auditId",
+              audit.chat_id as "auditChatId",
+              audit.actor_user_id as "actorUserId",
+              audit.action as "auditAction",
+              case
+                when audit.id is null then null
+                else jsonb_build_object(
+                  'type', audit.payload->'type',
+                  'reviewStatus', audit.payload->'reviewStatus',
+                  'reviewAction', audit.payload->'reviewAction',
+                  'reviewPublicationProtocol', audit.payload->'reviewPublicationProtocol',
+                  'reviewPublicationLedgerJobId', audit.payload->'reviewPublicationLedgerJobId',
+                  'reviewClaimToken', audit.payload->'reviewClaimToken',
+                  'reviewClaimedAt', audit.payload->'reviewClaimedAt',
+                  'reviewClaimedByUserId', audit.payload->'reviewClaimedByUserId',
+                  'reviewClaimedByDisplayName', audit.payload->'reviewClaimedByDisplayName',
+                  'reviewPublicationContext', audit.payload->'reviewPublicationContext',
+                  'publishedMessageId', audit.payload->'publishedMessageId'
+                )
+              end as payload
+            from max_action_ledger ledger
+            left join audit_logs audit
+              on audit.id = substring(
+                ledger.job_id from length('channel-suggestion:publish:v1:') + 1
+              )
+            where ledger.action_type = 'SEND_MESSAGE'
+              and ledger.source_tag = 'suggestion_delivery'
+              and ledger.job_id like 'channel-suggestion:publish:v1:%'
+              and not coalesce(
+                audit.action = 'CHANNEL_DIALOG_SUGGESTION'
+                and audit.chat_id = ledger.chat_id
+                and audit.payload->>'type' = 'suggest'
+                and audit.payload->>'reviewStatus' = 'published'
+                and audit.payload->>'reviewPublicationProtocol' = 'max_action_ledger_v1'
+                and audit.payload->>'reviewPublicationLedgerJobId' = ledger.job_id
+                and ledger.status = 'SUCCEEDED'
+                and ledger.ambiguous = false
+                and ledger.terminal = true
+                and nullif(btrim(ledger.remote_message_id), '') is not null
+                and audit.payload->>'publishedMessageId' = ledger.remote_message_id
+                and jsonb_typeof(audit.payload->'reviewPublicationContext') = 'object'
+                and audit.payload->'reviewPublicationContext'->>'protocol' = 'max_action_ledger_v1'
+                and pg_input_is_valid(
+                  audit.payload->'reviewPublicationContext'->>'preparedAt',
+                  'timestamp with time zone'
+                )
+                and audit.payload->'reviewPublicationContext'->>'messageDigest'
+                  ~* '^[a-f0-9]{64}$'
+                and audit.payload->'reviewPublicationContext'->>'contextDigest'
+                  ~* '^[a-f0-9]{64}$'
+                and nullif(btrim(ledger.dispatch_bot_id), '') is not null
+                and nullif(
+                  btrim(audit.payload->'reviewPublicationContext'->>'botId'),
+                  ''
+                ) is not null
+                and audit.payload->'reviewPublicationContext'->>'botId' = ledger.dispatch_bot_id
+                and jsonb_typeof(
+                  audit.payload->'reviewPublicationContext'->'buttons'
+                ) = 'array'
+                and jsonb_typeof(
+                  audit.payload->'reviewPublicationContext'->'includeCommentsButton'
+                ) = 'boolean'
+                and jsonb_typeof(
+                  audit.payload->'reviewPublicationContext'->'includeSuggestButton'
+                ) = 'boolean'
+                and audit.payload->'reviewPublicationContext'->>'suggestionEntryMode'
+                  in ('BOT', 'MINIAPP')
+                and jsonb_typeof(
+                  audit.payload->'reviewPublicationContext'->'authorAttribution'
+                ) = 'object'
+                and audit.payload->'reviewPublicationContext'->'authorAttribution'->>'userId'
+                  = audit.actor_user_id
+                and jsonb_typeof(ledger.metadata->'ledgerContext') = 'object'
+                and ledger.metadata->'ledgerContext'->>'suggestionId' = audit.id
+                and ledger.metadata->'ledgerContext'->>'publicationProtocol'
+                  = 'max_action_ledger_v1'
+                and nullif(
+                  btrim(ledger.metadata->'ledgerContext'->>'claimToken'),
+                  ''
+                ) is not null
+                and ledger.metadata->'ledgerContext'->>'actorUserId' = audit.actor_user_id
+                and ledger.metadata->'ledgerContext'->>'messageDigest'
+                  = audit.payload->'reviewPublicationContext'->>'messageDigest'
+                and ledger.metadata->'ledgerContext'->>'contextDigest'
+                  = audit.payload->'reviewPublicationContext'->>'contextDigest',
+                false
+              )
+            order by ledger.updated_at asc, ledger.id asc
+            limit ${SUGGESTION_PUBLICATION_AUDIT_LIMIT + 1}
+          )
+          select *
+          from suggestion_ledger_risk_candidates risk
+          order by risk."updatedAt" asc, risk."ledgerId" asc
+        `,
+      ]);
+
+      const publishing = {
+        safeRelease: 0,
+        completed: 0,
+        manual: 0,
+        legacy: 0,
+        audited: 0,
+        oldestAgeSec: 0,
+        capped: publishingRows.length > SUGGESTION_PUBLICATION_AUDIT_LIMIT,
+      };
+      for (const row of publishingRows.slice(0, SUGGESTION_PUBLICATION_AUDIT_LIMIT)) {
+        const claimAt = this.readDate(row.claimAt) ?? this.readDate(row.createdAt);
+        if (!claimAt || claimAt >= staleBefore) {
+          continue;
+        }
+        publishing.audited += 1;
+        publishing.oldestAgeSec = Math.max(
+          publishing.oldestAgeSec,
+          Math.max(0, Math.floor((checkedAt.getTime() - claimAt.getTime()) / 1_000)),
+        );
+        const payload = this.readRecord(row.payload) ?? {};
+        const decision = classifyChannelSuggestionPublicationRecovery({
+          payload,
+          suggestionId: row.suggestionId,
+          chatId: row.chatId,
+          actorUserId: row.actorUserId,
+          ledger: row.jobId ? this.mapSuggestionPublicationLedger(row) : null,
+          nowMs: checkedAt.getTime(),
+        });
+        if (decision.kind === 'release_pre_dispatch') {
+          publishing.safeRelease += 1;
+        } else if (decision.kind === 'completed') {
+          publishing.completed += 1;
+        } else if (decision.kind === 'manual' && decision.reason === 'legacy') {
+          publishing.legacy += 1;
+        } else if (decision.kind === 'manual') {
+          publishing.manual += 1;
+        }
+      }
+
+      const ledgerAudit = {
+        missingAudit: 0,
+        pendingAudit: 0,
+        publishedAudit: 0,
+        mismatchedAudit: 0,
+        linkedPublishing: 0,
+        audited: Math.min(ledgerRows.length, SUGGESTION_PUBLICATION_AUDIT_LIMIT),
+        oldestAgeSec: 0,
+        capped: ledgerRows.length > SUGGESTION_PUBLICATION_AUDIT_LIMIT,
+      };
+      for (const row of ledgerRows.slice(0, SUGGESTION_PUBLICATION_AUDIT_LIMIT)) {
+        const updatedAt = this.readDate(row.updatedAt);
+        if (updatedAt) {
+          ledgerAudit.oldestAgeSec = Math.max(
+            ledgerAudit.oldestAgeSec,
+            Math.max(0, Math.floor((checkedAt.getTime() - updatedAt.getTime()) / 1_000)),
+          );
+        }
+        const decision = classifyChannelSuggestionPublicationLedgerAudit({
+          ledger: this.mapSuggestionPublicationLedger(row),
+          audit:
+            row.auditId && row.auditChatId && row.actorUserId && row.auditAction
+              ? {
+                  id: row.auditId,
+                  chatId: row.auditChatId,
+                  actorUserId: row.actorUserId,
+                  action: row.auditAction,
+                  payload: this.readRecord(row.payload) ?? {},
+                }
+              : null,
+        });
+        this.incrementSuggestionLedgerAuditDecision(ledgerAudit, decision);
+      }
+
+      return {
+        checkedAt: checkedAt.toISOString(),
+        publishing,
+        ledgerAudit,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Channel suggestion publication protocol dashboard audit is unavailable',
+      );
+      return null;
+    }
+  }
+
+  private mapSuggestionPublicationLedger(
+    row: SuggestionPublishingAuditRow | SuggestionLedgerAuditRow,
+  ): ChannelSuggestionPublicationLedgerRow {
+    return {
+      jobId: row.jobId ?? '',
+      actionType: row.actionType ?? '',
+      chatId: row.ledgerChatId ?? '',
+      sourceTag: row.sourceTag,
+      status: row.status ?? '',
+      ambiguous: row.ambiguous === true,
+      terminal: row.terminal === true,
+      dispatchToken: row.dispatchToken,
+      dispatchStartedAt: this.readDate(row.dispatchStartedAt),
+      dispatchBotId: row.dispatchBotId,
+      remoteMessageId: row.remoteMessageId,
+      metadata: row.metadata,
+    };
+  }
+
+  private incrementSuggestionLedgerAuditDecision(
+    snapshot: SuggestionPublicationProtocolSnapshot['ledgerAudit'],
+    decision: ChannelSuggestionPublicationLedgerAuditDecision,
+  ): void {
+    if (decision === 'missing_audit') {
+      snapshot.missingAudit += 1;
+    } else if (decision === 'pending_audit') {
+      snapshot.pendingAudit += 1;
+    } else if (decision === 'published_audit') {
+      snapshot.publishedAudit += 1;
+    } else if (decision === 'linked_publishing') {
+      snapshot.linkedPublishing += 1;
+    } else {
+      snapshot.mismatchedAudit += 1;
+    }
+  }
+
   private buildDeliveryLedgerRiskAlert(
     snapshot: DeliveryLedgerRiskSnapshot | null,
   ): SystemDashboardAlert | null {
@@ -1265,6 +1665,51 @@ export class SystemDashboardService {
       detail: `${snapshot.deleteIntentAgedWaitingCapabilityCapped ? '>=' : ''}${snapshot.deleteIntentAgedWaitingCapability} delete intents сейчас в WAITING_CAPABILITY, а их первая попытка была больше ${thresholdMin} мин назад. ${scopeDetail}`,
       recommendedAction:
         'Проверьте effective delete permission и маршрут доступных ботов (для group chat требуется write), свежесть capability snapshot и unverified 404/message presence. Не удаляйте intents и не повторяйте действия вручную: durable retry продолжит работу после восстановления доступности.',
+    };
+  }
+
+  private buildSuggestionPublishingRiskAlert(
+    snapshot: SuggestionPublicationProtocolSnapshot | null,
+  ): SystemDashboardAlert | null {
+    if (!snapshot) {
+      return null;
+    }
+
+    const publishing = snapshot.publishing;
+    const stalePublishing =
+      publishing.safeRelease + publishing.completed + publishing.manual + publishing.legacy;
+    if (stalePublishing === 0 && !publishing.capped) {
+      return null;
+    }
+    const thresholdMin = SUGGESTION_PUBLICATION_STALE_MS / 60_000;
+    return {
+      code: 'channel-suggestion-publishing-stale',
+      level: 'warning',
+      title: 'Есть зависшие публикации предложек',
+      detail: `${publishing.capped ? 'Выборка ограничена; ' : ''}${stalePublishing} предложек остаются в publishing дольше ${thresholdMin} мин: safe pre-dispatch ${publishing.safeRelease}, completed ${publishing.completed}, manual ${publishing.manual}, legacy ${publishing.legacy}. Проверено ${publishing.audited}, максимальный возраст claim ${publishing.oldestAgeSec} сек.`,
+      recommendedAction:
+        'Safe pre-dispatch можно восстанавливать только штатным повторным review-запросом; completed требует штатной финализации. Manual и legacy сверяйте с MAX и transport logs, не сбрасывайте claim и не отправляйте повторно вручную.',
+    };
+  }
+
+  private buildSuggestionLedgerAuditAlert(
+    snapshot: SuggestionPublicationProtocolSnapshot | null,
+  ): SystemDashboardAlert | null {
+    if (!snapshot) {
+      return null;
+    }
+    const audit = snapshot.ledgerAudit;
+    const orphanRisk = audit.missingAudit + audit.pendingAudit + audit.mismatchedAudit;
+    if (orphanRisk === 0 && !audit.capped) {
+      return null;
+    }
+    return {
+      code: 'channel-suggestion-ledger-audit',
+      level: 'warning',
+      title: 'Suggestion publication ledger требует сверки',
+      detail: `${audit.capped ? 'Выборка ограничена; ' : ''}orphan/mismatch ${orphanRisk}: missing audit ${audit.missingAudit}, pending audit ${audit.pendingAudit}, mismatched ${audit.mismatchedAudit}. Корректно связаны: publishing ${audit.linkedPublishing}, published ${audit.publishedAudit}. Проверено ${audit.audited}, максимальный возраст ledger ${audit.oldestAgeSec} сек.`,
+      recommendedAction:
+        'Не удаляйте и не переотправляйте ledger автоматически. Сопоставьте suggestion id, immutable actor, claim/context digests, dispatch bot и remoteMessageId; исправляйте только после внешнего подтверждения MAX.',
     };
   }
 
@@ -1668,5 +2113,22 @@ export class SystemDashboardService {
       return Number.isFinite(parsed) ? parsed : 0;
     }
     return 0;
+  }
+
+  private readRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private readDate(value: unknown): Date | null {
+    if (value instanceof Date && Number.isFinite(value.getTime())) {
+      return value;
+    }
+    if (typeof value !== 'string' || !value.trim()) {
+      return null;
+    }
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
   }
 }

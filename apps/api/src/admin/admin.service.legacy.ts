@@ -231,10 +231,11 @@ import { AdminChannelDialogMappingRuntime } from './admin-channel-dialog-mapping
 import { createAdminChannelDialogMappingRuntimeContext } from './admin-channel-dialog-mapping-runtime-context';
 import { AdminChannelSuggestionImageRuntime } from './admin-channel-suggestion-image-runtime';
 import { createAdminChannelSuggestionImageRuntimeContext } from './admin-channel-suggestion-image-runtime-context';
+import { type ChannelSuggestionPublicationBotAssignment } from './admin-channel-suggestion-media-route';
 import {
-  resolveChannelSuggestionMediaPublicationBotId,
-  type ChannelSuggestionPublicationBotAssignment,
-} from './admin-channel-suggestion-media-route';
+  AdminChannelSuggestionPublicationRuntime,
+  createAdminChannelSuggestionPublicationRuntimeContext,
+} from './admin-channel-suggestion-publication-runtime';
 import {
   resolveChannelSuggestionActorDisplayName as resolveChannelSuggestionActorDisplayNameValue,
   resolveChannelSuggestionAuthorAttribution as resolveChannelSuggestionAuthorAttributionValue,
@@ -328,8 +329,6 @@ import { createAdminManagedBroadcastRuntimeContext } from './admin-managed-broad
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
-  hasRetriableManagedBroadcastAttachment,
-  isAttachmentNotReadyError as isAttachmentNotReadyErrorValue,
   isManagedBroadcastSlotConflictError as isManagedBroadcastSlotConflictErrorValue,
   resolveBroadcastImageFileName as resolveBroadcastImageFileNameValue,
   resolveManagedBroadcastAttachmentRetryCount,
@@ -345,7 +344,6 @@ import {
 import {
   DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
   ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS,
-  BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
   CHANNEL_SUGGESTION_DELIVERY_RECOVERY_BATCH_SIZE,
@@ -504,7 +502,6 @@ export type {
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
 
-const CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR = Symbol('channelSuggestionAmbiguousSendError');
 const CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY = '__default__';
 const MANUAL_MODERATION_FANOUT_LEDGER_STALE_MS = 10 * 60 * 1000;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_REBUILD_MAX_ATTEMPTS = 3;
@@ -628,6 +625,10 @@ export class AdminService implements OnModuleDestroy {
   private readonly channelSuggestionImageRuntime = new AdminChannelSuggestionImageRuntime(
     createAdminChannelSuggestionImageRuntimeContext(this),
   );
+  private readonly channelSuggestionPublicationRuntime =
+    new AdminChannelSuggestionPublicationRuntime(
+      createAdminChannelSuggestionPublicationRuntimeContext(this),
+    );
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(
     createAdminChannelStatsRuntimeContext(this),
   );
@@ -7108,375 +7109,8 @@ export class AdminService implements OnModuleDestroy {
     suggestionId: string,
     user: AuthUser,
     action: ChannelSuggestionReviewAction,
-  ): Promise<{
-    status: 'reviewed' | 'already_reviewed' | 'review_in_progress';
-    reviewStatus: 'published' | 'cancelled' | 'processing';
-    publishedUrl: string | null;
-  }> {
-    const normalizedSuggestionId = suggestionId.trim();
-    if (!normalizedSuggestionId) {
-      throw new BadRequestException('Предложка не найдена.');
-    }
-
-    const row = await this.prisma.auditLog.findFirst({
-      where: {
-        id: normalizedSuggestionId,
-        action: CHANNEL_DIALOG_ACTION_SUGGEST,
-      },
-      select: {
-        id: true,
-        chatId: true,
-        actorUserId: true,
-        payload: true,
-      },
-    });
-
-    if (!row) {
-      throw new BadRequestException('Предложка не найдена.');
-    }
-
-    await this.assertChatAdmin(row.chatId, user.userId, 'channel');
-    await this.ensureEntityType(row.chatId, user.userId, 'channel');
-
-    const payload = this.readObjectPayload(row.payload);
-    if (this.readLowerString(payload.type) !== 'suggest') {
-      throw new BadRequestException('Предложка не найдена.');
-    }
-    const currentReviewStatus = this.readLowerString(payload.reviewStatus);
-    if (currentReviewStatus === 'published' || currentReviewStatus === 'cancelled') {
-      return {
-        status: 'already_reviewed',
-        reviewStatus: currentReviewStatus,
-        publishedUrl: this.readTrimmedString(payload.publishedUrl),
-      };
-    }
-    if (currentReviewStatus === 'publishing') {
-      return {
-        status: 'review_in_progress',
-        reviewStatus: 'processing',
-        publishedUrl: null,
-      };
-    }
-
-    const claim = await this.claimChannelSuggestionReview({
-      suggestionId: row.id,
-      userId: user.userId,
-      action,
-    });
-    if (!claim) {
-      const latestRow = await this.prisma.auditLog.findFirst({
-        where: {
-          id: row.id,
-          action: CHANNEL_DIALOG_ACTION_SUGGEST,
-        },
-        select: {
-          payload: true,
-        },
-      });
-      const latestPayload = latestRow ? this.readObjectPayload(latestRow.payload) : {};
-      const latestReviewStatus = this.readLowerString(latestPayload.reviewStatus);
-      if (latestReviewStatus === 'published' || latestReviewStatus === 'cancelled') {
-        return {
-          status: 'already_reviewed',
-          reviewStatus: latestReviewStatus,
-          publishedUrl: this.readTrimmedString(latestPayload.publishedUrl),
-        };
-      }
-      if (latestReviewStatus === 'publishing') {
-        return {
-          status: 'review_in_progress',
-          reviewStatus: 'processing',
-          publishedUrl: null,
-        };
-      }
-
-      throw new BadRequestException('Предложка уже обрабатывается.');
-    }
-
-    const payloadActorUserId = this.readTrimmedString(payload.actorUserId);
-    const hasActorMismatch = Boolean(payloadActorUserId && payloadActorUserId !== row.actorUserId);
-    if (hasActorMismatch) {
-      this.logger.warn(
-        {
-          suggestionId: row.id,
-          chatId: row.chatId,
-          actorUserId: row.actorUserId,
-          payloadActorUserId,
-        },
-        'Channel suggestion payload actor differs from audit actor; using audit actor',
-      );
-    }
-    const canonicalPayload: Record<string, unknown> = {
-      ...payload,
-      ...(hasActorMismatch
-        ? {
-            authorDisplayName: null,
-            authorMentionDisplayName: null,
-            authorUsername: null,
-            authorProfileUrl: null,
-            authorAvatarUrl: null,
-          }
-        : {}),
-      actorUserId: row.actorUserId,
-    };
-
-    let published: Awaited<ReturnType<typeof this.publishStoredChannelSuggestion>>;
-    try {
-      if (action === 'publish') {
-        const publicationAssignment = await this.resolveChannelSuggestionPublicationBotAssignment(
-          row.chatId,
-        );
-        const images = await this.channelSuggestionImageRuntime.loadStoredImages(
-          row.id,
-          canonicalPayload,
-        );
-        const resolvedBotId = await resolveChannelSuggestionMediaPublicationBotId({
-          payload: canonicalPayload,
-          images,
-          assignment: publicationAssignment,
-          loadSentDeliveryBotIds: async () =>
-            (
-              await this.prisma.channelSuggestionAdminDelivery.findMany({
-                where: {
-                  auditLogId: row.id,
-                  status: PrismaChannelSuggestionAdminDeliveryStatus.SENT,
-                },
-                select: { botId: true },
-              })
-            ).map(({ botId }) => botId),
-          onUnavailable: (reason) =>
-            this.logger.warn(
-              { suggestionId: row.id, chatId: row.chatId, reason },
-              'Channel suggestion media token route is unverified',
-            ),
-        });
-        published = await this.publishStoredChannelSuggestion(
-          row.chatId,
-          row.actorUserId,
-          canonicalPayload,
-          images,
-          resolvedBotId,
-        );
-      } else {
-        const resolvedBotId = await this.resolveDeliveryBotAssignment(row.chatId);
-        published = {
-          messageId: null,
-          url: null,
-          threadId: null,
-          includeCommentsButton: false,
-          includeSuggestButton: false,
-          suggestButtonText: null,
-          suggestionEntryMode: 'BOT' as ChannelSettings['postSuggestionsEntryMode'],
-          botId: resolvedBotId ?? null,
-          authorAttribution: await this.resolveChannelSuggestionAuthorAttribution(
-            row.chatId,
-            this.readStoredChannelSuggestionActor(row.actorUserId, canonicalPayload),
-            {
-              botId: resolvedBotId,
-              trafficClass: 'interactive',
-            },
-          ),
-        };
-      }
-    } catch (error) {
-      if (this.isChannelSuggestionAmbiguousSendError(error)) {
-        this.logger.warn(
-          {
-            suggestionId: row.id,
-            chatId: row.chatId,
-            userId: user.userId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Channel suggestion publish send failed ambiguously; keeping review claim for manual verification',
-        );
-        throw error;
-      }
-
-      try {
-        await this.releaseChannelSuggestionReviewClaim({
-          suggestionId: row.id,
-          userId: user.userId,
-          previousReviewStatus: currentReviewStatus ?? 'pending',
-          error,
-        });
-      } catch (releaseError) {
-        this.logger.warn(
-          {
-            suggestionId: row.id,
-            chatId: row.chatId,
-            userId: user.userId,
-            publishError: error instanceof Error ? error.message : String(error),
-            releaseError:
-              releaseError instanceof Error ? releaseError.message : String(releaseError),
-          },
-          'Failed to release channel suggestion review claim after publish error',
-        );
-      }
-      throw error;
-    }
-    const reviewerLabel = user.displayName?.trim() || user.username?.trim() || user.userId;
-    const reviewStatus = action === 'publish' ? 'published' : 'cancelled';
-    const updatedPayload = {
-      ...canonicalPayload,
-      authorDisplayName: published.authorAttribution.displayName,
-      authorMentionDisplayName: published.authorAttribution.mentionDisplayName,
-      authorUsername: published.authorAttribution.username,
-      authorProfileUrl: published.authorAttribution.profileUrl,
-      reviewStatus,
-      reviewedAt: new Date().toISOString(),
-      reviewedByUserId: user.userId,
-      reviewedByDisplayName: reviewerLabel,
-      publishedMessageId: published.messageId,
-      publishedUrl: published.url,
-    } as Prisma.InputJsonValue;
-
-    const persisted = await this.prisma.auditLog.updateMany({
-      where: {
-        id: row.id,
-        action: CHANNEL_DIALOG_ACTION_SUGGEST,
-        payload: {
-          path: ['reviewStatus'],
-          equals: 'publishing',
-        } satisfies Prisma.JsonFilter,
-        AND: [
-          {
-            payload: {
-              path: ['reviewClaimedByUserId'],
-              equals: user.userId,
-            } satisfies Prisma.JsonFilter,
-          },
-          {
-            payload: {
-              path: ['reviewAction'],
-              equals: action,
-            } satisfies Prisma.JsonFilter,
-          },
-        ],
-      },
-      data: {
-        payload: updatedPayload,
-      },
-    });
-    if (persisted.count === 0) {
-      this.logger.warn(
-        {
-          suggestionId: row.id,
-          chatId: row.chatId,
-          reviewStatus,
-          publishedMessageId: published.messageId,
-        },
-        'Channel suggestion disappeared before review persistence',
-      );
-    }
-
-    if (
-      action === 'publish' &&
-      published.messageId &&
-      published.threadId &&
-      (published.includeCommentsButton || published.includeSuggestButton)
-    ) {
-      await this.prisma.auditLog.create({
-        data: {
-          chatId: row.chatId,
-          actorUserId: user.userId,
-          action: CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
-          payload: {
-            messageId: published.messageId,
-            threadId: published.threadId,
-            includeCommentsButton: published.includeCommentsButton,
-            includeSuggestButton: published.includeSuggestButton,
-            suggestionEntryMode: published.suggestionEntryMode,
-            source: 'suggestion_review',
-            ...(published.url ? { publishedUrl: published.url } : {}),
-            ...(published.botId ? { botId: published.botId } : {}),
-            ...(published.suggestButtonText
-              ? { suggestButtonText: published.suggestButtonText }
-              : {}),
-          },
-        },
-      });
-    }
-
-    await this.syncChannelSuggestionAdminReviewMessages(
-      row.id,
-      row.chatId,
-      updatedPayload as Record<string, unknown>,
-    );
-
-    return {
-      status: 'reviewed',
-      reviewStatus,
-      publishedUrl: published.url,
-    };
-  }
-
-  private async claimChannelSuggestionReview(params: {
-    suggestionId: string;
-    userId: string;
-    action: ChannelSuggestionReviewAction;
-  }): Promise<boolean> {
-    const claimedAt = new Date().toISOString();
-    const updated = await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE audit_logs
-      SET payload = payload::jsonb || jsonb_build_object(
-        'reviewStatus', 'publishing',
-        'reviewClaimedAt', ${claimedAt}::text,
-        'reviewClaimedByUserId', ${params.userId}::text,
-        'reviewAction', ${params.action}::text
-      )
-      WHERE id = ${params.suggestionId}::text
-        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
-        AND payload->>'type' = 'suggest'
-        AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending'
-    `);
-
-    return Number(updated) > 0;
-  }
-
-  private markChannelSuggestionAmbiguousSendError(error: unknown): void {
-    if (error && (typeof error === 'object' || typeof error === 'function')) {
-      Object.defineProperty(error, CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR, {
-        value: true,
-        configurable: true,
-      });
-    }
-  }
-
-  private isChannelSuggestionAmbiguousSendError(error: unknown): boolean {
-    return Boolean(
-      error &&
-      (typeof error === 'object' || typeof error === 'function') &&
-      (error as Record<typeof CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR, unknown>)[
-        CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR
-      ],
-    );
-  }
-
-  private async releaseChannelSuggestionReviewClaim(params: {
-    suggestionId: string;
-    userId: string;
-    previousReviewStatus: string;
-    error: unknown;
-  }): Promise<void> {
-    const releasedAt = new Date().toISOString();
-    const message = (
-      params.error instanceof Error ? params.error.message : String(params.error)
-    ).slice(0, 500);
-    await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE audit_logs
-      SET payload = (
-        payload::jsonb
-        || jsonb_build_object(
-          'reviewStatus', ${params.previousReviewStatus}::text,
-          'reviewClaimReleasedAt', ${releasedAt}::text,
-          'reviewLastError', ${message}::text
-        )
-      ) - 'reviewClaimedAt' - 'reviewClaimedByUserId' - 'reviewAction'
-      WHERE id = ${params.suggestionId}::text
-        AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
-        AND payload->>'reviewStatus' = 'publishing'
-        AND payload->>'reviewClaimedByUserId' = ${params.userId}::text
-    `);
+  ) {
+    return this.channelSuggestionPublicationRuntime.review(suggestionId, user, action);
   }
 
   parseChannelSuggestionStartPayload(
@@ -8517,14 +8151,6 @@ export class AdminService implements OnModuleDestroy {
     return resolveManagedBroadcastSendRetryDelayMsValue(error, attempt, options);
   }
 
-  private hasRetriableMaxAttachment(options: ManagedBroadcastRetriableAttachmentOptions): boolean {
-    return hasRetriableManagedBroadcastAttachment(options);
-  }
-
-  private isAttachmentNotReadyError(error: unknown): boolean {
-    return isAttachmentNotReadyErrorValue(error);
-  }
-
   private sleep(ms: number): Promise<void> {
     return sleep(ms);
   }
@@ -8928,57 +8554,6 @@ export class AdminService implements OnModuleDestroy {
 
   private resolveRulesImageFileName(fileName: string, mimeType: string): string {
     return resolveRulesImageFileNameValue(fileName, mimeType);
-  }
-
-  private async publishMessageWithRetry(
-    chatId: string,
-    text: string,
-    options:
-      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
-      | undefined,
-    botId?: string,
-  ): Promise<{ messageId: string; url: string | null }> {
-    let lastError: unknown = null;
-    const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
-    const requestOptions = {
-      trafficClass: 'interactive',
-      actionHealthLane: 'interactive',
-      sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
-      timeoutMs: 10_000,
-      ...(botId ? { botId } : {}),
-    } as const;
-
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      try {
-        return await this.maxClient.sendMessageImmediateWithResolvedLink(
-          chatId,
-          text,
-          options,
-          requestOptions,
-        );
-      } catch (error: unknown) {
-        lastError = error;
-        if (wasMaxMessageSendAttempted(error) || isAmbiguousMaxSendError(error)) {
-          this.markChannelSuggestionAmbiguousSendError(error);
-          throw error;
-        }
-        if (
-          !this.hasRetriableMaxAttachment(options) ||
-          !this.isAttachmentNotReadyError(error) ||
-          attempt >= attempts
-        ) {
-          throw error;
-        }
-        const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
-        await this.sleep(delayMs);
-      }
-    }
-
-    if (lastError) {
-      throw lastError;
-    }
-
-    throw new Error('Message publish failed without error details');
   }
 
   private normalizeChatRulesDraft(...args: any[]) {
@@ -17927,6 +17502,7 @@ export class AdminService implements OnModuleDestroy {
       },
       select: {
         id: true,
+        chatId: true,
         actorUserId: true,
         payload: true,
         createdAt: true,
@@ -18086,8 +17662,11 @@ export class AdminService implements OnModuleDestroy {
       where: { id: normalizedAuditLogId },
       select: {
         id: true,
+        chatId: true,
+        actorUserId: true,
         action: true,
         payload: true,
+        createdAt: true,
       },
     });
     if (!row || row.action !== CHANNEL_DIALOG_ACTION_SUGGEST) {
@@ -18095,15 +17674,15 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const payload = this.readObjectPayload(row.payload);
-    const reviewStatus = this.readLowerString(payload.reviewStatus);
-    if (reviewStatus && reviewStatus !== 'pending') {
-      return;
-    }
-
     const ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
     if (ledgerRows.length > 0) {
       await this.reconcileStaleChannelSuggestionAdminDeliveries(row.id);
       await this.syncChannelSuggestionLegacyDeliveryPayload(row);
+      return;
+    }
+
+    const reviewStatus = this.readLowerString(payload.reviewStatus);
+    if (reviewStatus && reviewStatus !== 'pending') {
       return;
     }
 
@@ -18120,7 +17699,6 @@ export class AdminService implements OnModuleDestroy {
     const code = extractMaxErrorCode(error);
     const message = extractMaxErrorMessage(error) || 'unknown delivery job failure';
     const recoverable = this.isRecoverableChannelSuggestionDeliveryJobError(error);
-    const failureCount = this.toSafeInteger(payload.deliveryJobFailureCount) + 1;
     const deliveryJobLastError = {
       message,
       status,
@@ -18131,13 +17709,11 @@ export class AdminService implements OnModuleDestroy {
       final: metadata.final,
     };
 
-    const nextPayload: Record<string, unknown> = {
-      ...payload,
+    const failurePatch: Record<string, unknown> = {
       delivered: false,
       deliveredToUserId: null,
       deliveredToUserIds: [],
       deliveries: [],
-      deliveryJobFailureCount: failureCount,
       deliveryJobLastFailedAt: failedAt,
       deliveryJobLastError,
       ...(metadata.final
@@ -18149,8 +17725,8 @@ export class AdminService implements OnModuleDestroy {
     };
 
     if (metadata.final && !recoverable) {
-      nextPayload.deliveryAttemptedAt = failedAt;
-      nextPayload.deliveryFailures = [
+      failurePatch.deliveryAttemptedAt = failedAt;
+      failurePatch.deliveryFailures = [
         {
           adminUserId: 'delivery_job',
           privateChatId: null,
@@ -18163,12 +17739,35 @@ export class AdminService implements OnModuleDestroy {
       ];
     }
 
-    await this.prisma.auditLog.update({
-      where: { id: row.id },
-      data: {
-        payload: nextPayload as Prisma.InputJsonValue,
-      },
-    });
+    const failurePatchJson = JSON.stringify(failurePatch);
+    const updated = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE audit_logs audit
+      SET payload = audit.payload::jsonb
+        || ${failurePatchJson}::jsonb
+        || jsonb_build_object(
+          'deliveryJobFailureCount',
+          CASE
+            WHEN COALESCE(audit.payload->>'deliveryJobFailureCount', '') ~ '^[0-9]{1,18}$'
+              THEN LEAST(
+                (audit.payload->>'deliveryJobFailureCount')::bigint + 1,
+                2147483647
+              )
+            ELSE 1
+          END
+        )
+      WHERE audit.id = ${row.id}::text
+        AND audit.action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
+        AND audit.payload->>'type' = 'suggest'
+        AND COALESCE(NULLIF(audit.payload->>'reviewStatus', ''), 'pending') = 'pending'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM channel_suggestion_admin_deliveries delivery
+          WHERE delivery.audit_log_id = audit.id
+        )
+    `);
+    if (Number(updated) === 0) {
+      await this.syncChannelSuggestionLegacyDeliveryPayload(row, failedAt);
+    }
   }
 
   private async processChannelSuggestionDeliveryJobWithinTimeout(
@@ -18292,7 +17891,13 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async applyChannelSuggestionDeliveryResult(
-    row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date },
+    row: {
+      id: string;
+      chatId?: string;
+      actorUserId: string;
+      payload: Prisma.JsonValue;
+      createdAt: Date;
+    },
     delivery: {
       delivered: boolean;
       deliveredToUserId: string | null;
@@ -18302,9 +17907,7 @@ export class AdminService implements OnModuleDestroy {
       deliveryFailures: ChannelSuggestionAdminDeliveryFailure[];
     },
   ) {
-    const createdPayload = this.readObjectPayload(row.payload);
-    const nextPayload: Record<string, unknown> = {
-      ...createdPayload,
+    const deliveryPatch: Record<string, unknown> = {
       delivered: delivery.delivered,
       deliveredToUserId: delivery.deliveredToUserId,
       deliveredToUserIds: delivery.deliveredToUserIds,
@@ -18312,26 +17915,71 @@ export class AdminService implements OnModuleDestroy {
       deliveryAttemptedAt: delivery.deliveryAttemptedAt,
       deliveryFailures: delivery.deliveryFailures,
     };
-    delete nextPayload.deliveryJobLastError;
-    delete nextPayload.deliveryJobLastFailedAt;
-    delete nextPayload.deliveryJobFinalFailedAt;
-    delete nextPayload.deliveryJobFailureCount;
-    delete nextPayload.deliveryJobRecoverable;
-
-    return this.prisma.auditLog.update({
-      where: {
-        id: row.id,
-      },
-      data: {
-        payload: nextPayload as Prisma.InputJsonValue,
-      },
-      select: {
-        id: true,
-        actorUserId: true,
-        payload: true,
-        createdAt: true,
-      },
-    });
+    const deliveryPatchJson = JSON.stringify(deliveryPatch);
+    const updatedRows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        chatId: string;
+        actorUserId: string;
+        payload: Prisma.JsonValue;
+        createdAt: Date;
+      }>
+    >(Prisma.sql`
+      UPDATE audit_logs audit
+      SET payload = (
+        audit.payload::jsonb || ${deliveryPatchJson}::jsonb
+      )
+        - 'deliveryJobLastError'
+        - 'deliveryJobLastFailedAt'
+        - 'deliveryJobFinalFailedAt'
+        - 'deliveryJobFailureCount'
+        - 'deliveryJobRecoverable'
+      WHERE audit.id = ${row.id}::text
+        AND audit.action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
+        AND audit.payload->>'type' = 'suggest'
+      RETURNING
+        audit.id,
+        audit.chat_id AS "chatId",
+        audit.actor_user_id AS "actorUserId",
+        audit.payload,
+        audit.created_at AS "createdAt"
+    `);
+    const fallbackPayloadRecord: Record<string, unknown> = {
+      ...this.readObjectPayload(row.payload),
+      ...deliveryPatch,
+    };
+    delete fallbackPayloadRecord.deliveryJobLastError;
+    delete fallbackPayloadRecord.deliveryJobLastFailedAt;
+    delete fallbackPayloadRecord.deliveryJobFinalFailedAt;
+    delete fallbackPayloadRecord.deliveryJobFailureCount;
+    delete fallbackPayloadRecord.deliveryJobRecoverable;
+    const fallbackPayload = fallbackPayloadRecord as Prisma.JsonValue;
+    const returned = updatedRows[0];
+    const updated =
+      returned?.id === row.id &&
+      returned.createdAt instanceof Date &&
+      Boolean(this.readObjectPayloadOrNull(returned.payload))
+        ? returned
+        : {
+            id: row.id,
+            chatId: row.chatId ?? '',
+            actorUserId: row.actorUserId,
+            payload: fallbackPayload,
+            createdAt: row.createdAt instanceof Date ? row.createdAt : new Date(),
+          };
+    const latestPayload = this.readObjectPayload(updated.payload);
+    const latestReviewStatus = this.readLowerString(latestPayload.reviewStatus);
+    if (
+      updated.chatId &&
+      (latestReviewStatus === 'published' || latestReviewStatus === 'cancelled')
+    ) {
+      await this.syncChannelSuggestionAdminReviewMessages(
+        updated.id,
+        updated.chatId,
+        latestPayload,
+      );
+    }
+    return updated;
   }
 
   private normalizeChannelSuggestionAdminDeliveryBotKey(botId?: string | null): string {
@@ -18445,10 +18093,17 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async syncChannelSuggestionLegacyDeliveryPayload(
-    row: { id: string; actorUserId?: string; payload: Prisma.JsonValue; createdAt?: Date },
+    row: {
+      id: string;
+      chatId?: string;
+      actorUserId?: string;
+      payload: Prisma.JsonValue;
+      createdAt?: Date;
+    },
     deliveryAttemptedAt = new Date().toISOString(),
   ): Promise<{
     id: string;
+    chatId: string;
     actorUserId: string;
     payload: Prisma.JsonValue;
     createdAt: Date;
@@ -18461,6 +18116,7 @@ export class AdminService implements OnModuleDestroy {
     return this.applyChannelSuggestionDeliveryResult(
       {
         id: row.id,
+        chatId: row.chatId,
         actorUserId: row.actorUserId ?? '',
         payload: row.payload,
         createdAt: row.createdAt ?? new Date(),
@@ -18689,8 +18345,7 @@ export class AdminService implements OnModuleDestroy {
           },
         });
       } catch (error: unknown) {
-        const ambiguous =
-          isMaxApiTimeoutError(error) || this.isChannelSuggestionAmbiguousSendError(error);
+        const ambiguous = isMaxApiTimeoutError(error);
         const deliveryFailure = this.buildChannelSuggestionDeliveryFailure({
           adminUserId: ledgerRow.adminUserId,
           privateChatId,
@@ -18881,174 +18536,6 @@ export class AdminService implements OnModuleDestroy {
   private buildPrivateControlCallbackPayload(action: string, ...args: string[]): string {
     const normalizedArgs = args.map((arg) => arg.trim()).filter((arg) => arg.length > 0);
     return [PRIVATE_CONTROL_CALLBACK_PREFIX, action, ...normalizedArgs].join('|');
-  }
-
-  private async publishStoredChannelSuggestion(
-    chatId: string,
-    actorUserId: string,
-    payload: Record<string, unknown>,
-    images: ChannelSuggestionImageAsset[],
-    resolvedBotId: string | undefined,
-  ): Promise<{
-    messageId: string | null;
-    url: string | null;
-    threadId: string | null;
-    includeCommentsButton: boolean;
-    includeSuggestButton: boolean;
-    suggestButtonText: string | null;
-    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
-    botId: string | null;
-    authorAttribution: ChannelSuggestionAuthorAttribution;
-  }> {
-    const text = this.readRawString(payload.text) ?? '';
-    const authorAttribution = await this.resolveChannelSuggestionAuthorAttribution(
-      chatId,
-      this.readStoredChannelSuggestionActor(actorUserId, payload),
-      {
-        botId: resolvedBotId,
-        trafficClass: 'interactive',
-      },
-    );
-    const media = await this.resolveChannelSuggestionAttachments(
-      {
-        images,
-        mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
-        mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
-        mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
-        mediaFileName: this.readTrimmedString(payload.mediaFileName),
-      },
-      resolvedBotId,
-    );
-    const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(
-      chatId,
-      payload,
-      resolvedBotId,
-    );
-    const textFormat = this.normalizeBroadcastTextFormat(
-      this.readTrimmedString(payload.textFormat) ?? 'plain',
-    );
-    const textMarkup = this.readChannelSuggestionTextMarkup(payload.textMarkup);
-    const messageTextPayload = buildPublishedChannelSuggestionMessagePayloadValue(
-      authorAttribution,
-      text,
-      textFormat,
-      textMarkup,
-    );
-
-    if (!text.trim() && !media.imagePayload && !media.attachments?.length) {
-      throw new BadRequestException('В предложке нет текста или медиа для публикации.');
-    }
-
-    const preparedMessageText = this.channelPostSignatureService
-      ? await this.channelPostSignatureService.preparePostText(
-          chatId,
-          {
-            text: messageTextPayload.text,
-            textFormat: messageTextPayload.textFormat,
-          },
-          {
-            entityType: 'channel',
-            trafficClass: 'interactive',
-            sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
-          },
-        )
-      : messageTextPayload;
-    const messageOptions: Pick<
-      MaxSendMessageOptions,
-      'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
-    > = {
-      ...(buttonContext.buttons.length > 0 ? { buttons: buttonContext.buttons } : {}),
-      ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
-      ...(media.attachments?.length ? { attachments: media.attachments } : {}),
-      textFormat: preparedMessageText.textFormat,
-    };
-    const published = await this.publishMessageWithRetry(
-      chatId,
-      preparedMessageText.text,
-      messageOptions,
-      resolvedBotId,
-    );
-
-    return {
-      messageId: published.messageId,
-      url: published.url,
-      threadId: buttonContext.threadId,
-      includeCommentsButton: buttonContext.includeCommentsButton,
-      includeSuggestButton: buttonContext.includeSuggestButton,
-      suggestButtonText: buttonContext.suggestButtonText,
-      suggestionEntryMode: buttonContext.suggestionEntryMode,
-      botId: resolvedBotId ?? null,
-      authorAttribution,
-    };
-  }
-
-  private async buildPublishedChannelSuggestionButtonContext(
-    chatId: string,
-    payload: Record<string, unknown>,
-    botId?: string | null,
-  ): Promise<{
-    buttons: MaxMessageButton[][];
-    threadId: string | null;
-    includeCommentsButton: boolean;
-    includeSuggestButton: boolean;
-    suggestButtonText: string | null;
-    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
-  }> {
-    const settings = await this.getPublicChannelSettings(chatId);
-    const includeCommentsButton = settings.commentsEnabled;
-    const includeSuggestButton = settings.postSuggestionsEnabled;
-
-    if (!includeCommentsButton && !includeSuggestButton) {
-      return {
-        buttons: [],
-        threadId: null,
-        includeCommentsButton,
-        includeSuggestButton,
-        suggestButtonText: null,
-        suggestionEntryMode: settings.postSuggestionsEntryMode,
-      };
-    }
-
-    // A published channel post must have its own dialog thread.
-    // Reusing the suggestion thread mixes comments between the source post/suggestion
-    // and the newly published post.
-    const threadId = randomUUID();
-    const suggestButtonText = settings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
-    const buttons: MaxMessageButton[][] = [];
-
-    if (includeCommentsButton) {
-      buttons.push([
-        this.buildChannelDialogButton(
-          chatId,
-          'comments',
-          threadId,
-          formatCommentsButtonText('💬 Комментарии', 0),
-          botId,
-        ),
-      ]);
-    }
-
-    if (includeSuggestButton) {
-      buttons.push([
-        this.buildChannelDialogButton(
-          chatId,
-          'suggest',
-          threadId,
-          suggestButtonText,
-          botId,
-          settings.postSuggestionsEntryMode,
-        ),
-      ]);
-    }
-
-    return {
-      buttons,
-      threadId,
-      includeCommentsButton,
-      includeSuggestButton,
-      suggestButtonText: includeSuggestButton ? suggestButtonText : null,
-      suggestionEntryMode: settings.postSuggestionsEntryMode,
-    };
   }
 
   private async syncChannelSuggestionAdminReviewMessages(

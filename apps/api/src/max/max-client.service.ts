@@ -60,6 +60,7 @@ import {
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
   wasMaxPreDispatchGuardRejected,
 } from './max-action-pre-dispatch-guard';
 import {
@@ -176,6 +177,16 @@ export type MaxPublishedMessage = {
   messageId: string;
   url: string | null;
   chatId?: string | null;
+  recoveredSendDispatch?: {
+    dispatchBotId: string | null;
+  };
+};
+
+const MAX_RECOVERED_SEND_DISPATCH_RESPONSE = Symbol('max-recovered-send-dispatch-response');
+type MaxQueuedSendResponse = Record<string, unknown> & {
+  [MAX_RECOVERED_SEND_DISPATCH_RESPONSE]?: {
+    dispatchBotId: string | null;
+  };
 };
 
 type MaxMessageMarkup = {
@@ -413,6 +424,7 @@ export type MaxActionRoutingMetadata = {
   action?: 'delete_message' | 'moderate_member';
   routingVersion?: number | null;
   sendRouteHalfOpenProbe?: 'publication_exact_verification';
+  requiredBotId?: string;
 };
 
 export type MaxActionLedgerContextValue =
@@ -483,6 +495,7 @@ export type MaxActionDispatchOptions = {
 type MaxActionExecutionOptions = {
   beforeDeleteMutation?: () => Promise<void>;
   beforeMemberMutation?: () => Promise<void>;
+  beforeSendMutation?: () => Promise<void>;
 };
 
 type MaxApiRequestOptions = {
@@ -2566,12 +2579,26 @@ export class MaxClientService implements OnModuleDestroy {
       ...job,
       attempt: Number.isInteger(job.attempt) && job.attempt > 0 ? job.attempt : 1,
     };
+    const completedSendDispatch =
+      typeof this.actionLedgerService?.getCompletedSendDispatchResult === 'function'
+        ? await this.actionLedgerService.getCompletedSendDispatchResult(action)
+        : null;
     const completedSendMessageId =
-      await this.actionLedgerService?.getCompletedSendDispatch?.(action);
+      completedSendDispatch?.remoteMessageId ??
+      (typeof this.actionLedgerService?.getCompletedSendDispatchResult !== 'function'
+        ? await this.actionLedgerService?.getCompletedSendDispatch?.(action)
+        : null);
     if (completedSendMessageId) {
+      const dispatchBotId = this.assertRecoveredSendDispatchBot(
+        action,
+        completedSendDispatch?.dispatchBotId ?? null,
+      );
       return {
         messageId: completedSendMessageId,
         url: null,
+        recoveredSendDispatch: {
+          dispatchBotId,
+        },
       };
     }
     const bot = this.resolveExecutableBot(action.botId, {
@@ -2614,6 +2641,7 @@ export class MaxClientService implements OnModuleDestroy {
             action,
             attachments,
             mutationOptions,
+            executionOptions.beforeSendMutation,
           );
           const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
           if (!sentMessageId) {
@@ -2643,10 +2671,12 @@ export class MaxClientService implements OnModuleDestroy {
             }
           }
           const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
+          const recoveredSendDispatch = sendResponse[MAX_RECOVERED_SEND_DISPATCH_RESPONSE];
           return {
             messageId: sentMessageId,
             url: this.parseChatLink(sendResponse),
             ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+            ...(recoveredSendDispatch ? { recoveredSendDispatch } : {}),
           };
         }
 
@@ -6503,7 +6533,8 @@ export class MaxClientService implements OnModuleDestroy {
     action: MaxActionJob,
     attachments: Record<string, unknown>[],
     mutationOptions: MaxApiRequestOptions,
-  ): Promise<Record<string, unknown>> {
+    beforeMutation?: () => Promise<void>,
+  ): Promise<MaxQueuedSendResponse> {
     const messageLink = this.buildMessageLinkData(action.options?.messageLink);
     const hasText = typeof action.text === 'string' && action.text.trim().length > 0;
     if (!hasText && attachments.length === 0 && !messageLink) {
@@ -6528,7 +6559,13 @@ export class MaxClientService implements OnModuleDestroy {
         return await this.executeMessageMutation(
           'send',
           action.chatId,
-          sendRequest,
+          async () => {
+            await this.runPreDispatchMutationGuard(
+              beforeMutation,
+              MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+            );
+            return sendRequest();
+          },
           mutationOptions,
         );
       } catch (error: unknown) {
@@ -6551,12 +6588,20 @@ export class MaxClientService implements OnModuleDestroy {
           const botId = this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id;
           const claim = await this.actionLedgerService!.claimSendDispatch(action, botId);
           if (claim.kind === 'recovered') {
+            const dispatchBotId = this.assertRecoveredSendDispatchBot(action, claim.dispatchBotId);
             return {
               message_id: claim.remoteMessageId,
+              [MAX_RECOVERED_SEND_DISPATCH_RESPONSE]: {
+                dispatchBotId,
+              },
             };
           }
 
           dispatchToken = claim.dispatchToken;
+          await this.runPreDispatchMutationGuard(
+            beforeMutation,
+            MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
+          );
           const response = await sendRequest();
           const remoteMessageId = this.extractMessageIdFromSendResponse(response);
           if (!remoteMessageId) {
@@ -6573,6 +6618,20 @@ export class MaxClientService implements OnModuleDestroy {
       );
     } catch (error: unknown) {
       if (!dispatchToken) {
+        throw error;
+      }
+
+      if (wasMaxPreDispatchGuardRejected(error)) {
+        try {
+          await this.actionLedgerService.releaseSendDispatch(action, dispatchToken);
+        } catch (releaseError: unknown) {
+          return this.throwAmbiguousQueuedSend(
+            action,
+            dispatchToken,
+            releaseError,
+            `Ambiguous MAX SEND_MESSAGE fence release after pre-dispatch guard rejection for chat ${action.chatId}`,
+          );
+        }
         throw error;
       }
 
@@ -6628,7 +6687,7 @@ export class MaxClientService implements OnModuleDestroy {
     dispatchToken: string,
     cause: unknown,
     message: string,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<MaxQueuedSendResponse> {
     const error = this.createAmbiguousQueuedMutationError(message, cause);
     let finalized = false;
     try {
@@ -6654,16 +6713,43 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (!finalized) {
-      const recoveredRemoteMessageId = await this.actionLedgerService
-        ?.getCompletedSendDispatch?.(action)
-        ?.catch(() => null);
+      const recovered =
+        typeof this.actionLedgerService?.getCompletedSendDispatchResult === 'function'
+          ? await this.actionLedgerService.getCompletedSendDispatchResult(action)
+          : null;
+      const recoveredRemoteMessageId =
+        recovered?.remoteMessageId ??
+        (typeof this.actionLedgerService?.getCompletedSendDispatchResult !== 'function'
+          ? await this.actionLedgerService?.getCompletedSendDispatch?.(action)?.catch(() => null)
+          : null);
       if (recoveredRemoteMessageId) {
+        const dispatchBotId = this.assertRecoveredSendDispatchBot(
+          action,
+          recovered?.dispatchBotId ?? null,
+        );
         return {
           message_id: recoveredRemoteMessageId,
+          [MAX_RECOVERED_SEND_DISPATCH_RESPONSE]: {
+            dispatchBotId,
+          },
         };
       }
     }
     throw error;
+  }
+
+  private assertRecoveredSendDispatchBot(
+    action: MaxActionJob,
+    persistedDispatchBotId: string | null | undefined,
+  ): string | null {
+    const dispatchBotId = this.readTrimmedString(persistedDispatchBotId);
+    const requiredBotId = this.readTrimmedString(action.routing?.requiredBotId);
+    if (requiredBotId && dispatchBotId !== requiredBotId) {
+      throw new UnrecoverableError(
+        `Completed MAX SEND_MESSAGE ${action.idempotencyKey} is not bound to required bot ${requiredBotId}`,
+      );
+    }
+    return dispatchBotId;
   }
 
   private async executeQueuedMemberModerationAction(

@@ -15,6 +15,7 @@ import {
   MAX_ACTION_LEGACY_QUEUE,
   resolveMaxActionQueueName,
 } from '../max/max-action.queue';
+import { isMaxActionChannelSuggestionPublicationLedger } from '../max/max-action-ledger-keys';
 import type {
   MaxActionJob,
   MaxActionLedgerContext,
@@ -535,6 +536,17 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
         error: `MAX SEND_MESSAGE outcome is unknown after a retained dispatch fence; BullMQ states ${this.formatJobStates(observations)}. Manual review is required before retry.`,
         outcome: 'quarantined',
       });
+      return;
+    }
+
+    if (
+      isMaxActionChannelSuggestionPublicationLedger({
+        jobId: row.jobId,
+        actionType: row.actionType,
+        sourceTag: row.sourceTag,
+      })
+    ) {
+      summary.lastDeferredCount += 1;
       return;
     }
 

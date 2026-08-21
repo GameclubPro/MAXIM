@@ -431,6 +431,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       recordSucceeded?: jest.Mock;
       recordFailed?: jest.Mock;
       getCompletedSendDispatch?: jest.Mock;
+      getCompletedSendDispatchResult?: jest.Mock;
       claimSendDispatch?: jest.Mock;
       completeSendDispatch?: jest.Mock;
       releaseSendDispatch?: jest.Mock;
@@ -882,6 +883,47 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('releases the send fence when the final pre-HTTP guard rejects', async () => {
+    const httpService = { request: jest.fn() };
+    const actionLedgerService = {
+      claimSendDispatch: jest.fn().mockResolvedValue({
+        kind: 'claimed',
+        dispatchToken: 'dispatch-token-guard-1',
+      }),
+      completeSendDispatch: jest.fn(),
+      releaseSendDispatch: jest.fn().mockResolvedValue(undefined),
+      recordAmbiguousSendDispatch: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+    const guardError = new Error('suggestion claim changed');
+    const beforeSendMutation = jest.fn().mockRejectedValue(guardError);
+    const job = {
+      actionType: 'SEND_MESSAGE' as const,
+      chatId: 'channel-1',
+      text: 'publication',
+      attempt: 1,
+      idempotencyKey: 'channel-suggestion:publish:v1:suggestion-guard-1',
+      createdAt: new Date().toISOString(),
+    };
+
+    await expect(service.executeActionJob(job, { beforeSendMutation })).rejects.toBe(guardError);
+
+    expect(actionLedgerService.claimSendDispatch).toHaveBeenCalledWith(job, '777000_bot');
+    expect(beforeSendMutation).toHaveBeenCalledTimes(1);
+    expect(actionLedgerService.releaseSendDispatch).toHaveBeenCalledWith(
+      job,
+      'dispatch-token-guard-1',
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(actionLedgerService.completeSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
+    expect(actionLedgerService.claimSendDispatch.mock.invocationCallOrder[0]).toBeLessThan(
+      beforeSendMutation.mock.invocationCallOrder[0],
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('recovers a persisted SEND_MESSAGE result without another MAX request', async () => {
     const httpService = {
       request: jest.fn(),
@@ -890,6 +932,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       claimSendDispatch: jest.fn().mockResolvedValue({
         kind: 'recovered',
         remoteMessageId: 'mid-recovered-1',
+        dispatchBotId: 'bot-1',
       }),
       completeSendDispatch: jest.fn(),
       releaseSendDispatch: jest.fn(),
@@ -897,18 +940,125 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService, {}, undefined, actionLedgerService);
 
-    await service.executeActionJob({
-      actionType: 'SEND_MESSAGE',
-      chatId: 'chat-1',
-      text: 'hello',
-      attempt: 2,
-      idempotencyKey: 'send-fenced-recovered',
-      createdAt: new Date().toISOString(),
+    await expect(
+      service.executeActionJob({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'chat-1',
+        text: 'hello',
+        attempt: 2,
+        idempotencyKey: 'send-fenced-recovered',
+        createdAt: new Date().toISOString(),
+      }),
+    ).resolves.toEqual({
+      messageId: 'mid-recovered-1',
+      url: null,
+      recoveredSendDispatch: {
+        dispatchBotId: 'bot-1',
+      },
     });
 
     expect(httpService.request).not.toHaveBeenCalled();
     expect(actionLedgerService.completeSendDispatch).not.toHaveBeenCalled();
     expect(actionLedgerService.releaseSendDispatch).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('propagates a completion that appears between the early ledger read and dispatch claim', async () => {
+    const httpService = { request: jest.fn() };
+    let signalClaimEntered: (() => void) | undefined;
+    const claimEntered = new Promise<void>((resolve) => {
+      signalClaimEntered = resolve;
+    });
+    let resolveClaim:
+      | ((value: {
+          kind: 'recovered';
+          remoteMessageId: string;
+          dispatchBotId: string | null;
+        }) => void)
+      | undefined;
+    const claimResult = new Promise<{
+      kind: 'recovered';
+      remoteMessageId: string;
+      dispatchBotId: string | null;
+    }>((resolve) => {
+      resolveClaim = resolve;
+    });
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      claimSendDispatch: jest.fn().mockImplementation(async () => {
+        signalClaimEntered?.();
+        return claimResult;
+      }),
+      completeSendDispatch: jest.fn(),
+      releaseSendDispatch: jest.fn(),
+      recordAmbiguousSendDispatch: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+    const job = {
+      actionType: 'SEND_MESSAGE' as const,
+      chatId: 'channel-1',
+      botId: '777000_bot',
+      routing: { purpose: 'send_message' as const, requiredBotId: '777000_bot' },
+      text: 'publication',
+      attempt: 2,
+      idempotencyKey: 'channel-suggestion:publish:v1:claim-barrier',
+      createdAt: new Date().toISOString(),
+    };
+
+    const execution = service.executeActionJob(job);
+    await claimEntered;
+    resolveClaim?.({
+      kind: 'recovered',
+      remoteMessageId: 'mid-claim-barrier',
+      dispatchBotId: '777000_bot',
+    });
+
+    await expect(execution).resolves.toEqual({
+      messageId: 'mid-claim-barrier',
+      url: null,
+      recoveredSendDispatch: {
+        dispatchBotId: '777000_bot',
+      },
+    });
+    expect(actionLedgerService.getCompletedSendDispatchResult).toHaveBeenCalledTimes(1);
+    expect(httpService.request).not.toHaveBeenCalled();
+    expect(actionLedgerService.completeSendDispatch).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it.each([
+    { label: 'a foreign bot', dispatchBotId: 'foreign-bot' },
+    { label: 'no persisted bot', dispatchBotId: null },
+  ])('rejects late required-bot claim recovery from $label', async ({ dispatchBotId }) => {
+    const httpService = { request: jest.fn() };
+    const actionLedgerService = {
+      getCompletedSendDispatchResult: jest.fn().mockResolvedValue(null),
+      claimSendDispatch: jest.fn().mockResolvedValue({
+        kind: 'recovered',
+        remoteMessageId: 'mid-invalid-required-claim',
+        dispatchBotId,
+      }),
+      completeSendDispatch: jest.fn(),
+      releaseSendDispatch: jest.fn(),
+      recordAmbiguousSendDispatch: jest.fn(),
+    };
+    const service = createService(httpService, {}, undefined, actionLedgerService);
+
+    await expect(
+      service.executeActionJob({
+        actionType: 'SEND_MESSAGE',
+        chatId: 'channel-1',
+        botId: '777000_bot',
+        routing: { purpose: 'send_message', requiredBotId: '777000_bot' },
+        text: 'publication',
+        attempt: 2,
+        idempotencyKey: 'channel-suggestion:publish:v1:invalid-required-claim',
+        createdAt: new Date().toISOString(),
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

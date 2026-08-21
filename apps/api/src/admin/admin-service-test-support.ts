@@ -1016,6 +1016,10 @@ export function createPrismaMock() {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
     },
+    maxActionLedgerEntry: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),

@@ -7,6 +7,7 @@ import {
   MaxActionRouteQuarantinedError,
 } from './max-action-dispatch-error';
 import { MaxActionLedgerService } from './max-action-ledger.service';
+import { wasMaxPreDispatchGuardRejected } from './max-action-pre-dispatch-guard';
 import { MaxBotLinkService, type MaxBotRouteRequest } from './max-bot-link.service';
 import {
   isMaxApiCircuitOpenError,
@@ -57,6 +58,10 @@ export type MaxActionDispatchExecutionOptions = {
     ledgerContext?: MaxActionLedgerContext;
   }>;
   onDispatchAttempt?: (params: { botId: string | null; job: MaxActionJob }) => void | Promise<void>;
+  beforeSendMutation?: (params: {
+    botId: string | null;
+    job: MaxActionJob;
+  }) => void | Promise<void>;
 };
 
 export {
@@ -118,10 +123,18 @@ export class MaxActionDispatchService {
       return null;
     }
 
+    const requiredBotId = this.readTrimmedString(job.routing?.requiredBotId);
+    const persistedDispatchBotId = this.readTrimmedString(completedSendDispatch?.dispatchBotId);
+    if (requiredBotId && persistedDispatchBotId !== requiredBotId) {
+      throw new UnrecoverableError(
+        `Completed MAX SEND_MESSAGE ${job.idempotencyKey} is not bound to required bot ${requiredBotId}`,
+      );
+    }
+
     return {
       messageId: completedSendMessageId,
       url: null,
-      botId: completedSendDispatch?.dispatchBotId ?? job.botId?.trim() ?? null,
+      botId: persistedDispatchBotId,
     };
   }
 
@@ -188,6 +201,21 @@ export class MaxActionDispatchService {
       (allowImplicitDefaultAttempt && attemptedBotIds.length === 0)
     ) {
       const candidateBotId = candidateBotIds.shift();
+      if (
+        candidateBotId &&
+        !this.isRequiredBotCandidate(candidateBotId, job.routing?.requiredBotId)
+      ) {
+        this.logger.warn(
+          {
+            actionType: job.actionType,
+            chatId: job.chatId,
+            botId: candidateBotId,
+            requiredBotId: job.routing?.requiredBotId ?? null,
+          },
+          'Skipped routed MAX action candidate outside the required bot fence',
+        );
+        continue;
+      }
       if (candidateBotId && !this.isExecutableCandidate(candidateBotId)) {
         this.logger.warn(
           {
@@ -266,18 +294,50 @@ export class MaxActionDispatchService {
           job: attemptJob,
         });
         dispatchAttemptStartedAt = new Date();
-        const executionResult = await this.maxClient.executeActionJob(attemptJob);
-        await this.recordLedgerSucceeded(attemptJob);
+        const executionResult = options.beforeSendMutation
+          ? await this.maxClient.executeActionJob(attemptJob, {
+              beforeSendMutation: async () => {
+                await options.beforeSendMutation!({
+                  botId: candidateBotId ?? null,
+                  job: attemptJob,
+                });
+              },
+            })
+          : await this.maxClient.executeActionJob(attemptJob);
+        const recoveredSendDispatch = executionResult?.recoveredSendDispatch;
+        if (!recoveredSendDispatch) {
+          await this.recordLedgerSucceeded(attemptJob);
+        }
         if (executionResult) {
+          const publishedMessage = { ...executionResult };
+          delete publishedMessage.recoveredSendDispatch;
+          const recoveredDispatchBotId = this.readTrimmedString(
+            recoveredSendDispatch?.dispatchBotId,
+          );
+          const requiredBotId = this.readTrimmedString(job.routing?.requiredBotId);
+          if (recoveredSendDispatch && requiredBotId && recoveredDispatchBotId !== requiredBotId) {
+            throw new UnrecoverableError(
+              `Completed MAX SEND_MESSAGE ${job.idempotencyKey} is not bound to required bot ${requiredBotId}`,
+            );
+          }
           return {
-            ...executionResult,
-            botId: candidateBotId ?? attemptJob.botId?.trim() ?? null,
+            ...publishedMessage,
+            botId: recoveredSendDispatch
+              ? recoveredDispatchBotId
+              : (candidateBotId ?? attemptJob.botId?.trim() ?? null),
           };
         }
         return;
       } catch (error: unknown) {
         if (!dispatchAttemptStartedAt) {
           await releaseHalfOpenClaim();
+        }
+        if (wasMaxPreDispatchGuardRejected(error)) {
+          await releaseHalfOpenClaim();
+          await this.recordLedgerFailed(attemptJob, error, {
+            exhausted: options.finalAttempt === true,
+          });
+          throw error;
         }
         if (isMaxApiCircuitOpenError(error)) {
           await releaseHalfOpenClaim();
@@ -342,6 +402,7 @@ export class MaxActionDispatchService {
           const replacementBotId = terminalManagedEntityOutcome.replacementBotId;
           if (
             replacementBotId &&
+            this.isRequiredBotCandidate(replacementBotId, job.routing?.requiredBotId) &&
             !attemptedBotIds.includes(replacementBotId) &&
             !candidateBotIds.includes(replacementBotId)
           ) {
@@ -394,7 +455,10 @@ export class MaxActionDispatchService {
     halfOpenCandidateBotIds: string[];
     retryAt: Date | null;
   }> {
-    const storedCandidates = this.normalizeBotIds([job.botId, ...(job.candidateBotIds ?? [])]);
+    const storedCandidates = this.filterRequiredBotCandidate(
+      this.normalizeBotIds([job.botId, ...(job.candidateBotIds ?? [])]),
+      job.routing?.requiredBotId,
+    );
     if (!job.routing || !this.maxBotLinkService) {
       return { candidateBotIds: storedCandidates, halfOpenCandidateBotIds: [], retryAt: null };
     }
@@ -420,7 +484,10 @@ export class MaxActionDispatchService {
           'Recalculated stale routed MAX action before dispatch',
         );
       }
-      const refreshedCandidates = this.normalizeBotIds(route.candidateBotIds);
+      const refreshedCandidates = this.filterRequiredBotCandidate(
+        this.normalizeBotIds(route.candidateBotIds),
+        job.routing?.requiredBotId,
+      );
       if (refreshedCandidates.length === 0) {
         if (
           route.purpose === 'send_message' &&
@@ -767,6 +834,14 @@ export class MaxActionDispatchService {
     return fallback;
   }
 
+  private readTrimmedString(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
   private normalizeBotIds(values: readonly unknown[]): string[] {
     return Array.from(
       new Set(
@@ -775,6 +850,19 @@ export class MaxActionDispatchService {
           .filter((value) => value.length > 0),
       ),
     );
+  }
+
+  private filterRequiredBotCandidate(candidateBotIds: string[], requiredBotId: unknown): string[] {
+    const required = typeof requiredBotId === 'string' ? requiredBotId.trim() : '';
+    if (!required) {
+      return candidateBotIds;
+    }
+    return candidateBotIds.includes(required) ? [required] : [];
+  }
+
+  private isRequiredBotCandidate(botId: string, requiredBotId: unknown): boolean {
+    const required = typeof requiredBotId === 'string' ? requiredBotId.trim() : '';
+    return !required || botId === required;
   }
 
   private async resolveTerminalManagedEntityOutcome(

@@ -32,6 +32,8 @@ export type MaxRoutedPublicationRequest = {
   trafficClass: MaxApiTrafficClass;
   actionHealthLane?: MaxActionJob['actionHealthLane'];
   sourceTag: string;
+  preferredBotId?: string;
+  requiredBotId?: string;
   sendRouteHalfOpenProbe?: 'publication_exact_verification';
   timeoutMs?: number;
   ignoreFailureMetricStatuses?: readonly number[];
@@ -41,6 +43,7 @@ export type MaxRoutedPublicationRequest = {
     ledgerContext?: MaxActionLedgerContext;
   }>;
   onDispatchAttempt?: (context: MaxRoutedPublicationAttemptContext) => void | Promise<void>;
+  beforeSendMutation?: (context: MaxRoutedPublicationAttemptContext) => void | Promise<void>;
 };
 
 export type MaxRoutedPublicationResult = MaxPublishedMessage & {
@@ -74,6 +77,7 @@ export class MaxRoutedPublicationService {
     }
 
     const routePurpose = request.routePurpose ?? 'send_message';
+    const requiredBotId = request.requiredBotId?.trim() ?? '';
     const baseJob: MaxActionJob = {
       actionType: 'SEND_MESSAGE',
       chatId: entityId,
@@ -89,10 +93,23 @@ export class MaxRoutedPublicationService {
       attempt: 1,
       idempotencyKey: logicalIdempotencyKey,
       createdAt: new Date().toISOString(),
+      ...(requiredBotId
+        ? {
+            routing: {
+              purpose: routePurpose,
+              requiredBotId,
+            },
+          }
+        : {}),
     };
     const recovered = await this.maxActionDispatchService.recoverCompletedSend(baseJob);
     const recoveredBotId = recovered?.botId?.trim();
-    if (recovered && recoveredBotId) {
+    if (recovered) {
+      if (!recoveredBotId || (requiredBotId && recoveredBotId !== requiredBotId)) {
+        throw new UnrecoverableError(
+          `Recovered MAX publication ${logicalIdempotencyKey} is not bound to its required dispatch bot`,
+        );
+      }
       const url =
         recovered.url ??
         (await this.resolveRecoveredMessageUrl(request, {
@@ -110,8 +127,14 @@ export class MaxRoutedPublicationService {
     }
 
     const route = await this.resolveFreshRoute(entityId, routePurpose, request);
-    const candidateBotIds = this.normalizeBotIds(route.candidateBotIds);
-    if (routePurpose === 'channel_poll' && candidateBotIds.length === 0) {
+    const candidateBotIds = this.resolveRequestedCandidateBotIds(
+      this.normalizeBotIds(route.candidateBotIds),
+      request,
+    );
+    if (
+      candidateBotIds.length === 0 &&
+      (routePurpose === 'channel_poll' || Boolean(request.requiredBotId?.trim()))
+    ) {
       throw new MaxActionNoExecutableRouteError('SEND_MESSAGE', entityId);
     }
     const job: MaxActionJob = {
@@ -123,6 +146,7 @@ export class MaxRoutedPublicationService {
         primaryBotId: route.primaryBotId,
         reason: route.reason,
         routingVersion: route.routingVersion ?? null,
+        ...(requiredBotId ? { requiredBotId } : {}),
         ...(request.sendRouteHalfOpenProbe
           ? { sendRouteHalfOpenProbe: request.sendRouteHalfOpenProbe }
           : {}),
@@ -147,6 +171,18 @@ export class MaxRoutedPublicationService {
               if (botId) {
                 await request.onDispatchAttempt!({ botId, job: attemptJob });
               }
+            },
+          }
+        : {}),
+      ...(request.beforeSendMutation
+        ? {
+            beforeSendMutation: async ({ botId, job: attemptJob }) => {
+              if (!botId) {
+                throw new UnrecoverableError(
+                  `MAX publication ${logicalIdempotencyKey} has no dispatch bot`,
+                );
+              }
+              await request.beforeSendMutation!({ botId, job: attemptJob });
             },
           }
         : {}),
@@ -220,6 +256,26 @@ export class MaxRoutedPublicationService {
       fallbackToPrimary: true,
       allowHalfOpenProbe: request.sendRouteHalfOpenProbe === 'publication_exact_verification',
     });
+  }
+
+  private prioritizePreferredBot(candidateBotIds: string[], preferredBotId: unknown): string[] {
+    const preferred = typeof preferredBotId === 'string' ? preferredBotId.trim() : '';
+    if (!preferred || !candidateBotIds.includes(preferred)) {
+      return candidateBotIds;
+    }
+    return [preferred, ...candidateBotIds.filter((botId) => botId !== preferred)];
+  }
+
+  private resolveRequestedCandidateBotIds(
+    candidateBotIds: string[],
+    request: Pick<MaxRoutedPublicationRequest, 'preferredBotId' | 'requiredBotId'>,
+  ): string[] {
+    const requiredBotId =
+      typeof request.requiredBotId === 'string' ? request.requiredBotId.trim() : '';
+    if (requiredBotId) {
+      return candidateBotIds.includes(requiredBotId) ? [requiredBotId] : [];
+    }
+    return this.prioritizePreferredBot(candidateBotIds, request.preferredBotId);
   }
 
   private async hydrateManagedPollRoute(

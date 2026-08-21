@@ -92,6 +92,7 @@ export type MaxSendDispatchClaim =
   | {
       kind: 'recovered';
       remoteMessageId: string;
+      dispatchBotId: string | null;
     };
 
 export type MaxCompletedSendDispatch = {
@@ -244,7 +245,7 @@ export class MaxActionLedgerService {
       );
     }
 
-    if (row?.remoteMessageId) {
+    if (row && this.readCompletedSendDispatchFromState(job, row)) {
       return;
     }
 
@@ -290,7 +291,10 @@ export class MaxActionLedgerService {
         remoteMessageId: true,
       },
     });
-    if (!row || (job.actionType === 'SEND_MESSAGE' && row.remoteMessageId)) {
+    if (!row) {
+      return;
+    }
+    if (this.readCompletedSendDispatchFromState(job, row)) {
       return;
     }
 
@@ -455,6 +459,9 @@ export class MaxActionLedgerService {
     }
 
     const row = await this.readSendDispatchState(job.idempotencyKey);
+    if (this.readCompletedSendDispatchFromState(job, row)) {
+      return;
+    }
     const failure = this.classifyPreparedSendFailure(job.idempotencyKey, row);
     const error = this.createPreparedSendFailureError(failure);
     if (failure.preserveExistingLedger) {
@@ -518,10 +525,11 @@ export class MaxActionLedgerService {
       }
 
       const row = await this.readSendDispatchState(job.idempotencyKey);
-      if (row?.remoteMessageId) {
+      const completed = this.readCompletedSendDispatchFromState(job, row);
+      if (completed) {
         return {
           kind: 'recovered',
-          remoteMessageId: row.remoteMessageId,
+          ...completed,
         };
       }
 
@@ -544,10 +552,11 @@ export class MaxActionLedgerService {
     }
 
     const row = await this.readSendDispatchState(job.idempotencyKey);
-    if (row?.remoteMessageId) {
+    const completed = this.readCompletedSendDispatchFromState(job, row);
+    if (completed) {
       return {
         kind: 'recovered',
-        remoteMessageId: row.remoteMessageId,
+        ...completed,
       };
     }
     throw new UnrecoverableError(
@@ -589,8 +598,16 @@ export class MaxActionLedgerService {
         },
       });
     } catch (error: unknown) {
-      const recovered = await this.getCompletedSendDispatch(job).catch(() => null);
-      if (recovered === normalizedRemoteMessageId) {
+      let recovered: MaxCompletedSendDispatch | null;
+      try {
+        recovered = await this.getCompletedSendDispatchResult(job);
+      } catch (recoveryError: unknown) {
+        if (recoveryError instanceof UnrecoverableError) {
+          throw recoveryError;
+        }
+        throw error;
+      }
+      if (recovered?.remoteMessageId === normalizedRemoteMessageId) {
         return;
       }
       throw error;
@@ -600,7 +617,8 @@ export class MaxActionLedgerService {
     }
 
     const row = await this.readSendDispatchState(job.idempotencyKey);
-    if (row?.remoteMessageId === normalizedRemoteMessageId) {
+    const recovered = this.readCompletedSendDispatchFromState(job, row);
+    if (recovered?.remoteMessageId === normalizedRemoteMessageId) {
       return;
     }
 
@@ -620,13 +638,7 @@ export class MaxActionLedgerService {
       return null;
     }
     const state = await this.readSendDispatchState(job.idempotencyKey);
-    if (!state?.remoteMessageId) {
-      return null;
-    }
-    return {
-      remoteMessageId: state.remoteMessageId,
-      dispatchBotId: this.nullableString(state.dispatchBotId),
-    };
+    return this.readCompletedSendDispatchFromState(job, state);
   }
 
   async releaseSendDispatch(job: MaxActionJob, dispatchToken: string): Promise<void> {
@@ -653,7 +665,7 @@ export class MaxActionLedgerService {
     }
 
     const row = await this.readSendDispatchState(job.idempotencyKey);
-    if (row?.remoteMessageId || !row?.dispatchToken) {
+    if (this.readCompletedSendDispatchFromState(job, row) || !row?.dispatchToken) {
       return;
     }
 
@@ -972,6 +984,9 @@ export class MaxActionLedgerService {
       return;
     }
 
+    if (await this.getCompletedSendDispatchResult(job)) {
+      return;
+    }
     await this.assertCanExecute(job);
     throw new UnrecoverableError(
       `MAX SEND_MESSAGE ledger entry ${job.idempotencyKey} changed before execution claim`,
@@ -1116,6 +1131,7 @@ export class MaxActionLedgerService {
             action: job.routing.action ?? null,
             routingVersion: job.routing.routingVersion ?? null,
             sendRouteHalfOpenProbe: job.routing.sendRouteHalfOpenProbe ?? null,
+            requiredBotId: job.routing.requiredBotId ?? null,
           }
         : null,
       ledgerContext: job.ledgerContext ?? null,
@@ -1280,6 +1296,31 @@ export class MaxActionLedgerService {
     const error = new UnrecoverableError(failure.message) as MaxSendLedgerPreparationError;
     error.code = failure.code;
     return error;
+  }
+
+  private readCompletedSendDispatchFromState(
+    job: MaxActionJob,
+    state: Pick<MaxSendDispatchState, 'dispatchBotId' | 'remoteMessageId'> | null,
+  ): MaxCompletedSendDispatch | null {
+    if (job.actionType !== 'SEND_MESSAGE') {
+      return null;
+    }
+    const remoteMessageId = this.nullableString(state?.remoteMessageId);
+    if (!remoteMessageId) {
+      return null;
+    }
+
+    const dispatchBotId = this.nullableString(state?.dispatchBotId);
+    const requiredBotId = this.nullableString(job.routing?.requiredBotId);
+    if (requiredBotId && dispatchBotId !== requiredBotId) {
+      throw new UnrecoverableError(
+        `Completed MAX SEND_MESSAGE ${job.idempotencyKey} is not bound to required bot ${requiredBotId}`,
+      );
+    }
+    return {
+      remoteMessageId,
+      dispatchBotId,
+    };
   }
 
   private async readSendDispatchState(jobId: string): Promise<MaxSendDispatchState | null> {

@@ -1,11 +1,18 @@
 import type { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
+import { extractSqlText } from '../admin/admin-service-test-support';
 import {
   MAX_ACTION_BACKGROUND_QUEUE,
   MAX_ACTION_CRITICAL_QUEUE,
   MAX_ACTION_INTERACTIVE_QUEUE,
   MAX_ACTION_LEGACY_QUEUE,
 } from '../max/max-action.queue';
+import {
+  CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+  CHANNEL_SUGGESTION_PUBLICATION_SOURCE_TAG,
+  buildChannelSuggestionPublicationLedgerJobId,
+  withChannelSuggestionPublicationContextDigest,
+} from '../admin/admin-channel-suggestion-publication-protocol';
 import { SystemDashboardService } from './system-dashboard.service';
 
 function createConfigMock(values: Partial<Record<string, number>> = {}): ConfigService {
@@ -59,6 +66,105 @@ function createWebhookSubscriptionSnapshot(
     botCount: 1,
     bots: {},
     ...overrides,
+  };
+}
+
+function createSuggestionPublicationContext() {
+  return withChannelSuggestionPublicationContextDigest({
+    protocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+    preparedAt: '2026-08-20T10:01:00.000Z',
+    messageDigest: 'a'.repeat(64),
+    botId: 'bot-1',
+    threadId: null,
+    buttons: [],
+    includeCommentsButton: false,
+    includeSuggestButton: false,
+    suggestButtonText: null,
+    suggestionEntryMode: 'BOT',
+    authorAttribution: {
+      userId: 'user-1',
+      displayName: 'Автор',
+      mentionDisplayName: 'Автор',
+      username: null,
+      profileUrl: null,
+    },
+  });
+}
+
+function createSuggestionClaimPayload(
+  suggestionId: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    type: 'suggest',
+    reviewStatus: 'publishing',
+    reviewAction: 'publish',
+    reviewPublicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+    reviewPublicationLedgerJobId: buildChannelSuggestionPublicationLedgerJobId(suggestionId),
+    reviewClaimToken: `claim-${suggestionId}`,
+    reviewClaimedAt: '2026-08-20T10:00:00.000Z',
+    reviewClaimedByUserId: 'admin-1',
+    ...overrides,
+  };
+}
+
+function createSuggestionLedgerFields(
+  suggestionId: string,
+  overrides: Record<string, unknown> = {},
+) {
+  const context = createSuggestionPublicationContext();
+  return {
+    jobId: buildChannelSuggestionPublicationLedgerJobId(suggestionId),
+    actionType: 'SEND_MESSAGE',
+    ledgerChatId: 'channel-1',
+    sourceTag: CHANNEL_SUGGESTION_PUBLICATION_SOURCE_TAG,
+    status: 'IN_PROGRESS',
+    ambiguous: false,
+    terminal: false,
+    dispatchToken: null,
+    dispatchStartedAt: null,
+    dispatchBotId: null,
+    remoteMessageId: null,
+    metadata: {
+      ledgerContext: {
+        suggestionId,
+        publicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+        claimToken: `claim-${suggestionId}`,
+        actorUserId: 'user-1',
+        messageDigest: context.messageDigest,
+        contextDigest: context.contextDigest,
+      },
+    },
+    ...overrides,
+  };
+}
+
+function createHealthyPublishedSuggestionLedgerRow(suggestionId: string, updatedAt: Date) {
+  const context = createSuggestionPublicationContext();
+  const messageId = `mid-${suggestionId}`;
+  return {
+    ledgerId: `ledger-${suggestionId}`,
+    updatedAt,
+    ...createSuggestionLedgerFields(suggestionId, {
+      status: 'SUCCEEDED',
+      terminal: true,
+      dispatchToken: `dispatch-${suggestionId}`,
+      dispatchStartedAt: updatedAt,
+      dispatchBotId: 'bot-1',
+      remoteMessageId: messageId,
+    }),
+    auditId: suggestionId,
+    auditChatId: 'channel-1',
+    actorUserId: 'user-1',
+    auditAction: 'CHANNEL_DIALOG_SUGGESTION',
+    payload: {
+      type: 'suggest',
+      reviewStatus: 'published',
+      reviewPublicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+      reviewPublicationLedgerJobId: buildChannelSuggestionPublicationLedgerJobId(suggestionId),
+      reviewPublicationContext: context,
+      publishedMessageId: messageId,
+    },
   };
 }
 
@@ -401,6 +507,8 @@ describe('SystemDashboardService', () => {
   });
 
   it('surfaces delivery ledger risks as operator warnings without automatic retries', async () => {
+    const context = createSuggestionPublicationContext();
+    const auditDate = new Date('2026-08-20T10:00:00.000Z');
     const queryRaw = jest
       .fn()
       .mockResolvedValueOnce([
@@ -459,6 +567,131 @@ describe('SystemDashboardService', () => {
           deleteIntentOldestWaitingCapabilityAgeSec: 0,
           deleteIntentAgedWaitingCapabilityCapped: false,
         },
+      ])
+      .mockResolvedValueOnce([
+        {
+          suggestionId: 'safe',
+          chatId: 'channel-1',
+          actorUserId: 'user-1',
+          createdAt: auditDate,
+          claimAt: auditDate,
+          payload: createSuggestionClaimPayload('safe'),
+          jobId: null,
+        },
+        {
+          suggestionId: 'completed',
+          chatId: 'channel-1',
+          actorUserId: 'user-1',
+          createdAt: auditDate,
+          claimAt: auditDate,
+          payload: createSuggestionClaimPayload('completed', {
+            reviewPublicationContext: context,
+          }),
+          ...createSuggestionLedgerFields('completed', {
+            status: 'SUCCEEDED',
+            terminal: true,
+            dispatchToken: 'dispatch-completed',
+            dispatchStartedAt: auditDate,
+            dispatchBotId: 'bot-1',
+            remoteMessageId: 'mid-completed',
+          }),
+        },
+        {
+          suggestionId: 'manual',
+          chatId: 'channel-1',
+          actorUserId: 'user-1',
+          createdAt: auditDate,
+          claimAt: auditDate,
+          payload: createSuggestionClaimPayload('manual', {
+            reviewPublicationContext: context,
+          }),
+          ...createSuggestionLedgerFields('manual', {
+            dispatchToken: 'dispatch-manual',
+            dispatchStartedAt: auditDate,
+            dispatchBotId: 'bot-1',
+          }),
+        },
+        {
+          suggestionId: 'legacy',
+          chatId: 'channel-1',
+          actorUserId: 'user-1',
+          createdAt: auditDate,
+          claimAt: auditDate,
+          payload: {
+            type: 'suggest',
+            reviewStatus: 'publishing',
+            reviewAction: 'publish',
+            reviewClaimedAt: auditDate.toISOString(),
+            reviewClaimedByUserId: 'admin-1',
+          },
+          jobId: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          ledgerId: 'ledger-missing',
+          updatedAt: auditDate,
+          ...createSuggestionLedgerFields('missing'),
+          auditId: null,
+          auditChatId: null,
+          actorUserId: null,
+          auditAction: null,
+          payload: null,
+        },
+        {
+          ledgerId: 'ledger-pending',
+          updatedAt: auditDate,
+          ...createSuggestionLedgerFields('pending'),
+          auditId: 'pending',
+          auditChatId: 'channel-1',
+          actorUserId: 'user-1',
+          auditAction: 'CHANNEL_DIALOG_SUGGESTION',
+          payload: { type: 'suggest', reviewStatus: 'pending' },
+        },
+        {
+          ledgerId: 'ledger-published',
+          updatedAt: auditDate,
+          ...createSuggestionLedgerFields('published', {
+            status: 'SUCCEEDED',
+            terminal: true,
+            dispatchToken: 'dispatch-published',
+            dispatchStartedAt: auditDate,
+            dispatchBotId: 'bot-1',
+            remoteMessageId: 'mid-published',
+          }),
+          auditId: 'published',
+          auditChatId: 'channel-1',
+          actorUserId: 'user-1',
+          auditAction: 'CHANNEL_DIALOG_SUGGESTION',
+          payload: {
+            type: 'suggest',
+            reviewStatus: 'published',
+            reviewPublicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+            reviewPublicationLedgerJobId: buildChannelSuggestionPublicationLedgerJobId('published'),
+            reviewPublicationContext: context,
+            publishedMessageId: 'mid-published',
+          },
+        },
+        {
+          ledgerId: 'ledger-mismatch',
+          updatedAt: auditDate,
+          ...createSuggestionLedgerFields('mismatch'),
+          auditId: 'mismatch',
+          auditChatId: 'other-channel',
+          actorUserId: 'user-1',
+          auditAction: 'CHANNEL_DIALOG_SUGGESTION',
+          payload: { type: 'suggest', reviewStatus: 'pending' },
+        },
+        {
+          ledgerId: 'ledger-linked',
+          updatedAt: auditDate,
+          ...createSuggestionLedgerFields('linked'),
+          auditId: 'linked',
+          auditChatId: 'channel-1',
+          actorUserId: 'user-1',
+          auditAction: 'CHANNEL_DIALOG_SUGGESTION',
+          payload: createSuggestionClaimPayload('linked'),
+        },
       ]);
     const service = new SystemDashboardService(
       {
@@ -509,12 +742,61 @@ describe('SystemDashboardService', () => {
     expect(alert?.detail).toContain(
       'moderation delete intents: safely expirable 476, stale expired in-progress 2',
     );
+    expect(alert?.detail).not.toContain('publishing');
 
-    const deleteIntentQuery = queryRaw.mock.calls[6];
-    const deleteIntentSql = (deleteIntentQuery?.[0] as readonly string[] | undefined)?.join('?');
+    expect(snapshot.alerts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'channel-suggestion-publishing-stale',
+          level: 'warning',
+          detail: expect.stringContaining('safe pre-dispatch 1, completed 1, manual 1, legacy 1'),
+          recommendedAction: expect.stringContaining('не сбрасывайте claim'),
+        }),
+        expect.objectContaining({
+          code: 'channel-suggestion-ledger-audit',
+          level: 'warning',
+          detail: expect.stringContaining('missing audit 1, pending audit 1, mismatched 1'),
+        }),
+      ]),
+    );
+
+    const findQuery = (fragment: string) =>
+      queryRaw.mock.calls.find((call) => extractSqlText(call).includes(fragment));
+    const suggestionPublishingQuery = findQuery('with publishing_candidates as materialized');
+    const suggestionPublishingSql = extractSqlText(suggestionPublishingQuery);
+    expect(suggestionPublishingSql).toContain("audit.payload->>'reviewStatus' = 'publishing'");
+    expect(suggestionPublishingSql).toContain("audit.payload->>'type' = 'suggest'");
+    expect(suggestionPublishingSql).toContain('jsonb_build_object');
+    expect(suggestionPublishingSql).toContain('pg_input_is_valid(');
+    expect(suggestionPublishingSql).toContain('audit.created_at <');
+    expect(suggestionPublishingSql).toContain('and claim."claimAt" <');
+    expect(suggestionPublishingSql).toContain(
+      'order by claim."claimAt" asc, audit.created_at asc, audit.id asc',
+    );
+    expect(suggestionPublishingSql.indexOf('and claim."claimAt" <')).toBeLessThan(
+      suggestionPublishingSql.indexOf('limit'),
+    );
+    expect(suggestionPublishingSql).toContain('limit');
+
+    const suggestionLedgerQuery = findQuery(
+      'with suggestion_ledger_risk_candidates as materialized',
+    );
+    const suggestionLedgerSql = extractSqlText(suggestionLedgerQuery);
+    expect(suggestionLedgerSql).toContain("ledger.action_type = 'SEND_MESSAGE'");
+    expect(suggestionLedgerSql).toContain("ledger.source_tag = 'suggestion_delivery'");
+    expect(suggestionLedgerSql).toContain("ledger.job_id like 'channel-suggestion:publish:v1:%'");
+    expect(suggestionLedgerSql).toContain('left join audit_logs audit');
+    expect(suggestionLedgerSql).toContain('and not coalesce(');
+    expect(suggestionLedgerSql).toContain("audit.payload->>'reviewStatus' = 'published'");
+    expect(suggestionLedgerSql.indexOf('and not coalesce(')).toBeLessThan(
+      suggestionLedgerSql.indexOf('limit'),
+    );
+
+    const deleteIntentQuery = findQuery('with risk_candidates as');
+    const deleteIntentSql = extractSqlText(deleteIntentQuery);
     expect(deleteIntentSql).toContain('with risk_candidates as');
     expect(deleteIntentSql).toContain('stale_in_progress_candidates as');
-    expect(deleteIntentSql).toContain('limit ?');
+    expect(deleteIntentSql).toContain('limit');
     expect(deleteIntentSql).toContain('intent.remote_delete_succeeded_at is null');
     expect(deleteIntentSql).toContain('intent.delete_dispatch_started_at is null');
     expect(deleteIntentSql).toContain('intent.lease_expires_at is null');
@@ -522,13 +804,309 @@ describe('SystemDashboardService', () => {
     expect(deleteIntentSql).toContain('waiting_capability_candidates as');
     expect(deleteIntentSql).toContain("intent.status = 'WAITING_CAPABILITY'");
     expect(deleteIntentSql).toContain('intent.retry_until_at > current_timestamp');
-    expect(deleteIntentSql).toContain('intent.first_attempt_at <= ?');
+    expect(deleteIntentSql).toContain('intent.first_attempt_at <=');
     expect(deleteIntentSql).toContain('order by intent.next_attempt_at asc, intent.execute_at asc');
     const deleteIntentParams = deleteIntentQuery?.slice(1) ?? [];
     expect(deleteIntentParams[2]).toBeInstanceOf(Date);
     expect(deleteIntentParams.filter((value: unknown) => typeof value === 'number')).toEqual([
       1_001, 1_001, 1_001, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
     ]);
+  });
+
+  it('caps both suggestion protocol audits at 1000 and keeps the truncation visible', async () => {
+    const auditDate = new Date('2026-08-20T10:00:00.000Z');
+    const publishingRows = Array.from({ length: 1_001 }, (_, index) => {
+      const suggestionId = `safe-${index}`;
+      return {
+        suggestionId,
+        chatId: 'channel-1',
+        actorUserId: 'user-1',
+        createdAt: auditDate,
+        claimAt: auditDate,
+        payload: createSuggestionClaimPayload(suggestionId),
+        jobId: null,
+      };
+    });
+    const ledgerRows = Array.from({ length: 1_001 }, (_, index) => {
+      const suggestionId = `linked-${index}`;
+      return {
+        ledgerId: `ledger-${index}`,
+        updatedAt: auditDate,
+        ...createSuggestionLedgerFields(suggestionId),
+        auditId: suggestionId,
+        auditChatId: 'channel-1',
+        actorUserId: 'user-1',
+        auditAction: 'CHANNEL_DIALOG_SUGGESTION',
+        payload: createSuggestionClaimPayload(suggestionId),
+      };
+    });
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValueOnce(publishingRows).mockResolvedValueOnce(ledgerRows),
+    };
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      prisma as never,
+    );
+
+    const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
+
+    expect(protocol.publishing).toMatchObject({
+      safeRelease: 1_000,
+      audited: 1_000,
+      capped: true,
+    });
+    expect(protocol.ledgerAudit).toMatchObject({
+      linkedPublishing: 1_000,
+      audited: 1_000,
+      capped: true,
+    });
+    expect((service as any).buildSuggestionPublishingRiskAlert(protocol)).toMatchObject({
+      level: 'warning',
+      detail: expect.stringContaining('Выборка ограничена'),
+    });
+    expect((service as any).buildSuggestionLedgerAuditAlert(protocol)).toMatchObject({
+      level: 'warning',
+      detail: expect.stringContaining('Выборка ограничена'),
+    });
+  });
+
+  it('filters more than 1000 fresh claims before limiting stale publishing candidates', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-21T12:00:00.000Z'));
+    try {
+      const freshClaimAt = new Date('2026-08-21T11:59:00.000Z');
+      const staleClaimAt = new Date('2026-08-21T10:00:00.000Z');
+      const freshRows = Array.from({ length: 1_001 }, (_, index) => {
+        const suggestionId = `fresh-old-${index}`;
+        return {
+          suggestionId,
+          chatId: 'channel-1',
+          actorUserId: 'user-1',
+          createdAt: new Date(`2025-01-${String((index % 28) + 1).padStart(2, '0')}T00:00:00.000Z`),
+          claimAt: freshClaimAt,
+          payload: createSuggestionClaimPayload(suggestionId, {
+            reviewClaimedAt: freshClaimAt.toISOString(),
+          }),
+          jobId: null,
+        };
+      });
+      const staleRow = {
+        suggestionId: 'actually-stale',
+        chatId: 'channel-1',
+        actorUserId: 'user-1',
+        createdAt: new Date('2026-08-20T12:00:00.000Z'),
+        claimAt: staleClaimAt,
+        payload: createSuggestionClaimPayload('actually-stale', {
+          reviewClaimedAt: staleClaimAt.toISOString(),
+        }),
+        jobId: null,
+      };
+      const databaseRows = [...freshRows, staleRow];
+      const staleBefore = new Date('2026-08-21T11:45:00.000Z');
+      const queryRaw = jest.fn(async (...args: unknown[]) => {
+        const sql = extractSqlText(args);
+        if (sql.includes('with publishing_candidates as materialized')) {
+          return databaseRows
+            .filter((row) => row.claimAt < staleBefore)
+            .sort(
+              (left, right) =>
+                left.claimAt.getTime() - right.claimAt.getTime() ||
+                left.createdAt.getTime() - right.createdAt.getTime() ||
+                left.suggestionId.localeCompare(right.suggestionId),
+            )
+            .slice(0, 1_001);
+        }
+        if (sql.includes('with suggestion_ledger_risk_candidates as materialized')) {
+          return [];
+        }
+        throw new Error(`Unexpected suggestion protocol query: ${sql}`);
+      });
+      const service = new SystemDashboardService(
+        {} as never,
+        {} as never,
+        createConfigMock(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { $queryRaw: queryRaw } as never,
+      );
+
+      const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
+
+      const createdAtLimitedWindow = [...databaseRows]
+        .sort(
+          (left, right) =>
+            left.createdAt.getTime() - right.createdAt.getTime() ||
+            left.suggestionId.localeCompare(right.suggestionId),
+        )
+        .slice(0, 1_001);
+      expect(createdAtLimitedWindow).not.toContain(staleRow);
+      expect(protocol.publishing).toMatchObject({
+        safeRelease: 1,
+        audited: 1,
+        capped: false,
+      });
+
+      const publishingCall = queryRaw.mock.calls.find((call) =>
+        extractSqlText(call).includes('with publishing_candidates as materialized'),
+      );
+      const publishingSql = extractSqlText(publishingCall);
+      expect(publishingSql).toContain(
+        'order by claim."claimAt" asc, audit.created_at asc, audit.id asc',
+      );
+      expect(publishingSql.indexOf('and claim."claimAt" <')).toBeLessThan(
+        publishingSql.indexOf('limit'),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('finds a new orphan after more than 1000 healthy published ledgers', async () => {
+    const healthyUpdatedAt = new Date('2026-08-20T10:00:00.000Z');
+    const healthyHistory = Array.from({ length: 1_001 }, (_, index) =>
+      createHealthyPublishedSuggestionLedgerRow(`healthy-${index}`, healthyUpdatedAt),
+    );
+    const orphan = {
+      ledgerId: 'ledger-new-orphan',
+      updatedAt: new Date('2026-08-21T10:00:00.000Z'),
+      ...createSuggestionLedgerFields('new-orphan'),
+      auditId: null,
+      auditChatId: null,
+      actorUserId: null,
+      auditAction: null,
+      payload: null,
+    };
+    const databaseRows = [...healthyHistory, orphan];
+    const queryRaw = jest.fn(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (sql.includes('with publishing_candidates as materialized')) {
+        return [];
+      }
+      if (sql.includes('with suggestion_ledger_risk_candidates as materialized')) {
+        return databaseRows.filter((row) => row.auditId === null).slice(0, 1_001);
+      }
+      throw new Error(`Unexpected suggestion protocol query: ${sql}`);
+    });
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { $queryRaw: queryRaw } as never,
+    );
+
+    const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
+
+    expect(
+      [...databaseRows]
+        .sort(
+          (left, right) =>
+            left.updatedAt.getTime() - right.updatedAt.getTime() ||
+            left.ledgerId.localeCompare(right.ledgerId),
+        )
+        .slice(0, 1_001),
+    ).not.toContain(orphan);
+    expect(protocol.ledgerAudit).toMatchObject({
+      missingAudit: 1,
+      audited: 1,
+      capped: false,
+    });
+
+    const ledgerCall = queryRaw.mock.calls.find((call) =>
+      extractSqlText(call).includes('with suggestion_ledger_risk_candidates as materialized'),
+    );
+    const ledgerSql = extractSqlText(ledgerCall);
+    expect(ledgerSql).toContain('and not coalesce(');
+    expect(ledgerSql).toContain("ledger.status = 'SUCCEEDED'");
+    expect(ledgerSql).toContain("audit.payload->>'publishedMessageId' = ledger.remote_message_id");
+    expect(ledgerSql).toContain("ledger.metadata->'ledgerContext'->>'contextDigest'");
+    expect(ledgerSql.indexOf('and not coalesce(')).toBeLessThan(ledgerSql.indexOf('limit'));
+  });
+
+  it('does not cap or warn on healthy published ledger history alone', async () => {
+    const healthyHistory = Array.from({ length: 1_500 }, (_, index) =>
+      createHealthyPublishedSuggestionLedgerRow(
+        `healthy-only-${index}`,
+        new Date('2026-08-20T10:00:00.000Z'),
+      ),
+    );
+    const queryRaw = jest.fn(async (...args: unknown[]) => {
+      const sql = extractSqlText(args);
+      if (sql.includes('with publishing_candidates as materialized')) {
+        return [];
+      }
+      if (sql.includes('with suggestion_ledger_risk_candidates as materialized')) {
+        return healthyHistory.filter(() => false);
+      }
+      throw new Error(`Unexpected suggestion protocol query: ${sql}`);
+    });
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { $queryRaw: queryRaw } as never,
+    );
+
+    const protocol = await (service as any).loadSuggestionPublicationProtocolSnapshot();
+
+    expect(healthyHistory).toHaveLength(1_500);
+    expect(protocol.ledgerAudit).toMatchObject({
+      missingAudit: 0,
+      pendingAudit: 0,
+      publishedAudit: 0,
+      mismatchedAudit: 0,
+      linkedPublishing: 0,
+      audited: 0,
+      capped: false,
+    });
+    expect((service as any).buildSuggestionLedgerAuditAlert(protocol)).toBeNull();
+  });
+
+  it('does not warn for fully bound published suggestion ledgers alone', () => {
+    const service = new SystemDashboardService({} as never, {} as never, createConfigMock());
+    const protocol = {
+      checkedAt: '2026-08-21T10:00:00.000Z',
+      publishing: {
+        safeRelease: 0,
+        completed: 0,
+        manual: 0,
+        legacy: 0,
+        audited: 0,
+        oldestAgeSec: 0,
+        capped: false,
+      },
+      ledgerAudit: {
+        missingAudit: 0,
+        pendingAudit: 0,
+        publishedAudit: 20,
+        mismatchedAudit: 0,
+        linkedPublishing: 0,
+        audited: 20,
+        oldestAgeSec: 86_400,
+        capped: false,
+      },
+    };
+
+    expect((service as any).buildSuggestionPublishingRiskAlert(protocol)).toBeNull();
+    expect((service as any).buildSuggestionLedgerAuditAlert(protocol)).toBeNull();
   });
 
   it('warns when active moderation deletions wait for capability longer than five minutes', async () => {
@@ -800,6 +1378,13 @@ describe('SystemDashboardService', () => {
               suggestionStaleSending: 0,
               suggestionRiskSuggestions: 0,
               suggestionOldestRiskAgeSec: 0,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              suggestionStalePublishing: 0,
+              suggestionOldestPublishingAgeSec: 0,
+              suggestionStalePublishingCapped: false,
             },
           ])
           .mockResolvedValueOnce([

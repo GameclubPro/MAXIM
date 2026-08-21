@@ -1,4 +1,5 @@
 import type { MaxActionJob } from './max-client.service';
+import { UnrecoverableError } from 'bullmq';
 import { MaxActionNoExecutableRouteError } from './max-action-dispatch-error';
 import { MaxRoutedPublicationService } from './max-routed-publication.service';
 
@@ -24,6 +25,7 @@ describe('MaxRoutedPublicationService', () => {
       execute: jest.fn().mockImplementation(async (job: MaxActionJob, options: any) => {
         const prepared = await options.prepareAttempt({ botId: 'bot-2', job });
         await options.onDispatchAttempt({ botId: 'bot-2', job: { ...job, ...prepared } });
+        await options.beforeSendMutation({ botId: 'bot-2', job: { ...job, ...prepared } });
         return {
           messageId: 'mid-1',
           url: 'https://max.ru/channel-1/mid-1',
@@ -35,6 +37,7 @@ describe('MaxRoutedPublicationService', () => {
       options: { imagePayload: { token: 'bot-2-upload' } },
     });
     const onDispatchAttempt = jest.fn();
+    const beforeSendMutation = jest.fn();
     const service = new MaxRoutedPublicationService(
       maxBotLinkService as never,
       maxActionDispatchService as never,
@@ -51,6 +54,7 @@ describe('MaxRoutedPublicationService', () => {
         ignoreFailureMetricStatuses: [403, 404],
         prepareAttempt,
         onDispatchAttempt,
+        beforeSendMutation,
       }),
     ).resolves.toEqual({
       messageId: 'mid-1',
@@ -75,10 +79,136 @@ describe('MaxRoutedPublicationService', () => {
     );
     expect(prepareAttempt).toHaveBeenCalledWith(expect.objectContaining({ botId: 'bot-2' }));
     expect(onDispatchAttempt).toHaveBeenCalledWith(expect.objectContaining({ botId: 'bot-2' }));
+    expect(beforeSendMutation).toHaveBeenCalledWith(expect.objectContaining({ botId: 'bot-2' }));
     expect(
       (maxActionDispatchService.execute.mock.calls[0]?.[0] as MaxActionJob).idempotencyKey,
     ).not.toContain('bot-1');
   });
+
+  it('restricts a bot-scoped publication to its required executable token owner', async () => {
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1', 'media-bot'],
+        reason: 'primary_confirmed',
+        routingVersion: 8,
+      }),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn().mockResolvedValue({
+        messageId: 'mid-media-1',
+        url: null,
+        botId: 'media-bot',
+      }),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      { resolveMessageLink: jest.fn().mockResolvedValue(null) } as never,
+    );
+
+    await service.publish({
+      entityId: 'channel-1',
+      logicalIdempotencyKey: 'channel-suggestion:publish:v1:suggestion-1',
+      text: 'video',
+      trafficClass: 'interactive',
+      sourceTag: 'suggestion_delivery',
+      preferredBotId: 'media-bot',
+      requiredBotId: 'media-bot',
+    });
+
+    expect(maxActionDispatchService.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        botId: 'media-bot',
+        candidateBotIds: ['media-bot'],
+        routing: expect.objectContaining({ requiredBotId: 'media-bot' }),
+      }),
+      {},
+    );
+  });
+
+  it('fails closed before dispatch when a required media bot left the fresh route', async () => {
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'send_message',
+        chatId: 'channel-1',
+        primaryBotId: 'bot-1',
+        botId: 'bot-1',
+        candidateBotIds: ['bot-1'],
+        reason: 'primary_confirmed',
+        routingVersion: 8,
+      }),
+    };
+    const maxActionDispatchService = {
+      recoverCompletedSend: jest.fn().mockResolvedValue(null),
+      execute: jest.fn(),
+    };
+    const service = new MaxRoutedPublicationService(
+      maxBotLinkService as never,
+      maxActionDispatchService as never,
+      { resolveMessageLink: jest.fn() } as never,
+    );
+
+    await expect(
+      service.publish({
+        entityId: 'channel-1',
+        logicalIdempotencyKey: 'channel-suggestion:publish:v1:suggestion-2',
+        text: 'video',
+        trafficClass: 'interactive',
+        sourceTag: 'suggestion_delivery',
+        requiredBotId: 'media-bot',
+      }),
+    ).rejects.toBeInstanceOf(MaxActionNoExecutableRouteError);
+    expect(maxActionDispatchService.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'another bot', recoveredBotId: 'foreign-bot' },
+    { label: 'no proven bot', recoveredBotId: null },
+  ])(
+    'fails closed without a resend when a completed required publication has $label',
+    async ({ recoveredBotId }) => {
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn(),
+      };
+      const maxActionDispatchService = {
+        recoverCompletedSend: jest.fn().mockResolvedValue({
+          messageId: 'mid-recovered-required',
+          url: null,
+          botId: recoveredBotId,
+        }),
+        execute: jest.fn(),
+      };
+      const service = new MaxRoutedPublicationService(
+        maxBotLinkService as never,
+        maxActionDispatchService as never,
+        { resolveMessageLink: jest.fn() } as never,
+      );
+
+      await expect(
+        service.publish({
+          entityId: 'channel-1',
+          logicalIdempotencyKey: 'channel-suggestion:publish:v1:suggestion-recovered-required',
+          text: 'video',
+          trafficClass: 'interactive',
+          sourceTag: 'suggestion_delivery',
+          requiredBotId: 'media-bot',
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+
+      expect(maxActionDispatchService.recoverCompletedSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routing: { purpose: 'send_message', requiredBotId: 'media-bot' },
+        }),
+      );
+      expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
+      expect(maxActionDispatchService.execute).not.toHaveBeenCalled();
+    },
+  );
 
   it('uses the poll-specific eligible candidate route', async () => {
     const maxBotLinkService = {

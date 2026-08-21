@@ -1,4 +1,8 @@
 import { MaxActionLedgerStatus } from '../prisma/prisma-client';
+import {
+  buildMaxActionChannelSuggestionPublicationJobId,
+  MAX_ACTION_CHANNEL_SUGGESTION_PUBLICATION_SOURCE_TAG,
+} from '../max/max-action-ledger-keys';
 import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
 
 function createCandidate(
@@ -548,7 +552,7 @@ describe('MaxActionLedgerWatchdogService', () => {
     expect(snapshot.staleInProgressCount).toBe(1);
   });
 
-  it('terminally fails stale SEND_MESSAGE work that never acquired a dispatch fence', async () => {
+  it('terminally fails ordinary stale SEND_MESSAGE work that never acquired a dispatch fence', async () => {
     const row = createCandidate({
       status: MaxActionLedgerStatus.IN_PROGRESS,
       attemptCount: 2,
@@ -569,6 +573,63 @@ describe('MaxActionLedgerWatchdogService', () => {
       }),
     );
     expect((await service.getSnapshot()).lastQuarantinedCount).toBe(0);
+  });
+
+  it('defers a versioned channel-suggestion publication without a dispatch fence', async () => {
+    const row = createCandidate({
+      jobId: buildMaxActionChannelSuggestionPublicationJobId('suggestion-1'),
+      sourceTag: MAX_ACTION_CHANNEL_SUGGESTION_PUBLICATION_SOURCE_TAG,
+      status: MaxActionLedgerStatus.IN_PROGRESS,
+      attemptCount: 1,
+      firstAttemptAt: new Date(Date.now() - 11 * 60_000),
+      lastAttemptAt: new Date(Date.now() - 10 * 60_000),
+    });
+    const { service, prisma } = createHarness({ rows: [row] });
+
+    await service.runNow();
+
+    expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+    expect(await service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        lastDeferredCount: 1,
+        lastTerminalFailedCount: 0,
+        lastQuarantinedCount: 0,
+      }),
+    );
+  });
+
+  it('quarantines a versioned channel-suggestion publication with a retained fence', async () => {
+    const row = createCandidate({
+      jobId: buildMaxActionChannelSuggestionPublicationJobId('suggestion-1'),
+      sourceTag: MAX_ACTION_CHANNEL_SUGGESTION_PUBLICATION_SOURCE_TAG,
+      status: MaxActionLedgerStatus.IN_PROGRESS,
+      attemptCount: 1,
+      dispatchToken: 'suggestion-dispatch-token-1',
+      dispatchStartedAt: new Date(Date.now() - 10 * 60_000),
+      dispatchBotId: 'bot-1',
+    });
+    const { service, prisma } = createHarness({ rows: [row] });
+
+    await service.runNow();
+
+    expect(prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: MaxActionLedgerStatus.AMBIGUOUS,
+          ambiguous: true,
+          terminal: true,
+          lastErrorCode: 'ledger.watchdog.ambiguous',
+          lastError: expect.stringContaining('Manual review is required before retry'),
+        }),
+      }),
+    );
+    expect(await service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        lastDeferredCount: 0,
+        lastTerminalFailedCount: 0,
+        lastQuarantinedCount: 1,
+      }),
+    );
   });
 
   it('terminally fails an unconfirmed idempotent action without calling it ambiguous', async () => {
@@ -691,8 +752,10 @@ describe('MaxActionLedgerWatchdogService', () => {
     expect((await service.getSnapshot()).lastRecoveredSucceededCount).toBe(0);
   });
 
-  it('recovers stale SEND_MESSAGE only from a durable remote message id', async () => {
+  it('recovers a versioned channel-suggestion publication from a durable remote message id', async () => {
     const row = createCandidate({
+      jobId: buildMaxActionChannelSuggestionPublicationJobId('suggestion-1'),
+      sourceTag: MAX_ACTION_CHANNEL_SUGGESTION_PUBLICATION_SOURCE_TAG,
       status: MaxActionLedgerStatus.IN_PROGRESS,
       attemptCount: 1,
       dispatchToken: 'dispatch-token-1',

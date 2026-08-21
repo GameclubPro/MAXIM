@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260816204000_expand_managed_poll_question_length_to_2000",
-  "baselineNamesSha256": "e9e261c4cf068da376c01e015b9db5404a437cd96d506ffda9e1e522fdf79b5f",
-  "baselineContentsSha256": "9328f992a223a0b9b6a9b1aff52b9a77457ca0e043b3746d9cd0d3466d84211d",
+  "baselineThrough": "20260821122000_guard_channel_suggestion_publication_ledger_insert",
+  "baselineNamesSha256": "80a6064f924f0a498e56d357b35adb0aa12eb28541bfdca565e4c118cf41be2a",
+  "baselineContentsSha256": "b3b676e3f0faa8aef9bdf17438533a3c6e368598847640c3058b002f62f80488",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -46,6 +46,11 @@
       "reason": "Manual review approved an atomic drop-and-recreate of the chat settings recovery trigger because PostgreSQL blocks changing the type of a column named by a trigger definition. The migration restores the same trigger and function before commit, and it drops no table columns.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "The parser's drop-column classification is a false positive from CREATE TRIGGER EXECUTE FUNCTION. Existing and new runtimes both expose these columns as Prisma DateTime values; the transaction preserves UTC instants, removes only the unintended updated_at default, and cannot commit without restoring the trigger."
+    },
+    "20260821122000_guard_channel_suggestion_publication_ledger_insert": {
+      "reason": "Manual review approved an additive BEFORE INSERT trigger that serializes the exact versioned channel-suggestion ledger signature with stale claim release. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic and destructive, but this migration contains no dynamic EXECUTE and drops no schema objects.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Existing and new runtimes create versioned suggestion ledgers only while the exact publishing claim is active; all other max_action_ledger signatures bypass the trigger. After claim finalization, only a row-locked exact terminal-success conflict may reach the caller's ON CONFLICT no-op; every genuinely new row still requires the active claim. The migration does not change stored columns or reads."
     }
   },
   "nonConcurrentIndexExceptions": {}
