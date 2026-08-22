@@ -4070,6 +4070,7 @@ describe('ModerationService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
     expect(karavanStorefrontRelayService.handleMessageCreated).toHaveBeenCalledWith({
       updateType: 'message_created',
+      karavanStorefrontEnabled: false,
       chatId: 'chat-1',
       messageId: 'msg-1',
       senderId: 'user-1',

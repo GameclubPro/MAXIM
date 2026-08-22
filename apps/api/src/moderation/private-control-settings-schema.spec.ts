@@ -20,12 +20,16 @@ describe('private control settings schema', () => {
       'duplicates',
       'limits',
       'night',
+      'storefront',
       'extra',
     ]);
     expect(SECTION_LABELS).not.toHaveProperty('thematicFilters');
     expect(SECTION_FIELDS).not.toHaveProperty('thematicFilters');
     expect(SECTION_SETTING_KEYS).not.toHaveProperty('thematicFilters');
     expect(SECTION_CARD_FIELDS).not.toHaveProperty('thematicFilters');
+    expect(SECTION_FIELDS.storefront).toEqual([
+      expect.objectContaining({ key: 'karavanStorefrontEnabled', type: 'boolean' }),
+    ]);
 
     for (const section of SECTION_ORDER) {
       expect(SECTION_LABELS[section]).toEqual(expect.any(String));

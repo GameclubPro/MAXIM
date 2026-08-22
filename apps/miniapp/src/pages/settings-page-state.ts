@@ -14,6 +14,7 @@ export type ApplySectionKey =
   | 'requiredSubscription'
   | 'invitationAccess'
   | 'commands'
+  | 'storefront'
   | 'extra';
 
 export type SanctionPresetGroup =
@@ -337,6 +338,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'adminSilenceCommandName',
     'adminOpenChatCommandName',
   ],
+  storefront: ['karavanStorefrontEnabled'],
   extra: [
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',

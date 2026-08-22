@@ -806,6 +806,7 @@ export const SETTINGS_SECTION_KEYS = {
     'adminSilenceCommandName',
     'adminOpenChatCommandName',
   ],
+  storefront: ['karavanStorefrontEnabled'],
   extra: [
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',
@@ -828,6 +829,7 @@ export const SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS = {
   ],
   invitationAccess: ['invitationAccessBotMessageText', 'invitationAccessWarnMessageText'],
   commands: [],
+  storefront: [],
   extra: [],
 } as const satisfies Record<keyof typeof SETTINGS_SECTION_KEYS, readonly BotSpeechMediaFieldKey[]>;
 export const BOT_SPEECH_MEDIA_SETTING_KEYS = BOT_SPEECH_EDITABLE_FIELD_KEYS;

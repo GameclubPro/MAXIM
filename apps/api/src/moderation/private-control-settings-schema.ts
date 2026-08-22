@@ -15,6 +15,7 @@ export const SECTION_LABELS: Record<PrivateSectionKey, string> = {
   duplicates: 'Дубли сообщений',
   limits: 'Ограничения сообщений',
   night: 'Ночной режим',
+  storefront: 'Интернет-витрина',
   extra: 'Дополнительно',
 };
 
@@ -313,6 +314,7 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'nightModeForceCloseHours', label: 'Часы ручного закрытия', type: 'number' },
     { key: 'nightModeForceCloseDays', label: 'Дни ручного закрытия', type: 'number' },
   ],
+  storefront: [{ key: 'karavanStorefrontEnabled', label: 'Кнопка Караван', type: 'boolean' }],
   extra: [
     { key: 'deleteSpammersEnabled', label: 'Удалять спамеров', type: 'boolean' },
     { key: 'deleteBotMessagesEnabled', label: 'Удалять сообщения бота', type: 'boolean' },
@@ -337,6 +339,7 @@ export const SECTION_SETTING_KEYS: Record<PrivateSectionKey, readonly (keyof Cha
   duplicates: SECTION_FIELDS.duplicates.map((field) => field.key),
   limits: SECTION_FIELDS.limits.map((field) => field.key),
   night: SECTION_FIELDS.night.map((field) => field.key),
+  storefront: SECTION_FIELDS.storefront.map((field) => field.key),
   extra: SECTION_FIELDS.extra.map((field) => field.key),
 };
 
@@ -348,6 +351,7 @@ export const SECTION_ORDER: PrivateSectionKey[] = [
   'duplicates',
   'limits',
   'night',
+  'storefront',
   'extra',
 ];
 
@@ -489,6 +493,10 @@ export const SECTION_CARD_FIELDS: Record<
       'nightModeForceCloseHours',
       'nightModeForceCloseDays',
     ],
+  },
+  storefront: {
+    basic: ['karavanStorefrontEnabled'],
+    advanced: [],
   },
   extra: {
     basic: [

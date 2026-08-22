@@ -1684,6 +1684,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             senderId,
             senderName,
             text,
+            karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
           })
         ) {
           return;
@@ -1726,6 +1727,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               senderId,
               senderName,
               text,
+              karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
             })
           ) {
             return false;
@@ -2029,6 +2031,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           senderId,
           senderName,
           text,
+          karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
         }))
       ) {
         await suppressDeferredPhotoAnalysisActions();
@@ -2181,6 +2184,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             senderId,
             senderName,
             text,
+            karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
           })
         ) {
           return;
@@ -3746,6 +3750,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     senderId: string;
     senderName?: string | null;
     text?: string | null;
+    karavanStorefrontEnabled: boolean;
   }): Promise<boolean> {
     if (!params.messageId || !this.karavanStorefrontRelayService) {
       return false;
@@ -3753,6 +3758,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const result = await this.karavanStorefrontRelayService.handleMessageCreated({
       updateType: params.updateType,
+      karavanStorefrontEnabled: params.karavanStorefrontEnabled,
       chatId: params.chatId,
       messageId: params.messageId,
       senderId: params.senderId,

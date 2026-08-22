@@ -221,6 +221,7 @@ import { SettingsLimitsSection } from './settings/settings-limits-section';
 import { SettingsNightSection } from './settings/settings-night-section';
 import { SettingsPollsSection } from './settings/settings-polls-section';
 import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
+import { SettingsStorefrontSection } from './settings/settings-storefront-section';
 import { SettingsStopWordsSection } from './settings/settings-stop-words-section';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
@@ -586,7 +587,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'polls' &&
       focusSection !== 'vkParsing' &&
       focusSection !== 'broadcast' &&
-      focusSection !== 'requiredSubscription'
+      focusSection !== 'requiredSubscription' &&
+      focusSection !== 'storefront'
     ) {
       return;
     }
@@ -609,7 +611,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     ? { vkParsing: true }
                     : focusSection === 'requiredSubscription'
                       ? { requiredSubscription: true }
-                      : { mailing: true }),
+                      : focusSection === 'storefront'
+                        ? { storefront: true }
+                        : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -3893,7 +3897,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       (section === 'giveaway' && focusSection === 'giveaway') ||
       (section === 'polls' && focusSection === 'polls') ||
       (section === 'vkParsing' && focusSection === 'vkParsing') ||
-      (section === 'requiredSubscription' && focusSection === 'requiredSubscription')
+      (section === 'requiredSubscription' && focusSection === 'requiredSubscription') ||
+      (section === 'storefront' && focusSection === 'storefront')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
       ['focus', 'handoff', 'workspace', 'legacyKind', 'legacyId'].forEach((key) =>
@@ -4427,6 +4432,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const extraHeaderSummary =
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const extraCardStatus = extraEnabledCount > 0 ? `${extraEnabledCount}` : 'Выкл';
+  const storefrontHeaderSummary = draft?.karavanStorefrontEnabled
+    ? 'Кнопка после сообщений с $'
+    : 'Выключено';
+  const storefrontCardStatus = draft?.karavanStorefrontEnabled ? 'Вкл' : 'Выкл';
   const chatsCount = chatsList.data?.length ?? 0;
   const canApplyToAllChats = !chatsList.isSyncComplete || chatsCount > 1;
   const mailingAudienceChoices = useMemo(() => {
@@ -7926,6 +7935,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               />
             </Suspense>
 
+            <SettingsStorefrontSection
+              draft={draft}
+              expanded={expandedSections.storefront}
+              summary={storefrontHeaderSummary}
+              status={storefrontCardStatus}
+              headerAction={renderApplyTargetHeaderAction('storefront')}
+              footer={renderSectionSaveFooter('storefront')}
+              hasChanges={isSectionDirty('storefront')}
+              onDiscardChanges={() => discardSectionChanges('storefront')}
+              onToggleSection={() => toggleSection('storefront')}
+              onFieldChange={(enabled) => setFieldValue('karavanStorefrontEnabled', enabled)}
+            />
+
             <SettingsExtraSection
               draft={draft}
               expanded={expandedSections.extra}
@@ -7945,7 +7967,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <GlassCard
               className="settings-section settings-home-entry stagger-in"
-              style={{ order: 32 }}
+              style={{ order: 33 }}
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle

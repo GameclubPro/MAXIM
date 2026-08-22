@@ -751,6 +751,7 @@ export async function saveChatSettings(params: {
       nightModeForceCloseHours: true,
       nightModeForceCloseDays: true,
       nightModeForceCloseUntil: true,
+      karavanStorefrontEnabled: true,
     },
   });
   const settingsInput = {
@@ -764,6 +765,9 @@ export async function saveChatSettings(params: {
     duplicatePhotoScope: hasOwnSetting(params.body, 'duplicatePhotoScope')
       ? parsed.data.duplicatePhotoScope
       : (currentSettings?.duplicatePhotoScope ?? parsed.data.duplicatePhotoScope),
+    karavanStorefrontEnabled: hasOwnSetting(params.body, 'karavanStorefrontEnabled')
+      ? parsed.data.karavanStorefrontEnabled
+      : (currentSettings?.karavanStorefrontEnabled ?? parsed.data.karavanStorefrontEnabled),
   };
   let normalizedSettings = normalizeChatSettings(
     settingsInput,

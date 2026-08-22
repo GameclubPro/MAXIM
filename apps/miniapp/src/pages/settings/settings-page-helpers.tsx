@@ -709,6 +709,7 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   requiredSubscription: false,
   invitationAccess: false,
   commands: false,
+  storefront: false,
   comments: false,
   mailing: false,
   vkParsing: false,
@@ -728,6 +729,7 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   requiredSubscription: 'Подписка на канал',
   invitationAccess: 'Настройки',
   commands: 'Команды',
+  storefront: 'Интернет-витрина',
   extra: 'Сервис',
 };
 export const APPLY_TARGET_FAVORITE_ICONS = HOME_ENTITY_FAVORITE_ICONS;

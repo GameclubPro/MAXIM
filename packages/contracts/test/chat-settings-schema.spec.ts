@@ -59,6 +59,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(settings.duplicatePhotoEnabled).toBe(false);
     expect(settings.duplicatePhotoMatchPreset).toBe('SAME_IMAGE');
     expect(settings.duplicatePhotoScope).toBe('SAME_AUTHOR');
+    expect(settings.karavanStorefrontEnabled).toBe(false);
   });
 
   it('accepts supported photo duplicate settings and rejects unknown enum values', () => {
@@ -239,6 +240,13 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(settings).not.toHaveProperty('thematicCodeword');
     expect(settings).not.toHaveProperty('thematicFiltersWarnEnabled');
     expect(applySettingsSectionSchema.safeParse('thematicFilters').success).toBe(false);
+  });
+
+  it('supports the opt-in Karavan storefront setting and section', () => {
+    expect(chatSettingsSchema.parse({ karavanStorefrontEnabled: true })).toEqual(
+      expect.objectContaining({ karavanStorefrontEnabled: true }),
+    );
+    expect(applySettingsSectionSchema.safeParse('storefront').success).toBe(true);
   });
 
   it('allows duplicate thresholds to start from the first duplicate', () => {

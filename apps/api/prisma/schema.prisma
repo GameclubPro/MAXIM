@@ -586,6 +586,7 @@ model ChatSettings {
   commentsAdminsEnabled                         Boolean                  @default(false) @map("comments_admins_enabled")
   commentsAllEnabled                            Boolean                  @default(false) @map("comments_all_enabled")
   commentsChatBroadcastsEnabled                 Boolean                  @default(false) @map("comments_chat_broadcasts_enabled")
+  karavanStorefrontEnabled                      Boolean                  @default(false) @map("karavan_storefront_enabled")
   deleteBotMessagesEnabled                      Boolean                  @default(false) @map("delete_bot_messages_enabled")
   deleteBotMessagesDelayMinutes                 Float                    @default(2) @map("delete_bot_messages_delay_minutes")
   removeBotsFromGroupEnabled                    Boolean                  @default(false) @map("remove_bots_from_group_enabled")

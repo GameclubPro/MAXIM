@@ -17,6 +17,7 @@ export type SettingsSectionIconName =
   | 'moon'
   | 'send'
   | 'commands'
+  | 'storefront'
   | 'tools'
   | 'comments'
   | 'spark'
@@ -28,6 +29,7 @@ const SETTINGS_SECTION_SEARCH_ALIASES: Record<string, string> = {
   Автопостинг: 'публикации расписание посты',
   Команды: 'администратор команды бота',
   'Коммерческая реклама': 'реклама продажи услуги ссылки',
+  'Интернет-витрина': 'караван витрина продавец магазин кнопка доллар',
   Комментарии: 'обсуждение посты модерация',
   'Комментарии в приложении': 'обсуждение посты модерация кастомные',
   'Мат и оскорбления': 'мат ругань токсичность фильтр',
@@ -275,6 +277,34 @@ export function SettingsSectionIcon({ name }: { name: SettingsSectionIconName })
       <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
         <path
           d="M21 4 10.5 14.5M21 4l-6.8 16.1a.6.6 0 0 1-1.1 0L10.4 14.5 4 11.9a.6.6 0 0 1 0-1.1L20 4.1A.6.6 0 0 1 21 4Z"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+
+  if (name === 'storefront') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+        <path
+          d="M4.5 10.2h15v8.6a1.7 1.7 0 0 1-1.7 1.7H6.2a1.7 1.7 0 0 1-1.7-1.7v-8.6Z"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="m3.6 10.2 1.5-5h13.8l1.5 5c-.4 1.2-1.3 1.9-2.5 1.9-1.2 0-2.1-.7-2.5-1.9-.4 1.2-1.3 1.9-2.5 1.9s-2.1-.7-2.5-1.9c-.4 1.2-1.3 1.9-2.5 1.9s-2.1-.7-2.5-1.9c-.4 1.2-1.3 1.9-2.3 1.9-1.2 0-2.1-.7-2.5-1.9Z"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M9 20.5v-5.3h6v5.3"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"

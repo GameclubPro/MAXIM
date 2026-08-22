@@ -608,6 +608,14 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'chat-settings-storefront',
+    beforeShot: async (page) => {
+      await page.getByRole('checkbox', { name: 'Включить кнопку витрины Караван' }).waitFor({
+        state: 'visible',
+      });
+    },
+  },
+  {
     name: 'chat-settings-extra',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Сообщения и боты', '.settings-drilldown__panel--extra');

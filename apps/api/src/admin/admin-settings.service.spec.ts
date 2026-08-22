@@ -1021,6 +1021,33 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
+  it('preserves the storefront toggle when a stale client omits the new field', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        karavanStorefrontEnabled: true,
+      }),
+    });
+
+    await service.updateSettings('chat-1', user as never, {
+      antiSpamEnabled: false,
+    });
+
+    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
+    expect(upsert.update.settings.upsert.update).toEqual(
+      expect.objectContaining({
+        karavanStorefrontEnabled: true,
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: {
+          source: 'miniapp',
+          settingKeys: ['antiSpamEnabled'],
+        },
+      }),
+    });
+  });
+
   it('normalizes required subscription settings to indefinite auto-enabled state', async () => {
     const { legacyAdminService, prisma, service } = createService();
 

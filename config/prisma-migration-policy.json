@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260821140000_add_night_mode_transition_manual_acknowledgement",
-  "baselineNamesSha256": "b8474772e19639a99b9eb8566a33b638022ccce1d0b4b4f49b5bc473aee31d23",
-  "baselineContentsSha256": "7ad0a8ef1d613f7bfe56ff4cf67d0ce2cda64e4ffc5e3352e108750e3ac06440",
+  "baselineThrough": "20260822100000_add_karavan_storefront_setting",
+  "baselineNamesSha256": "d5f9d830d58a18153b214b40686fc235432a6d101909d1333404e1e893245b5f",
+  "baselineContentsSha256": "d1402658b967a3dc7c66792a88b0985644947f2c7c88d43f374b7e559e6431c5",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."

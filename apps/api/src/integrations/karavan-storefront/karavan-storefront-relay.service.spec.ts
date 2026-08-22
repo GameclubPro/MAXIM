@@ -87,6 +87,7 @@ function createService(
 }
 
 const baseContext = {
+  karavanStorefrontEnabled: true,
   updateType: 'message_created',
   chatId: 'chat-1',
   messageId: 'mid-source-1',
@@ -104,6 +105,24 @@ const baseContext = {
 };
 
 describe('KaravanStorefrontRelayService', () => {
+  it('returns disabled before acquiring a lock when the chat setting is off', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          karavanStorefrontEnabled: false,
+        }),
+      ).resolves.toBe('disabled');
+      expect(fixture.redisCounter.acquireLock).not.toHaveBeenCalled();
+      expect(fixture.fetchMock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
   it('adds a storefront reply button for dollar-prefixed seller messages without touching the original post', async () => {
     const fixture = createService();
 

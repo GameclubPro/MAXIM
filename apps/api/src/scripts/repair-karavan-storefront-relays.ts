@@ -353,7 +353,12 @@ async function main(): Promise<void> {
       }
 
       try {
+        const settings = await prisma.chatSettings.findUnique({
+          where: { chatId: candidate.chatId },
+          select: { karavanStorefrontEnabled: true },
+        });
         const result = await relay.handleMessageCreated({
+          karavanStorefrontEnabled: settings?.karavanStorefrontEnabled ?? false,
           updateType: candidate.update.type,
           chatId: candidate.chatId,
           messageId: candidate.messageId,

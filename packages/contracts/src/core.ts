@@ -82,6 +82,7 @@ export const applySettingsSectionSchema = z.enum([
   'requiredSubscription',
   'invitationAccess',
   'commands',
+  'storefront',
   'extra',
 ]);
 export const channelSuggestionEntryModeSchema = z.enum(['BOT', 'MINIAPP']);
@@ -719,6 +720,7 @@ export const chatSettingsSchema = z
       commentsAdminsEnabled: z.boolean().default(false),
       commentsAllEnabled: z.boolean().default(false),
       commentsChatBroadcastsEnabled: z.boolean().default(false),
+      karavanStorefrontEnabled: z.boolean().default(false),
       deleteBotMessagesEnabled: z.boolean().default(false),
       deleteBotMessagesDelayMinutes: deleteBotMessagesDelayMinutesSchema,
       removeBotsFromGroupEnabled: z.boolean().default(false),

@@ -18,6 +18,10 @@ describe('admin settings section apply', () => {
     );
   });
 
+  it('keeps the storefront section scoped to its toggle', () => {
+    expect(SETTINGS_SECTION_KEYS.storefront).toEqual(['karavanStorefrontEnabled']);
+  });
+
   it('rejects a crafted request for the retired thematic section before applying settings', async () => {
     const getSourceSettings = jest.fn();
     const applySettings = jest.fn();

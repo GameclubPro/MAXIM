@@ -48,7 +48,7 @@ export function SettingsExtraSection({
   return (
     <GlassCard
       className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-      style={{ animationDelay: '372ms', order: 31 }}
+      style={{ animationDelay: '372ms', order: 32 }}
       aria-label="Сервис"
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

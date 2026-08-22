@@ -13,6 +13,7 @@ import {
 import { RedisCounterService } from '../../moderation/redis-counter.service';
 
 type RelayContext = {
+  karavanStorefrontEnabled: boolean;
   updateType: string | null;
   chatId: string;
   messageId: string | null | undefined;
@@ -101,6 +102,10 @@ export class KaravanStorefrontRelayService {
   }
 
   async handleMessageCreated(context: RelayContext): Promise<KaravanStorefrontRelayResult> {
+    if (!context.karavanStorefrontEnabled) {
+      return 'disabled';
+    }
+
     if (!this.isConfigured()) {
       return this.enabled ? 'failed' : 'disabled';
     }

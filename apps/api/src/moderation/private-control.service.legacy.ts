@@ -6798,6 +6798,10 @@ export class PrivateControlService {
           `Сообщение: ${this.describeBooleanCompact(settings.nightModeBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.nightModeBotButtonEnabled)}`,
           `Ручное закрытие: ${this.describeBooleanCompact(settings.nightModeForceCloseEnabled)}${settings.nightModeForceCloseEnabled ? ` • ${settings.nightModeForceCloseForever ? 'бессрочно' : `${settings.nightModeForceCloseDays}д ${settings.nightModeForceCloseHours}ч`}` : ''}`,
         ];
+      case 'storefront':
+        return [
+          `Кнопка Караван: ${this.describeBooleanCompact(settings.karavanStorefrontEnabled)}`,
+        ];
       case 'extra':
         return [
           `Удаление спамеров: ${this.describeBooleanCompact(settings.deleteSpammersEnabled)}`,

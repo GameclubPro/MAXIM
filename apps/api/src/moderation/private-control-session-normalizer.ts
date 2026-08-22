@@ -29,6 +29,7 @@ const PRIVATE_SECTION_KEYS = [
   'duplicates',
   'limits',
   'night',
+  'storefront',
   'extra',
 ] as const satisfies readonly PrivateSectionKey[];
 

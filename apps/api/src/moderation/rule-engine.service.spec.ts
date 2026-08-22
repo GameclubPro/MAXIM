@@ -132,6 +132,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     greetingBotButtonText: 'Открыть',
     greetingBotButtons: [],
     greetingRulesButtonEnabled: false,
+    karavanStorefrontEnabled: false,
     deleteBotMessagesEnabled: true,
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,

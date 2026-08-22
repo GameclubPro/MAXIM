@@ -328,6 +328,7 @@ const baseScenarios = [
     'chat-settings-night',
     'chat-settings-night-time-picker',
     'chat-settings-commands',
+    ['chat-settings-storefront', { searchParams: { focus: 'storefront' } }],
     'chat-settings-extra',
     'chat-settings-speech-style',
     ['chat-settings-stop-words', { searchParams: { focus: 'stopWords' } }],

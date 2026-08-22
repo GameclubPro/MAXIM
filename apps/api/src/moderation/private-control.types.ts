@@ -22,6 +22,7 @@ export type PrivateSectionKey =
   | 'duplicates'
   | 'limits'
   | 'night'
+  | 'storefront'
   | 'extra';
 
 export type ChannelSectionKey = 'post_suggestions' | 'comments';
