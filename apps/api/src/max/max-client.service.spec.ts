@@ -8299,6 +8299,83 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('preserves explicit bot markers for the narrow admin roster lookup', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              { user_id: 123, role: 'admin', is_bot: true },
+              {
+                user: { user_id: 'human_bot', username: 'human_bot', is_bot: false },
+                role: 'owner',
+              },
+              { user_id: 'human-2', role: 'admin', isBot: false },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getChatAdminMembers('chat-1')).resolves.toEqual([
+      { userId: '123', isBot: true },
+      { userId: 'human_bot', isBot: false },
+      { userId: 'human-2', isBot: false },
+    ]);
+    await expect(service.getChatAdminMembers('chat-1')).resolves.toEqual([
+      { userId: '123', isBot: true },
+      { userId: 'human_bot', isBot: false },
+      { userId: 'human-2', isBot: false },
+    ]);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('paginates and caches rich admin roster entries independently from admin ids', async () => {
+    const request = jest
+      .fn()
+      .mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [{ user_id: 'bot-1', role: 'admin', is_bot: true }],
+            marker: 42,
+          },
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [{ user_id: 'user-1', role: 'admin', is_bot: false }],
+            marker: null,
+          },
+        }),
+      );
+    const service = createService({ request });
+
+    await expect(service.getChatAdminMembers('chat-1')).resolves.toEqual([
+      { userId: 'bot-1', isBot: true },
+      { userId: 'user-1', isBot: false },
+    ]);
+    await expect(service.getChatAdminMembers('chat-1')).resolves.toEqual([
+      { userId: 'bot-1', isBot: true },
+      { userId: 'user-1', isBot: false },
+    ]);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        params: { marker: 42 },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('returns null when requested chat member is absent', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

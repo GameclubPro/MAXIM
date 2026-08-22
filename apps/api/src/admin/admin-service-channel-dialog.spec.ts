@@ -3865,6 +3865,11 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['209468578', '214634783', '98315271']),
+      getChatAdminMembers: jest.fn().mockResolvedValue([
+        { userId: '209468578', isBot: true },
+        { userId: '214634783', isBot: true },
+        { userId: '98315271', isBot: false },
+      ]),
       getCurrentChatMemberAccess: jest
         .fn()
         .mockImplementation(async (_chatId: string, options?: { botId?: string }) => {
@@ -3964,6 +3969,14 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         botId: 'id613002203036_4_bot',
       }),
     );
+    expect(maxClient.getChatAdminMembers).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+      }),
+    );
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
       'channel-1',
       expect.objectContaining({

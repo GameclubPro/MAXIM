@@ -650,6 +650,28 @@ describe('MaxBotLinkService', () => {
     jest.useRealTimers();
   });
 
+  it('retries a transient PostgreSQL membership deadlock without replaying business work', async () => {
+    jest.useRealTimers();
+    const fixture = createServiceFixture();
+    const deadlock = Object.assign(new Error('deadlock detected'), { code: 'P2034' });
+    let attempts = 0;
+    const operation = jest.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw deadlock;
+      }
+      return 'committed';
+    });
+
+    await expect(
+      (fixture.service as any).runChatMembershipWriteWithDeadlockRetry(
+        operation,
+        'test.membershipWrite',
+      ),
+    ).resolves.toBe('committed');
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
   it('treats routed send access as stale at the configured age boundary', async () => {
     const fixture = createServiceFixture();
     fixture.memberships.push(

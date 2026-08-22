@@ -126,6 +126,7 @@ import {
   type MaxActionDispatchOptions,
   type MaxAttachmentPayload,
   type MaxBotChat,
+  type MaxChatAdminMember,
   type MaxChatMemberAccess,
   type MaxMessageButton,
   type MaxSendMessageOptions,
@@ -18182,16 +18183,29 @@ export class AdminService implements OnModuleDestroy {
     const deliveryBotId = await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery');
     const privateDeliveryBotId = this.resolvePrivateDeliveryBotId(deliveryBotId);
     const knownBotUserIds = await this.resolveKnownBotUserIdsForChat(chatId, [deliveryBotId]);
+    const adminLookupOptions = {
+      trafficClass: 'background' as const,
+      sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+      timeoutMs: CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
+      ...(deliveryBotId ? { botId: deliveryBotId } : {}),
+    };
+    const richAdminLookup = (
+      this.maxClient as MaxClientService & {
+        getChatAdminMembers?: (
+          lookupChatId: string,
+          options?: Parameters<MaxClientService['getChatAdminMembers']>[1],
+        ) => Promise<MaxChatAdminMember[]>;
+      }
+    ).getChatAdminMembers;
+    const adminIdsFromRoster =
+      typeof richAdminLookup === 'function'
+        ? (await richAdminLookup.call(this.maxClient, chatId, adminLookupOptions))
+            .filter((member) => member.isBot !== true)
+            .map((member) => member.userId)
+        : await this.maxClient.getChatAdminIds(chatId, adminLookupOptions);
     const adminIds = Array.from(
       new Set(
-        (
-          await this.maxClient.getChatAdminIds(chatId, {
-            trafficClass: 'background',
-            sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
-            timeoutMs: CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
-            ...(deliveryBotId ? { botId: deliveryBotId } : {}),
-          })
-        ).filter(
+        adminIdsFromRoster.filter(
           (id) =>
             id.trim().length > 0 &&
             !knownBotUserIds.has(id.trim()) &&

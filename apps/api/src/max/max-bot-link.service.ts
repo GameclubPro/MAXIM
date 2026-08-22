@@ -53,6 +53,8 @@ const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
 const NIGHT_MODE_RECONCILIATION_RETRY_DELAY_MS = 5_000;
 const NIGHT_MODE_RECONCILIATION_RETRY_BATCH_SIZE = 50;
+const CHAT_MEMBERSHIP_DEADLOCK_MAX_ATTEMPTS = 3;
+const CHAT_MEMBERSHIP_DEADLOCK_RETRY_DELAYS_MS = [25, 75] as const;
 const SEND_ROUTE_STICKY_DISAPPEARANCE_THRESHOLD = 2;
 const SEND_ROUTE_OPEN_CIRCUIT_RECHECK_MS = 15 * 60_000;
 const WRITE_MESSAGE_PERMISSION_ALIASES = new Set([
@@ -717,73 +719,82 @@ export class MaxBotLinkService implements OnModuleDestroy {
       return false;
     }
 
-    const result = await this.prisma.$transaction(
-      async (tx) => {
-        // FLAG: Access probes and destructive lifecycle cleanup serialize on the parent Chat.
-        // Keep this transaction SQL-only; route reconciliation happens after commit.
-        const locked = await tx.$queryRaw<Array<{ id: string; entityType: ChatEntityType }>>(
-          Prisma.sql`
+    const result = await this.runChatMembershipWriteWithDeadlockRetry(
+      () =>
+        this.prisma.$transaction(
+          async (tx) => {
+            // FLAG: Access probes and destructive lifecycle cleanup serialize on the parent Chat.
+            // Keep this transaction SQL-only; route reconciliation happens after commit.
+            const locked = await tx.$queryRaw<Array<{ id: string; entityType: ChatEntityType }>>(
+              Prisma.sql`
           SELECT chat."id", chat."entity_type" AS "entityType"
           FROM "chats" AS chat
           WHERE chat."id" = ${chatId}
           FOR UPDATE OF chat
         `,
-        );
-        if (locked.length !== 1) {
-          return { persisted: false, wake: null, nightModeAccessActivated: false };
-        }
-
-        const previous = await tx.chatBotMembership.findUnique({
-          where: { chatId_botId: { chatId, botId } },
-          select: {
-            status: true,
-            botAccessState: true,
-            botAccessCheckedAt: true,
-            botAccessExpiresAt: true,
-            permissionsSnapshot: true,
-          },
-        });
-        const previousAccess: PreviousBotDeleteAccess = previous
-          ? {
-              status: previous.status,
-              botAccessState: previous.botAccessState,
-              botAccessCheckedAt: previous.botAccessCheckedAt,
-              botAccessExpiresAt: previous.botAccessExpiresAt,
-              permissionsSnapshot: previous.permissionsSnapshot,
+            );
+            if (locked.length !== 1) {
+              return { persisted: false, wake: null, nightModeAccessActivated: false };
             }
-          : null;
-        const persisted = await this.persistBotAccessProbeInTransaction(tx, params, chatId, botId);
-        const current = persisted
-          ? await tx.chatBotMembership.findUnique({
+
+            const previous = await tx.chatBotMembership.findUnique({
               where: { chatId_botId: { chatId, botId } },
               select: {
                 status: true,
                 botAccessState: true,
+                botAccessCheckedAt: true,
+                botAccessExpiresAt: true,
+                permissionsSnapshot: true,
               },
-            })
-          : null;
-        return {
-          persisted,
-          nightModeAccessActivated:
-            persisted &&
-            locked[0]!.entityType === ChatEntityType.CHAT &&
-            this.getExecutableBotById(botId) !== null &&
-            !isNightModeTransitionMembershipCandidate({ ...previous, botId }) &&
-            isNightModeTransitionMembershipCandidate({ ...current, botId }),
-          wake: persisted
-            ? {
-                chatId,
-                botId,
-                entityType: locked[0]!.entityType,
-                source: params.source,
-                checkedAt: params.checkedAt,
-                access: params.access,
-                previousAccess,
-              }
-            : null,
-        };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+            });
+            const previousAccess: PreviousBotDeleteAccess = previous
+              ? {
+                  status: previous.status,
+                  botAccessState: previous.botAccessState,
+                  botAccessCheckedAt: previous.botAccessCheckedAt,
+                  botAccessExpiresAt: previous.botAccessExpiresAt,
+                  permissionsSnapshot: previous.permissionsSnapshot,
+                }
+              : null;
+            const persisted = await this.persistBotAccessProbeInTransaction(
+              tx,
+              params,
+              chatId,
+              botId,
+            );
+            const current = persisted
+              ? await tx.chatBotMembership.findUnique({
+                  where: { chatId_botId: { chatId, botId } },
+                  select: {
+                    status: true,
+                    botAccessState: true,
+                  },
+                })
+              : null;
+            return {
+              persisted,
+              nightModeAccessActivated:
+                persisted &&
+                locked[0]!.entityType === ChatEntityType.CHAT &&
+                this.getExecutableBotById(botId) !== null &&
+                !isNightModeTransitionMembershipCandidate({ ...previous, botId }) &&
+                isNightModeTransitionMembershipCandidate({ ...current, botId }),
+              wake: persisted
+                ? {
+                    chatId,
+                    botId,
+                    entityType: locked[0]!.entityType,
+                    source: params.source,
+                    checkedAt: params.checkedAt,
+                    access: params.access,
+                    previousAccess,
+                  }
+                : null,
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        ),
+      'recordBotAccessProbe',
     );
     if (result.nightModeAccessActivated && this.nightModeTransitionScheduler) {
       this.pendingNightModeReconciliations.add(chatId);
@@ -805,6 +816,45 @@ export class MaxBotLinkService implements OnModuleDestroy {
       await this.reconcilePendingNightModeTransition(chatId);
     }
     return result.persisted;
+  }
+
+  private async runChatMembershipWriteWithDeadlockRetry<T>(
+    operation: () => Promise<T>,
+    operationName: string,
+  ): Promise<T> {
+    // FLAG: Membership writes are idempotent CAS/upsert operations; only a PostgreSQL
+    // deadlock may be retried, and never a MAX side effect or an ambiguous mutation.
+    for (let attempt = 1; attempt <= CHAT_MEMBERSHIP_DEADLOCK_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error: unknown) {
+        if (attempt >= CHAT_MEMBERSHIP_DEADLOCK_MAX_ATTEMPTS || !this.isPostgresDeadlock(error)) {
+          throw error;
+        }
+
+        const delayMs = CHAT_MEMBERSHIP_DEADLOCK_RETRY_DELAYS_MS[attempt - 1] ?? 75;
+        this.logger.debug(
+          { operation: operationName, attempt, delayMs },
+          'Retrying a transient PostgreSQL chat membership deadlock',
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    throw new Error(`Chat membership operation ${operationName} did not complete`);
+  }
+
+  private isPostgresDeadlock(error: unknown): boolean {
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code ?? '')
+        : '';
+    if (code === 'P2034' || code === '40P01') {
+      return true;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return /(?:40P01|deadlock detected)/iu.test(message);
   }
 
   private async reconcilePendingNightModeTransition(chatId: string): Promise<void> {
@@ -1793,14 +1843,18 @@ export class MaxBotLinkService implements OnModuleDestroy {
     });
 
     if (removed.count === 0) {
-      const created = await this.prisma.chatBotMembership.createMany({
-        data: {
-          chatId,
-          botId,
-          ...removalData,
-        },
-        skipDuplicates: true,
-      });
+      const created = await this.runChatMembershipWriteWithDeadlockRetry(
+        () =>
+          this.prisma.chatBotMembership.createMany({
+            data: {
+              chatId,
+              botId,
+              ...removalData,
+            },
+            skipDuplicates: true,
+          }),
+        'markChatBotRemoved.membershipCreate',
+      );
       if (created.count === 0) {
         removed = await this.prisma.chatBotMembership.updateMany({
           where: removalWhere,
@@ -3589,14 +3643,18 @@ export class MaxBotLinkService implements OnModuleDestroy {
       }
 
       // FLAG: Creation races retry the timestamp CAS; equal timestamps remain removal-wins.
-      const created = await this.prisma.chatBotMembership.createMany({
-        data: {
-          chatId,
-          botId,
-          ...reactivationData,
-        },
-        skipDuplicates: true,
-      });
+      const created = await this.runChatMembershipWriteWithDeadlockRetry(
+        () =>
+          this.prisma.chatBotMembership.createMany({
+            data: {
+              chatId,
+              botId,
+              ...reactivationData,
+            },
+            skipDuplicates: true,
+          }),
+        'upsertChatBotMembership.reactivationCreate',
+      );
       if (created.count > 0) {
         return { active: true, lifecycleAdvanced: true };
       }

@@ -145,6 +145,12 @@ export type MaxChatMemberAccess = {
   permissionsKnown?: boolean;
 };
 
+/** The narrow admin roster shape used by recipient selection paths. */
+export type MaxChatAdminMember = {
+  userId: string;
+  isBot: boolean;
+};
+
 export type MaxChatMemberRole = 'owner' | 'admin' | 'member';
 export type MaxChatRosterUnavailableReason = 'deleted' | 'blocked' | 'deactivated' | 'suspended';
 
@@ -841,6 +847,7 @@ export class MaxClientService implements OnModuleDestroy {
     Promise<Map<string, MaxChatMemberAccess>>
   >();
   private readonly chatAdminIdsInFlight = new Map<string, Promise<string[]>>();
+  private readonly chatAdminMembersInFlight = new Map<string, Promise<MaxChatAdminMember[]>>();
   private readonly mediaUploadValidationCache = new MaxMediaUploadValidationCache();
 
   constructor(
@@ -2928,6 +2935,86 @@ export class MaxClientService implements OnModuleDestroy {
     return [...(await pending)];
   }
 
+  /**
+   * Returns the admin roster with MAX's bot marker preserved. Keep this separate
+   * from getChatAdminIds: ownership and access callers intentionally include bot
+   * administrators, while private human-recipient flows must be able to exclude
+   * bot-to-bot deliveries.
+   */
+  async getChatAdminMembers(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatAdminMember[]> {
+    const normalizedChatId = chatId.trim();
+    const botId = this.resolveBot(options.botId).id;
+    const cacheKey = this.buildChatAdminMembersCacheKey(botId, normalizedChatId);
+    if (!options.bypassCache) {
+      const cached = await this.readJsonCache(cacheKey, (value): value is MaxChatAdminMember[] =>
+        this.isChatAdminMemberArray(value),
+      );
+      if (cached) {
+        return cached.map((member) => ({ ...member }));
+      }
+
+      const existingInFlight = this.chatAdminMembersInFlight.get(cacheKey);
+      if (existingInFlight) {
+        return (await existingInFlight).map((member) => ({ ...member }));
+      }
+    }
+
+    const pending = this.fetchChatAdminMembersUncached(normalizedChatId, options).finally(() => {
+      if (this.chatAdminMembersInFlight.get(cacheKey) === pending) {
+        this.chatAdminMembersInFlight.delete(cacheKey);
+      }
+    });
+    if (!options.bypassCache) {
+      this.chatAdminMembersInFlight.set(cacheKey, pending);
+    }
+
+    return (await pending).map((member) => ({ ...member }));
+  }
+
+  private async fetchChatAdminMembersUncached(
+    chatId: string,
+    options: MaxApiRequestOptions,
+  ): Promise<MaxChatAdminMember[]> {
+    const members = await this.listChatAdminMembers(chatId, options);
+    const adminMembers = members
+      .map((member): MaxChatAdminMember | null => {
+        if (!member || typeof member !== 'object') {
+          return null;
+        }
+
+        const row = member as Record<string, unknown>;
+        if (!this.isChatAdminMemberRow(row)) {
+          return null;
+        }
+
+        const userId = this.readMemberUserId(row);
+        if (!userId) {
+          return null;
+        }
+
+        return {
+          userId,
+          // MAX documents is_bot as an explicit ChatMember field. Do not infer
+          // from usernames here: a human may legitimately have a *_bot handle.
+          isBot: this.readExplicitChatMemberBot(row),
+        };
+      })
+      .filter((member): member is MaxChatAdminMember => member !== null);
+
+    if (!options.bypassCache) {
+      await this.writeJsonCache(
+        this.buildChatAdminMembersCacheKey(this.resolveBot(options.botId).id, chatId),
+        adminMembers,
+        this.chatAdminIdsCacheTtlSec,
+      );
+    }
+
+    return adminMembers;
+  }
+
   private async fetchChatAdminIdsUncached(
     chatId: string,
     botId: string,
@@ -3522,6 +3609,10 @@ export class MaxClientService implements OnModuleDestroy {
     return `maxapi:cache:v1:chat-admin-ids:${botId}:${chatId}`;
   }
 
+  private buildChatAdminMembersCacheKey(botId: string, chatId: string): string {
+    return `maxapi:cache:v1:chat-admin-members:${botId}:${chatId}`;
+  }
+
   private async readJsonCache<T>(
     key: string,
     guard: (value: unknown) => value is T,
@@ -3923,6 +4014,40 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return profile.userId.toLowerCase().endsWith('_bot');
+  }
+
+  private readExplicitChatMemberBot(value: unknown): boolean {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    const row = value as Record<string, unknown>;
+    const nestedUser =
+      row.user && typeof row.user === 'object' && !Array.isArray(row.user)
+        ? (row.user as Record<string, unknown>)
+        : null;
+    return [row, nestedUser].some(
+      (candidate) =>
+        candidate !== null &&
+        (candidate.is_bot === true ||
+          candidate.isBot === true ||
+          candidate.bot === true ||
+          candidate.is_service === true ||
+          candidate.isService === true),
+    );
+  }
+
+  private isChatAdminMemberArray(value: unknown): value is MaxChatAdminMember[] {
+    return (
+      Array.isArray(value) &&
+      value.every(
+        (member) =>
+          member !== null &&
+          typeof member === 'object' &&
+          typeof (member as MaxChatAdminMember).userId === 'string' &&
+          typeof (member as MaxChatAdminMember).isBot === 'boolean',
+      )
+    );
   }
 
   private parseChatMemberUnavailableReason(value: unknown): MaxChatRosterUnavailableReason | null {
