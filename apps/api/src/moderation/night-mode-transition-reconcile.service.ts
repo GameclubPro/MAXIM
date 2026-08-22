@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,6 +7,7 @@ import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import type { NightModeTransitionManualReview } from './night-mode-transition-scheduler.service';
 import { parseNightModeTransitionSessionKey } from './night-mode-transition-time.util';
+import { RedisCounterService } from './redis-counter.service';
 
 const NIGHT_MODE_RECONCILE_INTERVAL_MS = 500;
 const NIGHT_MODE_RECONCILE_BATCH_SIZE = 16;
@@ -24,6 +25,9 @@ const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_SIZE = 100;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_RETRY_MS = 5_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_INCREMENTAL_MS = 60_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_OVERLAP_MS = 5 * 60_000;
+const NIGHT_MODE_RECONCILE_LEADER_LOCK_KEY = 'night-mode:transition-reconcile:leader:v1';
+const NIGHT_MODE_RECONCILE_LEADER_LOCK_TTL_MS = 120_000;
+const NIGHT_MODE_RECONCILE_LEADER_RENEW_MS = 30_000;
 
 type NightModeTransitionReconcileRequest = {
   chat_id: string;
@@ -69,6 +73,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
   constructor(
     private readonly prisma: PrismaService,
     private readonly scheduler: NightModeTransitionSchedulerService,
+    @Optional() private readonly redisCounter?: RedisCounterService,
   ) {}
 
   onModuleInit(): void {
@@ -96,7 +101,33 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
     }
 
     this.inFlight = true;
+    let leaderToken: string | null = null;
+    let leaderRenewTimer: NodeJS.Timeout | null = null;
     try {
+      if (this.redisCounter) {
+        leaderToken = await this.redisCounter.acquireLock(
+          NIGHT_MODE_RECONCILE_LEADER_LOCK_KEY,
+          NIGHT_MODE_RECONCILE_LEADER_LOCK_TTL_MS,
+        );
+        if (!leaderToken) {
+          return;
+        }
+        leaderRenewTimer = setInterval(() => {
+          void this.redisCounter
+            ?.renewLock(
+              NIGHT_MODE_RECONCILE_LEADER_LOCK_KEY,
+              leaderToken!,
+              NIGHT_MODE_RECONCILE_LEADER_LOCK_TTL_MS,
+            )
+            .catch((error: unknown) => {
+              this.logger.warn(
+                { error: error instanceof Error ? error.message : String(error) },
+                'Failed to renew the night mode reconcile leader lock',
+              );
+            });
+        }, NIGHT_MODE_RECONCILE_LEADER_RENEW_MS);
+        leaderRenewTimer.unref();
+      }
       await this.discoverLegacyCloseRecoveriesPage().catch((error: unknown) => {
         this.legacyRecoveryDiscoveryNextAttemptAt =
           Date.now() + NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_RETRY_MS;
@@ -112,6 +143,19 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         'Failed to reconcile durable night mode transition requests',
       );
     } finally {
+      if (leaderRenewTimer) {
+        clearInterval(leaderRenewTimer);
+      }
+      if (leaderToken && this.redisCounter) {
+        await this.redisCounter
+          .releaseLock(NIGHT_MODE_RECONCILE_LEADER_LOCK_KEY, leaderToken)
+          .catch((error: unknown) => {
+            this.logger.warn(
+              { error: error instanceof Error ? error.message : String(error) },
+              'Failed to release the night mode reconcile leader lock',
+            );
+          });
+      }
       this.inFlight = false;
     }
   }

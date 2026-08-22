@@ -35,6 +35,11 @@ describe('NightModeTransitionReconcileService', () => {
     repair?: jest.Mock;
     queryRaw?: jest.Mock;
     executeRaw?: jest.Mock;
+    redisCounter?: {
+      acquireLock: jest.Mock;
+      renewLock: jest.Mock;
+      releaseLock: jest.Mock;
+    };
   }) {
     const requests = params?.requests ?? [];
     const prisma = {
@@ -58,9 +63,32 @@ describe('NightModeTransitionReconcileService', () => {
           passes: 1,
         }),
     };
-    const service = new NightModeTransitionReconcileService(prisma as never, scheduler as never);
+    const service = new NightModeTransitionReconcileService(
+      prisma as never,
+      scheduler as never,
+      params?.redisCounter as never,
+    );
     return { prisma, scheduler, service };
   }
+
+  it('skips duplicate reconcile providers while another instance owns the leader lock', async () => {
+    const redisCounter = {
+      acquireLock: jest.fn().mockResolvedValue(null),
+      renewLock: jest.fn(),
+      releaseLock: jest.fn(),
+    };
+    const { prisma, service } = createService({ redisCounter });
+
+    await (service as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(redisCounter.acquireLock).toHaveBeenCalledWith(
+      'night-mode:transition-reconcile:leader:v1',
+      120_000,
+    );
+    expect(redisCounter.renewLock).not.toHaveBeenCalled();
+    expect(redisCounter.releaseLock).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
 
   function buildLegacyRecoveryRow(
     chatId: string,
