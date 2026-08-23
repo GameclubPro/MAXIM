@@ -89,7 +89,7 @@ export function SettingsStorefrontSection({
                   </label>
                 </div>
                 <p className="settings-native-toggle__hint">
-                  Для одиночного $ без витрины бот покажет «Смотреть витрины» и «Открыть витрину».
+                  Одиночный $ без витрины покажет кнопки витрин.
                 </p>
               </div>
             </div>

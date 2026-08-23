@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Remote discovery is deliberately constructed as a quoted remote bash program.
+# shellcheck disable=SC2016,SC2029
 umask 077
 export LC_ALL=C
 

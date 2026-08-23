@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Remote commands are passed through explicit shell_quote boundaries.
+# shellcheck disable=SC2016,SC2029
 umask 077
 export LC_ALL=C
 
