@@ -83,6 +83,29 @@ describe('repair Karavan storefront relays CLI', () => {
     });
   });
 
+  it('accepts an exact bare dollar from a direct message', () => {
+    expect(
+      classifyReplayEvent(
+        createEvent({
+          rawMessage: {
+            body: {
+              text: '  $  ',
+            },
+            link: null,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'eligible',
+      candidate: {
+        webhookEventId: 'webhook-1',
+        chatId: '-1001',
+        messageId: 'mid-1',
+        senderId: 'seller-1',
+      },
+    });
+  });
+
   it('accepts the same relay shape inside a webhook event envelope', () => {
     expect(
       classifyReplayEvent(
@@ -143,6 +166,18 @@ describe('repair Karavan storefront relays CLI', () => {
           rawMessage: {
             body: {
               text: 'мой комментарий',
+            },
+          },
+        }),
+      ),
+      'direct_text_present',
+    );
+    expectSkip(
+      classifyReplayEvent(
+        createEvent({
+          rawMessage: {
+            body: {
+              text: '$ витрина',
             },
           },
         }),

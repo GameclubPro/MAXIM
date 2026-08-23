@@ -117,8 +117,23 @@ export function classifyReplayEvent(event: StoredWebhookEvent): ReplayDecision {
   if (!rawMessage) {
     return skip(event.id, 'missing_raw_message');
   }
-  if (extractMessageText(rawMessage) || readString(raw?.text)) {
-    return skip(event.id, 'direct_text_present');
+
+  // The current relay handles an exact bare `$` from a direct message as the
+  // storefront-directory onboarding action. Keep the legacy replay guard for
+  // forwarded posts below: a non-empty outer body is still not replay-safe.
+  const directText = extractMessageText(rawMessage) ?? readString(raw?.text);
+  if (directText) {
+    if (directText.trim() !== '$') {
+      return skip(event.id, 'direct_text_present');
+    }
+
+    return eligibleCandidate({
+      event,
+      update,
+      chatId,
+      messageId,
+      senderId,
+    });
   }
 
   const link = asRecord(rawMessage.link);
@@ -136,15 +151,31 @@ export function classifyReplayEvent(event: StoredWebhookEvent): ReplayDecision {
     return skip(event.id, 'missing_forwarded_dollar_marker');
   }
 
+  return eligibleCandidate({
+    event,
+    update,
+    chatId,
+    messageId,
+    senderId,
+  });
+}
+
+function eligibleCandidate(params: {
+  event: StoredWebhookEvent;
+  update: MaxUpdate;
+  chatId: string;
+  messageId: string;
+  senderId: string;
+}): ReplayDecision {
   return {
     kind: 'eligible',
     candidate: {
-      webhookEventId: event.id,
-      update,
-      chatId,
-      messageId,
-      senderId,
-      botId: readString(update.botId),
+      webhookEventId: params.event.id,
+      update: params.update,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      senderId: params.senderId,
+      botId: readString(params.update.botId),
     },
   };
 }

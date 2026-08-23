@@ -57,6 +57,13 @@ export const KARAVAN_STOREFRONT_RELAY_AUDIT_ACTION = 'KARAVAN_STOREFRONT_RELAY';
 const KARAVAN_STOREFRONT_RELAY_ENQUEUE_FAILED_AUDIT_ACTION =
   'KARAVAN_STOREFRONT_RELAY_ENQUEUE_FAILED';
 export const KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT = 'Витрина продавца';
+export const KARAVAN_STOREFRONT_CATALOG_BUTTON_TEXT = 'Смотреть витрины';
+export const KARAVAN_STOREFRONT_CREATE_BUTTON_TEXT = 'Открыть витрину';
+export const KARAVAN_STOREFRONT_CATALOG_URL = 'https://max.ru/se13381675_1_bot?startapp=';
+export const KARAVAN_STOREFRONT_CREATE_URL = 'https://max.ru/se13381675_bot?startapp=storefront';
+
+type StorefrontRelayTrigger = 'prefixed' | 'bare';
+type StorefrontRelayVariant = 'storefront' | 'directory';
 
 export function isKaravanStorefrontRelayCompanionText(value: unknown): boolean {
   return value === KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT;
@@ -71,6 +78,8 @@ export class KaravanStorefrontRelayService {
   private readonly lookupTimeoutMs: number;
   private readonly cacheTtlSec: number;
   private readonly relayLockTtlSec: number;
+  private readonly catalogUrl: string;
+  private readonly createUrl: string;
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inFlightLookups = new Map<string, Promise<LookupResponse | null>>();
 
@@ -86,6 +95,14 @@ export class KaravanStorefrontRelayService {
     );
     this.integrationToken = this.normalizeToken(
       this.configService?.get<string>('KARAVAN_INTEGRATION_TOKEN'),
+    );
+    this.catalogUrl = this.readUrlConfig(
+      'KARAVAN_STOREFRONT_CATALOG_URL',
+      KARAVAN_STOREFRONT_CATALOG_URL,
+    );
+    this.createUrl = this.readUrlConfig(
+      'KARAVAN_STOREFRONT_CREATE_URL',
+      KARAVAN_STOREFRONT_CREATE_URL,
     );
     this.lookupTimeoutMs = this.readPositiveIntConfig(
       'KARAVAN_STOREFRONT_LOOKUP_TIMEOUT_MS',
@@ -114,7 +131,8 @@ export class KaravanStorefrontRelayService {
       return 'noop';
     }
 
-    if (!this.hasStorefrontRelayTrigger(context)) {
+    const trigger = this.resolveStorefrontRelayTrigger(context);
+    if (!trigger) {
       return 'noop';
     }
 
@@ -142,21 +160,25 @@ export class KaravanStorefrontRelayService {
       if (store === undefined) {
         return 'failed';
       }
-      if (!store) {
+      if (!store && trigger !== 'bare') {
         return 'noop';
       }
 
       const idempotencyKey = this.buildRelayIdempotencyKey(context.chatId, context.messageId!);
+      const variant: StorefrontRelayVariant = store ? 'storefront' : 'directory';
       pendingAudit = await this.createPendingAuditLog({
         context,
         store,
         idempotencyKey,
+        variant,
       });
       await this.maxClient.sendMessage(
         context.chatId,
         KARAVAN_STOREFRONT_BUTTON_MESSAGE_TEXT,
-        this.buildStorefrontMessageOptions(context.messageId!, store.url),
-        this.buildDispatchOptions({ context, store, idempotencyKey }),
+        store
+          ? this.buildStorefrontMessageOptions(context.messageId!, store.url)
+          : this.buildDirectoryMessageOptions(context.messageId!),
+        this.buildDispatchOptions({ context, store, idempotencyKey, variant }),
       );
       keepClaim = true;
 
@@ -294,8 +316,14 @@ export class KaravanStorefrontRelayService {
     return !this.isPrivateDirectChat(context.chatId);
   }
 
-  private hasStorefrontRelayTrigger(context: RelayContext): boolean {
-    return this.extractVisibleText(context)?.trimStart().startsWith('$') === true;
+  private resolveStorefrontRelayTrigger(context: RelayContext): StorefrontRelayTrigger | null {
+    const visibleText = this.extractVisibleText(context);
+    const normalized = visibleText?.trimStart();
+    if (!normalized?.startsWith('$')) {
+      return null;
+    }
+
+    return normalized.trim() === '$' ? 'bare' : 'prefixed';
   }
 
   // FLAG: Normalized text can include reply/quote previews; use it only without raw payload or after a validated forward.
@@ -459,6 +487,33 @@ export class KaravanStorefrontRelayService {
     };
   }
 
+  private buildDirectoryMessageOptions(messageId: string): MaxSendMessageOptions {
+    return {
+      messageLink: {
+        type: 'reply',
+        mid: messageId,
+      },
+      // Keep each link on its own row. MAX currently normalizes link buttons
+      // this way as well, and explicit rows keep the queued payload stable.
+      buttons: [
+        [
+          {
+            type: 'link',
+            text: KARAVAN_STOREFRONT_CATALOG_BUTTON_TEXT,
+            url: this.catalogUrl,
+          },
+        ],
+        [
+          {
+            type: 'link',
+            text: KARAVAN_STOREFRONT_CREATE_BUTTON_TEXT,
+            url: this.createUrl,
+          },
+        ],
+      ],
+    };
+  }
+
   private async fetchLookup(maxUserId: string): Promise<LookupResponse> {
     if (!this.apiBaseUrl || !this.integrationToken) {
       return { exists: false, store: null };
@@ -498,8 +553,9 @@ export class KaravanStorefrontRelayService {
 
   private buildDispatchOptions(params: {
     context: RelayContext;
-    store: LookupStore;
+    store: LookupStore | null;
     idempotencyKey: string;
+    variant: StorefrontRelayVariant;
   }): MaxActionDispatchOptions {
     return {
       idempotencyKey: params.idempotencyKey,
@@ -511,8 +567,9 @@ export class KaravanStorefrontRelayService {
           sourceMessageId: params.context.messageId ?? null,
           senderId: params.context.senderId,
           requestedBotId: params.context.botId ?? null,
-          storeId: params.store.id,
-          storeSlug: params.store.slug,
+          storeId: params.store?.id ?? null,
+          storeSlug: params.store?.slug ?? null,
+          variant: params.variant,
         },
       },
     };
@@ -520,8 +577,9 @@ export class KaravanStorefrontRelayService {
 
   private async createPendingAuditLog(params: {
     context: RelayContext;
-    store: LookupStore;
+    store: LookupStore | null;
     idempotencyKey: string;
+    variant: StorefrontRelayVariant;
   }): Promise<{ id: string; payload: Prisma.InputJsonObject }> {
     const payload: Prisma.InputJsonObject = {
       sourceMessageId: params.context.messageId ?? null,
@@ -530,14 +588,17 @@ export class KaravanStorefrontRelayService {
       deliveryStatus: 'pending',
       idempotencyKey: params.idempotencyKey,
       requestedBotId: params.context.botId ?? null,
-      store: {
-        id: params.store.id,
-        slug: params.store.slug,
-        name: params.store.name,
-        sellerAccountId: params.store.sellerAccountId,
-        url: params.store.url,
-        inviteUrl: params.store.inviteUrl,
-      },
+      variant: params.variant,
+      store: params.store
+        ? {
+            id: params.store.id,
+            slug: params.store.slug,
+            name: params.store.name,
+            sellerAccountId: params.store.sellerAccountId,
+            url: params.store.url,
+            inviteUrl: params.store.inviteUrl,
+          }
+        : null,
     };
     const audit = await this.prisma.auditLog.create({
       data: {
@@ -652,6 +713,21 @@ export class KaravanStorefrontRelayService {
     const value = this.configService?.get<number | string>(key);
     const numeric = typeof value === 'string' ? Number(value) : value;
     return Number.isFinite(numeric) && numeric! > 0 ? Math.trunc(numeric!) : fallback;
+  }
+
+  private readUrlConfig(key: string, fallback: string): string {
+    const value = this.configService?.get<string>(key);
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return fallback;
+    }
+
+    try {
+      const url = new URL(normalized);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : fallback;
+    } catch {
+      return fallback;
+    }
   }
 
   private normalizeBaseUrl(value: string | null | undefined): string | null {

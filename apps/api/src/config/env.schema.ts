@@ -549,6 +549,14 @@ const envSchema = z.object({
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
   KARAVAN_API_BASE_URL: z.string().url().optional(),
   KARAVAN_INTEGRATION_TOKEN: z.string().min(16).optional(),
+  KARAVAN_STOREFRONT_CATALOG_URL: z
+    .string()
+    .url()
+    .default('https://max.ru/se13381675_1_bot?startapp='),
+  KARAVAN_STOREFRONT_CREATE_URL: z
+    .string()
+    .url()
+    .default('https://max.ru/se13381675_bot?startapp=storefront'),
   KARAVAN_STOREFRONT_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
   KARAVAN_STOREFRONT_CACHE_TTL_SEC: z.coerce.number().int().min(1).max(3600).default(120),
   KARAVAN_STOREFRONT_RELAY_LOCK_TTL_SEC: z.coerce.number().int().min(60).max(86_400).default(3600),
@@ -665,6 +673,14 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
   if (parsed.data.NODE_ENV === 'production') {
     assertProductionPublicHttpsOrigin('APP_BASE_URL', parsed.data.APP_BASE_URL);
     assertProductionPublicHttpsOrigin('MAX_WEBHOOK_BASE_URL', parsed.data.MAX_WEBHOOK_BASE_URL);
+    assertProductionPublicHttpsOrigin(
+      'KARAVAN_STOREFRONT_CATALOG_URL',
+      parsed.data.KARAVAN_STOREFRONT_CATALOG_URL,
+    );
+    assertProductionPublicHttpsOrigin(
+      'KARAVAN_STOREFRONT_CREATE_URL',
+      parsed.data.KARAVAN_STOREFRONT_CREATE_URL,
+    );
     assertProductionCurrentMaxApiHost(parsed.data.MAX_API_BASE_URL);
 
     if (!parsed.data.ADMIN_ACCESS_CODE) {

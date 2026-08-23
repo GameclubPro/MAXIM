@@ -281,7 +281,9 @@ test('keeps backup preflight read-only and reclaims only manifest-aware release 
     backup,
     /if \[\[ "\$MODE" != "--preflight-only" \]\]; then[\s\S]*rm -f -- "\$expired_dump"/u,
   );
-  assert.match(reclaim, /release-image-reclaim\.mjs reclaim/u);
+  assert.match(reclaim, /release-image-reclaim\.mjs/u);
+  assert.match(reclaim, /reclaim_args=\(/u);
+  assert.match(reclaim, /reclaim_args\+=\(--dry-run\)/u);
   assert.match(reclaim, /Node 24 is required for release image reclaim/u);
   assert.ok(reclaim.indexOf('Node 24 is required') < callIndex(reclaim, 'acquire_deploy_lock'));
   assert.match(reclaim, /acquire_deploy_lock/u);

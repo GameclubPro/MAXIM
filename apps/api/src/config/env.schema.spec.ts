@@ -832,5 +832,37 @@ describe('validateEnv boolean parsing', () => {
     );
 
     expect(env.KARAVAN_STOREFRONT_RELAY_ENABLED).toBe(true);
+    expect(env.KARAVAN_STOREFRONT_CATALOG_URL).toBe(
+      'https://max.ru/se13381675_1_bot?startapp=',
+    );
+    expect(env.KARAVAN_STOREFRONT_CREATE_URL).toBe(
+      'https://max.ru/se13381675_bot?startapp=storefront',
+    );
+  });
+
+  it('keeps Karavan fallback links configurable and HTTPS-only in production', () => {
+    const env = validateEnv(
+      createValidEnv({
+        KARAVAN_STOREFRONT_CATALOG_URL: 'https://example.com/catalog?startapp=',
+        KARAVAN_STOREFRONT_CREATE_URL: 'https://example.com/seller?startapp=storefront',
+      }),
+    );
+
+    expect(env).toMatchObject({
+      KARAVAN_STOREFRONT_CATALOG_URL: 'https://example.com/catalog?startapp=',
+      KARAVAN_STOREFRONT_CREATE_URL: 'https://example.com/seller?startapp=storefront',
+    });
+
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          NODE_ENV: 'production',
+          ADMIN_ACCESS_CODE: 'server-admin-code',
+          MAX_WEBHOOK_SECRET_PATH: 'prod-secret-path-1',
+          MAX_WEBHOOK_HEADER_SECRET: 'prod-header-secret-1',
+          KARAVAN_STOREFRONT_CATALOG_URL: 'http://example.com/catalog',
+        }),
+      ),
+    ).toThrow(/KARAVAN_STOREFRONT_CATALOG_URL must use public https/u);
   });
 });

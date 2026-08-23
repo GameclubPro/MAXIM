@@ -5,6 +5,8 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
     KARAVAN_STOREFRONT_RELAY_ENABLED: true,
     KARAVAN_API_BASE_URL: 'https://api2.major-maksimov.ru/karavan/api',
     KARAVAN_INTEGRATION_TOKEN: 'test-karavan-integration-token',
+    KARAVAN_STOREFRONT_CATALOG_URL: 'https://max.ru/se13381675_1_bot?startapp=',
+    KARAVAN_STOREFRONT_CREATE_URL: 'https://max.ru/se13381675_bot?startapp=storefront',
     KARAVAN_STOREFRONT_LOOKUP_TIMEOUT_MS: 500,
     KARAVAN_STOREFRONT_CACHE_TTL_SEC: 120,
     KARAVAN_STOREFRONT_RELAY_LOCK_TTL_SEC: 3600,
@@ -635,6 +637,131 @@ describe('KaravanStorefrontRelayService', () => {
 
       expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
       expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('sends catalog and seller buttons for a bare dollar when the sender has no storefront', async () => {
+    const fixture = createService({
+      fetchResponse: {
+        exists: false,
+        store: null,
+      },
+    });
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          text: '$',
+          raw: {
+            message: {
+              body: {
+                text: '$',
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledWith(
+        'chat-1',
+        'Витрина продавца',
+        {
+          messageLink: {
+            type: 'reply',
+            mid: 'mid-source-1',
+          },
+          buttons: [
+            [
+              {
+                type: 'link',
+                text: 'Смотреть витрины',
+                url: 'https://max.ru/se13381675_1_bot?startapp=',
+              },
+            ],
+            [
+              {
+                type: 'link',
+                text: 'Открыть витрину',
+                url: 'https://max.ru/se13381675_bot?startapp=storefront',
+              },
+            ],
+          ],
+        },
+        expect.objectContaining({
+          ledgerContext: {
+            karavanStorefrontRelay: expect.objectContaining({
+              sourceMessageId: 'mid-source-1',
+              senderId: '1001',
+              storeId: null,
+              storeSlug: null,
+              variant: 'directory',
+            }),
+          },
+        }),
+      );
+      expect(fixture.prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            payload: expect.objectContaining({
+              sourceMessageId: 'mid-source-1',
+              variant: 'directory',
+              store: null,
+              deliveryStatus: 'pending',
+            }),
+          }),
+          select: { id: true },
+        }),
+      );
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('keeps the personal storefront button for a bare dollar when the sender has a storefront', async () => {
+    const fixture = createService();
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          text: '  $  ',
+          raw: {
+            message: {
+              body: {
+                text: '  $  ',
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+
+      expect(fixture.maxClient.sendMessage).toHaveBeenCalledWith(
+        'chat-1',
+        'Витрина продавца',
+        expect.objectContaining({
+          buttons: [
+            [
+              {
+                type: 'link',
+                text: 'Открыть витрину',
+                url: 'https://max.ru/se13381675_1_bot?startapp=s_severnaya-lavka__r_seller-1',
+              },
+            ],
+          ],
+        }),
+        expect.objectContaining({
+          ledgerContext: {
+            karavanStorefrontRelay: expect.objectContaining({
+              storeId: 'store-1',
+              storeSlug: 'severnaya-lavka',
+              variant: 'storefront',
+            }),
+          },
+        }),
+      );
     } finally {
       fixture.restore();
     }
