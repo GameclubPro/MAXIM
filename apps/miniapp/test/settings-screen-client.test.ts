@@ -13,7 +13,13 @@ import {
   getChannelSettingsScreen,
   updateChannelPostSignature,
 } from '../src/lib/api/channel-settings-client';
-import { addDomain, getSettingsScreen } from '../src/lib/api/chat-settings-client';
+import {
+  addDomain,
+  getKaravanStorefrontAllowlist,
+  handoffKaravanStorefrontAllowlist,
+  revokeKaravanStorefrontAllowlistEntry,
+  getSettingsScreen,
+} from '../src/lib/api/chat-settings-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 type ApiCall = {
@@ -113,6 +119,43 @@ test('chat settings client sends typed targets and preserves legacy allowlist re
     calls[1]?.init?.body,
     JSON.stringify({ domain: 'docs.max.ru', matchType: 'DOMAIN' }),
   );
+});
+
+test('Karavan storefront allowlist client uses cursor pagination and typed mutations', async () => {
+  const calls: ApiCall[] = [];
+  const listApi = createApiMock(
+    {
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    },
+    calls,
+  );
+
+  await getKaravanStorefrontAllowlist(listApi, 'chat-1', {
+    signal: new AbortController().signal,
+    cursor: 'cursor-1',
+    limit: 25,
+  });
+  const mutationApi = createApiMock({ botUrl: 'https://max.ru/maxim-bot' }, calls);
+  const handoffResponse = await handoffKaravanStorefrontAllowlist(mutationApi, 'chat-1');
+  assert.equal(handoffResponse.botUrl, 'https://max.ru/maxim-bot');
+
+  const revokeApi = createApiMock({ revoked: true }, calls);
+  const revokeResponse = await revokeKaravanStorefrontAllowlistEntry(
+    revokeApi,
+    'chat-1',
+    'entry/1',
+  );
+  assert.equal(revokeResponse.revoked, true);
+
+  assert.equal(calls[0]?.path, '/chats/chat-1/karavan-storefront/allowlist?cursor=cursor-1&limit=25');
+  assert.equal(calls[0]?.init?.signal instanceof AbortSignal, true);
+  assert.equal(calls[1]?.path, '/chats/chat-1/karavan-storefront/allowlist/handoff');
+  assert.equal(calls[1]?.init?.method, 'POST');
+  assert.equal(calls[1]?.init?.body, '{}');
+  assert.equal(calls[2]?.path, '/chats/chat-1/karavan-storefront/allowlist/entry%2F1');
+  assert.equal(calls[2]?.init?.method, 'DELETE');
 });
 
 test('channel post signature client preserves a custom URL across GET and PATCH', async () => {

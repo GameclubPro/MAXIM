@@ -32,6 +32,12 @@ import {
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
 } from '@maxim/contracts';
+import {
+  karavanStorefrontAllowlistQuerySchema,
+  karavanStorefrontAllowlistResponseSchema,
+  karavanStorefrontAllowlistRevokeResponseSchema,
+  karavanStorefrontHandoffResponseSchema,
+} from '@maxim/contracts/karavan-storefront';
 import { ApiRequestError } from '../api-request-error';
 import {
   createManagedPollRequestSchema,
@@ -252,6 +258,30 @@ export function createBroadcastHandoffResponse(): BroadcastHandoffResponse {
   };
 }
 
+function buildKaravanStorefrontAllowlistResponse(
+  state: PreviewState,
+  url: URL,
+): ReturnType<typeof karavanStorefrontAllowlistResponseSchema.parse> {
+  const query = karavanStorefrontAllowlistQuerySchema.parse({
+    cursor: url.searchParams.get('cursor') ?? undefined,
+    limit: url.searchParams.get('limit') ?? undefined,
+  });
+  const cursorIndex = query.cursor
+    ? state.chatKaravanStorefrontAllowlist.findIndex((entry) => entry.id === query.cursor)
+    : -1;
+  if (query.cursor && cursorIndex < 0) {
+    throw new Error('Preview Karavan storefront cursor is invalid.');
+  }
+  const startIndex = query.cursor ? cursorIndex + 1 : 0;
+  const items = state.chatKaravanStorefrontAllowlist.slice(startIndex, startIndex + query.limit);
+  const hasMore = startIndex + items.length < state.chatKaravanStorefrontAllowlist.length;
+  return karavanStorefrontAllowlistResponseSchema.parse({
+    items,
+    hasMore,
+    nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null,
+  });
+}
+
 export function createPublishRulesResult(
   chatId: string,
   clock: PreviewClock,
@@ -335,6 +365,32 @@ export async function handleChatRequest(
   method: string,
   init?: RequestInit,
 ): Promise<unknown> {
+  if (tail[0] === 'karavan-storefront' && tail[1] === 'allowlist') {
+    if (tail.length === 2 && method === 'GET') {
+      return cloneJson(buildKaravanStorefrontAllowlistResponse(state, url));
+    }
+
+    if (tail[2] === 'handoff' && tail.length === 3 && method === 'POST') {
+      return karavanStorefrontHandoffResponseSchema.parse({
+        botUrl: 'https://max.ru/maxim-bot?startapp=karavan-allowlist-preview',
+      });
+    }
+
+    if (tail.length === 3 && method === 'DELETE') {
+      const entryId = decodeURIComponent(tail[2] ?? '');
+      const hadEntry = state.chatKaravanStorefrontAllowlist.some((entry) => entry.id === entryId);
+      state.chatKaravanStorefrontAllowlist = state.chatKaravanStorefrontAllowlist.filter(
+        (entry) => entry.id !== entryId,
+      );
+      if (!hadEntry) {
+        throw new Error(`Preview Karavan storefront entry not found: ${entryId}`);
+      }
+      return karavanStorefrontAllowlistRevokeResponseSchema.parse({
+        revoked: true,
+      });
+    }
+  }
+
   if (tail[0] === 'header' && method === 'GET') {
     const assignedBots = buildPreviewAssignedBots(
       {

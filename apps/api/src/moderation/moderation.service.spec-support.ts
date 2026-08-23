@@ -518,6 +518,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     commentsAllEnabled: false,
     commentsChatBroadcastsEnabled: false,
     karavanStorefrontEnabled: false,
+    karavanStorefrontAdminsOnly: false,
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,

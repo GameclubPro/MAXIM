@@ -721,6 +721,7 @@ export const chatSettingsSchema = z
       commentsAllEnabled: z.boolean().default(false),
       commentsChatBroadcastsEnabled: z.boolean().default(false),
       karavanStorefrontEnabled: z.boolean().default(true),
+      karavanStorefrontAdminsOnly: z.boolean().default(false),
       deleteBotMessagesEnabled: z.boolean().default(false),
       deleteBotMessagesDelayMinutes: deleteBotMessagesDelayMinutesSchema,
       removeBotsFromGroupEnabled: z.boolean().default(false),

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import {
   broadcastHandoffRequestSchema,
@@ -26,6 +27,10 @@ import {
   type UpdateManagedGiveawayRequest,
   DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
+import {
+  karavanStorefrontDurationSchema,
+  karavanStorefrontHandoffResponseSchema,
+} from '@maxim/contracts/karavan-storefront';
 import type { SupportRequestAttachment } from '@maxim/contracts/support-requests';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { AdminService } from '../admin/admin.service';
@@ -34,6 +39,10 @@ import { ManualModerationService } from '../admin/manual-moderation.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import { SupportRequestsService } from '../admin/support-requests.service';
+import {
+  KaravanStorefrontAllowlistService,
+  resolveKaravanStorefrontExpiresAt,
+} from '../integrations/karavan-storefront/karavan-storefront-allowlist.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { buildChatUserDisplayNameUpsert } from '../common/chat-user-display-name-read-model.util';
@@ -82,6 +91,9 @@ import {
   DEFERRED_PRIVATE_CALLBACK_NOTIFICATION,
   ENTITY_CALLBACK_ACTIONS,
   GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
+  KARAVAN_ALLOWLIST_CALLBACK_ACTION,
+  KARAVAN_ALLOWLIST_CANCEL_CALLBACK_ACTION,
+  KARAVAN_ALLOWLIST_FLOW_TTL_MS,
   LAUNCHER_INTRO_MARKER_TTL_SEC,
   LEGACY_CALLBACK_PREFIX,
   MAX_CALLBACK_PREFIX,
@@ -116,6 +128,7 @@ import type {
   ForwardedModerationTarget,
   ForwardedRulesSource,
   PendingInput,
+  PendingKaravanAllowlistFlow,
   PendingMassAction,
   PrivateBroadcastDraft,
   PrivateContext,
@@ -158,6 +171,7 @@ import {
 import {
   dedupePrivateForwardedModerationTargets,
   dedupePrivateForwardedRulesSources,
+  extractForwardedModerationTargets,
   extractPrivateForwardedModerationTargets,
   extractPrivateForwardedRulesSources,
   parsePrivateForwardedModerationCommand,
@@ -215,8 +229,10 @@ import {
 } from './private-control-profile-mention-handoff';
 import {
   buildPrivateGiveawayHandoffStartPayload,
+  buildPrivateKaravanAllowlistStartPayload,
   buildPrivateProfileMentionStartPayload,
   parsePrivateGiveawayHandoffStartPayload,
+  parsePrivateKaravanAllowlistStartPayload,
   parsePrivateProfileMentionStartPayload,
 } from './private-control-handoff-start-payload';
 import {
@@ -274,6 +290,8 @@ export class PrivateControlService {
     @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
     @Optional() private readonly supportRequestsService?: SupportRequestsService,
     @Optional() private readonly prisma?: PrismaService,
+    @Optional()
+    private readonly karavanStorefrontAllowlistService?: KaravanStorefrontAllowlistService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -413,6 +431,11 @@ export class PrivateControlService {
     }
 
     const startPayload = this.extractBotStartedStartPayload(update);
+    const karavanAllowlistStart = this.parseKaravanAllowlistStartPayload(startPayload);
+    if (karavanAllowlistStart) {
+      await this.handleKaravanAllowlistStarted(context, karavanAllowlistStart);
+      return;
+    }
     const claimPayload = this.managedGiveawayService.parseClaimStartPayload(startPayload);
     if (claimPayload) {
       const claimContext = await this.managedGiveawayService.getGiveawayClaimContext(
@@ -603,6 +626,402 @@ export class PrivateControlService {
     if (shouldShowLauncherIntro) {
       await this.markLauncherIntroDelivered(context.actor.userId);
     }
+  }
+
+  async handoffKaravanStorefrontAllowlistFromMiniapp(
+    sourceChatId: string,
+    user: AuthUser,
+  ): Promise<{ botUrl: string }> {
+    const chatId = sourceChatId.trim();
+    if (!chatId) {
+      throw new BadRequestException('Не указан чат для списка разрешённых пользователей.');
+    }
+    await this.adminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    if (!this.karavanStorefrontAllowlistService) {
+      throw new BadRequestException('Список разрешённых пользователей временно недоступен.');
+    }
+
+    const session = await this.loadSession(user.userId);
+    const existing = session.pendingKaravanAllowlist;
+    if (existing && existing.expiresAt > Date.now()) {
+      throw new BadRequestException(
+        'Сначала завершите текущее добавление пользователя или нажмите «Отмена».',
+      );
+    }
+
+    const botId = user.launchBotId?.trim() || session.lastPrivateBotId?.trim() || null;
+    const nonce = this.createKaravanAllowlistNonce();
+    const startPayload = this.buildKaravanAllowlistStartPayload(
+      { chatId, actorUserId: user.userId, nonce },
+      botId,
+    );
+    const botUrl = this.buildBotStartUrl(startPayload, botId);
+    if (!botUrl) {
+      throw new BadRequestException('Ссылка на личный чат бота не настроена.');
+    }
+
+    session.pendingKaravanAllowlist = {
+      chatId,
+      actorUserId: user.userId,
+      botId,
+      nonce,
+      stage: 'await_forward',
+      targetUserId: null,
+      targetDisplayName: null,
+      sourceMessageId: null,
+      expiresAt: Date.now() + KARAVAN_ALLOWLIST_FLOW_TTL_MS,
+    };
+    await this.saveSession(user.userId, session);
+    return karavanStorefrontHandoffResponseSchema.parse({ botUrl });
+  }
+
+  private async handleKaravanAllowlistStarted(
+    context: PrivateContext,
+    start: { chatId: string; actorUserId: string; nonce: string },
+  ): Promise<void> {
+    const session = await this.loadSession(context.actor.userId);
+    this.rememberPrivateChatRoute(session, context);
+    const flow = session.pendingKaravanAllowlist;
+    const currentBotId = this.sessionBotContext.currentBotId();
+    const bound = Boolean(
+      flow &&
+      flow.chatId === start.chatId &&
+      flow.actorUserId === start.actorUserId &&
+      flow.actorUserId === context.actor.userId &&
+      flow.nonce === start.nonce &&
+      (!flow.botId || !currentBotId || flow.botId === currentBotId),
+    );
+    if (!flow || !bound) {
+      await this.sendImmediate(
+        context.chatId,
+        'Ссылка добавления устарела или уже использована. Вернитесь в настройки чата и запустите добавление ещё раз.',
+        undefined,
+        this.resolvePrivateDeliveryBotId(context, session),
+      );
+      return;
+    }
+    if (flow.expiresAt <= Date.now()) {
+      session.pendingKaravanAllowlist = null;
+      await this.respond(context, session, this.renderKaravanAllowlistExpiredView(), {
+        callbackId: null,
+        notification: null,
+      });
+      return;
+    }
+
+    flow.stage = 'await_forward';
+    await this.respond(
+      context,
+      session,
+      this.renderKaravanAllowlistForwardPrompt(flow.chatId, undefined, flow.nonce),
+      {
+        callbackId: null,
+        notification: null,
+      },
+    );
+  }
+
+  private async processKaravanAllowlistText(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<boolean> {
+    const flow = session.pendingKaravanAllowlist;
+    if (!flow) return false;
+    if (flow.actorUserId !== context.actor.userId) {
+      return false;
+    }
+    if (flow.expiresAt <= Date.now()) {
+      session.pendingKaravanAllowlist = null;
+      await this.respond(context, session, this.renderKaravanAllowlistExpiredView(), {
+        callbackId: null,
+        notification: null,
+      });
+      return true;
+    }
+
+    if (context.text.trim().toLowerCase() === 'отмена') {
+      session.pendingKaravanAllowlist = null;
+      await this.respond(context, session, this.renderKaravanAllowlistCancelledView(), {
+        callbackId: null,
+        notification: 'Отменено',
+      });
+      return true;
+    }
+
+    if (flow.stage !== 'await_forward') {
+      await this.respond(context, session, this.renderKaravanAllowlistDurationPrompt(flow), {
+        callbackId: null,
+        notification: 'Выберите срок кнопкой ниже',
+      });
+      return true;
+    }
+
+    const targets = dedupePrivateForwardedModerationTargets(
+      extractForwardedModerationTargets(context.update, null, {
+        messageNodeMode: 'incoming-message',
+        readPrivateForwardedFields: true,
+        skipPrivateDirectChats: true,
+      }),
+    );
+    if (targets.length !== 1) {
+      await this.respond(
+        context,
+        session,
+        this.renderKaravanAllowlistForwardPrompt(
+          flow.chatId,
+          targets.length > 1
+            ? 'В одном сообщении найдено несколько пользователей. Перешлите ровно одно сообщение.'
+            : 'Не удалось распознать пересланное сообщение. Перешлите сообщение пользователя из выбранного чата.',
+          flow.nonce,
+        ),
+        { callbackId: null, notification: 'Нужно переслать одно сообщение' },
+      );
+      return true;
+    }
+
+    const target = targets[0]!;
+    if (target.chatId.trim() !== flow.chatId.trim()) {
+      await this.respond(
+        context,
+        session,
+        this.renderKaravanAllowlistForwardPrompt(
+          flow.chatId,
+          'Сообщение из другого чата. Перешлите сообщение именно из выбранного чата.',
+          flow.nonce,
+        ),
+        { callbackId: null, notification: 'Неверный чат' },
+      );
+      return true;
+    }
+    if (!target.userId.trim() || target.userId.trim() === context.actor.userId.trim()) {
+      await this.respond(
+        context,
+        session,
+        this.renderKaravanAllowlistForwardPrompt(
+          flow.chatId,
+          'Нельзя добавить себя или пользователя без подтверждённого отправителя.',
+          flow.nonce,
+        ),
+        { callbackId: null, notification: 'Пользователь не распознан' },
+      );
+      return true;
+    }
+
+    flow.stage = 'await_duration';
+    flow.targetUserId = target.userId.trim();
+    flow.targetDisplayName = target.senderName?.trim() || null;
+    flow.sourceMessageId = target.messageId?.trim() || null;
+    await this.respond(context, session, this.renderKaravanAllowlistDurationPrompt(flow), {
+      callbackId: null,
+      notification: 'Пользователь найден',
+    });
+    return true;
+  }
+
+  private async processKaravanAllowlistCallback(
+    context: PrivateContext,
+    session: PrivateSession,
+    callback: CallbackAction,
+  ): Promise<void> {
+    const flow = session.pendingKaravanAllowlist;
+    if (!flow || flow.actorUserId !== context.actor.userId) {
+      await this.respond(context, session, this.renderKaravanAllowlistExpiredView(), {
+        callbackId: context.callbackId,
+        notification: 'Сценарий устарел',
+      });
+      return;
+    }
+    if (callback.action === KARAVAN_ALLOWLIST_CANCEL_CALLBACK_ACTION) {
+      if (callback.args[0] !== flow.nonce) {
+        await this.respond(context, session, this.renderKaravanAllowlistExpiredView(), {
+          callbackId: context.callbackId,
+          notification: 'Кнопка устарела',
+        });
+        return;
+      }
+      session.pendingKaravanAllowlist = null;
+      await this.respond(context, session, this.renderKaravanAllowlistCancelledView(), {
+        callbackId: context.callbackId,
+        notification: 'Отменено',
+      });
+      return;
+    }
+    if (flow.expiresAt <= Date.now() || flow.stage !== 'await_duration') {
+      session.pendingKaravanAllowlist = null;
+      await this.respond(context, session, this.renderKaravanAllowlistExpiredView(), {
+        callbackId: context.callbackId,
+        notification: 'Сценарий устарел',
+      });
+      return;
+    }
+    const nonce = callback.args[0]?.trim() ?? '';
+    const parsedDuration = karavanStorefrontDurationSchema.safeParse(callback.args[1]);
+    if (!nonce || nonce !== flow.nonce || !parsedDuration.success || !flow.targetUserId) {
+      await this.respond(context, session, this.renderKaravanAllowlistDurationPrompt(flow), {
+        callbackId: context.callbackId,
+        notification: 'Кнопка устарела',
+      });
+      return;
+    }
+    if (!this.karavanStorefrontAllowlistService) {
+      throw new BadRequestException('Список разрешённых пользователей временно недоступен.');
+    }
+
+    const lockKey = `karavan-storefront-allowlist:grant:${flow.actorUserId}:${flow.nonce}`;
+    const lockToken = this.redisCounter
+      ? await this.redisCounter.acquireLock(lockKey, 15_000)
+      : 'memory';
+    if (!lockToken) {
+      await this.respond(context, session, this.renderKaravanAllowlistExpiredView(), {
+        callbackId: context.callbackId,
+        notification: 'Операция уже выполняется',
+      });
+      return;
+    }
+    try {
+      await this.adminService.assertManagedEntityAdminAccess(
+        flow.chatId,
+        context.actor.userId,
+        'chat',
+      );
+      const expiresAt = resolveKaravanStorefrontExpiresAt(parsedDuration.data);
+      await this.karavanStorefrontAllowlistService.upsert({
+        chatId: flow.chatId,
+        userId: flow.targetUserId,
+        displayName: flow.targetDisplayName,
+        expiresAt,
+        createdByUserId: context.actor.userId,
+        sourceMessageId: flow.sourceMessageId,
+      });
+      session.pendingKaravanAllowlist = null;
+      await this.respond(
+        context,
+        session,
+        this.renderKaravanAllowlistGrantedView(flow, expiresAt),
+        { callbackId: context.callbackId, notification: 'Доступ сохранён' },
+      );
+    } finally {
+      if (this.redisCounter && lockToken !== 'memory') {
+        await this.redisCounter.releaseLock(lockKey, lockToken).catch(() => undefined);
+      }
+    }
+  }
+
+  private renderKaravanAllowlistForwardPrompt(
+    chatId: string,
+    notice?: string,
+    nonce?: string,
+  ): PrivateView {
+    return {
+      text: [
+        privateMarkdownTitle('Разрешение для витрины'),
+        '',
+        notice ?? 'Перешлите любое сообщение пользователя из выбранного чата.',
+        `Чат: ${chatId}`,
+        '',
+        'Идентификатор пользователя вручную не принимается. Для отмены напишите «отмена».',
+      ].join('\n'),
+      options: {
+        buttons: [
+          [
+            this.callbackButton(
+              'Отмена',
+              this.cb(KARAVAN_ALLOWLIST_CANCEL_CALLBACK_ACTION, nonce ?? ''),
+            ),
+          ],
+        ],
+      },
+    };
+  }
+
+  private renderKaravanAllowlistDurationPrompt(flow: PendingKaravanAllowlistFlow): PrivateView {
+    const label = flow.targetDisplayName || flow.targetUserId || 'Пользователь';
+    return {
+      text: [
+        privateMarkdownTitle('Срок разрешения'),
+        '',
+        `Пользователь: ${label}`,
+        `ID: ${flow.targetUserId ?? 'не определён'}`,
+        '',
+        'Выберите срок публикации витрин:',
+      ].join('\n'),
+      options: {
+        buttons: [
+          [
+            this.callbackButton(
+              '1 день',
+              this.cb(KARAVAN_ALLOWLIST_CALLBACK_ACTION, flow.nonce, '1d'),
+            ),
+            this.callbackButton(
+              '7 дней',
+              this.cb(KARAVAN_ALLOWLIST_CALLBACK_ACTION, flow.nonce, '7d'),
+            ),
+          ],
+          [
+            this.callbackButton(
+              '30 дней',
+              this.cb(KARAVAN_ALLOWLIST_CALLBACK_ACTION, flow.nonce, '30d'),
+            ),
+            this.callbackButton(
+              '90 дней',
+              this.cb(KARAVAN_ALLOWLIST_CALLBACK_ACTION, flow.nonce, '90d'),
+            ),
+          ],
+          [
+            this.callbackButton(
+              'Бессрочно',
+              this.cb(KARAVAN_ALLOWLIST_CALLBACK_ACTION, flow.nonce, 'forever'),
+              'positive',
+            ),
+          ],
+          [
+            this.callbackButton(
+              'Отмена',
+              this.cb(KARAVAN_ALLOWLIST_CANCEL_CALLBACK_ACTION, flow.nonce),
+              'negative',
+            ),
+          ],
+        ],
+      },
+    };
+  }
+
+  private renderKaravanAllowlistGrantedView(
+    flow: PendingKaravanAllowlistFlow,
+    expiresAt: Date | null,
+  ): PrivateView {
+    return {
+      text: [
+        privateMarkdownTitle('Доступ разрешён'),
+        '',
+        `Пользователь: ${flow.targetDisplayName || flow.targetUserId || 'Пользователь'}`,
+        `Чат: ${flow.chatId}`,
+        `Срок: ${expiresAt ? formatPrivateControlDateTimeLabel(expiresAt.toISOString()) : 'бессрочно'}`,
+      ].join('\n'),
+      options: { buttons: this.buildFooterButtons() },
+    };
+  }
+
+  private renderKaravanAllowlistExpiredView(): PrivateView {
+    return {
+      text: [
+        privateMarkdownTitle('Сценарий завершён'),
+        '',
+        'Вернитесь в настройки чата и запустите добавление пользователя ещё раз.',
+      ].join('\n'),
+      options: { buttons: this.buildFooterButtons() },
+    };
+  }
+
+  private renderKaravanAllowlistCancelledView(): PrivateView {
+    return {
+      text: [
+        privateMarkdownTitle('Добавление отменено'),
+        '',
+        'Список разрешённых пользователей не изменён.',
+      ].join('\n'),
+      options: { buttons: this.buildFooterButtons() },
+    };
   }
 
   async handoffBroadcastFromMiniapp(
@@ -1016,6 +1435,10 @@ export class PrivateControlService {
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatRoute(session, context);
+    if (session.pendingKaravanAllowlist) {
+      await this.processKaravanAllowlistText(context, session);
+      return;
+    }
     const directText = this.extractDirectIncomingText(context.update);
     const forwardedModerationCommand = parsePrivateForwardedModerationCommand(directText);
     if (forwardedModerationCommand) {
@@ -1689,6 +2112,30 @@ export class PrivateControlService {
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
         notification: 'Приз подтверждён',
+      });
+      return;
+    }
+
+    if (
+      callback.action === KARAVAN_ALLOWLIST_CALLBACK_ACTION ||
+      callback.action === KARAVAN_ALLOWLIST_CANCEL_CALLBACK_ACTION
+    ) {
+      await this.processKaravanAllowlistCallback(context, session, callback);
+      return;
+    }
+
+    if (session.pendingKaravanAllowlist) {
+      const view =
+        session.pendingKaravanAllowlist.stage === 'await_duration'
+          ? this.renderKaravanAllowlistDurationPrompt(session.pendingKaravanAllowlist)
+          : this.renderKaravanAllowlistForwardPrompt(
+              session.pendingKaravanAllowlist.chatId,
+              undefined,
+              session.pendingKaravanAllowlist.nonce,
+            );
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Сначала завершите добавление пользователя',
       });
       return;
     }
@@ -6801,6 +7248,7 @@ export class PrivateControlService {
       case 'storefront':
         return [
           `Кнопка Караван: ${this.describeBooleanCompact(settings.karavanStorefrontEnabled)}`,
+          `Только администраторы и разрешённые: ${this.describeBooleanCompact(settings.karavanStorefrontAdminsOnly)}`,
         ];
       case 'extra':
         return [
@@ -8953,6 +9401,26 @@ export class PrivateControlService {
     botId?: string | null,
   ): string {
     return buildPrivateProfileMentionStartPayload(params, this.getCurrentBotToken(botId));
+  }
+
+  private buildKaravanAllowlistStartPayload(
+    params: { chatId: string; actorUserId: string; nonce: string },
+    botId?: string | null,
+  ): string {
+    return buildPrivateKaravanAllowlistStartPayload(params, this.getCurrentBotToken(botId));
+  }
+
+  private parseKaravanAllowlistStartPayload(
+    startPayload: string | null,
+  ): { chatId: string; actorUserId: string; nonce: string } | null {
+    return parsePrivateKaravanAllowlistStartPayload(
+      startPayload,
+      this.maxBotTokenValidationSecrets,
+    );
+  }
+
+  private createKaravanAllowlistNonce(): string {
+    return randomBytes(12).toString('base64url');
   }
 
   private parseGiveawayHandoffStartPayload(

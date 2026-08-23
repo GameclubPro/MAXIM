@@ -8,6 +8,7 @@ import { DEFAULT_BROADCAST_DRAFT } from './private-control.constants';
 import type {
   ChannelSectionKey,
   PendingInput,
+  PendingKaravanAllowlistFlow,
   PendingMassAction,
   PrivateBroadcastDraft,
   PrivateBroadcastView,
@@ -74,6 +75,7 @@ export function createDefaultPrivateControlSession(): PrivateSession {
     logsRange: '7d',
     manualTargetUserId: null,
     pendingInput: null,
+    pendingKaravanAllowlist: null,
     pendingMassAction: null,
     broadcastDraft: {
       ...DEFAULT_BROADCAST_DRAFT,
@@ -146,9 +148,52 @@ export function normalizePrivateControlSession(
     ),
     manualTargetUserId: nonEmptyTrimmedString(row.manualTargetUserId),
     pendingInput: normalizePrivateControlPendingInput(row.pendingInput),
+    pendingKaravanAllowlist: normalizePendingKaravanAllowlist(row.pendingKaravanAllowlist),
     pendingMassAction: normalizePrivateControlPendingMassAction(row.pendingMassAction),
     broadcastDraft: deps.normalizeBroadcastDraft(row.broadcastDraft),
     suggestionDraft: deps.normalizeSuggestionDraft(row.suggestionDraft),
+  };
+}
+
+function normalizePendingKaravanAllowlist(raw: unknown): PendingKaravanAllowlistFlow | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const chatId = typeof row.chatId === 'string' ? row.chatId.trim() : '';
+  const actorUserId = typeof row.actorUserId === 'string' ? row.actorUserId.trim() : '';
+  const nonce = typeof row.nonce === 'string' ? row.nonce.trim() : '';
+  const botId = typeof row.botId === 'string' && row.botId.trim() ? row.botId.trim() : null;
+  const stage =
+    row.stage === 'await_duration'
+      ? 'await_duration'
+      : row.stage === 'await_forward'
+        ? 'await_forward'
+        : null;
+  const expiresAt =
+    typeof row.expiresAt === 'number' && Number.isFinite(row.expiresAt) ? row.expiresAt : 0;
+  if (!chatId || !actorUserId || !nonce || !stage || expiresAt <= Date.now()) {
+    return null;
+  }
+  return {
+    chatId,
+    actorUserId,
+    botId,
+    nonce,
+    stage,
+    targetUserId:
+      typeof row.targetUserId === 'string' && row.targetUserId.trim()
+        ? row.targetUserId.trim()
+        : null,
+    targetDisplayName:
+      typeof row.targetDisplayName === 'string' && row.targetDisplayName.trim()
+        ? row.targetDisplayName.trim()
+        : null,
+    sourceMessageId:
+      typeof row.sourceMessageId === 'string' && row.sourceMessageId.trim()
+        ? row.sourceMessageId.trim()
+        : null,
+    expiresAt,
   };
 }
 

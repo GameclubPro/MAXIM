@@ -597,6 +597,7 @@ function createHarness(
     maxBotLinkService?: Record<string, unknown>;
     adminDialogLinkService?: Record<string, unknown>;
     supportRequestsService?: Record<string, unknown>;
+    karavanStorefrontAllowlistService?: Record<string, unknown>;
     prisma?: Record<string, unknown>;
     managedEntityHandshakeService?: Record<string, unknown>;
   } = {},
@@ -772,6 +773,7 @@ function createHarness(
       publishedUrl: 'https://max.ru/chats/channel-1/message/777',
     }),
     publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
+    assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
     ...overrides.adminService,
   };
   const managedBroadcastService =
@@ -1047,6 +1049,10 @@ function createHarness(
     createRequest: jest.fn().mockResolvedValue({ id: 'support-request-1' }),
     ...(overrides.supportRequestsService ?? {}),
   };
+  const karavanStorefrontAllowlistService = {
+    upsert: jest.fn().mockResolvedValue({}),
+    ...(overrides.karavanStorefrontAllowlistService ?? {}),
+  };
   const prisma = overrides.prisma
     ? {
         $executeRaw: jest.fn().mockResolvedValue(undefined),
@@ -1084,6 +1090,7 @@ function createHarness(
     supportRequestsService as never,
     prisma as never,
     overrides.managedEntityHandshakeService as never,
+    karavanStorefrontAllowlistService as never,
   );
 
   return {
@@ -1096,6 +1103,7 @@ function createHarness(
     managedBroadcastService,
     managedGiveawayService,
     supportRequestsService,
+    karavanStorefrontAllowlistService,
     prisma,
     redisCounter,
     chats,
@@ -3900,6 +3908,55 @@ describe('PrivateControlService', () => {
 
     expect(buttonTexts).not.toContain('Открыть приложение');
     expect(buttonTexts).not.toContain('Поддержка');
+  });
+
+  it('hands off Karavan allowlist, accepts one forwarded user, and grants a selected duration', async () => {
+    const { service, maxClient, karavanStorefrontAllowlistService } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      launchBotId: '777000_bot',
+      username: null,
+      displayName: 'Тестовый пользователь',
+    };
+
+    const handoff = await service.handoffKaravanStorefrontAllowlistFromMiniapp(
+      '-70000000000001',
+      actor,
+    );
+    const startPayload = extractStartPayload(handoff.botUrl);
+    expect(startPayload).toMatch(/^ka2-/u);
+
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(startPayload, { botId: '777000_bot' }),
+    );
+    expect(getLastSentText(maxClient)).toContain('Перешлите любое сообщение пользователя');
+
+    await service.handleUpdate({
+      ...createPrivateForwardedModerationUpdate(''),
+      botId: '777000_bot',
+    });
+    const durationButton = getLastButtons(maxClient)
+      .flat()
+      .find((button) =>
+        typeof (button as { payload?: unknown })?.payload === 'string' &&
+        String((button as { payload: string }).payload).endsWith('|1d'),
+      ) as { payload?: string } | undefined;
+    expect(durationButton?.payload).toBeTruthy();
+    expect(getLastSentText(maxClient)).toContain('Срок разрешения');
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(durationButton!.payload!, { botId: '777000_bot' }),
+    );
+    expect(karavanStorefrontAllowlistService.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-70000000000001',
+        userId: 'user-77',
+        createdByUserId: 'user-1',
+        sourceMessageId: null,
+        expiresAt: expect.any(Date),
+      }),
+    );
+    expect(getLastEditedText(maxClient)).toContain('Доступ разрешён');
   });
 
   it('preserves channel timer and cycle from miniapp handoff', async () => {

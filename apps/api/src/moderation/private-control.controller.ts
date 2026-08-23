@@ -8,6 +8,14 @@ import { PrivateControlService } from './private-control.service';
 export class PrivateControlController {
   constructor(private readonly privateControlService: PrivateControlService) {}
 
+  @Post('chats/:chatId/karavan-storefront/allowlist/handoff')
+  handoffKaravanStorefrontAllowlist(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.privateControlService.handoffKaravanStorefrontAllowlistFromMiniapp(chatId, user);
+  }
+
   @Post('chats/:chatId/broadcast/handoff')
   handoffChatBroadcast(
     @Param('chatId') chatId: string,

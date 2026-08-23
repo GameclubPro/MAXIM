@@ -18,8 +18,11 @@ describe('admin settings section apply', () => {
     );
   });
 
-  it('keeps the storefront section scoped to its toggle', () => {
-    expect(SETTINGS_SECTION_KEYS.storefront).toEqual(['karavanStorefrontEnabled']);
+  it('keeps the storefront section scoped to its toggles', () => {
+    expect(SETTINGS_SECTION_KEYS.storefront).toEqual([
+      'karavanStorefrontEnabled',
+      'karavanStorefrontAdminsOnly',
+    ]);
   });
 
   it('rejects a crafted request for the retired thematic section before applying settings', async () => {

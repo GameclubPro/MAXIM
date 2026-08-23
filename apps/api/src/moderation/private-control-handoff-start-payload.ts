@@ -14,6 +14,75 @@ import type {
   GiveawayHandoffStartPayload,
   ProfileMentionStartPayload,
 } from './private-control.types';
+import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
+import { isValidMaxBotStartPayload } from '../max/max-deep-link.util';
+import { KARAVAN_ALLOWLIST_START_PREFIX } from './private-control.constants';
+
+export type PrivateKaravanAllowlistStart = {
+  chatId: string;
+  actorUserId: string;
+  nonce: string;
+};
+
+const KARAVAN_ALLOWLIST_SCOPE = 'karavan-allowlist-v2';
+
+function signKaravanPayload(encoded: string, botToken: string): string {
+  return createHmac('sha256', botToken.trim())
+    .update(`${KARAVAN_ALLOWLIST_SCOPE}:${encoded}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+export function buildPrivateKaravanAllowlistStartPayload(
+  params: Pick<PrivateKaravanAllowlistStart, 'chatId' | 'actorUserId'> & { nonce?: string },
+  botToken: string,
+): string {
+  const nonce = params.nonce?.trim() || randomBytes(12).toString('base64url');
+  const encoded = Buffer.from(
+    JSON.stringify({ v: 1, c: params.chatId.trim(), a: params.actorUserId.trim(), n: nonce }),
+    'utf8',
+  ).toString('base64url');
+  const payload = `${KARAVAN_ALLOWLIST_START_PREFIX}${encoded}.${signKaravanPayload(encoded, botToken)}`;
+  if (!isValidMaxBotStartPayload(payload)) {
+    throw new Error('Karavan allowlist start payload is too long or contains invalid characters');
+  }
+  return payload;
+}
+
+export function parsePrivateKaravanAllowlistStartPayload(
+  payload: string | null,
+  botTokens: readonly string[],
+): PrivateKaravanAllowlistStart | null {
+  if (!payload?.startsWith(KARAVAN_ALLOWLIST_START_PREFIX) || !isValidMaxBotStartPayload(payload)) {
+    return null;
+  }
+  const raw = payload.slice(KARAVAN_ALLOWLIST_START_PREFIX.length);
+  const separator = raw.lastIndexOf('.');
+  if (separator <= 0) return null;
+  const encoded = raw.slice(0, separator);
+  const signature = raw.slice(separator + 1).toLowerCase();
+  if (!/^[a-f0-9]{16}$/u.test(signature)) return null;
+  const valid = botTokens.some((token) => {
+    const expected = signKaravanPayload(encoded, token);
+    const left = Buffer.from(signature, 'utf8');
+    const right = Buffer.from(expected, 'utf8');
+    return left.length === right.length && timingSafeEqual(left, right);
+  });
+  if (!valid) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
+    const actorUserId = typeof parsed.a === 'string' ? parsed.a.trim() : '';
+    const nonce = typeof parsed.n === 'string' ? parsed.n.trim() : '';
+    if (parsed.v !== 1 || !chatId || !actorUserId || !nonce) return null;
+    return { chatId, actorUserId, nonce };
+  } catch {
+    return null;
+  }
+}
 
 export type PrivateGiveawayHandoffStart = {
   chatId: string;

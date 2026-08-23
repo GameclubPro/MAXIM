@@ -106,6 +106,44 @@ test('preview generated ids and timestamps use the injected clock', async () => 
   assert.equal(published.publishedAt, now.toISOString());
 });
 
+test('preview Karavan storefront allowlist supports listing, handoff, and revoke', async () => {
+  const api = createPreviewApiTransport();
+
+  const initial = (await api.request('/chats/preview-chat/karavan-storefront/allowlist')) as {
+    items: Array<{ id: string; userId: string }>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
+  assert.equal(initial.items.length, 1);
+  assert.equal(initial.items[0]?.userId, 'preview-storefront-user-1');
+  assert.equal(initial.hasMore, false);
+  assert.equal(initial.nextCursor, null);
+
+  const handoff = (await api.request(
+    '/chats/preview-chat/karavan-storefront/allowlist/handoff',
+    { method: 'POST', body: '{}' },
+  )) as { botUrl: string };
+  assert.match(handoff.botUrl, /^https:\/\/max\.ru\//u);
+
+  const entryId = initial.items[0]?.id;
+  assert.ok(entryId);
+  assert.deepEqual(
+    await api.request(
+      `/chats/preview-chat/karavan-storefront/allowlist/${encodeURIComponent(entryId)}`,
+      { method: 'DELETE' },
+    ),
+    { revoked: true },
+  );
+  const afterRevoke = (await api.request(
+    '/chats/preview-chat/karavan-storefront/allowlist',
+  )) as { items: unknown[] };
+  assert.deepEqual(afterRevoke.items, []);
+  await assert.rejects(
+    () => api.request('/chats/preview-chat/karavan-storefront/allowlist?cursor=missing'),
+    /cursor is invalid/u,
+  );
+});
+
 test('preview keepalive reports rejection without an unhandled rejection', async () => {
   const keepaliveErrors: unknown[] = [];
   const unhandled: unknown[] = [];

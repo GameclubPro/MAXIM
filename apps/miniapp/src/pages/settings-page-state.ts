@@ -338,7 +338,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'adminSilenceCommandName',
     'adminOpenChatCommandName',
   ],
-  storefront: ['karavanStorefrontEnabled'],
+  storefront: ['karavanStorefrontEnabled', 'karavanStorefrontAdminsOnly'],
   extra: [
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',

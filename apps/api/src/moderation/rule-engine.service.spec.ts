@@ -133,6 +133,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     greetingBotButtons: [],
     greetingRulesButtonEnabled: false,
     karavanStorefrontEnabled: false,
+    karavanStorefrontAdminsOnly: false,
     deleteBotMessagesEnabled: true,
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,

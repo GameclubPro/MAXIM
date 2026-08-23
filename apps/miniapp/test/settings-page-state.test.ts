@@ -302,20 +302,26 @@ test('commands section keeps admin command names scoped', () => {
   assert.equal(merged.linkPolicy, 'ALLOWLIST_ONLY');
 });
 
-test('storefront section keeps only the Karavan toggle scoped', () => {
-  assert.deepEqual(SECTION_SETTING_KEYS.storefront, ['karavanStorefrontEnabled']);
+test('storefront section keeps only the Karavan toggles scoped', () => {
+  assert.deepEqual(SECTION_SETTING_KEYS.storefront, [
+    'karavanStorefrontEnabled',
+    'karavanStorefrontAdminsOnly',
+  ]);
 
   const current = createSettings({
     karavanStorefrontEnabled: false,
+    karavanStorefrontAdminsOnly: false,
     deleteBotMessagesEnabled: true,
   });
   const saved = createSettings({
     karavanStorefrontEnabled: true,
+    karavanStorefrontAdminsOnly: true,
     deleteBotMessagesEnabled: false,
   });
   const merged = mergeSectionSettings(current, saved, 'storefront');
 
   assert.equal(merged.karavanStorefrontEnabled, true);
+  assert.equal(merged.karavanStorefrontAdminsOnly, true);
   assert.equal(merged.deleteBotMessagesEnabled, true);
 });
 

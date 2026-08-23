@@ -29,6 +29,7 @@ describe('private control settings schema', () => {
     expect(SECTION_CARD_FIELDS).not.toHaveProperty('thematicFilters');
     expect(SECTION_FIELDS.storefront).toEqual([
       expect.objectContaining({ key: 'karavanStorefrontEnabled', type: 'boolean' }),
+      expect.objectContaining({ key: 'karavanStorefrontAdminsOnly', type: 'boolean' }),
     ]);
 
     for (const section of SECTION_ORDER) {

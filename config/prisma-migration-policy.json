@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260823180000_enable_karavan_storefront_by_default",
-  "baselineNamesSha256": "e2d8d902458a7cd599770ff84f5b26fcf19600991ce61b710ac6d431874783e3",
-  "baselineContentsSha256": "b60fe265554023f204767e009d27eb84495250f9dacd6828f996f11df8118d59",
+  "baselineThrough": "20260824090000_add_karavan_storefront_admin_allowlist",
+  "baselineNamesSha256": "b5dfd68691d45b5cff56b53dca5eed24be76d0a751640be09c4b9beaeddcbedd",
+  "baselineContentsSha256": "8235716ede130454bd7d1705d84dda9134e87039068bc2d1fa13683385febfe5",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -59,6 +59,9 @@
     }
   },
   "nonConcurrentIndexExceptions": {
+    "20260824090000_add_karavan_storefront_admin_allowlist": {
+      "reason": "The indexes are created immediately after the new empty allowlist table; keeping them in the same atomic additive migration avoids exposing a table without its uniqueness and lookup indexes, and there is no existing workload to block."
+    },
     "20260821130000_add_night_mode_transition_reconcile_requests": {
       "reason": "The index is created immediately after its new empty table and before the bounded enabled-chat backfill, so there is no existing table workload to block and PostgreSQL forbids CREATE INDEX CONCURRENTLY inside Prisma's migration transaction."
     }

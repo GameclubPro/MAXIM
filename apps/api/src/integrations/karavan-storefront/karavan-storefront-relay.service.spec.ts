@@ -21,6 +21,7 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
 function createService(
   options: {
     config?: Record<string, unknown>;
+    authorization?: { canPublish: jest.Mock };
     fetchResponse?: unknown;
     lockToken?: string | null;
     sendRejects?: boolean;
@@ -74,6 +75,7 @@ function createService(
     prisma as never,
     redisCounter as never,
     createConfigMock(options.config) as never,
+    options.authorization as never,
   );
 
   return {
@@ -107,6 +109,66 @@ const baseContext = {
 };
 
 describe('KaravanStorefrontRelayService', () => {
+  it('denies relay before a lock or storefront lookup when admin-only authorization fails', async () => {
+    const authorization = { canPublish: jest.fn().mockResolvedValue(false) };
+    const fixture = createService({ authorization });
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          karavanStorefrontAdminsOnly: true,
+        }),
+      ).resolves.toBe('noop');
+      expect(authorization.canPublish).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        actorUserId: '1001',
+        adminsOnly: true,
+      });
+      expect(fixture.redisCounter.acquireLock).not.toHaveBeenCalled();
+      expect(fixture.fetchMock).not.toHaveBeenCalled();
+      expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      fixture.restore();
+    }
+  });
+
+  it('keeps actor authorization separate from a forwarded seller lookup', async () => {
+    const authorization = { canPublish: jest.fn().mockResolvedValue(true) };
+    const fixture = createService({ authorization });
+
+    try {
+      await expect(
+        fixture.service.handleMessageCreated({
+          ...baseContext,
+          karavanStorefrontAdminsOnly: true,
+          storefrontOwnerUserId: 'seller-42',
+          raw: {
+            message: {
+              body: { text: '' },
+              link: {
+                type: 'forward',
+                sender: { user_id: 'seller-42' },
+                message: { text: '$ товар' },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe('handled');
+      expect(authorization.canPublish).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        actorUserId: '1001',
+        adminsOnly: true,
+      });
+      expect(fixture.fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/by-max-user/seller-42'),
+        expect.anything(),
+      );
+    } finally {
+      fixture.restore();
+    }
+  });
+
   it('returns disabled before acquiring a lock when the chat setting is off', async () => {
     const fixture = createService();
 

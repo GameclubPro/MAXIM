@@ -11,13 +11,19 @@ import {
   type MaxSendMessageOptions,
 } from '../../max/max-client.service';
 import { RedisCounterService } from '../../moderation/redis-counter.service';
+import { KaravanStorefrontAuthorizationService } from './karavan-storefront-authorization.service';
 
-type RelayContext = {
+export type RelayContext = {
   karavanStorefrontEnabled: boolean;
+  /** When true, only chat admins or active allowlist entries may publish. */
+  karavanStorefrontAdminsOnly?: boolean;
   updateType: string | null;
   chatId: string;
   messageId: string | null | undefined;
+  /** User who sent the current message/update. */
   senderId: string;
+  /** Optional seller identity extracted from a validated forwarded message. */
+  storefrontOwnerUserId?: string | null;
   senderName?: string | null;
   text?: string | null;
   raw?: unknown;
@@ -88,6 +94,8 @@ export class KaravanStorefrontRelayService {
     private readonly prisma: PrismaService,
     private readonly redisCounter: RedisCounterService,
     @Optional() private readonly configService?: ConfigService,
+    @Optional()
+    private readonly authorizationService?: KaravanStorefrontAuthorizationService,
   ) {
     this.enabled = this.readBooleanConfig('KARAVAN_STOREFRONT_RELAY_ENABLED', false);
     this.apiBaseUrl = this.normalizeBaseUrl(
@@ -136,6 +144,18 @@ export class KaravanStorefrontRelayService {
       return 'noop';
     }
 
+    if (
+      context.karavanStorefrontAdminsOnly &&
+      (!this.authorizationService ||
+        !(await this.authorizationService.canPublish({
+          chatId: context.chatId,
+          actorUserId: context.senderId,
+          adminsOnly: true,
+        })))
+    ) {
+      return 'noop';
+    }
+
     const lockKey = this.buildRelayLockKey(context.chatId, context.messageId!);
     const lockToken = await this.redisCounter.acquireLock(
       lockKey,
@@ -156,7 +176,8 @@ export class KaravanStorefrontRelayService {
       // `$` is an explicit seller action, so each logical source message starts
       // from a fresh storefront lookup. Concurrent messages from the same seller
       // still share one in-flight request.
-      const store = await this.lookupStorefront(context.senderId, { fresh: true });
+      const storefrontOwnerUserId = this.resolveStorefrontOwnerUserId(context);
+      const store = await this.lookupStorefront(storefrontOwnerUserId, { fresh: true });
       if (store === undefined) {
         return 'failed';
       }
@@ -342,7 +363,7 @@ export class KaravanStorefrontRelayService {
     const link = this.asRecord(message.link);
     if (
       this.readLowerString(link?.type) !== 'forward' ||
-      !this.isForwardFromContextSender(link, context.senderId)
+      !this.isForwardFromContextSender(link, context.senderId, context.storefrontOwnerUserId)
     ) {
       return null;
     }
@@ -410,13 +431,49 @@ export class KaravanStorefrontRelayService {
   private isForwardFromContextSender(
     link: Record<string, unknown> | null,
     contextSenderId: string,
+    expectedOwnerUserId?: string | null,
   ): boolean {
     const sender = this.asRecord(link?.sender);
     const forwardSenderId = this.readString(
       link?.sender_id ?? link?.senderId ?? sender?.user_id ?? sender?.userId ?? sender?.id,
     );
 
-    return !forwardSenderId || forwardSenderId === contextSenderId.trim();
+    if (!forwardSenderId) {
+      return true;
+    }
+    if (forwardSenderId === contextSenderId.trim()) {
+      return true;
+    }
+    // A caller that parsed the update envelope may supply the forwarded seller
+    // explicitly. Keep the old strict behavior for unannotated compatibility
+    // contexts, while allowing actor/seller identity to be separated safely.
+    return Boolean(expectedOwnerUserId?.trim() && forwardSenderId === expectedOwnerUserId.trim());
+  }
+
+  private resolveStorefrontOwnerUserId(context: RelayContext): string {
+    const explicit = context.storefrontOwnerUserId?.trim();
+    if (explicit) {
+      return explicit;
+    }
+
+    const raw = this.asRecord(context.raw);
+    const message = this.extractRawMessage(raw);
+    const link = this.asRecord(message?.link);
+    // A real outer message takes precedence over any forward metadata. In
+    // that case the actor is also the storefront owner for lookup purposes.
+    if (this.extractMessageText(message)?.trim()) {
+      return context.senderId.trim();
+    }
+    if (this.readLowerString(link?.type) === 'forward') {
+      const sender = this.asRecord(link?.sender);
+      const forwardedUserId = this.readString(
+        link?.sender_id ?? link?.senderId ?? sender?.user_id ?? sender?.userId ?? sender?.id,
+      );
+      if (forwardedUserId && forwardedUserId === context.senderId.trim()) {
+        return forwardedUserId;
+      }
+    }
+    return context.senderId.trim();
   }
 
   private isPrivateDirectChat(chatId: string): boolean {
@@ -565,6 +622,8 @@ export class KaravanStorefrontRelayService {
       ledgerContext: {
         karavanStorefrontRelay: {
           sourceMessageId: params.context.messageId ?? null,
+          actorUserId: params.context.senderId,
+          storefrontOwnerUserId: this.resolveStorefrontOwnerUserId(params.context),
           senderId: params.context.senderId,
           requestedBotId: params.context.botId ?? null,
           storeId: params.store?.id ?? null,
@@ -588,6 +647,8 @@ export class KaravanStorefrontRelayService {
       deliveryStatus: 'pending',
       idempotencyKey: params.idempotencyKey,
       requestedBotId: params.context.botId ?? null,
+      actorUserId: params.context.senderId,
+      storefrontOwnerUserId: this.resolveStorefrontOwnerUserId(params.context),
       variant: params.variant,
       store: params.store
         ? {

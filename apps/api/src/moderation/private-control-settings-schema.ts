@@ -314,7 +314,14 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'nightModeForceCloseHours', label: 'Часы ручного закрытия', type: 'number' },
     { key: 'nightModeForceCloseDays', label: 'Дни ручного закрытия', type: 'number' },
   ],
-  storefront: [{ key: 'karavanStorefrontEnabled', label: 'Кнопка Караван', type: 'boolean' }],
+  storefront: [
+    { key: 'karavanStorefrontEnabled', label: 'Кнопка Караван', type: 'boolean' },
+    {
+      key: 'karavanStorefrontAdminsOnly',
+      label: 'Только администраторы и разрешённые пользователи',
+      type: 'boolean',
+    },
+  ],
   extra: [
     { key: 'deleteSpammersEnabled', label: 'Удалять спамеров', type: 'boolean' },
     { key: 'deleteBotMessagesEnabled', label: 'Удалять сообщения бота', type: 'boolean' },
@@ -495,7 +502,7 @@ export const SECTION_CARD_FIELDS: Record<
     ],
   },
   storefront: {
-    basic: ['karavanStorefrontEnabled'],
+    basic: ['karavanStorefrontEnabled', 'karavanStorefrontAdminsOnly'],
     advanced: [],
   },
   extra: {

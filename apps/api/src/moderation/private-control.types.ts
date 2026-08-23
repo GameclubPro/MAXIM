@@ -82,6 +82,20 @@ export type PendingInput =
   | { kind: 'manual_mute_duration'; targetUserId: string }
   | { kind: 'support_request' };
 
+/** Dedicated state for the Karavan allowlist handoff. Kept outside pendingInput
+ * so an in-progress broadcast/rules editor is never overwritten. */
+export type PendingKaravanAllowlistFlow = {
+  chatId: string;
+  actorUserId: string;
+  botId: string | null;
+  nonce: string;
+  stage: 'await_forward' | 'await_duration';
+  targetUserId: string | null;
+  targetDisplayName: string | null;
+  sourceMessageId: string | null;
+  expiresAt: number;
+};
+
 export type PendingMassAction =
   | {
       kind: 'apply_section';
@@ -213,6 +227,7 @@ export type PrivateSession = {
   logsRange: LogsDashboardRange;
   manualTargetUserId: string | null;
   pendingInput: PendingInput | null;
+  pendingKaravanAllowlist: PendingKaravanAllowlistFlow | null;
   pendingMassAction: PendingMassAction | null;
   broadcastDraft: PrivateBroadcastDraft;
   suggestionDraft: PrivateSuggestionDraft | null;

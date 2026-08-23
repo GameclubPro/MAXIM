@@ -6,6 +6,7 @@ import type {
   ManagedEntityType,
   MaxUpdate,
 } from '@maxim/contracts';
+import type { KaravanStorefrontHandoffResponse } from '@maxim/contracts/karavan-storefront';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entity-forwarded-recovery.util';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
@@ -19,6 +20,7 @@ import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxClientService } from '../max/max-client.service';
 import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { KaravanStorefrontAllowlistService } from '../integrations/karavan-storefront/karavan-storefront-allowlist.service';
 import { RedisCounterService } from './redis-counter.service';
 import { PrivateControlService as LegacyPrivateControlService } from './private-control.service.legacy';
 
@@ -39,6 +41,7 @@ export class PrivateControlService extends LegacyPrivateControlService {
     @Optional() prisma?: PrismaService,
     @Optional()
     private readonly managedEntityHandshakeService?: ManagedEntityHandshakeService,
+    @Optional() karavanStorefrontAllowlistService?: KaravanStorefrontAllowlistService,
   ) {
     super(
       maxClient,
@@ -53,6 +56,7 @@ export class PrivateControlService extends LegacyPrivateControlService {
       adminDialogLinkService,
       supportRequestsService,
       prisma,
+      karavanStorefrontAllowlistService,
     );
   }
 
@@ -68,6 +72,15 @@ export class PrivateControlService extends LegacyPrivateControlService {
 
   override handleBotStarted(update: MaxUpdate): Promise<void> {
     return this.runWithUpdateSessionBot(update, () => super.handleBotStarted(update));
+  }
+
+  override handoffKaravanStorefrontAllowlistFromMiniapp(
+    sourceChatId: string,
+    user: AuthUser,
+  ): Promise<KaravanStorefrontHandoffResponse> {
+    return this.runWithSessionBot(user.launchBotId, () =>
+      super.handoffKaravanStorefrontAllowlistFromMiniapp(sourceChatId, user),
+    );
   }
 
   override handoffBroadcastFromMiniapp(

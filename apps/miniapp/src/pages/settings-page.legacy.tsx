@@ -4433,9 +4433,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const extraCardStatus = extraEnabledCount > 0 ? `${extraEnabledCount}` : 'Выкл';
   const storefrontHeaderSummary = draft?.karavanStorefrontEnabled
-    ? 'Кнопка после сообщений с $'
+    ? draft.karavanStorefrontAdminsOnly
+      ? 'Только админы и разрешённые пользователи'
+      : 'Кнопка после сообщений с $'
     : 'Выключено';
-  const storefrontCardStatus = draft?.karavanStorefrontEnabled ? 'Вкл' : 'Выкл';
+  const storefrontCardStatus = !draft?.karavanStorefrontEnabled
+    ? 'Выкл'
+    : draft.karavanStorefrontAdminsOnly
+      ? 'Админы'
+      : 'Вкл';
   const chatsCount = chatsList.data?.length ?? 0;
   const canApplyToAllChats = !chatsList.isSyncComplete || chatsCount > 1;
   const mailingAudienceChoices = useMemo(() => {
@@ -7937,6 +7943,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <SettingsStorefrontSection
               draft={draft}
+              api={api}
+              chatId={chatId}
               expanded={expandedSections.storefront}
               summary={storefrontHeaderSummary}
               status={storefrontCardStatus}
@@ -7946,6 +7954,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               onDiscardChanges={() => discardSectionChanges('storefront')}
               onToggleSection={() => toggleSection('storefront')}
               onFieldChange={(enabled) => setFieldValue('karavanStorefrontEnabled', enabled)}
+              onAdminsOnlyChange={(enabled) =>
+                setFieldValue('karavanStorefrontAdminsOnly', enabled)
+              }
             />
 
             <SettingsExtraSection

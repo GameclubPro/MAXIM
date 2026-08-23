@@ -752,6 +752,7 @@ export async function saveChatSettings(params: {
       nightModeForceCloseDays: true,
       nightModeForceCloseUntil: true,
       karavanStorefrontEnabled: true,
+      karavanStorefrontAdminsOnly: true,
     },
   });
   const settingsInput = {
@@ -768,6 +769,11 @@ export async function saveChatSettings(params: {
     karavanStorefrontEnabled: hasOwnSetting(params.body, 'karavanStorefrontEnabled')
       ? parsed.data.karavanStorefrontEnabled
       : (currentSettings?.karavanStorefrontEnabled ?? parsed.data.karavanStorefrontEnabled),
+    // Older Mini App clients send a complete settings object without the new
+    // field. Preserve the stored value instead of silently resetting policy.
+    karavanStorefrontAdminsOnly: hasOwnSetting(params.body, 'karavanStorefrontAdminsOnly')
+      ? parsed.data.karavanStorefrontAdminsOnly
+      : (currentSettings?.karavanStorefrontAdminsOnly ?? parsed.data.karavanStorefrontAdminsOnly),
   };
   let normalizedSettings = normalizeChatSettings(
     settingsInput,

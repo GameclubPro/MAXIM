@@ -1685,6 +1685,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             senderName,
             text,
             karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+            karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
+            storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
           })
         ) {
           return;
@@ -1728,6 +1730,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               senderName,
               text,
               karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+              karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
+              storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
             })
           ) {
             return false;
@@ -2032,6 +2036,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           senderName,
           text,
           karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+          karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
+          storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
         }))
       ) {
         await suppressDeferredPhotoAnalysisActions();
@@ -2185,6 +2191,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             senderName,
             text,
             karavanStorefrontEnabled: settings.karavanStorefrontEnabled,
+            karavanStorefrontAdminsOnly: this.readKaravanStorefrontAdminsOnly(settings),
+            storefrontOwnerUserId: this.readKaravanStorefrontOwnerUserId(update, senderId),
           })
         ) {
           return;
@@ -3752,6 +3760,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     senderName?: string | null;
     text?: string | null;
     karavanStorefrontEnabled: boolean;
+    karavanStorefrontAdminsOnly?: boolean;
+    storefrontOwnerUserId?: string | null;
   }): Promise<boolean> {
     if (!params.messageId || !this.karavanStorefrontRelayService) {
       return false;
@@ -3767,9 +3777,69 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text: params.text,
       raw: params.update.raw,
       botId: params.update.botId ?? null,
+      ...(params.karavanStorefrontAdminsOnly ? { karavanStorefrontAdminsOnly: true } : {}),
+      ...(params.storefrontOwnerUserId
+        ? { storefrontOwnerUserId: params.storefrontOwnerUserId }
+        : {}),
     });
 
     return result === 'handled' || result === 'duplicate';
+  }
+
+  private readKaravanStorefrontAdminsOnly(settings: unknown): boolean {
+    if (!settings || typeof settings !== 'object') {
+      return false;
+    }
+    return (
+      (settings as { karavanStorefrontAdminsOnly?: unknown }).karavanStorefrontAdminsOnly === true
+    );
+  }
+
+  private readKaravanStorefrontOwnerUserId(update: MaxUpdate, actorUserId: string): string | null {
+    const raw = this.asRecord(update.raw);
+    const message = this.findKaravanRawMessage(raw);
+    const body = this.asRecord(message?.body);
+    const directText =
+      this.readString(body?.text) ??
+      this.readString(body?.caption) ??
+      this.readString(message?.text) ??
+      this.readString(message?.caption);
+    if (directText?.trim()) return null;
+    const link = this.asRecord(message?.link);
+    if (this.readString(link?.type)?.toLowerCase() !== 'forward') return null;
+    const sender = this.asRecord(link?.sender);
+    const forwardedUserId = this.readString(
+      link?.sender_id ?? link?.senderId ?? sender?.user_id ?? sender?.userId ?? sender?.id,
+    );
+    return forwardedUserId && forwardedUserId !== actorUserId.trim() ? forwardedUserId : null;
+  }
+
+  private findKaravanRawMessage(
+    raw: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (!raw) {
+      return null;
+    }
+    const direct = this.asRecord(raw.message);
+    if (direct) {
+      return direct;
+    }
+    for (const key of ['message_created', 'data', 'event', raw.update_type, raw.type]) {
+      if (typeof key !== 'string' || !key) {
+        continue;
+      }
+      const envelope = this.asRecord(raw[key]);
+      const nested = this.asRecord(envelope?.message);
+      if (nested) {
+        return nested;
+      }
+      const data = this.asRecord(envelope?.data);
+      const nestedData = this.asRecord(data?.message);
+      if (nestedData) {
+        return nestedData;
+      }
+    }
+    return null;
   }
 
   private buildLinkExplanation(
@@ -14855,7 +14925,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           source: 'poll',
           senderId: normalized.senderId,
           senderAdminVerified:
-            normalized.senderId !== null && managedChannel.adminUserIds.includes(normalized.senderId),
+            normalized.senderId !== null &&
+            managedChannel.adminUserIds.includes(normalized.senderId),
         }),
     });
   }

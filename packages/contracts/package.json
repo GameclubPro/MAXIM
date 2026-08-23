@@ -30,6 +30,10 @@
       "types": "./dist/channel-dialog.d.ts",
       "default": "./dist/channel-dialog.js"
     },
+    "./karavan-storefront": {
+      "types": "./dist/karavan-storefront.d.ts",
+      "default": "./dist/karavan-storefront.js"
+    },
     "./channel-post-signature": {
       "types": "./dist/channel-post-signature.d.ts",
       "default": "./dist/channel-post-signature.js"

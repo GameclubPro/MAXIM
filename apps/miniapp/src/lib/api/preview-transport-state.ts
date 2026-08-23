@@ -28,6 +28,7 @@ import {
   type MembershipActivityItem,
   type VkParsingFeed,
 } from '@maxim/contracts';
+import type { KaravanStorefrontAllowlistEntry } from '@maxim/contracts/karavan-storefront';
 import {
   managedPollDetailsSchema,
   type ManagedPollDetails,
@@ -87,6 +88,7 @@ export type PreviewState = {
   chatSettings: ChatSettings;
   chatRules: ChatRules;
   chatDomains: DomainAllowlistEntry[];
+  chatKaravanStorefrontAllowlist: KaravanStorefrontAllowlistEntry[];
   chatBroadcasts: ManagedBroadcastDetails[];
   chatPolls: ManagedPollDetails[];
   chatPollVoters: ManagedPollVoter[];
@@ -208,6 +210,19 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       kind: 'WEB_DOMAIN',
       removeAfterAt: addDays(now, 2).toISOString(),
     }),
+  ];
+  const chatKaravanStorefrontAllowlist: KaravanStorefrontAllowlistEntry[] = [
+    {
+      id: 'karavan-entry-preview-1',
+      chatId: PREVIEW_CHAT_ID,
+      userId: 'preview-storefront-user-1',
+      displayName: 'Марина Волкова',
+      expiresAt: addDays(now, 30).toISOString(),
+      createdByUserId: 'preview-admin',
+      sourceMessageId: 'preview-forwarded-message-1',
+      createdAt: addDays(now, -2).toISOString(),
+      updatedAt: addDays(now, -2).toISOString(),
+    },
   ];
   const chatBroadcasts = [
     managedBroadcastDetailsSchema.parse({
@@ -840,6 +855,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     chatSettings,
     chatRules,
     chatDomains,
+    chatKaravanStorefrontAllowlist,
     chatBroadcasts,
     autopostRules: [],
     publications: [],

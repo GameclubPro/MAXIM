@@ -51,6 +51,7 @@ describe('private control session normalizer', () => {
       logsRange: '7d',
       manualTargetUserId: null,
       pendingInput: null,
+      pendingKaravanAllowlist: null,
       pendingMassAction: null,
       broadcastDraft: DEFAULT_BROADCAST_DRAFT,
       suggestionDraft: null,

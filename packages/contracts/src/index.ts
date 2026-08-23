@@ -8,3 +8,4 @@ export * from './channel-post-signature.js';
 export * from './safety-desk.js';
 export * from './support-requests.js';
 export * from './system-core.js';
+export * from './karavan-storefront.js';

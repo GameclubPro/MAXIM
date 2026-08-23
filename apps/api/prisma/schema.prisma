@@ -396,6 +396,7 @@ model Chat {
   dialogNotificationSubscriptions DialogNotificationSubscription[]
   dialogNotificationPreferences   DialogNotificationPreference[]
   participantImmunities           ChatParticipantModerationImmunity[]
+  karavanStorefrontAllowlistEntries KaravanStorefrontAllowlistEntry[]
   invitationAccessProgress        ChatInvitationAccessProgress[]
   spammerObservations             SpammerObservation[]
   globalSpammerCandidateChats     GlobalSpammerCandidateChat[]
@@ -518,6 +519,25 @@ model ChatParticipantModerationImmunity {
   @@map("chat_participant_moderation_immunities")
 }
 
+model KaravanStorefrontAllowlistEntry {
+  id              String    @id @default(cuid())
+  chatId          String    @map("chat_id")
+  userId          String    @map("user_id")
+  displayName     String?   @map("display_name")
+  expiresAt       DateTime? @map("expires_at")
+  createdByUserId String    @map("created_by_user_id")
+  sourceMessageId String?   @map("source_message_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId], map: "karavan_storefront_allowlist_chat_id_user_id_key")
+  @@index([chatId, expiresAt], map: "karavan_storefront_allowlist_chat_id_expires_at_idx")
+  @@index([userId, expiresAt], map: "karavan_storefront_allowlist_user_id_expires_at_idx")
+  @@map("karavan_storefront_allowlist")
+}
+
 model ChatSettings {
   id                                            String                   @id @default(cuid())
   chatId                                        String                   @unique @map("chat_id")
@@ -587,6 +607,7 @@ model ChatSettings {
   commentsAllEnabled                            Boolean                  @default(false) @map("comments_all_enabled")
   commentsChatBroadcastsEnabled                 Boolean                  @default(false) @map("comments_chat_broadcasts_enabled")
   karavanStorefrontEnabled                      Boolean                  @default(true) @map("karavan_storefront_enabled")
+  karavanStorefrontAdminsOnly                   Boolean                  @default(false) @map("karavan_storefront_admins_only")
   deleteBotMessagesEnabled                      Boolean                  @default(false) @map("delete_bot_messages_enabled")
   deleteBotMessagesDelayMinutes                 Float                    @default(2) @map("delete_bot_messages_delay_minutes")
   removeBotsFromGroupEnabled                    Boolean                  @default(false) @map("remove_bots_from_group_enabled")

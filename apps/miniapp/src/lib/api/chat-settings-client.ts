@@ -60,6 +60,14 @@ import {
   type ManagedEntityAccessRecheckResponse,
   type ManagedEntityHeader,
 } from '@maxim/contracts/managed-entities';
+import {
+  karavanStorefrontAllowlistRevokeResponseSchema,
+  karavanStorefrontAllowlistResponseSchema,
+  karavanStorefrontHandoffResponseSchema,
+  type KaravanStorefrontAllowlistEntry,
+  type KaravanStorefrontAllowlistResponse,
+  type KaravanStorefrontHandoffResponse,
+} from '@maxim/contracts/karavan-storefront';
 import type {
   BroadcastHandoffPayload,
   SendBroadcastPayload,
@@ -206,6 +214,59 @@ export async function updateSettings(
   });
   return chatSettingsSchema.parse(response);
 }
+
+export async function getKaravanStorefrontAllowlist(
+  api: ApiTransport,
+  chatId: string,
+  options: Pick<RequestInit, 'signal'> & {
+    cursor?: string;
+    limit?: number;
+    includeExpired?: boolean;
+  } = {},
+): Promise<KaravanStorefrontAllowlistResponse> {
+  const query = new URLSearchParams();
+  if (options.cursor) {
+    query.set('cursor', options.cursor);
+  }
+  if (options.limit !== undefined) {
+    query.set('limit', String(options.limit));
+  }
+  if (options.includeExpired !== undefined) {
+    query.set('includeExpired', options.includeExpired ? 'true' : 'false');
+  }
+  const suffix = query.toString();
+  const response = await api.request(
+    `/chats/${chatId}/karavan-storefront/allowlist${suffix ? `?${suffix}` : ''}`,
+    { signal: options.signal },
+  );
+  return karavanStorefrontAllowlistResponseSchema.parse(response);
+}
+
+export async function handoffKaravanStorefrontAllowlist(
+  api: ApiTransport,
+  chatId: string,
+): Promise<KaravanStorefrontHandoffResponse> {
+  const response = await api.request(`/chats/${chatId}/karavan-storefront/allowlist/handoff`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  return karavanStorefrontHandoffResponseSchema.parse(response);
+}
+
+export async function revokeKaravanStorefrontAllowlistEntry(
+  api: ApiTransport,
+  chatId: string,
+  entryId: string,
+) {
+  const response = await api.request(
+    `/chats/${chatId}/karavan-storefront/allowlist/${encodeURIComponent(entryId)}`,
+    { method: 'DELETE' },
+  );
+  return karavanStorefrontAllowlistRevokeResponseSchema.parse(response);
+}
+
+// Keep the type available to consumers that need to render an entry without importing contracts.
+export type { KaravanStorefrontAllowlistEntry };
 
 export async function applySettingsSectionToAll(
   api: ApiTransport,

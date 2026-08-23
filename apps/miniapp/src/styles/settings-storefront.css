@@ -1,0 +1,266 @@
+@layer components {
+  .settings-storefront__allowlist {
+    --storefront-border: rgba(121, 166, 203, 0.28);
+    --storefront-border-soft: rgba(121, 166, 203, 0.2);
+    --storefront-surface: rgba(247, 252, 255, 0.72);
+    --storefront-entry-surface: rgba(255, 255, 255, 0.76);
+    --storefront-control-surface: rgba(255, 255, 255, 0.86);
+    --storefront-accent: #0d67c4;
+    --storefront-accent-border: rgba(13, 103, 196, 0.28);
+    --storefront-accent-border-hover: rgba(13, 103, 196, 0.52);
+    --storefront-focus: rgba(13, 103, 196, 0.18);
+    --storefront-danger: #b43c5d;
+    --storefront-danger-border: rgba(180, 60, 93, 0.22);
+    --storefront-danger-border-hover: rgba(180, 60, 93, 0.48);
+    --storefront-danger-surface: rgba(255, 244, 247, 0.82);
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+    padding: 14px;
+    border: 1px solid var(--storefront-border);
+    border-radius: 16px;
+    background: var(--storefront-surface);
+  }
+
+  .settings-storefront__allowlist-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .settings-storefront__allowlist-head h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    line-height: 1.25;
+  }
+
+  .settings-storefront__allowlist-head p {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.35;
+  }
+
+  .settings-storefront__add-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 34px;
+    max-width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--storefront-accent-border);
+    border-radius: 10px;
+    background: var(--storefront-control-surface);
+    color: var(--storefront-accent);
+    font-size: 0.72rem;
+    font-weight: 760;
+    line-height: 1.2;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .settings-storefront__add-button svg {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+  }
+
+  .settings-storefront__add-button:hover:not(:disabled) {
+    border-color: var(--storefront-accent-border-hover);
+    background: var(--color-surface);
+  }
+
+  .settings-storefront__add-button:focus-visible,
+  .settings-storefront__revoke-button:focus-visible,
+  .settings-storefront__state button:focus-visible,
+  .settings-storefront__revoke-confirm button:focus-visible {
+    outline: 3px solid var(--storefront-focus);
+    outline-offset: 2px;
+  }
+
+  .settings-storefront__add-button:disabled,
+  .settings-storefront__revoke-button:disabled,
+  .settings-storefront__revoke-confirm button:disabled {
+    cursor: wait;
+    opacity: 0.58;
+  }
+
+  .settings-storefront__list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .settings-storefront__entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 8px 10px 11px;
+    border: 1px solid var(--storefront-border-soft);
+    border-radius: 12px;
+    background: var(--storefront-entry-surface);
+  }
+
+  .settings-storefront__entry-copy {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .settings-storefront__entry-copy strong,
+  .settings-storefront__entry-copy span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .settings-storefront__entry-copy strong {
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    line-height: 1.25;
+  }
+
+  .settings-storefront__entry-copy span {
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    line-height: 1.25;
+  }
+
+  .settings-storefront__revoke-button {
+    display: grid;
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border: 1px solid var(--storefront-danger-border);
+    border-radius: 9px;
+    background: var(--storefront-danger-surface);
+    color: var(--storefront-danger);
+    cursor: pointer;
+  }
+
+  .settings-storefront__revoke-button:hover:not(:disabled) {
+    border-color: var(--storefront-danger-border-hover);
+    background: var(--color-surface);
+  }
+
+  .settings-storefront__revoke-button svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .settings-storefront__revoke-confirm {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .settings-storefront__revoke-confirm-button,
+  .settings-storefront__revoke-cancel-button {
+    min-height: 30px;
+    padding: 5px 7px;
+    border-radius: 8px;
+    font-size: 0.67rem;
+    font-weight: 740;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .settings-storefront__revoke-confirm-button {
+    border: 1px solid var(--storefront-danger-border);
+    background: var(--storefront-danger-surface);
+    color: var(--storefront-danger);
+  }
+
+  .settings-storefront__revoke-cancel-button {
+    border: 1px solid var(--storefront-border-soft);
+    background: transparent;
+    color: var(--text-secondary);
+  }
+
+  .settings-storefront__state,
+  .settings-storefront__empty {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+    line-height: 1.35;
+  }
+
+  .settings-storefront__state--error {
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .settings-storefront__state--error p {
+    margin: 0;
+  }
+
+  .settings-storefront__state--error button {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border: 1px solid var(--storefront-accent-border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--storefront-accent);
+    font-size: 0.7rem;
+    font-weight: 720;
+    cursor: pointer;
+  }
+
+  @media (max-width: 520px) {
+    .settings-storefront__allowlist-head {
+      display: grid;
+      gap: 10px;
+    }
+
+    .settings-storefront__add-button {
+      width: 100%;
+    }
+  }
+
+  html[data-max-theme='dark'] .settings-storefront__allowlist {
+    --storefront-border: rgba(129, 177, 219, 0.26);
+    --storefront-border-soft: rgba(129, 177, 219, 0.2);
+    --storefront-surface: rgba(25, 42, 58, 0.58);
+    --storefront-entry-surface: rgba(21, 35, 49, 0.72);
+    --storefront-control-surface: rgba(20, 42, 63, 0.8);
+    --storefront-accent: #9dccff;
+    --storefront-accent-border: rgba(131, 191, 255, 0.32);
+    --storefront-accent-border-hover: rgba(131, 191, 255, 0.56);
+    --storefront-focus: rgba(131, 191, 255, 0.24);
+    --storefront-danger: #ff9ab5;
+    --storefront-danger-border: rgba(255, 149, 177, 0.3);
+    --storefront-danger-border-hover: rgba(255, 149, 177, 0.5);
+    --storefront-danger-surface: rgba(76, 35, 51, 0.72);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    html:not([data-max-theme]) .settings-storefront__allowlist {
+      --storefront-border: rgba(129, 177, 219, 0.26);
+      --storefront-border-soft: rgba(129, 177, 219, 0.2);
+      --storefront-surface: rgba(25, 42, 58, 0.58);
+      --storefront-entry-surface: rgba(21, 35, 49, 0.72);
+      --storefront-control-surface: rgba(20, 42, 63, 0.8);
+      --storefront-accent: #9dccff;
+      --storefront-accent-border: rgba(131, 191, 255, 0.32);
+      --storefront-accent-border-hover: rgba(131, 191, 255, 0.56);
+      --storefront-focus: rgba(131, 191, 255, 0.24);
+      --storefront-danger: #ff9ab5;
+      --storefront-danger-border: rgba(255, 149, 177, 0.3);
+      --storefront-danger-border-hover: rgba(255, 149, 177, 0.5);
+      --storefront-danger-surface: rgba(76, 35, 51, 0.72);
+    }
+  }
+}

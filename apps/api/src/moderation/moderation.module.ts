@@ -23,6 +23,8 @@ import { GlobalSpammerDenormProcessor } from './global-spammer-denorm.processor'
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from './global-spammer-denorm.queue';
 import { SystemModule } from '../system/system.module';
 import { KaravanStorefrontRelayModule } from '../integrations/karavan-storefront/karavan-storefront-relay.module';
+import { KaravanStorefrontAuthorizationService } from '../integrations/karavan-storefront/karavan-storefront-authorization.service';
+import { KaravanStorefrontRelayService } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
 import {
   BackgroundWebhookProcessor,
   CriticalWebhookProcessor,
@@ -96,6 +98,8 @@ const moderationProviders = [
   PhotoDuplicateModerationActionsService,
   ModerationExecutionService,
   ModerationAccessService,
+  KaravanStorefrontAuthorizationService,
+  KaravanStorefrontRelayService,
   BotSpeechMediaService,
   NightModeTransitionEventService,
   NightModeTransitionDeliveryService,

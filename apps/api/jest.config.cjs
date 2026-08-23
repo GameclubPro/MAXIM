@@ -12,6 +12,8 @@ module.exports = {
     '^@maxim/contracts/chat-participants$':
       '<rootDir>/../../packages/contracts/src/chat-participants.ts',
     '^@maxim/contracts/giveaway$': '<rootDir>/../../packages/contracts/src/giveaway.ts',
+    '^@maxim/contracts/karavan-storefront$':
+      '<rootDir>/../../packages/contracts/src/karavan-storefront.ts',
     '^@maxim/contracts/managed-entities$':
       '<rootDir>/../../packages/contracts/src/managed-entities.ts',
     '^@maxim/contracts/manual-moderation$':
