@@ -4173,6 +4173,38 @@ describe('ModerationService', () => {
     });
   });
 
+  it('routes user-facing sanction notices through the interactive lane without forcing immediate HTTP', async () => {
+    const maxClient = {
+      sendMessage: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+
+    await (service as any).sendBotMessageWithOptionalAutoDelete({
+      chatId: 'chat-1',
+      text: 'Предупреждение',
+      deleteBotMessagesEnabled: false,
+      deleteBotMessagesDelayMinutes: 2,
+      userFacing: true,
+    });
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Предупреждение',
+      expect.objectContaining({ textFormat: 'markdown' }),
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'moderation_notice',
+      }),
+    );
+    expect(maxClient.sendMessage.mock.calls[0]?.[3]).not.toHaveProperty('immediate');
+  });
+
   it('uploads bot speech media and attaches it to bot notices', async () => {
     const maxClient = {
       sendMessage: jest.fn(),

@@ -2474,6 +2474,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               { messageId, updateType },
             )
           : null;
+        let action: SanctionAction = SanctionAction.NONE;
         const sendChatBotMessage = async (
           textValue: string,
           messageOptions?: MaxSendMessageOptions,
@@ -2486,9 +2487,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageOptions,
             deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
             deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+            userFacing: action === SanctionAction.WARN,
           });
 
-        let action: SanctionAction = SanctionAction.NONE;
         const actionMuteDurationHours = this.resolveAutomaticMuteDurationHours(
           topViolation.ruleCode,
           settings,
@@ -5034,6 +5035,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : botMessageOptions,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
+        userFacing: true,
         beforeSend,
       });
     } catch (error: unknown) {
@@ -5093,6 +5095,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : botMessageOptions,
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
+        userFacing: true,
         beforeSend,
       });
     } catch (error: unknown) {
@@ -17981,12 +17984,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
+    userFacing?: boolean;
     botId?: string;
     idempotencyKey?: string;
   }): MaxActionDispatchOptions | undefined {
+    const interactive = params.immediate === true || params.userFacing === true;
     const dispatchOptions: MaxActionDispatchOptions = {
-      trafficClass: params.immediate === true ? 'interactive' : 'background',
-      actionHealthLane: params.immediate === true ? 'interactive' : 'background',
+      trafficClass: interactive ? 'interactive' : 'background',
+      actionHealthLane: interactive ? 'interactive' : 'background',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
     };
     if (params.botId) {
@@ -18016,6 +18021,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
+    /** Route a user-visible sanction notice through the interactive lane without blocking this worker. */
+    userFacing?: boolean;
     bypassNoticeBucket?: boolean;
     idempotencyKey?: string;
     /** Final guard before the durable send handoff; queued delivery may outlive the caller lease. */
@@ -18030,6 +18037,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       immediate,
+      userFacing,
       bypassNoticeBucket,
       idempotencyKey,
       beforeSend,
@@ -18044,8 +18052,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const resolvedMessageOptions = await this.withBotSpeechMediaOptions(messageOptions, media, {
-      trafficClass: immediate === true ? 'interactive' : 'background',
-      actionHealthLane: immediate === true ? 'interactive' : 'background',
+      trafficClass: immediate === true || userFacing === true ? 'interactive' : 'background',
+      actionHealthLane: immediate === true || userFacing === true ? 'interactive' : 'background',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
       ...(botId ? { botId } : {}),
     });
@@ -18061,6 +18069,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
         immediate,
+        userFacing,
         botId,
         idempotencyKey,
       }),

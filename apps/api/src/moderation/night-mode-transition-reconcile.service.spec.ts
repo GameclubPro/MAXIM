@@ -16,9 +16,11 @@ function extractSqlValues(query: unknown): readonly unknown[] {
 
 describe('NightModeTransitionReconcileService', () => {
   const originalAppRole = process.env.APP_ROLE;
+  const originalAppServiceName = process.env.APP_SERVICE_NAME;
 
   beforeEach(() => {
     process.env.APP_ROLE = 'enqueue';
+    delete process.env.APP_SERVICE_NAME;
   });
 
   afterEach(() => {
@@ -26,6 +28,11 @@ describe('NightModeTransitionReconcileService', () => {
       delete process.env.APP_ROLE;
     } else {
       process.env.APP_ROLE = originalAppRole;
+    }
+    if (originalAppServiceName === undefined) {
+      delete process.env.APP_SERVICE_NAME;
+    } else {
+      process.env.APP_SERVICE_NAME = originalAppServiceName;
     }
     jest.clearAllMocks();
   });
@@ -71,7 +78,27 @@ describe('NightModeTransitionReconcileService', () => {
     return { prisma, scheduler, service };
   }
 
+  it('owns the reconcile loop only on the dedicated background moderation service', () => {
+    process.env.APP_ROLE = 'moderation';
+    process.env.APP_SERVICE_NAME = 'api-moderation-background';
+    const background = createService().service;
+    expect(
+      (background as unknown as { runsInBackgroundModerationService: boolean })
+        .runsInBackgroundModerationService,
+    ).toBe(true);
+
+    process.env.APP_ROLE = 'enqueue';
+    process.env.APP_SERVICE_NAME = 'api-enqueue';
+    const enqueue = createService().service;
+    expect(
+      (enqueue as unknown as { runsInBackgroundModerationService: boolean })
+        .runsInBackgroundModerationService,
+    ).toBe(false);
+  });
+
   it('skips duplicate reconcile providers while another instance owns the leader lock', async () => {
+    process.env.APP_ROLE = 'moderation';
+    process.env.APP_SERVICE_NAME = 'api-moderation-background';
     const redisCounter = {
       acquireLock: jest.fn().mockResolvedValue(null),
       renewLock: jest.fn(),
@@ -134,6 +161,7 @@ describe('NightModeTransitionReconcileService', () => {
     expect(statement).toContain('ledger."ambiguous" = false');
     expect(statement).toContain('ledger."action_type" = \'SEND_MESSAGE\'');
     expect(statement).toContain('ledger."source_tag" = \'night_mode_transition\'');
+    expect(statement).toContain('ledger."job_id" LIKE \'night-mode:close:%\'');
     expect(statement).toContain('EXISTS');
     expect(statement).toContain('event."rule_code" = \'NIGHT_MODE_CLOSE_NOTICE\'');
     expect(statement).toContain('event."metadata" ->> \'sessionKey\'');
@@ -209,6 +237,14 @@ describe('NightModeTransitionReconcileService', () => {
       ).discoverLegacyCloseRecoveriesPage();
 
     await expect(discover()).resolves.toBe(1);
+    await expect(discover()).resolves.toBe(0);
+    expect(
+      (service as unknown as { legacyRecoveryDiscoveryNextAttemptAt: number })
+        .legacyRecoveryDiscoveryNextAttemptAt,
+    ).toBeGreaterThan(Date.now());
+    (
+      service as unknown as { legacyRecoveryDiscoveryNextAttemptAt: number }
+    ).legacyRecoveryDiscoveryNextAttemptAt = Date.now();
     await expect(discover()).resolves.toBe(2);
     await expect(discover()).resolves.toBe(0);
 
@@ -291,7 +327,9 @@ describe('NightModeTransitionReconcileService', () => {
 
       await expect(discover()).resolves.toBe(1);
       await expect(discover()).resolves.toBe(0);
-      jest.advanceTimersByTime(60_000);
+      jest.advanceTimersByTime(1_000);
+      await expect(discover()).resolves.toBe(0);
+      jest.advanceTimersByTime(60_001);
       await expect(discover()).resolves.toBe(1);
 
       const scanQueries = queryRaw.mock.calls

@@ -112,6 +112,7 @@
 - `antiSpamEnabled` bans on the sixth plain-text/sticker message within six seconds. Exclude photos, video, files, voice, media batches, and forward-only links; do not expose threshold controls or route this burst through configurable escalation.
 - Required-subscription moderation checks every target with bounded concurrency and confirms stale missing cache through MAX before sanctions. Save only verifiable targets; disable the feature if none remain and fail open on terminal target errors.
 - Night mode/manual close is chat-only. It deletes non-admin chat messages in the event path; transitions/notices are scheduled background work. Do not add channel handling, list polling, per-chat sleeps, or user-message-triggered notices.
+- Historical night-mode close recovery discovery is owned by `api-moderation-background`, never `api-enqueue`; keep its bounded ledger scan aligned with the covering partial index migration `20260823170000_add_night_mode_recovery_discovery_index` and preserve the page backoff.
 - Stop words include blocked words and domains. Blocked domains match exact hosts/subdomains independently of link moderation; an explicit allowlist suppresses that URL hit.
 - Allowlist `DOMAIN` matches the host and subdomains; `EXACT` remains URL-specific.
 - Moderation and membership feeds use maintained read models (`chat_moderation_feed_items`, `chat_moderation_affected_user_hours`, `chat_membership_activity_feed_items`), not raw-event reconstruction per request.

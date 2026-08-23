@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildNightModeNoticeIdempotencyKey } from '../max/max-action-idempotency.util';
-import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
+import { resolveRuntimeServiceProfile } from '../runtime/runtime-topology';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import type { NightModeTransitionManualReview } from './night-mode-transition-scheduler.service';
 import { parseNightModeTransitionSessionKey } from './night-mode-transition-time.util';
@@ -23,6 +23,7 @@ const NIGHT_MODE_RECONCILE_ERROR_CODE_MAX_LENGTH = 120;
 const NIGHT_MODE_RECONCILE_ERROR_MAX_LENGTH = 1_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_SIZE = 100;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_RETRY_MS = 5_000;
+const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_DELAY_MS = 1_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_INCREMENTAL_MS = 60_000;
 const NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_OVERLAP_MS = 5 * 60_000;
 const NIGHT_MODE_RECONCILE_LEADER_LOCK_KEY = 'night-mode:transition-reconcile:leader:v1';
@@ -62,7 +63,10 @@ type NightModeLegacyRecoveryCursor = {
 @Injectable()
 export class NightModeTransitionReconcileService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NightModeTransitionReconcileService.name);
-  private readonly enabled = roleRunsEnqueue(getAppRole());
+  // Keep the historical ledger scan off api-enqueue: its four Prisma connections are reserved
+  // for durable webhook enqueue and outbox maintenance. The dedicated background role owns it.
+  private readonly runsInBackgroundModerationService =
+    resolveRuntimeServiceProfile().service.serviceName === 'api-moderation-background';
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
   private legacyRecoveryDiscoveryComplete = false;
@@ -77,7 +81,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
   ) {}
 
   onModuleInit(): void {
-    if (!this.enabled) {
+    if (!this.runsInBackgroundModerationService) {
       return;
     }
 
@@ -96,7 +100,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
   }
 
   private async tick(): Promise<void> {
-    if (this.inFlight) {
+    if (!this.runsInBackgroundModerationService || this.inFlight) {
       return;
     }
 
@@ -197,6 +201,7 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
           AND BTRIM(ledger."remote_message_id") <> ''
           AND ledger."dispatch_bot_id" IS NOT NULL
           AND BTRIM(ledger."dispatch_bot_id") <> ''
+          AND ledger."job_id" LIKE 'night-mode:close:%'
           AND LEFT(
             ledger."job_id",
             CHAR_LENGTH('night-mode:close:' || ledger."chat_id" || ':session:')
@@ -324,7 +329,6 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
         this.legacyRecoveryHeadCursor = this.legacyRecoveryCursor;
       }
     }
-    this.legacyRecoveryDiscoveryNextAttemptAt = 0;
     if (rows.length < NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_SIZE) {
       if (!this.legacyRecoveryDiscoveryComplete) {
         this.legacyRecoveryDiscoveryComplete = true;
@@ -334,6 +338,11 @@ export class NightModeTransitionReconcileService implements OnModuleInit, OnModu
       );
       this.legacyRecoveryDiscoveryNextAttemptAt =
         Date.now() + NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_INCREMENTAL_MS;
+    } else {
+      // A full page means the historical cursor still has work. Do not rescan the ledger on every
+      // 500 ms reconcile tick while the background role drains a large backlog.
+      this.legacyRecoveryDiscoveryNextAttemptAt =
+        Date.now() + NIGHT_MODE_LEGACY_RECOVERY_DISCOVERY_PAGE_DELAY_MS;
     }
     return new Set(candidates.map((candidate) => candidate.chatId)).size;
   }

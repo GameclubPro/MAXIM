@@ -651,6 +651,24 @@ describe('Prisma migrations', () => {
     );
   });
 
+  it('adds a covering partial index for bounded night mode recovery discovery', () => {
+    const migration = readMigration('20260823170000_add_night_mode_recovery_discovery_index');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "max_action_ledger_night_mode_close_recovery_discovery_idx"',
+    );
+    expect(compact).toContain('ON "max_action_ledger"("completed_at" DESC, "id" DESC)');
+    expect(compact).toContain(
+      'INCLUDE ("job_id", "chat_id", "remote_message_id", "dispatch_bot_id")',
+    );
+    expect(compact).toContain('"source_tag" = \'night_mode_transition\'');
+    expect(compact).toContain('"job_id" LIKE \'night-mode:close:%\'');
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
+
   it('adds a non-destructive routed giveaway send lock discriminator', () => {
     const schema = readSchema();
     const migration = readMigration('20260711130000_managed_giveaway_send_lock_key');

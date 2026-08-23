@@ -4845,8 +4845,8 @@ describe('ModerationService', () => {
       muteNotice('Алексей', '6ч'),
       expect.objectContaining({ textFormat: 'markdown' }),
       expect.objectContaining({
-        trafficClass: 'background',
-        actionHealthLane: 'background',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
         sourceTag: 'moderation_notice',
       }),
     );
