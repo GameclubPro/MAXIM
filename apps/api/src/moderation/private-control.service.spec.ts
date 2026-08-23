@@ -98,7 +98,12 @@ function createPrivateTextUpdate(text: string, options: { botId?: string } = {})
   };
 }
 
-function createPrivateForwardedModerationUpdate(text = 'бан'): MaxUpdate {
+function createPrivateForwardedModerationUpdate(
+  text = 'бан',
+  options: { sourceChatId?: number; sourceChatTitle?: string } = {},
+): MaxUpdate {
+  const sourceChatId = options.sourceChatId ?? -70000000000001;
+  const sourceChatTitle = options.sourceChatTitle ?? 'Тестовый чат 1';
   return {
     updateId: `upd-forwarded-ban-${Date.now()}`,
     type: 'message_created',
@@ -121,8 +126,8 @@ function createPrivateForwardedModerationUpdate(text = 'бан'): MaxUpdate {
               name: 'Нарушитель',
             },
             recipient: {
-              chat_id: -70000000000001,
-              title: 'Тестовый чат 1',
+              chat_id: sourceChatId,
+              title: sourceChatTitle,
             },
             body: {
               text: 'Сомнительное сообщение',
@@ -3929,20 +3934,33 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(
       createBotStartedPrivateUpdate(startPayload, { botId: '777000_bot' }),
     );
-    expect(getLastSentText(maxClient)).toContain('Перешлите любое сообщение пользователя');
+    const forwardPrompt = getLastSentText(maxClient);
+    expect(forwardPrompt).toContain(
+      'Перешлите сообщение пользователя, которому хотите выдать доступ.',
+    );
+    expect(forwardPrompt).toContain('Чат: Тестовый чат 1');
+    expect(forwardPrompt).toContain('Сообщение можно переслать из любого чата.');
+    expect(forwardPrompt).not.toContain('-70000000000001');
+    expect(forwardPrompt).not.toContain('Идентификатор пользователя вручную');
 
     await service.handleUpdate({
-      ...createPrivateForwardedModerationUpdate(''),
+      ...createPrivateForwardedModerationUpdate('', {
+        sourceChatId: -90000000000001,
+        sourceChatTitle: 'Другой источник',
+      }),
       botId: '777000_bot',
     });
     const durationButton = getLastButtons(maxClient)
       .flat()
-      .find((button) =>
-        typeof (button as { payload?: unknown })?.payload === 'string' &&
-        String((button as { payload: string }).payload).endsWith('|1d'),
+      .find(
+        (button) =>
+          typeof (button as { payload?: unknown })?.payload === 'string' &&
+          String((button as { payload: string }).payload).endsWith('|1d'),
       ) as { payload?: string } | undefined;
     expect(durationButton?.payload).toBeTruthy();
     expect(getLastSentText(maxClient)).toContain('Срок разрешения');
+    expect(getLastSentText(maxClient)).toContain('Чат: Тестовый чат 1');
+    expect(getLastSentText(maxClient)).not.toContain('ID:');
 
     await service.handleUpdate(
       createPrivateCallbackUpdate(durationButton!.payload!, { botId: '777000_bot' }),
@@ -3956,7 +3974,43 @@ describe('PrivateControlService', () => {
         expiresAt: expect.any(Date),
       }),
     );
-    expect(getLastEditedText(maxClient)).toContain('Доступ разрешён');
+    const grantedText = getLastEditedText(maxClient);
+    expect(grantedText).toContain('Доступ разрешён');
+    expect(grantedText).toContain('Чат: Тестовый чат 1');
+    expect(grantedText).not.toContain('-70000000000001');
+  });
+
+  it('shows a concise retry prompt for a typed user id instead of technical validation text', async () => {
+    const { service, maxClient } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      launchBotId: '777000_bot',
+      username: null,
+      displayName: 'Тестовый пользователь',
+    };
+
+    const handoff = await service.handoffKaravanStorefrontAllowlistFromMiniapp(
+      '-70000000000001',
+      actor,
+    );
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(extractStartPayload(handoff.botUrl), {
+        botId: '777000_bot',
+      }),
+    );
+
+    await service.handleUpdate({
+      ...createPrivateTextUpdate('123456789'),
+      botId: '777000_bot',
+    });
+
+    const retryText = getLastSentText(maxClient);
+    expect(retryText).toContain(
+      'Не удалось определить пользователя. Перешлите сообщение пользователя, которому хотите выдать доступ.',
+    );
+    expect(retryText).toContain('Чат: Тестовый чат 1');
+    expect(retryText).not.toContain('Идентификатор пользователя вручную');
+    expect(retryText).not.toContain('123456789');
   });
 
   it('preserves channel timer and cycle from miniapp handoff', async () => {

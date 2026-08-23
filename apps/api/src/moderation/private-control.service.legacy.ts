@@ -220,6 +220,11 @@ import {
   wasPrivateHandoffRecentlyDelivered,
 } from './private-control-handoff-state';
 import {
+  formatKaravanAllowlistChatTitle,
+  isPresentableKaravanAllowlistChatTitle,
+  resolveKaravanAllowlistChatTitle,
+} from './private-control-karavan-allowlist-title';
+import {
   deliverPrivateScreenHandoffToKnownPrivateChat,
   type PrivateScreenHandoffKind,
 } from './private-control-handoff-delivery';
@@ -649,6 +654,8 @@ export class PrivateControlService {
       );
     }
 
+    const chatTitle = await this.resolveKaravanAllowlistChatTitle(chatId, user);
+
     const botId = user.launchBotId?.trim() || session.lastPrivateBotId?.trim() || null;
     const nonce = this.createKaravanAllowlistNonce();
     const startPayload = this.buildKaravanAllowlistStartPayload(
@@ -662,6 +669,7 @@ export class PrivateControlService {
 
     session.pendingKaravanAllowlist = {
       chatId,
+      chatTitle,
       actorUserId: user.userId,
       botId,
       nonce,
@@ -709,11 +717,13 @@ export class PrivateControlService {
       return;
     }
 
+    await this.ensureKaravanAllowlistChatTitle(flow, context.actor);
+
     flow.stage = 'await_forward';
     await this.respond(
       context,
       session,
-      this.renderKaravanAllowlistForwardPrompt(flow.chatId, undefined, flow.nonce),
+      this.renderKaravanAllowlistForwardPrompt(flow.chatId, undefined, flow.nonce, flow.chatTitle),
       {
         callbackId: null,
         notification: null,
@@ -748,6 +758,8 @@ export class PrivateControlService {
       return true;
     }
 
+    await this.ensureKaravanAllowlistChatTitle(flow, context.actor);
+
     if (flow.stage !== 'await_forward') {
       await this.respond(context, session, this.renderKaravanAllowlistDurationPrompt(flow), {
         callbackId: null,
@@ -760,7 +772,6 @@ export class PrivateControlService {
       extractForwardedModerationTargets(context.update, null, {
         messageNodeMode: 'incoming-message',
         readPrivateForwardedFields: true,
-        skipPrivateDirectChats: true,
       }),
     );
     if (targets.length !== 1) {
@@ -770,37 +781,26 @@ export class PrivateControlService {
         this.renderKaravanAllowlistForwardPrompt(
           flow.chatId,
           targets.length > 1
-            ? 'В одном сообщении найдено несколько пользователей. Перешлите ровно одно сообщение.'
-            : 'Не удалось распознать пересланное сообщение. Перешлите сообщение пользователя из выбранного чата.',
+            ? 'Перешлите одно сообщение пользователя.'
+            : 'Не удалось определить пользователя. Перешлите сообщение пользователя, которому хотите выдать доступ.',
           flow.nonce,
+          flow.chatTitle,
         ),
-        { callbackId: null, notification: 'Нужно переслать одно сообщение' },
+        { callbackId: null, notification: 'Нужно переслать сообщение пользователя' },
       );
       return true;
     }
 
     const target = targets[0]!;
-    if (target.chatId.trim() !== flow.chatId.trim()) {
-      await this.respond(
-        context,
-        session,
-        this.renderKaravanAllowlistForwardPrompt(
-          flow.chatId,
-          'Сообщение из другого чата. Перешлите сообщение именно из выбранного чата.',
-          flow.nonce,
-        ),
-        { callbackId: null, notification: 'Неверный чат' },
-      );
-      return true;
-    }
     if (!target.userId.trim() || target.userId.trim() === context.actor.userId.trim()) {
       await this.respond(
         context,
         session,
         this.renderKaravanAllowlistForwardPrompt(
           flow.chatId,
-          'Нельзя добавить себя или пользователя без подтверждённого отправителя.',
+          'Не удалось определить пользователя. Перешлите сообщение пользователя, которому хотите выдать доступ.',
           flow.nonce,
+          flow.chatTitle,
         ),
         { callbackId: null, notification: 'Пользователь не распознан' },
       );
@@ -911,15 +911,20 @@ export class PrivateControlService {
     chatId: string,
     notice?: string,
     nonce?: string,
+    chatTitle?: string | null,
   ): PrivateView {
+    const readableChatTitle = formatKaravanAllowlistChatTitle(chatId, chatTitle);
     return {
       text: [
         privateMarkdownTitle('Разрешение для витрины'),
         '',
-        notice ?? 'Перешлите любое сообщение пользователя из выбранного чата.',
-        `Чат: ${chatId}`,
+        notice
+          ? escapePrivateMarkdown(notice)
+          : 'Перешлите сообщение пользователя, которому хотите выдать доступ.',
+        `Чат: ${escapePrivateMarkdown(readableChatTitle)}`,
         '',
-        'Идентификатор пользователя вручную не принимается. Для отмены напишите «отмена».',
+        'Сообщение можно переслать из любого чата.',
+        'Для отмены напишите «отмена».',
       ].join('\n'),
       options: {
         buttons: [
@@ -935,13 +940,14 @@ export class PrivateControlService {
   }
 
   private renderKaravanAllowlistDurationPrompt(flow: PendingKaravanAllowlistFlow): PrivateView {
-    const label = flow.targetDisplayName || flow.targetUserId || 'Пользователь';
+    const label = flow.targetDisplayName?.trim() || 'Пользователь';
+    const chatTitle = formatKaravanAllowlistChatTitle(flow.chatId, flow.chatTitle);
     return {
       text: [
         privateMarkdownTitle('Срок разрешения'),
         '',
-        `Пользователь: ${label}`,
-        `ID: ${flow.targetUserId ?? 'не определён'}`,
+        `Пользователь: ${escapePrivateMarkdown(label)}`,
+        `Чат: ${escapePrivateMarkdown(chatTitle)}`,
         '',
         'Выберите срок публикации витрин:',
       ].join('\n'),
@@ -994,8 +1000,8 @@ export class PrivateControlService {
       text: [
         privateMarkdownTitle('Доступ разрешён'),
         '',
-        `Пользователь: ${flow.targetDisplayName || flow.targetUserId || 'Пользователь'}`,
-        `Чат: ${flow.chatId}`,
+        `Пользователь: ${escapePrivateMarkdown(flow.targetDisplayName?.trim() || 'Пользователь')}`,
+        `Чат: ${escapePrivateMarkdown(formatKaravanAllowlistChatTitle(flow.chatId, flow.chatTitle))}`,
         `Срок: ${expiresAt ? formatPrivateControlDateTimeLabel(expiresAt.toISOString()) : 'бессрочно'}`,
       ].join('\n'),
       options: { buttons: this.buildFooterButtons() },
@@ -1022,6 +1028,29 @@ export class PrivateControlService {
       ].join('\n'),
       options: { buttons: this.buildFooterButtons() },
     };
+  }
+
+  private resolveKaravanAllowlistChatTitle(chatId: string, user: AuthUser): Promise<string> {
+    return resolveKaravanAllowlistChatTitle({
+      chatId,
+      user,
+      loadHeader: (targetChatId, actor) =>
+        this.adminService.getChatHeader(targetChatId, actor, {
+          skipAdminCheck: true,
+          skipEntityCheck: true,
+        }),
+    });
+  }
+
+  private async ensureKaravanAllowlistChatTitle(
+    flow: PendingKaravanAllowlistFlow,
+    user: AuthUser,
+  ): Promise<void> {
+    if (isPresentableKaravanAllowlistChatTitle(flow.chatId, flow.chatTitle)) {
+      return;
+    }
+
+    flow.chatTitle = await this.resolveKaravanAllowlistChatTitle(flow.chatId, user);
   }
 
   async handoffBroadcastFromMiniapp(
@@ -2125,6 +2154,7 @@ export class PrivateControlService {
     }
 
     if (session.pendingKaravanAllowlist) {
+      await this.ensureKaravanAllowlistChatTitle(session.pendingKaravanAllowlist, context.actor);
       const view =
         session.pendingKaravanAllowlist.stage === 'await_duration'
           ? this.renderKaravanAllowlistDurationPrompt(session.pendingKaravanAllowlist)
@@ -2132,6 +2162,7 @@ export class PrivateControlService {
               session.pendingKaravanAllowlist.chatId,
               undefined,
               session.pendingKaravanAllowlist.nonce,
+              session.pendingKaravanAllowlist.chatTitle,
             );
       await this.respond(context, session, view, {
         callbackId: context.callbackId,

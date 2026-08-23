@@ -86,6 +86,7 @@ export type PendingInput =
  * so an in-progress broadcast/rules editor is never overwritten. */
 export type PendingKaravanAllowlistFlow = {
   chatId: string;
+  chatTitle: string | null;
   actorUserId: string;
   botId: string | null;
   nonce: string;

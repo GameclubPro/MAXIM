@@ -158,6 +158,54 @@ describe('private control session normalizer', () => {
     expect(normalizeSuggestionDraft).toHaveBeenCalledWith({ raw: 'suggestion' });
   });
 
+  it('keeps the readable Karavan chat title and accepts legacy flows without one', () => {
+    const expiresAt = Date.now() + 60_000;
+    const normalized = normalizePrivateControlSession(
+      {
+        pendingKaravanAllowlist: {
+          chatId: ' chat-1 ',
+          chatTitle: '  Команда MAX  ',
+          actorUserId: ' user-1 ',
+          botId: ' bot-1 ',
+          nonce: ' nonce-1 ',
+          stage: 'await_forward',
+          targetUserId: null,
+          targetDisplayName: null,
+          sourceMessageId: null,
+          expiresAt,
+        },
+      },
+      defaultNormalizerDeps,
+    );
+
+    expect(normalized.pendingKaravanAllowlist).toEqual({
+      chatId: 'chat-1',
+      chatTitle: 'Команда MAX',
+      actorUserId: 'user-1',
+      botId: 'bot-1',
+      nonce: 'nonce-1',
+      stage: 'await_forward',
+      targetUserId: null,
+      targetDisplayName: null,
+      sourceMessageId: null,
+      expiresAt,
+    });
+
+    const legacy = normalizePrivateControlSession(
+      {
+        pendingKaravanAllowlist: {
+          chatId: 'chat-1',
+          actorUserId: 'user-1',
+          nonce: 'nonce-1',
+          stage: 'await_forward',
+          expiresAt,
+        },
+      },
+      defaultNormalizerDeps,
+    );
+    expect(legacy.pendingKaravanAllowlist?.chatTitle).toBeNull();
+  });
+
   it('normalizes pending input variants', () => {
     expect(
       normalizePrivateControlPendingInput({

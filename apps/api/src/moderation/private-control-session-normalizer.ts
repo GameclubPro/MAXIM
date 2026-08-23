@@ -161,6 +161,8 @@ function normalizePendingKaravanAllowlist(raw: unknown): PendingKaravanAllowlist
   }
   const row = raw as Record<string, unknown>;
   const chatId = typeof row.chatId === 'string' ? row.chatId.trim() : '';
+  const chatTitle =
+    typeof row.chatTitle === 'string' && row.chatTitle.trim() ? row.chatTitle.trim() : null;
   const actorUserId = typeof row.actorUserId === 'string' ? row.actorUserId.trim() : '';
   const nonce = typeof row.nonce === 'string' ? row.nonce.trim() : '';
   const botId = typeof row.botId === 'string' && row.botId.trim() ? row.botId.trim() : null;
@@ -177,6 +179,7 @@ function normalizePendingKaravanAllowlist(raw: unknown): PendingKaravanAllowlist
   }
   return {
     chatId,
+    chatTitle,
     actorUserId,
     botId,
     nonce,
