@@ -328,7 +328,7 @@ function configureDefaultChannelAutoPostDeleteRoute(service: ModerationService):
 }
 
 describe('ModerationService channel auto post buttons', () => {
-  it('auto-attaches only to a fresh post authored by the executing bot', async () => {
+  it('auto-attaches fresh runtime-bot and admin-authored channel posts', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       chat: {
@@ -436,8 +436,8 @@ describe('ModerationService channel auto post buttons', () => {
     };
     await service.handleUpdate(manualAdminPost);
 
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
-    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(2);
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(2);
 
     maxClient.editMessageInlineKeyboard.mockClear();
     prisma.auditLog.create.mockClear();
@@ -1413,20 +1413,19 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('rejects an explicit edit route when the required author is omitted', async () => {
+  it('allows an ordinary channel edit without requiring a bot-author match', async () => {
+    const markerMock = createChannelAutoPostAttachMarkerMock();
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
-      channelAutoPostAttachMarker: {
-        findUnique: jest.fn(),
-      },
+      channelAutoPostAttachMarker: markerMock.delegate,
       auditLog: {
-        findFirst: jest.fn(),
-        create: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      editMessageInlineKeyboard: jest.fn(),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const service = new ModerationService(
       prisma as never,
@@ -1454,13 +1453,11 @@ describe('ModerationService channel auto post buttons', () => {
           adminUserIds: [],
         },
         source: 'poll',
-        senderId: '777000',
+        senderId: 'admin-1',
       }),
-    ).resolves.toBe('skipped');
+    ).resolves.toBe('attached');
 
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
-    expect(prisma.channelAutoPostAttachMarker.findUnique).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
 
   it('preserves MAX markup from forwarded channel post webhooks when publishing the bot copy', async () => {
@@ -2194,6 +2191,80 @@ describe('ModerationService channel auto post buttons', () => {
         }),
       }),
     });
+  });
+
+  it('appends the configured signature to an admin-authored channel post', async () => {
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Наука и Факты',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '',
+            commentsEnabled: false,
+            postSignatureEnabled: true,
+          },
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: 'Новый пост в канале\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
+    configureDefaultChannelAutoPostEditRoute(service);
+
+    const update = createRuntimeBotChannelPostUpdate();
+    update.updateId = 'upd-channel-admin-signature-1';
+    update.message!.messageId = 'mid-channel-admin-signature-1';
+    update.message!.senderId = 'admin-1';
+    (update.raw as any).message.sender = { user_id: 'admin-1', is_bot: false };
+    await service.handleUpdate(update);
+
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledWith(
+      'channel-1',
+      { text: 'Новый пост в канале' },
+      {
+        entityType: 'channel',
+        trafficClass: 'background',
+        sourceTag: 'channel_auto_post',
+      },
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-admin-signature-1',
+      'Новый пост в канале\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      expect.objectContaining({
+        buttons: [],
+        textFormat: 'html',
+        preserveExistingInlineKeyboard: true,
+      }),
+      expectChannelAutoPostOptions(),
+    );
   });
 
   it('applies the signature and engagement buttons in one bot-authored edit', async () => {
@@ -4306,8 +4377,8 @@ describe('ModerationService channel auto post buttons', () => {
         senderId: '333000',
         requiredAuthorUserId: '333000',
       }),
-    ).resolves.toBe('skipped');
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    ).resolves.toBe('attached');
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
 
   it('records a proven predispatch limiter failure and does not advance the scan cursor', async () => {

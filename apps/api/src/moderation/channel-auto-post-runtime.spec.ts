@@ -422,6 +422,31 @@ describe('channel auto-post runtime', () => {
     );
   });
 
+  it('does not filter ordinary channel posts by sender identity during polling', async () => {
+    const manager = createScanManager(() => 10_000);
+    const attach = jest.fn().mockResolvedValue('attached');
+
+    await manager.processListedMessages({
+      chatId: 'channel-1',
+      messages: [
+        {
+          id: 'admin-authored-post',
+          timestamp: 103,
+          sender_id: 'admin-1',
+          body: { text: 'Пост администратора' },
+        },
+      ],
+      adminUserIds: [],
+      settingsUpdatedAtMs: 102,
+      maxNewMessagesPerScan: 1,
+      attach,
+    });
+
+    expect(attach).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'admin-authored-post' }),
+    );
+  });
+
   it('leaves in-progress messages unadvanced so a later repair scan can retry them', async () => {
     const manager = createScanManager(() => 10_000);
 

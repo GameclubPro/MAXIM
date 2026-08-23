@@ -53,7 +53,6 @@ type ProcessChannelAutoPostListedMessagesParams = {
   chatId: string;
   messages: readonly Record<string, unknown>[];
   adminUserIds: readonly string[];
-  isRuntimeBotUserId?: (senderId: string) => boolean;
   settingsUpdatedAtMs: number;
   maxNewMessagesPerScan: number;
   attach: (message: ChannelAutoPostListedMessage) => Promise<ChannelAutoPostAttachOutcome>;
@@ -702,11 +701,10 @@ export class ChannelAutoPostScanManager {
         continue;
       }
       sawNewMessages = true;
-      const senderEligible = params.isRuntimeBotUserId
-        ? normalized.linkType === 'forward'
-          ? normalized.senderId !== null && params.adminUserIds.includes(normalized.senderId)
-          : normalized.senderId !== null && params.isRuntimeBotUserId(normalized.senderId)
-        : !normalized.senderId || params.adminUserIds.includes(normalized.senderId);
+      // FLAG: MAX channel posts are admin-only; edit-route capability is the mutation boundary.
+      const senderEligible =
+        normalized.linkType !== 'forward' ||
+        (normalized.senderId !== null && params.adminUserIds.includes(normalized.senderId));
       if (!senderEligible || normalized.timestampMs < params.settingsUpdatedAtMs) {
         scanState = this.advance(scanState, normalized);
         this.states.set(params.chatId, scanState);

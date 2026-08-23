@@ -14578,24 +14578,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const senderIsOwnBot = senderId ? this.isOwnBotSender(senderId) : false;
-    if (
-      this.isServiceAuthoredMessage(update) ||
-      (this.isBotAuthoredMessage(update) && !senderIsOwnBot)
-    ) {
+    if (this.isServiceAuthoredMessage(update)) {
       return;
     }
 
     const eventTimestampMs = resolveChannelAutoPostEventTimestampMs(update);
     const linkType = extractChannelAutoPostMessageLinkType(update);
-    if (linkType !== 'forward' && !senderIsOwnBot) {
-      this.channelAutoPostScanManager.markWebhookSeen(chatId, messageId, eventTimestampMs);
-      return;
-    }
     let senderAdminVerified = false;
 
-    if (senderIsOwnBot) {
+    if (linkType === 'forward' && senderIsOwnBot) {
       senderAdminVerified = true;
-    } else if (senderId) {
+    } else if (linkType === 'forward' && senderId) {
       const mode = await this.resolveSystemModeSnapshot();
       const senderAdminCheck = await this.resolveSenderChatAdminCheck(
         chatId,
@@ -14634,7 +14627,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       source: 'webhook',
       senderId,
       senderAdminVerified,
-      requiredAuthorUserId: senderId,
       sourceMessageAt: createdAt,
     });
     if (outcome !== 'in_progress') {
@@ -14845,7 +14837,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       messages,
       adminUserIds: managedChannel.adminUserIds,
-      isRuntimeBotUserId: (senderId) => this.isKnownRuntimeBotUserId(senderId),
       settingsUpdatedAtMs: managedChannel.channelSettings.updatedAt.getTime(),
       maxNewMessagesPerScan,
       attach: (normalized) =>
@@ -14861,9 +14852,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           source: 'poll',
           senderId: normalized.senderId,
           senderAdminVerified:
-            normalized.senderId !== null &&
-            managedChannel.adminUserIds.includes(normalized.senderId),
-          requiredAuthorUserId: normalized.senderId,
+            normalized.senderId !== null && managedChannel.adminUserIds.includes(normalized.senderId),
         }),
     });
   }
@@ -15011,7 +15000,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     source: 'webhook' | 'poll';
     senderId: string | null;
     senderAdminVerified: boolean;
-    requiredAuthorUserId: string | null;
     sourceMessageAt?: string | null;
   }): Promise<ChannelAutoPostAttachOutcome> {
     const {
@@ -15026,10 +15014,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderAdminVerified,
       sourceMessageAt,
     } = params;
+    // FLAG: MAX channel posts are admin-only; ordinary edits rely on the fresh channel/edit route.
+    // Forwarded replacements remain sender-verified because they also delete the original post.
     if (linkType === 'forward' && (!senderId || !senderAdminVerified)) {
       return 'skipped';
     }
-    if (linkType !== 'forward' && !params.requiredAuthorUserId?.trim()) {
+    if (linkType !== 'forward' && !senderId) {
       return 'skipped';
     }
     if (linkType === 'forward' && !(await this.isCurrentChannelEntity(chatId))) {
@@ -15056,9 +15046,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const autoAttachRoute = await this.resolveAutoAttachMutationBotId({
       chatId,
       action: linkType === 'forward' ? 'delete_message' : 'edit_message',
-      ...(linkType === 'forward' || params.requiredAuthorUserId === undefined
-        ? {}
-        : { requiredAuthorUserId: params.requiredAuthorUserId }),
     });
     if (!autoAttachRoute.botId || !autoAttachRoute.requiredAuthorVerified) {
       return 'skipped';
