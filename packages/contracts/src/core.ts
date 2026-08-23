@@ -720,7 +720,7 @@ export const chatSettingsSchema = z
       commentsAdminsEnabled: z.boolean().default(false),
       commentsAllEnabled: z.boolean().default(false),
       commentsChatBroadcastsEnabled: z.boolean().default(false),
-      karavanStorefrontEnabled: z.boolean().default(false),
+      karavanStorefrontEnabled: z.boolean().default(true),
       deleteBotMessagesEnabled: z.boolean().default(false),
       deleteBotMessagesDelayMinutes: deleteBotMessagesDelayMinutesSchema,
       removeBotsFromGroupEnabled: z.boolean().default(false),

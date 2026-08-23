@@ -40,7 +40,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(normalizeHttpButtonUrl(`https://example.test/${'я'.repeat(400)}`)).toBeNull();
   });
 
-  it('keeps new chats passive while allowing unrestricted message types by default', () => {
+  it('keeps new chats passive while enabling the Karavan storefront by default', () => {
     const settings = chatSettingsSchema.parse({});
     const enabledBooleanKeys = Object.entries(settings)
       .filter(([, value]) => value === true)
@@ -50,6 +50,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(settings.linkPolicy).toBe('ALERT_ONLY');
     expect(enabledBooleanKeys).toEqual([
       'fileMessagesEnabled',
+      'karavanStorefrontEnabled',
       'phoneNumbersEnabled',
       'photoMessagesEnabled',
       'videoMessagesEnabled',
@@ -59,7 +60,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(settings.duplicatePhotoEnabled).toBe(false);
     expect(settings.duplicatePhotoMatchPreset).toBe('SAME_IMAGE');
     expect(settings.duplicatePhotoScope).toBe('SAME_AUTHOR');
-    expect(settings.karavanStorefrontEnabled).toBe(false);
+    expect(settings.karavanStorefrontEnabled).toBe(true);
   });
 
   it('accepts supported photo duplicate settings and rejects unknown enum values', () => {
@@ -242,7 +243,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(applySettingsSectionSchema.safeParse('thematicFilters').success).toBe(false);
   });
 
-  it('supports the opt-in Karavan storefront setting and section', () => {
+  it('supports the Karavan storefront setting and section', () => {
     expect(chatSettingsSchema.parse({ karavanStorefrontEnabled: true })).toEqual(
       expect.objectContaining({ karavanStorefrontEnabled: true }),
     );

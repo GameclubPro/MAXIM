@@ -389,7 +389,7 @@ async function main(): Promise<void> {
           select: { karavanStorefrontEnabled: true },
         });
         const result = await relay.handleMessageCreated({
-          karavanStorefrontEnabled: settings?.karavanStorefrontEnabled ?? false,
+          karavanStorefrontEnabled: settings?.karavanStorefrontEnabled ?? true,
           updateType: candidate.update.type,
           chatId: candidate.chatId,
           messageId: candidate.messageId,
