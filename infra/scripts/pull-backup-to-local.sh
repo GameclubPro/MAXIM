@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
 # Remote commands are assembled as quoted strings and evaluated by the remote
 # bash explicitly; these ShellCheck diagnostics are intentional at those seams.
 # shellcheck disable=SC2016,SC2029
+set -euo pipefail
 umask 077
 export LC_ALL=C
 
