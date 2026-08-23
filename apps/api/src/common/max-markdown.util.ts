@@ -14,16 +14,19 @@ const HEADING_LINE_PATTERN = /^(#{1,6})[ \t]+(.+)$/u;
 const SUPPORTED_MARKDOWN_PATTERN =
   /(?:^#{1,6}\s+\S.*$|```[\s\S]+?```|\*\*\*[^*\n]+?\*\*\*|___[^_\n]+?___|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
 const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
+const MULTILINE_STRONG_MARKERS = ['**', '__'] as const;
 
 export function containsSupportedMarkdownSyntax(source: string): boolean {
-  return SUPPORTED_MARKDOWN_PATTERN.test(source.replace(/\r/g, '').trim());
+  return SUPPORTED_MARKDOWN_PATTERN.test(
+    normalizeMultilineStrongMarkdown(source.replace(/\r/g, '').trim()),
+  );
 }
 
 export function renderSupportedMarkdownAsHtml(
   source: string,
   options: RenderMarkdownOptions = {},
 ): string {
-  const normalized = source.replace(/\r/g, '');
+  const normalized = normalizeMultilineStrongMarkdown(source.replace(/\r/g, ''));
   if (!normalized.trim()) {
     return '';
   }
@@ -110,7 +113,7 @@ export function renderSupportedMarkdownAsHtml(
 }
 
 export function stripSupportedMarkdownToPlainText(source: string): string {
-  const normalized = source.replace(/\r/g, '').trim();
+  const normalized = normalizeMultilineStrongMarkdown(source.replace(/\r/g, '').trim());
   if (!normalized) {
     return '';
   }
@@ -166,7 +169,7 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
 
 export function extractSupportedMarkdownLinks(source: string): string[] {
   const links = new Set<string>();
-  const lines = source.replace(/\r/g, '').split('\n');
+  const lines = normalizeMultilineStrongMarkdown(source.replace(/\r/g, '')).split('\n');
 
   for (let index = 0; index < lines.length; index += 1) {
     const fencedCodeBlock = readFencedCodeBlock(lines, index);
@@ -202,6 +205,207 @@ function collectInlineTokenLinks(tokens: InlineToken[], links: Set<string>): voi
       collectInlineTokenLinks(token.children, links);
     }
   }
+}
+
+/**
+ * The editor can wrap a selection that crosses paragraph boundaries in one pair
+ * of strong markers. MAX accepts strong markup per line, so expand that legacy
+ * shape into independent line spans before the regular inline parser runs.
+ */
+function normalizeMultilineStrongMarkdown(source: string): string {
+  let normalized = source;
+  let searchStart = 0;
+
+  while (searchStart < normalized.length) {
+    const span = findMultilineStrongSpan(normalized, searchStart);
+    if (!span) {
+      break;
+    }
+
+    let replacement = wrapMultilineStrongContent(
+      span.marker,
+      normalized.slice(span.openEnd, span.closeStart),
+    );
+    const closeLineEnd = normalized.indexOf('\n', span.closeEnd);
+    const closeLineRemainder = normalized.slice(
+      span.closeEnd,
+      closeLineEnd === -1 ? normalized.length : closeLineEnd,
+    );
+    if (closeLineRemainder.trim().length === 0 && normalized[span.closeEnd] === '\n') {
+      replacement = replacement.replace(/\n$/u, '');
+    }
+    normalized =
+      normalized.slice(0, span.openStart) + replacement + normalized.slice(span.closeEnd);
+    searchStart = span.openStart + replacement.length;
+  }
+
+  return normalized;
+}
+
+function findMultilineStrongSpan(
+  source: string,
+  searchStart: number,
+): {
+  marker: (typeof MULTILINE_STRONG_MARKERS)[number];
+  openStart: number;
+  openEnd: number;
+  closeStart: number;
+  closeEnd: number;
+} | null {
+  for (let index = searchStart; index < source.length; index += 1) {
+    const marker = MULTILINE_STRONG_MARKERS.find((candidate) =>
+      isMarkdownMarkerAt(source, index, candidate),
+    );
+    if (
+      !marker ||
+      !isLikelyStrongOpening(source, index) ||
+      hasEarlierMarkerOnLine(source, index, marker) ||
+      isInsideFencedCodeBlock(source, index)
+    ) {
+      continue;
+    }
+
+    const lineEnd = source.indexOf('\n', index + marker.length);
+    const sameLineEnd = lineEnd === -1 ? source.length : lineEnd;
+    if (findNextMarkdownMarker(source, index + marker.length, sameLineEnd, marker) !== null) {
+      continue;
+    }
+
+    const closeStart = findMultilineStrongClose(source, index + marker.length, marker);
+    if (closeStart === null || !source.slice(index + marker.length, closeStart).includes('\n')) {
+      continue;
+    }
+
+    return {
+      marker,
+      openStart: index,
+      openEnd: index + marker.length,
+      closeStart,
+      closeEnd: closeStart + marker.length,
+    };
+  }
+
+  return null;
+}
+
+function hasEarlierMarkerOnLine(
+  source: string,
+  index: number,
+  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
+): boolean {
+  const lineStart = source.lastIndexOf('\n', index - 1) + 1;
+  return findPreviousMarkdownMarker(source, lineStart, index, marker) !== null;
+}
+
+function isLikelyStrongOpening(source: string, index: number): boolean {
+  if (index === 0) {
+    return true;
+  }
+
+  const previous = source[index - 1] ?? '';
+  return previous !== '\\' && !/[\p{L}\p{N}]/u.test(previous);
+}
+
+function findMultilineStrongClose(
+  source: string,
+  searchStart: number,
+  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
+): number | null {
+  for (let index = searchStart; index < source.length; index += 1) {
+    if (!isMarkdownMarkerAt(source, index, marker) || isInsideFencedCodeBlock(source, index)) {
+      continue;
+    }
+
+    const lineEnd = source.indexOf('\n', index + marker.length);
+    const remainder = source.slice(index + marker.length, lineEnd === -1 ? source.length : lineEnd);
+    const trimmedRemainder = remainder.trim();
+    const nextMarkerOnLine = findNextMarkdownMarker(
+      source,
+      index + marker.length,
+      lineEnd === -1 ? source.length : lineEnd,
+      marker,
+    );
+    if (
+      !trimmedRemainder ||
+      /^[\p{P}\p{S}]+$/u.test(trimmedRemainder) ||
+      !isLikelyStrongOpening(source, index) ||
+      nextMarkerOnLine === null
+    ) {
+      return index;
+    }
+  }
+
+  return null;
+}
+
+function findNextMarkdownMarker(
+  source: string,
+  searchStart: number,
+  end: number,
+  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
+): number | null {
+  for (let index = searchStart; index < end; index += 1) {
+    if (isMarkdownMarkerAt(source, index, marker)) {
+      return index;
+    }
+  }
+  return null;
+}
+
+function findPreviousMarkdownMarker(
+  source: string,
+  start: number,
+  end: number,
+  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
+): number | null {
+  for (let index = end - marker.length; index >= start; index -= 1) {
+    if (isMarkdownMarkerAt(source, index, marker)) {
+      return index;
+    }
+  }
+  return null;
+}
+
+function isMarkdownMarkerAt(
+  source: string,
+  index: number,
+  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
+): boolean {
+  if (!source.startsWith(marker, index)) {
+    return false;
+  }
+
+  const markerCharacter = marker[0];
+  if (source[index - 1] === markerCharacter || source[index + marker.length] === markerCharacter) {
+    return false;
+  }
+
+  let precedingBackslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
+    precedingBackslashes += 1;
+  }
+  return precedingBackslashes % 2 === 0;
+}
+
+function isInsideFencedCodeBlock(source: string, index: number): boolean {
+  const lines = source.slice(0, index + 1).split('\n');
+  let inside = false;
+  for (const line of lines) {
+    if (line.trim().startsWith('```')) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function wrapMultilineStrongContent(
+  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
+  content: string,
+): string {
+  return content
+    .split('\n')
+    .map((line) => (line.trim().length > 0 ? `${marker}${line}${marker}` : line))
+    .join('\n');
 }
 
 function renderHeadingHtml(content: string): string {

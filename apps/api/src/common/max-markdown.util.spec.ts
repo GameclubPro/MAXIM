@@ -1,4 +1,5 @@
 import {
+  containsSupportedMarkdownSyntax,
   containsSupportedMarkdownUrl,
   extractSupportedMarkdownLinks,
   renderSupportedMarkdownAsHtml,
@@ -84,6 +85,59 @@ describe('renderSupportedMarkdownAsHtml', () => {
       ),
     ).toBe(
       '🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;пробелами',
+    );
+  });
+
+  it('renders strong spans that cross paragraph boundaries without leaking markers', () => {
+    const source = '**Первая строка\n\nВторая строка**';
+
+    expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
+      '<strong>Первая строка</strong>\n\n<strong>Вторая строка</strong>',
+    );
+    expect(stripSupportedMarkdownToPlainText(source)).toBe('Первая строка\n\nВторая строка');
+  });
+
+  it('recognizes multiline strong spans after punctuation or emoji prefixes', () => {
+    expect(renderSupportedMarkdownAsHtml('🔥**Первая\n\nВторая**', { blockMode: 'raw' })).toBe(
+      '🔥<strong>Первая</strong>\n\n<strong>Вторая</strong>',
+    );
+    expect(
+      renderSupportedMarkdownAsHtml('Префикс: **Первая\nВторая**.', { blockMode: 'raw' }),
+    ).toBe('Префикс: <strong>Первая</strong>\n<strong>Вторая</strong>.');
+    expect(
+      renderSupportedMarkdownAsHtml('Префикс **Первая\n\nВторая** хвост', { blockMode: 'raw' }),
+    ).toBe('Префикс <strong>Первая</strong>\n\n<strong>Вторая</strong> хвост');
+  });
+
+  it('does not reinterpret ordinary single-line strong pairs as multiline spans', () => {
+    expect(
+      renderSupportedMarkdownAsHtml(
+        '👋 **Ваша публикация удалена.**\n\n**✏️ Условие. **\n\n**💙 **Нужно подписаться',
+        { blockMode: 'raw' },
+      ),
+    ).toBe(
+      '👋 <strong>Ваша публикация удалена.</strong>\n\n<strong>✏️ Условие. </strong>\n\n<strong>💙 </strong>Нужно подписаться',
+    );
+  });
+
+  it('handles a strong span whose closing marker is on its own line', () => {
+    const source = '**Одна строка\n\n**';
+
+    expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
+      '<strong>Одна строка</strong>\n\n',
+    );
+    expect(containsSupportedMarkdownSyntax(source)).toBe(true);
+    expect(
+      renderSupportedMarkdownAsHtml('**Одна строка\n\n**\nСледующая', { blockMode: 'raw' }),
+    ).toBe('<strong>Одна строка</strong>\n\nСледующая');
+  });
+
+  it('does not normalize escaped or fenced strong markers', () => {
+    expect(renderSupportedMarkdownAsHtml('\\**literal\n\n\\**', { blockMode: 'raw' })).toBe(
+      '**literal\n\n**',
+    );
+    expect(renderSupportedMarkdownAsHtml('```\n**literal\n\n**\n```', { blockMode: 'raw' })).toBe(
+      '<pre>**literal\n\n**</pre>',
     );
   });
 

@@ -28943,7 +28943,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: '**Новый выпуск** уже в канале.',
+        text: 'Префикс **Новый выпуск\n\nВторая строка**',
         textFormat: 'markdown',
         applyToAllChats: false,
         buttonEnabled: true,
@@ -28974,7 +28974,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'channel-1',
-      '<strong>Новый выпуск</strong> уже в канале.',
+      'Префикс <strong>Новый выпуск</strong>\n\n<strong>Вторая строка</strong>',
       {
         textFormat: 'html',
         buttons: [[{ text: 'Открыть выпуск', type: 'link', url: 'https://max.ru/channel/maxim' }]],
