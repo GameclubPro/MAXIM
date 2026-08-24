@@ -106,9 +106,65 @@ test('Safety Desk locations with local headers preserve the complete closed-site
   assertLocalHeadersPreserveSecuritySet(adminConfig, ADMIN_SECURITY_HEADERS);
 });
 
-test('installed Karavan SSE locations preserve the public security header set', () => {
-  assert.equal(readLocationBlocks(karavanSseLocations).length, 4);
+test('installed Karavan long-lived routes preserve routing, privacy, and security controls', () => {
+  const locations = readLocationBlocks(karavanSseLocations);
+  assert.equal(locations.length, 6);
   assertLocalHeadersPreserveSecuritySet(karavanSseLocations, MAJOR_SECURITY_HEADERS);
+
+  for (const location of locations) {
+    assert.match(
+      location,
+      /^\s*access_log\s+\/var\/log\/nginx\/access\.log\s+karavan_no_args\s*;\s*$/mu,
+    );
+  }
+
+  const mutationTunnel = locations.find((block) =>
+    /^\s*location\s+=\s+\/karavan\/api\/v1\/_mutation-tunnel\s*\{/u.test(block),
+  );
+  assert.ok(mutationTunnel, 'Expected the exact Karavan mutation tunnel route');
+  assert.match(mutationTunnel, /^\s*proxy_read_timeout\s+12m\s*;\s*$/mu);
+  assert.match(mutationTunnel, /^\s*proxy_send_timeout\s+12m\s*;\s*$/mu);
+  assert.match(
+    mutationTunnel,
+    /^\s*add_header\s+X-Maxim-Ingress\s+karavan-mutation-tunnel\s+always\s*;\s*$/mu,
+  );
+
+  const sellerUploads = locations.find((block) =>
+    /^\s*location\s+=\s+\/karavan\/api\/v1\/seller\/uploads\s*\{/u.test(block),
+  );
+  assert.ok(sellerUploads, 'Expected the exact Karavan seller upload route');
+  for (const route of [mutationTunnel, sellerUploads]) {
+    assert.match(route, /^\s*rewrite\s+\^\/karavan\(\/api\/\.\*\)\$\s+\$1\s+break\s*;\s*$/mu);
+    assert.match(route, /^\s*proxy_pass\s+http:\/\/127\.0\.0\.1:3211\s*;\s*$/mu);
+    assert.match(route, /^\s*proxy_http_version\s+1\.1\s*;\s*$/mu);
+  }
+  for (const timeout of [
+    'client_body_timeout',
+    'proxy_read_timeout',
+    'proxy_send_timeout',
+    'send_timeout',
+  ]) {
+    assert.match(sellerUploads, new RegExp(`^\\s*${timeout}\\s+12m\\s*;\\s*$`, 'mu'));
+  }
+  assert.match(
+    sellerUploads,
+    /^\s*add_header\s+X-Maxim-Ingress\s+karavan-upload\s+always\s*;\s*$/mu,
+  );
+
+  for (const path of [
+    '/karavan/api/v1/client/orders/stream',
+    '/karavan/api/v1/client/conversations/stream',
+    '/karavan/api/v1/seller/orders/stream',
+    '/karavan/api/v1/seller/conversations/stream',
+  ]) {
+    const streamRoute = locations.find((block) => block.startsWith(`location = ${path} {`));
+    assert.ok(streamRoute, `Expected the exact Karavan SSE route ${path}`);
+    assert.match(
+      streamRoute,
+      /^\s*include\s+\/etc\/nginx\/snippets\/karavan-sse-proxy-common\.conf\s*;\s*$/mu,
+    );
+    assert.match(streamRoute, /^\s*add_header\s+X-Maxim-Ingress\s+karavan-sse\s+always\s*;\s*$/mu);
+  }
 });
 
 test('major site apply verifies inherited-header regressions after nginx reload', () => {
@@ -280,6 +336,18 @@ test('legacy apply keeps rollback state through localhost SNI security smokes fo
     assert.ok(legacyApplyScript.includes(`"${path}"`));
   }
   assert.ok(legacyApplyScript.includes('/api/v1/system/metrics/queues'));
+  for (const [path, ingress] of [
+    ['/karavan/api/v1/_mutation-tunnel', 'karavan-mutation-tunnel'],
+    ['/karavan/api/v1/seller/uploads', 'karavan-upload'],
+    ['/karavan/api/v1/client/orders/stream', 'karavan-sse'],
+  ]) {
+    const routeIndex = legacyApplyScript.indexOf(`"${path}" ""`);
+    assert.ok(routeIndex >= 0, `${path} must have a localhost smoke`);
+    assert.ok(
+      legacyApplyScript.slice(routeIndex, routeIndex + 180).includes(`"${ingress}" 1 "HEAD"`),
+      `${path} must keep its exact Karavan ingress before deployment commits`,
+    );
+  }
   assert.ok(
     legacyApplyScript.includes(
       'verify_local_redirect "maxim.play-team.ru" "/app/" "https://major-maksimov.ru/app/"',

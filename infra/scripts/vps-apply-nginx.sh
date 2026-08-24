@@ -220,9 +220,22 @@ assert_local_security_headers() {
 read_local_headers() {
   local host="$1"
   local path="$2"
+  local request_method="${3:-GET}"
+  local method_args=()
+
+  case "${request_method}" in
+    GET)
+      ;;
+    HEAD)
+      method_args=(-I)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 
   curl --noproxy '*' -sS --max-time 15 --resolve "${host}:443:127.0.0.1" \
-    -D - -o /dev/null "https://${host}${path}"
+    "${method_args[@]}" -D - -o /dev/null "https://${host}${path}"
 }
 
 verify_local_route() {
@@ -231,10 +244,11 @@ verify_local_route() {
   local expected_status="$3"
   local expected_ingress="$4"
   local require_security_headers="$5"
+  local request_method="${6:-GET}"
   local route="${host}${path}"
   local headers
 
-  if ! headers="$(read_local_headers "${host}" "${path}")"; then
+  if ! headers="$(read_local_headers "${host}" "${path}" "${request_method}")"; then
     record_local_smoke_failure "${route}" "request"
     return 1
   fi
@@ -281,6 +295,12 @@ verify_local_nginx() {
   done
 
   verify_local_route "maxim.play-team.ru" "/api/v1/system/metrics/queues" "" "admin" 0 || return 1
+  verify_local_route "maxim.play-team.ru" "/karavan/api/v1/_mutation-tunnel" "" \
+    "karavan-mutation-tunnel" 1 "HEAD" || return 1
+  verify_local_route "maxim.play-team.ru" "/karavan/api/v1/seller/uploads" "" \
+    "karavan-upload" 1 "HEAD" || return 1
+  verify_local_route "maxim.play-team.ru" "/karavan/api/v1/client/orders/stream" "" \
+    "karavan-sse" 1 "HEAD" || return 1
   verify_local_redirect "maxim.play-team.ru" "/" "https://major-maksimov.ru/app/" || return 1
   verify_local_redirect "maxim.play-team.ru" "/app/" "https://major-maksimov.ru/app/" || return 1
 }
