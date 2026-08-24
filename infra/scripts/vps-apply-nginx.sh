@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
+# shellcheck source=infra/scripts/lib/nginx-public-smoke.sh
+source "$ROOT_DIR/infra/scripts/lib/nginx-public-smoke.sh"
 
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -372,24 +374,21 @@ DEPLOYMENT_COMMITTED=1
 REMOTE
 
 echo "Verifying public route split headers..."
-legacy_live_headers="$(curl -fsS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/health/live)"
-grep -Ei '^HTTP/[0-9.]+ 200' <<<"$legacy_live_headers"
-grep -i '^x-maxim-ingress: webhook' <<<"$legacy_live_headers"
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/health/ready | grep -Ei '^HTTP/[0-9.]+ 404'
-curl -sS --max-time 15 -D - -o /dev/null https://hook.maxim.play-team.ru/api/health/ready | grep -Ei '^HTTP/[0-9.]+ 404'
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/system/metrics/queues | grep -i '^x-maxim-ingress: admin'
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
-curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
+maxim_begin_public_nginx_smoke 120 12 10 3 1
+maxim_verify_public_nginx_route "maxim.play-team.ru" "/api/health/live" "200" "webhook" "" 0
+maxim_verify_public_nginx_route "maxim.play-team.ru" "/api/health/ready" "404" "" "" 1
+maxim_verify_public_nginx_route "hook.maxim.play-team.ru" "/api/health/ready" "404" "" "" 1
+maxim_verify_public_nginx_route \
+  "maxim.play-team.ru" "/api/v1/system/metrics/queues" "401" "admin" "" 0
+maxim_verify_public_nginx_route \
+  "maxim.play-team.ru" "/api/v1/safety-desk/queue" "404" "" "" 1
+maxim_verify_public_nginx_route \
+  "maxim.play-team.ru" "/api/v1/support-requests/queue" "404" "" "" 1
 
 echo "Verifying legacy play-team app redirects to the canonical mini app..."
-legacy_root_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/)"
-grep -Ei '^HTTP/[0-9.]+ 308' <<<"$legacy_root_headers"
-grep -i '^location: https://major-maksimov.ru/app/' <<<"$legacy_root_headers"
-legacy_app_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/)"
-grep -Ei '^HTTP/[0-9.]+ 308' <<<"$legacy_app_headers"
-grep -i '^location: https://major-maksimov.ru/app/' <<<"$legacy_app_headers"
-grep -i '^strict-transport-security:' <<<"$legacy_app_headers"
-grep -i '^x-content-type-options: nosniff' <<<"$legacy_app_headers"
-grep -i '^referrer-policy: strict-origin-when-cross-origin' <<<"$legacy_app_headers"
+maxim_verify_public_nginx_route \
+  "maxim.play-team.ru" "/" "308" "" "https://major-maksimov.ru/app/" 1
+maxim_verify_public_nginx_route \
+  "maxim.play-team.ru" "/app/" "308" "" "https://major-maksimov.ru/app/" 1
 
 echo "Done: nginx config applied on ${HOST}"

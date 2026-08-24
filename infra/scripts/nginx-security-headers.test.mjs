@@ -419,3 +419,22 @@ test('legacy apply retries local smokes and rolls back every incomplete post-mut
   );
   assert.doesNotMatch(legacyApplyScript, /systemctl reload nginx \|\| true/u);
 });
+
+test('legacy apply uses bounded semantic public route verification', () => {
+  assert.ok(
+    legacyApplyScript.includes('source "$ROOT_DIR/infra/scripts/lib/nginx-public-smoke.sh"'),
+  );
+  assert.ok(legacyApplyScript.includes('maxim_begin_public_nginx_smoke 120 12 10 3 1'));
+  for (const fragment of [
+    '"maxim.play-team.ru" "/api/health/live" "200" "webhook" "" 0',
+    '"maxim.play-team.ru" "/api/health/ready" "404" "" "" 1',
+    '"hook.maxim.play-team.ru" "/api/health/ready" "404" "" "" 1',
+    '"maxim.play-team.ru" "/api/v1/system/metrics/queues" "401" "admin" "" 0',
+    '"maxim.play-team.ru" "/api/v1/safety-desk/queue" "404" "" "" 1',
+    '"maxim.play-team.ru" "/api/v1/support-requests/queue" "404" "" "" 1',
+    '"maxim.play-team.ru" "/" "308" "" "https://major-maksimov.ru/app/" 1',
+    '"maxim.play-team.ru" "/app/" "308" "" "https://major-maksimov.ru/app/" 1',
+  ]) {
+    assert.ok(legacyApplyScript.includes(fragment), `missing public smoke: ${fragment}`);
+  }
+});
