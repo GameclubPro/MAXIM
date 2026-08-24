@@ -2173,7 +2173,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
   it('includes recoverable attempted delivery failures in stale suggestion recovery', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValue([{ id: 'suggestion-recoverable-delivery-failure-1' }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'suggestion-recoverable-delivery-failure-1' }]);
     const adminSuggestionDeliveryQueue = {
       getJob: jest.fn().mockResolvedValue(null),
       add: jest.fn().mockResolvedValue(undefined),
@@ -2192,12 +2194,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     await expect(service.recoverStaleChannelSuggestionDeliveries()).resolves.toBe(1);
 
-    const recoverySql = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    const recoverySql = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
     expect(recoverySql).toContain('channel_suggestion_admin_deliveries');
     expect(recoverySql).toContain("payload->'deliveryFailures'");
     expect(recoverySql).toContain("delivery_failure.value->>'recoverable' = 'true'");
+    expect(recoverySql).toContain("payload->>'deliveryJobLastFailedAt'");
+    expect(recoverySql).toContain("payload->>'deliveryJobRecoverable' = 'true'");
     expect(recoverySql).toContain('GROUP BY audit.id, audit.created_at');
-    expect(recoverySql).toContain('ORDER BY audit.created_at ASC');
+    expect(recoverySql).toContain('ORDER BY MIN(');
+    expect(recoverySql).toContain('delivery.updated_at');
     expect(adminSuggestionDeliveryQueue.add).toHaveBeenCalledWith(
       'deliver-channel-suggestion',
       { auditLogId: 'suggestion-recoverable-delivery-failure-1' },
@@ -2310,6 +2315,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         delivered: false,
         deliveryAttemptedAt: expect.any(String),
         deliveryJobRecoverable: false,
+        suggestionDelivery: {
+          state: 'uncertain',
+          deliveredCount: 0,
+          targetCount: 0,
+          pendingCount: 0,
+          unreachableCount: 0,
+        },
         deliveryFailures: [
           expect.objectContaining({
             adminUserId: 'delivery_job',
@@ -2665,7 +2677,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessageImmediateWithId: jest.fn().mockRejectedValue(timeoutError),
+      sendMessageImmediateWithId: jest.fn(
+        async (_chatId: string, _text: string, options?: { beforeSend?: () => Promise<void> }) => {
+          await options?.beforeSend?.();
+          throw timeoutError;
+        },
+      ),
     };
     const service = new AdminService(
       prisma as never,
@@ -3049,7 +3066,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(result).toEqual({
       ok: true,
       delivered: false,
-      deliveredToUserId: null,
       queued: true,
     });
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
@@ -3545,6 +3561,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           },
         ],
       },
+      { mediaBotId: '777000_bot' },
     );
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
@@ -3665,6 +3682,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         mediaMimeType: 'video/mp4',
         mediaFileName: 'suggestion.mp4',
       },
+      { mediaBotId: '777000_bot' },
     );
 
     expect(sleepSpy).toHaveBeenCalledTimes(1);
@@ -3714,7 +3732,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.channelSettings.findUnique.mockResolvedValue({
       postSuggestionsEnabled: false,
     });
-    prisma.$queryRaw.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '165176099' }]);
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
       id: 'suggestion-bot-filter-1',
       actorUserId: 'user-1',
@@ -3748,12 +3766,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         isOwner: false,
         permissions: [],
       }),
-      sendMessageImmediateWithId: jest.fn(),
-      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
         messageId: 'mid-suggestion-human-admin-1',
         url: null,
         chatId: '165176099',
       }),
+      sendMessageImmediateToUser: jest.fn(),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -3816,10 +3834,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         actionHealthLane: 'background',
       }),
     );
-    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
-      '98315271',
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '165176099',
       expect.stringContaining('[Пользователь](https://max.ru/user1)'),
       expect.objectContaining({
         textFormat: 'markdown',
@@ -3829,6 +3846,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         botId: 'id613002203036_bot',
       }),
     );
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
     expect(readSqlJsonPatch(prisma.$queryRaw, 'deliveryAttemptedAt')).toEqual(
       expect.objectContaining({
         deliveredToUserId: '98315271',
@@ -3861,7 +3879,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         },
       ],
     });
-    prisma.$queryRaw.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '165176099' }]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['209468578', '214634783', '98315271']),
@@ -3898,12 +3916,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             permissions: [],
           };
         }),
-      sendMessageImmediateWithId: jest.fn(),
-      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
         messageId: 'mid-suggestion-human-admin-1',
         url: null,
         chatId: '165176099',
       }),
+      sendMessageImmediateToUser: jest.fn(),
     };
     const config = {
       getOrThrow: jest.fn((key: string) => {
@@ -3983,10 +4001,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         botId: 'id613002203036_bot',
       }),
     );
-    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
-      '98315271',
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '165176099',
       expect.stringContaining('[Пользователь](https://max.ru/user1)'),
       expect.objectContaining({
         textFormat: 'markdown',
@@ -3996,6 +4013,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         botId: 'id613002203036_bot',
       }),
     );
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
     expect(delivery).toMatchObject({
       delivered: true,
       deliveredToUserId: '98315271',
@@ -4010,7 +4028,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
-  it('falls back to send-to-user when the cached admin private chat id is stale', async () => {
+  it('does not blind-send by user id when the known admin private chat is stale', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -4054,19 +4072,20 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         isOwner: false,
         permissions: [],
       }),
-      sendMessageImmediateWithId: jest.fn().mockRejectedValue({
-        response: {
-          status: 404,
-          data: {
-            message: 'chat not found',
-          },
+      sendMessageImmediateWithId: jest.fn(
+        async (_chatId: string, _text: string, options?: { beforeSend?: () => Promise<void> }) => {
+          await options?.beforeSend?.();
+          throw {
+            response: {
+              status: 404,
+              data: {
+                message: 'chat not found',
+              },
+            },
+          };
         },
-      }),
-      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
-        messageId: 'mid-suggestion-human-admin-fallback-1',
-        url: null,
-        chatId: '777001',
-      }),
+      ),
+      sendMessageImmediateToUser: jest.fn(),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -4108,6 +4127,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(privateChatLookupSql).toContain("normalized_payload->'message'->>'senderId'");
     expect(privateChatLookupSql).toContain("normalized_payload->'message'->>'chatId'");
     expect(privateChatLookupSql).toContain("normalized_payload->>'type'");
+    expect(privateChatLookupSql).toContain('created_at >=');
+    expect(privateChatLookupSql).toContain('bot_id =');
+    expect(privateChatLookupSql).not.toContain('DISTINCT ON');
     expect(privateChatLookupSql).not.toContain('raw_payload');
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '555001',
@@ -4119,23 +4141,18 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         trafficClass: 'background',
       }),
     );
-    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
-      '98315271',
-      expect.stringContaining('[Пользователь](https://max.ru/user1)'),
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-      expect.objectContaining({
-        trafficClass: 'background',
-      }),
-    );
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
     expect(readSqlJsonPatch(prisma.$queryRaw, 'deliveryAttemptedAt')).toEqual(
       expect.objectContaining({
-        deliveries: [
+        delivered: false,
+        deliveries: [],
+        deliveryFailures: [
           expect.objectContaining({
             adminUserId: '98315271',
-            privateChatId: '777001',
-            messageId: 'mid-suggestion-human-admin-fallback-1',
+            privateChatId: '555001',
+            status: 404,
+            code: 'suggestion.delivery.dialog_unavailable',
+            terminal: true,
           }),
         ],
       }),
@@ -4179,15 +4196,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         url: null,
       }),
     };
-    const unavailablePrivateError = {
-      response: {
-        status: 403,
-        data: {
-          code: 'access.denied',
-          message: 'access denied',
-        },
-      },
-    };
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['98315271']),
       getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
@@ -4197,7 +4205,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         permissions: [],
       }),
       sendMessageImmediateWithId: jest.fn(),
-      sendMessageImmediateToUser: jest.fn().mockRejectedValue(unavailablePrivateError),
+      sendMessageImmediateToUser: jest.fn(),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -4238,25 +4246,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
-      '98315271',
-      expect.stringContaining('[Пользователь](https://max.ru/user1)'),
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-      expect.objectContaining({
-        trafficClass: 'background',
-        ignoreFailureMetricStatuses: [403, 404],
-      }),
-    );
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
     expect(debugSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         suggestionId: 'suggestion-unavailable-private-chat-1',
         chatId: 'channel-1',
         adminUserId: '98315271',
         privateChatId: null,
-        status: 403,
-        code: 'access.denied',
+        status: 404,
+        code: 'suggestion.delivery.no_reachable_dialog',
       }),
       'Skipped suggestion delivery to unavailable admin private chat',
     );
@@ -4275,10 +4273,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           expect.objectContaining({
             adminUserId: '98315271',
             privateChatId: null,
-            status: 403,
-            code: 'access.denied',
+            status: 404,
+            code: 'suggestion.delivery.no_reachable_dialog',
             terminal: true,
-            message: 'access denied',
+            message: 'admin has not started an actionable suggestion delivery bot',
           }),
         ],
       }),

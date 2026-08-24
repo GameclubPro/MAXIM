@@ -159,6 +159,7 @@ export type PrivateSuggestionDraft = {
   textMarkup: IncomingMessageMarkup[];
   images: PrivateSuggestionImageDraft[];
   video: PrivateSuggestionVideoDraft | null;
+  mediaBotId: string | null;
   media?: PrivateSuggestionMediaDraft | null;
   imageBase64: string;
   imageMimeType: string;

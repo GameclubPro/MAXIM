@@ -3316,6 +3316,7 @@ describe('PrivateControlService', () => {
         token: 'cdt-suggest-token-1',
         text: 'Текст для публикации',
       },
+      { mediaBotId: null },
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
     expect(getLastEditedText(maxClient)).toContain(
@@ -3364,6 +3365,7 @@ describe('PrivateControlService', () => {
         token: 'cdt-suggest-token-q',
         text: 'Текст для очереди',
       }),
+      { mediaBotId: null },
     );
     expect(getLastEditedText(maxClient)).toContain('⏳ Материал принят');
     expect(getLastEditedText(maxClient)).toContain(
@@ -3371,6 +3373,31 @@ describe('PrivateControlService', () => {
     );
     expect(getLastEditedText(maxClient)).not.toContain(
       'Сейчас не удалось сразу доставить материал редакторам канала.',
+    );
+  });
+
+  it('clears suggestion preview buttons through the callback bot before editing', async () => {
+    const { service, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(
+      channels[0].id,
+      'cdt-suggest-token-edit-bot',
+    );
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(startPayload, { botId: '888000_bot' }),
+    );
+    await service.handleUpdate(createPrivateTextUpdate('Исправить текст', { botId: '888000_bot' }));
+    maxClient.editMessageInlineKeyboard.mockClear();
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('pc2|suggestion_edit', { botId: '888000_bot' }),
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      '152517912',
+      expect.any(String),
+      null,
+      { buttons: [] },
+      { botId: '888000_bot' },
     );
   });
 
@@ -3434,6 +3461,7 @@ describe('PrivateControlService', () => {
           }),
         ],
       }),
+      { mediaBotId: null },
     );
   });
 
@@ -3443,8 +3471,10 @@ describe('PrivateControlService', () => {
     const imageMock = mockImageFetch();
 
     try {
-      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
-      await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleBotStarted(
+        createBotStartedPrivateUpdate(startPayload, { botId: '888000_bot' }),
+      );
+      await service.handleUpdate(createPrivatePhotoUpdate({ botId: '888000_bot' }));
 
       let previewPayload = getLastCustomMessagePayload(maxClient);
       expect(previewPayload?.text).toBeUndefined();
@@ -3463,6 +3493,7 @@ describe('PrivateControlService', () => {
       await service.handleUpdate(
         createPrivatePhotoUpdate({
           photoIds: ['photo-2', 'photo-3'],
+          botId: '888000_bot',
         }),
       );
 
@@ -3489,9 +3520,12 @@ describe('PrivateControlService', () => {
         'msg-preview-1',
         null,
         { buttons: [] },
+        { botId: '888000_bot' },
       );
 
-      await service.handleUpdate(createPrivateTextUpdate('Подпись к фото'));
+      await service.handleUpdate(
+        createPrivateTextUpdate('Подпись к фото', { botId: '888000_bot' }),
+      );
 
       previewPayload = getLastCustomMessagePayload(maxClient);
       expect(previewPayload?.text).toBe('Подпись к фото');
@@ -3516,9 +3550,12 @@ describe('PrivateControlService', () => {
         'msg-preview-2',
         null,
         { buttons: [] },
+        { botId: '888000_bot' },
       );
 
-      await service.handleUpdate(createPrivateTextUpdate('Обновлённая подпись'));
+      await service.handleUpdate(
+        createPrivateTextUpdate('Обновлённая подпись', { botId: '888000_bot' }),
+      );
 
       previewPayload = getLastCustomMessagePayload(maxClient);
       expect(previewPayload?.text).toBe('Обновлённая подпись');
@@ -3543,6 +3580,7 @@ describe('PrivateControlService', () => {
         'msg-preview-3',
         null,
         { buttons: [] },
+        { botId: '888000_bot' },
       );
     } finally {
       imageMock.restore();
@@ -3555,9 +3593,13 @@ describe('PrivateControlService', () => {
     const imageMock = mockImageFetch();
 
     try {
-      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
-      await service.handleUpdate(createPrivatePhotoUpdate());
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+      await service.handleBotStarted(
+        createBotStartedPrivateUpdate(startPayload, { botId: '888000_bot' }),
+      );
+      await service.handleUpdate(createPrivatePhotoUpdate({ botId: '888000_bot' }));
+      await service.handleUpdate(
+        createPrivateCallbackUpdate('pc2|suggestion_send', { botId: '888000_bot' }),
+      );
     } finally {
       imageMock.restore();
     }
@@ -3576,6 +3618,14 @@ describe('PrivateControlService', () => {
           }),
         ],
       }),
+      { mediaBotId: '888000_bot' },
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      '152517912',
+      expect.any(String),
+      null,
+      { buttons: [] },
+      { botId: '888000_bot' },
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
   });
@@ -3591,8 +3641,10 @@ describe('PrivateControlService', () => {
     maxClient.uploadImage.mockRejectedValueOnce(validationError);
 
     try {
-      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
-      await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleBotStarted(
+        createBotStartedPrivateUpdate(startPayload, { botId: '888000_bot' }),
+      );
+      await service.handleUpdate(createPrivatePhotoUpdate({ botId: '888000_bot' }));
     } finally {
       imageMock.restore();
     }
@@ -3607,14 +3659,21 @@ describe('PrivateControlService', () => {
     const imageMock = mockImageFetch();
 
     try {
-      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+      await service.handleBotStarted(
+        createBotStartedPrivateUpdate(startPayload, { botId: '888000_bot' }),
+      );
       await service.handleUpdate(
         createPrivatePhotoUpdate({
           photoIds: ['photo-10', 'photo-11'],
+          botId: '888000_bot',
         }),
       );
-      await service.handleUpdate(createPrivatePhotoUpdate({ photoIds: ['photo-12'] }));
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+      await service.handleUpdate(
+        createPrivatePhotoUpdate({ photoIds: ['photo-12'], botId: '888000_bot' }),
+      );
+      await service.handleUpdate(
+        createPrivateCallbackUpdate('pc2|suggestion_send', { botId: '888000_bot' }),
+      );
     } finally {
       imageMock.restore();
     }
@@ -3638,8 +3697,94 @@ describe('PrivateControlService', () => {
           expect.objectContaining({ payload: { token: 'upload-token-3' } }),
         ],
       }),
+      { mediaBotId: '888000_bot' },
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
+  });
+
+  it('rejects a migrated media draft before uploading through a different bot', async () => {
+    const { service, adminService, maxClient, redisCounter, channels } = createHarness();
+    const session = createDefaultPrivateControlSession();
+    session.pendingInput = {
+      kind: 'channel_suggestion',
+      chatId: channels[0].id,
+      token: 'cdt-suggest-token-mixed-bots',
+    };
+    session.suggestionDraft = {
+      chatId: channels[0].id,
+      token: 'cdt-suggest-token-mixed-bots',
+      text: '',
+      textFormat: 'plain',
+      textMarkup: [],
+      images: [
+        {
+          kind: 'image',
+          mimeType: 'image/png',
+          fileName: 'original.png',
+          payload: { token: 'source-bot-token' },
+        },
+      ],
+      video: null,
+      mediaBotId: '888000_bot',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      sourceMessageId: 'source-message',
+      previewMessageId: null,
+    };
+    await redisCounter.setStringWithTtl(
+      'private-ui:v2:user-1',
+      JSON.stringify(session),
+    );
+    const imageMock = mockImageFetch();
+
+    try {
+      await service.handleUpdate(createPrivatePhotoUpdate({ botId: '777000_bot' }));
+    } finally {
+      imageMock.restore();
+    }
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(adminService.createChannelSuggestionFromBot).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain(
+      'Медиа этой предложки загружено другим ботом',
+    );
+  });
+
+  it('rejects a migrated token draft before a cross-bot text edit can render its preview', async () => {
+    const { service, maxClient, redisCounter, channels } = createHarness();
+    const session = createDefaultPrivateControlSession();
+    session.pendingInput = {
+      kind: 'channel_suggestion',
+      chatId: channels[0].id,
+      token: 'cdt-suggest-token-migrated-text',
+    };
+    session.suggestionDraft = {
+      chatId: channels[0].id,
+      token: 'cdt-suggest-token-migrated-text',
+      text: '',
+      textFormat: 'plain',
+      textMarkup: [],
+      images: [],
+      video: {
+        kind: 'video',
+        mimeType: 'video/mp4',
+        fileName: 'source.mp4',
+        payload: { token: 'source-video-token' },
+      },
+      mediaBotId: '888000_bot',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      sourceMessageId: 'source-message',
+      previewMessageId: null,
+    };
+    await redisCounter.setStringWithTtl('private-ui:v2:user-1', JSON.stringify(session));
+
+    await service.handleUpdate(createPrivateTextUpdate('Новая подпись', { botId: '777000_bot' }));
+
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain('Медиа этой предложки загружено другим ботом');
   });
 
   it('uploads downloaded suggestion video through the incoming private bot', async () => {
@@ -3702,9 +3847,13 @@ describe('PrivateControlService', () => {
     });
 
     try {
-      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
-      await service.handleUpdate(createPrivateVideoUpdate());
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+      await service.handleBotStarted(
+        createBotStartedPrivateUpdate(startPayload, { botId: '888000_bot' }),
+      );
+      await service.handleUpdate(createPrivateVideoUpdate({ botId: '888000_bot' }));
+      await service.handleUpdate(
+        createPrivateCallbackUpdate('pc2|suggestion_send', { botId: '888000_bot' }),
+      );
     } finally {
       Object.defineProperty(global, 'fetch', {
         configurable: true,
@@ -3725,6 +3874,7 @@ describe('PrivateControlService', () => {
         mediaMimeType: 'video/mp4',
         mediaFileName: 'channel-suggestion-video.mp4',
       }),
+      { mediaBotId: '888000_bot' },
     );
     expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       '152517912',
@@ -3739,6 +3889,7 @@ describe('PrivateControlService', () => {
           }),
         ]),
       }),
+      { botId: '888000_bot' },
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
   });

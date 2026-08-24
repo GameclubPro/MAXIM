@@ -251,6 +251,24 @@ verify_local_route() {
   fi
 }
 
+verify_local_redirect() {
+  local host="$1"
+  local path="$2"
+  local expected_location="$3"
+  local route="${host}${path}"
+  local headers
+
+  if ! headers="$(read_local_headers "${host}" "${path}")"; then
+    record_local_smoke_failure "${route}" "request"
+    return 1
+  fi
+  assert_local_smoke_match "${route}" "status:308" \
+    '^HTTP/[0-9.]+ 308([[:space:]]|$)' "${headers}" || return 1
+  assert_local_smoke_match "${route}" "location:${expected_location}" \
+    "^location: ${expected_location}[[:space:]]*$" "${headers}" || return 1
+  assert_local_security_headers "${route}" "${headers}" || return 1
+}
+
 verify_local_nginx() {
   local host
   local hosts=("maxim.play-team.ru" "hook.maxim.play-team.ru")
@@ -263,6 +281,8 @@ verify_local_nginx() {
   done
 
   verify_local_route "maxim.play-team.ru" "/api/v1/system/metrics/queues" "" "admin" 0 || return 1
+  verify_local_redirect "maxim.play-team.ru" "/" "https://major-maksimov.ru/app/" || return 1
+  verify_local_redirect "maxim.play-team.ru" "/app/" "https://major-maksimov.ru/app/" || return 1
 }
 
 verify_local_nginx_with_retry() {
@@ -341,14 +361,15 @@ curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/syste
 curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/safety-desk/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/api/v1/support-requests/queue | grep -Ei '^HTTP/[0-9.]+ 404'
 
-if [[ "${MAXIM_VERIFY_LEGACY_PLAY_TEAM_APP:-0}" == "1" ]]; then
-  echo "Verifying legacy play-team app security headers..."
-  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/ | grep -i '^location: https://maxim.play-team.ru/app/'
-  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^strict-transport-security:'
-  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^x-content-type-options: nosniff'
-  curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/ | grep -i '^referrer-policy: strict-origin-when-cross-origin'
-else
-  echo "Skipping legacy play-team /app/ smoke. Set MAXIM_VERIFY_LEGACY_PLAY_TEAM_APP=1 to verify it explicitly."
-fi
+echo "Verifying legacy play-team app redirects to the canonical mini app..."
+legacy_root_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/)"
+grep -Ei '^HTTP/[0-9.]+ 308' <<<"$legacy_root_headers"
+grep -i '^location: https://major-maksimov.ru/app/' <<<"$legacy_root_headers"
+legacy_app_headers="$(curl -sS --max-time 15 -D - -o /dev/null https://maxim.play-team.ru/app/)"
+grep -Ei '^HTTP/[0-9.]+ 308' <<<"$legacy_app_headers"
+grep -i '^location: https://major-maksimov.ru/app/' <<<"$legacy_app_headers"
+grep -i '^strict-transport-security:' <<<"$legacy_app_headers"
+grep -i '^x-content-type-options: nosniff' <<<"$legacy_app_headers"
+grep -i '^referrer-policy: strict-origin-when-cross-origin' <<<"$legacy_app_headers"
 
 echo "Done: nginx config applied on ${HOST}"

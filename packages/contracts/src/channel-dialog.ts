@@ -240,6 +240,28 @@ export type ChannelDialogSuggestionReviewStatus = z.infer<
   typeof channelDialogSuggestionReviewStatusSchema
 >;
 
+export const channelSuggestionDeliveryStateSchema = /*#__PURE__*/ z.enum([
+  'queued',
+  'delivered',
+  'partially_delivered',
+  'no_reachable_editor',
+  'uncertain',
+]);
+export type ChannelSuggestionDeliveryState = z.infer<
+  typeof channelSuggestionDeliveryStateSchema
+>;
+
+export const channelSuggestionDeliverySummarySchema = /*#__PURE__*/ z.object({
+  state: channelSuggestionDeliveryStateSchema,
+  deliveredCount: z.number().int().min(0),
+  targetCount: z.number().int().min(0),
+  pendingCount: z.number().int().min(0),
+  unreachableCount: z.number().int().min(0),
+});
+export type ChannelSuggestionDeliverySummary = z.infer<
+  typeof channelSuggestionDeliverySummarySchema
+>;
+
 export const channelDialogAttachmentSchema = /*#__PURE__*/ z.object({
   kind: channelDialogAttachmentKindSchema,
   url: z.string().trim().url().nullable().default(null),
@@ -274,7 +296,7 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   canDelete: z.boolean().default(false),
   canDeleteAsAdmin: z.boolean().default(false),
   delivered: z.boolean().optional(),
-  deliveredToUserId: z.string().nullable().optional(),
+  suggestionDelivery: channelSuggestionDeliverySummarySchema.optional(),
   reviewStatus: channelDialogSuggestionReviewStatusSchema.optional(),
   publishedUrl: z.string().trim().max(2_048).nullable().optional(),
   hasImage: z.boolean().optional(),

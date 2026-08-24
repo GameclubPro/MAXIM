@@ -10,6 +10,10 @@ const adminConfig = readFileSync(
   new URL('../nginx/admin.major-maksimov.ru.conf', import.meta.url),
   'utf8',
 );
+const legacyConfig = readFileSync(
+  new URL('../nginx/maxim.play-team.ru.conf', import.meta.url),
+  'utf8',
+);
 const karavanSseLocations = readFileSync(
   new URL('../nginx/snippets/karavan-sse-locations.conf', import.meta.url),
   'utf8',
@@ -276,6 +280,13 @@ test('legacy apply keeps rollback state through localhost SNI security smokes fo
     assert.ok(legacyApplyScript.includes(`"${path}"`));
   }
   assert.ok(legacyApplyScript.includes('/api/v1/system/metrics/queues'));
+  assert.ok(
+    legacyApplyScript.includes(
+      'verify_local_redirect "maxim.play-team.ru" "/app/" "https://major-maksimov.ru/app/"',
+    ),
+  );
+  assert.ok(legacyApplyScript.includes("'^HTTP/[0-9.]+ 308([[:space:]]|$)'"));
+  assert.ok(legacyApplyScript.includes('"^location: ${expected_location}[[:space:]]*$"'));
   for (const path of [
     '/api/health/ready',
     '/api/v1/safety-desk/queue',
@@ -301,6 +312,18 @@ test('legacy apply keeps rollback state through localhost SNI security smokes fo
     commitIndex < remoteEndIndex,
     'local SNI smokes must pass before rollback context ends',
   );
+});
+
+test('legacy MAX app routes redirect to the canonical mini app without a retired static upstream', () => {
+  assert.match(
+    legacyConfig,
+    /location = \/app \{\s+return 308 https:\/\/major-maksimov\.ru\/app\/\$is_args\$args;\s+\}/u,
+  );
+  assert.match(
+    legacyConfig,
+    /location \/app\/ \{\s+return 308 https:\/\/major-maksimov\.ru\$request_uri;\s+\}/u,
+  );
+  assert.doesNotMatch(legacyConfig, /proxy_pass http:\/\/127\.0\.0\.1:3000/u);
 });
 
 test('legacy apply retries local smokes and rolls back every incomplete post-mutation path', () => {

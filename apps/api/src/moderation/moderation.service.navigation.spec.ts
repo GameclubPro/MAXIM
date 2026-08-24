@@ -2507,7 +2507,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('opens channel suggestion flow in private bot chat from channel callback', async () => {
+  it('preserves a mixed-case legacy channel suggestion payload from a channel callback', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn(),
@@ -2550,10 +2550,22 @@ describe('ModerationService', () => {
       dialogLinkService as never,
     );
 
-    await service.handleUpdate(createChannelSuggestionCallbackUpdate('cds-channel-1:token'));
+    const legacyPayload = `cd-${Buffer.from(
+      JSON.stringify({
+        v: 1,
+        k: 'channel-dialog',
+        c: 'channel-1',
+        m: 'suggest',
+        t: 'cdt-CaseSensitiveToken',
+      }),
+      'utf8',
+    ).toString('base64url')}`;
+    expect(legacyPayload).not.toBe(legacyPayload.toLowerCase());
+
+    await service.handleUpdate(createChannelSuggestionCallbackUpdate(legacyPayload));
 
     expect(dialogLinkService.parseChannelSuggestionStartPayload).toHaveBeenCalledWith(
-      'cds-channel-1:token',
+      legacyPayload,
     );
     expect(privateControlService.openChannelSuggestionFromCallback).toHaveBeenCalledWith({
       userId: 'user-1',

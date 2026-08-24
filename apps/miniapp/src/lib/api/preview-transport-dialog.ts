@@ -84,6 +84,7 @@ export function buildPreviewDialogMessage(payload: {
   reactionGroups?: ChannelDialogMessage['reactionGroups'];
   delivered?: boolean;
   deliveredToUserId?: string | null;
+  suggestionDelivery?: ChannelDialogMessage['suggestionDelivery'];
   reviewStatus?: ChannelDialogMessage['reviewStatus'];
   publishedUrl?: string | null;
   hasImage?: boolean;
@@ -110,6 +111,9 @@ export function buildPreviewDialogMessage(payload: {
     ...(payload.delivered !== undefined ? { delivered: payload.delivered } : {}),
     ...(payload.deliveredToUserId !== undefined
       ? { deliveredToUserId: payload.deliveredToUserId }
+      : {}),
+    ...(payload.suggestionDelivery !== undefined
+      ? { suggestionDelivery: payload.suggestionDelivery }
       : {}),
     ...(payload.reviewStatus !== undefined ? { reviewStatus: payload.reviewStatus } : {}),
     ...(payload.publishedUrl !== undefined ? { publishedUrl: payload.publishedUrl } : {}),

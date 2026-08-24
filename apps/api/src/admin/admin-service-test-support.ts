@@ -329,6 +329,12 @@ export function createPrismaMock() {
     if (typeof where.id === 'string' && row.id !== where.id) {
       return false;
     }
+    if (where.id && typeof where.id === 'object') {
+      const idFilter = where.id as { in?: string[] };
+      if (Array.isArray(idFilter.in) && !idFilter.in.includes(row.id)) {
+        return false;
+      }
+    }
     if (typeof where.auditLogId === 'string' && row.auditLogId !== where.auditLogId) {
       return false;
     }
@@ -349,6 +355,12 @@ export function createPrismaMock() {
       if (typeof statusFilter.not === 'string' && row.status === statusFilter.not) {
         return false;
       }
+    }
+    if (typeof where.terminal === 'boolean' && row.terminal !== where.terminal) {
+      return false;
+    }
+    if (typeof where.lastErrorCode === 'string' && row.lastErrorCode !== where.lastErrorCode) {
+      return false;
     }
     if ('lockToken' in where) {
       if (where.lockToken === null && row.lockToken !== null) {

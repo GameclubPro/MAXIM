@@ -8,6 +8,7 @@ import type {
   AdminChannelDialogMappingRuntimeContext,
   NormalizeChannelSuggestionImagesParams,
 } from './admin-channel-dialog-mapping-runtime-context';
+import { buildChannelSuggestionDeliverySummary } from './admin-channel-suggestion-delivery-summary';
 
 type ChannelDialogAuditLogRow = {
   id: string;
@@ -100,7 +101,6 @@ export class AdminChannelDialogMappingRuntime {
       this.readChannelDialogAttachmentAssets(payload.attachments),
     );
     const delivered = payload.delivered === true;
-    const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
     const reviewStatus = this.readChannelDialogSuggestionReviewStatus(payload.reviewStatus);
     const publishedUrl = this.readTrimmedString(payload.publishedUrl);
     const suggestionImages = this.normalizeChannelSuggestionImages({
@@ -168,7 +168,7 @@ export class AdminChannelDialogMappingRuntime {
       ...(type === 'suggest'
         ? {
             delivered,
-            deliveredToUserId: deliveredToUserId ?? null,
+            suggestionDelivery: buildChannelSuggestionDeliverySummary(payload),
             reviewStatus: reviewStatus ?? 'pending',
             publishedUrl: publishedUrl ?? null,
             textFormat,

@@ -116,6 +116,11 @@ import {
 } from './private-control.constants';
 import { extractPrivateControlUserErrorDetails } from './private-control-bad-request.util';
 import {
+  assertPrivateSuggestionMediaBot,
+  assertPrivateSuggestionMediaCaptureBot,
+  buildPrivateChannelSuggestionSubmissionPayload,
+} from './private-control-channel-suggestion';
+import {
   buildBroadcastComposerClientResetKey,
   normalizeBroadcastComposerClientResetValue,
   rememberBroadcastComposerClientReset,
@@ -1857,7 +1862,9 @@ export class PrivateControlService {
       return;
     }
 
-    await this.clearChannelSuggestionPreviewButtons(context.chatId, draft.previewMessageId);
+    const botId = this.resolvePrivateDeliveryBotId(context, session);
+    assertPrivateSuggestionMediaBot(draft, botId);
+    await this.clearChannelSuggestionPreviewButtons(context.chatId, draft.previewMessageId, botId);
     draft.previewMessageId = null;
     session.pendingInput = {
       kind: 'channel_suggestion',
@@ -1886,41 +1893,19 @@ export class PrivateControlService {
       return;
     }
 
-    await this.clearChannelSuggestionPreviewButtons(context.chatId, draft.previewMessageId);
+    const botId = this.resolvePrivateDeliveryBotId(context, session);
+    assertPrivateSuggestionMediaBot(draft, botId);
+    await this.clearChannelSuggestionPreviewButtons(context.chatId, draft.previewMessageId, botId);
     draft.previewMessageId = null;
 
     let result: Awaited<ReturnType<AdminService['createChannelSuggestionFromBot']>>;
     try {
-      result = await this.adminService.createChannelSuggestionFromBot(draft.chatId, context.actor, {
-        token: draft.token,
-        text: draft.text,
-        ...(draft.textMarkup.length > 0 ? { textMarkup: draft.textMarkup } : {}),
-        ...(draft.textMarkup.length === 0 && draft.textFormat === 'markdown'
-          ? { textFormat: draft.textFormat }
-          : {}),
-        ...(draft.images.length > 0
-          ? {
-              images: draft.images.map((image) => ({
-                payload: image.payload,
-                mimeType: image.mimeType || null,
-                fileName: image.fileName || null,
-              })),
-            }
-          : draft.video
-            ? {
-                mediaType: draft.video.kind,
-                mediaPayload: draft.video.payload,
-                mediaMimeType: draft.video.mimeType || null,
-                mediaFileName: draft.video.fileName || null,
-              }
-            : draft.imageBase64
-              ? {
-                  imageBase64: draft.imageBase64,
-                  imageMimeType: draft.imageMimeType || null,
-                  imageFileName: draft.imageFileName || null,
-                }
-              : {}),
-      });
+      result = await this.adminService.createChannelSuggestionFromBot(
+        draft.chatId,
+        context.actor,
+        buildPrivateChannelSuggestionSubmissionPayload(draft),
+        { mediaBotId: draft.mediaBotId },
+      );
     } catch (error: unknown) {
       await this.sendChannelSuggestionDraftPreview(context, session);
       throw error;
@@ -4360,6 +4345,13 @@ export class PrivateControlService {
         const previousVideo = previousDraft?.video ?? null;
         let nextImages = previousImages;
         let nextVideo = previousVideo;
+        let mediaBotId = previousDraft?.mediaBotId ?? null;
+        const currentMediaBotId = this.resolvePrivateDeliveryBotId(context, session) ?? null;
+        assertPrivateSuggestionMediaBot(previousDraft, currentMediaBotId);
+        assertPrivateSuggestionMediaCaptureBot(
+          Boolean(imageSourceAttachments.length || videoSourceAttachment),
+          currentMediaBotId,
+        );
 
         if (imageSourceAttachments.length > 0 && videoSourceAttachment) {
           throw new BadRequestException(
@@ -4368,6 +4360,7 @@ export class PrivateControlService {
         }
 
         if (videoSourceAttachment) {
+          mediaBotId = currentMediaBotId;
           nextVideo = await buildPrivateSuggestionMediaDraftFromVideo(
             videoSourceAttachment,
             this.buildPrivateControlMediaUploader(context, session),
@@ -4376,6 +4369,7 @@ export class PrivateControlService {
           nextImages = [];
         } else if (imageSourceAttachments.length > 0) {
           const baseImages = previousVideo ? [] : previousImages;
+          mediaBotId = currentMediaBotId;
           if (
             baseImages.length + imageSourceAttachments.length >
             MAX_CHANNEL_DIALOG_SUGGEST_IMAGES
@@ -4412,6 +4406,7 @@ export class PrivateControlService {
           textMarkup: nextTextPayload.textMarkup,
           images: nextImages,
           video: nextVideo,
+          mediaBotId,
           imageBase64:
             imageSourceAttachments.length > 0 || videoSourceAttachment
               ? ''
@@ -7813,10 +7808,10 @@ export class PrivateControlService {
     if (!draft) {
       throw new BadRequestException('Черновик предложки не найден.');
     }
-
+    const botId = this.resolvePrivateDeliveryBotId(context, session);
+    assertPrivateSuggestionMediaBot(draft, botId);
     const previousPreviewMessageId = draft.previewMessageId;
     draft.previewMessageId = null;
-    const botId = this.resolvePrivateDeliveryBotId(context, session);
     await this.clearChannelSuggestionPreviewButtons(
       context.chatId,
       previousPreviewMessageId,

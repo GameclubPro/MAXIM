@@ -748,6 +748,13 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
           createdAt: addHours(now, -1.4).toISOString(),
           delivered: false,
           deliveredToUserId: null,
+          suggestionDelivery: {
+            state: 'no_reachable_editor',
+            deliveredCount: 0,
+            targetCount: 2,
+            pendingCount: 0,
+            unreachableCount: 2,
+          },
           reviewStatus: 'pending',
           hasImage: true,
           imageFileName: 'market-evening.webp',

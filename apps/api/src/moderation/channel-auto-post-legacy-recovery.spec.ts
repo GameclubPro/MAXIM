@@ -259,6 +259,7 @@ describe('ChannelAutoPostLegacyRecovery', () => {
         source: 'poll',
         senderId: null,
         senderAdminVerified: false,
+        allowSenderlessEngagement: false,
         managedChannel: expect.objectContaining({
           channelSettings: expect.objectContaining({
             commentsEnabled: true,

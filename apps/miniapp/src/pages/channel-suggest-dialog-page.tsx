@@ -7,7 +7,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Attachment as IconoirAttachment,
   Bold as IconoirBold,
-  Camera as IconoirCamera,
   Code as IconoirCode,
   Italic as IconoirItalic,
   Link as IconoirLink,
@@ -15,14 +14,16 @@ import {
   Strikethrough as IconoirStrikethrough,
   Type as IconoirType,
   Underline as IconoirUnderline,
-  Xmark as IconoirXmark,
 } from 'iconoir-react';
 import {
+  Suspense,
+  lazy,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent as ReactChangeEvent,
+  type ComponentType,
   type FormEvent as ReactFormEvent,
 } from 'react';
 import { useParams, useSearchParams } from 'react-router';
@@ -30,7 +31,6 @@ import {
   MAX_MARKDOWN_TOOL_DEFINITIONS,
   type MaxMarkdownTool,
 } from '../components/max-markdown-editor';
-import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { PublicDialogUnavailableState } from '../components/public-dialog-unavailable-state';
 import {
   MaxRichTextEditor,
@@ -39,6 +39,14 @@ import {
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import type { ApiTransport } from '../lib/api/transport';
+import {
+  resolveSuggestionKeyboardLayout,
+  type SuggestionKeyboardViewportBaseline,
+} from '../lib/channel-suggestion-keyboard-layout';
+import {
+  createChannelSuggestionImagePreparationGuard,
+  type ChannelSuggestionImagePreparationGuard,
+} from '../lib/channel-suggestion-image-preparation';
 import { cn } from '../lib/cn';
 import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/dialog-api-error';
 import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments';
@@ -53,6 +61,59 @@ const MAX_SUGGEST_IMAGES = 10;
 const MAX_SUGGEST_IMAGE_BASE64_LENGTH = 8_000_000;
 const MAX_SUGGEST_ATTACHMENTS_TOTAL_BASE64 = 24_000_000;
 
+function LazySuggestionChunkLoadFailure() {
+  return (
+    <button
+      type="button"
+      className="button button--danger"
+      onClick={() => window.location.reload()}
+    >
+      Обновить
+    </button>
+  );
+}
+
+function lazySuggestionComponent<TProps>(
+  loader: () => Promise<{ default: ComponentType<TProps> }>,
+  exportName: string,
+  recoverAutomatically: boolean,
+) {
+  return lazy(async () => {
+    try {
+      return await loader();
+    } catch (cause) {
+      let reloading = false;
+      if (recoverAutomatically) {
+        try {
+          const recovery = await import('../lib/lazy-load-recovery');
+          reloading = recovery.reloadAfterLazyPageLoadFailure(exportName, cause);
+        } catch {
+          // Keep the explicit reload action available when the recovery chunk also failed.
+        }
+      }
+      if (reloading) {
+        await new Promise((resolve) => setTimeout(resolve, 4_000));
+      }
+
+      return { default: LazySuggestionChunkLoadFailure as ComponentType<TProps> };
+    }
+  });
+}
+
+const loadChannelSuggestionComposeImageGrid = () =>
+  import('../components/channel-suggestion-compose-image-grid');
+const LazyChannelSuggestionComposeImageGrid = lazySuggestionComponent(
+  loadChannelSuggestionComposeImageGrid,
+  'ChannelSuggestionComposeImageGrid',
+  false,
+);
+const loadChannelSuggestionHistory = () => import('../components/channel-suggestion-history');
+const LazyChannelSuggestionHistory = lazySuggestionComponent(
+  loadChannelSuggestionHistory,
+  'ChannelSuggestionHistory',
+  true,
+);
+
 type SuggestDraftAttachment = PreparedCommentDialogAttachment;
 
 type PreparingImageState = {
@@ -61,13 +122,6 @@ type PreparingImageState = {
 };
 
 type TerminalDialogErrorState = readonly [chatId: string, token: string, message: string];
-
-type SuggestionStatusPresentation = {
-  badge: string;
-  headline: string;
-  note: string;
-  tone: 'pending' | 'published' | 'cancelled';
-};
 
 type CreateChannelSuggestMessagePayload = {
   token: string;
@@ -123,18 +177,6 @@ function normalizeApiError(error: unknown): string {
   return normalized;
 }
 
-function formatMessageTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleTimeString('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 function calculateDraftAttachmentsBase64Length(attachments: SuggestDraftAttachment[]): number {
   return attachments.reduce((total, attachment) => total + attachment.base64.length, 0);
 }
@@ -174,91 +216,6 @@ function updateDialogMessage(
   };
 }
 
-function resolveSuggestionStatus(message: ChannelDialogMessage): SuggestionStatusPresentation {
-  if (message.reviewStatus === 'published') {
-    return {
-      badge: 'Опубликовано',
-      headline: 'Пост вышел в канале',
-      note: 'Редактор взял предложку в публикацию.',
-      tone: 'published',
-    };
-  }
-
-  if (message.reviewStatus === 'cancelled') {
-    return {
-      badge: 'Отклонено',
-      headline: 'Идея не ушла в публикацию',
-      note: 'Можно доработать и отправить заново.',
-      tone: 'cancelled',
-    };
-  }
-
-  if (message.delivered === false) {
-    return {
-      badge: 'Отправлено',
-      headline: 'Предложка отправлена',
-      note: 'Материал сохранён и ожидает обработки. Для правок или дополнений отправьте новую предложку.',
-      tone: 'pending',
-    };
-  }
-
-  return {
-    badge: 'На проверке',
-    headline: 'Материал ушёл редакторам',
-    note: 'Бот уже отправил предложку админам. Дополнения после отправки идут новой предложкой.',
-    tone: 'pending',
-  };
-}
-
-function resolveSuggestionText(message: ChannelDialogMessage): string {
-  const normalized = message.text.trim();
-  if (normalized) {
-    return normalized;
-  }
-
-  if (message.hasVideo && !message.hasImage) {
-    return 'Предложение отправлено только с видео.';
-  }
-
-  const imageCount = Math.max(
-    message.imageCount ?? 0,
-    message.imageFileNames?.length ?? 0,
-    message.imageFileName ? 1 : 0,
-  );
-  if (imageCount > 1) {
-    return `Предложение отправлено с ${imageCount} фото.`;
-  }
-
-  if (message.hasImage && !message.hasVideo) {
-    return 'Предложение отправлено только с фото.';
-  }
-
-  return 'Предложение отправлено только с медиа.';
-}
-
-function resolveSuggestionAttachmentLabel(message: ChannelDialogMessage): string {
-  if (message.hasVideo) {
-    const fileName = message.videoFileName?.trim();
-    return fileName ? `Видео · ${fileName}` : 'Видео приложено';
-  }
-
-  const imageCount = Math.max(
-    message.imageCount ?? 0,
-    message.imageFileNames?.length ?? 0,
-    message.imageFileName ? 1 : 0,
-  );
-  if (imageCount > 1) {
-    return `Фото · ${imageCount} шт.`;
-  }
-
-  const fileName = message.imageFileName?.trim();
-  return fileName ? `Фото · ${fileName}` : 'Фото приложено';
-}
-
-function getDraftImagePreviewUrl(attachment: SuggestDraftAttachment): string {
-  return attachment.previewUrl?.trim() || '';
-}
-
 function buildAttachmentSelectionSignature(files: File[]): string {
   return files
     .map((file) => [file.name, file.size, file.type, file.lastModified].join(':'))
@@ -282,82 +239,6 @@ function SuggestMarkdownToolIcon({ tool }: { tool: MaxMarkdownTool }) {
     case 'link':
       return <IconoirLink aria-hidden focusable="false" />;
   }
-}
-
-function SuggestComposeImageGrid({
-  attachments,
-  preparingCount = 0,
-  busy = false,
-  onRemove,
-}: {
-  attachments: SuggestDraftAttachment[];
-  preparingCount?: number;
-  busy?: boolean;
-  onRemove: (index: number) => void;
-}) {
-  const cappedPreparingCount = Math.max(
-    0,
-    Math.min(preparingCount, MAX_SUGGEST_IMAGES - attachments.length),
-  );
-
-  if (!attachments.length && cappedPreparingCount <= 0) {
-    return null;
-  }
-
-  const visibleCount = Math.min(attachments.length + cappedPreparingCount, MAX_SUGGEST_IMAGES);
-
-  return (
-    <div
-      className={cn(
-        'channel-suggest-composer__image-grid',
-        `is-count-${visibleCount}`,
-        busy && 'is-busy',
-      )}
-      role="list"
-      aria-label={`Фото: ${visibleCount}`}
-    >
-      {attachments.map((attachment, attachmentIndex) => {
-        const previewUrl = getDraftImagePreviewUrl(attachment);
-        const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
-
-        return (
-          <div
-            key={`${fileName}-${attachmentIndex}`}
-            className={cn('channel-suggest-composer__image-tile', busy && 'is-uploading')}
-            role="listitem"
-            aria-label={fileName}
-          >
-            {previewUrl ? (
-              <img src={previewUrl} alt={fileName} loading="lazy" />
-            ) : (
-              <IconoirCamera aria-hidden focusable="false" />
-            )}
-
-            <button
-              type="button"
-              className="channel-suggest-composer__image-remove"
-              onClick={() => onRemove(attachmentIndex)}
-              aria-label={`Убрать ${fileName}`}
-            >
-              <IconoirXmark aria-hidden focusable="false" />
-            </button>
-          </div>
-        );
-      })}
-      {Array.from({ length: cappedPreparingCount }, (_, index) => (
-        <div
-          key={`preparing-${index}`}
-          className="channel-suggest-composer__image-tile is-loading"
-          role="listitem"
-          aria-label="Готовим фото"
-        >
-          <span className="channel-suggest-composer__image-loader" aria-hidden>
-            <IconoirCamera aria-hidden focusable="false" />
-          </span>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function SuggestionRequirements({ text }: { text: string }) {
@@ -397,6 +278,10 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   const suggestBarRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
+  const suggestionKeyboardBaselineRef = useRef<SuggestionKeyboardViewportBaseline | null>(null);
+  const imagePreparationGuardRef = useRef<ChannelSuggestionImagePreparationGuard | null>(null);
+  imagePreparationGuardRef.current ??= createChannelSuggestionImagePreparationGuard();
+  const imagePreparationGuard = imagePreparationGuardRef.current;
   const attachmentInputWatchCleanupRef = useRef<(() => void) | null>(null);
   const lastHandledAttachmentSelectionRef = useRef<string | null>(null);
   const recentAttachmentSelectionRef = useRef<{ signature: string; handledAt: number } | null>(
@@ -456,6 +341,10 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     draftLength <= SUGGEST_DRAFT_MAX_LENGTH &&
     (draftLength > 0 || draftAttachments.length > 0);
   const suggestPreparingImageSlots = preparingImageState?.total ?? 0;
+  const suggestVisibleImageCount = Math.min(
+    draftAttachments.length + suggestPreparingImageSlots,
+    MAX_SUGGEST_IMAGES,
+  );
   const suggestPreparingImageLabel = preparingImageState
     ? `Готовим ${Math.min(preparingImageState.done + 1, preparingImageState.total)}/${preparingImageState.total}`
     : null;
@@ -471,6 +360,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
 
   useEffect(
     () => () => {
+      imagePreparationGuard.cancel();
       resetAttachmentPicker();
     },
     [],
@@ -500,7 +390,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       window.removeEventListener('resize', updateBarHeight);
       screen.style.removeProperty('--suggest-bar-height');
     };
-  }, [dialogQuery.data, dialogQuery.error, dialogQuery.isLoading]);
+  }, [dialogQuery.isSuccess]);
 
   const blurSuggestComposerFocus = () => {
     if (typeof document === 'undefined') {
@@ -508,16 +398,17 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     }
 
     const activeElement = document.activeElement;
-    if (!(activeElement instanceof HTMLElement)) {
-      return;
-    }
-
     const composer = suggestComposerRef.current;
     const bar = suggestBarRef.current;
-    if ((composer && composer.contains(activeElement)) || (bar && bar.contains(activeElement))) {
+    if (
+      activeElement instanceof HTMLElement &&
+      ((composer && composer.contains(activeElement)) || (bar && bar.contains(activeElement)))
+    ) {
       activeElement.blur();
     }
     screenRef.current?.classList.remove('is-suggest-editor-focused');
+    screenRef.current?.style.removeProperty('--suggest-keyboard-reserve');
+    suggestionKeyboardBaselineRef.current = null;
   };
 
   useLayoutEffect(() => {
@@ -525,9 +416,10 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       return undefined;
     }
 
+    const screen = screenRef.current;
     const viewport = scrollViewportRef.current;
     const composer = suggestComposerRef.current;
-    if (!viewport || !composer) {
+    if (!screen || !viewport || !composer) {
       return undefined;
     }
 
@@ -537,7 +429,10 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
 
     const isSuggestEditorTarget = (target: EventTarget | null): target is Element =>
       target instanceof Element &&
-      Boolean(target.closest('.channel-suggest-composer__field textarea'));
+      composer.contains(target) &&
+      Boolean(
+        target.closest('.max-rich-text-editor__surface, .max-rich-text-editor__link-panel input'),
+      );
 
     const readKeyboardOverlap = () => {
       const rawValue = window
@@ -547,17 +442,66 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       return Number.isFinite(value) ? Math.max(0, value) : 0;
     };
 
-    const setFocusedClass = (focused: boolean) => {
-      screenRef.current?.classList.toggle('is-suggest-editor-focused', focused);
-    };
-
     const getFocusedAnchor = (): HTMLElement => {
       const activeElement = document.activeElement;
       if (activeElement instanceof HTMLElement && composer.contains(activeElement)) {
-        return activeElement;
+        const linkPanel = activeElement.closest<HTMLElement>('.max-rich-text-editor__link-panel');
+        const editorSurface = activeElement.closest<HTMLElement>('.max-rich-text-editor__surface');
+        return linkPanel ?? editorSurface ?? activeElement;
       }
 
       return composer;
+    };
+
+    const readKeyboardLayout = () => {
+      const visualViewport = window.visualViewport;
+      const layoutHeight = window.innerHeight;
+      const visualHeight = visualViewport?.height ?? layoutHeight;
+      const baseline = suggestionKeyboardBaselineRef.current ?? {
+        layoutHeight,
+        visualHeight,
+      };
+      suggestionKeyboardBaselineRef.current = baseline;
+
+      return resolveSuggestionKeyboardLayout({
+        focused: isEditorFocused,
+        fallbackEligible:
+          document.documentElement.dataset.maxClient === 'native' ||
+          Math.min(window.innerWidth, visualViewport?.width ?? window.innerWidth) <= 640,
+        layoutHeight,
+        visualHeight,
+        visualOffsetTop: visualViewport?.offsetTop ?? 0,
+        containerBottom: screen.getBoundingClientRect().bottom,
+        keyboardOverlap: readKeyboardOverlap(),
+        baseline,
+      });
+    };
+
+    const syncKeyboardReserve = () => {
+      if (!isEditorFocused) {
+        screen.style.removeProperty('--suggest-keyboard-reserve');
+        return null;
+      }
+
+      const layout = readKeyboardLayout();
+      if (layout.barReservePx > 0) {
+        screen.style.setProperty('--suggest-keyboard-reserve', `${layout.barReservePx}px`);
+      } else {
+        screen.style.removeProperty('--suggest-keyboard-reserve');
+      }
+      return layout;
+    };
+
+    const setEditorFocused = (focused: boolean) => {
+      isEditorFocused = focused;
+      screen.classList.toggle('is-suggest-editor-focused', focused);
+      if (focused) {
+        syncKeyboardReserve();
+        return;
+      }
+
+      screen.style.removeProperty('--suggest-keyboard-reserve');
+      suggestionKeyboardBaselineRef.current = null;
     };
 
     const keepFocusedEditorVisible = (behavior: ScrollBehavior) => {
@@ -568,23 +512,12 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       const visualViewport = window.visualViewport;
       const viewportRect = viewport.getBoundingClientRect();
       const visualTop = visualViewport?.offsetTop ?? 0;
-      const visualHeight = visualViewport?.height ?? window.innerHeight;
-      const keyboardOverlap = readKeyboardOverlap();
-      const isMobileViewport =
-        Math.min(window.innerWidth, visualViewport?.width ?? window.innerWidth) <= 640;
-      const isNativeClient = document.documentElement.dataset.maxClient === 'native';
-      const fallbackKeyboardReserve =
-        keyboardOverlap < 120 && (isNativeClient || isMobileViewport)
-          ? Math.min(320, Math.max(180, Math.round(visualHeight * 0.42)))
-          : 0;
-      const keyboardBottom =
-        keyboardOverlap >= 120 ? window.innerHeight - keyboardOverlap : Infinity;
+      const keyboardLayout = syncKeyboardReserve();
+      if (!keyboardLayout) {
+        return;
+      }
       const visibleTop = Math.max(viewportRect.top, visualTop);
-      const visibleBottom = Math.min(
-        viewportRect.bottom,
-        visualTop + visualHeight - fallbackKeyboardReserve,
-        keyboardBottom,
-      );
+      const visibleBottom = Math.min(viewportRect.bottom, keyboardLayout.visibleBottomPx);
       const barTop = suggestBarRef.current?.getBoundingClientRect().top;
       const protectedBottom =
         typeof barTop === 'number' ? Math.min(visibleBottom, barTop - 12) : visibleBottom;
@@ -623,8 +556,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      isEditorFocused = true;
-      setFocusedClass(true);
+      setEditorFocused(true);
       scheduleSettlingPasses();
     };
 
@@ -633,11 +565,11 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      isEditorFocused = false;
-      setFocusedClass(false);
+      setEditorFocused(false);
     };
 
     const handleViewportChange = () => {
+      syncKeyboardReserve();
       scheduleKeepVisible('auto');
     };
 
@@ -648,9 +580,16 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     window.visualViewport?.addEventListener('resize', handleViewportChange);
     window.visualViewport?.addEventListener('scroll', handleViewportChange);
 
+    if (isSuggestEditorTarget(document.activeElement)) {
+      setEditorFocused(true);
+      scheduleSettlingPasses();
+    }
+
     return () => {
       window.cancelAnimationFrame(frameId);
-      setFocusedClass(false);
+      screen.classList.remove('is-suggest-editor-focused');
+      screen.style.removeProperty('--suggest-keyboard-reserve');
+      suggestionKeyboardBaselineRef.current = null;
       for (const timerId of timers) {
         window.clearTimeout(timerId);
       }
@@ -661,7 +600,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       window.visualViewport?.removeEventListener('resize', handleViewportChange);
       window.visualViewport?.removeEventListener('scroll', handleViewportChange);
     };
-  }, [dialogQuery.data, dialogQuery.error, dialogQuery.isLoading]);
+  }, [dialogQuery.isSuccess]);
 
   const appendDraftAttachments = (nextAttachments: SuggestDraftAttachment[]) => {
     if (nextAttachments.length === 0) {
@@ -726,38 +665,48 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
 
   const prepareDraftImagesFromFiles = async (files: File[]) => {
     if (files.length === 0) {
-      resetAttachmentPicker();
+      if (!imagePreparationGuard.isActive()) {
+        resetAttachmentPicker();
+      }
       return;
     }
 
-    const remainingSlots = Math.max(0, MAX_SUGGEST_IMAGES - draftAttachments.length);
-    if (remainingSlots <= 0) {
-      pushToast({
-        tone: 'info',
-        title: 'Больше фото не поместится',
-        description: `В одной предложке может быть до ${MAX_SUGGEST_IMAGES} фото.`,
-      });
-      resetAttachmentPicker();
+    const preparationRun = imagePreparationGuard.tryStart();
+    if (!preparationRun) {
       return;
     }
-
-    if (files.length > remainingSlots) {
-      pushToast({
-        tone: 'info',
-        title: `Добавим ${remainingSlots} фото`,
-        description:
-          remainingSlots === MAX_SUGGEST_IMAGES
-            ? `За один раз можно выбрать до ${MAX_SUGGEST_IMAGES} фото.`
-            : `Сейчас осталось места только для ${remainingSlots} фото.`,
-      });
-    }
-
-    const selectableFiles = files.slice(0, remainingSlots);
-    setPreparingImageState({ total: selectableFiles.length, done: 0 });
 
     try {
+      const remainingSlots = Math.max(0, MAX_SUGGEST_IMAGES - draftAttachments.length);
+      if (remainingSlots <= 0) {
+        pushToast({
+          tone: 'info',
+          title: 'Больше фото не поместится',
+          description: `В одной предложке может быть до ${MAX_SUGGEST_IMAGES} фото.`,
+        });
+        return;
+      }
+
+      if (files.length > remainingSlots) {
+        pushToast({
+          tone: 'info',
+          title: `Добавим ${remainingSlots} фото`,
+          description:
+            remainingSlots === MAX_SUGGEST_IMAGES
+              ? `За один раз можно выбрать до ${MAX_SUGGEST_IMAGES} фото.`
+              : `Сейчас осталось места только для ${remainingSlots} фото.`,
+        });
+      }
+
+      const selectableFiles = files.slice(0, remainingSlots);
+      setPreparingImageState({ total: selectableFiles.length, done: 0 });
+
       const { prepareSuggestionDialogImageAttachment, resolveSuggestionDialogImageMaxBytes } =
         await import('../lib/dialog-attachments');
+      if (!imagePreparationGuard.owns(preparationRun)) {
+        return;
+      }
+
       const prepared: SuggestDraftAttachment[] = [];
       let firstError: string | null = null;
       const suggestionImageMaxBytes = resolveSuggestionDialogImageMaxBytes(
@@ -766,23 +715,38 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       );
 
       for (const file of selectableFiles) {
+        if (!imagePreparationGuard.owns(preparationRun)) {
+          return;
+        }
+
         try {
-          prepared.push(
-            await prepareSuggestionDialogImageAttachment(file, {
-              maxBytes: suggestionImageMaxBytes,
-            }),
-          );
+          const attachment = await prepareSuggestionDialogImageAttachment(file, {
+            maxBytes: suggestionImageMaxBytes,
+          });
+          if (!imagePreparationGuard.owns(preparationRun)) {
+            return;
+          }
+          prepared.push(attachment);
         } catch (error: unknown) {
+          if (!imagePreparationGuard.owns(preparationRun)) {
+            return;
+          }
           if (!firstError && error instanceof Error && error.message.trim()) {
             firstError = error.message;
           } else if (!firstError) {
             firstError = 'Не удалось подготовить фото.';
           }
         } finally {
-          setPreparingImageState((current) =>
-            current ? { ...current, done: Math.min(current.total, current.done + 1) } : current,
-          );
+          if (imagePreparationGuard.owns(preparationRun)) {
+            setPreparingImageState((current) =>
+              current ? { ...current, done: Math.min(current.total, current.done + 1) } : current,
+            );
+          }
         }
+      }
+
+      if (!imagePreparationGuard.owns(preparationRun)) {
+        return;
       }
 
       if (prepared.length > 0) {
@@ -797,17 +761,21 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
         });
       }
     } catch (error: unknown) {
-      pushToast({
-        tone: 'danger',
-        title: 'Фото не добавлено',
-        description:
-          error instanceof Error && error.message.trim()
-            ? error.message
-            : 'Не удалось подготовить фото.',
-      });
+      if (imagePreparationGuard.owns(preparationRun)) {
+        pushToast({
+          tone: 'danger',
+          title: 'Фото не добавлено',
+          description:
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : 'Не удалось подготовить фото.',
+        });
+      }
     } finally {
-      resetAttachmentPicker();
-      setPreparingImageState(null);
+      if (imagePreparationGuard.finish(preparationRun)) {
+        resetAttachmentPicker();
+        setPreparingImageState(null);
+      }
     }
   };
 
@@ -928,27 +896,40 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'success',
         title: 'Готово',
-        description: 'Предложка отправлена.',
+        description: 'Предложка сохранена.',
       });
       setDraft('');
       setDraftAttachments([]);
       resetAttachmentPicker();
-      requestAnimationFrame(() => {
-        const viewport = scrollViewportRef.current;
-        viewport?.scrollTo({
-          top: viewport.scrollHeight,
-          behavior: 'smooth',
+      void loadChannelSuggestionHistory()
+        .catch(() => undefined)
+        .then(() => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const viewport = scrollViewportRef.current;
+              viewport?.scrollTo({
+                top: viewport.scrollHeight,
+                behavior: 'smooth',
+              });
+            });
+          });
         });
-      });
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
       });
     },
     onError: (error) => {
+      const message = normalizeApiError(error);
+      if (isTerminalDialogApiMessage(message)) {
+        setTerminalDialogErrorState([chatId, token, message]);
+        void queryClient.cancelQueries({ queryKey: dialogQueryKey });
+        return;
+      }
+
       pushToast({
         tone: 'danger',
         title: 'Ошибка',
-        description: normalizeApiError(error),
+        description: message,
       });
     },
   });
@@ -969,6 +950,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   const onSubmit = () => {
     const text = draft.trim();
     if (
+      imagePreparationGuard.isActive() ||
       isSubmitPending ||
       !chatId ||
       !token ||
@@ -978,6 +960,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    void loadChannelSuggestionHistory().catch(() => undefined);
     sendMutation.mutate({
       text,
       attachments: draftAttachments,
@@ -1057,7 +1040,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
             onPointerDownCapture={armImageInputWatcher}
             tabIndex={-1}
           />
-          <IconoirCamera aria-hidden focusable="false" />
+          <IconoirAttachment aria-hidden focusable="false" />
         </label>
       ) : (
         <>
@@ -1075,7 +1058,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
               openFileInputPicker(imageInputRef.current);
             }}
           >
-            <IconoirCamera aria-hidden focusable="false" />
+            <IconoirAttachment aria-hidden focusable="false" />
           </button>
           <input
             ref={imageInputRef}
@@ -1231,12 +1214,45 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
                   )}
                 >
                   <div className="channel-suggest-composer__bubble">
-                    <SuggestComposeImageGrid
-                      attachments={draftAttachments}
-                      preparingCount={suggestPreparingImageSlots}
-                      busy={isSubmitPending || suggestPreparingImageSlots > 0}
-                      onRemove={handleDraftAttachmentRemove}
-                    />
+                    {suggestVisibleImageCount > 0 ? (
+                      <Suspense
+                        fallback={
+                          <div
+                            className={cn(
+                              'channel-suggest-composer__image-grid',
+                              `is-count-${suggestVisibleImageCount}`,
+                              'is-busy',
+                            )}
+                            role="list"
+                            aria-label="Готовим фото"
+                            aria-busy="true"
+                          >
+                            {Array.from({ length: suggestVisibleImageCount }, (_, index) => (
+                              <div
+                                key={index}
+                                className="channel-suggest-composer__image-tile is-loading"
+                                role="listitem"
+                              >
+                                <span
+                                  className="channel-suggest-composer__image-loader"
+                                  aria-hidden
+                                >
+                                  <IconoirAttachment aria-hidden focusable="false" />
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        }
+                      >
+                        <LazyChannelSuggestionComposeImageGrid
+                          attachments={draftAttachments}
+                          preparingCount={suggestPreparingImageSlots}
+                          busy={isSubmitPending || suggestPreparingImageSlots > 0}
+                          maxImages={MAX_SUGGEST_IMAGES}
+                          onRemove={handleDraftAttachmentRemove}
+                        />
+                      </Suspense>
+                    ) : null}
 
                     <div className="channel-suggest-composer__field">
                       <MaxRichTextEditor
@@ -1248,6 +1264,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
                         disabled={isSubmitPending}
                         ariaLabel="Текст предложки"
                         className="channel-suggest-composer__rich-editor"
+                        onPasteFiles={prepareDraftImagesFromFiles}
                       />
                     </div>
 
@@ -1257,63 +1274,21 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
               </section>
 
               {messages.length ? (
-                <div className="channel-suggest-list channel-suggest-list--history">
-                  {messages.map((message) => {
-                    const status = resolveSuggestionStatus(message);
-                    const suggestionText = resolveSuggestionText(message);
-                    const hasSuggestionText = message.text.trim().length > 0;
-                    const hasMedia =
-                      message.hasImage ||
-                      message.hasVideo ||
-                      Boolean(message.imageFileName || message.videoFileName);
-
-                    return (
-                      <article
-                        key={message.id}
-                        className={cn('channel-suggest-card', `is-${status.tone}`)}
-                      >
-                        <div className="channel-suggest-card__head">
-                          <span className={cn('channel-suggest-status', `is-${status.tone}`)}>
-                            {status.badge}
-                          </span>
-                          <time dateTime={message.createdAt}>
-                            {formatMessageTime(message.createdAt)}
-                          </time>
+                <Suspense
+                  fallback={
+                    <div className="channel-dialog-skeletons" aria-label="Загрузка истории">
+                      <div className="channel-dialog-skeleton">
+                        <span className="channel-dialog-skeleton__avatar" />
+                        <div className="channel-dialog-skeleton__body">
+                          <span className="channel-dialog-skeleton__line is-short" />
+                          <span className="channel-dialog-skeleton__line" />
                         </div>
-
-                        <p className={cn(!hasSuggestionText && 'is-muted')}>
-                          {hasSuggestionText && message.textFormat === 'markdown' ? (
-                            <MaxMarkdownPreview
-                              value={message.text}
-                              preserveLinks
-                              fallback={suggestionText}
-                            />
-                          ) : (
-                            suggestionText
-                          )}
-                        </p>
-
-                        {hasMedia ? (
-                          <span className="channel-suggest-card__media">
-                            <IconoirAttachment aria-hidden focusable="false" />
-                            {resolveSuggestionAttachmentLabel(message)}
-                          </span>
-                        ) : null}
-
-                        {message.publishedUrl ? (
-                          <a
-                            className="channel-suggest-card__link"
-                            href={message.publishedUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Открыть
-                          </a>
-                        ) : null}
-                      </article>
-                    );
-                  })}
-                </div>
+                      </div>
+                    </div>
+                  }
+                >
+                  <LazyChannelSuggestionHistory messages={messages} />
+                </Suspense>
               ) : null}
             </div>
           ) : null}

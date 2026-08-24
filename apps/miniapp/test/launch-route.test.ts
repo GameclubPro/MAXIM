@@ -163,6 +163,62 @@ test('prefers a fresh URL public dialog over a stale dialog launcher in reused i
   );
 });
 
+test('prefers a direct token-bound suggestion route over stale reused launchers', () => {
+  const staleSignedLauncher = encodeDialogStartParam({
+    kind: 'channel-dialog',
+    chatId: 'stale-public-channel',
+    mode: 'suggest',
+    token: 'stale-public-dialog-token-123456',
+  });
+  const staleBridgeLauncher = encodeRouteStartParam('/chat/stale-admin-chat/settings');
+  assignWindow(
+    'https://major-maksimov.ru/app/channel/current-public-channel/dialog/suggest?token=current-public-dialog-token-123456',
+    {
+      MAX: {
+        WebApp: {
+          initDataUnsafe: {
+            start_param: staleBridgeLauncher,
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(
+    resolveLaunchRoute(
+      `query_id=test&start_param=${encodeURIComponent(staleSignedLauncher)}&hash=stale`,
+    ),
+    '/channel/current-public-channel/dialog/suggest?token=current-public-dialog-token-123456',
+  );
+  assert.equal(
+    resolveLaunchRoute('query_id=test&hash=ok'),
+    '/channel/current-public-channel/dialog/suggest?token=current-public-dialog-token-123456',
+  );
+});
+
+test('stateful resolver keeps a direct suggestion route until a newer launcher arrives', () => {
+  const staleSignedLauncher = encodeRouteStartParam('/chat/stale-admin-chat/settings');
+  const freshSignedLauncher = encodeDialogStartParam({
+    kind: 'channel-dialog',
+    chatId: 'fresh-public-channel',
+    mode: 'suggest',
+    token: 'fresh-public-dialog-token-123456',
+  });
+  assignWindow(
+    'https://major-maksimov.ru/app/channel/current-public-channel/dialog/suggest?token=current-public-dialog-token-123456',
+  );
+  const resolver = createLaunchRouteResolver();
+
+  assert.equal(
+    resolver(`query_id=test&start_param=${encodeURIComponent(staleSignedLauncher)}&hash=stale`),
+    '/channel/current-public-channel/dialog/suggest?token=current-public-dialog-token-123456',
+  );
+  assert.equal(
+    resolver(`query_id=test&start_param=${encodeURIComponent(freshSignedLauncher)}&hash=fresh`),
+    '/channel/fresh-public-channel/dialog/suggest?token=fresh-public-dialog-token-123456',
+  );
+});
+
 test('lets a late signed launcher replace the initial URL dialog without pinning later URLs', () => {
   const firstUrlDialogLauncher = encodeDialogStartParam({
     kind: 'chat-dialog',

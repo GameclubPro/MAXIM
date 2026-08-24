@@ -109,6 +109,43 @@ function readStartParamFromInitData(initData: string): string {
   return readSearchParam(initData, ['start_param', 'startParam', 'WebAppStartParam']);
 }
 
+function parseDirectChannelSuggestionRoute(pathname: string, search: string): string | null {
+  const match = pathname.match(/(?:^|\/)(channel\/([^/?#]+)\/dialog\/suggest)\/?$/u);
+  const chatId = readString(match?.[2]);
+  if (!match?.[1] || !chatId) {
+    return null;
+  }
+
+  const params = new URLSearchParams(search);
+  const tokens = params.getAll('token');
+  const token = readString(tokens[0]);
+  if (tokens.length !== 1 || token.length < 16 || token.length > 256) {
+    return null;
+  }
+
+  return `/${match[1]}?token=${encodeURIComponent(token)}`;
+}
+
+function readDirectChannelSuggestionRouteFromLocation(): string | null {
+  const hashRoute = window.location.hash.trim().replace(/^#/u, '');
+  if (hashRoute.startsWith('/')) {
+    try {
+      const parsedHashRoute = new URL(hashRoute, 'https://miniapp.local');
+      const directHashRoute = parseDirectChannelSuggestionRoute(
+        parsedHashRoute.pathname,
+        parsedHashRoute.search,
+      );
+      if (directHashRoute) {
+        return directHashRoute;
+      }
+    } catch {
+      // Fall through to the browser pathname.
+    }
+  }
+
+  return parseDirectChannelSuggestionRoute(window.location.pathname, window.location.search);
+}
+
 function decodeBase64Url(value: string): string {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
@@ -402,6 +439,11 @@ export function resolveLaunchRoute(
   const startParamFromLocation = readStartParamFromLocation();
   // MAX can reuse a WebView whose initData still contains the previous launcher. A dialog URL
   // carries its own API-verified token, so the button that produced the current URL wins.
+  const directSuggestionRoute = readDirectChannelSuggestionRouteFromLocation();
+  if (options.preferLocationDialog !== false && directSuggestionRoute) {
+    return directSuggestionRoute;
+  }
+
   const locationDialogLaunch = parseChannelDialogStartParam(startParamFromLocation);
   if (options.preferLocationDialog !== false && locationDialogLaunch) {
     return buildChannelDialogRoute(locationDialogLaunch);
@@ -431,14 +473,20 @@ export function resolveLaunchRoute(
 export function createLaunchRouteResolver(): (initData: string) => string | null {
   let hasResolved = false;
   let previousLocationStartParam = '';
+  let previousDirectSuggestionRoute = '';
   let previousLauncherStartParam = '';
   let preferLocationDialog = true;
 
   return (initData: string) => {
     const locationStartParam = readStartParamFromLocation();
+    const directSuggestionRoute = readDirectChannelSuggestionRouteFromLocation() ?? '';
     const launcherStartParam = readStartParamFromInitData(initData) || readStartParamFromBridge();
 
-    if (!hasResolved || locationStartParam !== previousLocationStartParam) {
+    if (
+      !hasResolved ||
+      locationStartParam !== previousLocationStartParam ||
+      directSuggestionRoute !== previousDirectSuggestionRoute
+    ) {
       preferLocationDialog = true;
     } else if (launcherStartParam !== previousLauncherStartParam) {
       // Once MAX supplies a newer launcher for the same document URL, do not let the URL fallback
@@ -448,6 +496,7 @@ export function createLaunchRouteResolver(): (initData: string) => string | null
 
     hasResolved = true;
     previousLocationStartParam = locationStartParam;
+    previousDirectSuggestionRoute = directSuggestionRoute;
     previousLauncherStartParam = launcherStartParam;
 
     return resolveLaunchRoute(initData, { preferLocationDialog });

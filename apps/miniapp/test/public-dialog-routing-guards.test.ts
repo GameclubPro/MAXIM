@@ -52,6 +52,13 @@ test('public dialog pages keep terminal failures in the public flow', () => {
   assert.match(unavailableStateSource, /Закрыть приложение/u);
 });
 
+test('terminal suggestion submit failures replace the composer with the relaunch flow', () => {
+  assert.match(
+    suggestDialogPageSource,
+    /onError: \(error\) => \{[\s\S]*?isTerminalDialogApiMessage\(message\)[\s\S]*?setTerminalDialogErrorState\(\[chatId, token, message\]\)[\s\S]*?cancelQueries\(\{ queryKey: dialogQueryKey \}\)[\s\S]*?return;/u,
+  );
+});
+
 test('suggestion dialog state is remounted for every chat and token pair', () => {
   assert.match(
     appSource,

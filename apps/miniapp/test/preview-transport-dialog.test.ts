@@ -47,3 +47,28 @@ test('preview channel comment threads stay isolated per token', async () => {
     false,
   );
 });
+
+test('preview suggestion history includes an unreachable-editor delivery state', async () => {
+  const api = createPreviewApiTransport();
+  const response = (await api.request(
+    '/channels/preview-channel/dialog/suggest?token=preview-suggest-token-0001',
+  )) as {
+    messages: Array<{
+      id: string;
+      suggestionDelivery?: {
+        state: string;
+        deliveredCount: number;
+        targetCount: number;
+      };
+    }>;
+  };
+  const unreachable = response.messages.find((message) => message.id === 'channel-suggest-3');
+
+  assert.deepEqual(unreachable?.suggestionDelivery, {
+    state: 'no_reachable_editor',
+    deliveredCount: 0,
+    targetCount: 2,
+    pendingCount: 0,
+    unreachableCount: 2,
+  });
+});

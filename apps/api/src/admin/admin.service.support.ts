@@ -319,6 +319,7 @@ export type ChannelSuggestionDeliveryInput = {
   mediaPayload?: Record<string, unknown> | null;
   mediaMimeType?: string | null;
   mediaFileName?: string | null;
+  mediaBotId?: string | null;
 };
 
 export type ModerationViolationRow = ModerationFeedReadModelRow;

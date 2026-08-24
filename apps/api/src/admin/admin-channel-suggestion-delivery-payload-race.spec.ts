@@ -115,15 +115,19 @@ describe('channel suggestion delivery payload races', () => {
   ])('patches delivery fields without overwriting $name', async ({ currentPayload, terminal }) => {
     const { prisma, service, syncReviewed } = createHarness();
     const returnedPayload = { ...currentPayload, ...deliveredResult };
-    prisma.$queryRaw.mockResolvedValueOnce([
-      {
-        id: 'suggestion-1',
-        chatId: 'channel-1',
-        actorUserId: 'user-1',
-        payload: returnedPayload,
-        createdAt: new Date('2026-08-21T09:00:00.000Z'),
-      },
-    ]);
+    prisma.$queryRaw.mockImplementation(async (query: unknown) =>
+      extractSqlText(query).includes('UPDATE audit_logs')
+        ? [
+            {
+              id: 'suggestion-1',
+              chatId: 'channel-1',
+              actorUserId: 'user-1',
+              payload: returnedPayload,
+              createdAt: new Date('2026-08-21T09:00:00.000Z'),
+            },
+          ]
+        : [],
+    );
 
     const result = await (service as any).applyChannelSuggestionDeliveryResult(
       {
@@ -136,7 +140,10 @@ describe('channel suggestion delivery payload races', () => {
       deliveredResult,
     );
 
-    const sql = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    const sql =
+      prisma.$queryRaw.mock.calls
+        .map((call) => extractSqlText(call[0]))
+        .find((text) => text.includes('audit.payload::jsonb')) ?? '';
     const patch = readJsonPatch(prisma.$queryRaw);
     expect(sql).toContain('audit.payload::jsonb');
     expect(sql).toContain('RETURNING');
@@ -251,6 +258,42 @@ describe('channel suggestion delivery payload races', () => {
       'suggestion-late-sent-1',
       'channel-1',
       expect.objectContaining({ reviewStatus: 'published', delivered: true }),
+    );
+  });
+
+  it('preserves the existing attempt cursor during observer-only ledger synchronization', async () => {
+    const { prisma, service } = createHarness();
+    await prisma.channelSuggestionAdminDelivery.createMany({
+      data: [
+        {
+          auditLogId: 'suggestion-observer-sync-1',
+          adminUserId: 'admin-1',
+          botKey: '__default__',
+          status: 'FAILED',
+          terminal: true,
+          lastStatusCode: 404,
+          lastErrorCode: 'suggestion.delivery.dialog_unavailable',
+        },
+      ],
+      skipDuplicates: true,
+    });
+    const apply = jest
+      .spyOn(service as any, 'applyChannelSuggestionDeliveryResult')
+      .mockResolvedValue(null);
+
+    await (service as any).syncChannelSuggestionLegacyDeliveryPayload({
+      id: 'suggestion-observer-sync-1',
+      actorUserId: 'user-1',
+      payload: {
+        ...stalePendingPayload,
+        deliveryAttemptedAt: '2026-08-21T10:00:00.000Z',
+      },
+      createdAt: new Date('2026-08-21T09:00:00.000Z'),
+    });
+
+    expect(apply).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'suggestion-observer-sync-1' }),
+      expect.objectContaining({ deliveryAttemptedAt: '2026-08-21T10:00:00.000Z' }),
     );
   });
 });

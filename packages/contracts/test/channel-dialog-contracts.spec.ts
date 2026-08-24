@@ -7,6 +7,7 @@ import {
 } from '@maxim/contracts';
 import {
   channelDialogMessageSchema,
+  channelSuggestionDeliverySummarySchema,
   createChannelDialogMessageRequestSchema,
   publishChannelEngagementRequestSchema,
 } from '@maxim/contracts/channel-dialog';
@@ -59,5 +60,47 @@ describe('channel dialog contract exports', () => {
         height: undefined,
       },
     ]);
+  });
+
+  it('exposes only aggregate suggestion delivery state', () => {
+    const result = channelSuggestionDeliverySummarySchema.parse({
+      state: 'partially_delivered',
+      deliveredCount: 1,
+      targetCount: 3,
+      pendingCount: 0,
+      unreachableCount: 2,
+      adminUserIds: ['private-admin-id'],
+      botId: 'private-route-bot',
+      error: 'dialog.not.found',
+    });
+
+    expect(result).toEqual({
+      state: 'partially_delivered',
+      deliveredCount: 1,
+      targetCount: 3,
+      pendingCount: 0,
+      unreachableCount: 2,
+    });
+
+    const message = channelDialogMessageSchema.parse({
+      id: 'suggestion-1',
+      type: 'suggest',
+      text: 'Идея',
+      authorUserId: 'author-1',
+      authorDisplayName: 'Автор',
+      isAdmin: false,
+      avatarUrl: null,
+      createdAt: '2026-08-24T10:00:00.000Z',
+      attachments: [],
+      reactionGroups: [],
+      canEdit: false,
+      canDelete: false,
+      canDeleteAsAdmin: false,
+      delivered: true,
+      deliveredToUserId: 'private-admin-id',
+      suggestionDelivery: result,
+    });
+
+    expect(message).not.toHaveProperty('deliveredToUserId');
   });
 });

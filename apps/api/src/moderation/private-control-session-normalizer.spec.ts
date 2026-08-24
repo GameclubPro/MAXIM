@@ -75,6 +75,7 @@ describe('private control session normalizer', () => {
       textMarkup: [],
       images: [],
       video: null,
+      mediaBotId: null,
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',

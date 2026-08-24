@@ -1370,8 +1370,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const rawCallbackPayload = extractMaxCallbackPayloadRaw(update);
       const callbackPayload = rawCallbackPayload?.toLowerCase() ?? null;
       const suggestionPayload =
-        callbackPayload && this.adminDialogLinkService
-          ? this.adminDialogLinkService.parseChannelSuggestionStartPayload(callbackPayload)
+        rawCallbackPayload && this.adminDialogLinkService
+          ? this.adminDialogLinkService.parseChannelSuggestionStartPayload(rawCallbackPayload)
           : null;
       if (callbackId && suggestionPayload && this.privateControlService) {
         const callbackUserId = extractMaxCallbackUserId(update) ?? senderId;
@@ -14700,6 +14700,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       source: 'webhook',
       senderId,
       senderAdminVerified,
+      allowSenderlessEngagement: true,
       sourceMessageAt: createdAt,
     });
     if (outcome !== 'in_progress') {
@@ -14927,6 +14928,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           senderAdminVerified:
             normalized.senderId !== null &&
             managedChannel.adminUserIds.includes(normalized.senderId),
+          allowSenderlessEngagement: true,
         }),
     });
   }
@@ -15074,6 +15076,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     source: 'webhook' | 'poll';
     senderId: string | null;
     senderAdminVerified: boolean;
+    allowSenderlessEngagement: boolean;
     sourceMessageAt?: string | null;
   }): Promise<ChannelAutoPostAttachOutcome> {
     const {
@@ -15089,10 +15092,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       sourceMessageAt,
     } = params;
     const normalizedSenderId = senderId?.trim() || null;
-    // FLAG: MAX channel posts are admin-only; ordinary edits rely on the fresh channel/edit route.
-    // When MAX omits sender metadata, only a signature may be repaired; engagement buttons still
-    // require an identified author. Forwarded replacements remain sender-verified because they
-    // also delete the original post.
+    // FLAG: Only fresh webhook/poll callers opt senderless ordinary edits into the live channel/edit
+    // guard. Legacy recovery stays out; forwards still require a verified admin sender to delete.
     if (linkType === 'forward' && (!normalizedSenderId || !senderAdminVerified)) {
       return 'skipped';
     }
@@ -15102,7 +15103,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const configuredButtonVisibility = resolveChannelAutoPostButtonVisibility(
       managedChannel.channelSettings,
     );
-    const buttonVisibility = normalizedSenderId
+    const senderlessEngagementAllowed =
+      !normalizedSenderId && linkType !== 'forward' && params.allowSenderlessEngagement;
+    const buttonVisibility = normalizedSenderId || senderlessEngagementAllowed
       ? configuredButtonVisibility
       : { includeCommentsButton: false, includeSuggestButton: false };
     const existingButtonKinds = new Set(params.existingDialogButtonKinds ?? []);
@@ -15111,7 +15114,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const includeSuggestButton =
       buttonVisibility.includeSuggestButton && !existingButtonKinds.has('suggest');
     const postSignatureEnabled = managedChannel.channelSettings.postSignatureEnabled === true;
-    if (!normalizedSenderId && !postSignatureEnabled) {
+    if (!normalizedSenderId && !senderlessEngagementAllowed && !postSignatureEnabled) {
       return 'skipped';
     }
     if (!includeCommentsButton && !includeSuggestButton && !postSignatureEnabled) {

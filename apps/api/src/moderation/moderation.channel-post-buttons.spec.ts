@@ -637,7 +637,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it('does not edit a channel post when MAX omits author metadata', async () => {
+  it('auto-attaches configured buttons to a senderless post through the fresh channel edit route', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       chat: {
@@ -667,7 +667,16 @@ describe('ModerationService channel auto post buttons', () => {
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      editMessageInlineKeyboard: jest.fn(
+        async (
+          _chatId: string,
+          _messageId: string,
+          _text: string,
+          options: { beforeEditMutation?: () => Promise<void> },
+        ) => {
+          await options.beforeEditMutation?.();
+        },
+      ),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
@@ -689,9 +698,107 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
+    configureDefaultChannelAutoPostEditRoute(service);
     await service.handleUpdate(createChannelPostUpdateWithoutSender());
 
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      botId: '777000_bot',
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+    });
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
+      botId: '777000_bot',
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+    });
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-no-sender-1',
+      'Новый пост без senderId',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              text: '📰 Предложить пост',
+            }),
+          ],
+        ],
+      }),
+      expectChannelAutoPostOptions({ botId: '777000_bot' }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: 'system',
+        payload: expect.objectContaining({
+          includeCommentsButton: false,
+          includeSuggestButton: true,
+        }),
+      }),
+    });
+  });
+
+  it('keeps senderless legacy recovery blocked before resolving an edit route', async () => {
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      auditLog: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      editMessageInlineKeyboard: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+    configureDefaultChannelAutoPostEditRoute(service);
+    const resolveMutationBot = jest.spyOn(service as any, 'resolveAutoAttachMutationBotId');
+
+    await expect(
+      (service as any).tryAutoAttachChannelMessageButtons({
+        chatId: 'channel-1',
+        messageId: 'mid-legacy-recovery-no-sender-1',
+        text: null,
+        textFormat: null,
+        linkType: null,
+        existingDialogButtonKinds: [],
+        existingDialogThreadId: null,
+        managedChannel: {
+          channelSettings: {
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+            postSignatureEnabled: false,
+          },
+          adminUserIds: ['admin-1'],
+        },
+        source: 'poll',
+        senderId: null,
+        senderAdminVerified: false,
+        allowSenderlessEngagement: false,
+      }),
+    ).resolves.toBe('skipped');
+
+    expect(resolveMutationBot).not.toHaveBeenCalled();
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
@@ -2267,7 +2374,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('repairs a signature when MAX omits sender metadata without adding engagement buttons', async () => {
+  it('repairs a signature and adds configured buttons when MAX omits sender metadata', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       chat: {
@@ -2328,9 +2435,11 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-channel-no-sender-1',
       'Новый пост без senderId\n\n<a href="https://max.ru/science">Наука и Факты</a>',
       expect.objectContaining({
-        buttons: [],
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [expect.objectContaining({ text: 'Предложить пост' })],
+        ],
         textFormat: 'html',
-        preserveExistingInlineKeyboard: true,
       }),
       expectChannelAutoPostOptions(),
     );
@@ -2340,8 +2449,8 @@ describe('ModerationService channel auto post buttons', () => {
         actorUserId: 'system',
         payload: expect.objectContaining({
           signatureApplied: true,
-          includeCommentsButton: false,
-          includeSuggestButton: false,
+          includeCommentsButton: true,
+          includeSuggestButton: true,
         }),
       }),
     });
@@ -3544,7 +3653,7 @@ describe('ModerationService channel auto post buttons', () => {
     });
   });
 
-  it('does not edit polled channel posts when MAX omits author metadata', async () => {
+  it('auto-attaches configured buttons to senderless posts from the normal poll scan', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
@@ -3611,10 +3720,36 @@ describe('ModerationService channel auto post buttons', () => {
       adminService as never,
     );
 
+    configureDefaultChannelAutoPostEditRoute(service);
     await (service as any).processChannelAutoPostButtons();
 
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
+      botId: '777000_bot',
+      bypassCache: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
+      timeoutMs: 2_000,
+    });
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-polled-unknown-author-1',
+      'Пост без sender metadata',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '📰 Предложить пост' })]],
+      }),
+      expectChannelAutoPostOptions({ botId: '777000_bot' }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: 'system',
+        payload: expect.objectContaining({
+          includeCommentsButton: false,
+          includeSuggestButton: true,
+          source: 'poll',
+        }),
+      }),
+    });
   });
 
   it('routes forwarded channel replacement and cleanup through a delete-capable bot', async () => {

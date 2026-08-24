@@ -42,6 +42,7 @@ export type ChannelAutoPostLegacyRecoveryAttachInput = {
   source: 'poll';
   senderId: null;
   senderAdminVerified: false;
+  allowSenderlessEngagement: false;
   requiredAuthorUserId: null;
 };
 
@@ -285,6 +286,7 @@ export class ChannelAutoPostLegacyRecovery {
             source: 'poll',
             senderId: null,
             senderAdminVerified: false,
+            allowSenderlessEngagement: false,
             requiredAuthorUserId: null,
           });
           if (outcome === 'skipped') {

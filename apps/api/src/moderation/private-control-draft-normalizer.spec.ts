@@ -196,6 +196,7 @@ describe('private control draft normalizer', () => {
         fileName: ' video.mp4 ',
         payload: { token: 'video-token' },
       },
+      mediaBotId: ' source-private-bot ',
       media: {
         kind: 'video',
         mimeType: 'video/legacy',
@@ -223,6 +224,7 @@ describe('private control draft normalizer', () => {
           fileName: 'video.mp4',
           payload: { token: 'video-token' },
         },
+        mediaBotId: 'source-private-bot',
         sourceMessageId: 'source',
         previewMessageId: 'preview',
       }),

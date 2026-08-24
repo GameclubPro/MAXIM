@@ -210,6 +210,10 @@ export function normalizePrivateSuggestionDraft(raw: unknown): PrivateSuggestion
     textMarkup,
     images: normalizedImages,
     video,
+    mediaBotId:
+      typeof row.mediaBotId === 'string' && row.mediaBotId.trim().length > 0
+        ? row.mediaBotId.trim()
+        : null,
     imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
     imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',
     imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',

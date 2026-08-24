@@ -76,6 +76,11 @@ import {
   toggleChatDialogReaction,
 } from '../lib/api/channel-dialog-client';
 import type { ApiTransport } from '../lib/api/transport';
+import {
+  resolveSuggestionKeyboardLayout,
+  type SuggestionKeyboardViewportBaseline,
+} from '../lib/channel-suggestion-keyboard-layout';
+import { resolveSuggestionStatus } from '../lib/channel-suggestion-status';
 import { cn } from '../lib/cn';
 import {
   formatDialogAttachmentSize,
@@ -476,42 +481,6 @@ function resolveMessageWidthTone(
   }
 
   return 'is-medium';
-}
-
-function resolveSuggestionStatus(message: ChannelDialogMessage): SuggestionStatusPresentation {
-  if (message.reviewStatus === 'published') {
-    return {
-      badge: 'Опубликовано',
-      headline: 'Пост вышел в канале',
-      note: 'Редактор взял предложку в публикацию.',
-      tone: 'published',
-    };
-  }
-
-  if (message.reviewStatus === 'cancelled') {
-    return {
-      badge: 'Отклонено',
-      headline: 'Идея не ушла в публикацию',
-      note: 'Можно доработать и отправить заново.',
-      tone: 'cancelled',
-    };
-  }
-
-  if (message.delivered === false) {
-    return {
-      badge: 'Отправлено',
-      headline: 'Предложка отправлена',
-      note: 'Материал сохранён и ожидает обработки. Для правок или дополнений отправьте новую предложку.',
-      tone: 'pending',
-    };
-  }
-
-  return {
-    badge: 'На проверке',
-    headline: 'Материал ушёл редакторам',
-    note: 'Бот уже отправил предложку админам. Дополнения после отправки идут новой предложкой.',
-    tone: 'pending',
-  };
 }
 
 function resolveSuggestionText(message: ChannelDialogMessage): string {
@@ -1374,13 +1343,6 @@ type TerminalDialogErrorState = {
   message: string;
 };
 
-type SuggestionStatusPresentation = {
-  badge: string;
-  headline: string;
-  note: string;
-  tone: 'pending' | 'published' | 'cancelled';
-};
-
 function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   if (dialogType === 'suggest') {
     return {
@@ -1441,6 +1403,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const suggestComposerRef = useRef<HTMLElement | null>(null);
+  const suggestBarRef = useRef<HTMLDivElement | null>(null);
+  const suggestionKeyboardBaselineRef = useRef<SuggestionKeyboardViewportBaseline | null>(null);
   const notificationToggleRef = useRef<HTMLButtonElement | null>(null);
   const imageViewerPanelRef = useRef<HTMLElement | null>(null);
   const imageViewerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -2784,7 +2748,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'success',
         title: 'Готово',
-        description: dialogType === 'suggest' ? 'Предложка отправлена.' : 'Комментарий отправлен.',
+        description: dialogType === 'suggest' ? 'Предложка сохранена.' : 'Комментарий отправлен.',
       });
       setDraft('');
       setReplyToMessageId(null);
@@ -3507,6 +3471,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       activeElement.blur();
     }
     screenRef.current?.classList.remove('is-suggest-editor-focused');
+    screenRef.current?.style.removeProperty('--suggest-keyboard-reserve');
+    suggestionKeyboardBaselineRef.current = null;
   };
 
   useLayoutEffect(() => {
@@ -3530,6 +3496,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     const isSuggestEditorTarget = (target: EventTarget | null): target is Element =>
       target instanceof Element &&
+      composer.contains(target) &&
       Boolean(
         target.closest(
           '.max-rich-text-editor__surface, .max-rich-text-editor__link-panel input, .channel-suggest-composer__field textarea',
@@ -3542,10 +3509,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         .getPropertyValue('--app-keyboard-overlap');
       const value = Number.parseFloat(rawValue);
       return Number.isFinite(value) ? Math.max(0, value) : 0;
-    };
-
-    const setFocusedClass = (focused: boolean) => {
-      screenRef.current?.classList.toggle('is-suggest-editor-focused', focused);
     };
 
     const getFocusedAnchor = (): HTMLElement => {
@@ -3561,6 +3524,58 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return composer;
     };
 
+    const readKeyboardLayout = () => {
+      const visualViewport = window.visualViewport;
+      const layoutHeight = window.innerHeight;
+      const visualHeight = visualViewport?.height ?? layoutHeight;
+      const baseline = suggestionKeyboardBaselineRef.current ?? {
+        layoutHeight,
+        visualHeight,
+      };
+      suggestionKeyboardBaselineRef.current = baseline;
+
+      return resolveSuggestionKeyboardLayout({
+        focused: isEditorFocused,
+        fallbackEligible:
+          document.documentElement.dataset.maxClient === 'native' ||
+          Math.min(window.innerWidth, visualViewport?.width ?? window.innerWidth) <= 640,
+        layoutHeight,
+        visualHeight,
+        visualOffsetTop: visualViewport?.offsetTop ?? 0,
+        containerBottom: screenRef.current?.getBoundingClientRect().bottom ?? layoutHeight,
+        keyboardOverlap: readKeyboardOverlap(),
+        baseline,
+      });
+    };
+
+    const syncKeyboardReserve = () => {
+      const screen = screenRef.current;
+      if (!screen || !isEditorFocused) {
+        screen?.style.removeProperty('--suggest-keyboard-reserve');
+        return null;
+      }
+
+      const layout = readKeyboardLayout();
+      if (layout.barReservePx > 0) {
+        screen.style.setProperty('--suggest-keyboard-reserve', `${layout.barReservePx}px`);
+      } else {
+        screen.style.removeProperty('--suggest-keyboard-reserve');
+      }
+      return layout;
+    };
+
+    const setEditorFocused = (focused: boolean) => {
+      isEditorFocused = focused;
+      screenRef.current?.classList.toggle('is-suggest-editor-focused', focused);
+      if (focused) {
+        syncKeyboardReserve();
+        return;
+      }
+
+      screenRef.current?.style.removeProperty('--suggest-keyboard-reserve');
+      suggestionKeyboardBaselineRef.current = null;
+    };
+
     const keepFocusedEditorVisible = (behavior: ScrollBehavior) => {
       if (!isEditorFocused) {
         return;
@@ -3569,25 +3584,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       const visualViewport = window.visualViewport;
       const viewportRect = viewport.getBoundingClientRect();
       const visualTop = visualViewport?.offsetTop ?? 0;
-      const visualHeight = visualViewport?.height ?? window.innerHeight;
-      const keyboardOverlap = readKeyboardOverlap();
-      const isMobileViewport =
-        Math.min(window.innerWidth, visualViewport?.width ?? window.innerWidth) <= 640;
-      const isNativeClient = document.documentElement.dataset.maxClient === 'native';
-      const fallbackKeyboardReserve =
-        keyboardOverlap < 120 && (isNativeClient || isMobileViewport)
-          ? Math.min(320, Math.max(180, Math.round(visualHeight * 0.42)))
-          : 0;
-      const keyboardBottom =
-        keyboardOverlap >= 120 ? window.innerHeight - keyboardOverlap : Infinity;
+      const keyboardLayout = syncKeyboardReserve();
+      if (!keyboardLayout) {
+        return;
+      }
       const visibleTop = Math.max(viewportRect.top, visualTop);
-      const visibleBottom = Math.min(
-        viewportRect.bottom,
-        visualTop + visualHeight - fallbackKeyboardReserve,
-        keyboardBottom,
-      );
+      const visibleBottom = Math.min(viewportRect.bottom, keyboardLayout.visibleBottomPx);
+      const barTop = suggestBarRef.current?.getBoundingClientRect().top;
+      const protectedBottom =
+        typeof barTop === 'number' ? Math.min(visibleBottom, barTop - 12) : visibleBottom;
       const targetRect = getFocusedAnchor().getBoundingClientRect();
-      const bottomGap = targetRect.bottom + 18 - visibleBottom;
+      const bottomGap = targetRect.bottom + 18 - protectedBottom;
 
       if (bottomGap > 1) {
         viewport.scrollBy({ top: Math.ceil(bottomGap), behavior });
@@ -3621,8 +3628,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      isEditorFocused = true;
-      setFocusedClass(true);
+      setEditorFocused(true);
       scheduleSettlingPasses();
     };
 
@@ -3632,11 +3638,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      isEditorFocused = false;
-      setFocusedClass(false);
+      setEditorFocused(false);
     };
 
     const handleViewportChange = () => {
+      syncKeyboardReserve();
       scheduleKeepVisible('auto');
     };
 
@@ -3647,9 +3653,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     window.visualViewport?.addEventListener('resize', handleViewportChange);
     window.visualViewport?.addEventListener('scroll', handleViewportChange);
 
+    if (isSuggestEditorTarget(document.activeElement)) {
+      setEditorFocused(true);
+      scheduleSettlingPasses();
+    }
+
     return () => {
       window.cancelAnimationFrame(frameId);
-      setFocusedClass(false);
+      screenRef.current?.classList.remove('is-suggest-editor-focused');
+      screenRef.current?.style.removeProperty('--suggest-keyboard-reserve');
+      suggestionKeyboardBaselineRef.current = null;
       for (const timerId of timers) {
         window.clearTimeout(timerId);
       }
@@ -3660,7 +3673,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       window.visualViewport?.removeEventListener('resize', handleViewportChange);
       window.visualViewport?.removeEventListener('scroll', handleViewportChange);
     };
-  }, [dialogQuery.data, dialogQuery.error, dialogQuery.isLoading, dialogType]);
+  }, [dialogQuery.isSuccess, dialogType]);
 
   if (terminalDialogError) {
     const sessionExpired = isSessionExpiredApiMessage(terminalDialogError);
@@ -3952,7 +3965,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       </div>
                     </div>
 
-                    <div className="channel-suggest-composer__bar">
+                    <div ref={suggestBarRef} className="channel-suggest-composer__bar">
                       {suggestImageControl}
 
                       <div
@@ -4052,6 +4065,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                 {resolveSuggestionAttachmentLabel(message)}
                               </span>
                             ) : null}
+
+                            <div className="channel-suggest-card__status-copy">
+                              <strong>{status.headline}</strong>
+                              <span>{status.note}</span>
+                            </div>
 
                             {message.publishedUrl ? (
                               <a
