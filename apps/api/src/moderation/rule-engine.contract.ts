@@ -1,5 +1,15 @@
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
 
+export type {
+  ProfanityCategory,
+  ProfanityDetectionDecision,
+  ProfanityEvidence,
+  ProfanityMatchKind,
+  ProfanityRolloutMode,
+  ProfanitySensitivity,
+  ProfanityViolationMetadata,
+} from './profanity/profanity.types';
+
 export type CommercialSubtype =
   | 'CHANNEL_PLACEMENT'
   | 'PROPERTY_AGENT'

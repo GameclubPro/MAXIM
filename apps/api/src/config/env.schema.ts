@@ -312,6 +312,7 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(3_600_000),
+  PROFANITY_V2_ROLLOUT_MODE: z.enum(['on', 'legacy']).default('on'),
   PHOTO_DUPLICATE_ROLLOUT_MODE: z.enum(PHOTO_DUPLICATE_ROLLOUT_MODES).default('shadow'),
   PHOTO_DUPLICATE_ENFORCEMENT_CHAT_IDS: photoDuplicateExactChatIdsSchema.default(''),
   PHOTO_DUPLICATE_ADVANCED_CANARY_CHAT_IDS: photoDuplicateExactChatIdsSchema.default(''),

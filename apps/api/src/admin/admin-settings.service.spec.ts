@@ -1021,6 +1021,33 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
+  it('preserves profanity sensitivity when a stale client omits the new field', async () => {
+    const { prisma, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        profanitySensitivity: 'STRICT',
+      }),
+    });
+
+    await service.updateSettings('chat-1', user as never, {
+      antiSpamEnabled: false,
+    });
+
+    const upsert = prisma.chat.upsert.mock.calls[0]?.[0];
+    expect(upsert.update.settings.upsert.update).toEqual(
+      expect.objectContaining({
+        profanitySensitivity: 'STRICT',
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: {
+          source: 'miniapp',
+          settingKeys: ['antiSpamEnabled'],
+        },
+      }),
+    });
+  });
+
   it('preserves the storefront toggle when a stale client omits the new field', async () => {
     const { prisma, service } = createService({
       currentSettings: createPersistedChatSettings({
@@ -1593,6 +1620,38 @@ describe('AdminSettingsService chat rules', () => {
       requiredSubscriptionChannelIds: [],
     });
     expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(['chat-1', 'chat-2']);
+  });
+
+  it('preserves source profanity sensitivity for a stale full apply-to-all body', async () => {
+    const { prisma, service } = createService({
+      botAssignmentData: {
+        botId: 'bot-1',
+        primaryBotId: 'bot-1',
+      },
+      applyTargetChats: [
+        createChatSummary({ id: 'chat-1' }),
+        createChatSummary({ id: 'chat-2', title: 'Второй чат' }),
+      ],
+    });
+    const sourceSettings = chatSettingsSchema.parse({ profanitySensitivity: 'STRICT' });
+    jest.spyOn(service, 'getSettings').mockResolvedValue(sourceSettings);
+    const legacyBody = { ...chatSettingsSchema.parse({ antiSpamEnabled: false }) } as Record<
+      string,
+      unknown
+    >;
+    delete legacyBody.profanitySensitivity;
+
+    await service.applySettingsToAllChats('chat-1', user as never, legacyBody);
+
+    const targetSettingsUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'chat-2',
+    )?.[0];
+    expect(targetSettingsUpsert?.update.settings.upsert.update).toEqual(
+      expect.objectContaining({
+        antiSpamEnabled: false,
+        profanitySensitivity: 'STRICT',
+      }),
+    );
   });
 
   it('applies settings sections without routing through legacy section endpoint', async () => {

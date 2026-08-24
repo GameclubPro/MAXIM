@@ -355,6 +355,16 @@
     box-shadow: var(--shadow-xs);
   }
 
+  .settings-drilldown__panel--profanity
+    .settings-mode-segments
+    .segmented-control__item:is(.is-active, [aria-checked='true']),
+  html[data-max-theme='dark']
+    .settings-drilldown__panel--profanity
+    .settings-mode-segments
+    .segmented-control__item:is(.is-active, [aria-checked='true']) {
+    color: var(--text-primary);
+  }
+
   .settings-drilldown__panel--ladder .settings-section__collapse-inner {
     gap: 0;
   }

@@ -5729,6 +5729,86 @@ describe('ModerationService', () => {
     });
   });
 
+  it('deletes strict mild insults without bot messages or automatic escalation', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            profanityBotMessageEnabled: true,
+            profanityWarnEnabled: true,
+            profanityMuteEnabled: true,
+            profanityBanEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(4),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'PROFANITY',
+            score: 0.75,
+            reason: 'Detected targeted mild insult',
+            metadata: {
+              category: 'MILD_INSULT',
+              detectorVersion: 'profanity-v2',
+            },
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expect(prisma.violation.count).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'PROFANITY',
+        action: SanctionAction.NONE,
+        metadata: expect.not.objectContaining({
+          textFilterViolationCount24h: expect.any(Number),
+        }),
+      }),
+    });
+  });
+
   it('issues WARN on second text-filter violation in 24h when warning stage is enabled', async () => {
     const prisma = {
       chat: {
@@ -5780,6 +5860,14 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
+    expect(prisma.violation.count).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        ruleCode: 'PROFANITY',
+        score: { gte: 0.9 },
+      }),
+    });
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',

@@ -121,11 +121,13 @@
 - `GlobalSpammerIntelligenceService` owns observations, scoring, graph/reputation, decisions, diagnostics, and expiry. Active rows require future `expiresAt`; sanctions are gated by `evaluatePolicy` and active confirmed decisions.
 - Developer Super Ban uses `global_spammers` with `DEVELOPER_FORCED`, respects per-chat `deleteSpammersEnabled`, avoids synchronous global fanout, and lets later webhooks enforce in opted-in chats. Keep the Redis `global-spammer:developer-forced:*` fast path and warm-marker self-heal aligned with those rows.
 - Commercial detection lives under `src/moderation/commercial/`; scoring/policy changes update fixtures and benchmark while keeping `COMMERCIAL_AD` metadata explainable.
+- Profanity sensitivity uses structured `CORE_MAT`, `SEVERE_ABUSE`, and `MILD_INSULT` decisions. `PROFANITY_V2_ROLLOUT_MODE=legacy` is the temporary execution-time rollback switch; keep new-chat/default policy `BALANCED` and preserve category metadata.
 - Channel stats read rollups for membership/posts/views/reactions and only compact raw-post details. Do not block stats GET on MAX refresh; enqueue stale refresh and let the mini app request `includeActivityPreview=false` for first paint.
 - Managed giveaway prize labels are unique before persistence/publication; normalize repeated names into numbered slots.
 
 ## Bounded Operational Commands
 
+- Audit profanity and chat stop-word decisions with `npm run moderation:audit-profanity --workspace @maxim/api -- --since <iso> --until <iso> --limit <1..5000> --sample <0..100> --json`; text is omitted unless the reviewed `--include-sanitized-text` flag is present.
 - Preview expired global-spammer cleanup before deletion: `npm run spammers:archive-expired --workspace @maxim/api -- --dry-run --json`.
 - Audit commercial decisions locally with `npm run moderation:audit-commercial --workspace @maxim/api -- --since <iso> --until <iso> --limit <n>`.
 - On VPS, run the built commercial audit inside `api-admin` with `node apps/api/dist/apps/api/src/scripts/audit-commercial-filter.js` and explicit bounded `--since`, `--until`, and `--limit` arguments. Full-window audits must use `--limit all --page-size <1..5000>` so candidates and JSONL exports remain memory-bounded. Use `--current-only` for routine full-window production audits until the historical `COMMERCIAL_AD` lookup has a reviewed `(chat_id, message_id, created_at, id)` partial index.

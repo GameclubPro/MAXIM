@@ -238,6 +238,9 @@ import {
 } from './settings-page-state';
 import {
   DUPLICATE_DETECTION_LABELS,
+  PROFANITY_SENSITIVITY_HINTS,
+  PROFANITY_SENSITIVITY_LABELS,
+  PROFANITY_SENSITIVITY_OPTIONS,
   type DuplicateDetectionPreset,
   type NumericChatSettingKey,
   type StopWordsMode,
@@ -4322,6 +4325,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         draft?.profanityMuteEnabled,
       ].filter(Boolean).length
     : 0;
+  const profanitySensitivityLabel = draft
+    ? PROFANITY_SENSITIVITY_LABELS[draft.profanitySensitivity]
+    : PROFANITY_SENSITIVITY_LABELS.BALANCED;
   const textFiltersStagesEnabledCount = draft?.commercialAdsFilterEnabled
     ? [
         draft?.textFiltersBotMessageEnabled,
@@ -4409,7 +4415,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? `${requiredSubscriptionSelectedCount}`
         : '0';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
-    ? `${profanityStagesEnabledCount} действия из 4`
+    ? `${profanityStagesEnabledCount} действия из 4 · ${profanitySensitivityLabel.toLowerCase()}`
     : 'Выключено';
   const profanityFilterCardStatus = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4`
@@ -6607,14 +6613,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle text-filter-card">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">Фильтр мата</span>
+                            <span className="settings-native-toggle__title">
+                              Мат и оскорбления
+                            </span>
                             <button
                               type="button"
                               className={cn(
                                 'settings-info-button',
                                 openHintKey === 'textFiltersProfanity' && 'is-open',
                               )}
-                              aria-label="Пояснение для фильтра мата"
+                              aria-label="Пояснение для фильтра мата и оскорблений"
                               aria-controls="russian-profanity-filter-enabled-hint"
                               aria-expanded={openHintKey === 'textFiltersProfanity'}
                               onClick={() => toggleHint('textFiltersProfanity')}
@@ -6625,7 +6633,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить фильтр мата"
+                            aria-label="Включить фильтр мата и оскорблений"
                           >
                             <input
                               type="checkbox"
@@ -6649,13 +6657,28 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="russian-profanity-filter-enabled-hint"
                             className="settings-native-toggle__hint"
                           >
-                            Удаляет сообщения с матом и грубой лексикой на русском.
+                            {PROFANITY_SENSITIVITY_HINTS[draft.profanitySensitivity]}
                           </p>
                         ) : null}
                       </div>
 
                       {draft.russianProfanityFilterEnabled ? (
                         <>
+                          <div className="settings-native-toggle">
+                            <div className="settings-policy">
+                              <div className="settings-policy__label-row">
+                                <span className="field__label">Чувствительность</span>
+                              </div>
+                              <SegmentedControl
+                                value={draft.profanitySensitivity}
+                                options={PROFANITY_SENSITIVITY_OPTIONS}
+                                onChange={(value) => setFieldValue('profanitySensitivity', value)}
+                                className="settings-mode-segments"
+                                ariaLabel="Чувствительность фильтра мата и оскорблений"
+                              />
+                            </div>
+                          </div>
+
                           <div
                             className="settings-subsection-divider"
                             role="separator"

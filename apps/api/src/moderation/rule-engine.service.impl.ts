@@ -5,7 +5,24 @@ import { stripUrlsFromText } from '../common/url-text.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { CommercialAdDetector } from './commercial';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
-import { isExactProfanityVariant, isTargetedInsultVariant } from './profanity-lexicon';
+import {
+  resolveExactProfanityVariantFamily,
+  resolveTargetedInsultVariantFamily,
+} from './profanity-lexicon';
+import {
+  classifyProfanityVariant,
+  createProfanityDecision,
+  isProfanityCategoryEnabled,
+  resolveProfanityRolloutMode,
+  resolveProfanitySensitivity,
+} from './profanity/profanity-policy';
+import type {
+  ProfanityDetectionDecision,
+  ProfanityEvidence,
+  ProfanityMatchKind,
+  ProfanityRolloutMode,
+  ProfanitySensitivity,
+} from './profanity/profanity.types';
 import { RedisCounterService } from './redis-counter.service';
 import { createRuleDetectionContext } from './rule-engine-detection-context';
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
@@ -32,21 +49,41 @@ type ProfanityCandidate = {
   rawIndex?: number;
 };
 
+type ProfanityCorePattern = {
+  familyId: string;
+  pattern: RegExp;
+};
+
 // Keep regexes only for highly productive mat roots. Closed-form insults and slurs
 // should come from the exact lexicon so names/surnames with the same prefix do not match.
-const PROFANITY_CORE_TOKEN_PATTERNS = [
-  /^бля(?:[дт][а-я0-9]*)?$/u,
-  /^пизд[а-я0-9]*$/u,
-  /^(?:на|по|до|о|а|за|ни|вы|при|под|пере|раз|об)?ху(?:й|е|я|и|ю)[а-я0-9]*$/u,
-  /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?(?:[её]|йо|йе)б(?:а(?:л|ть|н|ш|ч)|е(?:т|шь|м|те)|у(?:т|ч|н)|и(?:сь|т|те)|л(?:ан|о|и)?|н(?:у|ут)|о(?:н|ны)|щ|уч)[а-я0-9]*$/u,
-  /^долбо(?:[её]б)[а-я0-9]*$/u,
+const PROFANITY_CORE_TOKEN_PATTERNS: readonly ProfanityCorePattern[] = [
+  { familyId: 'core:blyad', pattern: /^бля(?:[дт][а-я0-9]*)?$/u },
+  { familyId: 'core:pizd', pattern: /^пизд[а-я0-9]*$/u },
+  {
+    familyId: 'core:huy',
+    pattern: /^(?:на|по|до|о|а|за|ни|вы|при|под|пере|раз|об)?ху(?:й|е|я|и|ю)[а-я0-9]*$/u,
+  },
+  {
+    familyId: 'core:yeb',
+    pattern:
+      /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?(?:[её]|йо|йе)б(?:а(?:л|ть|н|ш|ч)|е(?:т|шь|м|те)|у(?:т|ч|н)|и(?:сь|т|те)|л(?:ан|о|и)?|н(?:у|ут)|о(?:н|ны)|щ|уч)[а-я0-9]*$/u,
+  },
+  { familyId: 'core:dolboyeb', pattern: /^долбо(?:[её]б)[а-я0-9]*$/u },
 ];
-const PROFANITY_LATIN_TOKEN_PATTERNS = [
-  /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
-  /^pizd[a-z0-9]*$/i,
-  /^(?:na|po|do|o|a|za|ni|vy|pri|pod|pere|raz|ob)?(?:h|x)(?:u|oo|y)(?:y|j|i|e|ya|yu)[a-z0-9]*$/i,
-  /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a(?:l|t|n|sh|ch)|e(?:t|sh|m|te)|u(?:t|ch|n)|i(?:s|t|te)|l(?:an|o|i)?|n(?:u|ut)|uch)[a-z0-9]*$/i,
-  /^dolboe+b[a-z0-9]*$/i,
+const PROFANITY_LATIN_TOKEN_PATTERNS: readonly ProfanityCorePattern[] = [
+  { familyId: 'core:blyad', pattern: /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i },
+  { familyId: 'core:pizd', pattern: /^pizd[a-z0-9]*$/i },
+  {
+    familyId: 'core:huy',
+    pattern:
+      /^(?:na|po|do|o|a|za|ni|vy|pri|pod|pere|raz|ob)?(?:h|x)(?:u|oo|y)(?:y|j|i|e|ya|yu)[a-z0-9]*$/i,
+  },
+  {
+    familyId: 'core:yeb',
+    pattern:
+      /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a(?:l|t|n|sh|ch)|e(?:t|sh|m|te)|u(?:t|ch|n)|i(?:s|t|te)|l(?:an|o|i)?|n(?:u|ut)|uch)[a-z0-9]*$/i,
+  },
+  { familyId: 'core:dolboyeb', pattern: /^dolboe+b[a-z0-9]*$/i },
 ];
 const PROFANITY_CANINE_FEMALE_FORMS = new Set([
   'сука',
@@ -858,10 +895,8 @@ const PROFANITY_HOSTILE_AFTER_TARGET_TOKENS = new Set([
   'пришла',
   'пришли',
 ]);
-const DUPLICATE_COMMAND_ONLY_PATTERN =
-  /^\s*\/[\p{L}\p{N}_]+(?:@[\p{L}\p{N}_]+)?\s*$/u;
-const DUPLICATE_START_WITH_PAYLOAD_PATTERN =
-  /^\s*\/start(?:@[\p{L}\p{N}_]+)?\s+(\S+)\s*$/iu;
+const DUPLICATE_COMMAND_ONLY_PATTERN = /^\s*\/[\p{L}\p{N}_]+(?:@[\p{L}\p{N}_]+)?\s*$/u;
+const DUPLICATE_START_WITH_PAYLOAD_PATTERN = /^\s*\/start(?:@[\p{L}\p{N}_]+)?\s+(\S+)\s*$/iu;
 const DUPLICATE_EXACT_MIN_SIGNAL_CHARACTERS = 2;
 const PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP: Record<string, string> = {
   ...MIXED_CHAR_MAP,
@@ -1027,11 +1062,29 @@ export class RuleEngineService {
     });
     markRuleEngineDetectStage(profile, 'normalize');
 
-    if (settings.russianProfanityFilterEnabled && this.hasProfanity(text)) {
+    const profanityRolloutMode = resolveProfanityRolloutMode();
+    const profanityDecision = settings.russianProfanityFilterEnabled
+      ? this.detectProfanity(
+          text,
+          profanityRolloutMode === 'legacy' ? 'STRICT' : resolveProfanitySensitivity(settings),
+          profanityRolloutMode,
+        )
+      : null;
+    if (profanityDecision) {
       violations.push({
         ruleCode: 'PROFANITY',
-        score: 0.95,
+        score: profanityDecision.score,
         reason: 'Detected profanity or abusive language pattern',
+        metadata: {
+          category: profanityDecision.category,
+          sensitivity: profanityDecision.sensitivity,
+          rolloutMode: profanityDecision.rolloutMode,
+          familyId: profanityDecision.familyId,
+          matchKind: profanityDecision.matchKind,
+          matchedVariant: profanityDecision.matchedVariant,
+          evidence: profanityDecision.evidence,
+          detectorVersion: profanityDecision.detectorVersion,
+        },
       });
     }
     markRuleEngineDetectStage(profile, 'profanity');
@@ -1251,10 +1304,15 @@ export class RuleEngineService {
     return this.commercialAdDetector.hasCommercialSpamMarkers(text);
   }
 
-  private hasProfanity(text: string): boolean {
+  private detectProfanity(
+    text: string,
+    sensitivity: ProfanitySensitivity,
+    rolloutMode: ProfanityRolloutMode = 'on',
+  ): ProfanityDetectionDecision | null {
     const normalizedContext = this.normalizeForDetection(stripUrlsFromText(text));
     const latinTargetContext = this.normalizeProfanityLatinContext(stripUrlsFromText(text));
     const candidates = this.extractProfanityCandidates(text);
+    let strongestDecision: ProfanityDetectionDecision | null = null;
     for (const candidate of candidates) {
       for (const normalizedCandidate of this.buildProfanityCyrillicCandidates(candidate.value)) {
         if (!normalizedCandidate || this.isProfanityException(normalizedCandidate)) {
@@ -1290,18 +1348,81 @@ export class RuleEngineService {
           continue;
         }
 
-        if (
-          this.isProfanityToken(normalizedCandidate) ||
-          isExactProfanityVariant(normalizedCandidate)
-        ) {
-          return true;
+        const coreFamilyId = this.resolveProfanityCoreFamily(
+          normalizedCandidate,
+          PROFANITY_CORE_TOKEN_PATTERNS,
+        );
+        if (coreFamilyId) {
+          return this.buildProfanityDecision({
+            candidate,
+            sensitivity,
+            rolloutMode,
+            familyId: coreFamilyId,
+            matchKind: 'CORE_PATTERN',
+            matchedVariant: normalizedCandidate,
+            targetContext: this.hasExplicitProfanityTargetContext(
+              normalizedCandidate,
+              normalizedContext,
+              candidate,
+            ),
+          });
         }
 
-        if (
-          isTargetedInsultVariant(normalizedCandidate) &&
-          this.matchesTargetedInsultContext(normalizedCandidate, normalizedContext, candidate)
-        ) {
-          return true;
+        const exactFamilyId = resolveExactProfanityVariantFamily(normalizedCandidate);
+        if (exactFamilyId) {
+          const decision = this.buildProfanityDecision({
+            candidate,
+            sensitivity,
+            rolloutMode,
+            familyId: exactFamilyId,
+            matchKind: 'EXACT_VARIANT',
+            matchedVariant: normalizedCandidate,
+            targetContext: this.hasExplicitProfanityTargetContext(
+              normalizedCandidate,
+              normalizedContext,
+              candidate,
+            ),
+          });
+          if (decision) {
+            strongestDecision = this.selectStrongerProfanityDecision(strongestDecision, decision);
+          }
+        }
+
+        const targetedFamilyId = resolveTargetedInsultVariantFamily(normalizedCandidate);
+        if (targetedFamilyId) {
+          const category = classifyProfanityVariant(normalizedCandidate, 'TARGETED_VARIANT');
+          const targetContext =
+            rolloutMode === 'legacy'
+              ? this.matchesTargetedInsultContext(
+                  normalizedCandidate,
+                  normalizedContext,
+                  candidate,
+                )
+              : category === 'MILD_INSULT'
+              ? this.hasExplicitProfanityTargetContext(
+                  normalizedCandidate,
+                  normalizedContext,
+                  candidate,
+                )
+              : this.matchesTargetedInsultContext(
+                  normalizedCandidate,
+                  normalizedContext,
+                  candidate,
+                );
+          if (targetContext) {
+            const decision = this.buildProfanityDecision({
+              candidate,
+              sensitivity,
+              rolloutMode,
+              familyId: targetedFamilyId,
+              matchKind: 'TARGETED_VARIANT',
+              matchedVariant: normalizedCandidate,
+              targetContext: true,
+            });
+            if (decision) {
+              strongestDecision = this.selectStrongerProfanityDecision(strongestDecision, decision);
+            }
+          }
         }
       }
 
@@ -1318,32 +1439,165 @@ export class RuleEngineService {
           continue;
         }
 
-        if (
-          normalizedLatinCandidate &&
-          isTargetedInsultVariant(normalizedLatinCandidate) &&
-          this.matchesTargetedInsultContext(normalizedLatinCandidate, latinTargetContext, candidate)
-        ) {
-          return true;
+        if (!normalizedLatinCandidate) {
+          continue;
         }
 
-        if (
-          normalizedLatinCandidate &&
-          PROFANITY_LATIN_TOKEN_PATTERNS.some((pattern) => pattern.test(normalizedLatinCandidate))
-        ) {
-          return true;
+        const latinCoreFamilyId = this.resolveProfanityCoreFamily(
+          normalizedLatinCandidate,
+          PROFANITY_LATIN_TOKEN_PATTERNS,
+        );
+        if (latinCoreFamilyId) {
+          return this.buildProfanityDecision({
+            candidate,
+            sensitivity,
+            rolloutMode,
+            familyId: latinCoreFamilyId,
+            matchKind: 'CORE_PATTERN',
+            matchedVariant: normalizedLatinCandidate,
+            targetContext: this.hasExplicitProfanityTargetContext(
+              normalizedLatinCandidate,
+              latinTargetContext,
+              candidate,
+            ),
+          });
+        }
+
+        const latinTargetedFamilyId = resolveTargetedInsultVariantFamily(normalizedLatinCandidate);
+        if (latinTargetedFamilyId) {
+          const category = classifyProfanityVariant(normalizedLatinCandidate, 'TARGETED_VARIANT');
+          const targetContext =
+            rolloutMode === 'legacy'
+              ? this.matchesTargetedInsultContext(
+                  normalizedLatinCandidate,
+                  latinTargetContext,
+                  candidate,
+                )
+              : category === 'MILD_INSULT'
+              ? this.hasExplicitProfanityTargetContext(
+                  normalizedLatinCandidate,
+                  latinTargetContext,
+                  candidate,
+                )
+              : this.matchesTargetedInsultContext(
+                  normalizedLatinCandidate,
+                  latinTargetContext,
+                  candidate,
+                );
+          if (targetContext) {
+            const decision = this.buildProfanityDecision({
+              candidate,
+              sensitivity,
+              rolloutMode,
+              familyId: latinTargetedFamilyId,
+              matchKind: 'TARGETED_VARIANT',
+              matchedVariant: normalizedLatinCandidate,
+              targetContext: true,
+            });
+            if (decision) {
+              strongestDecision = this.selectStrongerProfanityDecision(strongestDecision, decision);
+            }
+          }
         }
       }
     }
 
-    return false;
+    return strongestDecision;
   }
 
-  private isProfanityToken(token: string): boolean {
+  private selectStrongerProfanityDecision(
+    current: ProfanityDetectionDecision | null,
+    candidate: ProfanityDetectionDecision,
+  ): ProfanityDetectionDecision {
+    return !current || candidate.score > current.score ? candidate : current;
+  }
+
+  private resolveProfanityCoreFamily(
+    token: string,
+    patterns: readonly ProfanityCorePattern[],
+  ): string | null {
     if (!token) {
-      return false;
+      return null;
     }
 
-    return PROFANITY_CORE_TOKEN_PATTERNS.some((pattern) => pattern.test(token));
+    return patterns.find(({ pattern }) => pattern.test(token))?.familyId ?? null;
+  }
+
+  private buildProfanityDecision(params: {
+    candidate: ProfanityCandidate;
+    sensitivity: ProfanitySensitivity;
+    rolloutMode: ProfanityRolloutMode;
+    familyId: string;
+    matchKind: ProfanityMatchKind;
+    matchedVariant: string;
+    targetContext: boolean;
+  }): ProfanityDetectionDecision | null {
+    const category = classifyProfanityVariant(params.matchedVariant, params.matchKind);
+    if (category === 'MILD_INSULT' && params.rolloutMode !== 'legacy' && !params.targetContext) {
+      return null;
+    }
+    if (
+      !isProfanityCategoryEnabled(category, params.sensitivity, params.rolloutMode, params.familyId)
+    ) {
+      return null;
+    }
+
+    return createProfanityDecision({
+      category,
+      sensitivity: params.sensitivity,
+      rolloutMode: params.rolloutMode,
+      familyId: params.familyId,
+      matchKind: params.matchKind,
+      matchedVariant: params.matchedVariant,
+      evidence: this.buildProfanityEvidence(
+        params.candidate,
+        params.matchedVariant,
+        params.targetContext,
+      ),
+    });
+  }
+
+  private buildProfanityEvidence(
+    candidate: ProfanityCandidate,
+    matchedVariant: string,
+    targetContext: boolean,
+  ): ProfanityEvidence[] {
+    const evidence = new Set<ProfanityEvidence>();
+    const rawValue = candidate.rawValue ?? candidate.value;
+
+    if (candidate.joined) {
+      evidence.add('JOINED_FRAGMENTS');
+    }
+    if (/[а-яё]/iu.test(rawValue) && /[a-z]/iu.test(rawValue)) {
+      evidence.add('MIXED_SCRIPT');
+    }
+
+    const innerValue = rawValue.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    if (/[^\p{L}\p{N}]/u.test(innerValue) || /[0-9@!|$€₽¥]/u.test(rawValue)) {
+      evidence.add('CHAR_SUBSTITUTION');
+    }
+    if (/[a-z]/iu.test(matchedVariant) && !/[а-яё]/iu.test(matchedVariant)) {
+      evidence.add('LATIN_TRANSLITERATION');
+    }
+    if (targetContext) {
+      evidence.add('TARGET_CONTEXT');
+    }
+    if (evidence.size === 0) {
+      evidence.add('TOKEN');
+    }
+
+    return [...evidence];
+  }
+
+  private hasExplicitProfanityTargetContext(
+    token: string,
+    normalizedContext: string,
+    candidate: ProfanityCandidate,
+  ): boolean {
+    return this.matchesTargetedInsultContext(token, normalizedContext, {
+      ...candidate,
+      joined: false,
+    });
   }
 
   private isProfanityException(token: string): boolean {

@@ -85,6 +85,25 @@ describe('admin chat rules text format helpers', () => {
     );
   });
 
+  it.each([
+    ['CORE_ONLY', 'Пожалуйста, без мата.'],
+    ['BALANCED', 'Пожалуйста, без мата и грубой лексики.'],
+    ['STRICT', 'Пожалуйста, без мата, грубой лексики и оскорблений.'],
+  ] as const)('describes %s profanity sensitivity in published rules', (sensitivity, expected) => {
+    const settings = chatSettingsSchema.parse({
+      russianProfanityFilterEnabled: true,
+      profanitySensitivity: sensitivity,
+    });
+
+    expect(
+      buildRulesTextItemsFromSettings({
+        settings,
+        domains: [],
+        requiredSubscriptionChannels: [],
+      }),
+    ).toContain(expected);
+  });
+
   it('mentions repeated photos only when photo duplicate enforcement is active', () => {
     const baseSettings = chatSettingsSchema.parse({
       linkPolicy: 'ALERT_ONLY',

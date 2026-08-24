@@ -182,6 +182,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageLimitsBotButtonText: 'Открыть',
     messageLimitsBotButtons: [],
     russianProfanityFilterEnabled: true,
+    profanitySensitivity: 'BALANCED',
     commercialAdsFilterEnabled: false,
     commercialAdsSensitivity: 'BALANCED',
     commercialAdsWarnThreshold: 45,
@@ -492,9 +493,9 @@ describe('RuleEngineService', () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     let now = 10_000;
     dateNowSpy.mockImplementation(() => now);
-    jest.spyOn(service as any, 'hasProfanity').mockImplementation(() => {
+    jest.spyOn(service as any, 'detectProfanity').mockImplementation(() => {
       now += 3_400;
-      return false;
+      return null;
     });
 
     try {
@@ -955,7 +956,7 @@ describe('RuleEngineService', () => {
         chatId: 'chat-1',
         userId: 'u-1',
         text,
-        settings: buildSettings(),
+        settings: buildSettings({ profanitySensitivity: 'STRICT' }),
         domainAllowlist: [],
       });
 
@@ -1026,7 +1027,7 @@ describe('RuleEngineService', () => {
         chatId: 'chat-1',
         userId: 'u-1',
         text,
-        settings: buildSettings(),
+        settings: buildSettings({ profanitySensitivity: 'STRICT' }),
         domainAllowlist: [],
       });
 

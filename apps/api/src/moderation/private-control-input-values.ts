@@ -260,6 +260,9 @@ export function formatPrivateControlEnumValue(value: string): string {
   if (value === 'ALERT_ONLY') {
     return 'Только предупреждать';
   }
+  if (value === 'CORE_ONLY') {
+    return 'Только мат';
+  }
   if (value === 'BALANCED') {
     return 'Сбалансированный';
   }

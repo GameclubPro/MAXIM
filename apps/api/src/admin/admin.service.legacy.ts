@@ -7798,6 +7798,7 @@ export class AdminService implements OnModuleDestroy {
         this.isRequiredSubscriptionCurrentlyActiveForSettings(settings),
       scheduleReadinessRefresh: (params) =>
         this.scheduleApplySettingsToAllReadinessRefreshForSettings(params),
+      getCurrentSourceSettings: () => this.getSettings(sourceChatId, user),
     });
   }
 

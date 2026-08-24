@@ -33,6 +33,12 @@ type SettingsApplyReadinessRefresh = {
   requiredSubscriptionChannelIds: readonly string[];
 };
 
+function hasOwnSetting(value: unknown, key: keyof ChatSettings): boolean {
+  return Boolean(
+    value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, key),
+  );
+}
+
 function mergeBotSpeechMediaForKeys(
   current: ChatSettings['botSpeechMedia'] | undefined,
   source: ChatSettings['botSpeechMedia'],
@@ -94,13 +100,26 @@ export async function applySettingsToAllChats(params: {
   assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<ChatSettings | void>;
   isRequiredSubscriptionCurrentlyActive: (settings: ChatSettings) => boolean;
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
+  getCurrentSourceSettings?: () => Promise<
+    Pick<ChatSettings, 'profanitySensitivity'> | null
+  >;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
   const parsed = chatSettingsSchema.safeParse(params.body);
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }
-  let normalizedSettings = params.normalizeSettings(parsed.data);
+  const currentSourceSettings =
+    !hasOwnSetting(params.body, 'profanitySensitivity') && params.getCurrentSourceSettings
+      ? await params.getCurrentSourceSettings()
+      : null;
+  const parsedSettings = currentSourceSettings
+    ? {
+        ...parsed.data,
+        profanitySensitivity: currentSourceSettings.profanitySensitivity,
+      }
+    : parsed.data;
+  let normalizedSettings = params.normalizeSettings(parsedSettings);
 
   const targetOrSettingKeys = params.targetOrSettingKeys ?? {
     mode: 'all' as const,

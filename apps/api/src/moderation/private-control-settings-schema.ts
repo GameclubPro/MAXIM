@@ -104,6 +104,12 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
   ],
   profanityFilter: [
     { key: 'russianProfanityFilterEnabled', label: 'Включить фильтр', type: 'boolean' },
+    {
+      key: 'profanitySensitivity',
+      label: 'Чувствительность',
+      type: 'enum',
+      enumValues: ['CORE_ONLY', 'BALANCED', 'STRICT'],
+    },
     { key: 'profanityBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'profanityWarnEnabled', label: 'Выдавать предупреждение', type: 'boolean' },
     { key: 'profanityMuteEnabled', label: 'Выдавать мут', type: 'boolean' },
@@ -401,6 +407,7 @@ export const SECTION_CARD_FIELDS: Record<
   profanityFilter: {
     basic: [
       'russianProfanityFilterEnabled',
+      'profanitySensitivity',
       'profanityWarnEnabled',
       'profanityMuteEnabled',
       'profanityMuteDurationHours',

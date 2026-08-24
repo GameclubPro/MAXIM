@@ -52,6 +52,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy --config prisma.config.ts",
     "prisma:seed": "tsx prisma/seed.ts",
     "moderation:audit-commercial": "tsx src/scripts/audit-commercial-filter.ts",
+    "moderation:audit-profanity": "tsx src/scripts/audit-profanity-filter.ts",
     "moderation:commercial-audit-summary": "tsx src/scripts/commercial-audit-summary.ts",
     "moderation:validate-commercial-corpus": "tsx src/scripts/validate-commercial-corpus.ts",
     "moderation:replay-commercial-corpus": "tsx src/scripts/replay-commercial-corpus.ts",

@@ -67,6 +67,35 @@ test('shows blocked word from moderation metadata', () => {
   );
 });
 
+test('shows structured profanity categories and keeps the legacy fallback', () => {
+  const cases = [
+    ['PROFANITY_DELETE', 'CORE_MAT', 'Нецензурная лексика.'],
+    ['PROFANITY', 'SEVERE_ABUSE', 'Грубое оскорбление.'],
+    ['PROFANITY_DELETE', 'MILD_INSULT', 'Оскорбление по строгому режиму.'],
+  ] as const;
+
+  for (const [ruleCode, category, expected] of cases) {
+    assert.equal(
+      resolveModerationFeedReason({
+        ruleCode,
+        metadata: {
+          category,
+          reason: 'Detected profanity or abusive language pattern',
+        },
+      }),
+      expected,
+    );
+  }
+
+  assert.equal(
+    resolveModerationFeedReason({
+      ruleCode: 'PROFANITY_DELETE',
+      metadata: { reason: 'Detected profanity or abusive language pattern' },
+    }),
+    'Грубая лексика запрещена правилами чата.',
+  );
+});
+
 test('summarizes commercial ad evidence', () => {
   const reason = resolveModerationFeedReason({
     ruleCode: 'COMMERCIAL_AD_DELETE',

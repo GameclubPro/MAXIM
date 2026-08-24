@@ -414,6 +414,7 @@ function buildSettings(chatId: string): ChatSettings {
     messageLimitsBotButtonText: 'Открыть',
     messageLimitsBotButtons: [],
     russianProfanityFilterEnabled: true,
+    profanitySensitivity: 'BALANCED',
     commercialAdsFilterEnabled: false,
     commercialAdsSensitivity: 'BALANCED',
     commercialAdsWarnThreshold: 45,
@@ -567,6 +568,10 @@ describe('ChatContextCacheService', () => {
     });
     maxBotLinkService.resolveBotId.mockResolvedValue('777000_bot');
     maxBotLinkService.getContextOrDefaultBotId.mockReturnValue('777000_bot');
+  });
+
+  it('uses a cache payload version that includes profanity sensitivity', () => {
+    expect(ChatContextCacheService.cacheKey('chat-1')).toBe('chat:context:v3:chat-1');
   });
 
   it('disables Redis ready check on the pub/sub subscriber connection', () => {

@@ -16,6 +16,12 @@ const commercialSubtypeLabels: Record<string, string> = {
   GENERIC: 'рекламный оффер',
 };
 
+const profanityCategoryLabels: Record<string, string> = {
+  CORE_MAT: 'Нецензурная лексика.',
+  SEVERE_ABUSE: 'Грубое оскорбление.',
+  MILD_INSULT: 'Оскорбление по строгому режиму.',
+};
+
 const standaloneDeleteRuleCodes = new Set([
   'BOT_MESSAGE_AUTO_DELETE',
   'MANUAL_GROUP_CLOSE_DELETE',
@@ -45,6 +51,11 @@ function resolveStructuredReason(
   ruleCode: string,
   metadata: Record<string, unknown> | null,
 ): string | null {
+  if (ruleCode === 'PROFANITY') {
+    const category = readString(metadata?.category);
+    return category ? (profanityCategoryLabels[category] ?? null) : null;
+  }
+
   if (ruleCode === 'COMMERCIAL_AD') {
     return resolveCommercialReason(metadata);
   }

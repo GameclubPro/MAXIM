@@ -18,6 +18,10 @@ describe('admin settings section apply', () => {
     );
   });
 
+  it('applies profanity sensitivity with the profanity section', () => {
+    expect(SETTINGS_SECTION_KEYS.profanityFilter).toContain('profanitySensitivity');
+  });
+
   it('keeps the storefront section scoped to its toggles', () => {
     expect(SETTINGS_SECTION_KEYS.storefront).toEqual([
       'karavanStorefrontEnabled',

@@ -53,6 +53,25 @@ function buildVariantSet(families: readonly VariantFamily[]): Set<string> {
   return variants;
 }
 
+function buildVariantFamilyIndex(
+  families: readonly VariantFamily[],
+  prefix: 'exact' | 'targeted',
+): Map<string, string> {
+  const variants = new Map<string, string>();
+
+  families.forEach((family, index) => {
+    const anchor = family.stems[0] ?? family.exact?.[0] ?? `family-${index + 1}`;
+    const familyId = `${prefix}:${anchor}`;
+    for (const variant of buildVariantSet([family])) {
+      if (!variants.has(variant)) {
+        variants.set(variant, familyId);
+      }
+    }
+  });
+
+  return variants;
+}
+
 const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
   {
     stems: ['сук'],
@@ -1461,6 +1480,10 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
 
 const TARGETED_INSULT_VARIANT_FAMILIES: readonly VariantFamily[] = [
   {
+    stems: ['вален'],
+    suffixes: CYRILLIC_OK_SUFFIXES,
+  },
+  {
     stems: ['дурак'],
     suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
     exact: [
@@ -1676,6 +1699,10 @@ const TARGETED_INSULT_VARIANT_FAMILIES: readonly VariantFamily[] = [
     suffixes: CYRILLIC_HARD_FEM_A_SUFFIXES,
   },
   {
+    stems: ['valen'],
+    suffixes: LATIN_OK_SUFFIXES,
+  },
+  {
     stems: ['durak'],
     suffixes: LATIN_HARD_MASC_SUFFIXES,
     exact: ['dura', 'dury', 'durakami', 'durochka', 'durochku'],
@@ -1752,8 +1779,11 @@ const TARGETED_INSULT_VARIANT_FAMILIES: readonly VariantFamily[] = [
   },
 ];
 
-const EXACT_PROFANITY_VARIANTS = buildVariantSet(PROFANITY_VARIANT_FAMILIES);
-const TARGETED_INSULT_VARIANTS = buildVariantSet(TARGETED_INSULT_VARIANT_FAMILIES);
+const EXACT_PROFANITY_VARIANTS = buildVariantFamilyIndex(PROFANITY_VARIANT_FAMILIES, 'exact');
+const TARGETED_INSULT_VARIANTS = buildVariantFamilyIndex(
+  TARGETED_INSULT_VARIANT_FAMILIES,
+  'targeted',
+);
 
 export const PROFANITY_EXACT_VARIANT_COUNT = EXACT_PROFANITY_VARIANTS.size;
 export const TARGETED_INSULT_VARIANT_COUNT = TARGETED_INSULT_VARIANTS.size;
@@ -1762,6 +1792,14 @@ export function isExactProfanityVariant(value: string): boolean {
   return EXACT_PROFANITY_VARIANTS.has(value);
 }
 
+export function resolveExactProfanityVariantFamily(value: string): string | null {
+  return EXACT_PROFANITY_VARIANTS.get(value) ?? null;
+}
+
 export function isTargetedInsultVariant(value: string): boolean {
   return TARGETED_INSULT_VARIANTS.has(value);
+}
+
+export function resolveTargetedInsultVariantFamily(value: string): string | null {
+  return TARGETED_INSULT_VARIANTS.get(value) ?? null;
 }

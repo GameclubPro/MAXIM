@@ -52,6 +52,17 @@ describe('validateEnv boolean parsing', () => {
     ).toBe(false);
   });
 
+  it('keeps structured profanity policy on with an explicit legacy kill switch', () => {
+    expect(validateEnv(createValidEnv()).PROFANITY_V2_ROLLOUT_MODE).toBe('on');
+    expect(
+      validateEnv(createValidEnv({ PROFANITY_V2_ROLLOUT_MODE: 'legacy' }))
+        .PROFANITY_V2_ROLLOUT_MODE,
+    ).toBe('legacy');
+    expect(() => validateEnv(createValidEnv({ PROFANITY_V2_ROLLOUT_MODE: 'shadow' }))).toThrow(
+      /PROFANITY_V2_ROLLOUT_MODE/u,
+    );
+  });
+
   it('retains the server-side Safety Desk access code', () => {
     expect(
       validateEnv(createValidEnv({ ADMIN_ACCESS_CODE: 'server-admin-code' })).ADMIN_ACCESS_CODE,

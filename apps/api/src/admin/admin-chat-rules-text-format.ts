@@ -6,6 +6,7 @@ import type {
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 
+import { resolvePublishedProfanityRuleText } from '../moderation/profanity/profanity-copy';
 import { isRequiredSubscriptionCurrentlyActive } from './admin-chat-settings';
 
 export function buildRulesTextFromSettings(input: {
@@ -71,7 +72,7 @@ export function buildRulesTextItemsFromSettings(input: {
   }
 
   if (settings.russianProfanityFilterEnabled) {
-    items.push('Пожалуйста, без мата и грубой лексики.');
+    items.push(resolvePublishedProfanityRuleText(settings.profanitySensitivity));
   }
 
   if (settings.commercialAdsFilterEnabled) {

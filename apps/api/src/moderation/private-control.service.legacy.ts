@@ -115,6 +115,7 @@ import {
   SUPPORT_CHAT_URL,
 } from './private-control.constants';
 import { extractPrivateControlUserErrorDetails } from './private-control-bad-request.util';
+import { resolvePublishedProfanityRuleText } from './profanity/profanity-copy';
 import {
   assertPrivateSuggestionMediaBot,
   assertPrivateSuggestionMediaCaptureBot,
@@ -6005,7 +6006,7 @@ export class PrivateControlService {
     }
 
     if (settings.russianProfanityFilterEnabled) {
-      items.push('Пожалуйста, без мата и грубой лексики.');
+      items.push(resolvePublishedProfanityRuleText(settings.profanitySensitivity));
     }
 
     if (settings.commercialAdsFilterEnabled) {
@@ -7234,7 +7235,7 @@ export class PrivateControlService {
         ];
       case 'profanityFilter':
         return [
-          `Фильтр: ${this.describeBooleanCompact(settings.russianProfanityFilterEnabled)}`,
+          `Фильтр: ${this.describeBooleanCompact(settings.russianProfanityFilterEnabled)} • чувствительность ${formatPrivateControlEnumValue(settings.profanitySensitivity)}`,
           `Санкции: WARN ${this.describeBooleanCompact(settings.profanityWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.profanityMuteEnabled)} (${settings.profanityMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.profanityBanEnabled)}`,
           `Сообщение бота: ${this.describeBooleanCompact(settings.profanityBotMessageEnabled)}`,
         ];

@@ -746,6 +746,7 @@ export async function saveChatSettings(params: {
       duplicatePhotoEnabled: true,
       duplicatePhotoMatchPreset: true,
       duplicatePhotoScope: true,
+      profanitySensitivity: true,
       nightModeForceCloseEnabled: true,
       nightModeForceCloseForever: true,
       nightModeForceCloseHours: true,
@@ -766,11 +767,13 @@ export async function saveChatSettings(params: {
     duplicatePhotoScope: hasOwnSetting(params.body, 'duplicatePhotoScope')
       ? parsed.data.duplicatePhotoScope
       : (currentSettings?.duplicatePhotoScope ?? parsed.data.duplicatePhotoScope),
+    // Older clients omit settings introduced after their bundled contract.
+    profanitySensitivity: hasOwnSetting(params.body, 'profanitySensitivity')
+      ? parsed.data.profanitySensitivity
+      : (currentSettings?.profanitySensitivity ?? parsed.data.profanitySensitivity),
     karavanStorefrontEnabled: hasOwnSetting(params.body, 'karavanStorefrontEnabled')
       ? parsed.data.karavanStorefrontEnabled
       : (currentSettings?.karavanStorefrontEnabled ?? parsed.data.karavanStorefrontEnabled),
-    // Older Mini App clients send a complete settings object without the new
-    // field. Preserve the stored value instead of silently resetting policy.
     karavanStorefrontAdminsOnly: hasOwnSetting(params.body, 'karavanStorefrontAdminsOnly')
       ? parsed.data.karavanStorefrontAdminsOnly
       : (currentSettings?.karavanStorefrontAdminsOnly ?? parsed.data.karavanStorefrontAdminsOnly),

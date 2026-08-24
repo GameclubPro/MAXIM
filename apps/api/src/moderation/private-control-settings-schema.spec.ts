@@ -92,6 +92,19 @@ describe('private control settings schema', () => {
     );
   });
 
+  it('exposes profanity sensitivity as a basic enum control', () => {
+    expect(
+      SECTION_FIELDS.profanityFilter.find((field) => field.key === 'profanitySensitivity'),
+    ).toEqual(
+      expect.objectContaining({
+        label: 'Чувствительность',
+        type: 'enum',
+        enumValues: ['CORE_ONLY', 'BALANCED', 'STRICT'],
+      }),
+    );
+    expect(SECTION_CARD_FIELDS.profanityFilter.basic).toContain('profanitySensitivity');
+  });
+
   it('keeps channel section fields aligned with labels', () => {
     expect(Object.keys(CHANNEL_SECTION_LABELS).sort()).toEqual(
       Object.keys(CHANNEL_SECTION_FIELDS).sort(),

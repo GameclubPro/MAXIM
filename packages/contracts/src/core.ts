@@ -68,6 +68,8 @@ export const sanctionActionSchema = z.enum([
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
+export const profanitySensitivitySchema = z.enum(['CORE_ONLY', 'BALANCED', 'STRICT']);
+export type ProfanitySensitivity = z.infer<typeof profanitySensitivitySchema>;
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const applySettingsSectionSchema = z.enum([
   'links',
@@ -777,6 +779,7 @@ export const chatSettingsSchema = z
         .max(MAX_BROADCAST_LINK_BUTTONS)
         .default([]),
       russianProfanityFilterEnabled: z.boolean().default(false),
+      profanitySensitivity: profanitySensitivitySchema.default('BALANCED'),
       commercialAdsFilterEnabled: z.boolean().default(false),
       commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
       commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),

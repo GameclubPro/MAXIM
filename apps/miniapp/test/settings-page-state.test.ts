@@ -249,6 +249,23 @@ test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections'
   );
 });
 
+test('profanity section saves and applies sensitivity with the rest of the filter', () => {
+  assert.ok(SECTION_SETTING_KEYS.profanityFilter.includes('profanitySensitivity'));
+
+  const current = createSettings({
+    profanitySensitivity: 'BALANCED',
+    commercialAdsSensitivity: 'BALANCED',
+  });
+  const saved = createSettings({
+    profanitySensitivity: 'STRICT',
+    commercialAdsSensitivity: 'STRICT',
+  });
+  const merged = mergeSectionSettings(current, saved, 'profanityFilter');
+
+  assert.equal(merged.profanitySensitivity, 'STRICT');
+  assert.equal(merged.commercialAdsSensitivity, 'BALANCED');
+});
+
 test('required subscription section keeps expiry and duration out of scoped saves', () => {
   assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionEnabled'));
   assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionChannelIds'));

@@ -14,6 +14,12 @@ enum ProfanityLevel {
   HIGH
 }
 
+enum ProfanitySensitivity {
+  CORE_ONLY
+  BALANCED
+  STRICT
+}
+
 enum LinkPolicy {
   ALLOWLIST_ONLY
   BLOCKLIST_ONLY
@@ -655,6 +661,7 @@ model ChatSettings {
   messageLimitsBotButtonText                    String                   @default("Открыть") @map("message_limits_bot_button_text")
   messageLimitsBotButtons                       Json                     @default("[]") @map("message_limits_bot_buttons")
   russianProfanityFilterEnabled                 Boolean                  @default(false) @map("russian_profanity_filter_enabled")
+  profanitySensitivity                          ProfanitySensitivity     @default(BALANCED) @map("profanity_sensitivity")
   commercialAdsFilterEnabled                    Boolean                  @default(false) @map("commercial_ads_filter_enabled")
   commercialAdsSensitivity                      CommercialAdsSensitivity @default(BALANCED) @map("commercial_ads_sensitivity")
   commercialAdsWarnThreshold                    Int                      @default(45) @map("commercial_ads_warn_threshold")

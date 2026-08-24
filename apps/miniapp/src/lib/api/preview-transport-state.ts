@@ -148,6 +148,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     antiSpamEnabled: true,
     deleteSpammersEnabled: true,
     russianProfanityFilterEnabled: true,
+    profanitySensitivity: 'BALANCED',
     commercialAdsFilterEnabled: true,
     commercialAdsSensitivity: 'BALANCED',
     profanityWarnEnabled: true,

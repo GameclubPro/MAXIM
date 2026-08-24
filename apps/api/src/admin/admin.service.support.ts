@@ -643,6 +643,7 @@ export const SETTINGS_SECTION_KEYS = {
   ],
   profanityFilter: [
     'russianProfanityFilterEnabled',
+    'profanitySensitivity',
     'profanityBotMessageEnabled',
     'profanityWarnEnabled',
     'profanityBanEnabled',

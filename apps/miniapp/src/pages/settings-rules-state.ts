@@ -127,7 +127,13 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
   }
 
   if (settings.russianProfanityFilterEnabled) {
-    items.push('Пожалуйста, без мата и грубой лексики.');
+    items.push(
+      settings.profanitySensitivity === 'CORE_ONLY'
+        ? 'Пожалуйста, без мата.'
+        : settings.profanitySensitivity === 'STRICT'
+          ? 'Пожалуйста, без мата, грубой лексики и оскорблений.'
+          : 'Пожалуйста, без мата и грубой лексики.',
+    );
   }
 
   if (settings.commercialAdsFilterEnabled) {

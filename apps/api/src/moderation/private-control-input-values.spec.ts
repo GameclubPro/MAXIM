@@ -134,6 +134,7 @@ describe('private control input values', () => {
       ['ALLOWLIST_ONLY', 'Разрешать только цели из списка разрешённых'],
       ['BLOCKLIST_ONLY', 'Удалять все кликабельные ссылки'],
       ['ALERT_ONLY', 'Только предупреждать'],
+      ['CORE_ONLY', 'Только мат'],
       ['BALANCED', 'Сбалансированный'],
       ['STRICT', 'Строгий'],
       ['SAME_IMAGE', 'Та же картинка'],

@@ -145,6 +145,27 @@ test('buildRulesTextFromSettingsScreen assembles a publishable draft from active
   assert.match(text, /Ночью чат работает тише: ограничения действуют с 23:00 до 07:00\./);
 });
 
+test('buildRulesTextFromSettingsScreen describes the selected profanity sensitivity', () => {
+  const expectedBySensitivity = {
+    CORE_ONLY: 'Пожалуйста, без мата.',
+    BALANCED: 'Пожалуйста, без мата и грубой лексики.',
+    STRICT: 'Пожалуйста, без мата, грубой лексики и оскорблений.',
+  } as const;
+
+  for (const [profanitySensitivity, expected] of Object.entries(expectedBySensitivity)) {
+    const text = buildRulesTextFromSettingsScreen(
+      createScreen({
+        settings: chatSettingsSchema.parse({
+          russianProfanityFilterEnabled: true,
+          profanitySensitivity,
+        }),
+      }),
+    );
+
+    assert.ok(text.includes(expected));
+  }
+});
+
 test('buildRulesTextFromSettingsScreen mentions photos only for enforcing rollout modes', () => {
   const settings = chatSettingsSchema.parse({
     antiDuplicateEnabled: true,

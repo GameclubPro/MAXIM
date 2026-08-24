@@ -318,6 +318,7 @@ import {
   DEFAULT_NIGHT_MODE_TIMEZONE,
   LINK_ESCALATION_WINDOW_HOURS,
   TEXT_FILTER_ESCALATION_WINDOW_HOURS,
+  PROFANITY_AUTOMATIC_ESCALATION_MIN_SCORE,
   MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
   REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
   REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC,
@@ -2420,6 +2421,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const isPhoneNumberHit = topViolation.ruleCode === 'PHONE_NUMBER_BLOCKED';
         const isTextFilterHit =
           this.isTextFilterViolation(topViolation.ruleCode) && !isCommercialReviewOnly;
+        const isEscalatingTextFilterHit =
+          isTextFilterHit &&
+          (topViolation.ruleCode !== 'PROFANITY' ||
+            topViolation.score >= PROFANITY_AUTOMATIC_ESCALATION_MIN_SCORE);
         const isMessageLimitsHit =
           this.isMessageLimitsViolation(topViolation.ruleCode) && !isPhoneNumberHit;
         const messageLimitsBlockedWord = extractMessageLimitsBlockedToken(topViolation.metadata);
@@ -2462,7 +2467,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               rulesPublishedMessageId,
             )
           : null;
-        const textFilterViolationCount24h = isTextFilterHit
+        const textFilterViolationCount24h = isEscalatingTextFilterHit
           ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode, {
               messageId,
               updateType,
@@ -2521,7 +2526,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             muteMaxCount: settings.phoneNumbersMuteMaxCount,
             banMaxCount: settings.phoneNumbersBanMaxCount,
           });
-        } else if (isTextFilterHit) {
+        } else if (isEscalatingTextFilterHit) {
           action = this.resolveTextFilterEscalationAction(textFilterViolationCount24h ?? 1, {
             warnEnabled: Boolean(textFilterEscalationSettings?.warnEnabled),
             banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
@@ -2550,7 +2555,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
         const isFirstLinkViolation =
           topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
-        const isFirstTextFilterViolation = isTextFilterHit && textFilterViolationCount24h === 1;
+        const isFirstTextFilterViolation =
+          isEscalatingTextFilterHit && textFilterViolationCount24h === 1;
         const isFirstMessageLimitsViolation =
           isMessageLimitsHit && messageLimitsViolationCount12h === 1;
         const isFirstPhoneNumberViolation = isPhoneNumberHit && phoneNumbersViolationCount === 1;
@@ -6421,14 +6427,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       updateType: context.updateType,
       loadCount: async () => {
         const violationModel = this.prisma.violation as unknown as {
-          count?: (args: {
-            where: {
-              chatId: string;
-              userId: string;
-              ruleCode: string | { in: string[] };
-              createdAt: { gte: Date };
-            };
-          }) => Promise<number>;
+          count?: (args: { where: Record<string, unknown> }) => Promise<number>;
         };
 
         if (typeof violationModel.count !== 'function') {
@@ -6441,6 +6440,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             userId,
             ruleCode: ruleCodeFilter,
+            ...(ruleCode === 'PROFANITY' ? { score: { gte: PROFANITY_AUTOMATIC_ESCALATION_MIN_SCORE } } : {}),
             createdAt: { gte: since },
           },
         });

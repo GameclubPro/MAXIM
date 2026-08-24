@@ -614,6 +614,7 @@ export class AdminSettingsService {
         this.legacyAdminService.isRequiredSubscriptionCurrentlyActiveForSettings(settings),
       scheduleReadinessRefresh: (params) =>
         this.legacyAdminService.scheduleApplySettingsToAllReadinessRefreshForSettings(params),
+      getCurrentSourceSettings: () => this.getSettings(sourceChatId, user),
     });
     if (shouldReconcileNightModeTransitions) {
       await this.reconcileNightModeTransitions(result.appliedChatIds);
