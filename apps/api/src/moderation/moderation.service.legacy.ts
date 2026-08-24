@@ -15088,24 +15088,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderAdminVerified,
       sourceMessageAt,
     } = params;
+    const normalizedSenderId = senderId?.trim() || null;
     // FLAG: MAX channel posts are admin-only; ordinary edits rely on the fresh channel/edit route.
-    // Forwarded replacements remain sender-verified because they also delete the original post.
-    if (linkType === 'forward' && (!senderId || !senderAdminVerified)) {
-      return 'skipped';
-    }
-    if (linkType !== 'forward' && !senderId) {
+    // When MAX omits sender metadata, only a signature may be repaired; engagement buttons still
+    // require an identified author. Forwarded replacements remain sender-verified because they
+    // also delete the original post.
+    if (linkType === 'forward' && (!normalizedSenderId || !senderAdminVerified)) {
       return 'skipped';
     }
     if (linkType === 'forward' && !(await this.isCurrentChannelEntity(chatId))) {
       return 'skipped';
     }
-    const buttonVisibility = resolveChannelAutoPostButtonVisibility(managedChannel.channelSettings);
+    const configuredButtonVisibility = resolveChannelAutoPostButtonVisibility(
+      managedChannel.channelSettings,
+    );
+    const buttonVisibility = normalizedSenderId
+      ? configuredButtonVisibility
+      : { includeCommentsButton: false, includeSuggestButton: false };
     const existingButtonKinds = new Set(params.existingDialogButtonKinds ?? []);
     const includeCommentsButton =
       buttonVisibility.includeCommentsButton && !existingButtonKinds.has('comments');
     const includeSuggestButton =
       buttonVisibility.includeSuggestButton && !existingButtonKinds.has('suggest');
     const postSignatureEnabled = managedChannel.channelSettings.postSignatureEnabled === true;
+    if (!normalizedSenderId && !postSignatureEnabled) {
+      return 'skipped';
+    }
     if (!includeCommentsButton && !includeSuggestButton && !postSignatureEnabled) {
       return 'noop';
     }
@@ -15219,7 +15227,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               // FLAG: Re-read MAX and local authorization in the final callback before publishing.
               await this.channelAutoPostMutationGuard.assertForwardSendAuthorized(
                 chatId,
-                senderId,
+                normalizedSenderId,
                 autoAttachBotId,
               );
               await this.replacementAttachMarkerStore.recordChannelReplacementSendStarted({
@@ -15258,7 +15266,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageId,
             reasonKey: 'channel_auto_post_forward_replacement_cleanup',
             ruleCode: 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
-            subjectUserId: senderId,
+            subjectUserId: normalizedSenderId,
             ...(sourceMessageAt ? { sourceMessageAt } : {}),
             entityType: 'CHANNEL',
             messageAuthorKind: 'user',
@@ -15278,7 +15286,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             beforeImmediateDeleteMutation: () =>
               this.channelAutoPostMutationGuard.assertForwardDeleteAuthorized(
                 chatId,
-                senderId,
+                normalizedSenderId,
                 autoAttachBotId,
               ),
           };
@@ -15424,7 +15432,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await recordChannelAutoPostTerminalSkip(this.prisma, this.logger, {
           chatId,
           messageId,
-          senderId,
+          senderId: normalizedSenderId,
           botId: autoAttachBotId,
           linkType,
           source,
@@ -15490,7 +15498,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await recordChannelAutoPostTerminalSkip(this.prisma, this.logger, {
           chatId,
           messageId,
-          senderId,
+          senderId: normalizedSenderId,
           botId: autoAttachBotId,
           linkType,
           source,
@@ -15552,7 +15560,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.prisma.auditLog.create({
         data: {
           chatId,
-          actorUserId: senderId ?? 'system',
+          actorUserId: normalizedSenderId ?? 'system',
           action: CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
           payload: {
             messageId,

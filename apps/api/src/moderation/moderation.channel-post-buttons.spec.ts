@@ -2267,6 +2267,86 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
+  it('repairs a signature when MAX omits sender metadata without adding engagement buttons', async () => {
+    const prisma = {
+      ...createChannelMutationGuardPrismaMock(),
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Наука и Факты',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: 'Предложить пост',
+            commentsEnabled: true,
+            postSignatureEnabled: true,
+          },
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      ...createChannelMutationGuardMaxClientMock(),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const channelPostSignatureService = {
+      preparePostText: jest.fn().mockResolvedValue({
+        text: 'Новый пост без senderId\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+        textFormat: 'html',
+        signatureApplied: true,
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+    (service as any).channelPostSignatureService = channelPostSignatureService;
+    configureDefaultChannelAutoPostEditRoute(service);
+
+    await service.handleUpdate(createChannelPostUpdateWithoutSender());
+
+    expect(channelPostSignatureService.preparePostText).toHaveBeenCalledWith(
+      'channel-1',
+      { text: 'Новый пост без senderId' },
+      {
+        entityType: 'channel',
+        trafficClass: 'background',
+        sourceTag: 'channel_auto_post',
+      },
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-no-sender-1',
+      'Новый пост без senderId\n\n<a href="https://max.ru/science">Наука и Факты</a>',
+      expect.objectContaining({
+        buttons: [],
+        textFormat: 'html',
+        preserveExistingInlineKeyboard: true,
+      }),
+      expectChannelAutoPostOptions(),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        actorUserId: 'system',
+        payload: expect.objectContaining({
+          signatureApplied: true,
+          includeCommentsButton: false,
+          includeSuggestButton: false,
+        }),
+      }),
+    });
+  });
+
   it('applies the signature and engagement buttons in one bot-authored edit', async () => {
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
