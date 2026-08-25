@@ -438,7 +438,7 @@ describe('MaxApiMetricsService', () => {
     await service.onModuleDestroy();
   });
 
-  it('aggregates limiter-backed bot RPS pressure by traffic class', async () => {
+  it('measures shared bot pressure only against the per-bot overall limit', async () => {
     const service = new MaxApiMetricsService(createConfigMock() as never);
     const store = redisStores[0]!;
     const nowSec = Math.floor(Date.now() / 1_000);
@@ -482,13 +482,13 @@ describe('MaxApiMetricsService', () => {
         },
         limits: {
           globalRps: 30,
-          criticalRps: 16,
-          interactiveRps: 14,
-          backgroundRps: 4,
+          criticalRps: 0,
+          interactiveRps: 0,
+          backgroundRps: 0,
         },
-        peakLoad: 0.75,
-        avgLoad: 0.0125,
-        smoothedLoad: 0.15,
+        peakLoad: 0.3333,
+        avgLoad: 0.0072,
+        smoothedLoad: 0.0867,
       },
       'bot-b': {
         windowSec: expectedWindowSec,
@@ -518,13 +518,13 @@ describe('MaxApiMetricsService', () => {
         },
         limits: {
           globalRps: 30,
-          criticalRps: 16,
-          interactiveRps: 14,
-          backgroundRps: 4,
+          criticalRps: 0,
+          interactiveRps: 0,
+          backgroundRps: 0,
         },
-        peakLoad: 0.5,
-        avgLoad: 0.0083,
-        smoothedLoad: 0.1,
+        peakLoad: 0.0667,
+        avgLoad: 0.0017,
+        smoothedLoad: 0.02,
       },
     });
 
@@ -587,7 +587,7 @@ describe('MaxApiMetricsService', () => {
     await service.onModuleDestroy();
   });
 
-  it('keeps shared overall load during service-metric cold start', async () => {
+  it('does not treat shared overall traffic as capacity pressure during service-metric cold start', async () => {
     const service = new MaxApiMetricsService(createConfigMock('API Action / A') as never);
     const store = redisStores[0]!;
     const nowSec = Math.floor(Date.now() / 1_000);
@@ -616,7 +616,8 @@ describe('MaxApiMetricsService', () => {
     });
     expect(stack).toMatchObject({
       totalRequests: 12,
-      smoothedLoad: 0.08,
+      smoothedLoad: 0,
+      limits: { globalRps: 0 },
       trafficClasses: {
         critical: { totalRequests: 0 },
         interactive: { totalRequests: 0 },
@@ -627,7 +628,7 @@ describe('MaxApiMetricsService', () => {
     await service.onModuleDestroy();
   });
 
-  it('aggregates stack-wide limiter pressure across all runtime bots', async () => {
+  it('keeps shared stack traffic observational without aggregate capacity pressure', async () => {
     const service = new MaxApiMetricsService(createConfigMock() as never);
     const store = redisStores[0]!;
     const nowSec = Math.floor(Date.now() / 1_000);
@@ -670,14 +671,14 @@ describe('MaxApiMetricsService', () => {
         },
       },
       limits: {
-        globalRps: 30,
-        criticalRps: 16,
-        interactiveRps: 14,
-        backgroundRps: 4,
+        globalRps: 0,
+        criticalRps: 0,
+        interactiveRps: 0,
+        backgroundRps: 0,
       },
-      peakLoad: 1,
-      avgLoad: 0.0293,
-      smoothedLoad: 0.35,
+      peakLoad: 0,
+      avgLoad: 0,
+      smoothedLoad: 0,
     });
 
     await service.onModuleDestroy();

@@ -35,7 +35,7 @@
 - MAX removed bot-wide `GET /chats`; keep `listBotChats` compatibility out of production discovery and never build a new flow on it.
 - Send bot tokens only as `Authorization: <token>`, never query parameters. Keep tokens and webhook secrets only in ignored env/VPS secrets.
 - Production delivery uses webhooks. Long polling is development-only and cannot coexist with a webhook subscription.
-- Keep `platform-api2.max.ru` traffic within the documented 30 rps global limit. Use existing queues, lane/source tags, route priorities, and per-role limits rather than direct hot-path calls.
+- The MAX overview documents a 30 rps ceiling without defining its scope across unrelated tokens. This project enforces 30 rps independently per bot token and has no additional aggregate 30 rps hard guard; use existing per-bot queues, lane/source tags, route priorities, and per-role class limits rather than direct hot-path calls.
 - The runtime image carries the Russian Trusted Root/Sub CA bundle under `infra/certs/` via `NODE_EXTRA_CA_CERTS`; preserve it in API Docker changes.
 - MAX permissions are entity-sensitive: group-chat `write` permits message deletion and channel posting, but channel edit/delete requires `edit`/`edit_message` and `delete`/`delete_message` respectively.
 - In hot paths prefer targeted `getCurrentChatMemberAccess` or `getChatMembersAccess`; fetch a full admin roster only when the feature needs it.

@@ -993,7 +993,7 @@ export class SystemDashboardService {
       title: 'Critical MAX-запросы упираются во внутренний limiter',
       detail: `${snapshot.internalRejects} critical rejects за ${this.formatShortTimeWindow(snapshot.windowSec)} (warning threshold ${warningThreshold}).`,
       recommendedAction:
-        'Сверьте source tags и чаты в MAX diagnostics, critical action backlog и class/stack capacity. Снижайте конкурирующий interactive/background трафик; не повышайте общий лимит выше документированных 30 rps.',
+        'Сверьте source tags, bot IDs и чаты в MAX diagnostics, critical action backlog и class capacity. Снижайте конкурирующий interactive/background трафик внутри перегруженного bot budget.',
     };
   }
 

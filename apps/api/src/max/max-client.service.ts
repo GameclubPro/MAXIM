@@ -885,8 +885,11 @@ export class MaxClientService implements OnModuleDestroy {
       'MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED',
       true,
     );
-    this.globalRpsLimit = this.readConfigInt(
-      configService.get('MAX_API_GLOBAL_RPS'),
+    this.globalRpsLimit = Math.min(
+      this.readConfigInt(
+        configService.get('MAX_API_GLOBAL_RPS'),
+        DEFAULT_MAX_API_GLOBAL_RPS,
+      ),
       DEFAULT_MAX_API_GLOBAL_RPS,
     );
     this.criticalGlobalRpsLimit = this.readConfigInt(
@@ -7177,7 +7180,7 @@ export class MaxClientService implements OnModuleDestroy {
       {
         key: `maxapi:gcra:v1:bot:${botId}:all`,
         limit: this.globalRpsLimit,
-        reason: `MAX API global rate limit exceeded for bot ${botId}`,
+        reason: `MAX API per-bot rate limit exceeded for bot ${botId}`,
       },
       {
         key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:bot:${botId}:class:${trafficClass}`,
@@ -7193,11 +7196,6 @@ export class MaxClientService implements OnModuleDestroy {
             },
           ]
         : []),
-      {
-        key: 'maxapi:gcra:v1:stack:all',
-        limit: Math.min(this.globalRpsLimit, DEFAULT_MAX_API_GLOBAL_RPS),
-        reason: 'MAX API global rate limit exceeded across all bots',
-      },
       {
         key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:stack:class:${trafficClass}`,
         limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),

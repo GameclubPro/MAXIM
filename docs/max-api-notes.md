@@ -1,7 +1,7 @@
 # MAX API Notes (2026)
 
 - Production mode should use webhook delivery over HTTPS.
-- Keep total traffic to `platform-api2.max.ru` within the documented 30 rps ceiling.
+- MAX documents a 30 rps ceiling for `platform-api2.max.ru` without defining its scope across unrelated bot tokens. This project enforces it independently per token and does not add a separate aggregate 30 rps ceiling across the bot fleet.
 - MAX documents a target-scoped limit of 2 operations per second for each [send](https://dev.max.ru/docs-api/methods/POST/messages), [edit](https://dev.max.ru/docs-api/methods/PUT/messages), [delete](https://dev.max.ru/docs-api/methods/DELETE/messages), and [callback answer](https://dev.max.ru/docs-api/methods/POST/answers) operation; queue or delay excess work.
 - A [webhook](https://dev.max.ru/docs-api/methods/POST/subscriptions) must return HTTP 200 within 30 seconds; keep the application deadline below that transport ceiling.
 - Validate [upload](https://dev.max.ru/docs-api/methods/POST/uploads) payloads before creating a session: image 50 MB, video 250 MB, audio 256 MB and 60 minutes, file 4 GB; images must also remain within 7680 x 7680 px.

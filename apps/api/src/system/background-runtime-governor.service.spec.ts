@@ -131,7 +131,7 @@ function createDecisionSnapshotForTest() {
 describe('BackgroundRuntimeGovernorService', () => {
   it.each([
     {
-      label: 'stack-wide MAX capacity',
+      label: 'service-local MAX class capacity',
       pressure: { stackLoad: { smoothedLoad: 0.8, peakLoad: 0.9, avgLoad: 0.7 } },
       reason: 'MAX API stack load 80.0%',
     },
@@ -214,7 +214,7 @@ describe('BackgroundRuntimeGovernorService', () => {
 
   it.each([
     {
-      label: 'stack-wide MAX capacity',
+      label: 'service-local MAX class capacity',
       pressure: { stackLoad: { smoothedLoad: 0.8 } },
       guardedDecision: { action: 'pause', reason: 'MAX API stack load 80.0%' },
     },
@@ -723,7 +723,7 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
   });
 
-  it('slows background work when stack-wide MAX API load is high across bots', async () => {
+  it('slows background work when service-local MAX API class load is high across bots', async () => {
     const getStackRateLimitSnapshot = jest
       .fn()
       .mockResolvedValue(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }));
@@ -815,7 +815,7 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
   });
 
-  it('keeps dashboard MAX capacity snapshots on the shared default scope', async () => {
+  it('reports service class capacity and shared per-bot capacity on the dashboard', async () => {
     const getSourceSnapshot = jest.fn().mockResolvedValue({
       overall: {
         totalRequests: 10,
@@ -837,8 +837,7 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
     const getStackRateLimitSnapshot = jest
       .fn()
-      .mockResolvedValueOnce(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }))
-      .mockResolvedValueOnce(createStackRateLimitSnapshot({ smoothedLoad: 0.12 }));
+      .mockResolvedValue(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }));
     const getBotRateLimitSnapshot = jest
       .fn()
       .mockResolvedValueOnce({
@@ -874,7 +873,7 @@ describe('BackgroundRuntimeGovernorService', () => {
 
     await expect(service.getDashboardBudgetSummary()).resolves.toMatchObject({
       backgroundShare: 0.6,
-      stackLoad: { smoothedLoad: 0.12 },
+      stackLoad: { smoothedLoad: 0.48 },
       botLoad: {
         maxSmoothedLoad: 0.1,
         topBots: [expect.objectContaining({ botId: 'bot-a', smoothedLoad: 0.1 })],
@@ -895,7 +894,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       windowSec: 60,
       capacityScope: 'service',
     });
-    expect(getStackRateLimitSnapshot).toHaveBeenNthCalledWith(2, { windowSec: 60 });
+    expect(getStackRateLimitSnapshot).toHaveBeenCalledTimes(1);
     expect(getBotRateLimitSnapshot).toHaveBeenNthCalledWith(1, ['bot-a'], {
       windowSec: 60,
       capacityScope: 'service',

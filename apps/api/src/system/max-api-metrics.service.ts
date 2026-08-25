@@ -81,8 +81,11 @@ export class MaxApiMetricsService implements OnModuleDestroy {
 
   constructor(configService: ConfigService) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
-    this.globalRpsLimit = this.readConfigInt(
-      configService.get<number>('MAX_API_GLOBAL_RPS'),
+    this.globalRpsLimit = Math.min(
+      this.readConfigInt(
+        configService.get<number>('MAX_API_GLOBAL_RPS'),
+        DEFAULT_MAX_API_GLOBAL_RPS,
+      ),
       DEFAULT_MAX_API_GLOBAL_RPS,
     );
     this.criticalGlobalRpsLimit = this.readConfigInt(
@@ -335,6 +338,10 @@ export class MaxApiMetricsService implements OnModuleDestroy {
         this.buildRateLimitSnapshot(
           buckets.get(botId) ?? this.createSourceCounterBucket(),
           windowSec,
+          {
+            includeOverallCapacity: true,
+            includeTrafficClassCapacity: options.capacityScope === 'service',
+          },
         ),
       ]),
     );
@@ -354,7 +361,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     }> = [];
 
     for (let sec = startSec; sec <= nowSec; sec += 1) {
-      // Match GCRA: the all-traffic guard is shared, while class budgets are service-local.
+      // Overall stack traffic is observational; enforced traffic-class budgets are service-local.
       const overallKey = `maxapi:rps:stack:${sec}`;
       keys.push(overallKey);
       entries.push({ key: overallKey, sec, trafficClass: null });
@@ -390,7 +397,10 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       }
     }
 
-    return this.buildRateLimitSnapshot(bucket, windowSec);
+    return this.buildRateLimitSnapshot(bucket, windowSec, {
+      includeOverallCapacity: false,
+      includeTrafficClassCapacity: options.capacityScope === 'service',
+    });
   }
 
   private normalizeWindowSec(value: number | undefined): number {
@@ -582,13 +592,23 @@ export class MaxApiMetricsService implements OnModuleDestroy {
   private buildRateLimitSnapshot(
     bucket: SourceCounterBucket,
     windowSec: number,
+    options: {
+      includeOverallCapacity: boolean;
+      includeTrafficClassCapacity: boolean;
+    },
   ): MaxApiRateLimitSnapshot {
     const stats = this.buildStats(bucket, windowSec);
     const limits = {
-      globalRps: this.globalRpsLimit,
-      criticalRps: this.resolveTrafficClassEffectiveRpsLimit('critical'),
-      interactiveRps: this.resolveTrafficClassEffectiveRpsLimit('interactive'),
-      backgroundRps: this.resolveTrafficClassEffectiveRpsLimit('background'),
+      globalRps: options.includeOverallCapacity ? this.globalRpsLimit : 0,
+      criticalRps: options.includeTrafficClassCapacity
+        ? this.resolveTrafficClassEffectiveRpsLimit('critical')
+        : 0,
+      interactiveRps: options.includeTrafficClassCapacity
+        ? this.resolveTrafficClassEffectiveRpsLimit('interactive')
+        : 0,
+      backgroundRps: options.includeTrafficClassCapacity
+        ? this.resolveTrafficClassEffectiveRpsLimit('background')
+        : 0,
     };
     const peakLoad = this.normalizeLoad(
       Math.max(

@@ -8759,7 +8759,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('applies global MAX API rate limit to read requests', async () => {
+  it('applies the per-bot MAX API rate limit to read requests', async () => {
     const httpService = {
       request: jest.fn(),
     };
@@ -8773,7 +8773,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       .mockResolvedValueOnce([0, 1, 1]);
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
-      'MAX API global rate limit exceeded',
+      'MAX API per-bot rate limit exceeded',
     );
     expect(httpService.request).not.toHaveBeenCalled();
 
@@ -8799,26 +8799,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('applies stack-wide MAX API global limit before chat-scoped reads', async () => {
-    const httpService = {
-      request: jest.fn(),
-    };
-    const service = createService(httpService, {
-      MAX_API_GLOBAL_RPS: '30',
-      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
-    });
-
-    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 4, 1]);
-
-    await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
-      'MAX API global rate limit exceeded across all bots',
-    );
-    expect(httpService.request).not.toHaveBeenCalled();
-
-    await service.onModuleDestroy();
-  });
-
   it('applies stack-wide MAX API class limit across all bots', async () => {
     const httpService = {
       request: jest.fn(),
@@ -8830,7 +8810,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 5, 1]);
+    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 4, 1]);
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
       'MAX API interactive rate limit exceeded across all bots',
@@ -9054,20 +9034,20 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('shares GCRA stack reservations across service instances and smooths the next slot', async () => {
+  it('keeps per-bot GCRA reservations independent across bot tokens', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:00:00.000Z'));
     const firstService = createService(
       {},
       {
         MAX_API_GLOBAL_RPS: '1',
-        MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+        MAX_API_GLOBAL_RPS_INTERACTIVE: '2',
       },
     );
     const secondService = createService(
       {},
       {
         MAX_API_GLOBAL_RPS: '1',
-        MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+        MAX_API_GLOBAL_RPS_INTERACTIVE: '2',
       },
     );
 
@@ -9076,16 +9056,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
     ).resolves.toEqual({ ok: true });
     await expect(
       (secondService as any).tryReserveRateLimitSlot('bot-b', 'chat-b', 'interactive'),
+    ).resolves.toEqual({ ok: true });
+
+    await firstService.onModuleDestroy();
+    await secondService.onModuleDestroy();
+  });
+
+  it('shares the per-bot GCRA reservation across service instances for the same token', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:00:00.000Z'));
+    const firstService = createService(
+      {},
+      {
+        APP_SERVICE_NAME: 'API Action / A',
+        MAX_API_GLOBAL_RPS: '1',
+        MAX_API_GLOBAL_RPS_INTERACTIVE: '2',
+      },
+    );
+    const secondService = createService(
+      {},
+      {
+        APP_SERVICE_NAME: 'API Action / B',
+        MAX_API_GLOBAL_RPS: '1',
+        MAX_API_GLOBAL_RPS_INTERACTIVE: '2',
+      },
+    );
+
+    await expect(
+      (firstService as any).tryReserveRateLimitSlot('bot-a', 'chat-a', 'interactive'),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      (secondService as any).tryReserveRateLimitSlot('bot-a', 'chat-b', 'interactive'),
     ).resolves.toEqual({
       ok: false,
       retryAfterMs: 1_000,
-      reason: 'MAX API global rate limit exceeded across all bots',
+      reason: 'MAX API per-bot rate limit exceeded for bot bot-a',
     });
-
-    jest.advanceTimersByTime(1_000);
-    await expect(
-      (secondService as any).tryReserveRateLimitSlot('bot-b', 'chat-b', 'interactive'),
-    ).resolves.toEqual({ ok: true });
 
     await firstService.onModuleDestroy();
     await secondService.onModuleDestroy();
@@ -9934,7 +9939,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await serviceB.onModuleDestroy();
   });
 
-  it('scopes class and source limiter budgets by service while retaining one 30 rps stack guard', async () => {
+  it('caps the per-bot budget at 30 while scoping class and source budgets by service', async () => {
     const service = createService(
       { request: jest.fn() },
       {
@@ -9968,12 +9973,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
       'maxapi:gcra:v1:bot:777000_bot:all',
       'maxapi:gcra:v1:service:api_action_a:bot:777000_bot:class:background',
       'maxapi:gcra:v1:chat:777000_bot:chat-1',
-      'maxapi:gcra:v1:stack:all',
       'maxapi:gcra:v1:service:api_action_a:stack:class:background',
       'maxapi:gcra:v1:service:api_action_a:source:777000_bot:managed_refresh',
       'maxapi:gcra:v1:service:api_action_a:source:stack:managed_refresh',
     ]);
-    expect(limits[3]).toBe('30');
+    expect(limits[0]).toBe('30');
     expect(limits.slice(-2)).toEqual(['2', '2']);
 
     await service.onModuleDestroy();

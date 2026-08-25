@@ -55,7 +55,7 @@
 
 - Bot token надо передавать как `Authorization: <token>`; query-token transport больше не поддерживается.
 - API host: `https://platform-api2.max.ru`.
-- Для стабильной работы ботов MAX требует не больше 30 rps на `platform-api2.max.ru`.
+- MAX указывает потолок 30 rps для `platform-api2.max.ru`, но не уточняет область действия для независимых bot tokens. Реализация ограничивает каждый token отдельно и не добавляет общий потолок 30 rps на весь набор ботов.
 - `POST /messages` ограничивает текст 4000 символами и поддерживает attachments + text format.
 - Загрузка медиа идёт через `/uploads`; `type=photo` deprecated, нужен `type=image`.
 - Media publish многошаговый: получить upload URL, загрузить бинарник, затем отправить token/payload в сообщении.

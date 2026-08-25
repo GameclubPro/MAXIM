@@ -215,7 +215,7 @@ and make each extraction reviewable through focused tests.
   repair, and duplicate handling.
 - Moderation hot path: admin/bot bypass, rule detection, sanction/action fallback,
   timeout profile, and shared-chat execution guard.
-- MAX API reliability: global/per-chat rate limits, circuit/backoff behavior,
+- MAX API reliability: per-bot/service-class/per-chat rate limits, circuit/backoff behavior,
   membership lookup, media upload, and action dispatch.
 - Managed entities home: fresh access edges, published snapshots/diffs, recent
   `bot_added` bootstrap, refresh/backoff state, favorites.

@@ -293,10 +293,8 @@ export class BackgroundRuntimeGovernorService {
 
   async getDashboardBudgetSummary(): Promise<BackgroundRuntimeBudgetSummary> {
     const snapshot = await this.getPressureSnapshot();
-    const rateLimitWindowSec = Math.min(60, this.sourceWindowSec);
-    const [pauseReasons, sharedStackRateLimit, sharedBotLoad] = await Promise.all([
+    const [pauseReasons, sharedBotLoad] = await Promise.all([
       this.runtimeDiagnosticsService?.getBackgroundDecisionSummary(),
-      this.maxApiMetricsService.getStackRateLimitSnapshot({ windowSec: rateLimitWindowSec }),
       this.buildBotLoadSnapshot(snapshot.queues, 'shared'),
     ]);
 
@@ -305,7 +303,7 @@ export class BackgroundRuntimeGovernorService {
       backgroundShare: Number(snapshot.backgroundShare.toFixed(3)),
       topSources: snapshot.topSources,
       pauseReasons: pauseReasons?.pauseReasons ?? [],
-      stackLoad: this.buildStackLoadSnapshot(sharedStackRateLimit),
+      stackLoad: snapshot.stackLoad,
       botLoad: sharedBotLoad,
     };
   }
