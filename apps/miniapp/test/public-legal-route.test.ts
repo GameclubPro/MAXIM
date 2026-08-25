@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  isPublicBotPathnameFromWindow,
   isPublicLegalPathnameFromWindow,
   resolveRouterPathnameFromWindow,
 } from '../src/lib/public-legal-route';
@@ -44,4 +45,11 @@ test('keeps private app paths behind initData', () => {
   assignWindow('https://major-maksimov.ru/app/chat/chat-1/settings');
 
   assert.equal(isPublicLegalPathnameFromWindow('browser'), false);
+});
+
+test('allows the public bot page without initData', () => {
+  assignWindow('https://major-maksimov.ru/app/publik');
+
+  assert.equal(resolveRouterPathnameFromWindow('browser'), '/publik');
+  assert.equal(isPublicBotPathnameFromWindow('browser'), true);
 });

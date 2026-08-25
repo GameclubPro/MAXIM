@@ -8,7 +8,7 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 123008,
+        "jsGzipBytes": 123520,
         "cssGzipBytes": 43008
       },
       "allowances": [
@@ -29,7 +29,7 @@
       "label": "Chat settings",
       "entries": ["src/pages/settings-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 145408, "cssGzipBytes": 77824 }
+      "limits": { "jsGzipBytes": 145920, "cssGzipBytes": 77824 }
     },
     {
       "id": "channel-settings",
@@ -86,6 +86,13 @@
       "entries": ["src/pages/legal-page.tsx"],
       "baseline": "startup",
       "limits": { "jsGzipBytes": 10240, "cssGzipBytes": 3072 }
+    },
+    {
+      "id": "publik",
+      "label": "Publik public page",
+      "entries": ["src/pages/publik-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 8192, "cssGzipBytes": 4096 }
     },
     {
       "id": "vk-parsing-card",

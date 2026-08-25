@@ -38,7 +38,10 @@ import {
   syncMaxNativeEnvironment,
 } from './lib/max-bridge';
 import { PUBLIC_ROUTER_BASENAME } from './lib/public-config';
-import { isPublicLegalPathnameFromWindow } from './lib/public-legal-route';
+import {
+  isPublicBotPathnameFromWindow,
+  isPublicLegalPathnameFromWindow,
+} from './lib/public-legal-route';
 import {
   LazyChannelDialogPage,
   LazyChannelSuggestDialogPage,
@@ -55,6 +58,11 @@ import {
 const LazyPublicationsPage = lazy(async () => {
   const module = await import('./pages/publications-page');
   return { default: module.PublicationsPage };
+});
+
+const LazyPublikPage = lazy(async () => {
+  const module = await import('./pages/publik-page');
+  return { default: module.PublikPage };
 });
 
 const LazyManagedEntityNavigationProvider = lazy(async () => {
@@ -462,6 +470,7 @@ function AppRoutes({
   return (
     <Suspense fallback={<RouteLoadingFallback />}>
       <Routes>
+        <Route path="/publik" element={<LazyPublikPage />} />
         <Route
           element={
             <AppRouteShell
@@ -519,9 +528,10 @@ function PublicLegalRoutes() {
     <AppRouter basename={ROUTER_BASENAME}>
       <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
+          <Route path="/publik" element={<LazyPublikPage />} />
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
           <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
-          <Route path="*" element={<Navigate to="/legal/agreement" replace />} />
+          <Route path="*" element={<Navigate to="/publik" replace />} />
         </Routes>
       </Suspense>
     </AppRouter>
@@ -760,6 +770,10 @@ export function App() {
   }
 
   if (!apiClient && isPublicLegalPathnameFromWindow(HASH_ROUTER_ENABLED ? 'hash' : 'browser')) {
+    return <PublicLegalRoutes />;
+  }
+
+  if (!apiClient && isPublicBotPathnameFromWindow(HASH_ROUTER_ENABLED ? 'hash' : 'browser')) {
     return <PublicLegalRoutes />;
   }
 
