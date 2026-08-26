@@ -116,6 +116,8 @@ export type PreviewState = {
   channelPartnerAssistEnabled: boolean;
   accessDiagnostics: ManagedEntityAccessDiagnostics | null;
   settingsScreenError: 'auth-expired' | 'access-denied' | null;
+  publisherEntitiesVariant: 'mixed' | 'large' | 'empty' | 'error';
+  publisherPolicyVariant: 'normal' | 'setup' | 'error';
 };
 
 export type PreviewDialogBucket = {
@@ -137,7 +139,10 @@ export type PreviewDialogThreadBuckets = Partial<
 
 export function createInitialState(search: string, clock: PreviewClock): PreviewState {
   const now = readPreviewClock(clock);
-  const publisherProfile = new URLSearchParams(search).get('profile') === 'publisher';
+  const searchParams = new URLSearchParams(search);
+  const publisherProfile = searchParams.get('profile') === 'publisher';
+  const publisherState = searchParams.get('publisherState');
+  const publisherPolicyState = searchParams.get('publisherPolicyState');
   const chatSettings = chatSettingsSchema.parse({
     greetingEnabled: false,
     greetingBotMessageEnabled: false,
@@ -915,6 +920,14 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     channelPartnerAssistEnabled: false,
     accessDiagnostics: buildPreviewAccessDiagnostics(search),
     settingsScreenError: resolvePreviewSettingsScreenError(search),
+    publisherEntitiesVariant:
+      publisherState === 'large' || publisherState === 'empty' || publisherState === 'error'
+        ? publisherState
+        : 'mixed',
+    publisherPolicyVariant:
+      publisherPolicyState === 'setup' || publisherPolicyState === 'error'
+        ? publisherPolicyState
+        : 'normal',
   };
 
   state.autopostRules = [

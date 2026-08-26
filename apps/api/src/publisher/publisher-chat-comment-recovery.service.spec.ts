@@ -12,6 +12,7 @@ import {
   type PublisherChatCommentJob,
 } from './publisher-chat-comment.queue';
 import { PublisherDispatchPausedError } from './publisher-dispatch-health.service';
+import { PublisherSetupRequiredException } from './publisher-errors';
 
 const MARKER_ID = `ccr1_${'d'.repeat(32)}`;
 const LOCK_TOKEN = 'exhausted-lock-1';
@@ -147,7 +148,9 @@ describe('PublisherChatCommentRecoveryService', () => {
   });
 
   it('defers through a long disabled window and retries the retained job after enablement', async () => {
-    const harness = createHarness({ readinessError: new Error('publisher disabled') });
+    const harness = createHarness({
+      readinessError: new PublisherSetupRequiredException(['chat-1'], 'bot_not_connected'),
+    });
 
     const disabled = await harness.service.recoverOnce();
     expect(disabled).toMatchObject({ scanned: 1, deferred: 1, retried: 0 });
@@ -163,6 +166,10 @@ describe('PublisherChatCommentRecoveryService', () => {
 
     expect(enabled).toMatchObject({ scanned: 1, retried: 1, deferred: 0 });
     expect(harness.job.retry).toHaveBeenCalledTimes(1);
+    expect(harness.job.retry).toHaveBeenCalledWith('failed', {
+      resetAttemptsMade: true,
+      resetAttemptsStarted: true,
+    });
   });
 
   it.each([

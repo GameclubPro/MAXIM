@@ -33,6 +33,7 @@ import { StatusState } from '../components/ui/status-state';
 import { TimeField } from '../components/ui/time-field';
 import { useToast } from '../components/ui/toast';
 import { PublicationDetailsSheet } from '../features/publications/publication-details-sheet';
+import { PublicationHubHeader } from '../features/publications/publication-hub-header';
 import {
   LEGACY_PUBLICATION_KIND_FILTERS as LEGACY_KIND_FILTERS,
   LEGACY_PUBLICATION_VIEW_OPTIONS as LEGACY_VIEW_OPTIONS,
@@ -134,7 +135,7 @@ import {
 import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
-import { maxImpact, maxNotify } from '../lib/max-bridge';
+import { maxImpact, maxNotify, openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/publications-page.css';
@@ -378,9 +379,11 @@ const MAX_PUBLICATION_VIDEO_FILE_BYTES = 24_000_000;
 export function PublicationsPage({
   api,
   profile = 'moderation',
+  botDialogUrl = null,
 }: {
   api: ApiTransport;
   profile?: MiniappProfile;
+  botDialogUrl?: string | null;
 }) {
   const isPublisherProfile = profile === 'publisher';
   const queryClient = useQueryClient();
@@ -970,6 +973,10 @@ export function PublicationsPage({
       );
       return !current?.readiness?.canPublish;
     });
+  const publisherHasReadyTarget =
+    !isPublisherProfile || targets.some((target) => target.readiness?.canPublish === true);
+  const publisherCanCreate =
+    !isPublisherProfile || (sourcesReady && !sourcesHaveError && publisherHasReadyTarget);
   const isBusy =
     saveMutation.isPending ||
     testMutation.isPending ||
@@ -1849,7 +1856,7 @@ export function PublicationsPage({
                     ? 'Расписаний пока нет'
                     : 'Текущих постов нет'}
             </strong>
-            {view !== 'history' && !query.trim() ? (
+            {view !== 'history' && !query.trim() && publisherCanCreate ? (
               <button type="button" className="publications-primary" onClick={openCreateEditor}>
                 <Plus aria-hidden />
                 <span>Новая публикация</span>
@@ -1880,22 +1887,22 @@ export function PublicationsPage({
   function renderHub() {
     return (
       <>
-        <header className="publications-header">
-          <div>
-            <h1>{isPublisherProfile ? 'Публик' : 'Посты'}</h1>
-            {isPublisherProfile ? <span>Посты</span> : null}
-          </div>
-          <button
-            type="button"
-            className="publications-primary"
-            onClick={openCreateEditor}
-            aria-label="Создать публикацию"
-            title="Создать публикацию"
-          >
-            <Plus aria-hidden />
-            <span>Создать</span>
-          </button>
-        </header>
+        <PublicationHubHeader
+          publisherProfile={isPublisherProfile}
+          canCreate={publisherCanCreate}
+          targets={targets}
+          sourcesLoading={sourcesLoading}
+          sourcesFetching={sourcesFetching}
+          sourcesHaveError={sourcesHaveError}
+          botDialogUrl={botDialogUrl}
+          onCreate={openCreateEditor}
+          onRefresh={() => void targetSources.refetch()}
+          onOpenBot={() => {
+            if (!botDialogUrl || !openMaxBotLinkAndClose(botDialogUrl)) {
+              pushToast({ tone: 'danger', title: 'Не удалось открыть Публик' });
+            }
+          }}
+        />
 
         <div className="publications-tabs" role="group" aria-label="Раздел постов">
           {VIEW_OPTIONS.map((option) =>
@@ -2520,7 +2527,7 @@ export function PublicationsPage({
                   {sourcesUnavailable
                     ? 'Чаты и каналы недоступны'
                     : isPublisherProfile
-                      ? 'Цели Публик временно недоступны'
+                      ? 'Получатели Публика временно недоступны'
                       : targetSources.chatsFailed
                         ? 'Чаты временно недоступны'
                         : 'Каналы временно недоступны'}
@@ -2793,7 +2800,13 @@ export function PublicationsPage({
   );
 
   return (
-    <div className={cn('publications-page', isEditor && 'is-editor')}>
+    <div
+      className={cn(
+        'publications-page',
+        isPublisherProfile && 'is-publisher',
+        isEditor && 'is-editor',
+      )}
+    >
       {isEditor ? renderEditor() : isLegacyView ? renderLegacyHub() : renderHub()}
 
       <ActionConfirmSheet

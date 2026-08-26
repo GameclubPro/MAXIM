@@ -156,11 +156,63 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   });
   assert.ok(scenarios.get('publications-publisher')?.features.includes('publisher'));
   assert.ok(scenarios.get('chat-dialog-comments-publisher')?.features.includes('publisher'));
+  assert.deepEqual(scenarios.get('publications-publisher-compose')?.searchParams, {
+    profile: 'publisher',
+    compose: '1',
+  });
+  assert.deepEqual(scenarios.get('publications-publisher-empty')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'empty',
+  });
+  assert.deepEqual(scenarios.get('publications-publisher-error')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'error',
+  });
+  assert.deepEqual(scenarios.get('publications-publisher-large')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'large',
+  });
+  assert.deepEqual(scenarios.get('publications-publisher-compose-large')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'large',
+    compose: '1',
+  });
+  assert.ok(scenarios.get('publications-publisher-compose')?.features.includes('publisher'));
+  assert.ok(scenarios.get('publications-publisher-readiness')?.features.includes('publisher'));
+  assert.deepEqual(scenarios.get('chat-settings-publisher-policy-setup')?.searchParams, {
+    publisherPolicyState: 'setup',
+  });
+  assert.deepEqual(scenarios.get('chat-settings-publisher-policy-error')?.searchParams, {
+    publisherPolicyState: 'error',
+  });
+});
+
+test('public Publik route and publisher source files select their visual scenarios', () => {
+  const publik = MINIAPP_VISUAL_SCENARIOS.find((scenario) => scenario.name === 'publik');
+  assert.equal(publik?.path, '/publik');
+  assert.equal(publik?.preview, false);
+  assert.equal(publik?.maxBridge, false);
+
+  for (const changedFile of [
+    'apps/miniapp/src/components/publisher-policy-card.tsx',
+    'apps/miniapp/src/features/publications/publication-hub-header.css',
+    'apps/miniapp/src/features/publications/publication-target-picker.css',
+    'apps/miniapp/src/features/publications/publisher-readiness-overview.tsx',
+    'apps/miniapp/src/lib/publisher-readiness.ts',
+    'apps/miniapp/src/lib/publisher-readiness-label.ts',
+    'packages/contracts/src/publisher.ts',
+  ]) {
+    const selectedNames = selectMiniappVisualScenarios({ changedFiles: [changedFile] }).scenarios.map(
+      (scenario) => scenario.name,
+    );
+    assert.ok(selectedNames.includes('publications-publisher'), changedFile);
+    assert.ok(selectedNames.includes('publications-publisher-compose'), changedFile);
+  }
 });
 
 test('smoke preset is short, local-device focused, and includes navigation order', () => {
   const smoke = MINIAPP_VISUAL_PRESETS.smoke;
-  assert.ok(smoke.scenarioNames.length >= 8 && smoke.scenarioNames.length <= 12);
+  assert.ok(smoke.scenarioNames.length >= 8 && smoke.scenarioNames.length <= 13);
   assert.equal(smoke.device, 'iphone');
   assert.equal(smoke.target, 'native');
   assert.deepEqual(smoke.checks, {

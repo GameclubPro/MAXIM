@@ -1,8 +1,18 @@
 import { MAX_PUBLICATION_TARGETS } from '@maxim/contracts/publication';
 import { Check, NavArrowDown, Search, Xmark } from 'iconoir-react';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
 import { cn } from '../../lib/cn';
+import { getPublisherReadinessLabel } from '../../lib/publisher-readiness-label';
+import { resolveVirtualListRange } from '../../lib/virtual-list';
 import {
   getPublicationTargetKey,
   getPublicationTargetTitle,
@@ -10,6 +20,7 @@ import {
   type PublicationEntityFilter,
   type PublicationTarget,
 } from './publication-model';
+import { togglePublicationTargetSelection } from './publication-target-selection';
 import './publication-target-picker.css';
 
 type PublicationTargetPickerProps = {
@@ -27,6 +38,10 @@ const FILTERS: Array<{ value: PublicationEntityFilter; label: string }> = [
   { value: 'chat', label: 'Чаты' },
   { value: 'channel', label: 'Каналы' },
 ];
+const TARGET_ROW_HEIGHT = 58;
+const TARGET_LIST_VIEWPORT_HEIGHT = 266;
+const TARGET_LIST_VIRTUALIZATION_THRESHOLD = 60;
+const TARGET_LIST_OVERSCAN = 3;
 
 export function PublicationTargetPicker({
   choices,
@@ -41,22 +56,41 @@ export function PublicationTargetPicker({
   const [filter, setFilter] = useState<PublicationEntityFilter>('all');
   const [expanded, setExpanded] = useState(false);
   const [shouldRevealEditor, setShouldRevealEditor] = useState(false);
+  const [listScrollTop, setListScrollTop] = useState(0);
   const pickerRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const editorId = useId();
   const errorId = useId();
+  const deferredQuery = useDeferredValue(query.trim());
   const selectedKeys = useMemo(
     () => new Set(value.map((target) => getPublicationTargetKey(target))),
     [value],
   );
-  const visibleChoices = useMemo(
+  const filteredChoices = useMemo(
     () =>
       choices.filter(
         (choice) =>
           (filter === 'all' || choice.entityType === filter) &&
-          matchesPublicationSearch([choice.title], query),
+          matchesPublicationSearch([choice.title], deferredQuery),
       ),
-    [choices, filter, query],
+    [choices, deferredQuery, filter],
   );
+  const shouldVirtualize = filteredChoices.length > TARGET_LIST_VIRTUALIZATION_THRESHOLD;
+  const virtualRange = useMemo(
+    () =>
+      resolveVirtualListRange({
+        itemCount: filteredChoices.length,
+        scrollTop: listScrollTop,
+        viewportHeight: TARGET_LIST_VIEWPORT_HEIGHT,
+        rowHeight: TARGET_ROW_HEIGHT,
+        overscan: TARGET_LIST_OVERSCAN,
+      }),
+    [filteredChoices.length, listScrollTop],
+  );
+  const renderedChoices = shouldVirtualize
+    ? filteredChoices.slice(virtualRange.startIndex, virtualRange.endIndex)
+    : filteredChoices;
+  const renderedOffset = virtualRange.startIndex * TARGET_ROW_HEIGHT;
   const collapsedSelectedSummary =
     value.length === 0
       ? 'Выберите получателей'
@@ -80,7 +114,7 @@ export function PublicationTargetPicker({
           : 'Чаты и каналы';
   const hasHiddenSelection = value.some(
     (target) =>
-      !visibleChoices.some(
+      !filteredChoices.some(
         (choice) => getPublicationTargetKey(choice) === getPublicationTargetKey(target),
       ),
   );
@@ -109,20 +143,21 @@ export function PublicationTargetPicker({
     return () => window.cancelAnimationFrame(frameId);
   }, [expanded, shouldRevealEditor]);
 
+  useEffect(() => {
+    setListScrollTop(0);
+    listRef.current?.scrollTo({ top: 0 });
+  }, [deferredQuery, filter]);
+
   function toggleTarget(target: PublicationTarget) {
-    if (target.readiness && !target.readiness.canPublish) {
-      return;
-    }
-    const key = getPublicationTargetKey(target);
-    if (!selectedKeys.has(key) && value.length >= maxTargets) {
+    const result = togglePublicationTargetSelection(value, target, maxTargets);
+    if (result.outcome === 'blocked_limit') {
       onLimitReached?.();
       return;
     }
-    onChange(
-      selectedKeys.has(key)
-        ? value.filter((item) => getPublicationTargetKey(item) !== key)
-        : [...value, target],
-    );
+    if (result.outcome === 'blocked_unavailable') {
+      return;
+    }
+    onChange(result.targets);
   }
 
   function toggleEditor() {
@@ -134,6 +169,52 @@ export function PublicationTargetPicker({
 
     setExpanded(true);
     setShouldRevealEditor(true);
+  }
+
+  function renderChoice(choice: PublicationTarget) {
+    const selected = selectedKeys.has(getPublicationTargetKey(choice));
+    const unavailable = Boolean(choice.readiness && !choice.readiness.canPublish);
+    const readinessLabel = choice.readiness
+      ? getPublisherReadinessLabel(choice.readiness)
+      : choice.entityType === 'channel'
+        ? 'Канал'
+        : 'Чат';
+    return (
+      <button
+        key={getPublicationTargetKey(choice)}
+        type="button"
+        className={cn(
+          'publication-target-row',
+          selected && 'is-selected',
+          unavailable && 'is-unavailable',
+        )}
+        aria-pressed={selected}
+        aria-disabled={disabled || (unavailable && !selected)}
+        aria-label={
+          unavailable && !selected
+            ? `${choice.title}, ${readinessLabel}`
+            : `${selected ? 'Убрать' : 'Выбрать'} ${choice.title}, ${
+                choice.entityType === 'channel' ? 'канал' : 'чат'
+              }`
+        }
+        onClick={() => toggleTarget(choice)}
+        disabled={disabled}
+      >
+        <EntityAvatar
+          title={choice.title}
+          entityType={choice.entityType}
+          avatarUrl={choice.avatarUrl}
+          className="publication-target-row__avatar"
+        />
+        <span className="publication-target-row__copy">
+          <strong>{choice.title}</strong>
+          <small>{readinessLabel}</small>
+        </span>
+        <span className="publication-target-row__check" aria-hidden>
+          {selected ? <Check /> : null}
+        </span>
+      </button>
+    );
   }
 
   return (
@@ -237,53 +318,36 @@ export function PublicationTargetPicker({
             ))}
           </div>
 
-          <div className="publication-target-picker__list" role="group" aria-label="Получатели">
-            {visibleChoices.length > 0 ? (
-              visibleChoices.map((choice) => {
-                const selected = selectedKeys.has(getPublicationTargetKey(choice));
-                const unavailable = Boolean(choice.readiness && !choice.readiness.canPublish);
-                const readinessLabel =
-                  choice.readiness?.state === 'disabled'
-                    ? 'Публик выключен'
-                    : choice.readiness?.state === 'temporarily_unavailable'
-                      ? 'Временно недоступен'
-                      : unavailable
-                        ? 'Нужно подключить Публик'
-                        : choice.entityType === 'channel'
-                          ? 'Канал'
-                          : 'Чат';
-                return (
-                  <button
-                    key={getPublicationTargetKey(choice)}
-                    type="button"
-                    className={cn(
-                      'publication-target-row',
-                      selected && 'is-selected',
-                      unavailable && 'is-unavailable',
-                    )}
-                    aria-pressed={selected}
-                    aria-label={`${selected ? 'Убрать' : 'Выбрать'} ${choice.title}, ${
-                      choice.entityType === 'channel' ? 'канал' : 'чат'
-                    }`}
-                    onClick={() => toggleTarget(choice)}
-                    disabled={disabled || unavailable}
+          <div
+            ref={listRef}
+            className={cn(
+              'publication-target-picker__list',
+              shouldVirtualize && 'is-virtual',
+            )}
+            role="group"
+            aria-label="Получатели"
+            onScroll={
+              shouldVirtualize
+                ? (event) => setListScrollTop(event.currentTarget.scrollTop)
+                : undefined
+            }
+          >
+            {filteredChoices.length > 0 ? (
+              shouldVirtualize ? (
+                <div
+                  className="publication-target-picker__virtual-spacer"
+                  style={{ height: `${virtualRange.totalHeight}px` } as CSSProperties}
+                >
+                  <div
+                    className="publication-target-picker__virtual-window"
+                    style={{ transform: `translateY(${renderedOffset}px)` }}
                   >
-                    <EntityAvatar
-                      title={choice.title}
-                      entityType={choice.entityType}
-                      avatarUrl={choice.avatarUrl}
-                      className="publication-target-row__avatar"
-                    />
-                    <span className="publication-target-row__copy">
-                      <strong>{choice.title}</strong>
-                      <small>{readinessLabel}</small>
-                    </span>
-                    <span className="publication-target-row__check" aria-hidden>
-                      {selected ? <Check /> : null}
-                    </span>
-                  </button>
-                );
-              })
+                    {renderedChoices.map(renderChoice)}
+                  </div>
+                </div>
+              ) : (
+                renderedChoices.map(renderChoice)
+              )
             ) : (
               <span className="publication-target-picker__empty" role="status">
                 Ничего не найдено

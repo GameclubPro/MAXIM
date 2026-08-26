@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getMe } from '../src/lib/api/me-client';
-import { listPublisherEntities } from '../src/lib/api/publisher-client';
+import {
+  getPublisherEntity,
+  listPublisherEntities,
+  updatePublisherPolicy,
+} from '../src/lib/api/publisher-client';
+import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { createInitialState } from '../src/lib/api/preview-transport-state';
 import { systemPreviewClock } from '../src/lib/api/preview-transport-runtime';
 
@@ -54,6 +59,103 @@ test('publisher entities preserve unready targets for the picker', async () => {
   const response = await listPublisherEntities(api as never);
   assert.equal(response.items.length, 1);
   assert.equal(response.items[0]?.readiness.canPublish, false);
+});
+
+test('publisher entity client encodes ids and validates policy update payloads', async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const entity = {
+    id: 'channel/with?symbols',
+    title: 'Канал',
+    entityType: 'channel',
+    policy: {
+      publikEnabled: true,
+      suggestionsViaPublik: false,
+      revision: 4,
+      updatedAt: null,
+    },
+    readiness: {
+      state: 'ready',
+      canPublish: true,
+      canUseChatComments: false,
+      canPublishSuggestions: false,
+      blockerCode: null,
+      checkedAt: null,
+      retryAt: null,
+    },
+  };
+  const api = {
+    request: async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return init?.method === 'PATCH' ? { ...entity.policy, revision: 5 } : entity;
+    },
+  };
+
+  await getPublisherEntity(api as never, 'channel', entity.id);
+  const policy = await updatePublisherPolicy(api as never, 'channel', entity.id, {
+    expectedRevision: 4,
+    suggestionsViaPublik: true,
+  });
+
+  assert.equal(
+    calls[0]?.path,
+    '/publisher/entities/channel/channel%2Fwith%3Fsymbols',
+  );
+  assert.equal(
+    calls[1]?.path,
+    '/publisher/entities/channel/channel%2Fwith%3Fsymbols/policy',
+  );
+  assert.equal(calls[1]?.init?.method, 'PATCH');
+  assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
+    expectedRevision: 4,
+    suggestionsViaPublik: true,
+  });
+  assert.equal(policy.revision, 5);
+});
+
+test('publisher update rejects an empty policy change before transport', async () => {
+  let requested = false;
+  const api = {
+    request: async () => {
+      requested = true;
+      return {};
+    },
+  };
+
+  await assert.rejects(
+    updatePublisherPolicy(api as never, 'chat', 'chat-1', { expectedRevision: 0 }),
+    /Specify at least one publication policy field/u,
+  );
+  assert.equal(requested, false);
+});
+
+test('preview publisher list includes ready, setup, temporary, empty, and error states', async () => {
+  const mixed = await listPublisherEntities(
+    createPreviewApiTransport({ search: '?profile=publisher' }),
+  );
+  assert.equal(mixed.items.length, 4);
+  assert.ok(mixed.items.some((item) => item.readiness.state === 'ready'));
+  assert.ok(mixed.items.some((item) => item.readiness.blockerCode === 'bot_not_connected'));
+  assert.ok(
+    mixed.items.some((item) => item.readiness.blockerCode === 'publisher_runtime_unavailable'),
+  );
+
+  const empty = await listPublisherEntities(
+    createPreviewApiTransport({ search: '?profile=publisher&publisherState=empty' }),
+  );
+  assert.deepEqual(empty.items, []);
+
+  const large = await listPublisherEntities(
+    createPreviewApiTransport({ search: '?profile=publisher&publisherState=large' }),
+  );
+  assert.equal(large.items.length, 400);
+  assert.equal(new Set(large.items.map((item) => item.id)).size, 400);
+
+  await assert.rejects(
+    listPublisherEntities(
+      createPreviewApiTransport({ search: '?profile=publisher&publisherState=error' }),
+    ),
+    /unavailable/u,
+  );
 });
 
 test('preview can render the isolated publisher profile', () => {

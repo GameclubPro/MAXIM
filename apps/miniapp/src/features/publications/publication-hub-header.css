@@ -1,0 +1,34 @@
+@layer pages {
+  .publications-page.is-publisher {
+    --accent: #0f5c42;
+    --accent-soft: #e2f3eb;
+    --color-accent: #0f5c42;
+    --color-accent-soft: #e2f3eb;
+  }
+
+  .publications-header h1 {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .publications-header h1 svg {
+    width: 22px;
+    height: 22px;
+    color: var(--color-accent);
+  }
+
+  .publications-primary:disabled {
+    cursor: not-allowed;
+    filter: saturate(0.45);
+    opacity: 0.58;
+  }
+
+  html[data-max-theme='dark'] .publications-page.is-publisher {
+    --accent: #62c69f;
+    --accent-soft: #17372b;
+    --color-accent: #62c69f;
+    --color-accent-soft: #17372b;
+    --publication-ui-on-accent: #0b1a14;
+  }
+}

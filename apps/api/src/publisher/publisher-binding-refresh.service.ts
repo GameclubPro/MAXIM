@@ -20,10 +20,15 @@ import {
 const PUBLISHER_ACCESS_SNAPSHOT_TTL_MS = 15 * 60_000;
 const PUBLISHER_BOOTSTRAP_SCAN_INTERVAL_MS = 60_000;
 const PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE = 100;
-const PUBLISHER_STALE_REFRESH_BATCH_SIZE = 100;
+const PUBLISHER_READY_REFRESH_BATCH_SIZE = 200;
+const PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE = 25;
 const PUBLISHER_ACCESS_REFRESH_AHEAD_MS = 2 * 60_000;
+const PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS = 5 * 60_000;
+const PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS = 15 * 60_000;
+const PUBLISHER_LOST_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
 
 type PublisherBootstrapCandidate = { id: string };
+type PublisherBindingRefreshCandidate = { chatId: string };
 
 @Injectable()
 export class PublisherBindingRefreshService {
@@ -196,6 +201,7 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
   private cursor: string | null = null;
+  private discoveryCursor: string | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -243,36 +249,8 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
         await this.identityAttestation.assertAttested();
         const now = new Date();
         const bootstrapCandidates = await this.readBootstrapCandidates();
-        const staleBindings = await this.prisma.publisherEntityBinding.findMany({
-          where: {
-            publisherBotId: this.publisherBotId,
-            status: ChatBotMembershipStatus.ACTIVE,
-            chat: {
-              botMemberships: {
-                some: {
-                  status: ChatBotMembershipStatus.ACTIVE,
-                  botId: { not: this.publisherBotId },
-                },
-              },
-              OR: [
-                { publicationPolicy: { is: null } },
-                { publicationPolicy: { is: { publikEnabled: true } } },
-              ],
-            },
-            OR: [
-              { botAccessCheckedAt: null },
-              { botAccessExpiresAt: null },
-              {
-                botAccessExpiresAt: {
-                  lte: new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS),
-                },
-              },
-            ],
-          },
-          select: { chatId: true },
-          orderBy: { chatId: 'asc' },
-          take: PUBLISHER_STALE_REFRESH_BATCH_SIZE,
-        });
+        const readyBindings = await this.readReadyRefreshCandidates(now);
+        const discoveryBindings = await this.readDiscoveryRefreshCandidates(now);
 
         for (const candidate of bootstrapCandidates) {
           await this.refreshService.ensureBinding(candidate.id);
@@ -283,7 +261,7 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
             requestedAt: now,
           });
         }
-        for (const binding of staleBindings) {
+        for (const binding of [...readyBindings, ...discoveryBindings]) {
           await this.refreshQueue.enqueue({
             chatId: binding.chatId,
             publisherBotId: this.publisherBotId,
@@ -296,6 +274,10 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
           bootstrapCandidates.length < PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE
             ? null
             : (bootstrapCandidates.at(-1)?.id ?? null);
+        this.discoveryCursor =
+          discoveryBindings.length < PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE
+            ? null
+            : (discoveryBindings.at(-1)?.chatId ?? null);
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -342,5 +324,95 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
       ORDER BY chat."id" ASC
       LIMIT ${PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE}
     `);
+  }
+
+  private readReadyRefreshCandidates(now: Date): Promise<PublisherBindingRefreshCandidate[]> {
+    const refreshBefore = new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS);
+    return this.prisma.publisherEntityBinding.findMany({
+      where: {
+        publisherBotId: this.publisherBotId,
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: {
+          in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
+        },
+        chat: this.managedChatFilter(),
+        OR: [{ botAccessExpiresAt: null }, { botAccessExpiresAt: { lte: refreshBefore } }],
+      },
+      select: { chatId: true },
+      orderBy: [{ botAccessExpiresAt: { sort: 'asc', nulls: 'first' } }, { chatId: 'asc' }],
+      take: PUBLISHER_READY_REFRESH_BATCH_SIZE,
+    });
+  }
+
+  private readDiscoveryRefreshCandidates(now: Date): Promise<PublisherBindingRefreshCandidate[]> {
+    const unknownRetryBefore = new Date(now.getTime() - PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS);
+    const nonAdminRetryBefore = new Date(now.getTime() - PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS);
+    const lostRetryBefore = new Date(now.getTime() - PUBLISHER_LOST_REPROBE_COOLDOWN_MS);
+    const refreshBefore = new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS);
+    return this.prisma.publisherEntityBinding.findMany({
+      where: {
+        publisherBotId: this.publisherBotId,
+        status: ChatBotMembershipStatus.ACTIVE,
+        ...(this.discoveryCursor ? { chatId: { gt: this.discoveryCursor } } : {}),
+        chat: this.managedChatFilter(),
+        OR: [
+          {
+            botAccessState: ChatBotAccessState.UNKNOWN,
+            OR: [
+              { botAccessCheckedAt: { lte: unknownRetryBefore } },
+              {
+                botAccessCheckedAt: null,
+                updatedAt: { lte: unknownRetryBefore },
+              },
+            ],
+          },
+          {
+            botAccessState: {
+              in: [ChatBotAccessState.CONFIRMED_MEMBER, ChatBotAccessState.STALE],
+            },
+            OR: [
+              { botAccessExpiresAt: { lte: refreshBefore } },
+              {
+                botAccessExpiresAt: null,
+                botAccessCheckedAt: { lte: nonAdminRetryBefore },
+              },
+              {
+                botAccessExpiresAt: null,
+                botAccessCheckedAt: null,
+                updatedAt: { lte: nonAdminRetryBefore },
+              },
+            ],
+          },
+          {
+            botAccessState: { in: [ChatBotAccessState.DENIED, ChatBotAccessState.LOST] },
+            OR: [
+              { botAccessCheckedAt: { lte: lostRetryBefore } },
+              {
+                botAccessCheckedAt: null,
+                updatedAt: { lte: unknownRetryBefore },
+              },
+            ],
+          },
+        ],
+      },
+      select: { chatId: true },
+      orderBy: { chatId: 'asc' },
+      take: PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE,
+    });
+  }
+
+  private managedChatFilter() {
+    return {
+      botMemberships: {
+        some: {
+          status: ChatBotMembershipStatus.ACTIVE,
+          botId: { not: this.publisherBotId },
+        },
+      },
+      OR: [
+        { publicationPolicy: { is: null } },
+        { publicationPolicy: { is: { publikEnabled: true } } },
+      ],
+    } satisfies Prisma.ChatWhereInput;
   }
 }

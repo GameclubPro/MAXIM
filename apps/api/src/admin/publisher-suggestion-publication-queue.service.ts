@@ -25,12 +25,21 @@ import {
   type PublisherSuggestionPublicationJob,
 } from './publisher-suggestion-publication.queue';
 
+const PUBLISHER_SUGGESTION_RECOVERY_PAGE_SIZE = 100;
+const PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES = 2;
+
+type PublisherSuggestionRecoveryCursor = {
+  createdAt: Date;
+  id: string;
+};
+
 @Injectable()
 export class PublisherSuggestionPublicationQueueService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PublisherSuggestionPublicationQueueService.name);
   private readonly recoveryEnabled = roleRunsPublisher(getAppRole());
   private recoveryTimer: NodeJS.Timeout | null = null;
   private recoveryInFlight: Promise<void> | null = null;
+  private recoveryCursor: PublisherSuggestionRecoveryCursor | null = null;
 
   constructor(
     @InjectQueue(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE)
@@ -113,27 +122,69 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
       if (await this.dispatchHealth.isGloballyPaused()) {
         return;
       }
-      const rows = await this.prisma.auditLog.findMany({
-        where: {
-          action: CHANNEL_DIALOG_ACTION_SUGGEST,
-          AND: [
-            { payload: { path: ['reviewStatus'], equals: 'publishing' } },
-            { payload: { path: ['reviewDispatchProfile'], equals: 'PUBLIK_V1' } },
-          ],
-        },
-        select: { id: true, payload: true },
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-        take: 100,
-      });
-      for (const row of rows) {
-        const payload =
-          row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-            ? (row.payload as Record<string, unknown>)
-            : {};
-        const claim = readChannelSuggestionPublicationClaimV1(payload, row.id);
-        if (claim) {
-          await this.enqueue(row.id, claim.claimToken);
+      let cursor = this.recoveryCursor;
+      let failedClaims = 0;
+      let firstFailure: unknown = null;
+      for (let page = 0; page < PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES; page += 1) {
+        const rows = await this.prisma.auditLog.findMany({
+          where: {
+            action: CHANNEL_DIALOG_ACTION_SUGGEST,
+            AND: [
+              { payload: { path: ['reviewStatus'], equals: 'publishing' } },
+              { payload: { path: ['reviewDispatchProfile'], equals: 'PUBLIK_V1' } },
+              ...(cursor
+                ? [
+                    {
+                      OR: [
+                        { createdAt: { gt: cursor.createdAt } },
+                        { createdAt: cursor.createdAt, id: { gt: cursor.id } },
+                      ],
+                    },
+                  ]
+                : []),
+            ],
+          },
+          select: { id: true, payload: true, createdAt: true },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          take: PUBLISHER_SUGGESTION_RECOVERY_PAGE_SIZE,
+        });
+        if (rows.length === 0) {
+          this.recoveryCursor = null;
+          break;
         }
+        for (const row of rows) {
+          const payload =
+            row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+              ? (row.payload as Record<string, unknown>)
+              : {};
+          const claim = readChannelSuggestionPublicationClaimV1(payload, row.id);
+          if (!claim) {
+            continue;
+          }
+          try {
+            await this.enqueue(row.id, claim.claimToken);
+          } catch (error: unknown) {
+            failedClaims += 1;
+            firstFailure ??= error;
+          }
+        }
+
+        const lastRow = rows.at(-1)!;
+        cursor = { createdAt: lastRow.createdAt, id: lastRow.id };
+        this.recoveryCursor =
+          rows.length === PUBLISHER_SUGGESTION_RECOVERY_PAGE_SIZE ? cursor : null;
+        if (!this.recoveryCursor) {
+          break;
+        }
+      }
+      if (failedClaims > 0) {
+        this.logger.warn(
+          {
+            failedClaims,
+            err: firstFailure instanceof Error ? firstFailure.message : String(firstFailure),
+          },
+          'Failed to recover some queued Publik suggestion publications',
+        );
       }
     } catch (error: unknown) {
       this.logger.warn(

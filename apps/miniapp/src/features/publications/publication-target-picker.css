@@ -2,4 +2,30 @@
   .publication-target-row.is-unavailable {
     opacity: 0.66;
   }
+
+  .publication-target-row:not([aria-disabled='true']),
+  .publication-target-row.is-unavailable[aria-pressed='true'] {
+    cursor: pointer;
+  }
+
+  .publication-target-row[aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+
+  .publication-target-picker__virtual-spacer {
+    position: relative;
+    width: 100%;
+  }
+
+  .publication-target-picker__virtual-window {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+  }
+
+  .publication-target-picker__list.is-virtual .publication-target-row {
+    height: 58px;
+    min-height: 58px;
+  }
 }

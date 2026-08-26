@@ -1,7 +1,8 @@
-import { DelayedError, type Job } from 'bullmq';
+import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
 import { PublisherChatCommentProcessor } from './publisher-chat-comment.processor';
 import type { PublisherChatCommentJob } from './publisher-chat-comment.queue';
 import { PublisherDispatchPausedError } from './publisher-dispatch-health.service';
+import { PublisherSetupRequiredException } from './publisher-errors';
 import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from './publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationError } from './publisher-identity-attestation.service';
 import { PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS } from './publisher-identity-attestation-job-guard';
@@ -130,6 +131,80 @@ describe('PublisherChatCommentProcessor', () => {
       attemptsMade: 12,
       maxAttempts: 12,
     });
+  });
+
+  it('terminalizes a setup-blocked attach after its first actual delivery attempt', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const setupError = new PublisherSetupRequiredException(['chat-1'], 'bot_not_connected');
+    const delivery = { process: jest.fn().mockRejectedValue(setupError) };
+    const processor = new PublisherChatCommentProcessor(
+      delivery as never,
+      createAttestation() as never,
+      createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
+    );
+    const job = {
+      data: attachJob,
+      attemptsMade: 0,
+      opts: { attempts: 12 },
+    } as Job<PublisherChatCommentJob>;
+
+    const failure = await processor.process(job).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(UnrecoverableError);
+    expect(failure).toMatchObject({
+      message: 'Publisher chat-comment setup blocked: bot_not_connected',
+    });
+    expect(delivery.process).toHaveBeenCalledTimes(1);
+    expect(delivery.process).toHaveBeenCalledWith(attachJob, {
+      final: false,
+      attemptsMade: 1,
+      maxAttempts: 12,
+    });
+  });
+
+  it('keeps non-setup attach failures on the configured automatic retry path', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const transientError = new Error('temporary MAX transport failure');
+    const delivery = { process: jest.fn().mockRejectedValue(transientError) };
+    const processor = new PublisherChatCommentProcessor(
+      delivery as never,
+      createAttestation() as never,
+      createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
+    );
+
+    await expect(
+      processor.process({
+        data: attachJob,
+        attemptsMade: 0,
+        opts: { attempts: 12 },
+      } as Job<PublisherChatCommentJob>),
+    ).rejects.toBe(transientError);
+    expect(delivery.process).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not suppress keyboard retries when entity readiness changes', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const setupError = new PublisherSetupRequiredException(['chat-1'], 'bot_not_connected');
+    const delivery = { process: jest.fn().mockRejectedValue(setupError) };
+    const processor = new PublisherChatCommentProcessor(
+      delivery as never,
+      createAttestation() as never,
+      createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
+    );
+
+    await expect(
+      processor.process({
+        data: keyboardJob,
+        attemptsMade: 0,
+        opts: { attempts: 8 },
+      } as Job<PublisherChatCommentJob>),
+    ).rejects.toBe(setupError);
   });
 
   it('delays a keyboard edit without consuming an attempt while identity is unattested', async () => {

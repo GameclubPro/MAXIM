@@ -138,6 +138,59 @@ describe('PublisherDispatchHealthService', () => {
     });
   });
 
+  it('waits for a connecting Redis client before the first startup read', async () => {
+    const { service, redis } = createHarness();
+    const listeners = new Map<string, () => void>();
+    Object.assign(redis, {
+      status: 'connecting',
+      once: jest.fn((event: string, listener: () => void) => {
+        listeners.set(event, listener);
+        return redis;
+      }),
+      off: jest.fn((event: string, listener: () => void) => {
+        if (listeners.get(event) === listener) {
+          listeners.delete(event);
+        }
+        return redis;
+      }),
+    });
+
+    const paused = service.isGloballyPaused();
+    expect(redis.get).not.toHaveBeenCalled();
+
+    Object.assign(redis, { status: 'ready' });
+    listeners.get('ready')?.();
+
+    await expect(paused).resolves.toBe(false);
+    expect(redis.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed with a controlled unavailable error when startup Redis ends', async () => {
+    const { service, redis } = createHarness();
+    const listeners = new Map<string, () => void>();
+    Object.assign(redis, {
+      status: 'end',
+      once: jest.fn((event: string, listener: () => void) => {
+        listeners.set(event, listener);
+        return redis;
+      }),
+      off: jest.fn((event: string, listener: () => void) => {
+        if (listeners.get(event) === listener) {
+          listeners.delete(event);
+        }
+        return redis;
+      }),
+    });
+
+    const paused = service.isGloballyPaused();
+
+    await expect(paused).rejects.toMatchObject({
+      name: PublisherDispatchHealthUnavailableError.name,
+      code: 'PUBLISHER_DISPATCH_HEALTH_UNAVAILABLE',
+    });
+    expect(redis.get).not.toHaveBeenCalled();
+  });
+
   it('keeps an unreadable stored marker paused instead of classifying it as unavailable', async () => {
     const { service, values } = createHarness();
     values.set('publisher:dispatch:pause:v1:publik_bot', '{invalid-json');

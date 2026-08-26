@@ -10,10 +10,12 @@ import {
 } from 'iconoir-react';
 import { useEffect } from 'react';
 import { Link } from 'react-router';
+import { openMaxBotLink } from '../lib/max-bridge';
 import '../styles/publik-page.css';
 
 const PAGE_DESCRIPTION =
   'Публик - бот для подготовки и публикации постов в чатах и каналах MAX.';
+const PUBLIK_BOT_URL = 'https://max.ru/se14088825_bot';
 
 function setMetaContent(selector: string, content: string): string | null {
   const element = document.querySelector<HTMLMetaElement>(selector);
@@ -76,10 +78,23 @@ export function PublikPage() {
           <span className="publik-kicker">Бот для MAX</span>
           <h1 id="publik-title">Публик</h1>
           <p>Готовьте посты, выбирайте время и публикуйте в свои чаты и каналы.</p>
-          <a className="publik-primary-link" href="#features">
-            <span>Что умеет бот</span>
-            <NavArrowRight aria-hidden />
-          </a>
+          <div className="publik-hero__actions">
+            <a
+              className="publik-primary-link"
+              href={PUBLIK_BOT_URL}
+              onClick={(event) => {
+                event.preventDefault();
+                openMaxBotLink(PUBLIK_BOT_URL);
+              }}
+            >
+              <SendDiagonal aria-hidden />
+              <span>Открыть Публик</span>
+            </a>
+            <a className="publik-secondary-link" href="#features">
+              <span>Возможности</span>
+              <NavArrowRight aria-hidden />
+            </a>
+          </div>
         </div>
 
         <div className="publik-preview" aria-label="Пример публикации">

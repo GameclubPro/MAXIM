@@ -42,6 +42,12 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/styles/legal-page.css',
     'apps/miniapp/src/lib/public-legal-route.ts',
   ],
+  publik: [
+    'apps/miniapp/src/pages/publik-page.tsx',
+    'apps/miniapp/src/styles/publik-page.css',
+    'apps/miniapp/src/lib/max-bridge.ts',
+    'apps/miniapp/src/lib/public-legal-route.ts',
+  ],
   links: [
     'apps/miniapp/src/components/broadcast-link-*.tsx',
     'apps/miniapp/src/styles/settings-link-allowlist.css',
@@ -55,9 +61,18 @@ const FEATURE_SOURCE_GLOBS = {
   publisher: [
     'apps/miniapp/src/app.tsx',
     'apps/miniapp/src/components/shell.tsx',
-    'apps/miniapp/src/features/publications/publication-page-options.ts',
-    'apps/miniapp/src/features/publications/use-publication-target-sources.ts',
+    'apps/miniapp/src/components/publisher-policy-card.*',
+    'apps/miniapp/src/features/publications/publication-hub-header.*',
+    'apps/miniapp/src/features/publications/*publisher*.*',
+    'apps/miniapp/src/features/publications/publication-target-*.*',
+    'apps/miniapp/src/lib/publisher-readiness*.ts',
     'apps/miniapp/src/lib/api/publisher-client.ts',
+    'apps/miniapp/src/lib/api/preview-transport-state.ts',
+    'apps/miniapp/src/lib/api/preview-transport-publisher.ts',
+    'apps/miniapp/src/lib/api/preview-transport-system.ts',
+    'apps/miniapp/src/pages/publications-page.tsx',
+    'apps/miniapp/src/styles/publications-page.css',
+    'packages/contracts/src/publisher.ts',
   ],
   settings: [
     'apps/miniapp/src/pages/settings-page*.ts*',
@@ -106,6 +121,15 @@ const ROUTE_DEFINITIONS = {
     coldScenario: 'publications',
     features: ['publications'],
     sourceGlobs: FEATURE_SOURCE_GLOBS.publications,
+  },
+  publik: {
+    pattern: '/publik',
+    previewPath: '/publik',
+    manifestEntry: 'src/pages/publik-page.tsx',
+    readySelector: '.publik-page',
+    coldScenario: 'publik',
+    features: ['publik'],
+    sourceGlobs: FEATURE_SOURCE_GLOBS.publik,
   },
   autoposts: {
     pattern: '/autoposts',
@@ -289,6 +313,45 @@ const baseScenarios = [
   ...defineRouteScenarios('publications', [
     'publications',
     ['publications-publisher', { searchParams: { profile: 'publisher' }, features: ['publisher'] }],
+    [
+      'publications-publisher-readiness',
+      { searchParams: { profile: 'publisher' }, features: ['publisher'] },
+    ],
+    [
+      'publications-publisher-empty',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'empty' },
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publications-publisher-large',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'large' },
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publications-publisher-error',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'error' },
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publications-publisher-compose',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-compose-large',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'large', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
     'publications-actions',
     'publications-edit-discard',
     'publications-retry-choice',
@@ -317,6 +380,14 @@ const baseScenarios = [
   ]),
   ...defineRouteScenarios('chat-settings', [
     'chat-settings',
+    [
+      'chat-settings-publisher-policy-setup',
+      { searchParams: { publisherPolicyState: 'setup' }, features: ['publisher'] },
+    ],
+    [
+      'chat-settings-publisher-policy-error',
+      { searchParams: { publisherPolicyState: 'error' }, features: ['publisher'] },
+    ],
     [
       'chat-settings-auth-expired',
       { searchParams: { settingsError: 'auth-expired' }, readySelector: '.status-state' },
@@ -454,6 +525,10 @@ const baseScenarios = [
     preview: false,
     maxBridge: false,
   }),
+  defineScenario('publik', 'publik', {
+    preview: false,
+    maxBridge: false,
+  }),
   defineScenario('legal-privacy', 'legal-privacy', {
     preview: false,
     maxBridge: false,
@@ -520,6 +595,7 @@ export const MINIAPP_VISUAL_PRESETS = Object.freeze({
       'home',
       'publications',
       'publications-publisher',
+      'publik',
       'chat-settings',
       'channel-settings',
       'channel-stats',

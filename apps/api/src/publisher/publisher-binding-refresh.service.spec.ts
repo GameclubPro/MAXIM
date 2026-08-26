@@ -216,7 +216,10 @@ describe('PublisherBindingRefreshService', () => {
     const prisma = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'chat-bootstrap' }]),
       publisherEntityBinding: {
-        findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-stale' }]),
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([{ chatId: 'chat-ready' }])
+          .mockResolvedValueOnce([{ chatId: 'chat-discovery' }]),
       },
     };
     const refreshService = { ensureBinding: jest.fn().mockResolvedValue(undefined) };
@@ -240,11 +243,23 @@ describe('PublisherBindingRefreshService', () => {
 
     expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 100 }),
+    expect(prisma.publisherEntityBinding.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        take: 200,
+        where: expect.objectContaining({
+          botAccessState: {
+            in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
+          },
+        }),
+      }),
+    );
+    expect(prisma.publisherEntityBinding.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ take: 25 }),
     );
     expect(refreshService.ensureBinding).toHaveBeenCalledWith('chat-bootstrap');
-    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(2);
+    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(3);
     scheduler.onModuleDestroy();
   });
 
@@ -275,7 +290,161 @@ describe('PublisherBindingRefreshService', () => {
     resolveBootstrap([]);
     await scan;
 
-    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('prioritizes an expiring ready binding and cools down 2500 fresh LOST rows', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    try {
+      const checkedAt = new Date('2026-08-26T11:59:30.000Z');
+      const freshLost = Array.from({ length: 2_500 }, (_, index) => ({
+        chatId: `lost-${String(index).padStart(4, '0')}`,
+        botAccessCheckedAt: checkedAt,
+      }));
+      const ready = {
+        chatId: 'ready-expiring',
+        botAccessExpiresAt: new Date('2026-08-26T12:01:00.000Z'),
+      };
+      const findMany = jest.fn(
+        async (query: {
+          where: {
+            chatId?: { gt?: string };
+            botAccessState?: { in?: ChatBotAccessState[] };
+            OR?: Array<{
+              botAccessExpiresAt?: { lte?: Date } | null;
+              botAccessState?: { in?: ChatBotAccessState[] };
+              OR?: Array<{ botAccessCheckedAt?: { lte?: Date } | null }>;
+            }>;
+          };
+          take: number;
+        }) => {
+          if (query.where.botAccessState?.in?.includes(ChatBotAccessState.CONFIRMED_ADMIN)) {
+            const refreshBefore = query.where.OR?.find(
+              (branch) => branch.botAccessExpiresAt && 'lte' in branch.botAccessExpiresAt,
+            )?.botAccessExpiresAt?.lte;
+            return refreshBefore && ready.botAccessExpiresAt <= refreshBefore
+              ? [{ chatId: ready.chatId }]
+              : [];
+          }
+
+          const lostBranch = query.where.OR?.find((branch) =>
+            branch.botAccessState?.in?.includes(ChatBotAccessState.LOST),
+          );
+          const retryBefore = lostBranch?.OR?.find(
+            (branch) => branch.botAccessCheckedAt && 'lte' in branch.botAccessCheckedAt,
+          )?.botAccessCheckedAt?.lte;
+          return freshLost
+            .filter(
+              (row) =>
+                retryBefore !== undefined &&
+                row.botAccessCheckedAt <= retryBefore &&
+                (!query.where.chatId?.gt || row.chatId > query.where.chatId.gt),
+            )
+            .slice(0, query.take)
+            .map(({ chatId }) => ({ chatId }));
+        },
+      );
+      const prisma = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        publisherEntityBinding: { findMany },
+      };
+      const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+      const scheduler = new PublisherBindingBootstrapSchedulerService(
+        prisma as never,
+        { ensureBinding: jest.fn() } as never,
+        refreshQueue as never,
+        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+        { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
+        { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+        { dispatchEnabled: true } as never,
+        createBackgroundWork() as never,
+      );
+
+      await scheduler.scan('scheduled');
+      jest.advanceTimersByTime(60_000);
+      await scheduler.scan('scheduled');
+
+      expect(refreshQueue.enqueue).toHaveBeenCalledTimes(2);
+      expect(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).toEqual([
+        'ready-expiring',
+        'ready-expiring',
+      ]);
+      const discoveryQueries = findMany.mock.calls
+        .map(([query]) => query)
+        .filter((query) => query.where.botAccessState === undefined);
+      expect(discoveryQueries).toHaveLength(2);
+      const lostRetryCutoffs = discoveryQueries.map((query) => {
+        const lostBranch = query.where.OR?.find((branch) =>
+          branch.botAccessState?.in?.includes(ChatBotAccessState.LOST),
+        );
+        expect(lostBranch).toEqual(
+          expect.objectContaining({
+            OR: expect.arrayContaining([
+              expect.objectContaining({
+                botAccessCheckedAt: { lte: expect.any(Date) },
+              }),
+            ]),
+          }),
+        );
+        return lostBranch?.OR?.find(
+          (branch) => branch.botAccessCheckedAt && 'lte' in branch.botAccessCheckedAt,
+        )?.botAccessCheckedAt?.lte;
+      });
+      expect(lostRetryCutoffs).toEqual([
+        new Date('2026-08-26T06:00:00.000Z'),
+        new Date('2026-08-26T06:01:00.000Z'),
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('advances the disconnected discovery cursor across repeated scans', async () => {
+    const eligible = Array.from({ length: 60 }, (_, index) => ({
+      chatId: `lost-${String(index).padStart(3, '0')}`,
+    }));
+    const discoveryCursors: Array<string | null> = [];
+    const findMany = jest.fn(
+      async (query: {
+        where: {
+          chatId?: { gt?: string };
+          botAccessState?: { in?: ChatBotAccessState[] };
+        };
+        take: number;
+      }) => {
+        if (query.where.botAccessState) {
+          return [];
+        }
+        const cursor = query.where.chatId?.gt ?? null;
+        discoveryCursors.push(cursor);
+        return eligible.filter((row) => !cursor || row.chatId > cursor).slice(0, query.take);
+      },
+    );
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      publisherEntityBinding: { findMany },
+    };
+    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new PublisherBindingBootstrapSchedulerService(
+      prisma as never,
+      { ensureBinding: jest.fn() } as never,
+      refreshQueue as never,
+      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      { dispatchEnabled: true } as never,
+      createBackgroundWork() as never,
+    );
+
+    await scheduler.scan('scheduled');
+    await scheduler.scan('scheduled');
+    await scheduler.scan('scheduled');
+
+    expect(discoveryCursors).toEqual([null, 'lost-024', 'lost-049']);
+    expect(new Set(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId))).toEqual(
+      new Set(eligible.map((row) => row.chatId)),
+    );
   });
 
   it('keeps enabled bootstrap timers idle before identity, DB, or queue work while paused', async () => {
@@ -318,7 +487,7 @@ describe('PublisherBindingRefreshService', () => {
       expect(dispatchHealth.isGloballyPaused).toHaveBeenCalledTimes(3);
       expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
       expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-      expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(2);
       scheduler.onModuleDestroy();
     } finally {
       jest.useRealTimers();

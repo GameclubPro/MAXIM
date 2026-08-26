@@ -368,6 +368,91 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-readiness-overview').waitFor({ state: 'visible' });
+      await page.getByText(/2 готовы/u).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-readiness',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-readiness-overview__summary').click();
+      await page.locator('.publisher-readiness-overview__list').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-empty',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-readiness-overview__summary').click();
+      await page.getByText('Получателей пока нет', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-large',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-readiness-overview__summary').click();
+      const list = page.locator('.publisher-readiness-overview__list.is-virtual');
+      await list.waitFor({ state: 'visible' });
+      await list.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+      });
+      await page.getByText('Афиша района 400', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-error',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-readiness-overview__summary').click();
+      await page
+        .getByText('Получатели временно недоступны', { exact: true })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-compose',
+    beforeShot: async (page) => {
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page.locator('.publication-target-picker__summary').click();
+      await page.locator('.publication-target-picker__list').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-compose-large',
+    beforeShot: async (page) => {
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page.locator('.publication-target-picker__summary').click();
+      const list = page.locator('.publication-target-picker__list.is-virtual');
+      await list.waitFor({ state: 'visible' });
+      await list.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+      });
+      await page.getByText('Афиша района 400', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'chat-settings-publisher-policy-setup',
+    beforeShot: async (page) => {
+      const card = page.locator('.publisher-policy-card');
+      await card.waitFor({ state: 'visible' });
+      await card.scrollIntoViewIfNeeded();
+      await page.getByText('Публик не администратор', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'chat-settings-publisher-policy-error',
+    beforeShot: async (page) => {
+      const card = page.locator('.publisher-policy-card.has-error');
+      await card.waitFor({ state: 'visible' });
+      await card.scrollIntoViewIfNeeded();
+      await page
+        .getByRole('button', { name: 'Повторить загрузку настройки Публика' })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'publications-actions',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });

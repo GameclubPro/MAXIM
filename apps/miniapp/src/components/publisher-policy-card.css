@@ -1,12 +1,22 @@
 @layer components {
   .publisher-policy-card {
+    --publisher-policy-ready-border: var(--color-success);
+    --publisher-policy-error-border: color-mix(
+      in srgb,
+      var(--color-danger) 48%,
+      var(--color-border)
+    );
     display: grid;
     gap: 10px;
     border-color: var(--color-border-strong);
   }
 
   .publisher-policy-card.is-ready {
-    border-color: var(--color-success);
+    border-color: var(--publisher-policy-ready-border);
+  }
+
+  .publisher-policy-card.has-error {
+    border-color: var(--publisher-policy-error-border);
   }
 
   .publisher-policy-card__row {
@@ -60,5 +70,74 @@
 
   .publisher-policy-card__switch {
     flex: 0 0 auto;
+  }
+
+  .publisher-policy-card__retry,
+  .publisher-policy-card__readiness button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+    color: var(--color-accent);
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 760;
+    cursor: pointer;
+  }
+
+  .publisher-policy-card__retry {
+    width: 44px;
+    padding: 0;
+  }
+
+  .publisher-policy-card__retry svg,
+  .publisher-policy-card__readiness button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .publisher-policy-card__retry:focus-visible,
+  .publisher-policy-card__readiness button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  .publisher-policy-card__retry:disabled,
+  .publisher-policy-card__readiness button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  .publisher-policy-card__readiness {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .publisher-policy-card__readiness > span {
+    color: var(--color-ink-muted);
+    font-size: 0.72rem;
+    line-height: 1.42;
+  }
+
+  .publisher-policy-card__readiness button {
+    padding: 0 10px;
+  }
+
+  @media (max-width: 360px) {
+    .publisher-policy-card__readiness {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .publisher-policy-card__readiness button {
+      width: 100%;
+    }
   }
 }

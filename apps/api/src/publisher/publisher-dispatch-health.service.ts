@@ -9,6 +9,7 @@ import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh
 export const PUBLISHER_DISPATCH_HEALTH_REDIS = Symbol('PUBLISHER_DISPATCH_HEALTH_REDIS');
 export const PUBLISHER_DISPATCH_PAUSE_KEY_PREFIX = 'publisher:dispatch:pause:v1:';
 const PUBLISHER_PRESERVED_PAUSE_MAX_BYTES = 16 * 1_024;
+const PUBLISHER_DISPATCH_HEALTH_READY_TIMEOUT_MS = 1_250;
 const PUBLISHER_DISPATCH_RECORD_PAUSE_SCRIPT = `
 -- PUBLISHER_DISPATCH_RECORD_PAUSE_V1
 local nextRaw = ARGV[1]
@@ -82,7 +83,8 @@ if not observedAtMs or attemptedAtMs <= observedAtMs then return 0 end
 return redis.call('DEL', KEYS[1])
 `;
 
-type PublisherDispatchHealthRedis = Pick<Redis, 'get' | 'eval' | 'disconnect'>;
+type PublisherDispatchHealthRedis = Pick<Redis, 'get' | 'eval' | 'disconnect'> &
+  Partial<Pick<Redis, 'connect' | 'off' | 'once' | 'status'>>;
 
 export type PublisherFailureClassification =
   | 'global_paused'
@@ -157,6 +159,7 @@ export class PublisherDispatchHealthService implements OnModuleDestroy {
   private readonly publisherBotId: string;
   private readonly redis: PublisherDispatchHealthRedis;
   private readonly ownsRedis: boolean;
+  private redisConnectionAttempt: Promise<void> | null = null;
 
   constructor(
     configService: ConfigService,
@@ -186,12 +189,7 @@ export class PublisherDispatchHealthService implements OnModuleDestroy {
   }
 
   async assertDispatchAllowed(): Promise<void> {
-    let raw: string | null;
-    try {
-      raw = await this.redis.get(buildPublisherDispatchPauseKey(this.publisherBotId));
-    } catch (error: unknown) {
-      throw new PublisherDispatchHealthUnavailableError(error);
-    }
+    const raw = await this.readPauseRaw();
     if (!raw) {
       return;
     }
@@ -207,7 +205,78 @@ export class PublisherDispatchHealthService implements OnModuleDestroy {
   }
 
   async isGloballyPaused(): Promise<boolean> {
-    return Boolean(await this.redis.get(buildPublisherDispatchPauseKey(this.publisherBotId)));
+    return Boolean(await this.readPauseRaw());
+  }
+
+  private async readPauseRaw(): Promise<string | null> {
+    try {
+      await this.ensureRedisReady();
+      return await this.redis.get(buildPublisherDispatchPauseKey(this.publisherBotId));
+    } catch (error: unknown) {
+      throw new PublisherDispatchHealthUnavailableError(error);
+    }
+  }
+
+  private async ensureRedisReady(): Promise<void> {
+    const status = this.redis.status;
+    if (!status || status === 'ready') {
+      return;
+    }
+    if (this.redisConnectionAttempt) {
+      return this.redisConnectionAttempt;
+    }
+    if (!this.redis.once || !this.redis.off) {
+      throw new Error(`Publisher dispatch health Redis is not ready (${status})`);
+    }
+
+    const attempt = new Promise<void>((resolve, reject) => {
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = () => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        this.redis.off?.('ready', onReady);
+        this.redis.off?.('end', onEnd);
+      };
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+      const onEnd = () => {
+        cleanup();
+        reject(new Error('Publisher dispatch health Redis connection ended before ready'));
+      };
+
+      this.redis.once?.('ready', onReady);
+      this.redis.once?.('end', onEnd);
+      timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Publisher dispatch health Redis readiness timed out'));
+      }, PUBLISHER_DISPATCH_HEALTH_READY_TIMEOUT_MS);
+
+      if (this.redis.status === 'ready') {
+        onReady();
+        return;
+      }
+      if (this.redis.status === 'end') {
+        onEnd();
+        return;
+      }
+      if (this.redis.status === 'wait' && this.redis.connect) {
+        void this.redis.connect().catch((error: unknown) => {
+          cleanup();
+          reject(error);
+        });
+      }
+    });
+    const trackedAttempt = attempt.finally(() => {
+      if (this.redisConnectionAttempt === trackedAttempt) {
+        this.redisConnectionAttempt = null;
+      }
+    });
+    this.redisConnectionAttempt = trackedAttempt;
+    void trackedAttempt.catch(() => undefined);
+    return trackedAttempt;
   }
 
   async recordSendSuccess(chatId: string, attemptedAt?: Date): Promise<void> {

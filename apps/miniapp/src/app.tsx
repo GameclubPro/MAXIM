@@ -489,7 +489,13 @@ function AppRoutes({
           {moderationProfile ? <Route path="/" element={<LazyChatsPage api={apiClient} />} /> : null}
           <Route
             path="/publications"
-            element={<LazyPublicationsPage api={apiClient} profile={me.profile} />}
+            element={
+              <LazyPublicationsPage
+                api={apiClient}
+                profile={me.profile}
+                botDialogUrl={me.botDialogUrl}
+              />
+            }
           />
           {moderationProfile ? (
             <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />

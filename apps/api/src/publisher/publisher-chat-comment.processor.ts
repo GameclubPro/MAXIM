@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherChatCommentDeliveryService } from './publisher-chat-comment-delivery.service';
 import {
@@ -7,6 +7,7 @@ import {
   assertPublisherRuntimeEnabledOrDelay,
 } from './publisher-dispatch-job-guard';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
+import { PublisherSetupRequiredException } from './publisher-errors';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import { assertPublisherIdentityOrDelay } from './publisher-identity-attestation-job-guard';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
@@ -40,10 +41,22 @@ export class PublisherChatCommentProcessor extends WorkerHost {
       typeof job.opts.attempts === 'number' && Number.isFinite(job.opts.attempts)
         ? Math.max(1, Math.trunc(job.opts.attempts))
         : 1;
-    await this.delivery.process(job.data, {
-      final: job.attemptsMade + 1 >= maxAttempts,
-      attemptsMade: job.attemptsMade + 1,
-      maxAttempts,
-    });
+    try {
+      await this.delivery.process(job.data, {
+        final: job.attemptsMade + 1 >= maxAttempts,
+        attemptsMade: job.attemptsMade + 1,
+        maxAttempts,
+      });
+    } catch (error: unknown) {
+      if (
+        job.data.kind === 'attach_chat_reply' &&
+        error instanceof PublisherSetupRequiredException
+      ) {
+        throw new UnrecoverableError(
+          `Publisher chat-comment setup blocked: ${error.blockerCode}`,
+        );
+      }
+      throw error;
+    }
   }
 }

@@ -1,4 +1,8 @@
 import { PublisherBackgroundWorkCoordinatorClosedError } from '../publisher/publisher-background-work-coordinator.service';
+import {
+  buildChannelSuggestionPublicationLedgerJobId,
+  CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+} from './admin-channel-suggestion-publication-protocol';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 
 describe('PublisherSuggestionPublicationQueueService', () => {
@@ -41,6 +45,24 @@ describe('PublisherSuggestionPublicationQueueService', () => {
       { dispatchEnabled } as never,
     );
     return { backgroundWork, dispatchHealth, prisma, queue, service };
+  }
+
+  function createClaimRow(index: number) {
+    const id = `suggestion-${String(index).padStart(4, '0')}`;
+    return {
+      id,
+      createdAt: new Date(Date.UTC(2026, 7, 26, 10, 0, 0, index)),
+      payload: {
+        reviewStatus: 'publishing',
+        reviewDispatchProfile: 'PUBLIK_V1',
+        reviewAction: 'publish',
+        reviewPublicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+        reviewPublicationLedgerJobId: buildChannelSuggestionPublicationLedgerJobId(id),
+        reviewClaimToken: `claim-${index}`,
+        reviewClaimedAt: '2026-08-26T09:55:00.000Z',
+        reviewClaimedByUserId: 'admin-1',
+      },
+    };
   }
 
   it('does not start suggestion recovery while dispatch is disabled', async () => {
@@ -118,6 +140,68 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     await Promise.all([first, second]);
 
     expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('advances a bounded keyset cursor past more than 100 failed claims', async () => {
+    const { prisma, queue, service } = createHarness(true);
+    const blockedClaims = Array.from({ length: 200 }, (_, index) => createClaimRow(index));
+    const readyClaim = createClaimRow(200);
+    prisma.auditLog.findMany
+      .mockResolvedValueOnce(blockedClaims.slice(0, 100))
+      .mockResolvedValueOnce(blockedClaims.slice(100))
+      .mockResolvedValueOnce([readyClaim]);
+    queue.getJob.mockImplementation(async () => {
+      if (queue.getJob.mock.calls.length <= blockedClaims.length) {
+        return {
+          getState: jest.fn().mockResolvedValue('failed'),
+          retry: jest.fn().mockRejectedValue(new Error('permanent blocker')),
+        };
+      }
+      return null;
+    });
+    const warn = jest.spyOn((service as any).logger, 'warn');
+
+    await (service as any).recover();
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(2);
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ failedClaims: 200, err: 'permanent blocker' }),
+      'Failed to recover some queued Publik suggestion publications',
+    );
+
+    await (service as any).recover();
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(3);
+    expect(prisma.auditLog.findMany.mock.calls[2]?.[0]).toEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            {
+              OR: [
+                { createdAt: { gt: blockedClaims[199]!.createdAt } },
+                {
+                  createdAt: blockedClaims[199]!.createdAt,
+                  id: { gt: blockedClaims[199]!.id },
+                },
+              ],
+            },
+          ]),
+        }),
+        select: { id: true, payload: true, createdAt: true },
+        take: 100,
+      }),
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      'publish-approved-suggestion',
+      expect.objectContaining({
+        suggestionId: readyClaim.id,
+        claimToken: 'claim-200',
+      }),
+      expect.objectContaining({
+        jobId: expect.stringMatching(/^publik-suggestion-/),
+      }),
+    );
   });
 
   it('absorbs coordinator shutdown from its detached timer path', async () => {
