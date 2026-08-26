@@ -5,6 +5,7 @@ import { PublisherDispatchPausedError } from './publisher-dispatch-health.servic
 import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from './publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationError } from './publisher-identity-attestation.service';
 import { PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS } from './publisher-identity-attestation-job-guard';
+import { PublisherDispatchDisabledError } from './publisher-runtime-boundary.service';
 
 const attachJob: PublisherChatCommentJob = {
   version: 1,
@@ -58,6 +59,12 @@ describe('PublisherChatCommentProcessor', () => {
   const createDispatchHealth = () => ({
     assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
   });
+  const createRuntimeBoundary = (dispatchEnabled = true) => ({
+    dispatchEnabled,
+    assertDispatchEnabled: jest.fn(() => {
+      if (!dispatchEnabled) throw new PublisherDispatchDisabledError();
+    }),
+  });
 
   it('rejects a publisher job on every non-publisher role', async () => {
     process.env.APP_ROLE = 'action';
@@ -67,6 +74,7 @@ describe('PublisherChatCommentProcessor', () => {
       delivery as never,
       createAttestation() as never,
       createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
     );
 
     await expect(
@@ -87,6 +95,7 @@ describe('PublisherChatCommentProcessor', () => {
       delivery as never,
       createAttestation() as never,
       createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
     );
 
     await expect(
@@ -107,6 +116,7 @@ describe('PublisherChatCommentProcessor', () => {
       delivery as never,
       createAttestation() as never,
       createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
     );
 
     await processor.process({
@@ -136,6 +146,7 @@ describe('PublisherChatCommentProcessor', () => {
       delivery as never,
       identityAttestation as never,
       createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -165,6 +176,7 @@ describe('PublisherChatCommentProcessor', () => {
       delivery as never,
       identityAttestation as never,
       createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -192,6 +204,7 @@ describe('PublisherChatCommentProcessor', () => {
       delivery as never,
       createAttestation() as never,
       dispatchHealth as never,
+      createRuntimeBoundary() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -208,6 +221,39 @@ describe('PublisherChatCommentProcessor', () => {
       'worker-token',
     );
     expect(job.attemptsMade).toBe(7);
+    expect(delivery.process).not.toHaveBeenCalled();
+  });
+
+  it('delays a disabled comment job before identity, health, or delivery without consuming its attempt', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const delivery = { process: jest.fn() };
+    const identityAttestation = createAttestation();
+    const dispatchHealth = createDispatchHealth();
+    const processor = new PublisherChatCommentProcessor(
+      delivery as never,
+      identityAttestation as never,
+      dispatchHealth as never,
+      createRuntimeBoundary(false) as never,
+    );
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: attachJob,
+      attemptsMade: 7,
+      opts: { attempts: 8 },
+      token: 'job-token',
+      moveToDelayed,
+    } as unknown as Job<PublisherChatCommentJob>;
+
+    await expect(processor.process(job, 'worker-token')).rejects.toBeInstanceOf(DelayedError);
+    expect(moveToDelayed).toHaveBeenCalledWith(
+      Date.parse('2026-08-26T12:00:00.000Z') + PUBLISHER_DISPATCH_PAUSE_DEFER_MS,
+      'worker-token',
+    );
+    expect(job.attemptsMade).toBe(7);
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
     expect(delivery.process).not.toHaveBeenCalled();
   });
 });

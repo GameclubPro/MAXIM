@@ -6,6 +6,7 @@ import {
 import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from '../publisher/publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationError } from '../publisher/publisher-identity-attestation.service';
 import { PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS } from '../publisher/publisher-identity-attestation-job-guard';
+import { PublisherDispatchDisabledError } from '../publisher/publisher-runtime-boundary.service';
 import { PublisherSuggestionPublicationProcessor } from './publisher-suggestion-publication.processor';
 
 describe('PublisherSuggestionPublicationProcessor', () => {
@@ -23,6 +24,12 @@ describe('PublisherSuggestionPublicationProcessor', () => {
   const createDispatchHealth = () => ({
     assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
   });
+  const createRuntimeBoundary = (dispatchEnabled = true) => ({
+    dispatchEnabled,
+    assertDispatchEnabled: jest.fn(() => {
+      if (!dispatchEnabled) throw new PublisherDispatchDisabledError();
+    }),
+  });
 
   it('delays approved suggestion delivery while identity is unattested', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
@@ -39,6 +46,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       channelDialogService as never,
       identityAttestation as never,
       createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
     );
 
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
@@ -71,6 +79,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { processPublisherSuggestionPublicationJob } as never,
       { assertAttested: jest.fn().mockRejectedValue(failure) } as never,
       createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -100,6 +109,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { processPublisherSuggestionPublicationJob } as never,
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       dispatchHealth as never,
+      createRuntimeBoundary() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -138,6 +148,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { processPublisherSuggestionPublicationJob } as never,
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       dispatchHealth as never,
+      createRuntimeBoundary() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -171,6 +182,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { processPublisherSuggestionPublicationJob } as never,
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       { assertDispatchAllowed: jest.fn().mockRejectedValue(failure) } as never,
+      createRuntimeBoundary() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -187,6 +199,82 @@ describe('PublisherSuggestionPublicationProcessor', () => {
     await expect(processor.process(job as never, 'worker-token')).rejects.toBe(failure);
     expect(moveToDelayed).not.toHaveBeenCalled();
     expect(job.attemptsMade).toBe(4);
+    expect(processPublisherSuggestionPublicationJob).not.toHaveBeenCalled();
+  });
+
+  it('delays a disabled suggestion before identity, health, or domain state without consuming its attempt', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const processPublisherSuggestionPublicationJob = jest.fn();
+    const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
+    const dispatchHealth = createDispatchHealth();
+    const processor = new PublisherSuggestionPublicationProcessor(
+      { processPublisherSuggestionPublicationJob } as never,
+      identityAttestation as never,
+      dispatchHealth as never,
+      createRuntimeBoundary(false) as never,
+    );
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: {
+        suggestionId: 'suggestion-1',
+        claimToken: 'claim-1',
+        createdAt: '2026-08-26T12:00:00.000Z',
+      },
+      attemptsMade: 4,
+      token: 'job-token',
+      moveToDelayed,
+    };
+
+    await expect(processor.process(job as never, 'worker-token')).rejects.toBeInstanceOf(
+      DelayedError,
+    );
+    expect(moveToDelayed).toHaveBeenCalledWith(
+      Date.parse('2026-08-26T12:00:00.000Z') + PUBLISHER_DISPATCH_PAUSE_DEFER_MS,
+      'worker-token',
+    );
+    expect(job.attemptsMade).toBe(4);
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
+    expect(processPublisherSuggestionPublicationJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps generic runtime-boundary errors on the ordinary failure path', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const failure = new Error('runtime boundary failure');
+    const identityAttestation = { assertAttested: jest.fn() };
+    const dispatchHealth = createDispatchHealth();
+    const processPublisherSuggestionPublicationJob = jest.fn();
+    const processor = new PublisherSuggestionPublicationProcessor(
+      { processPublisherSuggestionPublicationJob } as never,
+      identityAttestation as never,
+      dispatchHealth as never,
+      {
+        dispatchEnabled: true,
+        assertDispatchEnabled: jest.fn(() => {
+          throw failure;
+        }),
+      } as never,
+    );
+    const moveToDelayed = jest.fn();
+    const job = {
+      data: {
+        suggestionId: 'suggestion-1',
+        claimToken: 'claim-1',
+        createdAt: '2026-08-26T12:00:00.000Z',
+      },
+      attemptsMade: 4,
+      token: 'job-token',
+      moveToDelayed,
+    };
+
+    await expect(processor.process(job as never, 'worker-token')).rejects.toBe(failure);
+    expect(moveToDelayed).not.toHaveBeenCalled();
+    expect(job.attemptsMade).toBe(4);
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
     expect(processPublisherSuggestionPublicationJob).not.toHaveBeenCalled();
   });
 });

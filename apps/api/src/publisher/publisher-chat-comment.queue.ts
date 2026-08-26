@@ -8,8 +8,18 @@ import type { QueueJobEnvelope } from '../common/queue-job-envelope';
 import type { MaxMessageButton } from '../max/max-client.service';
 import type { PublisherFeature } from './publisher-readiness.service';
 import { buildPublisherBotDescriptor } from './publisher-bot-descriptor';
+import { PublisherRuntimeHeartbeatReaderService } from './publisher-runtime-heartbeat.service';
 
 export const PUBLISHER_CHAT_COMMENT_QUEUE = 'publisher-chat-comments';
+
+export type PublisherChatCommentAdmissionFailureReason = 'heartbeat_missing' | 'dispatch_disabled';
+
+export class PublisherChatCommentAdmissionError extends Error {
+  constructor(readonly reason: PublisherChatCommentAdmissionFailureReason) {
+    super(`Publisher chat-comment admission failed: ${reason}`);
+    this.name = 'PublisherChatCommentAdmissionError';
+  }
+}
 
 type PublisherCommentJobMetadata = {
   idempotencyKey: string;
@@ -80,6 +90,7 @@ export class PublisherChatCommentQueueService {
     @InjectQueue(PUBLISHER_CHAT_COMMENT_QUEUE)
     private readonly queue: Queue<PublisherChatCommentJob>,
     configService: ConfigService,
+    private readonly runtimeHeartbeat: PublisherRuntimeHeartbeatReaderService,
   ) {
     this.publisherBotId = buildPublisherBotDescriptor({
       id: configService.get<string>('MAX_PUBLISHER_BOT_ID'),
@@ -104,6 +115,7 @@ export class PublisherChatCommentQueueService {
     const dialogBotId = this.requireString(params.dialogBotId, 'dialogBotId');
     const createdAt = params.createdAt ?? new Date();
 
+    await this.assertPublisherAdmissionEnabled();
     await this.queue.add(
       'attach-chat-reply',
       {
@@ -158,6 +170,7 @@ export class PublisherChatCommentQueueService {
       `${params.entityType}\0${chatId}\0${messageId}\0${threadId}\0${countSnapshot}`,
     );
 
+    await this.assertPublisherAdmissionEnabled();
     await this.queue.add(
       'edit-comment-keyboard',
       {
@@ -201,6 +214,16 @@ export class PublisherChatCommentQueueService {
             count: 20_000,
           },
     };
+  }
+
+  private async assertPublisherAdmissionEnabled(): Promise<void> {
+    const heartbeat = await this.runtimeHeartbeat.read(this.publisherBotId);
+    if (!heartbeat) {
+      throw new PublisherChatCommentAdmissionError('heartbeat_missing');
+    }
+    if (!heartbeat.dispatchEnabled) {
+      throw new PublisherChatCommentAdmissionError('dispatch_disabled');
+    }
   }
 
   private requireString(value: string, label: string): string {

@@ -2,9 +2,13 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
-import { assertPublisherDispatchAllowedOrDelay } from '../publisher/publisher-dispatch-job-guard';
+import {
+  assertPublisherDispatchAllowedOrDelay,
+  assertPublisherRuntimeEnabledOrDelay,
+} from '../publisher/publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationService } from '../publisher/publisher-identity-attestation.service';
 import { assertPublisherIdentityOrDelay } from '../publisher/publisher-identity-attestation-job-guard';
+import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { VK_PARSING_PUBLISHER_QUEUE, type VkParsingPublisherJob } from './vk-parsing.queue';
 import { VkParsingService } from './vk-parsing.service';
 
@@ -16,6 +20,7 @@ export class VkParsingPublisherProcessor extends WorkerHost {
     private readonly vkParsingService: VkParsingService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
+    private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
   ) {
     super();
   }
@@ -24,6 +29,7 @@ export class VkParsingPublisherProcessor extends WorkerHost {
     if (!roleRunsPublisher(getAppRole()) || process.env.APP_SERVICE_NAME !== 'api-publisher') {
       throw new Error('VK Publik queue may only be consumed by api-publisher');
     }
+    await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
     await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
     await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
 

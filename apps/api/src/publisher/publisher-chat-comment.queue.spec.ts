@@ -1,13 +1,32 @@
-import { PublisherChatCommentQueueService } from './publisher-chat-comment.queue';
+import {
+  PublisherChatCommentAdmissionError,
+  PublisherChatCommentQueueService,
+} from './publisher-chat-comment.queue';
 
 describe('PublisherChatCommentQueueService', () => {
+  const createHeartbeat = (dispatchEnabled: boolean | null = true) => ({
+    read: jest.fn().mockResolvedValue(
+      dispatchEnabled === null
+        ? null
+        : {
+            version: 1,
+            botId: 'publik-bot',
+            dispatchEnabled,
+            observedAt: '2026-08-26T09:00:00.000Z',
+            instanceId: 'publisher-1',
+          },
+    ),
+  });
+
   it('enqueues a durable attach envelope without publisher credentials', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const heartbeat = createHeartbeat();
     const service = new PublisherChatCommentQueueService(
       queue as never,
       {
         get: () => 'publik-bot',
       } as never,
+      heartbeat as never,
     );
 
     await service.enqueueAttach({
@@ -38,15 +57,18 @@ describe('PublisherChatCommentQueueService', () => {
         removeOnFail: false,
       }),
     );
+    expect(heartbeat.read).toHaveBeenCalledWith('publik-bot');
   });
 
   it('keys keyboard edits by the count snapshot while preserving exact origin attribution', async () => {
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const heartbeat = createHeartbeat();
     const service = new PublisherChatCommentQueueService(
       queue as never,
       {
         get: () => 'publik-bot',
       } as never,
+      heartbeat as never,
     );
     const params = {
       entityType: 'channel' as const,
@@ -76,5 +98,58 @@ describe('PublisherChatCommentQueueService', () => {
       }),
     );
     expect(first?.[2]?.jobId).not.toBe(second?.[2]?.jobId);
+    expect(heartbeat.read).toHaveBeenNthCalledWith(1, 'publik-bot');
+    expect(heartbeat.read).toHaveBeenNthCalledWith(2, 'publik-bot');
   });
+
+  it.each([
+    ['missing', null, 'heartbeat_missing'],
+    ['disabled', false, 'dispatch_disabled'],
+  ] as const)(
+    'rejects both enqueue paths when the publisher heartbeat is %s',
+    async (_, state, reason) => {
+      const queue = { add: jest.fn() };
+      const heartbeat = createHeartbeat(state);
+      const service = new PublisherChatCommentQueueService(
+        queue as never,
+        { get: () => 'publik-bot' } as never,
+        heartbeat as never,
+      );
+
+      const attachError = await service
+        .enqueueAttach({
+          markerId: `ccr1_${'a'.repeat(32)}`,
+          lockToken: 'claim-lock-1',
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          senderId: 'admin-1',
+          dialogBotId: 'main-bot',
+          button: { type: 'link', text: 'Comments', url: 'https://example.test' },
+        })
+        .catch((error: unknown) => error);
+      expect(attachError).toBeInstanceOf(PublisherChatCommentAdmissionError);
+      expect(attachError).toMatchObject({ reason });
+
+      const keyboardError = await service
+        .enqueueKeyboardEdit({
+          entityType: 'chat',
+          readinessFeature: 'chat_comments',
+          chatId: 'chat-1',
+          messageId: 'publisher-message-1',
+          threadId: 'thread-1',
+          requiredBotId: 'publik-bot',
+          dialogBotId: 'main-bot',
+          buttons: [],
+          commentsButton: { rowIndex: 0, columnIndex: 0, baseText: null },
+          countSnapshot: 0,
+        })
+        .catch((error: unknown) => error);
+      expect(keyboardError).toBeInstanceOf(PublisherChatCommentAdmissionError);
+      expect(keyboardError).toMatchObject({ reason });
+
+      expect(heartbeat.read).toHaveBeenNthCalledWith(1, 'publik-bot');
+      expect(heartbeat.read).toHaveBeenNthCalledWith(2, 'publik-bot');
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
 });

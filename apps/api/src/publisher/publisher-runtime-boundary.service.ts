@@ -3,6 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 
+export class PublisherDispatchDisabledError extends Error {
+  constructor() {
+    super('MAX publisher dispatch is disabled');
+    this.name = 'PublisherDispatchDisabledError';
+  }
+}
+
 @Injectable()
 export class PublisherRuntimeBoundaryService {
   readonly dispatchEnabled: boolean;
@@ -17,7 +24,7 @@ export class PublisherRuntimeBoundaryService {
 
   assertDispatchEnabled(): void {
     if (!this.dispatchEnabled) {
-      throw new Error('MAX publisher dispatch is disabled');
+      throw new PublisherDispatchDisabledError();
     }
   }
 }

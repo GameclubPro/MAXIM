@@ -2,10 +2,14 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherChatCommentDeliveryService } from './publisher-chat-comment-delivery.service';
-import { assertPublisherDispatchAllowedOrDelay } from './publisher-dispatch-job-guard';
+import {
+  assertPublisherDispatchAllowedOrDelay,
+  assertPublisherRuntimeEnabledOrDelay,
+} from './publisher-dispatch-job-guard';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import { assertPublisherIdentityOrDelay } from './publisher-identity-attestation-job-guard';
+import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import {
   PUBLISHER_CHAT_COMMENT_QUEUE,
   type PublisherChatCommentJob,
@@ -19,6 +23,7 @@ export class PublisherChatCommentProcessor extends WorkerHost {
     private readonly delivery: PublisherChatCommentDeliveryService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
+    private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
   ) {
     super();
   }
@@ -27,6 +32,7 @@ export class PublisherChatCommentProcessor extends WorkerHost {
     if (!roleRunsPublisher(getAppRole()) || process.env.APP_SERVICE_NAME !== 'api-publisher') {
       throw new Error('Publisher chat-comment job received outside api-publisher');
     }
+    await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
     await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
     await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
 
