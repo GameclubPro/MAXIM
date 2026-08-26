@@ -27,6 +27,14 @@ import {
   type SystemBotsSnapshot,
 } from '@maxim/contracts/system';
 import {
+  managedEntityPublicationPolicySchema,
+  publisherEntitiesResponseSchema,
+  publisherEntitySchema,
+  updateManagedEntityPublicationPolicyRequestSchema,
+  type ManagedEntityPublicationPolicy,
+  type PublisherEntity,
+} from '@maxim/contracts/publisher';
+import {
   PREVIEW_CHANNEL_ID,
   PREVIEW_CHANNEL_TITLE,
   PREVIEW_CHAT_ID,
@@ -773,6 +781,7 @@ export function buildPreviewSystemDashboard(state: PreviewState): SystemDashboar
       enqueueEnabled: true,
       moderationEnabled: true,
       actionEnabled: true,
+      publisherEnabled: false,
       enabledQueues: ['critical', 'default', 'join', 'background'],
       dynamicLeasesMode: inDegrade ? 'canary' : 'on',
       dynamicLeasesWorkerGroup: 'api-moderation-realtime-c',
@@ -1305,6 +1314,55 @@ export function updatePreviewManagedEntityFavorites(
   items[index] = next;
 }
 
+function getPreviewPublisherPolicies(
+  state: PreviewState,
+): Record<string, ManagedEntityPublicationPolicy> {
+  const extended = state as PreviewState & {
+    publisherPolicies?: Record<string, ManagedEntityPublicationPolicy>;
+  };
+  extended.publisherPolicies ??= {};
+  return extended.publisherPolicies;
+}
+
+function buildPreviewPublisherEntity(
+  state: PreviewState,
+  entityType: ManagedEntityType,
+  entityId: string,
+): PublisherEntity | null {
+  const source = (entityType === 'channel' ? state.channels : state.chats).find(
+    (item) => item.id === entityId,
+  );
+  if (!source) {
+    return null;
+  }
+  const policy =
+    getPreviewPublisherPolicies(state)[`${entityType}:${entityId}`] ??
+    managedEntityPublicationPolicySchema.parse({
+      publikEnabled: true,
+      suggestionsViaPublik: false,
+      revision: 0,
+      updatedAt: null,
+    });
+  return publisherEntitySchema.parse({
+    id: source.id,
+    title: source.title,
+    entityType,
+    avatarUrl: source.avatarUrl ?? null,
+    channelOverview: entityType === 'channel' ? (source.channelOverview ?? null) : null,
+    policy,
+    readiness: {
+      state: policy.publikEnabled ? 'ready' : 'disabled',
+      canPublish: policy.publikEnabled,
+      canUseChatComments: policy.publikEnabled && entityType === 'chat',
+      canPublishSuggestions:
+        policy.publikEnabled && entityType === 'channel' && policy.suggestionsViaPublik,
+      blockerCode: policy.publikEnabled ? null : 'policy_disabled',
+      checkedAt: state.clock.now().toISOString(),
+      retryAt: null,
+    },
+  });
+}
+
 export const handleSystemPreviewRequest: PreviewRequestHandler = ({
   state,
   url,
@@ -1314,6 +1372,44 @@ export const handleSystemPreviewRequest: PreviewRequestHandler = ({
 }) => {
   if (url.pathname === '/me' && method === 'GET') {
     return meSchema.parse(cloneJson(state.me));
+  }
+  if (url.pathname === '/publisher/entities' && method === 'GET') {
+    return publisherEntitiesResponseSchema.parse({
+      items: [
+        ...state.chats.map((item) => buildPreviewPublisherEntity(state, 'chat', item.id)),
+        ...state.channels.map((item) => buildPreviewPublisherEntity(state, 'channel', item.id)),
+      ].filter((item): item is PublisherEntity => item !== null),
+    });
+  }
+  if (
+    segments[0] === 'publisher' &&
+    segments[1] === 'entities' &&
+    (segments[2] === 'chat' || segments[2] === 'channel') &&
+    segments[3]
+  ) {
+    const entityType = segments[2];
+    const entityId = decodeURIComponent(segments[3]);
+    const entity = buildPreviewPublisherEntity(state, entityType, entityId);
+    if (!entity) {
+      throw new ApiRequestError(404, '', 'Preview publisher entity not found');
+    }
+    if (segments.length === 4 && method === 'GET') {
+      return entity;
+    }
+    if (segments[4] === 'policy' && method === 'PATCH') {
+      const request = updateManagedEntityPublicationPolicyRequestSchema.parse(parseJsonBody(init));
+      const policy = managedEntityPublicationPolicySchema.parse({
+        ...entity.policy,
+        ...(request.publikEnabled !== undefined ? { publikEnabled: request.publikEnabled } : {}),
+        ...(entityType === 'channel' && request.suggestionsViaPublik !== undefined
+          ? { suggestionsViaPublik: request.suggestionsViaPublik }
+          : {}),
+        revision: entity.policy.revision + 1,
+        updatedAt: state.clock.now().toISOString(),
+      });
+      getPreviewPublisherPolicies(state)[`${entityType}:${entityId}`] = policy;
+      return policy;
+    }
   }
   if (url.pathname === '/system/dashboard' && method === 'GET') {
     return systemDashboardResponseSchema.parse(buildPreviewSystemDashboard(state));

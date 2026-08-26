@@ -1,4 +1,11 @@
-export type AppRole = 'all' | 'ingress' | 'admin' | 'enqueue' | 'moderation' | 'action';
+export type AppRole =
+  | 'all'
+  | 'ingress'
+  | 'admin'
+  | 'enqueue'
+  | 'moderation'
+  | 'action'
+  | 'publisher';
 
 export const APP_ROLES = [
   'all',
@@ -7,6 +14,7 @@ export const APP_ROLES = [
   'enqueue',
   'moderation',
   'action',
+  'publisher',
 ] as const satisfies readonly AppRole[];
 
 export function normalizeAppRole(value: unknown, fallback: AppRole = 'all'): AppRole {
@@ -54,4 +62,8 @@ export function roleRunsModeration(role: AppRole): boolean {
 
 export function roleRunsAction(role: AppRole): boolean {
   return role === 'all' || role === 'action';
+}
+
+export function roleRunsPublisher(role: AppRole): boolean {
+  return role === 'publisher';
 }

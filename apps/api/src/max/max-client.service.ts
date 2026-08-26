@@ -16,6 +16,10 @@ import {
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
+import {
+  extractPublisherRemoteIdentity,
+  type PublisherRemoteIdentity,
+} from '../publisher/publisher-identity-attestation.util';
 import { ActionHealthService, type ActionHealthLane } from '../system/action-health.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
@@ -424,7 +428,8 @@ export type MaxActionType =
 export type MaxActionRoutingMetadata = {
   purpose:
     | Extract<MaxBotRouteRequest['purpose'], 'send_message' | 'moderation_action'>
-    | 'channel_poll';
+    | 'channel_poll'
+    | 'publisher_exact_send';
   primaryBotId?: string | null;
   reason?: string | null;
   action?: 'delete_message' | 'moderate_member';
@@ -608,7 +613,6 @@ const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
 const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
 const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
 const DEFAULT_MAX_API_MANAGED_REFRESH_RPS = 2;
-const DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS = 2;
 const MAX_MESSAGE_MUTATION_RPS = 2;
 const MAX_API_MESSAGE_IDS_BATCH_SIZE = 50;
 const MAX_API_DIRECT_MESSAGE_LOOKUP_CONCURRENCY = 4;
@@ -813,7 +817,6 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
   private readonly managedRefreshRpsLimit: number;
-  private readonly managedRefreshStackRpsLimit: number;
   private readonly rateLimitServiceScope: string;
   private readonly chatRpsLimit: number;
   private readonly chatMemberAccessAdminCacheTtlSec: number;
@@ -910,11 +913,6 @@ export class MaxClientService implements OnModuleDestroy {
     this.managedRefreshRpsLimit = this.readConfigInt(
       configService.get('MAX_API_MANAGED_REFRESH_RPS'),
       DEFAULT_MAX_API_MANAGED_REFRESH_RPS,
-      0,
-    );
-    this.managedRefreshStackRpsLimit = this.readConfigInt(
-      configService.get('MAX_API_MANAGED_REFRESH_STACK_RPS'),
-      DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS,
       0,
     );
     this.rateLimitServiceScope = normalizeMaxApiRateLimitServiceScope(
@@ -3454,6 +3452,30 @@ export class MaxClientService implements OnModuleDestroy {
         data.username ? `https://max.ru/${String(data.username).trim()}` : null,
       ),
     };
+  }
+
+  async getOwnProfileIdentity(
+    options: MaxApiRequestOptions = {},
+  ): Promise<PublisherRemoteIdentity> {
+    const requestedBotId = this.readTrimmedString(options.botId);
+    const bot = this.resolveBot(requestedBotId);
+    if (requestedBotId && bot.id !== requestedBotId) {
+      throw new UnrecoverableError(
+        'The requested MAX bot is not configured for exact identity lookup',
+      );
+    }
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
+    const data = await this.executeGlobalRequest(
+      async () =>
+        this.request<Record<string, unknown>>('get', '/me', {
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
+        }),
+      { ...options, botId: bot.id },
+    );
+    return extractPublisherRemoteIdentity(data);
   }
 
   async listBotChats(options: MaxApiRequestOptions = {}): Promise<MaxBotChat[]> {
@@ -7153,7 +7175,7 @@ export class MaxClientService implements OnModuleDestroy {
     return (
       trafficClass !== 'critical' &&
       this.normalizeMetricSourceTag(sourceTag) === MAX_API_SOURCE_TAGS.MANAGED_REFRESH &&
-      (this.managedRefreshRpsLimit > 0 || this.managedRefreshStackRpsLimit > 0)
+      this.managedRefreshRpsLimit > 0
     );
   }
 
@@ -7196,11 +7218,6 @@ export class MaxClientService implements OnModuleDestroy {
             },
           ]
         : []),
-      {
-        key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:stack:class:${trafficClass}`,
-        limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),
-        reason: `MAX API ${trafficClass} rate limit exceeded across all bots`,
-      },
       ...(messageMutation
         ? [
             {
@@ -7220,13 +7237,6 @@ export class MaxClientService implements OnModuleDestroy {
           key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:source:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
           limit: this.managedRefreshRpsLimit,
           reason: `MAX API managed_refresh source limit exceeded for bot ${botId}`,
-        });
-      }
-      if (this.managedRefreshStackRpsLimit > 0) {
-        dimensions.push({
-          key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:source:stack:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
-          limit: this.managedRefreshStackRpsLimit,
-          reason: 'MAX API managed_refresh source limit exceeded across all bots',
         });
       }
     }

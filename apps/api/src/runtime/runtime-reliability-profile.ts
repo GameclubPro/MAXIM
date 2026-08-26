@@ -177,7 +177,7 @@ export function buildSystemRollbackReadiness(
     failedWebhookOk,
     reasons,
     command:
-      './infra/scripts/vps-connect.sh rollback-runtime <git-ref> api-enqueue api-moderation api-moderation-critical api-moderation-join api-moderation-realtime-b api-moderation-realtime-c api-moderation-realtime-d api-moderation-background api-media-analysis api-action api-ingress api-admin',
+      './infra/scripts/vps-connect.sh rollback-runtime <git-ref> api-enqueue api-moderation api-moderation-critical api-moderation-join api-moderation-realtime-b api-moderation-realtime-c api-moderation-realtime-d api-moderation-background api-media-analysis api-action api-publisher api-ingress api-admin',
   };
 }
 

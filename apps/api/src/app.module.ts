@@ -10,6 +10,7 @@ import { MaxBotModule } from './max/max-bot.module';
 import { MaxModule } from './max/max.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { PublisherModule } from './publisher/publisher.module';
 import { SystemModule } from './system/system.module';
 import { WebhookModule } from './webhook/webhook.module';
 
@@ -52,6 +53,7 @@ import { WebhookModule } from './webhook/webhook.module';
     AdminModule,
     SystemModule,
     HealthModule,
+    PublisherModule,
   ],
 })
 export class AppModule {}

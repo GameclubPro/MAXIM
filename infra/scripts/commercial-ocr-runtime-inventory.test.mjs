@@ -16,6 +16,7 @@ const services = [
   'api-moderation-background',
   'api-media-analysis',
   'api-action',
+  'api-publisher',
 ];
 
 function container(id, options = {}) {
@@ -55,7 +56,9 @@ test('accepts one reviewed running container per expected service', () => {
               ? 'enqueue'
               : service === 'api-action'
                 ? 'action'
-                : 'moderation',
+                : service === 'api-publisher'
+                  ? 'publisher'
+                  : 'moderation',
     }),
   );
 
@@ -201,7 +204,7 @@ test('ignores stopped orphan containers and rejects malformed topology or inspec
   );
   assert.throws(
     () => classifyCommercialOcrApiContainerInventory([], services.slice(1)),
-    /12 unique expected services/u,
+    /13 unique expected services/u,
   );
   assert.throws(
     () => classifyCommercialOcrApiContainerInventory({}, services),

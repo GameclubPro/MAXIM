@@ -2,18 +2,30 @@ import { describe, expect, it } from 'vitest';
 
 import {
   publishVkParsingPostRequestSchema as rootPublishVkParsingPostRequestSchema,
+  publishVkParsingPostResultSchema as rootPublishVkParsingPostResultSchema,
   vkParsingFeedSchema as rootVkParsingFeedSchema,
 } from '@maxim/contracts';
 import {
   VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT,
   publishVkParsingPostRequestSchema,
+  publishVkParsingPostResultSchema,
+  rollbackVkParsingResultSchema,
   vkParsingFeedSchema,
 } from '@maxim/contracts/vk-parsing';
 
 describe('VK parsing contracts', () => {
   it('keeps root and subpath schema identity aligned', () => {
     expect(rootPublishVkParsingPostRequestSchema).toBe(publishVkParsingPostRequestSchema);
+    expect(rootPublishVkParsingPostResultSchema).toBe(publishVkParsingPostResultSchema);
     expect(rootVkParsingFeedSchema).toBe(vkParsingFeedSchema);
+  });
+
+  it('models manual publish and publisher rollback as asynchronous work', () => {
+    expect(publishVkParsingPostResultSchema.shape.queued.parse(undefined)).toBe(0);
+    expect(publishVkParsingPostResultSchema.shape.messageId.safeParse(undefined).success).toBe(
+      true,
+    );
+    expect(rollbackVkParsingResultSchema.shape.queued.parse(undefined)).toBe(0);
   });
 
   it('preserves fail-safe feed defaults', () => {

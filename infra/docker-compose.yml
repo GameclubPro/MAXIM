@@ -69,6 +69,10 @@ services:
       MAX_API_LIST_BOT_CHATS_CACHE_SEC: 120
       MAX_API_CHAT_SNAPSHOT_CACHE_SEC: 300
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
+      MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
+      MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: /run/secrets/max_publisher_webhook_credentials
+    secrets:
+      - max_publisher_webhook_credentials
     depends_on:
       - postgres
       - redis
@@ -100,6 +104,10 @@ services:
       MAX_API_LIST_BOT_CHATS_CACHE_SEC: 120
       MAX_API_CHAT_SNAPSHOT_CACHE_SEC: 300
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
+      MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
+      MAX_PUBLISHER_INIT_DATA_KEYS_FILE: /run/secrets/max_publisher_init_data_keys
+    secrets:
+      - max_publisher_init_data_keys
     depends_on:
       - postgres
       - redis
@@ -504,7 +512,7 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-action
       APP_ROLE: action
-      PRISMA_PG_POOL_MAX: 6
+      PRISMA_PG_POOL_MAX: 4
       PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
       PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 20000
       ACTION_CONCURRENCY: 3
@@ -534,6 +542,60 @@ services:
       BACKGROUND_GOVERNOR_SYSTEM_LOAD_PAUSE_THRESHOLD: 1.25
       BACKGROUND_GOVERNOR_IOWAIT_SLOW_THRESHOLD: 0.15
       BACKGROUND_GOVERNOR_IOWAIT_PAUSE_THRESHOLD: 0.35
+    depends_on:
+      - postgres
+      - redis
+
+  api-publisher:
+    image: ${MAXIM_API_IMAGE:-maxim-api:local}
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1000,gid=1000
+    logging: *default-logging
+    env_file:
+      - ${MAXIM_COMPOSE_SERVICE_ENV_FILE:-../.env}
+    environment:
+      <<: *spammer-read-model-shadow-env
+      APP_SERVICE_NAME: api-publisher
+      APP_ROLE: publisher
+      PRISMA_PG_POOL_MAX: 2
+      PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
+      PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 20000
+      MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
+      MAX_PUBLISHER_BOT_TOKEN_FILE: /run/secrets/max_publisher_bot_token
+      MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: /run/secrets/max_publisher_webhook_credentials
+      MAX_PUBLISHER_DISPATCH_ENABLED: ${MAX_PUBLISHER_DISPATCH_ENABLED:-false}
+      MAX_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
+      MAX_BOT_LABEL: Публик
+      MAX_BOT_CHARACTER_NAME: Публик
+      MAX_BOT_SPEECH_PERSONA: neutral
+      MAX_BOT_CONTACT_ID: ''
+      MAX_BOT_STATE: active
+      MAX_BOT_OWNERSHIP_WEIGHT: 1
+      MAX_ENTRY_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
+      MAX_BOT_TOKEN: ''
+      MAX_BOT_TOKEN_PREVIOUS: ''
+      MAX_BOTS_JSON: ''
+      MAX_WEBHOOK_SECRET_PATH: ''
+      MAX_WEBHOOK_HEADER_SECRET: ''
+      MAX_WEBHOOK_HEADER_SECRET_PREVIOUS: ''
+      MAX_API_GLOBAL_RPS: 30
+      MAX_API_GLOBAL_RPS_CRITICAL: 8
+      MAX_API_GLOBAL_RPS_INTERACTIVE: 10
+      MAX_API_GLOBAL_RPS_BACKGROUND: 4
+      MAX_API_CHAT_RPS: 5
+    secrets:
+      - max_publisher_bot_token
+      - max_publisher_webhook_credentials
     depends_on:
       - postgres
       - redis
@@ -581,6 +643,14 @@ services:
     logging: *default-logging
     ports:
       - '127.0.0.1:3004:3000'
+
+secrets:
+  max_publisher_bot_token:
+    file: /var/lib/maxim-secrets/publik-bot-token
+  max_publisher_webhook_credentials:
+    file: /var/lib/maxim-secrets/publik-webhook.json
+  max_publisher_init_data_keys:
+    file: /var/lib/maxim-secrets/publik-init-data-keys.json
 
 volumes:
   postgres_data:

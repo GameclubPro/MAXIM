@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { FastifyRequest } from 'fastify';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { PublisherWebhookCredentialService } from '../publisher/publisher-webhook-credential.service';
 import { WebhookIngressMetricsService } from '../system/webhook-ingress-metrics.service';
 import { WebhookSubscriptionStatusService } from '../system/webhook-subscription-status.service';
 import {
@@ -52,6 +53,8 @@ export class WebhookIngestionService {
     private readonly webhookSubscriptionStatusService: WebhookSubscriptionStatusService,
     configService: ConfigService,
     @Optional() private readonly webhookIngressMetricsService?: WebhookIngressMetricsService,
+    @Optional()
+    private readonly publisherWebhookCredentials?: PublisherWebhookCredentialService,
   ) {
     this.ackDeadlineMs = this.readPositiveInt(
       configService.get('WEBHOOK_ACK_DEADLINE_MS'),
@@ -251,11 +254,16 @@ export class WebhookIngestionService {
     params: WebhookIngestionParams,
     request: WebhookIngestionRequest,
   ) {
-    return this.botRegistry.resolveWebhookBot({
+    const credentials = {
       botId: params.botId,
       secretPath: params.secretPath,
       providedHeaderSecret: this.readWebhookHeaderSecret(request.headers),
-    });
+    };
+    return (
+      this.botRegistry.resolveWebhookBot(credentials) ??
+      this.publisherWebhookCredentials?.resolveWebhookBot(credentials) ??
+      null
+    );
   }
 
   private async ensureIngressAdmission(

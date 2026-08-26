@@ -353,6 +353,13 @@ import {
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
 import { createAdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
+import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
+import { PublisherChatCommentQueueService } from '../publisher/publisher-chat-comment.queue';
+import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
+import { PublisherDialogContextService } from './publisher-dialog-context.service';
+import { createCommentsButtonPosition, PublisherCommentKeyboardRouting } from './publisher-comment-keyboard-routing';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
@@ -654,6 +661,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedBroadcastRuntime = new AdminManagedBroadcastRuntime(
     createAdminManagedBroadcastRuntimeContext(this),
   );
+  private readonly publisherCommentKeyboardRouting: PublisherCommentKeyboardRouting;
   private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(
     createAdminChatRulesTextRuntimeContext(this),
   );
@@ -663,7 +671,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly channelSuggestionImageRuntime = new AdminChannelSuggestionImageRuntime(
     createAdminChannelSuggestionImageRuntimeContext(this),
   );
-  private readonly channelSuggestionPublicationRuntime =
+  readonly channelSuggestionPublicationRuntime =
     new AdminChannelSuggestionPublicationRuntime(
       createAdminChannelSuggestionPublicationRuntimeContext(this),
     );
@@ -816,7 +824,15 @@ export class AdminService implements OnModuleDestroy {
     private readonly injectedModerationSanctionStateLock?: ModerationSanctionStateLockService,
     @Optional()
     private readonly injectedModerationSanctionStateFence?: ModerationSanctionStateFenceService,
+    @Optional() private readonly publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService,
+    @Optional() private readonly publisherReadinessService?: PublisherReadinessService,
+    @Optional() private readonly publisherSuggestionPublicationQueue?: PublisherSuggestionPublicationQueueService,
+    @Optional() private readonly publisherDispatchHealthService?: PublisherDispatchHealthService,
+    @Optional() private readonly publisherChatCommentQueueService?: PublisherChatCommentQueueService,
+    @Optional()
+    private readonly publisherDialogContextService?: PublisherDialogContextService,
   ) {
+    this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(this.maxBotRegistry, this.publisherChatCommentQueueService, this.logger);
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
       configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
@@ -7159,13 +7175,11 @@ export class AdminService implements OnModuleDestroy {
   ) {
     return this.channelSuggestionPublicationRuntime.review(suggestionId, user, action);
   }
-
   parseChannelSuggestionStartPayload(
     startPayload: string | null,
   ): { chatId: string; token: string } | null {
     return this.dialogLinkHelper.parseChannelSuggestionStartPayload(startPayload);
   }
-
   private async createChannelDialogMessageInternal(
     chatId: string,
     user: AuthUser,
@@ -17258,6 +17272,7 @@ export class AdminService implements OnModuleDestroy {
       if (row.action === CHANNEL_DIALOG_ACTION_PUBLISH) {
         const messageId = this.readTrimmedString(payload.messageId);
         const botId = this.readTrimmedString(payload.botId);
+        const dialogBotId = this.readTrimmedString(payload.dialogBotId) ?? botId;
         const includeCommentsButton = payload.includeCommentsButton !== false;
         const includeSuggestButton = payload.includeSuggestButton === true;
         const suggestionEntryMode = this.readChannelSuggestionEntryMode(
@@ -17271,15 +17286,18 @@ export class AdminService implements OnModuleDestroy {
           this.normalizeManagedBroadcastButtons(payload.customButtons),
           { buttonsPerRow: 1 },
         );
+        let commentsButtonPosition: ReturnType<typeof createCommentsButtonPosition> | null = null;
 
         if (includeCommentsButton) {
+          const baseText = this.readTrimmedString(payload.commentsButtonText);
+          commentsButtonPosition = createCommentsButtonPosition(buttons, baseText);
           buttons.push([
             this.buildChannelDialogButton(
               chatId,
               'comments',
               threadId,
-              formatCommentsButtonText(this.readTrimmedString(payload.commentsButtonText), count),
-              botId,
+              formatCommentsButtonText(baseText, count),
+              dialogBotId,
             ),
           ]);
         }
@@ -17291,12 +17309,27 @@ export class AdminService implements OnModuleDestroy {
               'suggest',
               threadId,
               this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
-              botId,
+              dialogBotId,
               suggestionEntryMode,
             ),
           ]);
         }
 
+        if (
+          await this.publisherCommentKeyboardRouting.tryEnqueue({
+            chatId,
+            messageId,
+            threadId,
+            entityType: 'channel',
+            botId,
+            dialogBotId,
+            buttons,
+            commentsButton: commentsButtonPosition,
+            count,
+          })
+        ) {
+          continue;
+        }
         await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel', botId);
         continue;
       }
@@ -17307,6 +17340,7 @@ export class AdminService implements OnModuleDestroy {
 
       const messageId = this.resolveChannelCommentsTargetMessageId(payload);
       const botId = this.readTrimmedString(payload.botId);
+      const dialogBotId = this.readTrimmedString(payload.dialogBotId) ?? botId;
       const includeCommentsButton = payload.includeCommentsButton !== false;
       const includeSuggestButton = payload.includeSuggestButton === true;
       const suggestionEntryMode = this.readChannelSuggestionEntryMode(payload.suggestionEntryMode);
@@ -17318,15 +17352,18 @@ export class AdminService implements OnModuleDestroy {
         this.normalizeManagedBroadcastButtons(payload.customButtons),
         { buttonsPerRow: 1 },
       );
+      let commentsButtonPosition: ReturnType<typeof createCommentsButtonPosition> | null = null;
 
       if (includeCommentsButton) {
+        const baseText = '💬 Комментарии';
+        commentsButtonPosition = createCommentsButtonPosition(buttons, baseText);
         buttons.push([
           this.buildChannelDialogButton(
             chatId,
             'comments',
             threadId,
-            formatCommentsButtonText('💬 Комментарии', count),
-            botId,
+            formatCommentsButtonText(baseText, count),
+            dialogBotId,
           ),
         ]);
       }
@@ -17338,12 +17375,27 @@ export class AdminService implements OnModuleDestroy {
             'suggest',
             threadId,
             this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
-            botId,
+            dialogBotId,
             suggestionEntryMode,
           ),
         ]);
       }
 
+      if (
+        await this.publisherCommentKeyboardRouting.tryEnqueue({
+          chatId,
+          messageId,
+          threadId,
+          entityType: 'channel',
+          botId,
+          dialogBotId,
+          buttons,
+          commentsButton: commentsButtonPosition,
+          count,
+        })
+      ) {
+        continue;
+      }
       await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel', botId);
     }
   }
@@ -17394,6 +17446,7 @@ export class AdminService implements OnModuleDestroy {
       const payload = this.readObjectPayload(row.payload);
       const messageId = this.resolveChatCommentsTargetMessageId(payload);
       const botId = this.readTrimmedString(payload.botId);
+      const dialogBotId = this.readTrimmedString(payload.dialogBotId) ?? botId;
       if (!messageId) {
         continue;
       }
@@ -17401,16 +17454,32 @@ export class AdminService implements OnModuleDestroy {
       const buttons = this.buildBroadcastLinkButtonRows(
         this.normalizeManagedBroadcastButtons(payload.customButtons),
       );
+      const commentsButtonPosition = createCommentsButtonPosition(buttons, '💬 Комментарии');
       buttons.push([
         this.dialogLinkHelper.buildChatDialogButton(
           chatId,
           'comments',
           threadId,
           formatCommentsButtonText('💬 Комментарии', count),
-          botId,
+          dialogBotId,
         ),
       ]);
 
+      if (
+        await this.publisherCommentKeyboardRouting.tryEnqueue({
+          chatId,
+          messageId,
+          threadId,
+          entityType: 'chat',
+          botId,
+          dialogBotId,
+          buttons,
+          commentsButton: commentsButtonPosition,
+          count,
+        })
+      ) {
+        continue;
+      }
       await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'chat', botId);
     }
   }
@@ -17696,9 +17765,8 @@ export class AdminService implements OnModuleDestroy {
       await this.reconcileStaleChannelSuggestionAdminDeliveries(row.id);
       ledgerRows = await this.readChannelSuggestionAdminDeliveryLedgerRows(row.id);
       if (metadata.final) {
-        const retryableRows = selectRetryableLogicalDeliveryRows(
-          ledgerRows,
-          (delivery) => this.isRetryableChannelSuggestionAdminDeliveryRow(delivery),
+        const retryableRows = selectRetryableLogicalDeliveryRows(ledgerRows, (delivery) =>
+          this.isRetryableChannelSuggestionAdminDeliveryRow(delivery),
         );
         if (retryableRows.length > 0) {
           const failure = this.buildChannelSuggestionDeliveryFailure({
@@ -18171,15 +18239,13 @@ export class AdminService implements OnModuleDestroy {
     })) as ChannelSuggestionAdminDeliveryLedgerRow[];
   }
 
-  private async syncChannelSuggestionLegacyDeliveryPayload(
-    row: {
-      id: string;
-      chatId?: string;
-      actorUserId?: string;
-      payload: Prisma.JsonValue;
-      createdAt?: Date;
-    },
-  ): Promise<{
+  private async syncChannelSuggestionLegacyDeliveryPayload(row: {
+    id: string;
+    chatId?: string;
+    actorUserId?: string;
+    payload: Prisma.JsonValue;
+    createdAt?: Date;
+  }): Promise<{
     id: string;
     chatId: string;
     actorUserId: string;
@@ -18369,13 +18435,15 @@ export class AdminService implements OnModuleDestroy {
 
     const existingAdminUserIds = new Set(existingLedgerRows.map((row) => row.adminUserId));
     await this.prisma.channelSuggestionAdminDelivery.createMany({
-      data: adminIds.filter((adminUserId) => !existingAdminUserIds.has(adminUserId)).map((adminUserId) => ({
-        auditLogId: suggestionId,
-        adminUserId,
-        botKey: CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY,
-        botId: privateDeliveryBotId ?? null,
-        status: PrismaChannelSuggestionAdminDeliveryStatus.PENDING,
-      })),
+      data: adminIds
+        .filter((adminUserId) => !existingAdminUserIds.has(adminUserId))
+        .map((adminUserId) => ({
+          auditLogId: suggestionId,
+          adminUserId,
+          botKey: CHANNEL_SUGGESTION_ADMIN_DELIVERY_DEFAULT_BOT_KEY,
+          botId: privateDeliveryBotId ?? null,
+          status: PrismaChannelSuggestionAdminDeliveryStatus.PENDING,
+        })),
       skipDuplicates: true,
     });
     await this.reconcileStaleChannelSuggestionAdminDeliveries(suggestionId);
@@ -18666,12 +18734,19 @@ export class AdminService implements OnModuleDestroy {
                 isOwnBotUserId: (userId) => this.dialogLinkHelper.isOwnBotUserId(userId),
                 loadAccess: async () => {
                   if (typeof this.maxClient.getChatMembersAccess === 'function') {
-                    return (await this.maxClient.getChatMembersAccess(
-                        chatId, [ledgerRow.adminUserId], adminLookupOptions,
-                      )).get(ledgerRow.adminUserId) ?? null;
+                    return (
+                      (
+                        await this.maxClient.getChatMembersAccess(
+                          chatId,
+                          [ledgerRow.adminUserId],
+                          adminLookupOptions,
+                        )
+                      ).get(ledgerRow.adminUserId) ?? null
+                    );
                   }
                   const freshAdminIds = await this.maxClient.getChatAdminIds(
-                    chatId, adminLookupOptions,
+                    chatId,
+                    adminLookupOptions,
                   );
                   return freshAdminIds.includes(ledgerRow.adminUserId)
                     ? { isAdmin: true, isOwner: false }

@@ -4,7 +4,14 @@ import { ConfigService } from '@nestjs/config';
 import { AdminModule } from '../admin/admin.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
-import { getAppRole, roleRunsModeration } from '../runtime/app-role';
+import { getAppRole, roleRunsModeration, roleRunsPublisher } from '../runtime/app-role';
+import { PublisherChatCommentDeliveryService } from '../publisher/publisher-chat-comment-delivery.service';
+import { PublisherChatCommentProcessor } from '../publisher/publisher-chat-comment.processor';
+import { PublisherChatCommentRecoveryService } from '../publisher/publisher-chat-comment-recovery.service';
+import {
+  PUBLISHER_CHAT_COMMENT_QUEUE,
+  PublisherChatCommentQueueService,
+} from '../publisher/publisher-chat-comment.queue';
 import {
   commercialOcrProcessorEnabled,
   getEnabledModerationProcessorQueues,
@@ -111,6 +118,7 @@ const moderationProviders = [
   SanctionService,
   WebhookCanonicalExecutionService,
   LinkHistoryRecoveryService,
+  PublisherChatCommentQueueService,
   PhotoDuplicateEnqueueService,
   ...(moderationRoleEnabled ? [PhotoDuplicateOrderingStore] : []),
   ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
@@ -182,6 +190,13 @@ const moderationProviders = [
           : []),
       ]
     : []),
+  ...(roleRunsPublisher(getAppRole())
+    ? [
+        PublisherChatCommentDeliveryService,
+        PublisherChatCommentProcessor,
+        PublisherChatCommentRecoveryService,
+      ]
+    : []),
 ];
 
 @Module({
@@ -189,6 +204,7 @@ const moderationProviders = [
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
     BullModule.registerQueue({ name: PHOTO_DUPLICATE_QUEUE }),
+    BullModule.registerQueue({ name: PUBLISHER_CHAT_COMMENT_QUEUE }),
     ...(commercialOcrWorkerEnabled
       ? [BullModule.registerQueue({ name: COMMERCIAL_OCR_QUEUE })]
       : []),

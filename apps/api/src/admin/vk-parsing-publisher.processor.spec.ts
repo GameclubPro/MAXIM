@@ -1,0 +1,147 @@
+import { DelayedError } from 'bullmq';
+import { PublisherIdentityAttestationError } from '../publisher/publisher-identity-attestation.service';
+import { PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS } from '../publisher/publisher-identity-attestation-job-guard';
+import { VkParsingPublisherProcessor } from './vk-parsing-publisher.processor';
+
+describe('VkParsingPublisherProcessor', () => {
+  const previousRole = process.env.APP_ROLE;
+  const previousServiceName = process.env.APP_SERVICE_NAME;
+
+  afterEach(() => {
+    jest.useRealTimers();
+    if (previousRole === undefined) delete process.env.APP_ROLE;
+    else process.env.APP_ROLE = previousRole;
+    if (previousServiceName === undefined) delete process.env.APP_SERVICE_NAME;
+    else process.env.APP_SERVICE_NAME = previousServiceName;
+  });
+
+  it('fails closed when the publisher queue is instantiated outside api-publisher', async () => {
+    process.env.APP_ROLE = 'action';
+    process.env.APP_SERVICE_NAME = 'api-action';
+    const service = { processPublishPostJob: jest.fn() };
+    const identityAttestation = { assertAttested: jest.fn() };
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      identityAttestation as never,
+    );
+
+    await expect(
+      processor.process({
+        data: {
+          kind: 'publish',
+          postId: 'post-1',
+          chatId: 'channel-1',
+          requiredBotId: 'publisher-bot',
+          dispatchProfile: 'PUBLIK_V1',
+          reason: 'manual-retry',
+          idempotencyKey: 'intent-1',
+        },
+        attemptsMade: 0,
+        opts: { attempts: 5 },
+      } as never),
+    ).rejects.toThrow('only be consumed by api-publisher');
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(service.processPublishPostJob).not.toHaveBeenCalled();
+  });
+
+  it('rejects a publisher job whose exact route payload is incomplete', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const service = { processPublishPostJob: jest.fn() };
+    const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      identityAttestation as never,
+    );
+
+    await expect(
+      processor.process({
+        data: {
+          kind: 'publish',
+          postId: 'post-1',
+          chatId: 'channel-1',
+          requiredBotId: 'publisher-bot',
+          idempotencyKey: 'intent-1',
+        },
+        attemptsMade: 0,
+        opts: { attempts: 5 },
+      } as never),
+    ).rejects.toThrow('invalid route payload');
+    expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
+    expect(service.processPublishPostJob).not.toHaveBeenCalled();
+  });
+
+  it('delays VK intent processing while identity is unattested', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const service = { processPublishPostJob: jest.fn() };
+    const identityAttestation = {
+      assertAttested: jest
+        .fn()
+        .mockRejectedValue(new PublisherIdentityAttestationError('transient_failure')),
+    };
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      identityAttestation as never,
+    );
+
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: {
+        kind: 'publish',
+        postId: 'post-1',
+        chatId: 'channel-1',
+        requiredBotId: 'publisher-bot',
+        dispatchProfile: 'PUBLIK_V1',
+        reason: 'manual-retry',
+        idempotencyKey: 'intent-1',
+      },
+      attemptsMade: 4,
+      opts: { attempts: 5 },
+      token: 'job-token',
+      moveToDelayed,
+    };
+
+    await expect(processor.process(job as never, 'worker-token')).rejects.toBeInstanceOf(
+      DelayedError,
+    );
+    expect(moveToDelayed).toHaveBeenCalledWith(
+      Date.parse('2026-08-26T12:00:00.000Z') + PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS,
+      'worker-token',
+    );
+    expect(job.attemptsMade).toBe(4);
+    expect(service.processPublishPostJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps generic attestation errors on the ordinary retry path', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const failure = new Error('redis unavailable');
+    const service = { processPublishPostJob: jest.fn() };
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      { assertAttested: jest.fn().mockRejectedValue(failure) } as never,
+    );
+    const moveToDelayed = jest.fn();
+    const job = {
+      data: {
+        kind: 'publish',
+        postId: 'post-1',
+        chatId: 'channel-1',
+        requiredBotId: 'publisher-bot',
+        dispatchProfile: 'PUBLIK_V1',
+        reason: 'manual-retry',
+        idempotencyKey: 'intent-1',
+      },
+      attemptsMade: 0,
+      opts: { attempts: 5 },
+      token: 'job-token',
+      moveToDelayed,
+    };
+
+    await expect(processor.process(job as never, 'worker-token')).rejects.toBe(failure);
+    expect(moveToDelayed).not.toHaveBeenCalled();
+    expect(service.processPublishPostJob).not.toHaveBeenCalled();
+  });
+});

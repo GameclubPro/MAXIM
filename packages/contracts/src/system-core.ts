@@ -1524,6 +1524,7 @@ export const systemRuntimeRoleSchema = z.enum([
   'enqueue',
   'moderation',
   'action',
+  'publisher',
 ]);
 export type SystemRuntimeRole = z.infer<typeof systemRuntimeRoleSchema>;
 
@@ -1544,6 +1545,7 @@ export const systemRuntimeQueuePrioritySchema = z.enum([
   'user-facing-realtime',
   'background',
   'action-dispatch',
+  'publisher-dispatch',
 ]);
 export type SystemRuntimeQueuePriority = z.infer<typeof systemRuntimeQueuePrioritySchema>;
 
@@ -1563,6 +1565,7 @@ export const systemRuntimeProfileSchema = z.object({
   enqueueEnabled: z.boolean(),
   moderationEnabled: z.boolean(),
   actionEnabled: z.boolean(),
+  publisherEnabled: z.boolean().optional().default(false),
   enabledQueues: z.array(z.string()),
   dynamicLeasesMode: systemDynamicLeasesModeSchema,
   dynamicLeasesWorkerGroup: z.string().nullable(),

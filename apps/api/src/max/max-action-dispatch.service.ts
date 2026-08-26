@@ -252,6 +252,7 @@ export class MaxActionDispatchService {
       try {
         if (
           candidateBotId &&
+          job.routing?.purpose !== 'publisher_exact_send' &&
           routedFailoverEnabled &&
           !(await this.refreshStaleRoutedCandidateAccess(
             attemptJob,
@@ -459,6 +460,11 @@ export class MaxActionDispatchService {
       this.normalizeBotIds([job.botId, ...(job.candidateBotIds ?? [])]),
       job.routing?.requiredBotId,
     );
+    // FLAG: Publisher readiness owns this route. Publik deliberately has no ChatBotMembership,
+    // so the generic ownership resolver must not replace or reject its exact stored candidate.
+    if (job.routing?.purpose === 'publisher_exact_send') {
+      return { candidateBotIds: storedCandidates, halfOpenCandidateBotIds: [], retryAt: null };
+    }
     if (!job.routing || !this.maxBotLinkService) {
       return { candidateBotIds: storedCandidates, halfOpenCandidateBotIds: [], retryAt: null };
     }
@@ -870,6 +876,11 @@ export class MaxActionDispatchService {
     error: unknown,
     dispatchAttemptStartedAt: Date,
   ): Promise<TerminalManagedEntityOutcome | null> {
+    // Publisher access failures update PublisherEntityBinding through the publisher health hook.
+    // Writing them through the generic path would incorrectly create ChatBotMembership ownership.
+    if (job.routing?.purpose === 'publisher_exact_send') {
+      return null;
+    }
     if (!this.managedEntityAccessLossService) {
       return null;
     }

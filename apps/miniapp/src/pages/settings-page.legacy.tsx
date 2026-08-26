@@ -63,9 +63,7 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import type { ManagedGiveawayCardHandle } from '../components/managed-giveaway-card';
-import { AdminContactToggle } from '../components/admin-contact-toggle';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
-import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
@@ -78,7 +76,6 @@ import {
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
 import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
-import { SettingsLoadErrorState } from '../components/settings-load-error-state';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { DateField } from '../components/ui/date-field';
 import { GlassCard } from '../components/ui/glass-card';
@@ -221,7 +218,6 @@ import { SettingsLimitsSection } from './settings/settings-limits-section';
 import { SettingsNightSection } from './settings/settings-night-section';
 import { SettingsPollsSection } from './settings/settings-polls-section';
 import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
-import { SettingsStorefrontSection } from './settings/settings-storefront-section';
 import { SettingsStopWordsSection } from './settings/settings-stop-words-section';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
@@ -364,6 +360,13 @@ import {
   normalizeRequiredSubscriptionDraftSettings,
   useChatSettingsWorkspaceLeaveGuard,
 } from './settings/chat-settings-workspace';
+import {
+  AdminContactToggle,
+  BroadcastPublishBar,
+  PublisherPolicyCard,
+  SettingsLoadErrorState,
+  SettingsStorefrontSection,
+} from './settings/settings-lazy-surfaces';
 
 const LazyActionConfirmSheet = lazy(() =>
   import('../components/ui/action-confirm-sheet').then((module) => ({
@@ -5328,6 +5331,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           aria-label="Настройки чата"
           onClickCapture={handleDesktopToggleRowClick}
         >
+          {chatId ? <PublisherPolicyCard api={api} entityType="chat" entityId={chatId} /> : null}
+
           {settingsScreenQuery.data?.header.accessDiagnostics?.state === 'bot_access_lost' ? (
             <Suspense fallback={null}>
               <LazyManagedEntityAccessDiagnosticsBanner
@@ -6613,9 +6618,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle text-filter-card">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Мат и оскорбления
-                            </span>
+                            <span className="settings-native-toggle__title">Мат и оскорбления</span>
                             <button
                               type="button"
                               className={cn(

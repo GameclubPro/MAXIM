@@ -274,16 +274,19 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
         videoUrls: payload.videoUrls,
         linkUrls: payload.linkUrls,
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       setEditingPostId(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
-      pushToast({ tone: 'success', title: 'Пост опубликован' });
+      pushToast({
+        tone: result.queued > 0 ? 'success' : 'info',
+        title: result.queued > 0 ? 'Пост поставлен в очередь' : 'Пост уже в очереди',
+      });
       maxNotify('success');
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Пост не опубликован',
+        title: 'Пост не поставлен в очередь',
         description: normalizeApiError(error),
       });
       maxNotify('error');

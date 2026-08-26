@@ -5,22 +5,34 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MiniappAuthException } from './miniapp-auth.error';
+import { PublisherInitDataKeyService } from './publisher-init-data-key.service';
 
 const INIT_DATA_ALLOWED_CLOCK_SKEW_SEC = 30;
 const DEFAULT_INIT_DATA_MAX_AGE_SEC = 3_600;
 
 @Injectable()
 export class InitDataService {
-  private readonly validationCandidates: readonly { botId: string; token: string }[];
+  private readonly validationCandidates: readonly {
+    botId: string;
+    secretKeys: readonly Buffer[];
+  }[];
   private readonly maxAgeSec: number;
 
-  constructor(botRegistry: MaxBotRegistryService, configService: ConfigService) {
-    this.validationCandidates = botRegistry.getAllBots().flatMap((bot) =>
-      botRegistry.getValidationTokensForBot(bot.id).map((token) => ({
+  constructor(
+    botRegistry: MaxBotRegistryService,
+    configService: ConfigService,
+    publisherInitDataKeys?: PublisherInitDataKeyService,
+  ) {
+    const publisherKeys = publisherInitDataKeys?.getVerificationKeys() ?? null;
+    this.validationCandidates = [
+      ...botRegistry.getAllBots().map((bot) => ({
         botId: bot.id,
-        token,
+        secretKeys: botRegistry
+          .getValidationTokensForBot(bot.id)
+          .map((token) => this.deriveInitDataSecretKey(token)),
       })),
-    );
+      ...(publisherKeys ? [{ botId: publisherKeys.botId, secretKeys: publisherKeys.keys }] : []),
+    ].filter((candidate) => candidate.secretKeys.length > 0);
     this.maxAgeSec = configService.get<number>(
       'INIT_DATA_MAX_AGE_SEC',
       DEFAULT_INIT_DATA_MAX_AGE_SEC,
@@ -93,9 +105,8 @@ export class InitDataService {
     let matchedBotId: string | null = null;
 
     for (const candidate of this.validationCandidates) {
-      const matches = this.isValidHexSignature(
-        receivedHash,
-        this.calculateInitDataHash(sortedPairs, candidate.token),
+      const matches = candidate.secretKeys.some((secretKey) =>
+        this.isValidHexSignature(receivedHash, this.calculateInitDataHash(sortedPairs, secretKey)),
       );
       if (!matches) {
         continue;
@@ -253,8 +264,11 @@ export class InitDataService {
     }
   }
 
-  private calculateInitDataHash(sortedPairs: string, botToken: string): string {
-    const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest();
+  private deriveInitDataSecretKey(botToken: string): Buffer {
+    return createHmac('sha256', 'WebAppData').update(botToken).digest();
+  }
+
+  private calculateInitDataHash(sortedPairs: string, secretKey: Buffer): string {
     return createHmac('sha256', secretKey).update(sortedPairs).digest('hex');
   }
 

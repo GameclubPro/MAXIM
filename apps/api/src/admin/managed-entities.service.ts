@@ -28,6 +28,7 @@ import {
   type ManagedEntityPrivateAccessLossDiagnosticItem,
   type ManagedEntityType,
 } from '@maxim/contracts';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import {
   BadRequestException,
   ConflictException,
@@ -44,6 +45,7 @@ import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { buildMiniappProfileProjection } from '../auth/miniapp-profile';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxClientService } from '../max/max-client.service';
@@ -197,8 +199,14 @@ export class ManagedEntitiesService {
 
   async getMe(
     user: AuthUser,
-    options: { chatId?: string; entityType?: ManagedEntityType; enrichFromMax?: boolean } = {},
+    options: {
+      chatId?: string;
+      entityType?: ManagedEntityType;
+      enrichFromMax?: boolean;
+      profile?: MiniappProfile;
+    } = {},
   ): Promise<Me> {
+    const profileProjection = buildMiniappProfileProjection(options.profile ?? 'moderation');
     const canAccessSystem =
       this.systemAccessConfig.requireSystemAdmin &&
       canUserAccessSystem(user.userId, this.systemAccessConfig);
@@ -230,6 +238,7 @@ export class ManagedEntitiesService {
         : null,
       botDialogUrl: this.buildBotDialogUrl(user.launchBotId),
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
+      ...profileProjection,
     };
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
 
@@ -273,6 +282,7 @@ export class ManagedEntitiesService {
         ),
         botDialogUrl: fallback.botDialogUrl,
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
+        ...profileProjection,
       };
     } catch (error: unknown) {
       const logPayload = {
@@ -1085,7 +1095,7 @@ export class ManagedEntitiesService {
     return managedEntityBotExecutionPlanSchema.parse(plan);
   }
 
-  private assertManagedEntityAdminAccess(
+  assertManagedEntityAdminAccess(
     chatId: string,
     user: AuthUser,
     entityType: ManagedEntityType,
@@ -1315,8 +1325,7 @@ export class ManagedEntitiesService {
     if (edge) {
       return {
         state: 'denied',
-        reason:
-          edge.deniedReason === 'bot_denied' ? 'bot_access_lost' : 'bot_not_admin',
+        reason: edge.deniedReason === 'bot_denied' ? 'bot_access_lost' : 'bot_not_admin',
         checkedAt: edge.checkedAt.toISOString(),
         canEdit: false,
       };

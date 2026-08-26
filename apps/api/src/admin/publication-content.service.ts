@@ -67,6 +67,44 @@ export class PublicationContentService {
     };
   }
 
+  async assertPublisherCompatibleContent(
+    content: PreparedPublicationContentRevision,
+    actorUserId: string,
+  ): Promise<void> {
+    for (const asset of content.assets) {
+      if (asset.expectedType !== 'video') {
+        continue;
+      }
+      if (asset.kind === 'prepared') {
+        if (!asset.bytes) {
+          throw new BadRequestException(
+            'Сохранённое видео загружено другим ботом. Выберите видеофайл снова.',
+          );
+        }
+        continue;
+      }
+
+      const persisted = await this.prisma.publicationAsset.findFirst({
+        where: {
+          id: asset.assetId,
+          actorUserId,
+          contentLinks: {
+            some: { contentRevision: { publication: { actorUserId } } },
+          },
+        },
+        select: { bytes: true, mimeType: true },
+      });
+      if (!persisted) {
+        throw new BadRequestException('Медиа публикации больше недоступно.');
+      }
+      if (!persisted.bytes || !persisted.mimeType.toLowerCase().startsWith('video/')) {
+        throw new BadRequestException(
+          'Сохранённое видео загружено другим ботом. Выберите видеофайл снова.',
+        );
+      }
+    }
+  }
+
   async persistPreparedContentRevision(
     tx: any,
     publicationId: string,

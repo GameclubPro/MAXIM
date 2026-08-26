@@ -27,6 +27,7 @@ const productionServices = [
   'api-moderation-background',
   'api-media-analysis',
   'api-action',
+  'api-publisher',
 ];
 const producerServices = [
   'api-moderation',
@@ -315,13 +316,13 @@ test('proves recovery quiescence from a final fail-closed Docker inventory', () 
   );
 });
 
-test('pins an exact unique 12-role topology and exact seven producer partition', () => {
+test('pins an exact unique 13-role topology and exact seven producer partition', () => {
   const nonMediaServices = readShellArray(rollout, 'NON_MEDIA_SERVICES');
   assert.deepEqual(readShellArray(topology, 'MAXIM_PRODUCTION_API_SERVICES'), productionServices);
   assert.deepEqual(readShellArray(rollout, 'OCR_PRODUCER_SERVICES'), producerServices);
   assert.deepEqual(readShellArray(rollout, 'HTTP_READY_SERVICES'), httpReadyServices);
-  assert.equal(new Set(productionServices).size, 12);
-  assert.equal(new Set(nonMediaServices).size, 11);
+  assert.equal(new Set(productionServices).size, 13);
+  assert.equal(new Set(nonMediaServices).size, 12);
   assert.deepEqual(
     new Set([...nonMediaServices, 'api-media-analysis']),
     new Set(productionServices),

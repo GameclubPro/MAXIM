@@ -5,6 +5,7 @@ import { Test } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { InitDataService } from '../auth/init-data.service';
+import { PublisherInitDataKeyService } from '../auth/publisher-init-data-key.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
 import { ManagedEntitiesService } from './managed-entities.service';
@@ -28,12 +29,14 @@ function createSignedInitData(botToken: string, userId: string, authDateSec: num
 
 describe('AdminController auth e2e', () => {
   let app: NestFastifyApplication;
+  let appCreated = false;
   const botToken = 'test-bot-token';
   const listChatsWithRefreshState = jest.fn();
   const getManagedEntityFavoriteLabels = jest.fn();
   const updateManagedEntityFavoriteLabels = jest.fn();
 
   beforeEach(async () => {
+    appCreated = false;
     listChatsWithRefreshState.mockReset().mockResolvedValue({
       items: [],
       snapshot: {
@@ -76,6 +79,10 @@ describe('AdminController auth e2e', () => {
         InitDataGuard,
         InitDataService,
         {
+          provide: PublisherInitDataKeyService,
+          useValue: { getVerificationKeys: jest.fn(() => null) },
+        },
+        {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string, fallback?: unknown) => {
@@ -108,12 +115,15 @@ describe('AdminController auth e2e', () => {
     }).compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+    appCreated = true;
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
   });
 
   afterEach(async () => {
-    await app.close();
+    if (appCreated) {
+      await app.close();
+    }
   });
 
   it('rejects an unauthenticated chats refresh request', async () => {

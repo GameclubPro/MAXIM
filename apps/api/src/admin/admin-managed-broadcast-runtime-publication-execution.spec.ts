@@ -5,6 +5,7 @@ import {
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationDeliveryVerificationSource,
+  PublicationDispatchProfile,
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
@@ -2065,7 +2066,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       .mockResolvedValue({});
     jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
     jest.spyOn(runtime as any, 'resolveDeliveryBotAssignment').mockResolvedValue('bot-1');
-    jest.spyOn(runtime as any, 'buildManagedBroadcastMessage').mockResolvedValue({
+    jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
       messageText: 'Publication',
       messageOptions: {},
       commentDialogReference: null,
@@ -2074,7 +2075,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       .spyOn(runtime as any, 'heartbeatManagedBroadcastProcessingLock')
       .mockResolvedValue(undefined);
     jest
-      .spyOn(runtime as any, 'recordManagedBroadcastCommentDialogReference')
+      .spyOn((runtime as any).messageRuntime, 'recordDialogReference')
       .mockResolvedValue(undefined);
     jest
       .spyOn((runtime as any).publicationVerification, 'persistResponseTargetMismatch')
@@ -2280,6 +2281,179 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         failedChatIds: [],
         pendingChatIds: ['chat-1', 'chat-2'],
         canRetry: false,
+      }),
+    );
+  });
+
+  it('sends PUBLIK_V1 directly through its persisted exact bot without routed failover', async () => {
+    const nextSendAt = new Date('2026-08-26T10:00:00.000Z');
+    const row = {
+      id: 'broadcast-publik',
+      sourceChatId: 'chat-1',
+      entityType: 'CHAT',
+      actorUserId: 'admin-1',
+      text: 'Publication',
+      textFormat: 'plain',
+      applyToAllChats: false,
+      targetChatIds: ['chat-1'],
+      buttons: [],
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Open',
+      imageEnabled: false,
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      mediaType: null,
+      mediaPayload: null,
+      mediaMimeType: '',
+      mediaFileName: '',
+      scheduleMode: 'calendar',
+      scheduleTimezone: 'Europe/Moscow',
+      nextSendAt,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: 1,
+      sentCount: 0,
+      status: ManagedBroadcastStatus.ACTIVE,
+      lastError: null,
+      lockedAt: null,
+      lockToken: null,
+      publicationOccurrenceId: 'occurrence-publik',
+      publicationContentRevisionId: 'content-publik',
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+    };
+    const delivery = {
+      id: 'delivery-publik',
+      broadcastId: row.id,
+      occurrenceIndex: 1,
+      targetChatId: 'chat-1',
+      botId: null,
+      status: ManagedBroadcastDeliveryStatus.PENDING,
+      attemptCount: 0,
+      remoteMessageId: null,
+      lastError: null,
+      sentAt: null,
+      lockedAt: null,
+      lockToken: null,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-bot',
+    };
+    const publish = jest.fn();
+    const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const runtime = new AdminManagedBroadcastRuntime(
+      {
+        prisma: {
+          managedBroadcast: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+            findUnique: jest.fn().mockResolvedValue(row),
+          },
+          managedBroadcastDelivery: {
+            findMany: jest.fn().mockResolvedValue([delivery]),
+            updateMany: deliveryUpdateMany,
+          },
+        },
+        maxRoutedPublicationService: { publish },
+        publisherRuntimeBoundaryService: { assertDispatchEnabled: jest.fn() },
+        publisherReadinessService: {
+          assertEntityReady: jest.fn().mockResolvedValue({
+            chatId: 'chat-1',
+            entityType: 'chat',
+            requiredBotId: 'publisher-bot',
+            policyRevision: 1,
+          }),
+        },
+        publisherDispatchHealthService: {
+          assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
+          recordSendSuccess: jest.fn().mockResolvedValue(undefined),
+          recordSendFailure: jest.fn().mockResolvedValue('transient'),
+        },
+        assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
+        logger: { log: jest.fn(), warn: jest.fn() },
+      } as never,
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+    jest
+      .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
+      .mockResolvedValue(true);
+    jest
+      .spyOn(runtime as any, 'reconcileStaleManagedBroadcastDeliveries')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(runtime as any, 'deferManagedBroadcastOccurrenceWithFreshSendingDeliveries')
+      .mockResolvedValue(false);
+    jest
+      .spyOn((runtime as any).publisherDispatch, 'ensureRuntimeBoundary')
+      .mockResolvedValue({ ready: true });
+    jest.spyOn(runtime as any, 'resolveManagedBroadcastTargetsFromRow').mockReturnValue({
+      targetMode: 'selected',
+      targetChatIds: ['chat-1'],
+    });
+    jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue([delivery]);
+    jest
+      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastRequestMedia')
+      .mockResolvedValue({});
+    jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
+    jest
+      .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
+      .mockResolvedValue(new Set());
+    jest
+      .spyOn((runtime as any).publicationVerification, 'persistResponseTargetMismatch')
+      .mockResolvedValue(null);
+    jest
+      .spyOn(runtime as any, 'heartbeatManagedBroadcastProcessingLock')
+      .mockResolvedValue(undefined);
+    jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
+      messageText: 'Publication',
+      messageOptions: undefined,
+      commentDialogReference: null,
+    });
+    const send = jest
+      .spyOn(runtime as any, 'sendManagedBroadcastMessageImmediateWithId')
+      .mockResolvedValue({ messageId: 'mid-publik', url: null, chatId: 'chat-1' });
+    jest
+      .spyOn((runtime as any).messageRuntime, 'recordDialogReference')
+      .mockResolvedValue(undefined);
+    jest.spyOn(runtime as any, 'finalizeManagedBroadcastOccurrence').mockResolvedValue({
+      status: ManagedBroadcastStatus.COMPLETED,
+      currentOccurrence: 1,
+      sentChatIds: ['chat-1'],
+      failedChatIds: [],
+      pendingChatIds: [],
+      canRetry: false,
+      firstSendError: null,
+      nextSendAt: null,
+    });
+
+    await (runtime as any).processManagedBroadcastOccurrence(
+      row.id,
+      'deadline',
+      new Date('2026-08-26T09:55:00.000Z'),
+      [ManagedBroadcastStatus.ACTIVE],
+    );
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(
+      'chat-1',
+      'Publication',
+      undefined,
+      'publisher-bot',
+      expect.any(Object),
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+        }),
+        data: expect.objectContaining({
+          botId: 'publisher-bot',
+          dialogBotId: 'main-bot',
+        }),
       }),
     );
   });

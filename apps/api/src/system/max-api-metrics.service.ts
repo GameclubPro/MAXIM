@@ -283,7 +283,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
 
     for (const botId of normalizedBotIds) {
       for (let sec = startSec; sec <= nowSec; sec += 1) {
-        // Match GCRA: the all-traffic guard is shared, while class budgets are service-local.
+        // Per-token all-traffic capacity is shared across service instances; class data is local.
         if (options.capacityScope === 'service') {
           const key = `${MAX_API_GLOBAL_METRICS_KEY_PREFIX}:${botId}:${sec}`;
           keys.push(key);
@@ -361,7 +361,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     }> = [];
 
     for (let sec = startSec; sec <= nowSec; sec += 1) {
-      // Overall stack traffic is observational; enforced traffic-class budgets are service-local.
+      // Overall and traffic-class stack counters are observational only.
       const overallKey = `maxapi:rps:stack:${sec}`;
       keys.push(overallKey);
       entries.push({ key: overallKey, sec, trafficClass: null });

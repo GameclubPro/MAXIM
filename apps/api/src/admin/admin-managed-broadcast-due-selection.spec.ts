@@ -1,6 +1,7 @@
 import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
+  PublicationDispatchProfile,
   PublicationScheduleMode,
 } from '../prisma/prisma-client';
 import {
@@ -81,6 +82,9 @@ describe('publication managed broadcast due selection', () => {
       'verify-2',
     ]);
     expect(findMany).toHaveBeenCalledTimes(3);
+    expect(findMany.mock.calls[0]?.[0]?.where.dispatchProfile).toBe(
+      PublicationDispatchProfile.LEGACY_ROUTED,
+    );
     expect(findMany.mock.calls[1]?.[0]?.where.status.in).toEqual([
       ManagedBroadcastStatus.ACTIVE,
       ManagedBroadcastStatus.PARTIAL,
@@ -94,6 +98,24 @@ describe('publication managed broadcast due selection', () => {
       { remoteMessageVerificationAbsentCount: { gt: 0 } },
       { remoteMessageVerificationPresentCount: { gt: 0 } },
     ]);
+  });
+
+  it('scopes every publisher due lane to PUBLIK_V1 envelopes', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+
+    await selectPublicationManagedBroadcastDueBatch(
+      { managedBroadcast: { findMany } } as never,
+      [PublicationScheduleMode.NOW],
+      10,
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    expect(findMany).toHaveBeenCalledTimes(3);
+    for (const [request] of findMany.mock.calls) {
+      const where = request.where;
+      const profile = where.dispatchProfile ?? where.AND?.[0]?.dispatchProfile;
+      expect(profile).toBe(PublicationDispatchProfile.PUBLIK_V1);
+    }
   });
 
   it('uses the whole batch for verification when no send is due', async () => {

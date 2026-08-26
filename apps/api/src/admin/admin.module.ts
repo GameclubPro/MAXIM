@@ -4,10 +4,11 @@ import { AuthModule } from '../auth/auth.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
+import { PublisherModule } from '../publisher/publisher.module';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { ModerationDeleteIntentModule } from '../moderation/moderation-delete-intent.module';
-import { getAppRole, roleRunsAction } from '../runtime/app-role';
+import { getAppRole, roleRunsAction, roleRunsPublisher } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { AdminManagedEntitiesRefreshProcessor } from './admin-managed-entities-refresh.processor';
 import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from './admin-managed-entities-refresh.queue';
@@ -53,12 +54,20 @@ import { PublicationMetricsInterceptor } from './publication-metrics.interceptor
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationRunnerService } from './publication-runner.service';
 import { PublicationService } from './publication.service';
+import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
+import { PublisherDialogContextService } from './publisher-dialog-context.service';
+import { PublisherPublicationDispatchRunnerService } from './publisher-publication-dispatch-runner.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { VkParsingPublishProcessor } from './vk-parsing-publish.processor';
+import { VkParsingPublisherProcessor } from './vk-parsing-publisher.processor';
 import { VkParsingRunnerService } from './vk-parsing-runner.service';
 import { VkParsingSyncProcessor } from './vk-parsing-sync.processor';
-import { VK_PARSING_PUBLISH_QUEUE, VK_PARSING_SYNC_QUEUE } from './vk-parsing.queue';
+import {
+  VK_PARSING_PUBLISH_QUEUE,
+  VK_PARSING_PUBLISHER_QUEUE,
+  VK_PARSING_SYNC_QUEUE,
+} from './vk-parsing.queue';
 import { VkApiClientService } from './vk-api-client.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
@@ -74,6 +83,12 @@ import { SafetyDeskController } from './safety-desk.controller';
 import { SafetyDeskService } from './safety-desk.service';
 import { SupportRequestsController } from './support-requests.controller';
 import { SupportRequestsService } from './support-requests.service';
+import { PublisherController } from './publisher.controller';
+import { PublisherPolicyService } from './publisher-policy.service';
+import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
+import { PublisherSuggestionPublicationProcessor } from './publisher-suggestion-publication.processor';
+import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-publication.queue';
 
 @Module({
   imports: [
@@ -83,6 +98,8 @@ import { SupportRequestsService } from './support-requests.service';
     BullModule.registerQueue({ name: ADMIN_SUGGESTION_DELIVERY_QUEUE }),
     BullModule.registerQueue({ name: VK_PARSING_SYNC_QUEUE }),
     BullModule.registerQueue({ name: VK_PARSING_PUBLISH_QUEUE }),
+    BullModule.registerQueue({ name: VK_PARSING_PUBLISHER_QUEUE }),
+    BullModule.registerQueue({ name: PUBLISHER_SUGGESTION_PUBLICATION_QUEUE }),
     AuthModule,
     MaxModule,
     ChatContextModule,
@@ -90,6 +107,7 @@ import { SupportRequestsService } from './support-requests.service';
     NightModeTransitionModule,
     ModerationDeleteIntentModule,
     RedisCounterModule,
+    PublisherModule,
   ],
   controllers: [
     AdminManagedEntitiesController,
@@ -102,6 +120,7 @@ import { SupportRequestsService } from './support-requests.service';
     AdminPollController,
     AdminManualModerationController,
     PublicationController,
+    PublisherController,
     SafetyDeskController,
     SupportRequestsController,
   ],
@@ -142,7 +161,14 @@ import { SupportRequestsService } from './support-requests.service';
     PublicationMetricsInterceptor,
     PublicationPresenterService,
     PublicationService,
+    PublicationPublisherRoutingService,
+    PublisherDialogContextService,
     PublicationRunnerService,
+    ...(roleRunsPublisher(getAppRole()) ? [PublisherPublicationDispatchRunnerService] : []),
+    PublisherPolicyService,
+    PublisherReadinessService,
+    PublisherSuggestionPublicationQueueService,
+    ...(roleRunsPublisher(getAppRole()) ? [PublisherSuggestionPublicationProcessor] : []),
     ManagedGiveawayRunnerService,
     VkParsingRateLimitService,
     VkApiClientService,
@@ -160,6 +186,7 @@ import { SupportRequestsService } from './support-requests.service';
     ...(roleRunsAction(getAppRole()) ? [VkParsingRunnerService] : []),
     ...(roleRunsAction(getAppRole()) ? [VkParsingSyncProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [VkParsingPublishProcessor] : []),
+    ...(roleRunsPublisher(getAppRole()) ? [VkParsingPublisherProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManagedEntitiesRefreshProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuperBanProcessor] : []),
@@ -185,6 +212,8 @@ import { SupportRequestsService } from './support-requests.service';
     ManagedGiveawayService,
     ManagedPollService,
     PublicationService,
+    PublisherPolicyService,
+    PublisherReadinessService,
     VkParsingRateLimitService,
     VkApiClientService,
     VkParsingAccessService,

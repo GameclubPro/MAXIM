@@ -14,9 +14,11 @@ import { MiniappRequestSecurityService } from './miniapp-request-security.servic
 import { MiniappSessionService } from './miniapp-session.service';
 import { isSameMiniappPrincipal, type MiniappAuthContext } from './miniapp-session.types';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { MiniappProfileForbiddenException } from './miniapp-profile.error';
+import { MiniappProfileGuard } from './miniapp-profile.guard';
 
 type AuthenticatedRequest = FastifyRequest & {
-  user?: unknown;
+  user?: AuthUser;
   miniappAuth?: MiniappAuthContext;
 };
 
@@ -27,6 +29,7 @@ export class InitDataGuard implements CanActivate {
     @Optional() private readonly accessObservability?: MiniappAccessObservabilityService,
     @Optional() private readonly sessionService?: MiniappSessionService,
     @Optional() private readonly requestSecurity?: MiniappRequestSecurityService,
+    @Optional() private readonly profileGuard?: MiniappProfileGuard,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -48,7 +51,7 @@ export class InitDataGuard implements CanActivate {
             source: 'init_data',
             principalKey: createHash('sha256').update(initData).digest('hex'),
           };
-          return true;
+          return this.authorizeProfile(context, request);
         } catch (error: unknown) {
           if (!isMiniappAuthException(error) || error.kind !== 'expired') {
             throw error;
@@ -84,7 +87,7 @@ export class InitDataGuard implements CanActivate {
           principalKey: session.keyHash,
           session,
         };
-        return true;
+        return this.authorizeProfile(context, request);
       }
 
       if (expiredInitDataError) {
@@ -95,7 +98,14 @@ export class InitDataGuard implements CanActivate {
       }
       throw new MiniappAuthException('missing', 'Missing InitData authorization header');
     } catch (error: unknown) {
-      if (isMiniappAuthException(error)) {
+      if (error instanceof MiniappProfileForbiddenException) {
+        this.accessObservability?.recordRejection({
+          scope: 'profile',
+          code: error.code,
+          retryable: error.retryable,
+          recovery: error.recovery,
+        });
+      } else if (isMiniappAuthException(error)) {
         this.accessObservability?.recordRejection({
           scope: 'auth',
           code: error.code,
@@ -112,6 +122,18 @@ export class InitDataGuard implements CanActivate {
       }
       throw error;
     }
+  }
+
+  private authorizeProfile(context: ExecutionContext, request: AuthenticatedRequest): boolean {
+    // FLAG: Optional injection exists only for legacy unit construction; runtime must fail closed.
+    if (!this.profileGuard) {
+      if (process.env.NODE_ENV === 'test') {
+        return true;
+      }
+      throw new MiniappProfileForbiddenException('Mini app profile guard is unavailable');
+    }
+    this.profileGuard.assertAccess(context, request);
+    return true;
   }
 
   private requiresCsrf(request: FastifyRequest): boolean {

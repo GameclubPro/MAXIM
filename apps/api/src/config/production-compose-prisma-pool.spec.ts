@@ -13,11 +13,13 @@ const API_SERVICE_POOL_CAPS = {
   'api-moderation-realtime-d': 3,
   'api-moderation-background': 2,
   'api-media-analysis': 2,
-  'api-action': 6,
+  'api-action': 4,
+  'api-publisher': 2,
 } as const;
 
 const API_SERVICE_POOL_CONNECTION_TIMEOUT_MS = {
   'api-action': 20_000,
+  'api-publisher': 20_000,
 } as const satisfies Partial<Record<keyof typeof API_SERVICE_POOL_CAPS, number>>;
 
 const COMPOSE_FILES = [

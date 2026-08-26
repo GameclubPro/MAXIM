@@ -49,7 +49,6 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
-import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import type { ManagedGiveawayCardHandle } from '../components/managed-giveaway-card';
 import type { ManagedPollWorkspaceHandle } from '../components/managed-poll-workspace';
 import {
@@ -61,7 +60,6 @@ import {
   type BroadcastWorkspaceView,
 } from '../components/broadcast-studio-workspace';
 import { PublicationWorkspaceHandoff } from '../components/publication-workspace-handoff';
-import { SettingsLoadErrorState } from '../components/settings-load-error-state';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import { GlassCard } from '../components/ui/glass-card';
@@ -163,6 +161,11 @@ import {
   resolveLegacyBroadcastEditorTarget,
   resolveLegacyPublicationReturnPath,
 } from '../features/publications/legacy-autoposts';
+import {
+  BroadcastPublishBar,
+  PublisherPolicyCard,
+  SettingsLoadErrorState,
+} from './settings/settings-lazy-surfaces';
 
 type ChannelRouteState = {
   chatTitle: string;
@@ -3289,6 +3292,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       onClickCapture={handleDesktopToggleRowClick}
     >
       {workspaceHeader}
+
+      {chatId ? <PublisherPolicyCard api={api} entityType="channel" entityId={chatId} /> : null}
 
       {channelHeader?.accessDiagnostics?.state === 'bot_access_lost' ? (
         <Suspense fallback={null}>

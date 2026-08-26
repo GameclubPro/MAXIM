@@ -880,9 +880,6 @@ export function handleVkParsingPreviewRequest(
     }
 
     const nowIso = readPreviewClock(state.clock).toISOString();
-    const messageId = `preview-vk-published-${readPreviewClock(state.clock).getTime()}`;
-    const urlPrefix = entityType === 'channel' ? 'channels/yuzhnoe-news' : 'chats/preview-chat';
-    const url = `https://max.ru/${urlPrefix}/message/${messageId}`;
     const updatedPost: VkParsingPost = {
       ...post,
       text: payload.text,
@@ -890,15 +887,15 @@ export function handleVkParsingPreviewRequest(
       photoUrls: payload.photoUrls,
       videoUrls: payload.videoUrls,
       linkUrls: payload.linkUrls,
-      status: 'PUBLISHED',
-      publishedContentHash: `preview-${messageId}`,
-      publishedMessageId: messageId,
-      publishedUrl: url,
-      publishedAtMax: nowIso,
+      status: 'NEW',
+      publishedContentHash: null,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAtMax: null,
       autoPublishedAt: null,
       autoPublishError: null,
-      publishQueuedAt: null,
-      publishScheduledAt: null,
+      publishQueuedAt: nowIso,
+      publishScheduledAt: nowIso,
       publishLockedAt: null,
       lastError: null,
       updatedAt: nowIso,
@@ -906,14 +903,14 @@ export function handleVkParsingPreviewRequest(
     const feed = vkParsingFeedSchema.parse({
       ...readFeed(),
       posts: readFeed().posts.map((item) => (item.id === updatedPost.id ? updatedPost : item)),
+      queue: [updatedPost, ...readFeed().queue.filter((item) => item.id !== updatedPost.id)],
     });
     writeFeed(feed);
     return {
       handled: true,
       value: publishVkParsingPostResultSchema.parse({
         post: updatedPost,
-        messageId,
-        url,
+        queued: 1,
       }),
     };
   }

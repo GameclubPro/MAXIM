@@ -49,6 +49,13 @@ Commands:
   commercial-ocr-status       Read privacy-safe OCR runtime-control status
   commercial-ocr-recover-shadow [--apply]
                               Quiesce enforcement and reconcile every API role to shadow
+  publisher-dispatch-enable [--apply]
+                              Preview or enable Publik dispatch across all shared API roles
+  publisher-dispatch-disable [--apply]
+                              Preview or fail-closed disable Publik dispatch
+  publisher-dispatch-status   Read privacy-safe Publik dispatch rollout status
+  install-publisher-secrets [token-file]
+                              Install initial Publik credentials over SSH stdin
   ps [services...]            Show main production docker compose status
   logs <service> [tail]       Show main production service logs, default tail=200
   yc-shell                    Open a Yandex Cloud CLI SSH shell, if configured
@@ -448,6 +455,36 @@ commercial_ocr_downgrade() {
   remote_exec "$(shell_quote_args "${remote_args[@]}")"
 }
 
+publisher_dispatch_command() {
+  local action="$1"
+  shift
+  local apply="${1:-}"
+  if [[ "$action" == "status" ]]; then
+    if [[ $# -ne 0 ]]; then
+      echo "Usage: $0 publisher-dispatch-status" >&2
+      exit 2
+    fi
+  elif [[ -n "$apply" && "$apply" != "--apply" ]] || [[ $# -gt 1 ]]; then
+    echo "Usage: $0 publisher-dispatch-${action} [--apply]" >&2
+    exit 2
+  fi
+  local remote_args=(./infra/scripts/vps-publisher-dispatch-rollout.sh "$action")
+  if [[ "$apply" == "--apply" ]]; then
+    remote_args+=(--apply)
+  fi
+  local remote_command
+  remote_command="$(shell_quote_args "${remote_args[@]}")"
+  if [[ "$action" == "disable" && "$apply" == "--apply" ]]; then
+    # A failed publisher rollout deliberately leaves the webhook owner fence in place.
+    # Guarded disable is the fixed recovery path and re-proves the exact image before adoption.
+    MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=1 \
+      prepend_webhook_rollout_recovery_env remote_command
+  else
+    prepend_webhook_rollout_recovery_env remote_command
+  fi
+  remote_exec "$remote_command"
+}
+
 open_shell() {
   local args=()
   local remote_command
@@ -778,6 +815,78 @@ health() {
   printf '\n'
 }
 
+install_publisher_secrets() (
+  set -euo pipefail
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: $0 install-publisher-secrets [token-file]" >&2
+    exit 2
+  fi
+
+  local token_file="${1:-$ROOT_DIR/token}"
+  local token_mode
+  local bundle_dir
+  local remote_command
+  local remote_script
+  local args=()
+
+  token_file="$(expand_path "$token_file")"
+  if [[ ! -f "$token_file" || -L "$token_file" ]]; then
+    echo "Publisher token file must be a regular non-symlink file." >&2
+    exit 1
+  fi
+  token_mode="$(stat -c '%a' "$token_file" 2>/dev/null || stat -f '%Lp' "$token_file" 2>/dev/null || true)"
+  if [[ "$token_mode" != "600" ]]; then
+    echo "Publisher token file must have mode 0600." >&2
+    exit 1
+  fi
+
+  bundle_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$bundle_dir"' EXIT
+  node "$ROOT_DIR/infra/scripts/publisher-secret-bundle.mjs" pack \
+    "$token_file" \
+    "${MAX_PUBLISHER_BOT_ID:-se14088825_bot}" \
+    "$bundle_dir/bundle.json"
+  cp "$ROOT_DIR/infra/scripts/publisher-secret-bundle.mjs" "$bundle_dir/installer.mjs"
+  chmod 0600 "$bundle_dir/installer.mjs"
+
+  read -r -d '' remote_script <<'REMOTE' || true
+set -euo pipefail
+umask 077
+stage="$(mktemp -d)"
+target=/var/lib/maxim-secrets
+suffix="new.$$"
+cleanup() {
+  rm -rf -- "$stage"
+  rm -f -- "$target/publik-bot-token.$suffix" "$target/publik-webhook.json.$suffix" "$target/publik-init-data-keys.json.$suffix"
+}
+trap cleanup EXIT
+tar -xf - -C "$stage" --no-same-owner --no-same-permissions
+node "$stage/installer.mjs" stage "$stage/bundle.json" "$stage/output"
+names=(publik-bot-token publik-webhook.json publik-init-data-keys.json)
+exec 9>/tmp/maxim-publisher-secret-install.lock
+flock -n 9 || { echo "Another publisher secret installation is running." >&2; exit 1; }
+for name in "${names[@]}"; do
+  if sudo -n test -e "$target/$name"; then
+    echo "Publisher secrets already exist; use a reviewed rotation procedure." >&2
+    exit 1
+  fi
+done
+sudo -n install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" "$target"
+for name in "${names[@]}"; do
+  install -m 0600 "$stage/output/$name" "$target/$name.$suffix"
+done
+for name in "${names[@]}"; do
+  mv "$target/$name.$suffix" "$target/$name"
+done
+printf '%s\n' 'Publisher secrets installed.'
+REMOTE
+  printf -v remote_command 'cd %q && bash -c %q' "$MAXIM_VPS_REPO_DIR" "$remote_script"
+  mapfile -d '' -t args < <(ssh_args)
+  tar -C "$bundle_dir" -cf - installer.mjs bundle.json |
+    ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" \
+      "bash -lc $(printf '%q' "$remote_command")"
+)
+
 doctor() {
   local args=()
 
@@ -890,6 +999,18 @@ case "$command" in
     ;;
   commercial-ocr-recover-shadow)
     commercial_ocr_recover_shadow "$@"
+    ;;
+  publisher-dispatch-enable)
+    publisher_dispatch_command enable "$@"
+    ;;
+  publisher-dispatch-disable)
+    publisher_dispatch_command disable "$@"
+    ;;
+  publisher-dispatch-status)
+    publisher_dispatch_command status "$@"
+    ;;
+  install-publisher-secrets)
+    install_publisher_secrets "$@"
     ;;
   ps)
     remote_exec "$(shell_quote_args docker compose --env-file .env -p infra -f infra/docker-compose.yml ps "$@")"

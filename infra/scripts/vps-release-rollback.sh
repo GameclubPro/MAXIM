@@ -217,6 +217,7 @@ SELECT_ADMIN=0
 SELECTED_COMPONENTS=()
 SERVICES=()
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_PUBLISHER=0
 TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
 TARGET_COMMERCIAL_OCR_VERSION=""
 declare -A COMPONENT_SOURCE_SHA=()
@@ -295,6 +296,16 @@ if [[ "$SELECT_API" -eq 1 ]]; then
     echo "API component source commit is not available locally: $API_SOURCE_SHA" >&2
     echo "Fetch the immutable API source object without changing the VPS worktree, then retry." >&2
     exit 1
+  fi
+  if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_PUBLISHER_SERVICE"; then
+    TARGET_HAS_PUBLISHER=1
+  else
+    topology_status=$?
+    if [[ "$topology_status" -ne 1 ]]; then
+      exit "$topology_status"
+    fi
+    maxim_topology_remove_service SERVICES "$MAXIM_PUBLISHER_SERVICE"
+    echo "API rollback target predates $MAXIM_PUBLISHER_SERVICE; the role will be removed."
   fi
   if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
     TARGET_HAS_MEDIA_ANALYSIS=1
@@ -477,6 +488,28 @@ remove_incompatible_media_analysis_container() {
   docker rm -f "${container_ids[@]}" >/dev/null
 }
 
+remove_incompatible_publisher_container() {
+  local container_list
+  local container_ids=()
+
+  if ! container_list="$(
+    docker ps -a -q \
+      --filter "label=com.docker.compose.project=infra" \
+      --filter "label=com.docker.compose.service=$MAXIM_PUBLISHER_SERVICE"
+  )"; then
+    echo "Could not inspect the current $MAXIM_PUBLISHER_SERVICE container." >&2
+    return 1
+  fi
+  if [[ -z "$container_list" ]]; then
+    return 0
+  fi
+  mapfile -t container_ids <<<"$container_list"
+  ROLLBACK_RUNTIME_STARTED=1
+  echo "Stopping and removing $MAXIM_PUBLISHER_SERVICE for the pre-feature API target..."
+  docker stop --time 30 "${container_ids[@]}" >/dev/null
+  docker rm -f "${container_ids[@]}" >/dev/null
+}
+
 verify_service_image_id() {
   local service="$1"
   local expected_image_id="$2"
@@ -540,7 +573,13 @@ verify_inherited_release_components
 
 SMOKE_RESULTS=()
 if [[ "$SELECT_API" -eq 1 ]]; then
+  if [[ "$TARGET_HAS_PUBLISHER" -eq 1 ]]; then
+    maxim_topology_require_publisher_secret_files
+  fi
   maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
+  if [[ "$TARGET_HAS_PUBLISHER" -eq 0 ]]; then
+    remove_incompatible_publisher_container
+  fi
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
     remove_incompatible_media_analysis_container
   else
@@ -549,6 +588,10 @@ if [[ "$SELECT_API" -eq 1 ]]; then
 
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service api-action
+  if [[ "$TARGET_HAS_PUBLISHER" -eq 1 ]]; then
+    maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
+    recreate_service api-publisher
+  fi
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service api-admin
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
@@ -581,9 +624,12 @@ for service in "${SERVICES[@]}"; do
   fi
 done
 if [[ "$SELECT_API" -eq 1 && "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  publisher_policy="required"
+  [[ "$TARGET_HAS_PUBLISHER" -eq 1 ]] || publisher_policy="allow-absent"
   maxim_topology_verify_api_commercial_ocr_version \
     COMPOSE_FILES \
-    "$TARGET_COMMERCIAL_OCR_VERSION"
+    "$TARGET_COMMERCIAL_OCR_VERSION" \
+    "$publisher_policy"
 fi
 if [[ "$SELECT_API" -eq 1 ]]; then
   wait_for_strict_smoke json-ok http://127.0.0.1:3001/api/health/live

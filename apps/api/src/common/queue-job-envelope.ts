@@ -9,7 +9,8 @@ export type QueueRetryPolicyName =
   | 'night-mode-transition'
   | 'photo-duplicate'
   | 'vk-parsing-sync'
-  | 'vk-parsing-publish';
+  | 'vk-parsing-publish'
+  | 'publisher-chat-comment';
 
 export type QueueJobMetadata = {
   idempotencyKey?: string;

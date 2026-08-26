@@ -5,6 +5,7 @@ describe('application role HTTP boundary', () => {
     expect(roleRunsHttp(normalizeAppRole('moderation'), 'api-moderation-background')).toBe(false);
     expect(roleRunsHttp(normalizeAppRole('enqueue'), 'api-enqueue')).toBe(false);
     expect(roleRunsHttp(normalizeAppRole('action'), 'api-action')).toBe(false);
+    expect(roleRunsHttp(normalizeAppRole('publisher'), 'api-publisher')).toBe(false);
   });
 
   it('exposes media-analysis health only on container loopback', () => {

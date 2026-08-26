@@ -428,6 +428,7 @@ export type RollbackVkParsingRequest = z.infer<typeof rollbackVkParsingRequestSc
 export const rollbackVkParsingResultSchema = z.object({
   matched: z.number().int().min(0).default(0),
   deleted: z.number().int().min(0).default(0),
+  queued: z.number().int().min(0).default(0),
   failed: z.number().int().min(0).default(0),
   posts: z.array(vkParsingPostSchema).default([]),
 });
@@ -441,8 +442,10 @@ export type VkParsingRefreshResult = z.infer<typeof vkParsingRefreshResultSchema
 
 export const publishVkParsingPostResultSchema = z.object({
   post: vkParsingPostSchema,
-  messageId: z.string(),
-  url: z.string().url().nullable(),
+  queued: z.number().int().min(0).default(0),
+  // Rolling-deploy compatibility for an old API that still completed the send inline.
+  messageId: z.string().optional(),
+  url: z.string().url().nullable().optional(),
 });
 export type PublishVkParsingPostResult = z.infer<typeof publishVkParsingPostResultSchema>;
 

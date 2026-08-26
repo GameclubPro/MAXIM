@@ -47,6 +47,11 @@ import {
   managedEntityTypeSchema,
 } from './managed-entities.js';
 import {
+  miniappCapabilitySchema,
+  miniappHomeRouteSchema,
+  miniappProfileSchema,
+} from './publisher.js';
+import {
   DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
@@ -1536,6 +1541,11 @@ export const meSchema = z.object({
   profileHandoffUrl: z.string().trim().url().nullable().default(null),
   botDialogUrl: botDialogUrlSchema.nullable().default(null),
   canAccessSystem: z.boolean().optional(),
+  profile: miniappProfileSchema.default('moderation'),
+  capabilities: z
+    .array(miniappCapabilitySchema)
+    .default(['moderation_workspace', 'publisher_policy_write']),
+  homeRoute: miniappHomeRouteSchema.default('/'),
 });
 export type Me = z.infer<typeof meSchema>;
 

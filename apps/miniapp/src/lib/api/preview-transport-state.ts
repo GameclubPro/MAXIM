@@ -137,6 +137,7 @@ export type PreviewDialogThreadBuckets = Partial<
 
 export function createInitialState(search: string, clock: PreviewClock): PreviewState {
   const now = readPreviewClock(clock);
+  const publisherProfile = new URLSearchParams(search).get('profile') === 'publisher';
   const chatSettings = chatSettingsSchema.parse({
     greetingEnabled: false,
     greetingBotMessageEnabled: false,
@@ -785,8 +786,13 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
       profileUrl: buildPreviewProfileUrl('designer'),
       profileHandoffUrl: buildPreviewProfileHandoffUrl('preview-admin'),
-      botDialogUrl: 'https://max.ru/maxim-bot',
-      canAccessSystem: true,
+      botDialogUrl: publisherProfile ? 'https://max.ru/se14088825_bot' : 'https://max.ru/maxim-bot',
+      canAccessSystem: !publisherProfile,
+      profile: publisherProfile ? 'publisher' : 'moderation',
+      capabilities: publisherProfile
+        ? ['publisher_workspace', 'publisher_entities', 'chat_comments']
+        : ['moderation_workspace', 'publisher_policy_write'],
+      homeRoute: publisherProfile ? '/publications' : '/',
     },
     systemModeSelection: 'auto',
     favoriteLabelsInitialized: true,

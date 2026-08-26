@@ -80,7 +80,8 @@
     "vk-parsing:repair-publish": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-vk-parsing-publish.js ]; then exec node dist/apps/api/src/scripts/repair-vk-parsing-publish.js \"$@\"; else exec tsx src/scripts/repair-vk-parsing-publish.ts \"$@\"; fi' --",
     "vk-parsing:recover-access-loss": "sh -c 'if [ -f dist/apps/api/src/scripts/recover-vk-parsing-access-loss.js ]; then exec node dist/apps/api/src/scripts/recover-vk-parsing-access-loss.js \"$@\"; else exec tsx src/scripts/recover-vk-parsing-access-loss.ts \"$@\"; fi' --",
     "publication:audit-delivery-verification": "sh -c 'if [ -f dist/apps/api/src/scripts/audit-publication-delivery-verification.js ]; then exec node dist/apps/api/src/scripts/audit-publication-delivery-verification.js \"$@\"; else exec tsx src/scripts/audit-publication-delivery-verification.ts \"$@\"; fi' --",
-    "publication:recover-send-route": "sh -c 'if [ -f dist/apps/api/src/scripts/recover-publication-send-route.js ]; then exec node dist/apps/api/src/scripts/recover-publication-send-route.js \"$@\"; else exec tsx src/scripts/recover-publication-send-route.ts \"$@\"; fi' --"
+    "publication:recover-send-route": "sh -c 'if [ -f dist/apps/api/src/scripts/recover-publication-send-route.js ]; then exec node dist/apps/api/src/scripts/recover-publication-send-route.js \"$@\"; else exec tsx src/scripts/recover-publication-send-route.ts \"$@\"; fi' --",
+    "publisher:attest-identity": "node dist/apps/api/src/scripts/attest-publisher-identity.js"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

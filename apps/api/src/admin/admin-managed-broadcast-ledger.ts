@@ -11,6 +11,7 @@ export type ManagedBroadcastCommentDialogReference = {
   customButtons: BroadcastLinkButton[];
   suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
   botId: string | null;
+  dialogBotId?: string | null;
 };
 
 export function buildManagedBroadcastLedgerContext(
@@ -28,6 +29,7 @@ export function buildManagedBroadcastLedgerContext(
             customButtons: reference.customButtons,
             suggestionEntryMode: reference.suggestionEntryMode,
             botId: reference.botId,
+            dialogBotId: reference.dialogBotId ?? reference.botId,
           }
         : null,
     },
@@ -78,6 +80,7 @@ export function readManagedBroadcastLedgerCommentDialogContext(value: unknown): 
           ? (reference.suggestionEntryMode as ManagedBroadcastCommentDialogReference['suggestionEntryMode'])
           : null,
       botId: readTrimmedString(reference.botId),
+      dialogBotId: readTrimmedString(reference.dialogBotId) ?? readTrimmedString(reference.botId),
     },
   };
 }

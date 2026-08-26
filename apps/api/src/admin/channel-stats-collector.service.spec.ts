@@ -1032,7 +1032,7 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
-  it('keeps audience first and limits stats endpoint views under MAX capacity pressure', async () => {
+  it('keeps audience first and limits stats endpoint views under background pressure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 
     const calls: string[] = [];
@@ -1063,7 +1063,7 @@ describe('ChannelStatsCollectorService', () => {
     const backgroundRuntimeGovernorService = {
       decide: jest.fn().mockResolvedValue({
         action: 'slow',
-        reason: 'MAX API stack load 80.0%',
+        reason: 'background share 80.0%',
         retryAfterMs: 60_000,
       }),
     };
@@ -1593,7 +1593,7 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
-  it('requests a bounded slow path for recurring views under MAX capacity pressure', async () => {
+  it('requests a bounded slow path for recurring views under background pressure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1613,7 +1613,7 @@ describe('ChannelStatsCollectorService', () => {
     const backgroundRuntimeGovernorService = {
       decide: jest.fn().mockResolvedValue({
         action: 'slow',
-        reason: 'MAX API bot load 80.0%',
+        reason: 'background share 80.0%',
         retryAfterMs: 60_000,
       }),
     };
@@ -1700,7 +1700,7 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
-  it('backs off recurring discovery after MAX throttling and skips audience work', async () => {
+  it('backs off recurring discovery under process-level background pressure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1715,7 +1715,7 @@ describe('ChannelStatsCollectorService', () => {
     const backgroundRuntimeGovernorService = {
       decide: jest.fn().mockResolvedValue({
         action: 'slow',
-        reason: 'MAX API stack load 80.0%',
+        reason: 'background share 80.0%',
         retryAfterMs: 60_000,
       }),
     };
@@ -2107,7 +2107,7 @@ describe('ChannelStatsCollectorService', () => {
     const backgroundRuntimeGovernorService = {
       decide: jest.fn().mockResolvedValue({
         action: 'slow',
-        reason: 'MAX API bot load 26.7%',
+        reason: 'background share 80.0%',
         retryAfterMs: 90_000,
       }),
     };

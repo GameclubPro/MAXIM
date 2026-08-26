@@ -1,4 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
+import type { Me } from '@maxim/contracts';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import {
   Suspense,
   lazy,
@@ -20,9 +22,7 @@ import {
   useNavigate,
 } from 'react-router';
 import { Shell } from './components/shell';
-import { GlassCard } from './components/ui/glass-card';
 import { Spinner } from './components/ui/spinner';
-import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import { createApiTransport, createLazyMiniappServerSessionManager } from './lib/api/transport';
 import { createAuthQueryClient, useAuthQueryPrincipalKey } from './lib/auth-query-session';
@@ -68,6 +68,11 @@ const LazyPublikPage = lazy(async () => {
 const LazyManagedEntityNavigationProvider = lazy(async () => {
   const module = await import('./lib/managed-entity-navigation');
   return { default: module.ManagedEntityNavigationProvider };
+});
+
+const LazyAppStartupState = lazy(async () => {
+  const module = await import('./components/app-startup-state');
+  return { default: module.AppStartupState };
 });
 
 function LegacyAutopostsRedirect() {
@@ -410,15 +415,9 @@ function RouteLoadingFallback() {
   );
 }
 
-function KeyedChannelSuggestDialogPage({
-  api,
-}: {
-  api: ReturnType<typeof createApiTransport>;
-}) {
+function KeyedChannelSuggestDialogPage({ api }: { api: ReturnType<typeof createApiTransport> }) {
   const location = useLocation();
-  return (
-    <LazyChannelSuggestDialogPage key={location.pathname + location.search} api={api} />
-  );
+  return <LazyChannelSuggestDialogPage key={location.pathname + location.search} api={api} />;
 }
 
 function AppRouteShell({
@@ -426,11 +425,13 @@ function AppRouteShell({
   launchRouteAppliedRef,
   launchRouteResolver,
   managedEntityWorkspace = false,
+  profile,
 }: {
   launchInitData: string | null;
   launchRouteAppliedRef: RefObject<string | null>;
   launchRouteResolver: (initData: string) => string | null;
   managedEntityWorkspace?: boolean;
+  profile: MiniappProfile;
 }) {
   const content = (
     <>
@@ -441,7 +442,7 @@ function AppRouteShell({
           launchRouteResolver={launchRouteResolver}
         />
       ) : null}
-      <Shell />
+      <Shell profile={profile} />
     </>
   );
 
@@ -456,16 +457,20 @@ function AppRoutes({
   apiClient,
   launchInitData,
   launchRouteResolver,
+  me,
 }: {
   apiClient: ReturnType<typeof createApiTransport>;
   launchInitData: string | null;
   launchRouteResolver: (initData: string) => string | null;
+  me: Me;
 }) {
   const launchRouteAppliedRef = useRef<string | null>(null);
 
   useEffect(() => {
     traceMiniappBoot('first_render', undefined, { once: true });
   }, []);
+
+  const moderationProfile = me.profile === 'moderation';
 
   return (
     <Suspense fallback={<RouteLoadingFallback />}>
@@ -477,49 +482,130 @@ function AppRoutes({
               launchInitData={launchInitData}
               launchRouteAppliedRef={launchRouteAppliedRef}
               launchRouteResolver={launchRouteResolver}
+              profile={me.profile}
             />
           }
         >
-          <Route path="/" element={<LazyChatsPage api={apiClient} />} />
-          <Route path="/publications" element={<LazyPublicationsPage api={apiClient} />} />
-          <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
+          {moderationProfile ? <Route path="/" element={<LazyChatsPage api={apiClient} />} /> : null}
           <Route
-            path="/channel/:chatId/dialog/comments"
-            element={<LazyChannelDialogPage api={apiClient} />}
+            path="/publications"
+            element={<LazyPublicationsPage api={apiClient} profile={me.profile} />}
           />
+          {moderationProfile ? (
+            <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
+          ) : null}
+          {moderationProfile ? (
+            <Route
+              path="/channel/:chatId/dialog/comments"
+              element={<LazyChannelDialogPage api={apiClient} />}
+            />
+          ) : null}
           <Route
             path="/chat/:chatId/dialog/comments"
             element={<LazyChannelDialogPage api={apiClient} />}
           />
-          <Route
-            path="/channel/:chatId/dialog/suggest"
-            element={<KeyedChannelSuggestDialogPage api={apiClient} />}
-          />
-          <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
+          {moderationProfile ? (
+            <Route
+              path="/channel/:chatId/dialog/suggest"
+              element={<KeyedChannelSuggestDialogPage api={apiClient} />}
+            />
+          ) : null}
+          {moderationProfile ? (
+            <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
+          ) : null}
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
           <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to={me.homeRoute} replace />} />
         </Route>
-        <Route
-          element={
-            <AppRouteShell
-              launchInitData={launchInitData}
-              launchRouteAppliedRef={launchRouteAppliedRef}
-              launchRouteResolver={launchRouteResolver}
-              managedEntityWorkspace
-            />
-          }
-        >
-          <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
+        {moderationProfile ? (
           <Route
-            path="/channel/:chatId/settings"
-            element={<LazyChannelSettingsPage api={apiClient} />}
-          />
-          <Route path="/channel/:chatId/stats" element={<LazyChannelStatsPage api={apiClient} />} />
-          <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
-        </Route>
+            element={
+              <AppRouteShell
+                launchInitData={launchInitData}
+                launchRouteAppliedRef={launchRouteAppliedRef}
+                launchRouteResolver={launchRouteResolver}
+                managedEntityWorkspace
+                profile="moderation"
+              />
+            }
+          >
+            <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
+            <Route
+              path="/channel/:chatId/settings"
+              element={<LazyChannelSettingsPage api={apiClient} />}
+            />
+            <Route path="/channel/:chatId/stats" element={<LazyChannelStatsPage api={apiClient} />} />
+            <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
+          </Route>
+        ) : null}
       </Routes>
     </Suspense>
+  );
+}
+
+function ProfiledAppRoutes({
+  apiClient,
+  launchInitData,
+  launchRouteResolver,
+  queryClient,
+}: {
+  apiClient: ReturnType<typeof createApiTransport>;
+  launchInitData: string | null;
+  launchRouteResolver: (initData: string) => string | null;
+  queryClient: ReturnType<typeof createAuthQueryClient>;
+}) {
+  const [me, setMe] = useState<Me | null>();
+
+  useEffect(() => {
+    let active = true;
+    const queryKey = ['miniapp-profile'] as const;
+    setMe(undefined);
+
+    void queryClient
+      .fetchQuery({
+        queryKey,
+        queryFn: async ({ signal }) => {
+          const { getMe } = await import('./lib/api/me-client');
+          return getMe(apiClient, { signal });
+        },
+        staleTime: Number.POSITIVE_INFINITY,
+      })
+      .then(
+        (nextMe) => {
+          if (active) {
+            setMe(nextMe);
+          }
+        },
+        () => {
+          if (active) {
+            setMe(null);
+          }
+        },
+      );
+
+    return () => {
+      active = false;
+      void queryClient.cancelQueries({ queryKey, exact: true });
+    };
+  }, [apiClient, queryClient]);
+
+  if (me === undefined) {
+    return <RouteLoadingFallback />;
+  }
+  if (!me) {
+    return (
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <LazyAppStartupState kind="profile-error" />
+      </Suspense>
+    );
+  }
+  return (
+    <AppRoutes
+      apiClient={apiClient}
+      launchInitData={launchInitData}
+      launchRouteResolver={launchRouteResolver}
+      me={me}
+    />
   );
 }
 
@@ -724,16 +810,9 @@ export function App() {
 
   if (preview.enabled && !previewRuntime) {
     return (
-      <div className="app-shell app-shell--centered">
-        <GlassCard className="init-missing-card" elevated>
-          <h1>Design Preview</h1>
-          <StatusState
-            tone="neutral"
-            title="Подготавливаю preview"
-            description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
-          />
-        </GlassCard>
-      </div>
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <LazyAppStartupState kind="preview-loading" />
+      </Suspense>
     );
   }
 
@@ -779,26 +858,9 @@ export function App() {
 
   if (!apiClient) {
     return (
-      <div className="app-shell app-shell--centered">
-        <GlassCard className="init-missing-card" elevated>
-          <h1>Панель ботов</h1>
-          <StatusState
-            tone="warning"
-            title="Не удалось открыть приложение"
-            description="Запустите панель через кнопку в боте MAX. При открытии по прямой ссылке вход недоступен."
-          />
-          <div className="init-missing-help">
-            <p>Проверьте:</p>
-            <ul>
-              <li>Откройте приложение из MAX, а не по прямой ссылке в браузере.</li>
-              <li>
-                Если кнопка в боте не открывает панель, закройте приложение и попробуйте еще раз.
-              </li>
-              <li>При сохранении проблемы напишите администратору бота.</li>
-            </ul>
-          </div>
-        </GlassCard>
-      </div>
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <LazyAppStartupState kind="init-missing" />
+      </Suspense>
     );
   }
 
@@ -812,17 +874,19 @@ export function App() {
         <AppRouter basename={ROUTER_BASENAME}>
           {preview.enabled && PreviewScaffold ? (
             <PreviewScaffold initialDevice={preview.device}>
-              <AppRoutes
+              <ProfiledAppRoutes
                 apiClient={apiClient}
                 launchInitData={null}
                 launchRouteResolver={launchRouteResolver}
+                queryClient={queryClient}
               />
             </PreviewScaffold>
           ) : (
-            <AppRoutes
+            <ProfiledAppRoutes
               apiClient={apiClient}
               launchInitData={initData}
               launchRouteResolver={launchRouteResolver}
+              queryClient={queryClient}
             />
           )}
         </AppRouter>

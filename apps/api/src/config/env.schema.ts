@@ -20,6 +20,11 @@ import {
 import { COMMERCIAL_OCR_ROLLOUT_MODES } from '../moderation/commercial-ocr/commercial-ocr.runtime';
 import { COMMERCIAL_OCR_DEFAULT_VERSION } from '../moderation/commercial-ocr/commercial-ocr.queue';
 import { parseCanonicalCommercialOcrApprovalPublicKeyBase64 } from '../moderation/commercial-ocr/commercial-ocr-approval-key';
+import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
+import {
+  readPublisherActionTokenFile,
+  readPublisherWebhookCredentialFile,
+} from '../publisher/publisher-secret-files';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -162,6 +167,14 @@ const envSchema = z.object({
   MAX_WEBHOOK_HEADER_SECRET: z.string().min(8),
   MAX_WEBHOOK_HEADER_SECRET_PREVIOUS: z.string().min(8).optional(),
   MAX_BOTS_JSON: z.string().optional(),
+  MAX_PUBLISHER_BOT_ID: z.string().trim().min(3).default(DEFAULT_MAX_PUBLISHER_BOT_ID),
+  MAX_PUBLISHER_BOT_TOKEN_FILE: z.string().trim().min(1).optional(),
+  MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: z.string().trim().min(1).optional(),
+  MAX_PUBLISHER_INIT_DATA_KEYS_FILE: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().trim().min(1).optional(),
+  ),
+  MAX_PUBLISHER_DISPATCH_ENABLED: envBoolean(false),
   MAX_API_BASE_URL: z.string().url().default('https://platform-api2.max.ru'),
   MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: envBoolean(true),
   MAX_JOIN_DENY_CHAT_IDS: z.string().optional(),
@@ -247,7 +260,6 @@ const envSchema = z.object({
   MAX_API_GLOBAL_RPS_INTERACTIVE: z.coerce.number().int().positive().optional(),
   MAX_API_GLOBAL_RPS_BACKGROUND: z.coerce.number().int().positive().optional(),
   MAX_API_MANAGED_REFRESH_RPS: z.coerce.number().int().min(0).default(2),
-  MAX_API_MANAGED_REFRESH_STACK_RPS: z.coerce.number().int().min(0).default(2),
   MAX_API_CHAT_RPS: z.coerce.number().int().positive().default(5),
   MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: z.coerce.number().int().min(0).default(1_000),
   MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE: z.coerce.number().int().min(0).default(2_500),
@@ -593,7 +605,7 @@ const envSchema = z.object({
 export type EnvSchema = z.infer<typeof envSchema>;
 
 export function validateEnv(config: Record<string, unknown>): EnvSchema {
-  const parsed = envSchema.safeParse(config);
+  const parsed = envSchema.safeParse(resolvePublisherRuntimeSecrets(config));
 
   if (!parsed.success) {
     const details = parsed.error.issues
@@ -759,4 +771,69 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
   }
 
   return parsed.data;
+}
+
+function resolvePublisherRuntimeSecrets(config: Record<string, unknown>): Record<string, unknown> {
+  if (readTrimmedEnvValue(config.APP_ROLE) !== 'publisher') {
+    return config;
+  }
+  if (readTrimmedEnvValue(config.APP_SERVICE_NAME) !== 'api-publisher') {
+    throw new Error('Environment validation failed: publisher role requires api-publisher service');
+  }
+
+  const leakedKeys = ['MAX_BOT_TOKEN', 'MAX_BOT_TOKEN_PREVIOUS', 'MAX_BOTS_JSON'].filter(
+    (key) => readTrimmedEnvValue(config[key]).length > 0,
+  );
+  if (leakedKeys.length > 0) {
+    throw new Error(
+      `Environment validation failed: publisher runtime must not inherit main bot credentials (${leakedKeys.join(', ')})`,
+    );
+  }
+
+  const publisherBotId =
+    readTrimmedEnvValue(config.MAX_PUBLISHER_BOT_ID) || DEFAULT_MAX_PUBLISHER_BOT_ID;
+  for (const key of ['MAX_BOT_ID', 'MAX_ENTRY_BOT_ID'] as const) {
+    const configured = readTrimmedEnvValue(config[key]);
+    if (configured && configured !== publisherBotId) {
+      throw new Error(
+        `Environment validation failed: ${key} must equal MAX_PUBLISHER_BOT_ID in publisher runtime`,
+      );
+    }
+  }
+
+  const tokenFile = readTrimmedEnvValue(config.MAX_PUBLISHER_BOT_TOKEN_FILE);
+  const webhookFile = readTrimmedEnvValue(config.MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE);
+  if (!tokenFile || !webhookFile) {
+    throw new Error(
+      'Environment validation failed: publisher runtime requires file-mounted bot and webhook credentials',
+    );
+  }
+  const token = readPublisherActionTokenFile(tokenFile);
+  const webhook = readPublisherWebhookCredentialFile(webhookFile);
+  if (webhook.botId !== publisherBotId) {
+    throw new Error(
+      'Environment validation failed: publisher webhook credential bot id does not match MAX_PUBLISHER_BOT_ID',
+    );
+  }
+
+  return {
+    ...config,
+    MAX_BOT_ID: publisherBotId,
+    MAX_BOT_LABEL: 'Публик',
+    MAX_BOT_CHARACTER_NAME: 'Публик',
+    MAX_BOT_SPEECH_PERSONA: 'neutral',
+    MAX_BOT_STATE: 'active',
+    MAX_BOT_OWNERSHIP_WEIGHT: 1,
+    MAX_ENTRY_BOT_ID: publisherBotId,
+    MAX_BOT_TOKEN: token,
+    MAX_BOT_TOKEN_PREVIOUS: undefined,
+    MAX_BOTS_JSON: undefined,
+    MAX_WEBHOOK_SECRET_PATH: webhook.secretPath,
+    MAX_WEBHOOK_HEADER_SECRET: webhook.headerSecrets[0],
+    MAX_WEBHOOK_HEADER_SECRET_PREVIOUS: webhook.headerSecrets[1],
+  };
+}
+
+function readTrimmedEnvValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }

@@ -7,6 +7,7 @@ import {
   PublicationAudienceSelection,
   PublicationContentFormat,
   PublicationDeliveryVerificationSource,
+  PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
@@ -20,11 +21,13 @@ import {
 } from '@nestjs/common';
 import { buildMaxActionNoExecutableRouteMessage } from '../max/max-action-dispatch-error';
 import { validateMaxMediaUploadPayload } from '../max/max-media-upload-validation';
+import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import {
   type PreparedPublicationContentRevision,
   PublicationContentService,
 } from './publication-content.service';
 import { PublicationPresenterService } from './publication-presenter.service';
+import { LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE } from './publication-publisher-routing.service';
 import { PublicationService } from './publication.service';
 import {
   PUBLICATION_MAX_VIDEO_BYTES,
@@ -69,6 +72,44 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     assertChatAdminAccess: jest.fn().mockResolvedValue(undefined),
     assertChannelAdminAccess: jest.fn().mockResolvedValue(undefined),
   };
+  const publisherRouting = {
+    requireNewRoute: jest.fn().mockReturnValue({
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+    }),
+    assertTargetsReady: jest.fn().mockImplementation(async (targets: any[]) =>
+      targets.map((target) => ({
+        ...target,
+        requiredBotId: 'publisher-bot',
+        policyRevision: 1,
+      })),
+    ),
+    blockedRetryBefore: jest.fn((now: Date) => new Date(now.getTime() - 60_000)),
+    deferOccurrenceIfBlocked: jest.fn().mockResolvedValue(false),
+    prepareOccurrenceRoute: jest.fn().mockImplementation(async (_profile, _botId, targets) => ({
+      broadcastData: {
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: 'publisher-bot',
+      },
+      deliveryDataByChatId: new Map(
+        targets.map((target: any) => [
+          target.chatId,
+          {
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            requiredBotId: 'publisher-bot',
+            dialogBotId: 'primary-bot',
+            publisherDialogContext: {
+              version: 1,
+              dialogBotId: 'primary-bot',
+              buttons: [],
+              reference: null,
+            },
+            publicationPolicyRevision: 1,
+          },
+        ]),
+      ),
+    })),
+  };
   const service = new PublicationService(
     prisma as never,
     contentService,
@@ -77,8 +118,16 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     {} as never,
     {} as never,
     {} as never,
+    publisherRouting as never,
   );
-  return { contentService, presenter, service, prisma, managedEntitiesService };
+  return {
+    contentService,
+    presenter,
+    service,
+    prisma,
+    managedEntitiesService,
+    publisherRouting,
+  };
 }
 
 function createDeferred<T>() {
@@ -179,7 +228,7 @@ describe('PublicationService', () => {
     const backgroundRuntimeGovernorService = {
       decide: jest.fn().mockResolvedValue({
         action: 'pause',
-        reason: 'MAX API stack load 80.0%',
+        reason: 'user-facing queue lag 12.0s',
         retryAfterMs: 60_000,
       }),
     };
@@ -721,9 +770,50 @@ describe('PublicationService', () => {
 
     preparation.resolve({ text: 'Текст', textFormat: 'plain', buttons: [], assets: [] });
     await expect(createPromise).resolves.toEqual({ id: 'publication-create' });
+    expect(tx.publication.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+        }),
+      }),
+    );
     expect(prepareSpy.mock.invocationCallOrder[0]).toBeLessThan(
       transaction.mock.invocationCallOrder[0],
     );
+  });
+
+  it('rejects a new publication root when the publisher bot is not configured', async () => {
+    const { service, contentService } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+    });
+    (service as any).publisherRouting.requireNewRoute.mockImplementation(() => {
+      throw new ConflictException({ code: 'PUBLISHER_SETUP_REQUIRED' });
+    });
+    const prepare = jest.spyOn(contentService, 'prepareContentRevision');
+
+    await expect(
+      service.create(
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'create_missing_publisher_001',
+          title: 'Черновик',
+          content: { text: 'Текст', textFormat: 'plain', buttons: [], media: [] },
+          audience: {
+            selection: 'SELECTED',
+            mode: 'SNAPSHOT',
+            targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+          },
+          schedule: null,
+          intent: 'draft',
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'PUBLISHER_SETUP_REQUIRED',
+      },
+    });
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   it('finishes content preparation before the update transaction takes the calendar lock', async () => {
@@ -786,6 +876,188 @@ describe('PublicationService', () => {
     );
   });
 
+  it('rejects activation of a migrated legacy draft before creating dispatch work', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T09:00:00.000Z'));
+    try {
+      const transaction = jest.fn();
+      const { contentService, publisherRouting, service } = createService({
+        publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+        publication: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'legacy-draft',
+            actorUserId: 'user-1',
+            version: 3,
+            lifecycle: PublicationLifecycle.DRAFT,
+            title: 'Старый черновик',
+            audienceSelection: 'SELECTED',
+            audienceMode: 'SNAPSHOT',
+            canonicalContentRevisionId: 'content-legacy-draft',
+            canonicalContentRevision: { id: 'content-legacy-draft' },
+            dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+            requiredBotId: null,
+            targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+            schedule: {
+              id: 'legacy-draft-schedule',
+              revision: 2,
+              status: PublicationScheduleStatus.DRAFT,
+              rule: {
+                mode: 'once',
+                timezone: 'Europe/Moscow',
+                at: '2026-08-27T12:00:00.000+03:00',
+                replaceConflicts: false,
+              },
+            },
+          }),
+        },
+        $transaction: transaction,
+      });
+      const prepareContent = jest.spyOn(contentService, 'prepareContentRevision');
+
+      await expect(
+        service.update(
+          'legacy-draft',
+          { userId: 'user-1', username: null, displayName: null },
+          {
+            requestId: 'legacy-draft-activate-001',
+            expectedRevision: 3,
+            schedule: {
+              mode: 'once',
+              timezone: 'Europe/Moscow',
+              at: '2026-08-27T12:00:00.000+03:00',
+              replaceConflicts: false,
+            },
+            intent: 'publish',
+          },
+        ),
+      ).rejects.toMatchObject({
+        response: { code: LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE },
+      });
+
+      expect(publisherRouting.assertTargetsReady).not.toHaveBeenCalled();
+      expect(prepareContent).not.toHaveBeenCalled();
+      expect(transaction).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('rejects rescheduling and editing a migrated legacy publication before persistence', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T09:00:00.000Z'));
+    try {
+      const transaction = jest.fn();
+      const { contentService, publisherRouting, service } = createService({
+        publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+        publication: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'legacy-scheduled',
+            actorUserId: 'user-1',
+            version: 5,
+            lifecycle: PublicationLifecycle.ACTIVE,
+            title: 'Старый план',
+            audienceSelection: 'SELECTED',
+            audienceMode: 'SNAPSHOT',
+            canonicalContentRevisionId: 'content-legacy-scheduled',
+            canonicalContentRevision: { id: 'content-legacy-scheduled' },
+            dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+            requiredBotId: null,
+            targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+            schedule: {
+              id: 'legacy-active-schedule',
+              revision: 4,
+              status: PublicationScheduleStatus.ACTIVE,
+              rule: {
+                mode: 'once',
+                timezone: 'Europe/Moscow',
+                at: '2026-08-27T12:00:00.000+03:00',
+                replaceConflicts: false,
+              },
+            },
+          }),
+        },
+        $transaction: transaction,
+      });
+      const prepareContent = jest.spyOn(contentService, 'prepareContentRevision');
+
+      await expect(
+        service.update(
+          'legacy-scheduled',
+          { userId: 'user-1', username: null, displayName: null },
+          {
+            requestId: 'legacy-reschedule-edit-001',
+            expectedRevision: 5,
+            title: 'Новый план',
+            content: { text: 'Новый текст', textFormat: 'plain', buttons: [], media: [] },
+            schedule: {
+              mode: 'once',
+              timezone: 'Europe/Moscow',
+              at: '2026-08-28T12:00:00.000+03:00',
+              replaceConflicts: false,
+            },
+            intent: 'publish',
+          },
+        ),
+      ).rejects.toMatchObject({
+        response: { code: LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE },
+      });
+
+      expect(publisherRouting.assertTargetsReady).not.toHaveBeenCalled();
+      expect(prepareContent).not.toHaveBeenCalled();
+      expect(transaction).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('rejects a content-only edit of materialized legacy work without mutating its intent', async () => {
+    const transaction = jest.fn();
+    const { contentService, service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'legacy-materialized',
+          actorUserId: 'user-1',
+          version: 6,
+          lifecycle: PublicationLifecycle.ACTIVE,
+          title: 'Старый план',
+          audienceSelection: 'SELECTED',
+          audienceMode: 'SNAPSHOT',
+          canonicalContentRevisionId: 'content-legacy-materialized',
+          canonicalContentRevision: { id: 'content-legacy-materialized' },
+          dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+          requiredBotId: null,
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+          schedule: {
+            id: 'legacy-materialized-schedule',
+            revision: 4,
+            status: PublicationScheduleStatus.ACTIVE,
+            rule: { mode: 'now', timezone: 'Europe/Moscow' },
+          },
+        }),
+      },
+      $transaction: transaction,
+    });
+    const prepareContent = jest.spyOn(contentService, 'prepareContentRevision');
+
+    await expect(
+      service.update(
+        'legacy-materialized',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'legacy-content-edit-001',
+          expectedRevision: 6,
+          content: { text: 'Подмененный текст', textFormat: 'plain', buttons: [], media: [] },
+          schedule: { mode: 'now', timezone: 'Europe/Moscow' },
+          intent: 'publish',
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: { code: LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE },
+    });
+
+    expect(prepareContent).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('updates an already materialized NOW occurrence without rebuilding its schedule', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-10T09:00:05.000Z'));
     try {
@@ -803,6 +1075,8 @@ describe('PublicationService', () => {
             audienceMode: 'SNAPSHOT',
             canonicalContentRevisionId: 'content-old',
             canonicalContentRevision: { id: 'content-old' },
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            requiredBotId: 'publisher-bot',
             targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
             schedule: {
               id: 'schedule-now',
@@ -1432,6 +1706,8 @@ describe('PublicationService', () => {
       contentRevisionId: 'content-1',
       scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
       legacyBroadcastId: null,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
       schedule: { timezone: 'Europe/Moscow' },
       contentRevision: {
         text: 'Проверка',
@@ -1489,9 +1765,62 @@ describe('PublicationService', () => {
         expect.objectContaining({
           publicationOccurrenceId: 'occurrence-1',
           occurrenceIndex: 1,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+          dialogBotId: 'primary-bot',
+          publicationPolicyRevision: 1,
         }),
       ],
     });
+  });
+
+  it('keeps an unready Publik occurrence scheduled with a bounded blocker', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const transaction = jest.fn();
+    const occurrence = {
+      id: 'occurrence-blocked',
+      publicationId: 'publication-blocked',
+      scheduleId: 'schedule-blocked',
+      scheduleRevision: 1,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      schedule: {
+        id: 'schedule-blocked',
+        revision: 1,
+        rule: { mode: 'now', timezone: 'Europe/Moscow' },
+      },
+      contentRevision: {},
+      publication: { targets: [] },
+    };
+    const { publisherRouting, service } = createService({
+      publicationOccurrence: {
+        findMany: jest.fn().mockResolvedValue([occurrence]),
+        updateMany,
+      },
+      $transaction: transaction,
+    });
+    publisherRouting.deferOccurrenceIfBlocked.mockResolvedValue(true);
+    jest.spyOn(service as any, 'resolveOccurrenceTargets').mockResolvedValue([
+      {
+        chatId: 'chat-1',
+        entityType: 'chat',
+        title: 'Чат',
+        avatarUrl: null,
+        link: null,
+      },
+    ]);
+    jest
+      .spyOn(service as any, 'createOccurrenceExecution')
+      .mockRejectedValue(new PublisherSetupRequiredException(['chat-1'], 'policy_disabled'));
+
+    await (service as any).dispatchScheduledOccurrences(1, [PublicationScheduleMode.NOW]);
+
+    expect(publisherRouting.deferOccurrenceIfBlocked).toHaveBeenCalledWith(
+      occurrence,
+      expect.objectContaining({ blockerCode: 'policy_disabled' }),
+    );
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('rolls an ambiguous delivery up without making it retryable', async () => {
@@ -2685,6 +3014,8 @@ describe('PublicationService', () => {
                 audienceMode: 'SNAPSHOT',
                 audienceSelection: 'SELECTED',
                 canonicalContentRevisionId: 'content-stale',
+                dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+                requiredBotId: null,
                 targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
               },
             },
@@ -2715,6 +3046,8 @@ describe('PublicationService', () => {
             publicationId: 'publication-1',
             scheduleRevision: 4,
             contentRevisionId: 'content-current',
+            dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+            requiredBotId: null,
           }),
         ],
         skipDuplicates: true,

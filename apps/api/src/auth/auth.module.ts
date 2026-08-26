@@ -5,6 +5,8 @@ import { MiniappAccessObservabilityService } from './miniapp-access-observabilit
 import { MiniappRequestSecurityService } from './miniapp-request-security.service';
 import { MiniappSessionController } from './miniapp-session.controller';
 import { MiniappSessionService } from './miniapp-session.service';
+import { MiniappProfileGuard } from './miniapp-profile.guard';
+import { PublisherInitDataKeyService } from './publisher-init-data-key.service';
 
 @Global()
 @Module({
@@ -15,6 +17,8 @@ import { MiniappSessionService } from './miniapp-session.service';
     MiniappAccessObservabilityService,
     MiniappRequestSecurityService,
     MiniappSessionService,
+    MiniappProfileGuard,
+    PublisherInitDataKeyService,
   ],
   exports: [
     InitDataService,
@@ -22,6 +26,8 @@ import { MiniappSessionService } from './miniapp-session.service';
     MiniappAccessObservabilityService,
     MiniappRequestSecurityService,
     MiniappSessionService,
+    MiniappProfileGuard,
+    PublisherInitDataKeyService,
   ],
 })
 export class AuthModule {}

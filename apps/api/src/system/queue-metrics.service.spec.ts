@@ -14,6 +14,9 @@ import {
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
 import { PHOTO_DUPLICATE_QUEUE } from '../moderation/photo-duplicate/photo-duplicate.queue';
+import { PUBLISHER_BINDING_REFRESH_QUEUE } from '../publisher/publisher-binding-refresh.queue';
+import { PUBLISHER_CHAT_COMMENT_QUEUE } from '../publisher/publisher-chat-comment.queue';
+import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
 
 function createQueueMock(counts: {
   waiting: number;
@@ -146,6 +149,30 @@ describe('QueueMetricsService', () => {
         auxiliaryQueues['admin-managed-entities-refresh'],
       [getQueueToken(MODERATION_DELETE_INTENT_QUEUE)]:
         auxiliaryQueues[MODERATION_DELETE_INTENT_QUEUE],
+      [getQueueToken(PUBLISHER_BINDING_REFRESH_QUEUE)]: createQueueMock({
+        waiting: 5,
+        prioritized: 0,
+        active: 1,
+        delayed: 2,
+        failed: 3,
+        completed: 21,
+      }),
+      [getQueueToken(PUBLISHER_CHAT_COMMENT_QUEUE)]: createQueueMock({
+        waiting: 7,
+        prioritized: 1,
+        active: 2,
+        delayed: 4,
+        failed: 6,
+        completed: 31,
+      }),
+      [getQueueToken(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE)]: createQueueMock({
+        waiting: 9,
+        prioritized: 0,
+        active: 1,
+        delayed: 8,
+        failed: 4,
+        completed: 12,
+      }),
       [getQueueToken(MAX_ACTION_CRITICAL_QUEUE)]: createQueueMock({
         waiting: 2,
         prioritized: 0,
@@ -343,6 +370,21 @@ describe('QueueMetricsService', () => {
       delayed: 9,
       failed: 3,
       completed: 44,
+    });
+    expect(snapshot.auxiliaryQueues[PUBLISHER_BINDING_REFRESH_QUEUE]).toMatchObject({
+      waiting: 5,
+      active: 1,
+      failed: 3,
+    });
+    expect(snapshot.auxiliaryQueues[PUBLISHER_CHAT_COMMENT_QUEUE]).toMatchObject({
+      waiting: 7,
+      active: 2,
+      failed: 6,
+    });
+    expect(snapshot.auxiliaryQueues[PUBLISHER_SUGGESTION_PUBLICATION_QUEUE]).toMatchObject({
+      waiting: 9,
+      active: 1,
+      failed: 4,
     });
     expect(snapshot.auxiliaryQueues).toHaveProperty(PHOTO_DUPLICATE_QUEUE);
     expect(Object.keys(snapshot.auxiliaryQueues).sort()).toEqual([...AUXILIARY_QUEUE_NAMES].sort());

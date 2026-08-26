@@ -87,7 +87,10 @@ test('root navigation exposes chats, channels and posts as primary destinations'
   assert.doesNotMatch(chatsPageSource, /chats-command__tabs/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">Настройки/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">\{activityNavLabel\}/u);
-  assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute/u);
+  assert.match(
+    shellSource,
+    /const shouldShowBottomNav = profile === 'moderation' && \(isChatsRoute \|\| isPublicationsRoute\)/u,
+  );
   assert.match(shellSource, /\{shouldShowBottomNav \? \(/u);
 });
 

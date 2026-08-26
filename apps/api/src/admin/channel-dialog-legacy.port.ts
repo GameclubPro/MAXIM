@@ -4,6 +4,7 @@ export const CHANNEL_DIALOG_LEGACY_PORT = Symbol('CHANNEL_DIALOG_LEGACY_PORT');
 
 export type ChannelDialogLegacyPort = Pick<
   AdminService,
+  | 'channelSuggestionPublicationRuntime'
   | 'createChannelDialogMessage'
   | 'createChatDialogMessage'
   | 'deleteChannelDialogMessage'

@@ -1,4 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { validateEnv } from './env.schema';
 
@@ -16,6 +19,65 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('hydrates only the publisher ConfigService view from isolated secret files', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'maxim-publisher-env-'));
+    const tokenFile = join(directory, 'token');
+    const webhookFile = join(directory, 'webhook.json');
+    const token = 'P'.repeat(40);
+    writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+    writeFileSync(
+      webhookFile,
+      JSON.stringify({
+        version: 1,
+        botId: 'se14088825_bot',
+        secretPath: 'publisher_path_12345678',
+        headerSecrets: ['publisher_header_123456'],
+      }),
+      { mode: 0o600 },
+    );
+    const raw = createValidEnv({
+      APP_ROLE: 'publisher',
+      APP_SERVICE_NAME: 'api-publisher',
+      MAX_BOT_ID: 'se14088825_bot',
+      MAX_ENTRY_BOT_ID: 'se14088825_bot',
+      MAX_BOT_TOKEN: '',
+      MAX_BOT_TOKEN_PREVIOUS: '',
+      MAX_BOTS_JSON: '',
+      MAX_PUBLISHER_BOT_ID: 'se14088825_bot',
+      MAX_PUBLISHER_BOT_TOKEN_FILE: tokenFile,
+      MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: webhookFile,
+    });
+
+    try {
+      expect(validateEnv(raw)).toMatchObject({
+        MAX_BOT_ID: 'se14088825_bot',
+        MAX_ENTRY_BOT_ID: 'se14088825_bot',
+        MAX_BOT_TOKEN: token,
+        MAX_BOTS_JSON: undefined,
+        MAX_WEBHOOK_SECRET_PATH: 'publisher_path_12345678',
+        MAX_WEBHOOK_HEADER_SECRET: 'publisher_header_123456',
+      });
+      expect(raw.MAX_BOT_TOKEN).toBe('');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects inherited main-bot credentials before publisher bootstrap', () => {
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          APP_ROLE: 'publisher',
+          APP_SERVICE_NAME: 'api-publisher',
+          MAX_BOT_ID: 'se14088825_bot',
+          MAX_ENTRY_BOT_ID: 'se14088825_bot',
+          MAX_BOT_TOKEN: 'leaked-main-token',
+          MAX_PUBLISHER_BOT_ID: 'se14088825_bot',
+        }),
+      ),
+    ).toThrow(/must not inherit main bot credentials/u);
+  });
+
   it('keeps completed webhook retention disabled unless explicitly enabled', () => {
     expect(validateEnv(createValidEnv()).WEBHOOK_COMPLETED_RETENTION_ENABLED).toBe(false);
     expect(
@@ -211,19 +273,16 @@ describe('validateEnv boolean parsing', () => {
     expect(env.MAX_API_BASE_URL).toBe('https://platform-api2.max.ru');
   });
 
-  it('caps managed refresh pressure at two requests per second by default', () => {
+  it('caps managed refresh pressure independently per bot token by default', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.MAX_API_MANAGED_REFRESH_RPS).toBe(2);
-    expect(defaults.MAX_API_MANAGED_REFRESH_STACK_RPS).toBe(2);
 
     const configured = validateEnv(
       createValidEnv({
         MAX_API_MANAGED_REFRESH_RPS: '1',
-        MAX_API_MANAGED_REFRESH_STACK_RPS: '0',
       }),
     );
     expect(configured.MAX_API_MANAGED_REFRESH_RPS).toBe(1);
-    expect(configured.MAX_API_MANAGED_REFRESH_STACK_RPS).toBe(0);
   });
 
   it('enables resumable MAX video uploads by default with an explicit rollback flag', () => {
@@ -843,9 +902,7 @@ describe('validateEnv boolean parsing', () => {
     );
 
     expect(env.KARAVAN_STOREFRONT_RELAY_ENABLED).toBe(true);
-    expect(env.KARAVAN_STOREFRONT_CATALOG_URL).toBe(
-      'https://max.ru/se13381675_1_bot?startapp=',
-    );
+    expect(env.KARAVAN_STOREFRONT_CATALOG_URL).toBe('https://max.ru/se13381675_1_bot?startapp=');
     expect(env.KARAVAN_STOREFRONT_CREATE_URL).toBe(
       'https://max.ru/se13381675_bot?startapp=storefront',
     );

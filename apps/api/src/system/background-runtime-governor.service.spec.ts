@@ -129,18 +129,7 @@ function createDecisionSnapshotForTest() {
 }
 
 describe('BackgroundRuntimeGovernorService', () => {
-  it.each([
-    {
-      label: 'service-local MAX class capacity',
-      pressure: { stackLoad: { smoothedLoad: 0.8, peakLoad: 0.9, avgLoad: 0.7 } },
-      reason: 'MAX API stack load 80.0%',
-    },
-    {
-      label: 'per-bot MAX capacity',
-      pressure: { botLoad: { maxSmoothedLoad: 0.8, maxPeakLoad: 0.9 } },
-      reason: 'MAX API bot load 80.0%',
-    },
-  ])('allows bounded slow progress under $label pressure', ({ pressure, reason }) => {
+  it('keeps aggregate and hottest-bot MAX load observational', () => {
     const service = new BackgroundRuntimeGovernorService(
       {} as never,
       {} as never,
@@ -150,22 +139,21 @@ describe('BackgroundRuntimeGovernorService', () => {
     const base = createDecisionSnapshotForTest();
     const snapshot = {
       ...base,
-      ...(pressure.stackLoad ? { stackLoad: { ...base.stackLoad, ...pressure.stackLoad } } : {}),
-      ...(pressure.botLoad ? { botLoad: { ...base.botLoad, ...pressure.botLoad } } : {}),
+      stackLoad: { ...base.stackLoad, smoothedLoad: 0.8, peakLoad: 0.9, avgLoad: 0.7 },
+      botLoad: { ...base.botLoad, maxSmoothedLoad: 0.8, maxPeakLoad: 0.9 },
     };
 
     expect((service as any).buildDecisionFromSnapshot(snapshot)).toMatchObject({
-      action: 'pause',
-      reason,
+      action: 'run',
+      reason: 'background headroom available',
     });
     expect(
       (service as any).buildDecisionFromSnapshot(snapshot, {
         allowMaxApiCapacitySlowPath: true,
       }),
     ).toMatchObject({
-      action: 'slow',
-      retryAfterMs: 20_000,
-      reason,
+      action: 'run',
+      reason: 'background headroom available',
     });
   });
 
@@ -178,14 +166,14 @@ describe('BackgroundRuntimeGovernorService', () => {
     );
     const base = createDecisionSnapshotForTest();
     const options = { allowMaxApiCapacitySlowPath: true };
-    const stackLoad = { ...base.stackLoad, smoothedLoad: 0.8 };
+    const botLoad = { ...base.botLoad, maxSmoothedLoad: 0.8 };
 
     expect(
       (service as any).buildDecisionFromSnapshot(
         {
           ...base,
           mode: { ...base.mode, mode: 'degrade', reason: 'manual maintenance' },
-          stackLoad,
+          botLoad,
         },
         options,
       ),
@@ -195,7 +183,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         {
           ...base,
           queues: { ...base.queues, userFacingEffectiveLagSec: 12, effectiveLagSec: 12 },
-          stackLoad,
+          botLoad,
         },
         options,
       ),
@@ -205,7 +193,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         {
           ...base,
           systemPressure: { ...base.systemPressure, ioWaitRatio: 0.5 },
-          stackLoad,
+          botLoad,
         },
         options,
       ),
@@ -213,16 +201,6 @@ describe('BackgroundRuntimeGovernorService', () => {
   });
 
   it.each([
-    {
-      label: 'service-local MAX class capacity',
-      pressure: { stackLoad: { smoothedLoad: 0.8 } },
-      guardedDecision: { action: 'pause', reason: 'MAX API stack load 80.0%' },
-    },
-    {
-      label: 'per-bot MAX capacity',
-      pressure: { botLoad: { maxSmoothedLoad: 0.8 } },
-      guardedDecision: { action: 'pause', reason: 'MAX API bot load 80.0%' },
-    },
     {
       label: 'global background share',
       pressure: { backgroundShare: 0.8 },
@@ -240,11 +218,7 @@ describe('BackgroundRuntimeGovernorService', () => {
       const base = createDecisionSnapshotForTest();
       const snapshot = {
         ...base,
-        ...(pressure.stackLoad ? { stackLoad: { ...base.stackLoad, ...pressure.stackLoad } } : {}),
-        ...(pressure.botLoad ? { botLoad: { ...base.botLoad, ...pressure.botLoad } } : {}),
-        ...(pressure.backgroundShare === undefined
-          ? {}
-          : { backgroundShare: pressure.backgroundShare }),
+        backgroundShare: pressure.backgroundShare,
       };
 
       expect((service as any).buildDecisionFromSnapshot(snapshot)).toMatchObject(guardedDecision);
@@ -723,12 +697,12 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
   });
 
-  it('slows background work when service-local MAX API class load is high across bots', async () => {
+  it('keeps aggregate stack and hottest-bot load observational at runtime', async () => {
     const getStackRateLimitSnapshot = jest
       .fn()
       .mockResolvedValue(createStackRateLimitSnapshot({ smoothedLoad: 0.48 }));
     const getBotRateLimitSnapshot = jest.fn().mockResolvedValue({
-      'bot-a': { smoothedLoad: 0.18, peakLoad: 0.2, avgLoad: 0.05 },
+      'bot-a': { smoothedLoad: 0.8, peakLoad: 0.9, avgLoad: 0.7 },
       'bot-b': { smoothedLoad: 0.17, peakLoad: 0.2, avgLoad: 0.05 },
       'bot-c': { smoothedLoad: 0.16, peakLoad: 0.2, avgLoad: 0.05 },
     });
@@ -792,8 +766,8 @@ describe('BackgroundRuntimeGovernorService', () => {
     await expect(
       service.decide({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
     ).resolves.toMatchObject({
-      action: 'slow',
-      reason: 'MAX API stack load 48.0%',
+      action: 'run',
+      reason: 'background headroom available',
     });
     await expect(
       service.decide({

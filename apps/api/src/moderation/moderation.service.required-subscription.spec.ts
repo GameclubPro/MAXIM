@@ -4512,7 +4512,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('publishes admin chat comments as a strict-routed reply without cleanup intent', async () => {
+  it('queues admin chat comments for Publik without cleanup or a main-bot send', async () => {
     const prisma = {
       auditLog: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -4571,6 +4571,10 @@ describe('ModerationService', () => {
       maxBotLinkService as never,
     );
     (service as any).moderationDeleteIntentService = deleteIntents;
+    const publisherChatCommentQueue = {
+      enqueueAttach: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).publisherChatCommentQueueService = publisherChatCommentQueue;
     jest.spyOn(service as any, 'buildChatDialogButton').mockReturnValue({
       type: 'link',
       text: 'Comments',
@@ -4588,38 +4592,21 @@ describe('ModerationService', () => {
       chatId: 'chat-1',
       fallbackToPrimary: true,
     });
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'chat-1',
-      '\u200B',
+    expect(publisherChatCommentQueue.enqueueAttach).toHaveBeenCalledWith(
       expect.objectContaining({
-        messageLink: {
-          type: 'reply',
-          mid: 'mid-chat-original-1',
-        },
-        buttons: [[expect.objectContaining({ type: 'link', text: 'Comments' })]],
-      }),
-      expect.objectContaining({
-        botId: 'chat-bot-2',
-        trafficClass: 'background',
-        actionHealthLane: 'background',
-        sourceTag: 'comment_notification',
+        chatId: 'chat-1',
+        messageId: 'mid-chat-original-1',
+        senderId: 'admin-1',
+        dialogBotId: 'chat-bot-2',
+        button: expect.objectContaining({ type: 'link', text: 'Comments' }),
       }),
     );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(deleteIntents.ensureIntent).not.toHaveBeenCalled();
     expect(deleteIntents.ensureAndAttempt).not.toHaveBeenCalled();
     expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        payload: expect.objectContaining({
-          messageId: 'mid-chat-original-1',
-          deliveryMode: 'reply_message',
-          replyMessageId: 'mid-chat-reply-1',
-          originalDeleted: false,
-          botId: 'chat-bot-2',
-        }),
-      }),
-    });
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('records managed channel access loss when the background auto-post scan cannot read the channel', async () => {

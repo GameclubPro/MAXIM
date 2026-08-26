@@ -14,6 +14,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { InitDataGuard } from '../auth/init-data.guard';
+import { MiniappProfiles } from '../auth/miniapp-profile';
 import { MINIAPP_CSRF_HEADER_NAME } from '../auth/miniapp-session.constants';
 import type { MiniappAuthContext } from '../auth/miniapp-session.types';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
@@ -138,6 +139,10 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
 
   { method: 'POST', pattern: /^\/publications(?:\/test)?$/u },
   { method: 'POST', pattern: /^\/publications\/calendar-availability$/u },
+  {
+    method: 'PATCH',
+    pattern: new RegExp(`^/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/policy$`),
+  },
   {
     method: 'PUT',
     pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}$`),
@@ -339,6 +344,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
   }
 
   @Get('_mutation-tunnel')
+  @MiniappProfiles('moderation', 'publisher')
   async tunnel(
     @Query() query: MutationTunnelQuery,
     @Headers('authorization') authorization: string | undefined,

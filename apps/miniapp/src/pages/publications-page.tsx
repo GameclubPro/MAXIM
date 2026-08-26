@@ -7,6 +7,7 @@ import {
   type PublicationOccurrenceSummary,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import {
   FilterList,
   NavArrowLeft,
@@ -32,6 +33,14 @@ import { StatusState } from '../components/ui/status-state';
 import { TimeField } from '../components/ui/time-field';
 import { useToast } from '../components/ui/toast';
 import { PublicationDetailsSheet } from '../features/publications/publication-details-sheet';
+import {
+  LEGACY_PUBLICATION_KIND_FILTERS as LEGACY_KIND_FILTERS,
+  LEGACY_PUBLICATION_VIEW_OPTIONS as LEGACY_VIEW_OPTIONS,
+  PUBLICATION_ENTITY_FILTERS as ENTITY_FILTERS,
+  PUBLICATION_STATUS_FILTERS as STATUS_FILTERS_BY_VIEW,
+  PUBLICATION_VIEW_OPTIONS as VIEW_OPTIONS,
+  PUBLICATION_WEEKDAYS as WEEKDAYS,
+} from '../features/publications/publication-page-options';
 import {
   PublicationFeedCard,
   type PublicationFeedTone,
@@ -70,7 +79,6 @@ import {
   rebasePublicationDraft,
   shouldReviewPublicationScheduleConflict,
   shouldPersistPublicationDraft,
-  toPublicationTarget,
   type PublicationDraft,
   type PublicationEditScope,
   type PublicationEntityFilter,
@@ -95,6 +103,7 @@ import { PublicationRetrySheet } from '../features/publications/publication-retr
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
 import { usePublicationRequestIds } from '../features/publications/use-publication-request-ids';
+import { usePublicationTargetSources } from '../features/publications/use-publication-target-sources';
 import {
   createPublication,
   cancelPublication,
@@ -109,7 +118,6 @@ import {
   testPublication,
   updatePublication,
 } from '../lib/api/publication-client';
-import { getChats, getChannels } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import {
   hasBroadcastLinkButtonErrors,
@@ -180,8 +188,6 @@ function getPublicationCalendarRange(now = new Date()): { from: string; to: stri
 }
 
 const queryKeys = {
-  sourceChats: ['publications', 'sources', 'chats'] as const,
-  sourceChannels: ['publications', 'sources', 'channels'] as const,
   listRoot: ['publications', 'list'] as const,
   list: (
     view: PublicationView,
@@ -202,61 +208,6 @@ const queryKeys = {
 
 const PUBLICATION_LIST_PAGE_SIZE = 30;
 const LEGACY_PUBLICATION_LIST_PAGE_SIZE = 30;
-
-const VIEW_OPTIONS: Array<{ value: PublicationView; label: string }> = [
-  { value: 'current', label: 'Текущие' },
-  { value: 'schedules', label: 'Расписания' },
-  { value: 'history', label: 'История' },
-];
-
-const ENTITY_FILTERS: Array<{ value: PublicationEntityFilter; label: string }> = [
-  { value: 'all', label: 'Все' },
-  { value: 'chat', label: 'Чаты' },
-  { value: 'channel', label: 'Каналы' },
-];
-
-const LEGACY_VIEW_OPTIONS: Array<{ value: LegacyPublicationView; label: string }> = [
-  { value: 'active', label: 'Активные' },
-  { value: 'history', label: 'История' },
-];
-
-const LEGACY_KIND_FILTERS: Array<{ value: LegacyPublicationKindFilter; label: string }> = [
-  { value: 'all', label: 'Все' },
-  { value: 'autopost', label: 'Автопосты' },
-  { value: 'broadcast', label: 'Отправки' },
-];
-
-const STATUS_FILTERS_BY_VIEW: Record<
-  PublicationView,
-  Array<{ value: PublicationStatusFilter; label: string }>
-> = {
-  current: [
-    { value: 'all', label: 'Все статусы' },
-    { value: 'active', label: 'Активные' },
-    { value: 'paused', label: 'На паузе' },
-    { value: 'failed', label: 'С ошибкой' },
-  ],
-  schedules: [
-    { value: 'all', label: 'Все статусы' },
-    { value: 'active', label: 'Активные' },
-    { value: 'paused', label: 'На паузе' },
-    { value: 'failed', label: 'С ошибкой' },
-  ],
-  history: [
-    { value: 'all', label: 'Вся история' },
-    { value: 'completed', label: 'Завершённые и отменённые' },
-  ],
-};
-
-const WEEKDAYS = [
-  { value: 1, label: 'Пн' },
-  { value: 2, label: 'Вт' },
-  { value: 3, label: 'Ср' },
-  { value: 4, label: 'Чт' },
-  { value: 5, label: 'Пт' },
-  { value: 6, label: 'Сб' },
-  { value: 7, label: 'Вс' },
-] as const;
 
 function normalizeLegacyView(value: string | null): LegacyPublicationView {
   return value === 'history' ? 'history' : 'active';
@@ -424,7 +375,14 @@ function getLifecycleTone(publication: PublicationSummary): PublicationFeedTone 
 
 const MAX_PUBLICATION_VIDEO_FILE_BYTES = 24_000_000;
 
-export function PublicationsPage({ api }: { api: ApiTransport }) {
+export function PublicationsPage({
+  api,
+  profile = 'moderation',
+}: {
+  api: ApiTransport;
+  profile?: MiniappProfile;
+}) {
+  const isPublisherProfile = profile === 'publisher';
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const requestIds = usePublicationRequestIds();
@@ -432,7 +390,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const [editorContext, setEditorContext] = useState<PublicationEditorContext | null>(null);
   const isEditor = editorContext !== null;
   const legacyRouteRequested = searchParams.get('legacy') === '1';
-  const isLegacyView = legacyRouteRequested && !isEditor;
+  const isLegacyView = !isPublisherProfile && legacyRouteRequested && !isEditor;
   const persistenceEnabled = shouldPersistPublicationDraft(editorContext?.kind ?? null);
   const { draft, setDraft, hydrated, hasSavedDraft, clearDraft } = usePublicationComposer(
     isEditor,
@@ -499,26 +457,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const targetsSectionRef = useRef<HTMLElement | null>(null);
   const timingSectionRef = useRef<HTMLElement | null>(null);
 
-  const sourceChatsQuery = useQuery({
-    queryKey: queryKeys.sourceChats,
-    queryFn: () => getChats(api, { fresh: false }),
-  });
-  const sourceChannelsQuery = useQuery({
-    queryKey: queryKeys.sourceChannels,
-    queryFn: () => getChannels(api, { fresh: false }),
-  });
-  const targets = useMemo(
-    () =>
-      [...(sourceChatsQuery.data ?? []), ...(sourceChannelsQuery.data ?? [])].map(
-        toPublicationTarget,
-      ),
-    [sourceChannelsQuery.data, sourceChatsQuery.data],
-  );
-  const sourcesLoading = sourceChatsQuery.isLoading || sourceChannelsQuery.isLoading;
-  const sourcesFetching = sourceChatsQuery.isFetching || sourceChannelsQuery.isFetching;
-  const sourcesHaveError = sourceChatsQuery.isError || sourceChannelsQuery.isError;
-  const sourcesUnavailable = sourceChatsQuery.isError && sourceChannelsQuery.isError;
-  const sourcesReady = sourceChatsQuery.isSuccess && sourceChannelsQuery.isSuccess;
+  const targetSources = usePublicationTargetSources(api, isPublisherProfile);
+  const {
+    targets,
+    loading: sourcesLoading,
+    fetching: sourcesFetching,
+    hasError: sourcesHaveError,
+    unavailable: sourcesUnavailable,
+    ready: sourcesReady,
+  } = targetSources;
   const [calendarRange, setCalendarRange] = useState(() => getPublicationCalendarRange());
   const calendarTargetsKey = useMemo(
     () =>
@@ -622,14 +569,14 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const legacyActiveProbeQuery = useQuery({
     queryKey: queryKeys.legacyProbe('active'),
     queryFn: () => listLegacyPublications(api, { view: 'active', limit: 1 }),
-    enabled: !isEditor,
+    enabled: !isPublisherProfile && !isEditor,
     staleTime: 0,
     refetchOnMount: 'always',
   });
   const legacyHistoryProbeQuery = useQuery({
     queryKey: queryKeys.legacyProbe('history'),
     queryFn: () => listLegacyPublications(api, { view: 'history', limit: 1 }),
-    enabled: !isEditor,
+    enabled: !isPublisherProfile && !isEditor,
     staleTime: 0,
     refetchOnMount: 'always',
   });
@@ -651,7 +598,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         cursor: pageParam ?? undefined,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: isLegacyView,
+    enabled: !isPublisherProfile && isLegacyView,
     staleTime: 0,
     refetchOnMount: 'always',
   });
@@ -731,7 +678,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const legacyProbeComplete =
     (legacyActiveProbeQuery.isSuccess || legacyActiveProbeQuery.isError) &&
     (legacyHistoryProbeQuery.isSuccess || legacyHistoryProbeQuery.isError);
-  const showLegacyEntry = legacyKnownCount > 0 || (legacyProbeComplete && legacyProbeHasError);
+  const showLegacyEntry =
+    !isPublisherProfile && (legacyKnownCount > 0 || (legacyProbeComplete && legacyProbeHasError));
   const legacyEntryCount =
     legacyKnownCount > 0
       ? legacyKnownCount
@@ -1013,6 +961,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
   const hasButtonErrors =
     draft.buttonEnabled &&
     hasBroadcastLinkButtonErrors(validateBroadcastLinkButtons(draft.buttons));
+  const selectedPublisherTargetUnavailable =
+    isPublisherProfile &&
+    sourcesReady &&
+    draft.targets.some((selected) => {
+      const current = targets.find(
+        (target) => getPublicationTargetKey(target) === getPublicationTargetKey(selected),
+      );
+      return !current?.readiness?.canPublish;
+    });
   const isBusy =
     saveMutation.isPending ||
     testMutation.isPending ||
@@ -1053,6 +1010,15 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
         onClick: () =>
           focusEditorSection('targets', `Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей.`),
       });
+    } else if (selectedPublisherTargetUnavailable) {
+      issues.push({
+        label: 'Подключение',
+        onClick: () =>
+          focusEditorSection(
+            'targets',
+            'Выбранный получатель пока не готов к публикации через Публик.',
+          ),
+      });
     }
     if (
       (draft.timingMode === 'once' ||
@@ -1080,7 +1046,14 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       });
     }
     return issues;
-  }, [draft, hasButtonErrors, hasContent, recurrenceError, videoNeedsReselection]);
+  }, [
+    draft,
+    hasButtonErrors,
+    hasContent,
+    recurrenceError,
+    selectedPublisherTargetUnavailable,
+    videoNeedsReselection,
+  ]);
 
   useEffect(() => {
     document.body.classList.toggle('publications-editor-open', isEditor);
@@ -1501,6 +1474,10 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       setFieldError(`Можно выбрать до ${MAX_PUBLICATION_TARGETS} получателей.`);
       return false;
     }
+    if (selectedPublisherTargetUnavailable) {
+      setFieldError('Выбранный получатель пока не готов к публикации через Публик.');
+      return false;
+    }
     if (!options.ignoreSchedule) {
       const needsFutureSlots =
         draft.timingMode === 'once' ||
@@ -1905,7 +1882,8 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
       <>
         <header className="publications-header">
           <div>
-            <h1>Посты</h1>
+            <h1>{isPublisherProfile ? 'Публик' : 'Посты'}</h1>
+            {isPublisherProfile ? <span>Посты</span> : null}
           </div>
           <button
             type="button"
@@ -2541,14 +2519,16 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
                 <span>
                   {sourcesUnavailable
                     ? 'Чаты и каналы недоступны'
-                    : sourceChatsQuery.isError
-                      ? 'Чаты временно недоступны'
-                      : 'Каналы временно недоступны'}
+                    : isPublisherProfile
+                      ? 'Цели Публик временно недоступны'
+                      : targetSources.chatsFailed
+                        ? 'Чаты временно недоступны'
+                        : 'Каналы временно недоступны'}
                 </span>
                 <button
                   type="button"
                   onClick={() => {
-                    void Promise.all([sourceChatsQuery.refetch(), sourceChannelsQuery.refetch()]);
+                    void targetSources.refetch();
                   }}
                   disabled={sourcesFetching}
                 >
@@ -2754,6 +2734,7 @@ export function PublicationsPage({ api }: { api: ApiTransport }) {
             meta={formatTargetSummary(draft.targets)}
             issues={validationIssues}
             busy={isBusy}
+            showTest={!isPublisherProfile}
             testLabel="Отправить себе"
             compactTestLabel="Тест"
             testAriaLabel="Отправить публикацию себе"

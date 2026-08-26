@@ -52,6 +52,13 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/lib/api/publication-client.ts',
     'apps/miniapp/src/lib/publication-*.ts',
   ],
+  publisher: [
+    'apps/miniapp/src/app.tsx',
+    'apps/miniapp/src/components/shell.tsx',
+    'apps/miniapp/src/features/publications/publication-page-options.ts',
+    'apps/miniapp/src/features/publications/use-publication-target-sources.ts',
+    'apps/miniapp/src/lib/api/publisher-client.ts',
+  ],
   settings: [
     'apps/miniapp/src/pages/settings-page*.ts*',
     'apps/miniapp/src/pages/settings/**/*.ts*',
@@ -216,6 +223,7 @@ const FEATURE_NAME_MATCHERS = [
   ['moderation', /moderation|spam/u],
   ['participants', /participant/u],
   ['polls', /poll/u],
+  ['publisher', /publisher/u],
   ['stats', /stats|events/u],
   ['suggest', /suggest/u],
   ['vk-parsing', /vk-parsing/u],
@@ -280,6 +288,7 @@ const baseScenarios = [
   ]),
   ...defineRouteScenarios('publications', [
     'publications',
+    ['publications-publisher', { searchParams: { profile: 'publisher' }, features: ['publisher'] }],
     'publications-actions',
     'publications-edit-discard',
     'publications-retry-choice',
@@ -370,6 +379,16 @@ const baseScenarios = [
   ]),
   ...defineRouteScenarios('chat-comments', [
     ['chat-dialog-comments', { searchParams: { token: 'preview-comments-token-0001' } }],
+    [
+      'chat-dialog-comments-publisher',
+      {
+        searchParams: {
+          token: 'preview-comments-token-0001',
+          profile: 'publisher',
+        },
+        features: ['publisher'],
+      },
+    ],
     [
       'chat-dialog-comments-short-thread',
       { searchParams: { token: 'preview-comments-token-0001', thread: 'short' } },
@@ -500,6 +519,7 @@ export const MINIAPP_VISUAL_PRESETS = Object.freeze({
     scenarioNames: Object.freeze([
       'home',
       'publications',
+      'publications-publisher',
       'chat-settings',
       'channel-settings',
       'channel-stats',

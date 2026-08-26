@@ -80,6 +80,16 @@ export class AdminDialogLinkService {
     );
   }
 
+  buildChatDialogButton(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+    text: string,
+    botId?: string | null,
+  ): MaxMessageButton {
+    return this.helper.buildChatDialogButton(chatId, type, threadId, text, botId);
+  }
+
   buildBotStartUrl(startPayload: string, botId?: string | null): string | null {
     return this.helper.buildBotStartUrl(startPayload, botId);
   }

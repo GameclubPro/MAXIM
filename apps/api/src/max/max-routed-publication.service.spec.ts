@@ -131,6 +131,99 @@ describe('MaxRoutedPublicationService', () => {
     );
   });
 
+  it('uses the guarded exact Publik route without consulting managed-bot ownership', async () => {
+    const previousRole = process.env.APP_ROLE;
+    const previousServiceName = process.env.APP_SERVICE_NAME;
+    const previousPublisherBotId = process.env.MAX_PUBLISHER_BOT_ID;
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    process.env.MAX_PUBLISHER_BOT_ID = 'se14088825_bot';
+    try {
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn(),
+        resolveBotRouteForManagedPoll: jest.fn(),
+      };
+      const maxActionDispatchService = {
+        recoverCompletedSend: jest.fn().mockResolvedValue(null),
+        execute: jest.fn().mockResolvedValue({
+          messageId: 'mid-publik-1',
+          url: null,
+          botId: 'se14088825_bot',
+        }),
+      };
+      const service = new MaxRoutedPublicationService(
+        maxBotLinkService as never,
+        maxActionDispatchService as never,
+        { resolveMessageLink: jest.fn().mockResolvedValue(null) } as never,
+      );
+
+      await expect(
+        service.publish({
+          entityId: 'channel-1',
+          logicalIdempotencyKey: 'vk-parsing:publish:post-1:intent-1',
+          text: 'VK post',
+          trafficClass: 'background',
+          sourceTag: 'vk_parsing',
+          publisherExactBotId: 'se14088825_bot',
+        }),
+      ).resolves.toMatchObject({
+        messageId: 'mid-publik-1',
+        botId: 'se14088825_bot',
+        candidateBotIds: ['se14088825_bot'],
+      });
+
+      expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
+      expect(maxActionDispatchService.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          botId: 'se14088825_bot',
+          candidateBotIds: ['se14088825_bot'],
+          routing: expect.objectContaining({
+            purpose: 'publisher_exact_send',
+            requiredBotId: 'se14088825_bot',
+          }),
+        }),
+        {},
+      );
+    } finally {
+      if (previousRole === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = previousRole;
+      if (previousServiceName === undefined) delete process.env.APP_SERVICE_NAME;
+      else process.env.APP_SERVICE_NAME = previousServiceName;
+      if (previousPublisherBotId === undefined) delete process.env.MAX_PUBLISHER_BOT_ID;
+      else process.env.MAX_PUBLISHER_BOT_ID = previousPublisherBotId;
+    }
+  });
+
+  it('rejects the exact publisher route outside api-publisher', async () => {
+    const previousRole = process.env.APP_ROLE;
+    const previousServiceName = process.env.APP_SERVICE_NAME;
+    process.env.APP_ROLE = 'action';
+    process.env.APP_SERVICE_NAME = 'api-action';
+    try {
+      const service = new MaxRoutedPublicationService(
+        { resolveBotRoute: jest.fn() } as never,
+        { recoverCompletedSend: jest.fn(), execute: jest.fn() } as never,
+        { resolveMessageLink: jest.fn() } as never,
+      );
+
+      await expect(
+        service.publish({
+          entityId: 'channel-1',
+          logicalIdempotencyKey: 'vk-parsing:publish:post-1:wrong-role',
+          text: 'VK post',
+          trafficClass: 'background',
+          sourceTag: 'vk_parsing',
+          publisherExactBotId: 'se14088825_bot',
+        }),
+      ).rejects.toThrow('only available to api-publisher');
+    } finally {
+      if (previousRole === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = previousRole;
+      if (previousServiceName === undefined) delete process.env.APP_SERVICE_NAME;
+      else process.env.APP_SERVICE_NAME = previousServiceName;
+    }
+  });
+
   it('fails closed before dispatch when a required media bot left the fresh route', async () => {
     const maxBotLinkService = {
       resolveBotRoute: jest.fn().mockResolvedValue({

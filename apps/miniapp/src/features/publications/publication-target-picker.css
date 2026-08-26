@@ -1,0 +1,5 @@
+@layer components {
+  .publication-target-row.is-unavailable {
+    opacity: 0.66;
+  }
+}

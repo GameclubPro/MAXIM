@@ -1,4 +1,8 @@
-import { ChatEntityType } from '../prisma/prisma-client';
+import {
+  ChatEntityType,
+  ManagedBroadcastDeliveryStatus,
+  PublicationDispatchProfile,
+} from '../prisma/prisma-client';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 
 const user = { userId: 'user-1', username: null, displayName: null };
@@ -177,5 +181,182 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
       response: expect.objectContaining({ code: 'BROADCAST_TARGET_SLOT_CONFLICT' }),
     });
     expect(createMany).not.toHaveBeenCalled();
+  });
+
+  it('separates the Publik transport bot from the main dialog bot in post buttons', async () => {
+    const resolveBroadcastButtonContext = jest.fn().mockResolvedValue({
+      buttons: [[{ type: 'link', text: 'Комментарии', url: 'https://max.ru/main-bot' }]],
+      commentDialogReference: {
+        entityType: 'channel',
+        threadId: 'thread-1',
+        includeCommentsButton: true,
+        includeSuggestButton: false,
+        suggestButtonText: null,
+        customButtons: [],
+        suggestionEntryMode: 'BOT',
+        botId: 'main-bot',
+      },
+    });
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {},
+      resolveBroadcastButtonContext,
+    } as never);
+
+    const message = await (runtime as any).messageRuntime.buildMessage(
+      'channel-1',
+      'channel',
+      {
+        textFormat: 'plain',
+        buttons: [],
+        buttonEnabled: false,
+        buttonText: '',
+        buttonUrl: '',
+      },
+      'Публикация',
+      {},
+      'publisher-bot',
+      'main-bot',
+    );
+
+    expect(resolveBroadcastButtonContext).toHaveBeenCalledWith(
+      'channel-1',
+      'channel',
+      expect.any(Object),
+      'main-bot',
+    );
+    expect(message.commentDialogReference).toEqual(
+      expect.objectContaining({
+        botId: 'publisher-bot',
+        dialogBotId: 'main-bot',
+      }),
+    );
+  });
+
+  it('uses the persisted main-signed keyboard without rebuilding it in publisher runtime', async () => {
+    const resolveBroadcastButtonContext = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {},
+      resolveBroadcastButtonContext,
+    } as never);
+    const signedButton = {
+      type: 'link',
+      text: 'Комментарии · 0',
+      url: 'https://max.ru/main-bot?startapp=signed-main-context',
+    };
+
+    const message = await (runtime as any).messageRuntime.buildMessage(
+      'channel-1',
+      'channel',
+      {
+        textFormat: 'plain',
+        buttons: [],
+        buttonEnabled: false,
+        buttonText: '',
+        buttonUrl: '',
+      },
+      'Публикация',
+      {},
+      'publisher-bot',
+      'main-bot',
+      {
+        value: {
+          version: 1,
+          dialogBotId: 'main-bot',
+          buttons: [[signedButton]],
+          reference: null,
+        },
+        required: true,
+      },
+    );
+
+    expect(resolveBroadcastButtonContext).not.toHaveBeenCalled();
+    expect(message.messageOptions?.buttons).toEqual([[signedButton]]);
+  });
+
+  it('leaves Publik deliveries pending when the publisher runtime boundary is disabled', async () => {
+    const publicationOccurrenceUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const deliveryUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const broadcastUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      publicationOccurrence: { updateMany: publicationOccurrenceUpdate },
+      managedBroadcastDelivery: { updateMany: deliveryUpdate },
+      managedBroadcast: { updateMany: broadcastUpdate },
+    };
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: { $transaction: (callback: (client: typeof tx) => unknown) => callback(tx) },
+      publisherRuntimeBoundaryService: {
+        assertDispatchEnabled: () => {
+          throw new Error('disabled');
+        },
+      },
+      logger: { warn: jest.fn() },
+    } as never);
+
+    const result = await (runtime as any).publisherDispatch.ensureRuntimeBoundary(
+      {
+        id: 'broadcast-publik',
+        publicationOccurrenceId: 'occurrence-publik',
+      },
+      1,
+      { lockToken: 'broadcast-lock', lockedAt: new Date(), lastHeartbeatAt: new Date() },
+    );
+
+    expect(result).toEqual({ ready: false, retryAt: expect.any(Date) });
+    expect(deliveryUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        }),
+        data: expect.objectContaining({
+          dispatchBlockerCode: 'PUBLISHER_RUNTIME_UNAVAILABLE',
+        }),
+      }),
+    );
+    expect(broadcastUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          lockedAt: null,
+          lockToken: null,
+        }),
+      }),
+    );
+  });
+
+  it('blocks an individual pending delivery when its policy is toggled off before claim', async () => {
+    const deliveryUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedBroadcastDelivery: { updateMany: deliveryUpdate },
+      },
+      publisherRuntimeBoundaryService: { assertDispatchEnabled: jest.fn() },
+      publisherDispatchHealthService: {
+        assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
+      },
+      publisherReadinessService: {
+        assertEntityReady: jest
+          .fn()
+          .mockRejectedValue(Object.assign(new Error('disabled'), { blockerCode: 'policy_disabled' })),
+      },
+    } as never);
+
+    const retryAt = await (runtime as any).publisherDispatch.deferUnreadyBeforeClaim(
+      { id: 'broadcast-publik', publicationOccurrenceId: null },
+      { id: 'delivery-publik', targetChatId: 'chat-1' },
+      'publisher-bot',
+    );
+
+    expect(retryAt).toEqual(expect.any(Date));
+    expect(deliveryUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          requiredBotId: 'publisher-bot',
+        }),
+        data: {
+          dispatchBlockerCode: 'policy_disabled',
+          dispatchBlockedAt: expect.any(Date),
+        },
+      }),
+    );
   });
 });

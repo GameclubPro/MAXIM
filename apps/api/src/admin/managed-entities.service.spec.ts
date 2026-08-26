@@ -253,6 +253,11 @@ function createService(
 }
 
 describe('ManagedEntitiesService getMe', () => {
+  const moderationProfileProjection = {
+    profile: 'moderation',
+    capabilities: ['moderation_workspace', 'publisher_policy_write'],
+    homeRoute: '/',
+  } as const;
   const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   const encodeProfileLabel = (value: string): string =>
     new URLSearchParams({ profile_label: value }).toString().replace(/^profile_label=/u, '');
@@ -315,6 +320,7 @@ describe('ManagedEntitiesService getMe', () => {
       profileUrl: 'https://max.ru/designer',
       profileHandoffUrl: chatProfileHandoffUrl('Designer'),
       botDialogUrl: 'https://max.ru/777000_bot',
+      ...moderationProfileProjection,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -355,6 +361,7 @@ describe('ManagedEntitiesService getMe', () => {
       profileUrl: 'https://max.ru/designer',
       profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
       botDialogUrl: 'https://max.ru/777000_bot',
+      ...moderationProfileProjection,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -385,6 +392,7 @@ describe('ManagedEntitiesService getMe', () => {
       profileUrl: 'https://max.ru/designer-direct',
       profileHandoffUrl: null,
       botDialogUrl: 'https://max.ru/777000_bot',
+      ...moderationProfileProjection,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -425,6 +433,7 @@ describe('ManagedEntitiesService getMe', () => {
       profileUrl: null,
       profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
       botDialogUrl: 'https://max.ru/777000_bot',
+      ...moderationProfileProjection,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -470,6 +479,7 @@ describe('ManagedEntitiesService getMe', () => {
       profileUrl: 'https://max.ru/designer-direct',
       profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
       botDialogUrl: 'https://max.ru/777000_bot',
+      ...moderationProfileProjection,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -508,6 +518,7 @@ describe('ManagedEntitiesService getMe', () => {
         profileUrl: 'https://max.ru/designer',
         profileHandoffUrl: chatProfileHandoffUrl('Designer'),
         botDialogUrl: 'https://max.ru/777000_bot',
+        ...moderationProfileProjection,
       });
       expect(logSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -554,6 +565,7 @@ describe('ManagedEntitiesService getMe', () => {
         profileUrl: 'https://max.ru/designer',
         profileHandoffUrl: chatProfileHandoffUrl('Designer'),
         botDialogUrl: 'https://max.ru/777000_bot',
+        ...moderationProfileProjection,
       });
       expect(warnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -597,6 +609,7 @@ describe('ManagedEntitiesService getMe', () => {
       profileUrl: null,
       profileHandoffUrl: chatProfileHandoffUrl(null),
       botDialogUrl: 'https://max.ru/777000_bot',
+      ...moderationProfileProjection,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });

@@ -77,7 +77,7 @@ function createRuntime() {
   const resolveMedia = jest
     .spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia')
     .mockResolvedValue({});
-  jest.spyOn(runtime as any, 'buildManagedBroadcastMessage').mockResolvedValue({
+  jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
     messageText: 'Тест',
     messageOptions: {},
   });

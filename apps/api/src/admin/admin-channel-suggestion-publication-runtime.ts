@@ -13,6 +13,7 @@ import {
   wasMaxMessageSendAttempted,
 } from '../max/max-client.service';
 import type { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
+import type { MaxBotLinkService } from '../max/max-bot-link.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import {
   ChannelSuggestionAdminDeliveryStatus,
@@ -20,6 +21,12 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import type {
+  PublisherReadinessService,
+  PublisherReadyRoute,
+} from '../publisher/publisher-readiness.service';
+import type { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
+import type { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import {
   hasChannelSuggestionBotScopedMediaToken,
   resolveChannelSuggestionMediaPublicationBotId,
@@ -51,8 +58,14 @@ import {
   type ChannelSuggestionTextMarkup,
 } from './admin.service.support';
 import type { BroadcastTextFormat } from '@maxim/contracts';
+import type { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
+import type {
+  PublisherDialogContextService,
+  PublisherPreparedDialogContext,
+} from './publisher-dialog-context.service';
 
 const CHANNEL_SUGGESTION_AMBIGUOUS_SEND_ERROR = Symbol('channelSuggestionAmbiguousSendError');
+const PUBLISHER_SUGGESTION_DISPATCH_PROFILE = 'PUBLIK_V1';
 
 class ChannelSuggestionRecoveryConflictError extends Error {}
 
@@ -88,12 +101,32 @@ type PublishedSuggestion = {
   publicationContext?: ChannelSuggestionPublicationContextV1;
 };
 
+type SuggestionButtonContext = {
+  buttons: MaxMessageButton[][];
+  threadId: string | null;
+  includeCommentsButton: boolean;
+  includeSuggestButton: boolean;
+  suggestButtonText: string | null;
+  suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
+};
+
+type PublisherSuggestionRoute = PublisherReadyRoute & {
+  dialogBotId: string;
+  dialogContext: PublisherPreparedDialogContext;
+};
+
 export type AdminChannelSuggestionPublicationRuntimeContext = {
   readonly logger: Logger;
   readonly prisma: PrismaService;
   readonly maxClient: MaxClientService;
   readonly maxRoutedPublicationService?: MaxRoutedPublicationService;
   readonly channelSuggestionImageRuntime: AdminChannelSuggestionImageRuntime;
+  readonly publisherReadinessService?: PublisherReadinessService;
+  readonly publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService;
+  readonly publisherDispatchHealthService?: PublisherDispatchHealthService;
+  readonly publisherSuggestionPublicationQueue?: PublisherSuggestionPublicationQueueService;
+  readonly publisherDialogContextService?: PublisherDialogContextService;
+  readonly maxBotLinkService?: Pick<MaxBotLinkService, 'getStoredChatPrimaryBotId'>;
   readonly channelPostSignatureService?: {
     preparePostText(
       chatId: string,
@@ -228,15 +261,7 @@ export class AdminChannelSuggestionPublicationRuntime {
         'Channel suggestion payload actor differs from audit actor; using audit actor',
       );
     }
-    const payloadWithoutTransientClaim = { ...payload };
-    delete payloadWithoutTransientClaim.reviewClaimedAt;
-    delete payloadWithoutTransientClaim.reviewClaimedByUserId;
-    delete payloadWithoutTransientClaim.reviewClaimedByDisplayName;
-    delete payloadWithoutTransientClaim.reviewClaimToken;
-    delete payloadWithoutTransientClaim.reviewAction;
-    delete payloadWithoutTransientClaim.reviewPublicationProtocol;
-    delete payloadWithoutTransientClaim.reviewPublicationLedgerJobId;
-    delete payloadWithoutTransientClaim.reviewPublicationContext;
+    const payloadWithoutTransientClaim = this.stripTransientPublicationClaim(payload);
     const canonicalPayload: Record<string, unknown> = {
       ...payloadWithoutTransientClaim,
       ...(hasActorMismatch
@@ -262,7 +287,13 @@ export class AdminChannelSuggestionPublicationRuntime {
       });
     }
 
-    if (!this.context.maxRoutedPublicationService) {
+    const publisherRoute = await this.resolvePublisherSuggestionRoute(row.chatId, canonicalPayload);
+    if (publisherRoute && !this.context.publisherSuggestionPublicationQueue) {
+      throw new ServiceUnavailableException(
+        'Очередь Публика временно недоступна. Попробуйте позже.',
+      );
+    }
+    if (!publisherRoute && !this.context.maxRoutedPublicationService) {
       throw new ServiceUnavailableException(
         'Сервис безопасной публикации временно недоступен. Попробуйте позже.',
       );
@@ -272,9 +303,15 @@ export class AdminChannelSuggestionPublicationRuntime {
       suggestionId: row.id,
       userId: user.userId,
       userDisplayName: reviewerLabel,
+      publisherRoute,
     });
     if (!claim) {
       return this.readReviewResult(row.id);
+    }
+
+    if (publisherRoute) {
+      await this.context.publisherSuggestionPublicationQueue!.enqueue(row.id, claim.claimToken);
+      return this.processingResult();
     }
 
     let published: PublishedSuggestion;
@@ -299,60 +336,119 @@ export class AdminChannelSuggestionPublicationRuntime {
       throw error;
     }
 
-    const updatedPayload = {
-      ...canonicalPayload,
-      authorDisplayName: published.authorAttribution.displayName,
-      authorMentionDisplayName: published.authorAttribution.mentionDisplayName,
-      authorUsername: published.authorAttribution.username,
-      authorProfileUrl: published.authorAttribution.profileUrl,
-      reviewStatus: 'published',
-      reviewedAt: new Date().toISOString(),
-      reviewedByUserId: user.userId,
-      reviewedByDisplayName: reviewerLabel,
-      publishedMessageId: published.messageId,
-      publishedUrl: published.url,
-      reviewPublicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
-      reviewPublicationLedgerJobId: claim.ledgerJobId,
-      reviewPublicationContext: published.publicationContext,
-    } as Prisma.InputJsonValue;
+    return this.completePublishedSuggestion({
+      row,
+      claim,
+      canonicalPayload,
+      published,
+      clearAuthorAvatar: hasActorMismatch,
+    });
+  }
 
-    if (!published.publicationContext) {
+  async processPublisherSuggestionPublicationJob(
+    suggestionId: string,
+    expectedClaimToken: string,
+  ): Promise<void> {
+    const row = await this.context.prisma.auditLog.findFirst({
+      where: { id: suggestionId.trim(), action: CHANNEL_DIALOG_ACTION_SUGGEST },
+      select: { id: true, chatId: true, actorUserId: true, payload: true },
+    });
+    if (!row) {
+      return;
+    }
+    const payload = this.context.readObjectPayload(row.payload);
+    const claim = readChannelSuggestionPublicationClaimV1(payload, row.id);
+    const publisherRoute = this.readPublisherSuggestionRoute(payload, row.chatId);
+    if (!claim || claim.claimToken !== expectedClaimToken.trim() || !publisherRoute) {
+      return;
+    }
+    if (!this.context.publisherRuntimeBoundaryService) {
+      throw new ServiceUnavailableException('Runtime Публика временно недоступен.');
+    }
+    await this.context.publisherRuntimeBoundaryService.assertDispatchEnabled();
+    const readyRoute = await this.requirePublisherReadiness().assertEntityReady(
+      row.chatId,
+      'suggestion_publish',
+    );
+    if (readyRoute.requiredBotId !== publisherRoute.requiredBotId) {
+      throw new ServiceUnavailableException('Маршрут Публика изменился. Отправка остановлена.');
+    }
+
+    const canonicalPayload = this.stripTransientPublicationClaim(payload);
+    const hasActorMismatch =
+      Boolean(this.context.readTrimmedString(payload.actorUserId)) &&
+      this.context.readTrimmedString(payload.actorUserId) !== row.actorUserId;
+    const published = await this.publishClaimedSuggestion({
+      row,
+      claim,
+      payload: canonicalPayload,
+    });
+    await this.completePublishedSuggestion({
+      row,
+      claim,
+      canonicalPayload,
+      published,
+      clearAuthorAvatar: hasActorMismatch,
+    });
+  }
+
+  private async completePublishedSuggestion(params: {
+    row: StoredSuggestionRow;
+    claim: ChannelSuggestionPublicationClaimV1;
+    canonicalPayload: Record<string, unknown>;
+    published: PublishedSuggestion;
+    clearAuthorAvatar: boolean;
+  }): Promise<ChannelSuggestionReviewResult> {
+    if (!params.published.publicationContext) {
       throw new ServiceUnavailableException(
         'MAX подтвердил публикацию без сохраненного контекста. Требуется ручная проверка.',
       );
     }
+    const updatedPayload = {
+      ...params.canonicalPayload,
+      authorDisplayName: params.published.authorAttribution.displayName,
+      authorMentionDisplayName: params.published.authorAttribution.mentionDisplayName,
+      authorUsername: params.published.authorAttribution.username,
+      authorProfileUrl: params.published.authorAttribution.profileUrl,
+      reviewStatus: 'published',
+      reviewedAt: new Date().toISOString(),
+      reviewedByUserId: params.claim.claimedByUserId,
+      reviewedByDisplayName: params.claim.claimedByDisplayName ?? params.claim.claimedByUserId,
+      publishedMessageId: params.published.messageId,
+      publishedUrl: params.published.url,
+      reviewPublicationProtocol: CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
+      reviewPublicationLedgerJobId: params.claim.ledgerJobId,
+      reviewPublicationContext: params.published.publicationContext,
+    } as Prisma.InputJsonValue;
     const persistedCount = await this.finalizePublication({
-      suggestionId: row.id,
-      chatId: row.chatId,
-      claim,
-      context: published.publicationContext,
-      messageId: published.messageId,
-      url: published.url,
-      clearAuthorAvatar: hasActorMismatch,
+      suggestionId: params.row.id,
+      chatId: params.row.chatId,
+      claim: params.claim,
+      context: params.published.publicationContext,
+      messageId: params.published.messageId,
+      url: params.published.url,
+      clearAuthorAvatar: params.clearAuthorAvatar,
     });
     if (persistedCount === 0) {
       this.context.logger.warn(
         {
-          suggestionId: row.id,
-          chatId: row.chatId,
-          reviewStatus: 'published',
-          publishedMessageId: published.messageId,
+          suggestionId: params.row.id,
+          chatId: params.row.chatId,
+          publishedMessageId: params.published.messageId,
         },
         'Channel suggestion disappeared before review persistence',
       );
-      return this.readReviewResult(row.id);
+      return this.readReviewResult(params.row.id);
     }
-
     await this.context.syncChannelSuggestionAdminReviewMessages(
-      row.id,
-      row.chatId,
+      params.row.id,
+      params.row.chatId,
       updatedPayload as Record<string, unknown>,
     );
-
     return {
       status: 'reviewed',
       reviewStatus: 'published',
-      publishedUrl: published.url,
+      publishedUrl: params.published.url,
     };
   }
 
@@ -361,6 +457,23 @@ export class AdminChannelSuggestionPublicationRuntime {
     claim: ChannelSuggestionPublicationClaimV1;
     payload: Record<string, unknown>;
   }): Promise<PublishedSuggestion> {
+    const publisherRoute = this.readPublisherSuggestionRoute(params.payload, params.row.chatId);
+    if (publisherRoute) {
+      const images = await this.context.channelSuggestionImageRuntime.loadStoredImages(
+        params.row.id,
+        params.payload,
+      );
+      return this.publishStoredSuggestion({
+        suggestionId: params.row.id,
+        claim: params.claim,
+        chatId: params.row.chatId,
+        actorUserId: params.row.actorUserId,
+        payload: params.payload,
+        images,
+        resolvedBotId: publisherRoute.requiredBotId,
+        publisherRoute,
+      });
+    }
     const assignment = await this.context.resolveChannelSuggestionPublicationBotAssignment(
       params.row.chatId,
     );
@@ -396,7 +509,112 @@ export class AdminChannelSuggestionPublicationRuntime {
       payload: params.payload,
       images,
       resolvedBotId,
+      publisherRoute: null,
     });
+  }
+
+  private async resolvePublisherSuggestionRoute(
+    chatId: string,
+    _payload: Record<string, unknown>,
+  ): Promise<PublisherSuggestionRoute | null> {
+    const policyModel = (
+      this.context.prisma as PrismaService & {
+        managedEntityPublicationPolicy?: PrismaService['managedEntityPublicationPolicy'];
+      }
+    ).managedEntityPublicationPolicy;
+    if (!policyModel?.findUnique) {
+      return null;
+    }
+    const policy = await policyModel.findUnique({
+      where: { chatId },
+      select: { suggestionsViaPublik: true },
+    });
+    if (policy?.suggestionsViaPublik !== true) {
+      return null;
+    }
+    const route = await this.requirePublisherReadiness().assertEntityReady(
+      chatId,
+      'suggestion_publish',
+    );
+    if (route.entityType !== 'channel') {
+      throw new ServiceUnavailableException('Предложки через Публик доступны только каналам.');
+    }
+    const dialogBotId = await this.context.maxBotLinkService?.getStoredChatPrimaryBotId(chatId, {
+      bypassCache: true,
+    });
+    if (!dialogBotId || dialogBotId === route.requiredBotId) {
+      throw new ServiceUnavailableException('Для кнопок предложки не найден основной бот канала.');
+    }
+    const dialogContext = await this.requirePublisherDialogContexts().prepare({
+      chatId,
+      entityType: 'channel',
+      dialogBotId,
+      customButtons: [],
+    });
+    return { ...route, dialogBotId, dialogContext };
+  }
+
+  private readPublisherSuggestionRoute(
+    payload: Record<string, unknown>,
+    chatId: string,
+  ): PublisherSuggestionRoute | null {
+    if (payload.reviewDispatchProfile !== PUBLISHER_SUGGESTION_DISPATCH_PROFILE) {
+      return null;
+    }
+    const requiredBotId = this.context.readTrimmedString(payload.reviewRequiredBotId);
+    const dialogBotId = this.context.readTrimmedString(payload.reviewDialogBotId);
+    const policyRevision = payload.reviewPolicyRevision;
+    const dialogContext = this.requirePublisherDialogContexts().read(
+      payload.reviewPublisherDialogContext,
+      dialogBotId ?? '',
+    );
+    if (
+      !requiredBotId ||
+      !dialogBotId ||
+      !dialogContext ||
+      typeof policyRevision !== 'number' ||
+      !Number.isInteger(policyRevision) ||
+      policyRevision < 0
+    ) {
+      throw new ServiceUnavailableException('Сохранённый маршрут Публика повреждён.');
+    }
+    return {
+      chatId,
+      entityType: 'channel',
+      requiredBotId,
+      policyRevision,
+      dialogBotId,
+      dialogContext,
+    };
+  }
+
+  private requirePublisherReadiness(): PublisherReadinessService {
+    if (!this.context.publisherReadinessService) {
+      throw new ServiceUnavailableException('Readiness Публика временно недоступен.');
+    }
+    return this.context.publisherReadinessService;
+  }
+
+  private requirePublisherDialogContexts(): PublisherDialogContextService {
+    if (!this.context.publisherDialogContextService) {
+      throw new ServiceUnavailableException('Контекст кнопок Публика временно недоступен.');
+    }
+    return this.context.publisherDialogContextService;
+  }
+
+  private stripTransientPublicationClaim(
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const canonical = { ...payload };
+    delete canonical.reviewClaimedAt;
+    delete canonical.reviewClaimedByUserId;
+    delete canonical.reviewClaimedByDisplayName;
+    delete canonical.reviewClaimToken;
+    delete canonical.reviewAction;
+    delete canonical.reviewPublicationProtocol;
+    delete canonical.reviewPublicationLedgerJobId;
+    delete canonical.reviewPublicationContext;
+    return canonical;
   }
 
   private async cancelPendingSuggestion(params: {
@@ -481,13 +699,14 @@ export class AdminChannelSuggestionPublicationRuntime {
     suggestionId: string;
     userId: string;
     userDisplayName: string;
+    publisherRoute: PublisherSuggestionRoute | null;
   }): Promise<ChannelSuggestionPublicationClaimV1 | null> {
     const claimedAt = new Date().toISOString();
     const claimToken = randomUUID();
     const ledgerJobId = buildChannelSuggestionPublicationLedgerJobId(params.suggestionId);
     const updated = await this.context.prisma.$executeRaw(Prisma.sql`
       UPDATE audit_logs
-      SET payload = payload::jsonb || jsonb_build_object(
+      SET payload = payload::jsonb || jsonb_strip_nulls(jsonb_build_object(
         'reviewStatus', 'publishing',
         'reviewClaimedAt', ${claimedAt}::text,
         'reviewClaimedByUserId', ${params.userId}::text,
@@ -495,8 +714,13 @@ export class AdminChannelSuggestionPublicationRuntime {
         'reviewClaimToken', ${claimToken}::text,
         'reviewAction', 'publish',
         'reviewPublicationProtocol', ${CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1}::text,
-        'reviewPublicationLedgerJobId', ${ledgerJobId}::text
-      )
+        'reviewPublicationLedgerJobId', ${ledgerJobId}::text,
+        'reviewDispatchProfile', ${params.publisherRoute ? PUBLISHER_SUGGESTION_DISPATCH_PROFILE : null}::text,
+        'reviewRequiredBotId', ${params.publisherRoute?.requiredBotId ?? null}::text,
+        'reviewPolicyRevision', ${params.publisherRoute?.policyRevision ?? null}::integer,
+        'reviewDialogBotId', ${params.publisherRoute?.dialogBotId ?? null}::text,
+        'reviewPublisherDialogContext', ${params.publisherRoute ? JSON.stringify(params.publisherRoute.dialogContext) : null}::jsonb
+      ))
       WHERE id = ${params.suggestionId}::text
         AND action = ${CHANNEL_DIALOG_ACTION_SUGGEST}::text
         AND payload->>'type' = 'suggest'
@@ -915,6 +1139,7 @@ export class AdminChannelSuggestionPublicationRuntime {
           source: 'suggestion_review',
           ...(params.publishedUrl ? { publishedUrl: params.publishedUrl } : {}),
           ...(params.persistedBotId ? { botId: params.persistedBotId } : {}),
+          ...(params.context.dialogBotId ? { dialogBotId: params.context.dialogBotId } : {}),
           ...(params.context.suggestButtonText
             ? { suggestButtonText: params.context.suggestButtonText }
             : {}),
@@ -959,6 +1184,7 @@ export class AdminChannelSuggestionPublicationRuntime {
     payload: Record<string, unknown>;
     images: ChannelSuggestionImageAsset[];
     resolvedBotId: string | undefined;
+    publisherRoute: PublisherSuggestionRoute | null;
   }): Promise<PublishedSuggestion> {
     const tokenScopedMedia = hasChannelSuggestionBotScopedMediaToken(params.payload, params.images);
     const preparedByBotId = new Map<string, PreparedSuggestionPublication>();
@@ -969,6 +1195,7 @@ export class AdminChannelSuggestionPublicationRuntime {
       );
     }
     let lastPrepared: PreparedSuggestionPublication | undefined;
+    let publisherAttemptedAt: Date | null = null;
     let attempt = 1;
     for (;;) {
       try {
@@ -982,7 +1209,10 @@ export class AdminChannelSuggestionPublicationRuntime {
           timeoutMs: 10_000,
           ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
           ...(params.resolvedBotId ? { preferredBotId: params.resolvedBotId } : {}),
-          ...(tokenScopedMedia && params.resolvedBotId
+          ...(params.publisherRoute
+            ? { publisherExactBotId: params.publisherRoute.requiredBotId }
+            : {}),
+          ...((params.publisherRoute || tokenScopedMedia) && params.resolvedBotId
             ? { requiredBotId: params.resolvedBotId }
             : {}),
           prepareAttempt: async ({ botId }) => {
@@ -992,6 +1222,10 @@ export class AdminChannelSuggestionPublicationRuntime {
               payload: params.payload,
               images: params.images,
               botId,
+              dialogBotId: params.publisherRoute?.dialogBotId ?? botId,
+              preparedButtonContext: params.publisherRoute
+                ? this.adaptPublisherDialogContext(params.publisherRoute.dialogContext)
+                : undefined,
             });
             preparedByBotId.set(botId, prepared);
             lastPrepared = prepared;
@@ -1008,6 +1242,11 @@ export class AdminChannelSuggestionPublicationRuntime {
               },
             };
           },
+          onDispatchAttempt: ({ botId }) => {
+            if (params.publisherRoute && botId === params.publisherRoute.requiredBotId) {
+              publisherAttemptedAt = new Date();
+            }
+          },
           beforeSendMutation: async ({ botId }) => {
             const prepared = preparedByBotId.get(botId);
             if (!prepared || prepared.context.botId !== botId) {
@@ -1020,6 +1259,26 @@ export class AdminChannelSuggestionPublicationRuntime {
               params.claim.claimedByUserId,
               'channel',
             );
+            if (params.publisherRoute) {
+              if (!this.context.publisherRuntimeBoundaryService) {
+                throw new ServiceUnavailableException('Runtime Публика временно недоступен.');
+              }
+              await this.context.publisherRuntimeBoundaryService.assertDispatchEnabled();
+              if (!this.context.publisherDispatchHealthService) {
+                throw new ServiceUnavailableException('Health guard Публика недоступен.');
+              }
+              await this.context.publisherDispatchHealthService.assertDispatchAllowed();
+              const readyRoute = await this.requirePublisherReadiness().assertEntityReady(
+                params.chatId,
+                'suggestion_publish',
+              );
+              if (
+                botId !== params.publisherRoute.requiredBotId ||
+                readyRoute.requiredBotId !== params.publisherRoute.requiredBotId
+              ) {
+                throw new ServiceUnavailableException('Маршрут Публика изменился перед отправкой.');
+              }
+            }
             await this.persistPublicationContext({
               suggestionId: params.suggestionId,
               chatId: params.chatId,
@@ -1032,6 +1291,12 @@ export class AdminChannelSuggestionPublicationRuntime {
         if (!prepared) {
           throw new ServiceUnavailableException(
             'MAX подтвердил публикацию без сохраненного контекста. Требуется ручная проверка.',
+          );
+        }
+        if (params.publisherRoute && publisherAttemptedAt) {
+          await this.context.publisherDispatchHealthService?.recordSendSuccess(
+            params.chatId,
+            publisherAttemptedAt,
           );
         }
         return {
@@ -1047,6 +1312,13 @@ export class AdminChannelSuggestionPublicationRuntime {
           publicationContext: prepared.context,
         };
       } catch (error: unknown) {
+        if (params.publisherRoute) {
+          await this.context.publisherDispatchHealthService?.recordSendFailure(
+            params.chatId,
+            error,
+            publisherAttemptedAt ?? new Date(),
+          );
+        }
         if (wasMaxMessageSendAttempted(error) || isAmbiguousMaxSendError(error)) {
           this.markAmbiguousSendError(error);
           throw error;
@@ -1071,6 +1343,8 @@ export class AdminChannelSuggestionPublicationRuntime {
     payload: Record<string, unknown>;
     images: ChannelSuggestionImageAsset[];
     botId?: string;
+    dialogBotId?: string;
+    preparedButtonContext?: SuggestionButtonContext;
   }): Promise<PreparedSuggestionPublication> {
     const botId = params.botId?.trim();
     if (!botId) {
@@ -1099,7 +1373,10 @@ export class AdminChannelSuggestionPublicationRuntime {
       },
       botId,
     );
-    const buttonContext = await this.buildButtonContext(params.chatId, params.payload, botId);
+    const dialogBotId = params.dialogBotId?.trim() || botId;
+    const buttonContext =
+      params.preparedButtonContext ??
+      (await this.buildButtonContext(params.chatId, params.payload, dialogBotId));
     const textFormat = this.context.normalizeBroadcastTextFormat(
       this.context.readTrimmedString(params.payload.textFormat) ?? 'plain',
     );
@@ -1144,6 +1421,7 @@ export class AdminChannelSuggestionPublicationRuntime {
         preparedAt: new Date().toISOString(),
         messageDigest,
         botId,
+        ...(dialogBotId !== botId ? { dialogBotId } : {}),
         threadId: buttonContext.threadId,
         buttons: buttonContext.buttons,
         includeCommentsButton: buttonContext.includeCommentsButton,
@@ -1159,14 +1437,7 @@ export class AdminChannelSuggestionPublicationRuntime {
     chatId: string,
     _payload: Record<string, unknown>,
     botId?: string | null,
-  ): Promise<{
-    buttons: MaxMessageButton[][];
-    threadId: string | null;
-    includeCommentsButton: boolean;
-    includeSuggestButton: boolean;
-    suggestButtonText: string | null;
-    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
-  }> {
+  ): Promise<SuggestionButtonContext> {
     const settings = await this.context.getPublicChannelSettings(chatId);
     const includeCommentsButton = settings.commentsEnabled;
     const includeSuggestButton = settings.postSuggestionsEnabled;
@@ -1214,6 +1485,36 @@ export class AdminChannelSuggestionPublicationRuntime {
       includeSuggestButton,
       suggestButtonText: includeSuggestButton ? suggestButtonText : null,
       suggestionEntryMode: settings.postSuggestionsEntryMode,
+    };
+  }
+
+  private adaptPublisherDialogContext(
+    context: PublisherPreparedDialogContext,
+  ): SuggestionButtonContext {
+    const reference = context.reference;
+    if (!reference) {
+      if (context.buttons.length > 0) {
+        throw new ServiceUnavailableException('Сохранённый контекст кнопок Публика повреждён.');
+      }
+      return {
+        buttons: [],
+        threadId: null,
+        includeCommentsButton: false,
+        includeSuggestButton: false,
+        suggestButtonText: null,
+        suggestionEntryMode: 'BOT',
+      };
+    }
+    if (reference.entityType !== 'channel' || reference.dialogBotId !== context.dialogBotId) {
+      throw new ServiceUnavailableException('Сохранённый контекст кнопок Публика повреждён.');
+    }
+    return {
+      buttons: context.buttons,
+      threadId: reference.threadId,
+      includeCommentsButton: reference.includeCommentsButton,
+      includeSuggestButton: reference.includeSuggestButton,
+      suggestButtonText: reference.suggestButtonText,
+      suggestionEntryMode: reference.suggestionEntryMode ?? 'BOT',
     };
   }
 

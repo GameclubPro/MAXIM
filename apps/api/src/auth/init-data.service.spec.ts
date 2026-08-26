@@ -227,6 +227,31 @@ describe('InitDataService', () => {
     });
   });
 
+  it('validates publisher init data with a derived key and without its action token', () => {
+    const publisherToken = 'max-publisher-bot-token-test';
+    const publisherSecretKey = createHmac('sha256', 'WebAppData').update(publisherToken).digest();
+    const publisherKeys = {
+      getVerificationKeys: jest.fn().mockReturnValue({
+        botId: 'publik-bot',
+        keys: [publisherSecretKey],
+      }),
+    };
+    const service = new InitDataService(
+      createRegistryMock() as never,
+      createConfigMock(),
+      publisherKeys as never,
+    );
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '557' }));
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
+    params.set('hash', sign(params, publisherToken));
+
+    expect(service.validate(params.toString())).toMatchObject({
+      userId: '557',
+      launchBotId: 'publik-bot',
+    });
+  });
+
   it('accepts init data inside the default one-hour freshness window', () => {
     const service = new InitDataService(createRegistryMock() as never, createConfigMock());
     const params = new URLSearchParams();

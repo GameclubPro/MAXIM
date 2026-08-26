@@ -104,6 +104,26 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.isKnownBotUserId('700000000001')).toBe(true);
   });
 
+  it('protects Publik identity without adding it to normal routing candidates', () => {
+    const service = createService();
+
+    expect(service.getPublisherBotDescriptor()).toEqual({
+      id: 'se14088825_bot',
+      label: 'Публик',
+      kind: 'publisher',
+    });
+    expect(service.isKnownBotUserId('se14088825')).toBe(true);
+    expect(service.resolveBotIdFromUserId('se14088825_bot')).toBe('se14088825_bot');
+    expect(service.getBotById('se14088825_bot')).toBeNull();
+    expect(service.getValidationTokensForBot('se14088825_bot')).toEqual([]);
+    expect(service.getConfiguredWebhookSubscriptionTarget('se14088825_bot')).toEqual({
+      url: null,
+      maskedUrl: null,
+    });
+    expect(service.getActionableBots().map((bot) => bot.id)).not.toContain('se14088825_bot');
+    expect(service.getDiscoveryBots().map((bot) => bot.id)).not.toContain('se14088825_bot');
+  });
+
   it('resolves id, numeric suffix, and contact ids to canonical bot ids', () => {
     const service = createService({
       MAX_BOT_ID: 'id613002203036_bot',

@@ -1,0 +1,750 @@
+import { ConfigService } from '@nestjs/config';
+import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
+import { ChatEntityType, PublicationDispatchProfile } from '../prisma/prisma-client';
+import { VkPublishService } from './vk-publish.service';
+
+function createPublisherDialogContext() {
+  return {
+    version: 1 as const,
+    dialogBotId: 'main-dialog-bot',
+    buttons: [
+      [
+        {
+          type: 'link' as const,
+          text: 'Комментарии',
+          url: 'https://max.ru/main-dialog-bot?startapp=main-signed-context',
+        },
+      ],
+    ],
+    reference: {
+      entityType: 'channel' as const,
+      threadId: 'thread-main-signed',
+      includeCommentsButton: true,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      customButtons: [],
+      suggestionEntryMode: 'BOT' as const,
+      botId: null,
+      dialogBotId: 'main-dialog-bot',
+    },
+  };
+}
+
+function createPost(overrides: Record<string, unknown> = {}) {
+  const publisherDialogContext = createPublisherDialogContext();
+  const source = {
+    id: 'source-1',
+    chatId: 'channel-1',
+    publishMode: 'QUEUE',
+    quietHoursStart: null,
+    quietHoursEnd: null,
+    autoPublishEnabled: true,
+    autoPublishEnabledAt: new Date('2026-08-26T08:00:00.000Z'),
+    status: 'ACTIVE',
+    importEnabled: true,
+    autoPublishPausedAt: null,
+    autoPublishPausedReason: null,
+    dailyLimit: 3,
+    minPublishIntervalMinutes: 30,
+    lastAutoPublishedAt: null,
+  };
+  return {
+    id: 'post-1',
+    sourceId: source.id,
+    chatId: source.chatId,
+    vkOwnerId: -1,
+    vkPostId: 10,
+    text: 'Пост из VK',
+    textFormat: 'plain',
+    manualContentEditedAt: null,
+    photoUrls: [],
+    videoUrls: [],
+    linkUrls: [],
+    attachments: [],
+    attachmentTypes: [],
+    unsupportedAttachments: [],
+    hasUnsupportedAttachments: false,
+    url: 'https://vk.ru/wall-1_10',
+    raw: {},
+    isAdvertising: false,
+    advertisingMarkers: [],
+    contentHash: 'content-1',
+    publishedContentHash: null,
+    status: 'NEW',
+    publishedMessageId: null,
+    publishedUrl: null,
+    publishedAtMax: null,
+    autoPublishedAt: null,
+    autoPublishError: null,
+    skippedAt: null,
+    skipReason: null,
+    createdAt: new Date('2026-08-26T09:00:00.000Z'),
+    updatedAt: new Date('2026-08-26T09:00:00.000Z'),
+    vkPublishedAt: new Date('2026-08-26T09:00:00.000Z'),
+    lastSeenAt: new Date('2026-08-26T09:00:00.000Z'),
+    missingSinceAt: null,
+    missingSeenCount: 0,
+    lastAvailabilityCheckedAt: new Date('2026-08-26T09:00:00.000Z'),
+    unavailableAt: null,
+    publishQueuedAt: null,
+    publishScheduledAt: null,
+    publishCancelledAt: null,
+    publishCancelledByUserId: null,
+    publishLockedAt: null,
+    publishAttemptCount: 0,
+    publishIdempotencyKey: null,
+    publishReason: null,
+    publishActorUserId: null,
+    dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+    requiredBotId: null,
+    dialogBotId: null,
+    publishDialogContext:
+      overrides.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? publisherDialogContext
+        : null,
+    publicationPolicyRevision: null,
+    publishedBotId: null,
+    dispatchBlockerCode: null,
+    dispatchBlockedAt: null,
+    rollbackQueuedAt: null,
+    rollbackLockedAt: null,
+    rollbackDeletedAt: null,
+    rollbackAttemptCount: 0,
+    rollbackIdempotencyKey: null,
+    rollbackLastError: null,
+    lastError: null,
+    source,
+    ...overrides,
+  };
+}
+
+function createFixture() {
+  const prisma = {
+    vkParsingPost: {
+      findFirst: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      count: jest.fn().mockResolvedValue(0),
+      aggregate: jest.fn().mockResolvedValue({ _max: { vkPublishedAt: null } }),
+    },
+    vkParsingSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+    vkParsingSource: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    channelAudienceSnapshot: { findFirst: jest.fn().mockResolvedValue(null) },
+    managedBotChatCatalog: { findFirst: jest.fn().mockResolvedValue(null) },
+    auditLog: { create: jest.fn().mockResolvedValue({ id: 'audit-1' }) },
+  };
+  const accessService = {
+    resolvePublicationEntityType: jest.fn().mockResolvedValue(ChatEntityType.CHANNEL),
+  };
+  const adminService = {
+    buildChannelPublicationEngagementContext: jest.fn().mockResolvedValue({
+      buttons: [],
+      threadId: null,
+      includeCommentsButton: false,
+      includeSuggestButton: false,
+      suggestButtonText: null,
+      suggestionEntryMode: 'BOT',
+    }),
+    recordChannelPublicationEngagement: jest.fn(),
+  };
+  const maxClient = {
+    deleteMessage: jest.fn().mockResolvedValue(undefined),
+    sendMessageImmediateWithResolvedLink: jest.fn(),
+  };
+  const maxBotLinkService = {
+    resolveBotIdForSend: jest.fn().mockResolvedValue('main-dialog-bot'),
+    resolveBotIdForModerationAction: jest.fn().mockResolvedValue('main-fallback-bot'),
+  };
+  const feedService = {
+    mapPost: jest.fn((value: any) => ({
+      ...value,
+      sourceTitle: value.source?.title ?? 'VK source',
+      sourceUrl: value.source?.url ?? 'https://vk.ru/source',
+      sourcePublishMode: value.source?.publishMode ?? 'QUEUE',
+      vkPublishedAt: value.vkPublishedAt?.toISOString?.() ?? null,
+      publishedAtMax: value.publishedAtMax?.toISOString?.() ?? null,
+      autoPublishedAt: value.autoPublishedAt?.toISOString?.() ?? null,
+      skippedAt: value.skippedAt?.toISOString?.() ?? null,
+      lastSeenAt: value.lastSeenAt?.toISOString?.() ?? null,
+      missingSinceAt: value.missingSinceAt?.toISOString?.() ?? null,
+      lastAvailabilityCheckedAt: value.lastAvailabilityCheckedAt?.toISOString?.() ?? null,
+      unavailableAt: value.unavailableAt?.toISOString?.() ?? null,
+      publishQueuedAt: value.publishQueuedAt?.toISOString?.() ?? null,
+      publishScheduledAt: value.publishScheduledAt?.toISOString?.() ?? null,
+      publishCancelledAt: value.publishCancelledAt?.toISOString?.() ?? null,
+      publishLockedAt: value.publishLockedAt?.toISOString?.() ?? null,
+      createdAt: value.createdAt.toISOString(),
+      updatedAt: value.updatedAt.toISOString(),
+    })),
+  };
+  const legacyQueue = { add: jest.fn(), getJob: jest.fn().mockResolvedValue(null) };
+  const publisherQueue = {
+    add: jest.fn().mockResolvedValue(undefined),
+    getJob: jest.fn().mockResolvedValue(null),
+  };
+  const readiness = {
+    assertEntityReady: jest.fn().mockResolvedValue({
+      chatId: 'channel-1',
+      entityType: 'channel',
+      requiredBotId: 'publisher-bot',
+      policyRevision: 4,
+    }),
+  };
+  const runtimeBoundary = { assertDispatchEnabled: jest.fn() };
+  const health = {
+    assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
+    recordSendSuccess: jest.fn().mockResolvedValue(undefined),
+    recordSendFailure: jest.fn().mockResolvedValue('transient'),
+  };
+  const publisherDialogContextService = {
+    prepare: jest.fn().mockResolvedValue(createPublisherDialogContext()),
+    read: jest.fn((value: unknown, expectedBotId: string) => {
+      const context = value as ReturnType<typeof createPublisherDialogContext> | null;
+      return context?.version === 1 && context.dialogBotId === expectedBotId ? context : null;
+    }),
+  };
+  const maxRoutedPublicationService = { publish: jest.fn() };
+  const configService = {
+    get: jest.fn((key: string) => {
+      if (key === 'MAX_PUBLISHER_BOT_ID') return 'publisher-bot';
+      if (key === 'VK_PARSING_QUEUE_BATCH_SIZE') return 100;
+      if (key === 'VK_PARSING_PUBLISH_LEASE_TTL_MS') return 120_000;
+      return undefined;
+    }),
+  } as unknown as ConfigService;
+  const service = new VkPublishService(
+    prisma as never,
+    accessService as never,
+    adminService as never,
+    maxClient as never,
+    maxBotLinkService as never,
+    {} as never,
+    feedService as never,
+    legacyQueue as never,
+    configService,
+    undefined,
+    undefined,
+    maxRoutedPublicationService as never,
+    undefined,
+    publisherQueue as never,
+    readiness as never,
+    runtimeBoundary as never,
+    health as never,
+    publisherDialogContextService as never,
+  );
+  return {
+    service,
+    prisma,
+    accessService,
+    adminService,
+    maxClient,
+    maxBotLinkService,
+    legacyQueue,
+    publisherQueue,
+    readiness,
+    runtimeBoundary,
+    health,
+    publisherDialogContextService,
+    maxRoutedPublicationService,
+  };
+}
+
+describe('VK Publik routing', () => {
+  it('queues a new manual intent with an immutable Publik and dialog-bot route', async () => {
+    const fixture = createFixture();
+    const post = createPost();
+    fixture.prisma.vkParsingPost.findFirst.mockResolvedValueOnce(post).mockResolvedValueOnce({
+      ...post,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+    });
+
+    const result = await fixture.service.publishPost('channel-1', 'post-1', 'admin-1', {
+      text: 'Обновлённый пост',
+      textFormat: 'plain',
+      photoUrls: [],
+      videoUrls: [],
+      linkUrls: [],
+    });
+
+    expect(result).toMatchObject({ queued: 1 });
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+          dialogBotId: 'main-dialog-bot',
+          publishDialogContext: expect.objectContaining({
+            version: 1,
+            dialogBotId: 'main-dialog-bot',
+          }),
+          publicationPolicyRevision: 4,
+          publishActorUserId: 'admin-1',
+        }),
+      }),
+    );
+    expect(fixture.publisherQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
+      expect.objectContaining({
+        kind: 'publish',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+      }),
+      expect.any(Object),
+    );
+    expect(fixture.legacyQueue.add).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(fixture.publisherDialogContextService.prepare).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      entityType: 'channel',
+      dialogBotId: 'main-dialog-bot',
+      customButtons: [],
+    });
+  });
+
+  it('keeps an already queued legacy intent on managed-bot routing', async () => {
+    const fixture = createFixture();
+    const queuedAt = new Date(Date.now() - 1_000);
+    const post = createPost({
+      publishQueuedAt: queuedAt,
+      publishScheduledAt: queuedAt,
+      publishIdempotencyKey: 'legacy-intent',
+      publishReason: 'manual-schedule',
+    });
+    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    fixture.maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
+      const context = { botId: 'main-origin-bot', job: {} };
+      await request.prepareAttempt(context);
+      await request.onDispatchAttempt(context);
+      return {
+        messageId: 'legacy-message',
+        url: null,
+        botId: 'main-origin-bot',
+        candidateBotIds: ['main-origin-bot'],
+        routingVersion: 7,
+      };
+    });
+
+    await fixture.service.processPublishPostJob({
+      postId: post.id,
+      chatId: post.chatId,
+      reason: 'manual-schedule',
+      idempotencyKey: 'legacy-intent',
+    });
+
+    expect(fixture.maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.not.objectContaining({ publisherExactBotId: expect.anything() }),
+    );
+    expect(fixture.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(fixture.runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          publishedBotId: 'main-origin-bot',
+          publishedMessageId: 'legacy-message',
+        }),
+      }),
+    );
+  });
+
+  it('sends a publisher job only through the exact required bot and main dialog bot', async () => {
+    const fixture = createFixture();
+    const queuedAt = new Date('2026-08-26T10:00:00.000Z');
+    const post = createPost({
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+      publishActorUserId: 'admin-1',
+      publishQueuedAt: queuedAt,
+      publishScheduledAt: queuedAt,
+      publishIdempotencyKey: 'intent-1',
+      publishReason: 'manual-retry',
+    });
+    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    let preparedOptions: Record<string, unknown> | undefined;
+    fixture.maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
+      const context = { botId: 'publisher-bot', job: {} };
+      preparedOptions = (await request.prepareAttempt(context)).options;
+      await request.onDispatchAttempt(context);
+      await request.beforeSendMutation(context);
+      return {
+        messageId: 'message-1',
+        url: 'https://max.ru/channel/message-1',
+        botId: 'publisher-bot',
+        candidateBotIds: ['publisher-bot'],
+        routingVersion: null,
+      };
+    });
+
+    await fixture.service.processPublishPostJob({
+      postId: post.id,
+      chatId: post.chatId,
+      reason: 'manual-retry',
+      idempotencyKey: 'intent-1',
+      dispatchProfile: 'PUBLIK_V1',
+      requiredBotId: 'publisher-bot',
+    });
+
+    expect(fixture.maxRoutedPublicationService.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ publisherExactBotId: 'publisher-bot' }),
+    );
+    expect(fixture.adminService.buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
+    expect(preparedOptions).toEqual(
+      expect.objectContaining({
+        buttons: expect.arrayContaining([
+          expect.arrayContaining([expect.objectContaining({ text: 'Комментарии' })]),
+        ]),
+      }),
+    );
+    expect(fixture.readiness.assertEntityReady).toHaveBeenCalledTimes(2);
+    expect(fixture.runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(3);
+    expect(fixture.health.recordSendSuccess).toHaveBeenCalledWith('channel-1', expect.any(Date));
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          publishedBotId: 'publisher-bot',
+          publishedMessageId: 'message-1',
+        }),
+      }),
+    );
+  });
+
+  it('does not clear a publisher auth pause from a VK ledger replay', async () => {
+    const fixture = createFixture();
+    const queuedAt = new Date('2026-08-26T10:00:00.000Z');
+    const post = createPost({
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+      publishQueuedAt: queuedAt,
+      publishScheduledAt: queuedAt,
+      publishIdempotencyKey: 'intent-replayed',
+      publishReason: 'manual-retry',
+    });
+    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    fixture.maxRoutedPublicationService.publish.mockResolvedValue({
+      messageId: 'message-replayed',
+      url: null,
+      botId: 'publisher-bot',
+      candidateBotIds: ['publisher-bot'],
+      routingVersion: null,
+    });
+
+    await fixture.service.processPublishPostJob({
+      postId: post.id,
+      chatId: post.chatId,
+      reason: 'manual-retry',
+      idempotencyKey: 'intent-replayed',
+      dispatchProfile: 'PUBLIK_V1',
+      requiredBotId: 'publisher-bot',
+    });
+
+    expect(fixture.health.recordSendSuccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'PUBLISHED',
+          publishedMessageId: 'message-replayed',
+          publishedBotId: 'publisher-bot',
+        }),
+      }),
+    );
+  });
+
+  it('keeps an unstarted publisher intent pending when policy readiness turns off', async () => {
+    const fixture = createFixture();
+    const post = createPost({
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+      publishQueuedAt: new Date(),
+      publishScheduledAt: new Date(),
+      publishIdempotencyKey: 'intent-blocked',
+      publishReason: 'manual-retry',
+    });
+    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    fixture.readiness.assertEntityReady.mockRejectedValue(
+      new PublisherSetupRequiredException(['channel-1'], 'policy_disabled'),
+    );
+
+    await fixture.service.processPublishPostJob({
+      postId: post.id,
+      chatId: post.chatId,
+      reason: 'manual-retry',
+      idempotencyKey: 'intent-blocked',
+      dispatchProfile: 'PUBLIK_V1',
+      requiredBotId: 'publisher-bot',
+    });
+
+    expect(fixture.maxRoutedPublicationService.publish).not.toHaveBeenCalled();
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          publishLockedAt: null,
+          dispatchBlockerCode: 'policy_disabled',
+          dispatchBlockedAt: expect.any(Date),
+        }),
+      }),
+    );
+    const blockerData = fixture.prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0]?.data;
+    expect(blockerData).not.toHaveProperty('publishIdempotencyKey');
+    expect(blockerData).not.toHaveProperty('requiredBotId');
+  });
+
+  it.each([
+    { status: 401, health: 'global_paused', blocker: 'publisher_auth_paused' },
+    { status: 403, health: 'setup_required', blocker: 'publisher_setup_required' },
+  ])(
+    'keeps a Publik intent pending after MAX $status without trying a main-bot fallback',
+    async ({ status, health, blocker }) => {
+      const fixture = createFixture();
+      const post = createPost({
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: 'publisher-bot',
+        dialogBotId: 'main-dialog-bot',
+        publicationPolicyRevision: 4,
+        publishQueuedAt: new Date(),
+        publishScheduledAt: new Date(),
+        publishIdempotencyKey: `intent-${status}`,
+        publishReason: 'manual-retry',
+      });
+      fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+      fixture.health.recordSendFailure.mockResolvedValue(health);
+      const maxError = Object.assign(new Error(`MAX ${status}`), {
+        response: { status },
+      });
+      fixture.maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
+        await request.onDispatchAttempt({ botId: 'publisher-bot', job: {} });
+        throw maxError;
+      });
+
+      await fixture.service.processPublishPostJob({
+        postId: post.id,
+        chatId: post.chatId,
+        reason: 'manual-retry',
+        idempotencyKey: `intent-${status}`,
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+      });
+
+      expect(fixture.health.recordSendFailure).toHaveBeenCalledWith(
+        'channel-1',
+        maxError,
+        expect.any(Date),
+      );
+      expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ dispatchBlockerCode: blocker }),
+        }),
+      );
+      const blockerData = fixture.prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0]?.data;
+      expect(blockerData).not.toHaveProperty('publishIdempotencyKey');
+      expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retries a Publik 429 on the exact queue without fallback or route clearing', async () => {
+    const fixture = createFixture();
+    const post = createPost({
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+      publishQueuedAt: new Date(),
+      publishScheduledAt: new Date(),
+      publishIdempotencyKey: 'intent-429',
+      publishReason: 'manual-retry',
+    });
+    fixture.prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    fixture.health.recordSendFailure.mockResolvedValue('retryable');
+    const rateLimitError = Object.assign(new Error('MAX rate limit'), {
+      response: { status: 429 },
+    });
+    fixture.maxRoutedPublicationService.publish.mockImplementation(async (request: any) => {
+      await request.onDispatchAttempt({ botId: 'publisher-bot', job: {} });
+      throw rateLimitError;
+    });
+
+    await expect(
+      fixture.service.processPublishPostJob({
+        postId: post.id,
+        chatId: post.chatId,
+        reason: 'manual-retry',
+        idempotencyKey: 'intent-429',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-bot',
+      }),
+    ).rejects.toBe(rateLimitError);
+
+    expect(fixture.maxRoutedPublicationService.publish).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    const failureData = fixture.prisma.vkParsingPost.updateMany.mock.calls.at(-1)?.[0]?.data;
+    expect(failureData).toMatchObject({ status: 'FAILED', publishLockedAt: null });
+    expect(failureData).not.toHaveProperty('publishIdempotencyKey');
+    expect(failureData).not.toHaveProperty('requiredBotId');
+  });
+
+  it('queues Publik rollback by origin and keeps legacy deletion on its published bot', async () => {
+    const fixture = createFixture();
+    const publisherPost = createPost({
+      id: 'publisher-post',
+      status: 'PUBLISHED',
+      autoPublishedAt: new Date('2026-08-26T10:00:00.000Z'),
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+      publishedBotId: 'publisher-bot',
+      publishedMessageId: 'publisher-message',
+    });
+    const legacyPost = createPost({
+      id: 'legacy-post',
+      status: 'PUBLISHED',
+      autoPublishedAt: new Date('2026-08-26T10:05:00.000Z'),
+      publishedBotId: 'main-origin-bot',
+      publishedMessageId: 'legacy-message',
+    });
+    fixture.prisma.vkParsingPost.findMany.mockResolvedValue([publisherPost, legacyPost]);
+
+    const result = await fixture.service.rollbackAutoPublished('channel-1', 'admin-1', {
+      since: '2026-08-26T09:00:00.000Z',
+      until: '2026-08-26T11:00:00.000Z',
+      deleteMessages: true,
+    });
+
+    expect(result).toMatchObject({ matched: 2, queued: 1, deleted: 1, failed: 0 });
+    expect(fixture.publisherQueue.add).toHaveBeenCalledWith(
+      'rollback-vk-post',
+      expect.objectContaining({
+        kind: 'rollback-delete',
+        postId: 'publisher-post',
+        requiredBotId: 'publisher-bot',
+      }),
+      expect.any(Object),
+    );
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'legacy-message',
+      expect.objectContaining({ botId: 'main-origin-bot' }),
+    );
+    expect(fixture.maxBotLinkService.resolveBotIdForModerationAction).not.toHaveBeenCalled();
+  });
+
+  it('reports a conflicting active publisher rollback owner without replacing it', async () => {
+    const fixture = createFixture();
+    const post = createPost({
+      id: 'publisher-post',
+      status: 'PUBLISHED',
+      autoPublishedAt: new Date('2026-08-26T10:00:00.000Z'),
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+      publishedBotId: 'publisher-bot',
+      publishedMessageId: 'publisher-message',
+    });
+    fixture.prisma.vkParsingPost.findMany.mockResolvedValue([post]);
+    fixture.publisherQueue.getJob.mockResolvedValue({
+      data: {
+        kind: 'rollback-delete',
+        postId: 'publisher-post',
+        chatId: 'channel-1',
+        messageId: 'another-message',
+        requiredBotId: 'publisher-bot',
+        idempotencyKey: 'another-key',
+      },
+      getState: jest.fn().mockResolvedValue('active'),
+    });
+
+    const result = await fixture.service.rollbackAutoPublished('channel-1', 'admin-1', {
+      since: '2026-08-26T09:00:00.000Z',
+      until: '2026-08-26T11:00:00.000Z',
+      deleteMessages: true,
+    });
+
+    expect(result).toMatchObject({ queued: 0, deleted: 0, failed: 1 });
+    expect(fixture.publisherQueue.add).not.toHaveBeenCalled();
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { rollbackLastError: 'publisher_queue_ownership_conflict' },
+      }),
+    );
+  });
+
+  it('keeps an armed publisher rollback durable when BullMQ add is temporarily unavailable', async () => {
+    const fixture = createFixture();
+    const post = createPost({
+      id: 'publisher-post',
+      status: 'PUBLISHED',
+      autoPublishedAt: new Date('2026-08-26T10:00:00.000Z'),
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+      dialogBotId: 'main-dialog-bot',
+      publicationPolicyRevision: 4,
+      publishedBotId: 'publisher-bot',
+      publishedMessageId: 'publisher-message',
+    });
+    fixture.prisma.vkParsingPost.findMany.mockResolvedValue([post]);
+    fixture.publisherQueue.add.mockRejectedValue(new Error('Redis unavailable'));
+
+    const result = await fixture.service.rollbackAutoPublished('channel-1', 'admin-1', {
+      since: '2026-08-26T09:00:00.000Z',
+      until: '2026-08-26T11:00:00.000Z',
+      deleteMessages: true,
+    });
+
+    expect(result).toMatchObject({ queued: 1, deleted: 0, failed: 0 });
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { rollbackLastError: 'publisher_queue_temporarily_unavailable' },
+      }),
+    );
+  });
+
+  it('executes a queued rollback only with its persisted Publik origin', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.deleteMessage.mockImplementation(
+      async (
+        _chatId: unknown,
+        _messageId: unknown,
+        options: { beforeImmediateDeleteMutation: () => Promise<void> },
+      ) => {
+        await options.beforeImmediateDeleteMutation();
+      },
+    );
+
+    await fixture.service.processPublisherRollbackJob({
+      postId: 'publisher-post',
+      chatId: 'channel-1',
+      messageId: 'publisher-message',
+      requiredBotId: 'publisher-bot',
+      idempotencyKey: 'rollback-key',
+    });
+
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'publisher-message',
+      expect.objectContaining({
+        immediate: true,
+        botId: 'publisher-bot',
+        idempotencyKey: 'vk-parsing:publisher-rollback:rollback-key',
+      }),
+    );
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rollbackQueuedAt: null,
+          rollbackLockedAt: null,
+          rollbackDeletedAt: expect.any(Date),
+          rollbackIdempotencyKey: null,
+        }),
+      }),
+    );
+    expect(fixture.health.recordSendSuccess).toHaveBeenCalledWith('channel-1', expect.any(Date));
+  });
+});

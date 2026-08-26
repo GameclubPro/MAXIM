@@ -1,4 +1,5 @@
 import type { Me } from '@maxim/contracts';
+import type { MiniappCapability, MiniappProfile } from '@maxim/contracts/publisher';
 import type { ApiTransport } from './transport';
 
 const botDialogUrlCache = new WeakMap<ApiTransport, string>();
@@ -37,6 +38,23 @@ function parseMe(value: unknown): Me {
     throw new Error('Invalid me response');
   }
 
+  const profile: MiniappProfile = value.profile === 'publisher' ? 'publisher' : 'moderation';
+  const allowedCapabilities = new Set<MiniappCapability>([
+    'moderation_workspace',
+    'publisher_workspace',
+    'publisher_entities',
+    'publisher_policy_write',
+    'chat_comments',
+  ]);
+  const capabilities = Array.isArray(value.capabilities)
+    ? value.capabilities.filter(
+        (item): item is MiniappCapability =>
+          typeof item === 'string' && allowedCapabilities.has(item as MiniappCapability),
+      )
+    : profile === 'publisher'
+      ? (['publisher_workspace', 'publisher_entities', 'chat_comments'] as MiniappCapability[])
+      : (['moderation_workspace', 'publisher_policy_write'] as MiniappCapability[]);
+
   return {
     userId: value.userId,
     username: typeof value.username === 'string' ? value.username : null,
@@ -46,6 +64,9 @@ function parseMe(value: unknown): Me {
     profileHandoffUrl: typeof value.profileHandoffUrl === 'string' ? value.profileHandoffUrl : null,
     botDialogUrl: parseBotDialogUrl(value.botDialogUrl),
     ...(value.canAccessSystem === true ? { canAccessSystem: true } : {}),
+    profile,
+    capabilities,
+    homeRoute: profile === 'publisher' ? '/publications' : '/',
   };
 }
 

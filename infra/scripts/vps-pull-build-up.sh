@@ -76,6 +76,7 @@ if [[ "$DEPLOY_MODE" == "full" ]] || [[ "$DEPLOY_MODE" == "manual" && "${#SERVIC
     "api-moderation-background"
     "api-media-analysis"
     "api-action"
+    "api-publisher"
     "miniapp-major-static"
     "admin-static"
   )
@@ -818,12 +819,34 @@ verify_inherited_api_component() {
   local topology_status
   local service
   local media_container_ids
+  local publisher_container_ids
   local inherited_api_services=("${API_SERVICES[@]}")
 
   source_sha="$(release_field api-shared sourceSha)"
   if ! git cat-file -e "${source_sha}^{commit}" 2>/dev/null; then
     echo "Cannot verify inherited API topology at source $source_sha." >&2
     return 1
+  fi
+  if maxim_topology_git_compose_has_service "$source_sha" "$MAXIM_PUBLISHER_SERVICE"; then
+    :
+  else
+    topology_status=$?
+    if [[ "$topology_status" -ne 1 ]]; then
+      return "$topology_status"
+    fi
+    maxim_topology_remove_service inherited_api_services "$MAXIM_PUBLISHER_SERVICE"
+    if ! publisher_container_ids="$(
+      docker ps -a -q \
+        --filter "label=com.docker.compose.project=$MAIN_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=$MAXIM_PUBLISHER_SERVICE"
+    )"; then
+      echo "Could not inspect inherited publisher container state." >&2
+      return 1
+    fi
+    if [[ -n "$publisher_container_ids" ]]; then
+      echo "Inherited API runtime contains publisher absent from its source topology." >&2
+      return 1
+    fi
   fi
   if maxim_topology_git_compose_has_service "$source_sha" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
     :
@@ -1230,6 +1253,7 @@ RELEASE_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_SHA:0:12}"
 TARGET_HAS_MEDIA_ANALYSIS=0
 TARGET_COMMERCIAL_OCR_VERSION=""
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_require_publisher_secret_files
   maxim_topology_prepare_commercial_ocr_target \
     "$TARGET_SHA" \
     COMPOSE_FILES \
@@ -1326,7 +1350,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   fi
 
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
-  recreate_service_wave "action" "api-action"
+  recreate_service_wave "action and publisher" "api-action" "api-publisher"
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service_wave "admin" "api-admin"
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES

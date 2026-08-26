@@ -12,6 +12,9 @@ import type { ManagedEntityAccessLossService } from '../max/managed-entity-acces
 import type { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
+import type { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
+import type { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import type { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import type { SystemModeSnapshot } from '../system/system-mode.service';
 import type { AdminReadBypassOptions } from './admin.service.support';
 import type { ChannelPostSignatureService } from './channel-post-signature.service';
@@ -37,6 +40,7 @@ export type ManagedBroadcastButtonContextResult = {
     customButtons: BroadcastLinkButton[];
     suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
     botId: string | null;
+    dialogBotId?: string | null;
   } | null;
 };
 
@@ -48,6 +52,9 @@ export type AdminManagedBroadcastRuntimeContext = {
   readonly managedEntityAccessLossService?: ManagedEntityAccessLossService;
   readonly maxRoutedPublicationService?: MaxRoutedPublicationService;
   readonly channelPostSignatureService?: ChannelPostSignatureService;
+  readonly publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService;
+  readonly publisherReadinessService?: PublisherReadinessService;
+  readonly publisherDispatchHealthService?: PublisherDispatchHealthService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
@@ -84,6 +91,9 @@ type AdminManagedBroadcastRuntimeContextTarget = {
   managedEntityAccessLossService?: ManagedEntityAccessLossService;
   maxRoutedPublicationService?: MaxRoutedPublicationService;
   channelPostSignatureService?: ChannelPostSignatureService;
+  publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService;
+  publisherReadinessService?: PublisherReadinessService;
+  publisherDispatchHealthService?: PublisherDispatchHealthService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
   resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
@@ -138,6 +148,15 @@ export function createAdminManagedBroadcastRuntimeContext(
     },
     get channelPostSignatureService(): ChannelPostSignatureService | undefined {
       return typedTarget.channelPostSignatureService;
+    },
+    get publisherRuntimeBoundaryService(): PublisherRuntimeBoundaryService | undefined {
+      return typedTarget.publisherRuntimeBoundaryService;
+    },
+    get publisherReadinessService(): PublisherReadinessService | undefined {
+      return typedTarget.publisherReadinessService;
+    },
+    get publisherDispatchHealthService(): PublisherDispatchHealthService | undefined {
+      return typedTarget.publisherDispatchHealthService;
     },
     get managedBroadcastDegradePauseLogAtMs(): number {
       return typedTarget.managedBroadcastDegradePauseLogAtMs;

@@ -22,6 +22,7 @@ export class VkParsingPublishProcessor extends WorkerHost {
       chatId: job.data.chatId,
       reason: job.data.reason,
       idempotencyKey: job.data.idempotencyKey,
+      dispatchProfile: 'LEGACY_ROUTED',
       attemptsMade: job.attemptsMade,
       maxAttempts: typeof job.opts.attempts === 'number' ? job.opts.attempts : undefined,
     });

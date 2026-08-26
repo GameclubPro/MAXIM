@@ -15,6 +15,8 @@ import type {
 } from './max-client.service';
 import { MaxClientService } from './max-client.service';
 import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
+import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
+import { isPublisherBotId } from '../publisher/publisher-bot-descriptor';
 
 export type MaxRoutedPublicationRoutePurpose = 'send_message' | 'channel_poll';
 
@@ -34,6 +36,8 @@ export type MaxRoutedPublicationRequest = {
   sourceTag: string;
   preferredBotId?: string;
   requiredBotId?: string;
+  /** Exact publisher route already validated against PublisherEntityBinding by the caller. */
+  publisherExactBotId?: string;
   sendRouteHalfOpenProbe?: 'publication_exact_verification';
   timeoutMs?: number;
   ignoreFailureMetricStatuses?: readonly number[];
@@ -77,7 +81,17 @@ export class MaxRoutedPublicationService {
     }
 
     const routePurpose = request.routePurpose ?? 'send_message';
-    const requiredBotId = request.requiredBotId?.trim() ?? '';
+    const publisherExactBotId = this.resolvePublisherExactBotId(request.publisherExactBotId);
+    const requestedRequiredBotId = request.requiredBotId?.trim() ?? '';
+    if (
+      publisherExactBotId &&
+      requestedRequiredBotId &&
+      publisherExactBotId !== requestedRequiredBotId
+    ) {
+      throw new Error('Publisher exact route conflicts with requiredBotId');
+    }
+    const requiredBotId = publisherExactBotId || requestedRequiredBotId;
+    const actionRoutePurpose = publisherExactBotId ? 'publisher_exact_send' : routePurpose;
     const baseJob: MaxActionJob = {
       actionType: 'SEND_MESSAGE',
       chatId: entityId,
@@ -96,7 +110,7 @@ export class MaxRoutedPublicationService {
       ...(requiredBotId
         ? {
             routing: {
-              purpose: routePurpose,
+              purpose: actionRoutePurpose,
               requiredBotId,
             },
           }
@@ -126,7 +140,17 @@ export class MaxRoutedPublicationService {
       };
     }
 
-    const route = await this.resolveFreshRoute(entityId, routePurpose, request);
+    const route = publisherExactBotId
+      ? {
+          purpose: 'send_message' as const,
+          chatId: entityId,
+          primaryBotId: publisherExactBotId,
+          botId: publisherExactBotId,
+          candidateBotIds: [publisherExactBotId],
+          reason: 'publisher_exact_binding',
+          routingVersion: null,
+        }
+      : await this.resolveFreshRoute(entityId, routePurpose, request);
     const candidateBotIds = this.resolveRequestedCandidateBotIds(
       this.normalizeBotIds(route.candidateBotIds),
       request,
@@ -142,7 +166,7 @@ export class MaxRoutedPublicationService {
       ...(candidateBotIds[0] ? { botId: candidateBotIds[0] } : {}),
       candidateBotIds,
       routing: {
-        purpose: routePurpose,
+        purpose: actionRoutePurpose,
         primaryBotId: route.primaryBotId,
         reason: route.reason,
         routingVersion: route.routingVersion ?? null,
@@ -264,6 +288,22 @@ export class MaxRoutedPublicationService {
       return candidateBotIds;
     }
     return [preferred, ...candidateBotIds.filter((botId) => botId !== preferred)];
+  }
+
+  private resolvePublisherExactBotId(value: unknown): string {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return '';
+    }
+    const configuredPublisherBotId = process.env.MAX_PUBLISHER_BOT_ID?.trim();
+    if (
+      !roleRunsPublisher(getAppRole()) ||
+      process.env.APP_SERVICE_NAME !== 'api-publisher' ||
+      !isPublisherBotId(normalized, configuredPublisherBotId)
+    ) {
+      throw new Error('Publisher exact route is only available to api-publisher');
+    }
+    return normalized;
   }
 
   private resolveRequestedCandidateBotIds(

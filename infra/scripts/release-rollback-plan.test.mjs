@@ -43,7 +43,7 @@ function completeManifest() {
   });
 }
 
-test('default plan selects every active component and all twelve API roles', () => {
+test('default plan selects every active component and all thirteen API roles', () => {
   const plan = buildRollbackPlan({
     manifest: completeManifest(),
     now: new Date('2026-07-19T12:34:56.789Z'),

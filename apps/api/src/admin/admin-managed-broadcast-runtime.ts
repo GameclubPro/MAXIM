@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-
 import {
   addDomainRequestSchema,
   chatParticipantImmunitySchema,
@@ -133,6 +132,7 @@ import {
   Prisma,
   PrismaClient,
   PublicationLifecycle as PrismaPublicationLifecycle,
+  PublicationDispatchProfile as PrismaPublicationDispatchProfile,
   PublicationOccurrenceStatus as PrismaPublicationOccurrenceStatus,
   PublicationScheduleMode as PrismaPublicationScheduleMode,
   PublicationScheduleStatus as PrismaPublicationScheduleStatus,
@@ -143,7 +143,14 @@ import {
   type ManagedBroadcastOccurrence as PersistedManagedBroadcastOccurrence,
   type ChatRules as PersistedChatRules,
 } from '../prisma/prisma-client';
+import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
+import { PUBLISHER_SETUP_REQUIRED_CODE } from '../publisher/publisher-route';
 import { ConfigService } from '@nestjs/config';
+import {
+  PublisherDeliveryDeferredError,
+  PublisherManagedBroadcastDispatch,
+} from './publisher-managed-broadcast-dispatch';
+import { AdminManagedBroadcastMessageRuntime } from './admin-managed-broadcast-message-runtime';
 import {
   BadRequestException,
   ForbiddenException,
@@ -193,7 +200,6 @@ import {
   MAX_ACTION_NO_EXECUTABLE_ROUTE_ERROR_CODE,
 } from '../max/max-action-dispatch-error';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import {
   escapeHtml,
   escapeHtmlAttribute,
@@ -324,7 +330,6 @@ import {
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
-import type { ChannelPostSignatureService } from './channel-post-signature.service';
 import type {
   ManagedBroadcastButtonContextOptions,
   ManagedBroadcastButtonContextResult,
@@ -539,8 +544,6 @@ import {
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
   CHANNEL_DIALOG_ACTION_PUBLISH,
-  CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
-  CHAT_DIALOG_ACTION_AUTO_ATTACH,
   PRIVATE_CONTROL_CALLBACK_PREFIX,
   CHANNEL_DIALOG_START_PARAM_PREFIX,
   DEFAULT_CHAT_SETTINGS,
@@ -681,10 +684,21 @@ const resolveEarlierDate = (current: Date | null, candidate: Date): Date =>
 export class AdminManagedBroadcastRuntime {
   private readonly mediaRuntime: AdminManagedBroadcastMediaRuntime;
   private readonly publicationVerification: AdminManagedBroadcastPublicationVerification;
+  private readonly publisherDispatch: PublisherManagedBroadcastDispatch;
+  private readonly messageRuntime: AdminManagedBroadcastMessageRuntime;
+  private readonly publicationExecutorProfile: PrismaPublicationDispatchProfile;
 
-  constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {
+  constructor(
+    private readonly context: AdminManagedBroadcastRuntimeContext,
+    publicationExecutorProfile: PrismaPublicationDispatchProfile = roleRunsPublisher(getAppRole())
+      ? PrismaPublicationDispatchProfile.PUBLIK_V1
+      : PrismaPublicationDispatchProfile.LEGACY_ROUTED,
+  ) {
     this.mediaRuntime = new AdminManagedBroadcastMediaRuntime(context);
     this.publicationVerification = new AdminManagedBroadcastPublicationVerification(context);
+    this.publisherDispatch = new PublisherManagedBroadcastDispatch(context, context.logger);
+    this.messageRuntime = new AdminManagedBroadcastMessageRuntime(context, context.logger);
+    this.publicationExecutorProfile = publicationExecutorProfile;
   }
 
   private get prisma(): PrismaService {
@@ -709,10 +723,6 @@ export class AdminManagedBroadcastRuntime {
 
   private get maxRoutedPublicationService(): MaxRoutedPublicationService | undefined {
     return this.context.maxRoutedPublicationService;
-  }
-
-  private get channelPostSignatureService(): ChannelPostSignatureService | undefined {
-    return this.context.channelPostSignatureService;
   }
 
   private get managedBroadcastDegradePauseLogAtMs(): number {
@@ -1000,17 +1010,20 @@ export class AdminManagedBroadcastRuntime {
     const verificationBudget = sharedVerificationBudget ?? {
       remaining: PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE,
     };
-    await processPriorityHalfOpenPublicationVerifications({
-      prisma: this.prisma,
-      logger: this.logger,
-      verification: this.publicationVerification,
-      maxApiOptions: this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions('deadline'),
-      budget: verificationBudget,
-    });
+    if (this.publicationExecutorProfile === PrismaPublicationDispatchProfile.LEGACY_ROUTED) {
+      await processPriorityHalfOpenPublicationVerifications({
+        prisma: this.prisma,
+        logger: this.logger,
+        verification: this.publicationVerification,
+        maxApiOptions: this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions('deadline'),
+        budget: verificationBudget,
+      });
+    }
     const { dueRows, staleLockBefore } = await selectPublicationManagedBroadcastDueBatch(
       this.prisma,
       [PrismaPublicationScheduleMode.NOW],
       MANAGED_BROADCAST_DUE_BATCH_SIZE,
+      this.publicationExecutorProfile,
     );
 
     for (const row of dueRows) {
@@ -1045,6 +1058,7 @@ export class AdminManagedBroadcastRuntime {
         PrismaPublicationScheduleMode.RECURRENCE,
       ],
       limit,
+      this.publicationExecutorProfile,
     );
 
     for (const row of dueRows) {
@@ -2136,7 +2150,7 @@ export class AdminManagedBroadcastRuntime {
           undefined,
           options,
         );
-        const message = await this.buildManagedBroadcastMessage(
+        const message = await this.messageRuntime.buildMessage(
           sourceChatId,
           entityType,
           request.payload,
@@ -2733,7 +2747,7 @@ export class AdminManagedBroadcastRuntime {
       for (let cycleIndex = 0; cycleIndex < cycleCount; cycleIndex += 1) {
         const occurrenceDelayMs = delayMs + cycleIndex * cycleEveryMs;
         try {
-          const message = await this.buildManagedBroadcastMessage(
+          const message = await this.messageRuntime.buildMessage(
             chatId,
             entityType,
             request.payload,
@@ -2779,7 +2793,7 @@ export class AdminManagedBroadcastRuntime {
                   },
             );
           }
-          await this.recordManagedBroadcastCommentDialogReference({
+          await this.messageRuntime.recordDialogReference({
             chatId,
             actorUserId: user.userId,
             messageId: sentMessage?.messageId ?? null,
@@ -3094,6 +3108,7 @@ export class AdminManagedBroadcastRuntime {
         where: {
           id: broadcastId,
           status: { in: allowedStatuses },
+          dispatchProfile: this.publicationExecutorProfile,
           nextSendAt: { lte: claimedAt },
           OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
         },
@@ -3129,7 +3144,14 @@ export class AdminManagedBroadcastRuntime {
     const row = await this.prisma.managedBroadcast.findUnique({
       where: { id: broadcastId },
     });
-    if (!row || !row.nextSendAt || !allowedStatuses.includes(row.status)) {
+    const rowDispatchProfile =
+      row?.dispatchProfile ?? PrismaPublicationDispatchProfile.LEGACY_ROUTED;
+    if (
+      !row ||
+      rowDispatchProfile !== this.publicationExecutorProfile ||
+      !row.nextSendAt ||
+      !allowedStatuses.includes(row.status)
+    ) {
       await this.prisma.managedBroadcast.updateMany({
         where: { id: broadcastId, lockToken: activeLease.lockToken },
         data: { lockedAt: null, lockToken: null },
@@ -3147,6 +3169,14 @@ export class AdminManagedBroadcastRuntime {
     }
 
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
+    const isPublikExecution = rowDispatchProfile === PrismaPublicationDispatchProfile.PUBLIK_V1;
+    const requiredPublisherBotId = isPublikExecution ? row.requiredBotId?.trim() : null;
+    if (isPublikExecution && !requiredPublisherBotId) {
+      throw new ServiceUnavailableException({
+        code: PUBLISHER_SETUP_REQUIRED_CODE,
+        message: 'Маршрут Публика повреждён: не сохранён обязательный бот.',
+      });
+    }
     const maxApiOptions = this.mediaRuntime.resolveManagedBroadcastProcessingMaxApiOptions(reason);
     const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     try {
@@ -3190,6 +3220,25 @@ export class AdminManagedBroadcastRuntime {
           firstSendError: null,
           nextSendAt: row.nextSendAt,
         };
+      }
+      if (isPublikExecution) {
+        const boundary = await this.publisherDispatch.ensureRuntimeBoundary(
+          row,
+          currentOccurrence,
+          activeLease,
+        );
+        if (!boundary.ready) {
+          return {
+            status: PrismaManagedBroadcastStatus.ACTIVE,
+            currentOccurrence,
+            sentChatIds: [],
+            failedChatIds: [],
+            pendingChatIds: targetChatIds,
+            canRetry: false,
+            firstSendError: null,
+            nextSendAt: boundary.retryAt,
+          };
+        }
       }
       try {
         await assertManagedBroadcastTargetAdminAccess(
@@ -3267,7 +3316,11 @@ export class AdminManagedBroadcastRuntime {
         idempotencyKey: null,
         idempotencyHash: null,
       };
-      if (!this.maxRoutedPublicationService && process.env.NODE_ENV === 'production') {
+      if (
+        !isPublikExecution &&
+        !this.maxRoutedPublicationService &&
+        process.env.NODE_ENV === 'production'
+      ) {
         throw new ServiceUnavailableException(
           'Routed MAX publication service is required for production managed broadcasts',
         );
@@ -3286,7 +3339,7 @@ export class AdminManagedBroadcastRuntime {
         }
 
         try {
-          await this.recordManagedBroadcastCommentDialogReference({
+          await this.messageRuntime.recordDialogReference({
             chatId: delivery.targetChatId,
             actorUserId: row.actorUserId,
             messageId: sentMessage.messageId,
@@ -3418,12 +3471,15 @@ export class AdminManagedBroadcastRuntime {
         targetChatId: string,
         botId: string | undefined,
         onAttemptStarted: (startedAt: Date) => void,
+        dialogBotId: string | undefined = botId,
+        publisherDialog?: { value: unknown; required: boolean },
+        beforeDispatch?: () => Promise<void>,
       ): Promise<{
         sentMessage: MaxPublishedMessage;
         commentDialogReference: ManagedBroadcastCommentDialogReference | null;
         botId: string | null;
       } | null> => {
-        let message: Awaited<ReturnType<typeof this.buildManagedBroadcastMessage>>;
+        let message: Awaited<ReturnType<AdminManagedBroadcastMessageRuntime['buildMessage']>>;
         try {
           await this.heartbeatManagedBroadcastProcessingLock(
             row.id,
@@ -3431,19 +3487,22 @@ export class AdminManagedBroadcastRuntime {
             activeLease,
           );
           const media = await resolveMedia(botId);
-          message = await this.buildManagedBroadcastMessage(
+          message = await this.messageRuntime.buildMessage(
             targetChatId,
             row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
             request.payload,
             request.normalizedSourceText,
             media,
             botId,
+            dialogBotId,
+            publisherDialog,
           );
           if (
             !(await this.ensureManagedBroadcastPublicationExecutionActive(row, currentOccurrence))
           ) {
             return null;
           }
+          await beforeDispatch?.();
         } catch (error: unknown) {
           throw markManagedBroadcastSendPhase(error, false);
         }
@@ -3536,7 +3595,7 @@ export class AdminManagedBroadcastRuntime {
                   );
                 }
                 const media = await resolveMedia(botId);
-                const message = await this.buildManagedBroadcastMessage(
+                const message = await this.messageRuntime.buildMessage(
                   delivery.targetChatId,
                   row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
                   request.payload,
@@ -3659,6 +3718,18 @@ export class AdminManagedBroadcastRuntime {
           };
         }
 
+        if (isPublikExecution) {
+          const deferredUntil = await this.publisherDispatch.deferUnreadyBeforeClaim(
+            row,
+            delivery,
+            requiredPublisherBotId!,
+          );
+          if (deferredUntil) {
+            pendingNotBefore = resolveEarlierDate(pendingNotBefore, deferredUntil);
+            continue;
+          }
+        }
+
         await this.heartbeatManagedBroadcastProcessingLock(row.id, currentOccurrence, activeLease);
         const deliveryAttemptCount = delivery.attemptCount + 1;
         const deliveryLockToken = this.createManagedBroadcastLockToken();
@@ -3666,6 +3737,8 @@ export class AdminManagedBroadcastRuntime {
           where: {
             id: delivery.id,
             status: PrismaManagedBroadcastDeliveryStatus.PENDING,
+            dispatchProfile: rowDispatchProfile,
+            requiredBotId: row.requiredBotId,
           },
           data: {
             status: PrismaManagedBroadcastDeliveryStatus.SENDING,
@@ -3689,31 +3762,73 @@ export class AdminManagedBroadcastRuntime {
             currentOccurrence,
             activeLease,
           );
-          const deliveryAttempt = this.maxRoutedPublicationService
-            ? await sendDeliveryRouted(
-                delivery,
-                deliveryAttemptCount,
-                deliveryLockToken,
-                (botId) => {
-                  resolvedBotId = botId;
-                },
-              )
-            : await (async () => {
-                resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
-                await this.prisma.managedBroadcastDelivery.updateMany({
+          const deliveryAttempt = isPublikExecution
+            ? await (async () => {
+                const exactBotId = requiredPublisherBotId!;
+                const dialogBotId = await this.publisherDispatch.resolveDialogBotId(
+                  delivery,
+                  deliveryLockToken,
+                );
+                resolvedBotId = exactBotId;
+                const persistedExactRoute = await this.prisma.managedBroadcastDelivery.updateMany({
                   where: {
                     id: delivery.id,
                     status: PrismaManagedBroadcastDeliveryStatus.SENDING,
                     lockToken: deliveryLockToken,
+                    dispatchProfile: PrismaPublicationDispatchProfile.PUBLIK_V1,
+                    requiredBotId: exactBotId,
                   },
-                  data: {
-                    botId: resolvedBotId ?? null,
+                  data: { botId: exactBotId, dialogBotId },
+                });
+                if (persistedExactRoute.count !== 1) {
+                  throw new ServiceUnavailableException(
+                    'Publisher delivery lock or exact route was lost before MAX dispatch',
+                  );
+                }
+                await this.publisherDispatch.assertDeliveryReady(
+                  delivery.targetChatId,
+                  requiredPublisherBotId!,
+                );
+                return sendDeliveryWithBot(
+                  delivery.targetChatId,
+                  exactBotId,
+                  (startedAt) => {
+                    directSendAttemptStartedAt = startedAt;
                   },
-                });
-                return sendDeliveryWithBot(delivery.targetChatId, resolvedBotId, (startedAt) => {
-                  directSendAttemptStartedAt = startedAt;
-                });
-              })();
+                  dialogBotId,
+                  { value: delivery.publisherDialogContext, required: true },
+                  () =>
+                    this.publisherDispatch.assertDeliveryReady(
+                      delivery.targetChatId,
+                      requiredPublisherBotId!,
+                    ),
+                );
+              })()
+            : this.maxRoutedPublicationService
+              ? await sendDeliveryRouted(
+                  delivery,
+                  deliveryAttemptCount,
+                  deliveryLockToken,
+                  (botId) => {
+                    resolvedBotId = botId;
+                  },
+                )
+              : await (async () => {
+                  resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
+                  await this.prisma.managedBroadcastDelivery.updateMany({
+                    where: {
+                      id: delivery.id,
+                      status: PrismaManagedBroadcastDeliveryStatus.SENDING,
+                      lockToken: deliveryLockToken,
+                    },
+                    data: {
+                      botId: resolvedBotId ?? null,
+                    },
+                  });
+                  return sendDeliveryWithBot(delivery.targetChatId, resolvedBotId, (startedAt) => {
+                    directSendAttemptStartedAt = startedAt;
+                  });
+                })();
           if (!deliveryAttempt) {
             await cancelPublicationDeliveryBeforeStoppedDispatch(
               this.prisma,
@@ -3734,6 +3849,12 @@ export class AdminManagedBroadcastRuntime {
           sentMessage = deliveryAttempt.sentMessage;
           commentDialogReference = deliveryAttempt.commentDialogReference;
           resolvedBotId = deliveryAttempt.botId ?? undefined;
+          if (isPublikExecution) {
+            await this.publisherDispatch.recordSuccess(
+              delivery.targetChatId,
+              directSendAttemptStartedAt ?? new Date(),
+            );
+          }
         } catch (error: unknown) {
           if (error instanceof ManagedBroadcastPublicationExecutionStopped) {
             await cancelPublicationDeliveryBeforeStoppedDispatch(
@@ -3751,6 +3872,35 @@ export class AdminManagedBroadcastRuntime {
               firstSendError,
               nextSendAt: null,
             };
+          }
+          if (isPublikExecution) {
+            const classification =
+              error instanceof PublisherDeliveryDeferredError
+                ? null
+                : await this.publisherDispatch.recordFailure(
+                    delivery.targetChatId,
+                    error,
+                    directSendAttemptStartedAt ?? new Date(),
+                  );
+            if (
+              error instanceof PublisherDeliveryDeferredError ||
+              classification === 'global_paused' ||
+              classification === 'setup_required'
+            ) {
+              const deferredUntil = await this.publisherDispatch.deferClaimed({
+                row,
+                delivery,
+                deliveryLockToken,
+                blockerCode:
+                  error instanceof PublisherDeliveryDeferredError
+                    ? error.blockerCode
+                    : classification === 'global_paused'
+                      ? 'PUBLISHER_AUTH_PAUSED'
+                      : 'PUBLISHER_SETUP_REQUIRED',
+              });
+              pendingNotBefore = resolveEarlierDate(pendingNotBefore, deferredUntil);
+              continue;
+            }
           }
           const routeQuarantineDeferredUntil = await deferPublicationDeliveryAfterRouteQuarantine({
             context: this.context,
@@ -3832,7 +3982,7 @@ export class AdminManagedBroadcastRuntime {
             continue;
           }
           const accessLossResult =
-            this.maxRoutedPublicationService || !directSendAttemptStartedAt
+            isPublikExecution || this.maxRoutedPublicationService || !directSendAttemptStartedAt
               ? null
               : await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
                   chatId: delivery.targetChatId,
@@ -4243,148 +4393,6 @@ export class AdminManagedBroadcastRuntime {
           }
         : {}),
     });
-  }
-
-  private async buildManagedBroadcastMessage(
-    chatId: string,
-    entityType: ManagedEntityType,
-    payload: SendBroadcastRequest,
-    normalizedSourceText: string,
-    media: ManagedBroadcastResolvedMedia,
-    botId?: string,
-  ): Promise<{
-    messageText: string;
-    messageOptions:
-      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
-      | undefined;
-    commentDialogReference: ManagedBroadcastCommentDialogReference | null;
-  }> {
-    const { buttons: broadcastButtons, commentDialogReference } =
-      await this.resolveBroadcastButtonContext(
-        chatId,
-        entityType,
-        {
-          customButtons: payload.buttons,
-          includeCustomButton: payload.buttonEnabled,
-          customButtonText: payload.buttonText.trim(),
-          customButtonUrl: payload.buttonUrl.trim(),
-        },
-        botId,
-      );
-    const hasMedia = Boolean(media.imagePayload) || Boolean(media.attachments?.length);
-    const hasMeaningfulText = normalizedSourceText.trim().length > 0;
-    const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
-    const baseMessageText = shouldUseRichText
-      ? renderSupportedMarkdownAsHtml(normalizedSourceText, { blockMode: 'raw' })
-      : hasMeaningfulText
-        ? normalizedSourceText
-        : hasMedia
-          ? ' '
-          : '';
-    const baseTextFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText
-      ? 'html'
-      : undefined;
-    const preparedText = this.channelPostSignatureService
-      ? await this.channelPostSignatureService.preparePostText(
-          chatId,
-          { text: baseMessageText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
-          {
-            entityType,
-            trafficClass: 'background',
-            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-          },
-        )
-      : { text: baseMessageText, textFormat: baseTextFormat, signatureApplied: false };
-    const messageText = preparedText.text;
-    const textFormat = preparedText.textFormat;
-    const messageOptions =
-      broadcastButtons.length > 0 || hasMedia || textFormat
-        ? {
-            ...(textFormat ? { textFormat } : {}),
-            ...(broadcastButtons.length > 0 ? { buttons: broadcastButtons } : {}),
-            ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
-            ...(media.attachments?.length ? { attachments: media.attachments } : {}),
-          }
-        : undefined;
-
-    return {
-      messageText,
-      messageOptions,
-      commentDialogReference,
-    };
-  }
-
-  private async recordManagedBroadcastCommentDialogReference(params: {
-    chatId: string;
-    actorUserId: string;
-    messageId: string | null;
-    publishedUrl?: string | null;
-    text?: string | null;
-    reference: ManagedBroadcastCommentDialogReference | null;
-    source: string;
-    broadcastId?: string;
-    occurrenceIndex?: number;
-  }): Promise<void> {
-    const { chatId, actorUserId, messageId, reference } = params;
-    if (!messageId || (!reference?.includeCommentsButton && !reference?.includeSuggestButton)) {
-      return;
-    }
-    const postPreviewText =
-      typeof params.text === 'string' && params.text.trim().length > 0 ? params.text : null;
-    const publishedUrl =
-      typeof params.publishedUrl === 'string' && params.publishedUrl.trim().length > 0
-        ? params.publishedUrl.trim()
-        : null;
-
-    const commonPayload = {
-      messageId,
-      threadId: reference.threadId,
-      source: 'managed_broadcast',
-      managedBroadcastSource: params.source,
-      ...(postPreviewText ? { text: postPreviewText } : {}),
-      ...(publishedUrl ? { publishedUrl } : {}),
-      ...(params.broadcastId ? { broadcastId: params.broadcastId } : {}),
-      ...(params.occurrenceIndex ? { occurrenceIndex: params.occurrenceIndex } : {}),
-      ...(reference.botId ? { botId: reference.botId } : {}),
-      ...(reference.customButtons.length > 0 ? { customButtons: reference.customButtons } : {}),
-    };
-    const payload =
-      reference.entityType === 'channel'
-        ? {
-            ...commonPayload,
-            includeCommentsButton: reference.includeCommentsButton,
-            includeSuggestButton: reference.includeSuggestButton,
-            suggestionEntryMode: reference.suggestionEntryMode,
-            ...(reference.suggestButtonText
-              ? { suggestButtonText: reference.suggestButtonText }
-              : {}),
-          }
-        : commonPayload;
-
-    try {
-      await this.prisma.auditLog.create({
-        data: {
-          chatId,
-          actorUserId,
-          action:
-            reference.entityType === 'channel'
-              ? CHANNEL_DIALOG_ACTION_AUTO_ATTACH
-              : CHAT_DIALOG_ACTION_AUTO_ATTACH,
-          payload,
-        },
-      });
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          entityType: reference.entityType,
-          messageId,
-          threadId: reference.threadId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to record managed broadcast comments button reference',
-      );
-    }
   }
 
   private async createManagedBroadcastOccurrencesWithOverwrite(
@@ -5698,7 +5706,7 @@ export class AdminManagedBroadcastRuntime {
       }
       const recoveredContext = readManagedBroadcastLedgerCommentDialogContext(ledger.metadata);
       if (recoveredContext.found) {
-        await this.recordManagedBroadcastCommentDialogReference({
+        await this.messageRuntime.recordDialogReference({
           chatId: delivery.targetChatId,
           actorUserId: broadcast.actorUserId,
           messageId: ledger.remoteMessageId,
@@ -5880,7 +5888,8 @@ export class AdminManagedBroadcastRuntime {
       : [];
     const hasImmediatelyReadyPendingDelivery = pendingChats.some(
       (delivery: any) =>
-        delivery.lastErrorCode !== PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+        delivery.lastErrorCode !== PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE &&
+        !delivery.dispatchBlockerCode,
     );
     const canRetry = failedChats.length > 0;
     const scheduleMode = normalizeBroadcastScheduleMode(row.scheduleMode);

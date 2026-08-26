@@ -194,7 +194,7 @@ test('normal deploy resumes only after every API role has the target image', () 
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
   execFileSync('bash', ['-n', resolve(root, 'infra/scripts/vps-pull-build-up.sh')]);
   const quiesce = callIndex(deploy, 'maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES');
-  const actionRecreate = callIndex(deploy, 'recreate_service_wave "action"', quiesce);
+  const actionRecreate = callIndex(deploy, 'recreate_service_wave "action and publisher"', quiesce);
   const moderationRecreate = callIndex(
     deploy,
     'recreate_service_wave "moderation"',

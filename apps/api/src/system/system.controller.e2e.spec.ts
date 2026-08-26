@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { InitDataService } from '../auth/init-data.service';
+import { PublisherInitDataKeyService } from '../auth/publisher-init-data-key.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { QueueMetricsService } from './queue-metrics.service';
 import { MaxApiMetricsService } from './max-api-metrics.service';
@@ -31,6 +32,7 @@ function createSignedInitData(botToken: string, userId: string, authDateSec: num
 
 describe('SystemController auth e2e', () => {
   let app: NestFastifyApplication;
+  let appCreated = false;
   const botToken = 'test-bot-token';
   const getSourceSnapshot = jest.fn();
   const getRoutePreview = jest.fn();
@@ -38,6 +40,7 @@ describe('SystemController auth e2e', () => {
   const getMembershipAudit = jest.fn();
 
   beforeEach(async () => {
+    appCreated = false;
     getSourceSnapshot.mockReset().mockResolvedValue({
       generatedAt: '2026-04-01T18:10:00.000Z',
       windowSec: 120,
@@ -72,6 +75,10 @@ describe('SystemController auth e2e', () => {
       providers: [
         InitDataGuard,
         InitDataService,
+        {
+          provide: PublisherInitDataKeyService,
+          useValue: { getVerificationKeys: jest.fn(() => null) },
+        },
         {
           provide: ConfigService,
           useValue: {
@@ -125,12 +132,15 @@ describe('SystemController auth e2e', () => {
     }).compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+    appCreated = true;
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
   });
 
   afterEach(async () => {
-    await app.close();
+    if (appCreated) {
+      await app.close();
+    }
   });
 
   it('rejects an unauthenticated request', async () => {

@@ -65,6 +65,9 @@ test('getMe parses the current admin profile from /me', async () => {
     profileHandoffUrl: 'https://max.ru/777000_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
     botDialogUrl: 'https://max.ru/777000_bot',
     canAccessSystem: true,
+    profile: 'moderation',
+    capabilities: ['moderation_workspace', 'publisher_policy_write'],
+    homeRoute: '/',
   });
   assert.deepEqual(calls, ['/me']);
   assert.equal(getCachedBotDialogUrl(api), 'https://max.ru/777000_bot');

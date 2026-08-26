@@ -144,6 +144,20 @@ test('settings auth and access errors have dedicated visual scenarios', () => {
   }
 });
 
+test('publisher profile has dedicated publication and chat comment scenarios', () => {
+  const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
+
+  assert.deepEqual(scenarios.get('publications-publisher')?.searchParams, {
+    profile: 'publisher',
+  });
+  assert.deepEqual(scenarios.get('chat-dialog-comments-publisher')?.searchParams, {
+    token: 'preview-comments-token-0001',
+    profile: 'publisher',
+  });
+  assert.ok(scenarios.get('publications-publisher')?.features.includes('publisher'));
+  assert.ok(scenarios.get('chat-dialog-comments-publisher')?.features.includes('publisher'));
+});
+
 test('smoke preset is short, local-device focused, and includes navigation order', () => {
   const smoke = MINIAPP_VISUAL_PRESETS.smoke;
   assert.ok(smoke.scenarioNames.length >= 8 && smoke.scenarioNames.length <= 12);

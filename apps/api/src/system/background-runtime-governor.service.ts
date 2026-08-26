@@ -526,50 +526,6 @@ export class BackgroundRuntimeGovernorService {
       return systemPressureDecision;
     }
 
-    if (
-      !ignoreMaxApiTraffic &&
-      snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.pauseThreshold
-    ) {
-      return {
-        action: options.allowMaxApiCapacitySlowPath === true ? 'slow' : 'pause',
-        retryAfterMs:
-          options.allowMaxApiCapacitySlowPath === true
-            ? this.slowRetryAfterMs
-            : this.pauseRetryAfterMs,
-        reason: `MAX API stack load ${(snapshot.stackLoad.smoothedLoad * 100).toFixed(1)}%`,
-      };
-    }
-
-    if (
-      !ignoreMaxApiTraffic &&
-      snapshot.stackLoad.smoothedLoad >= snapshot.stackLoad.slowThreshold
-    ) {
-      return {
-        action: 'slow',
-        retryAfterMs: this.slowRetryAfterMs,
-        reason: `MAX API stack load ${(snapshot.stackLoad.smoothedLoad * 100).toFixed(1)}%`,
-      };
-    }
-
-    if (!ignoreMaxApiTraffic && snapshot.botLoad.maxSmoothedLoad >= this.botLoadPauseThreshold) {
-      return {
-        action: options.allowMaxApiCapacitySlowPath === true ? 'slow' : 'pause',
-        retryAfterMs:
-          options.allowMaxApiCapacitySlowPath === true
-            ? this.slowRetryAfterMs
-            : this.pauseRetryAfterMs,
-        reason: `MAX API bot load ${(snapshot.botLoad.maxSmoothedLoad * 100).toFixed(1)}%`,
-      };
-    }
-
-    if (!ignoreMaxApiTraffic && snapshot.botLoad.maxSmoothedLoad >= this.botLoadSlowThreshold) {
-      return {
-        action: 'slow',
-        retryAfterMs: this.slowRetryAfterMs,
-        reason: `MAX API bot load ${(snapshot.botLoad.maxSmoothedLoad * 100).toFixed(1)}%`,
-      };
-    }
-
     if (!ignoreMaxApiTraffic && snapshot.backgroundShare >= this.backgroundShareThreshold) {
       return {
         action: 'slow',

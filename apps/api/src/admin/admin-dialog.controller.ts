@@ -11,7 +11,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
+import { CurrentMiniappProfile, MiniappProfiles } from '../auth/miniapp-profile';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
+import { MiniappProfileForbiddenException } from '../auth/miniapp-profile.error';
 import { ChannelDialogService } from './channel-dialog.service';
 
 @Controller('v1')
@@ -98,65 +101,89 @@ export class AdminDialogController {
   }
 
   @Get('chats/:chatId/dialog/:dialogType')
+  @MiniappProfiles('moderation', 'publisher')
   getChatDialog(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @CurrentUser() user: AuthUser,
     @Query('token') token: string | undefined,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
+    this.assertChatDialogProfile(profile, dialogType);
     return this.dialogService.getChatDialog(chatId, user, dialogType, token ?? null);
   }
 
   @Post('chats/:chatId/dialog/:dialogType/messages')
+  @MiniappProfiles('moderation', 'publisher')
   createChatDialogMessage(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
+    this.assertChatDialogProfile(profile, dialogType);
     return this.dialogService.createChatDialogMessage(chatId, user, dialogType, body);
   }
 
   @Put('chats/:chatId/dialog/:dialogType/notifications')
+  @MiniappProfiles('moderation', 'publisher')
   updateChatDialogNotifications(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
+    this.assertChatDialogProfile(profile, dialogType);
     return this.dialogService.updateChatDialogNotifications(chatId, user, dialogType, body);
   }
 
   @Patch('chats/:chatId/dialog/:dialogType/messages/:messageId')
+  @MiniappProfiles('moderation', 'publisher')
   updateChatDialogMessage(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @Param('messageId') messageId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
+    this.assertChatDialogProfile(profile, dialogType);
     return this.dialogService.updateChatDialogMessage(chatId, user, dialogType, messageId, body);
   }
 
   @Delete('chats/:chatId/dialog/:dialogType/messages/:messageId')
+  @MiniappProfiles('moderation', 'publisher')
   deleteChatDialogMessage(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @Param('messageId') messageId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
+    this.assertChatDialogProfile(profile, dialogType);
     return this.dialogService.deleteChatDialogMessage(chatId, user, dialogType, messageId, body);
   }
 
   @Post('chats/:chatId/dialog/:dialogType/messages/:messageId/reactions')
+  @MiniappProfiles('moderation', 'publisher')
   toggleChatDialogReaction(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @Param('messageId') messageId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
+    this.assertChatDialogProfile(profile, dialogType);
     return this.dialogService.toggleChatDialogReaction(chatId, user, dialogType, messageId, body);
+  }
+
+  private assertChatDialogProfile(profile: MiniappProfile, dialogType: string): void {
+    if (profile === 'publisher' && dialogType !== 'comments') {
+      throw new MiniappProfileForbiddenException();
+    }
   }
 }

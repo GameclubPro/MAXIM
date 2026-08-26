@@ -170,6 +170,16 @@ export class ChannelDialogService {
     return this.legacyAdminService.processChannelSuggestionDeliveryJob(...args);
   }
 
+  processPublisherSuggestionPublicationJob(
+    suggestionId: string,
+    claimToken: string,
+  ): Promise<void> {
+    return this.legacyAdminService.channelSuggestionPublicationRuntime.processPublisherSuggestionPublicationJob(
+      suggestionId,
+      claimToken,
+    );
+  }
+
   recoverStaleChannelSuggestionDeliveries(
     ...args: Parameters<ChannelDialogLegacyPort['recoverStaleChannelSuggestionDeliveries']>
   ): ReturnType<ChannelDialogLegacyPort['recoverStaleChannelSuggestionDeliveries']> {

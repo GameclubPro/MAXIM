@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -153,6 +155,7 @@ export class AdminVkParsingController {
   }
 
   @Post('channels/:chatId/vk-parsing/posts/:postId/publish')
+  @HttpCode(HttpStatus.ACCEPTED)
   publishChannelVkParsingPost(
     @Param('chatId') chatId: string,
     @Param('postId') postId: string,
@@ -307,6 +310,7 @@ export class AdminVkParsingController {
   }
 
   @Post('chats/:chatId/vk-parsing/posts/:postId/publish')
+  @HttpCode(HttpStatus.ACCEPTED)
   publishChatVkParsingPost(
     @Param('chatId') chatId: string,
     @Param('postId') postId: string,

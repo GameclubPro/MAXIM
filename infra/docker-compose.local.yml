@@ -6,3 +6,11 @@ services:
   redis:
     ports:
       - '127.0.0.1:6379:6379'
+
+secrets:
+  max_publisher_bot_token:
+    file: ${MAXIM_PUBLISHER_BOT_TOKEN_SECRET_FILE:-../token}
+  max_publisher_webhook_credentials:
+    file: ${MAXIM_PUBLISHER_WEBHOOK_SECRET_FILE:-../publik-webhook.json}
+  max_publisher_init_data_keys:
+    file: ${MAXIM_PUBLISHER_INIT_DATA_KEYS_SECRET_FILE:-../publik-init-data-keys.json}

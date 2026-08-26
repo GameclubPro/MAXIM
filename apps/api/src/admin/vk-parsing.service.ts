@@ -311,7 +311,7 @@ export class VkParsingService {
     user: AuthUser,
   ): Promise<RetryVkParsingPostResult> {
     await this.accessService.assertAccess(chatId, user);
-    return this.publishService.retryPost(chatId, postId);
+    return this.publishService.retryPost(chatId, postId, user.userId);
   }
 
   async schedulePost(
@@ -380,10 +380,24 @@ export class VkParsingService {
     chatId: string;
     reason: VkParsingPublishReason;
     idempotencyKey: string;
+    dispatchProfile?: 'LEGACY_ROUTED' | 'PUBLIK_V1';
+    requiredBotId?: string;
     attemptsMade?: number;
     maxAttempts?: number;
   }): Promise<void> {
     return this.publishService.processPublishPostJob(params);
+  }
+
+  async processPublisherRollbackJob(params: {
+    postId: string;
+    chatId: string;
+    messageId: string;
+    requiredBotId: string;
+    idempotencyKey: string;
+    attemptsMade?: number;
+    maxAttempts?: number;
+  }): Promise<void> {
+    return this.publishService.processPublisherRollbackJob(params);
   }
 
   private async writeAuditLog(

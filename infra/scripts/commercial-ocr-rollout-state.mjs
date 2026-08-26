@@ -39,6 +39,7 @@ const productionAppRoleByService = Object.freeze({
   'api-moderation-background': 'moderation',
   'api-media-analysis': 'moderation',
   'api-action': 'action',
+  'api-publisher': 'publisher',
 });
 
 export function normalizeCommercialOcrRolloutChatIds(contents) {

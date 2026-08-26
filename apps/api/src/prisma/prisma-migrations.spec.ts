@@ -789,4 +789,109 @@ describe('Prisma migrations', () => {
     expect(compact).not.toContain('CREATE INDEX CONCURRENTLY');
     expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE)\b/i);
   });
+
+  it('adds immutable publisher routes without rewriting legacy publication work', () => {
+    const foundation = readMigration('20260826120000_add_publisher_dispatch_foundation');
+    const indexes = readMigration('20260826121000_index_publisher_dispatch_claims');
+    const compact = foundation.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      `CREATE TYPE "PublicationDispatchProfile" AS ENUM ('LEGACY_ROUTED', 'PUBLIK_V1')`,
+    );
+    expect(compact).toContain('CREATE TABLE "publisher_entity_bindings"');
+    expect(compact).toContain('CREATE TABLE "managed_entity_publication_policies"');
+    expect(compact).toContain('CREATE OR REPLACE FUNCTION "is_valid_publisher_dialog_context"');
+    expect(compact).toContain("context->'version' IS DISTINCT FROM '1'::JSONB");
+    expect(compact).toContain("JSONB_ARRAY_ELEMENTS(context->'buttons')");
+    expect(compact).toContain('JSONB_ARRAY_LENGTH(button_row) = 0');
+    expect(compact).toContain('OCTET_LENGTH(context::TEXT) > 65536');
+    expect(compact).toContain(
+      'ADD COLUMN "dispatch_profile" "PublicationDispatchProfile" NOT NULL DEFAULT \'LEGACY_ROUTED\'',
+    );
+    expect(compact).toContain('ADD COLUMN "dialog_bot_id" TEXT');
+    expect(compact).toContain('"bot_id" IS NULL OR "bot_id" = "required_bot_id"');
+    expect(compact).toContain('CREATE TRIGGER "managed_broadcasts_dispatch_route_fill"');
+    expect(compact).toContain('CREATE TRIGGER "managed_broadcast_deliveries_dispatch_route_fill"');
+    expect(compact).toContain('CREATE TRIGGER "publications_dispatch_route_immutable"');
+    expect(compact).toContain('CREATE TRIGGER "publication_occurrences_dispatch_route_fill"');
+    expect(compact).toContain('publication occurrence parent is immutable');
+    expect(compact).toContain('managed broadcast publication occurrence is immutable');
+    expect(compact).toContain(
+      'BEFORE INSERT OR UPDATE OF "publication_id", "dispatch_profile", "required_bot_id"',
+    );
+    expect(compact).toContain(
+      'BEFORE INSERT OR UPDATE OF "publication_occurrence_id", "dispatch_profile", "required_bot_id"',
+    );
+    expect(foundation.match(/NOT VALID/g)).toHaveLength(8);
+    expect(foundation.match(/VALIDATE CONSTRAINT/g)).toHaveLength(8);
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+    expect(indexes.match(/CREATE INDEX CONCURRENTLY/g)).toHaveLength(3);
+    expect(indexes).toContain('"publication_occurrences_dispatch_status_scheduled_idx"');
+    expect(indexes).toContain('"managed_broadcasts_dispatch_status_due_lock_idx"');
+    expect(indexes).toContain('"managed_broadcast_deliveries_dispatch_status_locked_idx"');
+  });
+
+  it('grandfathers queued VK work and fences new Publik intents to their exact origin', () => {
+    const migration = readMigration('20260826122000_add_vk_publisher_dispatch');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'ADD COLUMN "dispatch_profile" "PublicationDispatchProfile" NOT NULL DEFAULT \'LEGACY_ROUTED\'',
+    );
+    expect(compact).toContain('ADD COLUMN "required_bot_id" TEXT');
+    expect(compact).toContain('ADD COLUMN "dialog_bot_id" TEXT');
+    expect(compact).toContain('ADD COLUMN "publish_dialog_context" JSONB');
+    expect(compact).toContain('ADD COLUMN "published_bot_id" TEXT');
+    expect(compact).toContain('COALESCE("published_bot_id", \'\') = "required_bot_id"');
+    expect(compact).toContain('CREATE TRIGGER "vk_parsing_posts_dispatch_route_immutable"');
+    expect(compact).toContain(
+      '"is_valid_publisher_dialog_context"("publish_dialog_context", "dialog_bot_id")',
+    );
+    expect(compact).toContain('OLD."publish_idempotency_key" IS NOT NULL');
+    expect(compact).toContain('OR OLD."published_message_id" IS NOT NULL');
+    expect(compact).toContain(
+      'NEW."publish_actor_user_id" IS DISTINCT FROM OLD."publish_actor_user_id"',
+    );
+    expect(compact).toContain('published VK bot provenance is immutable');
+    expect(compact).toContain(
+      'NEW."publish_dialog_context" IS DISTINCT FROM OLD."publish_dialog_context"',
+    );
+    expect(compact).toContain('active VK publish intent route is immutable');
+    expect(migration.match(/CREATE (?:UNIQUE )?INDEX CONCURRENTLY/g)).toHaveLength(3);
+    expect(migration.match(/NOT VALID/g)).toHaveLength(8);
+    expect(migration.match(/VALIDATE CONSTRAINT/g)).toHaveLength(8);
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+"vk_parsing_posts")\b/i,
+    );
+  });
+
+  it('requires a complete main-signed dialog context for every Publik delivery', () => {
+    const migration = readMigration('20260826123000_add_publisher_dialog_context');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain('ADD COLUMN "publisher_dialog_context" JSONB');
+    expect(compact).toContain(
+      `"dispatch_profile" = 'LEGACY_ROUTED'::"PublicationDispatchProfile" AND "publisher_dialog_context" IS NULL`,
+    );
+    expect(compact).toContain(
+      `"dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile" AND "publisher_dialog_context" IS NOT NULL`,
+    );
+    expect(compact).toContain(
+      '"is_valid_publisher_dialog_context"("publisher_dialog_context", "dialog_bot_id")',
+    );
+    expect(compact).toContain('managed_broadcast_deliveries_publisher_dialog_context_check" CHECK');
+    expect(compact).toContain(') NOT VALID');
+    expect(compact).toContain(
+      'VALIDATE CONSTRAINT "managed_broadcast_deliveries_publisher_dialog_context_check"',
+    );
+    expect(compact).toContain(
+      'CREATE TRIGGER "managed_broadcast_deliveries_publisher_route_immutable"',
+    );
+    expect(compact).toContain('publication delivery route is immutable');
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
 });

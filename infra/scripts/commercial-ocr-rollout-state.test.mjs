@@ -241,7 +241,7 @@ test('builds and verifies matching shadow and canary runtime environments', () =
   assert.throws(() => buildCommercialOcrRolloutEnvUpdates('canary'), /chat cohort is invalid/iu);
 });
 
-test('verifies the exact APP_SERVICE_NAME and APP_ROLE identity for all 12 production roles', () => {
+test('verifies the exact APP_SERVICE_NAME and APP_ROLE identity for all 13 production roles', () => {
   const shadow = buildCommercialOcrRolloutEnvUpdates('shadow');
   const identities = [
     ['api-ingress', 'ingress'],
@@ -256,6 +256,7 @@ test('verifies the exact APP_SERVICE_NAME and APP_ROLE identity for all 12 produ
     ['api-moderation-background', 'moderation'],
     ['api-media-analysis', 'moderation'],
     ['api-action', 'action'],
+    ['api-publisher', 'publisher'],
   ];
 
   for (const [serviceName, appRole] of identities) {

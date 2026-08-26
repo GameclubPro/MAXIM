@@ -50,6 +50,51 @@ describe('MaxActionDispatchService', () => {
     expect(maxClient.executeActionJob).toHaveBeenCalledWith(job);
   });
 
+  it('executes a publisher exact send without ownership refresh or generic access-loss writes', async () => {
+    const maxError = createMaxApiError(403, 'publisher lost entity access');
+    const maxClient = {
+      executeActionJob: jest.fn().mockRejectedValue(maxError),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn(),
+    };
+    const maxBotLinkService = {
+      getExecutableBotById: jest.fn().mockReturnValue({ id: 'publisher-bot' }),
+      resolveBotRoute: jest.fn(),
+      isBotAccessSnapshotStale: jest.fn(),
+      recordBotAccessProbe: jest.fn(),
+    };
+    const service = new MaxActionDispatchService(
+      maxClient as never,
+      managedEntityAccessLossService as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+    const job = {
+      actionType: 'SEND_MESSAGE',
+      chatId: 'channel-1',
+      botId: 'publisher-bot',
+      candidateBotIds: ['publisher-bot'],
+      routing: {
+        purpose: 'publisher_exact_send',
+        requiredBotId: 'publisher-bot',
+      },
+      text: 'VK post',
+      attempt: 1,
+      idempotencyKey: 'vk-parsing:publisher:post-1',
+      createdAt: '2026-08-26T10:00:00.000Z',
+    } as MaxActionJob;
+
+    await expect(service.execute(job)).rejects.toBe(maxError);
+
+    expect(maxClient.executeActionJob).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'publisher-bot' }),
+    );
+    expect(maxBotLinkService.resolveBotRoute).not.toHaveBeenCalled();
+    expect(maxBotLinkService.isBotAccessSnapshotStale).not.toHaveBeenCalled();
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+  });
+
   it('records queued MAX action start and success in the ledger', async () => {
     const maxClient = {
       executeActionJob: jest.fn().mockResolvedValue(undefined),

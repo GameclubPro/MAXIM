@@ -36,7 +36,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import { DateTime } from 'luxon';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import {
@@ -48,6 +47,7 @@ import {
   PublicationAudienceSelection,
   PublicationContentFormat,
   PublicationDeliveryVerificationSource,
+  PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
@@ -68,6 +68,7 @@ import {
   resolvePublicationOccurrenceRollupStatus,
 } from './publication-delivery-verification-state';
 import { PublicationContentService } from './publication-content.service';
+import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { publicationBackgroundAccess } from './publication-background-access';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
@@ -80,7 +81,8 @@ import {
   syncPublicationBroadcastAfterDeliveryResolution,
 } from './publication-execution-recovery';
 import { PublicationPresenterService } from './publication-presenter.service';
-import { assertPublicationTimezone, expandPublicationSchedule } from './publication-recurrence';
+import { expandPublicationSchedule } from './publication-recurrence';
+import { normalizePublicationSchedule } from './publication-schedule-normalization';
 
 const PUBLICATION_RECURRENCE_HORIZON_MS = 14 * 24 * 60 * 60_000;
 const PUBLICATION_RECURRENCE_LOOKAHEAD_MS = 450 * 24 * 60 * 60_000;
@@ -143,6 +145,7 @@ export class PublicationService {
     private readonly managedBroadcastService: ManagedBroadcastService,
     private readonly backgroundRuntimeGovernorService: BackgroundRuntimeGovernorService,
     private readonly systemModeService: SystemModeService,
+    private readonly publisherRouting: PublicationPublisherRoutingService,
   ) {}
 
   async list(user: AuthUser, query: unknown): Promise<ListPublicationsResponse> {
@@ -625,8 +628,12 @@ export class PublicationService {
     if (replay) {
       return this.get(replay.publicationId, user);
     }
+    const dispatchRoute = this.publisherRouting.requireNewRoute();
 
     const targets = await this.resolveAudienceTargets(user, request.audience);
+    if (request.intent === 'publish') {
+      await this.publisherRouting.assertTargetsReady(targets, dispatchRoute.requiredBotId);
+    }
     const now = new Date();
     const schedule = request.schedule ? this.normalizeSchedule(request.schedule, now) : null;
     const initialSlots = schedule ? this.expandInitialSchedule(schedule, now) : [];
@@ -647,6 +654,10 @@ export class PublicationService {
     const preparedContent = await this.publicationContentService.prepareContentRevision(
       request.content,
     );
+    await this.publicationContentService.assertPublisherCompatibleContent(
+      preparedContent,
+      user.userId,
+    );
 
     let publicationId: string;
     try {
@@ -660,6 +671,8 @@ export class PublicationService {
               request.intent === 'draft' ? PublicationLifecycle.DRAFT : PublicationLifecycle.ACTIVE,
             audienceSelection: request.audience.selection as PublicationAudienceSelection,
             audienceMode: request.audience.mode as PublicationAudienceMode,
+            dispatchProfile: dispatchRoute.dispatchProfile,
+            requiredBotId: dispatchRoute.requiredBotId,
             targets: {
               create: targets.map((target, position) => ({
                 targetChatId: target.chatId,
@@ -717,6 +730,8 @@ export class PublicationService {
                 contentRevisionId: contentRevision.id,
                 scheduleRevision: persistedSchedule.revision,
                 scheduledAt,
+                dispatchProfile: dispatchRoute.dispatchProfile,
+                requiredBotId: dispatchRoute.requiredBotId,
               })),
               skipDuplicates: true,
             });
@@ -816,6 +831,12 @@ export class PublicationService {
     if (desiredIntent === 'publish' && !schedule) {
       throw new BadRequestException('Выберите время публикации.');
     }
+    if (
+      desiredIntent === 'publish' &&
+      existing.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+    ) {
+      await this.publisherRouting.assertTargetsReady(targets, existing.requiredBotId);
+    }
 
     const currentIntent = existing.lifecycle === PublicationLifecycle.DRAFT ? 'draft' : 'publish';
     const scheduleChanged =
@@ -823,6 +844,10 @@ export class PublicationService {
       !this.arePublicationSchedulesEquivalent(existingSchedule, schedule);
     const intentChanged = desiredIntent !== currentIntent;
     const shouldRebuildSchedule = audienceChanged || scheduleChanged || intentChanged;
+    PublicationPublisherRoutingService.assertRootUpdateAllowed(
+      existing.dispatchProfile,
+      shouldRebuildSchedule || request.content !== undefined,
+    );
     const initialSlots =
       desiredIntent === 'publish' && schedule && shouldRebuildSchedule
         ? this.expandInitialSchedule(schedule, now)
@@ -852,6 +877,12 @@ export class PublicationService {
     const preparedContent = request.content
       ? await this.publicationContentService.prepareContentRevision(request.content)
       : null;
+    if (preparedContent && existing.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
+      await this.publicationContentService.assertPublisherCompatibleContent(
+        preparedContent,
+        user.userId,
+      );
+    }
 
     const nextVersion = existing.version + 1;
     try {
@@ -977,6 +1008,8 @@ export class PublicationService {
                   contentRevisionId,
                   scheduleRevision,
                   scheduledAt,
+                  dispatchProfile: existing.dispatchProfile,
+                  requiredBotId: existing.requiredBotId,
                 })),
                 skipDuplicates: true,
               });
@@ -1005,6 +1038,8 @@ export class PublicationService {
                   contentRevisionId,
                   scheduleRevision: persistedSchedule.revision,
                   scheduledAt,
+                  dispatchProfile: existing.dispatchProfile,
+                  requiredBotId: existing.requiredBotId,
                 })),
                 skipDuplicates: true,
               });
@@ -1992,6 +2027,8 @@ export class PublicationService {
                 contentRevisionId: currentPublication.canonicalContentRevisionId,
                 scheduleRevision: schedule.revision,
                 scheduledAt,
+                dispatchProfile: schedule.publication.dispatchProfile,
+                requiredBotId: schedule.publication.requiredBotId,
               })),
               skipDuplicates: true,
             });
@@ -2031,6 +2068,7 @@ export class PublicationService {
   ): Promise<void> {
     const now = new Date();
     const horizon = new Date(now.getTime() + PUBLICATION_EXECUTION_HORIZON_MS);
+    const blockedRetryBefore = this.publisherRouting.blockedRetryBefore(now);
     const occurrences = await this.prisma.publicationOccurrence.findMany({
       where: {
         status: PublicationOccurrenceStatus.SCHEDULED,
@@ -2043,6 +2081,7 @@ export class PublicationService {
           },
         },
         legacyBroadcasts: { none: {} },
+        OR: [{ dispatchBlockerCode: null }, { dispatchBlockedAt: { lte: blockedRetryBefore } }],
       },
       orderBy: { scheduledAt: 'asc' },
       take: limit,
@@ -2092,6 +2131,9 @@ export class PublicationService {
         const scheduleRule = publicationScheduleInputSchema.parse(occurrence.schedule.rule);
         await this.createOccurrenceExecution(occurrence, targets, scheduleRule);
       } catch (error: unknown) {
+        if (await this.publisherRouting.deferOccurrenceIfBlocked(occurrence, error)) {
+          continue;
+        }
         const message =
           error instanceof ConflictException
             ? 'В выбранное время уже запланирована другая публикация.'
@@ -2146,6 +2188,13 @@ export class PublicationService {
     targets: ResolvedPublicationTarget[],
     schedule: PublicationScheduleInput,
   ): Promise<void> {
+    const publicationButtons = readStoredPublicationButtons(occurrence.contentRevision.buttons);
+    const publisherRoute = await this.publisherRouting.prepareOccurrenceRoute(
+      occurrence.dispatchProfile,
+      occurrence.requiredBotId,
+      targets,
+      publicationButtons,
+    );
     const groups = [
       {
         entityType: ChatEntityType.CHAT,
@@ -2178,7 +2227,11 @@ export class PublicationService {
             },
           },
         },
-        data: { status: PublicationOccurrenceStatus.IN_PROGRESS },
+        data: {
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          dispatchBlockerCode: null,
+          dispatchBlockedAt: null,
+        },
       });
       if (claimed.count === 0) {
         return;
@@ -2220,7 +2273,7 @@ export class PublicationService {
           });
         }
 
-        const buttons = readStoredPublicationButtons(occurrence.contentRevision.buttons);
+        const buttons = publicationButtons;
         const broadcast = await tx.managedBroadcast.create({
           data: {
             sourceChatId: targetChatIds[0],
@@ -2255,6 +2308,7 @@ export class PublicationService {
             status: ManagedBroadcastStatus.ACTIVE,
             publicationOccurrenceId: occurrence.id,
             publicationContentRevisionId: occurrence.contentRevisionId,
+            ...publisherRoute.broadcastData,
           },
           select: { id: true },
         });
@@ -2275,6 +2329,7 @@ export class PublicationService {
             targetChatId,
             publicationOccurrenceId: occurrence.id,
             contentRevisionId: occurrence.contentRevisionId,
+            ...publisherRoute.deliveryDataByChatId.get(targetChatId)!,
           })),
         });
         await tx.managedBroadcastCalendarReservation.createMany({
@@ -2983,50 +3038,7 @@ export class PublicationService {
     schedule: PublicationScheduleInput,
     now: Date,
   ): PublicationScheduleInput {
-    try {
-      assertPublicationTimezone(schedule.timezone);
-    } catch (error: unknown) {
-      if (error instanceof RangeError) {
-        throw new BadRequestException('Выберите корректный часовой пояс.');
-      }
-      throw error;
-    }
-    const normalized =
-      schedule.mode === 'recurrence' && schedule.startsAt === null
-        ? { ...schedule, startsAt: now.toISOString() }
-        : schedule;
-    const localTimes =
-      normalized.mode === 'recurrence'
-        ? normalized.times
-        : normalized.mode === 'once'
-          ? [
-              DateTime.fromISO(normalized.at, { setZone: true })
-                .setZone(normalized.timezone)
-                .toFormat('HH:mm'),
-            ]
-          : normalized.mode === 'slots'
-            ? normalized.slots.map((slot) =>
-                DateTime.fromISO(slot, { setZone: true })
-                  .setZone(normalized.timezone)
-                  .toFormat('HH:mm'),
-              )
-            : [];
-    if (localTimes.some((time) => Number(time.slice(3, 5)) % 30 !== 0)) {
-      throw new BadRequestException('Выберите время с шагом 30 минут.');
-    }
-    const datedSlots =
-      normalized.mode === 'once'
-        ? [new Date(normalized.at)]
-        : normalized.mode === 'slots'
-          ? normalized.slots.map((slot) => new Date(slot))
-          : [];
-    if (datedSlots.some((slot) => slot.getUTCSeconds() !== 0 || slot.getUTCMilliseconds() !== 0)) {
-      throw new BadRequestException('Выберите время с шагом 30 минут.');
-    }
-    if (datedSlots.some((slot) => slot.getTime() < now.getTime() - PUBLICATION_PAST_GRACE_MS)) {
-      throw new BadRequestException('Время публикации уже прошло.');
-    }
-    return normalized;
+    return normalizePublicationSchedule(schedule, now, PUBLICATION_PAST_GRACE_MS);
   }
 
   private expandInitialSchedule(schedule: PublicationScheduleInput, now: Date): Date[] {

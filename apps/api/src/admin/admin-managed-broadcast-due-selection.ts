@@ -2,6 +2,7 @@ import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   Prisma,
+  PublicationDispatchProfile,
   PublicationScheduleMode,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -132,6 +133,7 @@ export async function selectPublicationManagedBroadcastDueBatch(
   prisma: Pick<PrismaService, 'managedBroadcast'>,
   scheduleModes: readonly PublicationScheduleMode[],
   limit: number,
+  dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
 ): Promise<{ dueRows: DueManagedBroadcastRow[]; staleLockBefore: Date }> {
   const now = new Date();
   const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
@@ -141,6 +143,7 @@ export async function selectPublicationManagedBroadcastDueBatch(
   }
 
   const baseWhere: Prisma.ManagedBroadcastWhereInput = {
+    dispatchProfile,
     nextSendAt: { lte: now },
     OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
     publicationOccurrence: {

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260824120000_add_profanity_sensitivity",
-  "baselineNamesSha256": "5fa46f7582721e6d34b0ffd9bb267221bddb5f5c811382fa4f90ebda8e3550e8",
-  "baselineContentsSha256": "ef28fd15b297a0e4553882621757a176835254b2db28ab41b6d483a7c68eb95e",
+  "baselineThrough": "20260826123000_add_publisher_dialog_context",
+  "baselineNamesSha256": "77743174f850d417fe0c546053c8c9ad8dc855293aa091ef14d101d8c7ec5f73",
+  "baselineContentsSha256": "1ea1ac2359c0353950c1558af2304a2c076d0ebfbcb1ac03779ab0fa3e98d4a1",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -56,6 +56,21 @@
       "reason": "Manual review approved static trigger functions that enqueue generation-fenced night-mode reconciliation requests. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION bodies as dynamic and destructive, but this additive migration contains no dynamic EXECUTE and drops no schema object.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "The new tables, functions, indexes, and triggers are additive. Existing runtimes ignore the outbox while its triggers only upsert rows in the new reconcile table; the new runtime starts consuming those rows after the migration completes. DateTime columns use Prisma's PostgreSQL TIMESTAMP(3) mapping, and the scheduled-job writer supplies both required audit timestamps instead of relying on an undeclared updated_at database default. No existing column, constraint, or data contract changes."
+    },
+    "20260826120000_add_publisher_dispatch_foundation": {
+      "reason": "Manual review approved static parent-route propagation and immutability triggers plus the bounded prepared-dialog-context validator. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION and PL/pgSQL bodies as dynamic and destructive, but this additive migration contains no dynamic EXECUTE and drops no schema object.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The migration adds new tables and columns with legacy-compatible defaults. Existing runtimes continue to create LEGACY_ROUTED roots and envelopes; new occurrence, broadcast, and delivery rows derive immutable route fields from their parent even when a mixed-version writer supplies legacy defaults. New PUBLIK_V1 roots are enabled only after every API role runs compatible code."
+    },
+    "20260826122000_add_vk_publisher_dispatch": {
+      "reason": "Manual review approved one static BEFORE UPDATE trigger that prevents an active VK publish intent from changing its exact dispatch route. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION and UPDATE OF as dynamic/destructive SQL, but this additive migration contains no dynamic EXECUTE and drops no schema object or column.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "All added VK columns are nullable or use LEGACY_ROUTED-compatible defaults, so existing queued jobs and mixed-version action workers retain their main-bot route. The new runtime stamps PUBLIK_V1 only for newly armed intents after publisher readiness succeeds and stores the main-signed dialog context before handing work to the token-isolated publisher runtime. Concurrent indexes avoid blocking the existing VK post workload, and the trigger preserves route and bot provenance for active, published, and rollback-bound intents."
+    },
+    "20260826123000_add_publisher_dialog_context": {
+      "reason": "Manual review approved one static delivery-route immutability trigger. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic and destructive, but this additive migration contains no dynamic EXECUTE and drops no schema object or column.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The migration adds one nullable JSONB column to an existing delivery table, validates existing LEGACY_ROUTED rows through a lower-lock NOT VALID plus VALIDATE sequence, and requires a bounded main-signed context only for future PUBLIK_V1 deliveries. Old runtime cannot create PUBLIK_V1 routes, and publisher dispatch remains disabled until every API role runs the compatible client."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -64,6 +79,9 @@
     },
     "20260821130000_add_night_mode_transition_reconcile_requests": {
       "reason": "The index is created immediately after its new empty table and before the bounded enabled-chat backfill, so there is no existing table workload to block and PostgreSQL forbids CREATE INDEX CONCURRENTLY inside Prisma's migration transaction."
+    },
+    "20260826120000_add_publisher_dispatch_foundation": {
+      "reason": "All non-concurrent indexes in this migration are created on the two new empty publisher policy/binding tables before they receive rows. Existing publication-table claim indexes are isolated in the following concurrent-index migration."
     }
   }
 }

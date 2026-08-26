@@ -20,6 +20,7 @@ export const PRODUCTION_API_SERVICES = Object.freeze([
   'api-moderation-background',
   'api-media-analysis',
   'api-action',
+  'api-publisher',
 ]);
 
 export const ROLLBACK_COMPONENT_SERVICES = Object.freeze({

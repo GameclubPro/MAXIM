@@ -136,6 +136,7 @@
 ## VK Parsing
 
 - VK parsing is available for managed chats and channels through server capability, never a hardcoded client/user/channel allowlist. Endpoints enforce managed-entity admin access.
+- VK publish intent routing is durable: legacy queued rows stay on `vk-parsing-publish`/`api-action`, while newly armed `PUBLIK_V1` rows carry an immutable `requiredBotId`, main-signed dialog context, and run only on `vk-parsing-publisher`/`api-publisher`. The publisher worker reads the persisted context and never signs main-bot buttons; the bounded repair script is legacy-only and must never move a Publik row into the legacy queue.
 - Cached MAX upload payloads are bot-scoped. Persist and verify the internal upload-bot marker, strip it before sending to MAX, and re-upload legacy untagged payloads.
 - Source sync runs through the BullMQ `vk-parsing-sync` queue with database leases; automation settings live per managed entity in `vk_parsing_settings` and per source.
 - Supported publishable content is text, links, photos, or one direct HTTPS `video.files.mp4_*` video. If a supported video is present, publish it and drop photos; never accept player pages, external/HLS streams, or mixed photo/video payloads.

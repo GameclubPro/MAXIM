@@ -19,6 +19,7 @@ import {
   type TestPublicationRequest,
   type UpdatePublicationRequest,
 } from '@maxim/contracts/publication';
+import type { PublisherEntityReadiness } from '@maxim/contracts/publisher';
 import { trimBroadcastLinkButtons } from '../../lib/broadcast-link-buttons';
 import {
   formatLocalDateTimeInputValue,
@@ -95,6 +96,7 @@ export type PublicationTarget = {
   title: string;
   avatarUrl: string | null;
   channelOverview: Pick<ChannelOverview, 'commentsEnabled' | 'postSuggestionsEnabled'> | null;
+  readiness?: PublisherEntityReadiness | null;
 };
 
 export function getPublicationTargetTitle(
@@ -514,6 +516,7 @@ export function toPublicationTarget(source: ChatSummary): PublicationTarget {
           postSuggestionsEnabled: channelOverview.postSuggestionsEnabled,
         }
       : null,
+    readiness: null,
   };
 }
 

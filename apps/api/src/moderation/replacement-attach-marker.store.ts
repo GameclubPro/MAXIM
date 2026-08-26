@@ -62,6 +62,7 @@ type CompletionState = 'none' | 'done' | 'recover_legacy_channel_edit';
 type MarkerRow = {
   id: string;
   status: ReplacementAttachMarkerStatus;
+  lockToken: string | null;
   lockedAt: Date | null;
   botId: string | null;
   deliveryMode: string | null;
@@ -187,11 +188,15 @@ export class ReplacementAttachMarkerStore {
   probeChatAutoCommentAuditRecovery(params: {
     chatId: string;
     messageId: string;
+    expectedMarkerId?: string;
+    expectedLockToken?: string;
   }): Promise<ReplacementAttachMarkerClaim | null> {
     return this.resolveChatAutoCommentAuditRecovery(
       this.getDelegate('chat_auto_comment'),
       params.chatId,
       params.messageId,
+      params.expectedMarkerId,
+      params.expectedLockToken,
     );
   }
 
@@ -531,6 +536,7 @@ export class ReplacementAttachMarkerStore {
     messageId: string;
     lockToken: string;
     replyMessageId: string;
+    senderBotId?: string | null;
   }): Promise<void> {
     return this.recordChatReplyResult(params);
   }
@@ -565,9 +571,116 @@ export class ReplacementAttachMarkerStore {
     chatId: string;
     messageId: string;
     lockToken: string;
-  }): Promise<void> {
+    senderBotId?: string | null;
+  }): Promise<Date> {
     // FLAG: Keep replies on this durable fence so stale recovery and Safety Desk see every send.
-    return this.recordSendStarted('chat_auto_comment', params, 'reply_message');
+    return this.recordSendStarted('chat_auto_comment', params, 'reply_message', {
+      botId: params.senderBotId,
+    });
+  }
+
+  async refreshChatAutoCommentDispatchClaim(params: {
+    markerId: string;
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+  }): Promise<'ready' | 'done' | 'send_fenced' | 'lost'> {
+    const delegate = this.getDelegate('chat_auto_comment');
+    if (!delegate?.findUnique || !delegate.updateMany) {
+      throw new Error('Durable chat auto-comment markers are unavailable');
+    }
+
+    const state = await this.inspectChatAutoCommentDispatchClaim(params);
+    if (state !== 'ready') {
+      return state;
+    }
+
+    const refreshed = await delegate.updateMany({
+      where: {
+        id: params.markerId,
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: 'IN_PROGRESS',
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+      },
+      data: {
+        lockedAt: new Date(),
+      },
+    });
+    return refreshed.count === 1 ? 'ready' : 'lost';
+  }
+
+  async inspectChatAutoCommentDispatchClaim(params: {
+    markerId: string;
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+  }): Promise<'ready' | 'done' | 'send_fenced' | 'lost'> {
+    const delegate = this.getDelegate('chat_auto_comment');
+    if (!delegate?.findUnique) {
+      throw new Error('Durable chat auto-comment markers are unavailable');
+    }
+
+    const marker = await delegate.findUnique({
+      where: {
+        chatId_messageId: {
+          chatId: params.chatId,
+          messageId: params.messageId,
+        },
+      },
+      select: {
+        id: true,
+        status: true,
+        lockToken: true,
+        replacementMessageId: true,
+        replyMessageId: true,
+        replacementSendStartedAt: true,
+      },
+    });
+    if (!marker || marker.id !== params.markerId || marker.lockToken !== params.lockToken) {
+      return 'lost';
+    }
+    if (marker.status === 'SUCCEEDED' || marker.status === 'SKIPPED' || marker.replyMessageId) {
+      return 'done';
+    }
+    if (marker.replacementMessageId || marker.replacementSendStartedAt) {
+      return 'send_fenced';
+    }
+    return 'ready';
+  }
+
+  async recordChatAutoCommentRetryableFailure(params: {
+    markerId: string;
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    senderBotId: string | null;
+    sendStartedAt: Date | null;
+    lastError: string;
+    lastStatusCode: number | null;
+  }): Promise<void> {
+    await this.getDelegate('chat_auto_comment')?.updateMany?.({
+      where: {
+        id: params.markerId,
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: 'IN_PROGRESS',
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: params.sendStartedAt,
+      },
+      data: {
+        lockedAt: new Date(),
+        replacementSendStartedAt: null,
+        botId: params.senderBotId,
+        lastError: params.lastError,
+        lastStatusCode: params.lastStatusCode,
+      },
+    });
   }
 
   recordChannelReplySendStarted(params: {
@@ -575,7 +688,9 @@ export class ReplacementAttachMarkerStore {
     messageId: string;
     lockToken: string;
   }): Promise<void> {
-    return this.recordSendStarted('channel_auto_post', params, 'reply_message');
+    return this.recordSendStarted('channel_auto_post', params, 'reply_message').then(
+      () => undefined,
+    );
   }
 
   releaseChannelAutoPost(params: {
@@ -836,6 +951,8 @@ export class ReplacementAttachMarkerStore {
     delegate: MarkerDelegate | null,
     chatId: string,
     messageId: string,
+    expectedMarkerId?: string,
+    expectedLockToken?: string,
   ): Promise<ReplacementAttachMarkerClaim | null> {
     if (!delegate?.findUnique) {
       return null;
@@ -846,6 +963,7 @@ export class ReplacementAttachMarkerStore {
       select: {
         id: true,
         status: true,
+        lockToken: true,
         botId: true,
         deliveryMode: true,
         replyMessageId: true,
@@ -859,6 +977,14 @@ export class ReplacementAttachMarkerStore {
       !markerId ||
       !auditId ||
       (marker.status !== 'IN_PROGRESS' && marker.status !== 'SUCCEEDED')
+    ) {
+      return null;
+    }
+    if (
+      (expectedMarkerId && markerId !== expectedMarkerId) ||
+      (expectedLockToken &&
+        marker.status === 'IN_PROGRESS' &&
+        marker.lockToken !== expectedLockToken)
     ) {
       return null;
     }
@@ -1104,14 +1230,16 @@ export class ReplacementAttachMarkerStore {
     kind: MarkerKind,
     params: { chatId: string; messageId: string; lockToken: string },
   ): Promise<void> {
-    return this.recordSendStarted(kind, params, 'replace_with_bot_message');
+    await this.recordSendStarted(kind, params, 'replace_with_bot_message');
   }
 
   private async recordSendStarted(
     kind: MarkerKind,
     params: { chatId: string; messageId: string; lockToken: string },
     deliveryMode: 'replace_with_bot_message' | 'reply_message',
-  ): Promise<void> {
+    options: { botId?: string | null } = {},
+  ): Promise<Date> {
+    const sendStartedAt = new Date();
     const updated = await this.getDelegate(kind)?.updateMany?.({
       where: {
         chatId: params.chatId,
@@ -1123,13 +1251,15 @@ export class ReplacementAttachMarkerStore {
       },
       data: {
         deliveryMode,
-        replacementSendStartedAt: new Date(),
+        replacementSendStartedAt: sendStartedAt,
+        ...(options.botId ? { botId: options.botId } : {}),
       },
     });
     if (updated && updated.count !== 1) {
       const sendKind = deliveryMode === 'reply_message' ? 'reply' : 'replacement';
       throw new Error(`Failed to persist the ${this.label(kind)} ${sendKind} send fence`);
     }
+    return sendStartedAt;
   }
 
   private async recordChatReplyResult(params: {
@@ -1137,6 +1267,7 @@ export class ReplacementAttachMarkerStore {
     messageId: string;
     lockToken: string;
     replyMessageId: string;
+    senderBotId?: string | null;
   }): Promise<void> {
     const updated = await this.getDelegate('chat_auto_comment')?.updateMany?.({
       where: {
@@ -1149,6 +1280,7 @@ export class ReplacementAttachMarkerStore {
         deliveryMode: 'reply_message',
         replyMessageId: params.replyMessageId,
         replacementSendStartedAt: null,
+        ...(params.senderBotId ? { botId: params.senderBotId } : {}),
       },
     });
     if (updated && updated.count !== 1) {

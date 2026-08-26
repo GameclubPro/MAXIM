@@ -12,6 +12,7 @@ import {
   ChatEntityType,
   ChatRoutingState,
   MaxActionLedgerStatus,
+  PublicationDispatchProfile,
   Prisma,
   createPrismaClient,
   type PrismaClient,
@@ -70,6 +71,7 @@ const REPAIR_POST_SELECT = {
   publishAttemptCount: true,
   publishIdempotencyKey: true,
   publishReason: true,
+  dispatchProfile: true,
   lastError: true,
   source: {
     select: {
@@ -236,6 +238,7 @@ export type RepairCandidateFacts = {
   publishAttemptCount: number;
   publishIdempotencyKey: string | null;
   publishReason: string | null;
+  dispatchProfile: 'LEGACY_ROUTED' | 'PUBLIK_V1';
   lastError: string | null;
   source: {
     status: string;
@@ -775,6 +778,7 @@ function toCandidateFacts(row: RepairPostRow, at: Date): RepairCandidateFacts {
     publishAttemptCount: row.publishAttemptCount,
     publishIdempotencyKey: nullableString(row.publishIdempotencyKey),
     publishReason: nullableString(row.publishReason),
+    dispatchProfile: row.dispatchProfile,
     lastError: nullableString(row.lastError),
     source: {
       status: row.source.status,
@@ -1228,9 +1232,7 @@ export function buildDeterministicRepairPlan(
   const plannedBySource = new Map<string, number>();
   const repairablePostIds = new Set(
     assessed
-      .filter(
-        ({ facts, queue, ledger }) => classifyRepairCandidate(facts, queue, ledger) === null,
-      )
+      .filter(({ facts, queue, ledger }) => classifyRepairCandidate(facts, queue, ledger) === null)
       .map(({ facts }) => facts.postId),
   );
   // FLAG: Keep exact, pristine jobs that the repair cannot mutate as fixed reservations. Release
@@ -1434,6 +1436,7 @@ async function scanRepairOrphans(
             chatId: true,
             publishReason: true,
             publishIdempotencyKey: true,
+            dispatchProfile: true,
           },
         })
       : [];
@@ -1442,6 +1445,7 @@ async function scanRepairOrphans(
     const current = currentOwnerByPostId.get(entry.postId!);
     return !(
       current?.chatId === entry.chatId &&
+      current.dispatchProfile === PublicationDispatchProfile.LEGACY_ROUTED &&
       current.publishReason === 'autopublish' &&
       current.publishIdempotencyKey === entry.idempotencyKey
     );
@@ -1493,11 +1497,13 @@ export async function buildVkPublishRepairPlan(
 ): Promise<VkPublishRepairPlan> {
   const observedAt = new Date();
   const where = {
+    dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
     publishQueuedAt: { not: null, lte: options.cutoff },
     publishIdempotencyKey: { not: null },
     ...(options.chatIds.length > 0 ? { chatId: { in: options.chatIds } } : {}),
   } satisfies Prisma.VkParsingPostWhereInput;
   const afterCutoffWhere = {
+    dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
     publishQueuedAt: { gt: options.cutoff },
     publishIdempotencyKey: { not: null },
     ...(options.chatIds.length > 0 ? { chatId: { in: options.chatIds } } : {}),
@@ -1639,7 +1645,12 @@ async function reloadEntryEvidence(
     where: { id: entry.postId },
     select: REPAIR_POST_SELECT,
   });
-  if (!row || !row.publishQueuedAt || row.publishQueuedAt.getTime() > cutoff.getTime()) {
+  if (
+    !row ||
+    row.dispatchProfile !== PublicationDispatchProfile.LEGACY_ROUTED ||
+    !row.publishQueuedAt ||
+    row.publishQueuedAt.getTime() > cutoff.getTime()
+  ) {
     return null;
   }
   return assessRow(prisma, queue, row, new Date());
@@ -1654,6 +1665,7 @@ export async function assertFrozenOwnershipSnapshot(
   const [atCutoff, afterCutoff] = await Promise.all([
     prisma.vkParsingPost.count({
       where: {
+        dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
         publishQueuedAt: { not: null, lte: new Date(document.cutoff) },
         publishIdempotencyKey: { not: null },
         ...chatScope,
@@ -1661,6 +1673,7 @@ export async function assertFrozenOwnershipSnapshot(
     }),
     prisma.vkParsingPost.count({
       where: {
+        dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
         publishQueuedAt: { gt: new Date(document.cutoff) },
         publishIdempotencyKey: { not: null },
         ...chatScope,
@@ -1706,6 +1719,7 @@ async function persistRepairSchedule(
         publishAttemptCount: 0,
         publishIdempotencyKey: facts.publishIdempotencyKey,
         publishReason: 'autopublish',
+        dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
         publishedMessageId: null,
         publishedAtMax: null,
         autoPublishedAt: null,

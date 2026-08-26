@@ -1,5 +1,9 @@
 import { Queue, type ConnectionOptions, type Job } from 'bullmq';
-import { createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
+import {
+  createPrismaClient,
+  PublicationDispatchProfile,
+  type PrismaClient,
+} from '../prisma/prisma-client';
 
 type CliOptions = {
   json: boolean;
@@ -598,6 +602,8 @@ async function loadOwnedPublishDatabaseSnapshot(
   cap: number,
 ): Promise<OwnedPublishDatabaseSnapshot> {
   const ownershipWhere = {
+    // The reconciliation below inspects the legacy action-owned queue only.
+    dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
     publishQueuedAt: { not: null },
   } as const;
   const totalRowsBefore = await prisma.vkParsingPost.count({ where: ownershipWhere });

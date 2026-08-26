@@ -18,6 +18,9 @@ packages/contracts/src/**/*.js
 .env
 .env.*
 !.env.example
+/token
+/publik-webhook.json
+/publik-init-data-keys.json
 vk
 vk codex
 

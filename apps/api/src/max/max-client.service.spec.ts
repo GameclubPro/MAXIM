@@ -8759,6 +8759,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('returns only remote /me identity variants for exact-token attestation', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            user_id: '214634783',
+            userId: '214634783',
+            username: 'id613002203036_4_bot',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.getOwnProfileIdentity({
+        botId: '777000_bot',
+        sourceTag: 'publisher_identity_attestation',
+      }),
+    ).resolves.toEqual({
+      userIds: ['214634783'],
+      username: 'id613002203036_4_bot',
+    });
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api2.max.ru/me',
+        headers: expect.objectContaining({ Authorization: 'test-token' }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('applies the per-bot MAX API rate limit to read requests', async () => {
     const httpService = {
       request: jest.fn(),
@@ -8794,27 +8829,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
     limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1]);
 
     await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
-    expect(httpService.request).not.toHaveBeenCalled();
-
-    await service.onModuleDestroy();
-  });
-
-  it('applies stack-wide MAX API class limit across all bots', async () => {
-    const httpService = {
-      request: jest.fn(),
-    };
-    const service = createService(httpService, {
-      MAX_API_GLOBAL_RPS: '30',
-      MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
-      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
-    });
-
-    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 4, 1]);
-
-    await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
-      'MAX API interactive rate limit exceeded across all bots',
-    );
     expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
@@ -9014,7 +9028,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     reserve.mockReset().mockResolvedValue({
       ok: false,
       retryAfterMs: 1_500,
-      reason: 'MAX API critical rate limit exceeded across all bots',
+      reason: 'MAX API critical rate limit exceeded for bot 777000_bot',
     });
     const regularCriticalReservation = internal.reserveRateLimitSlot(
       '777000_bot',
@@ -9034,29 +9048,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('keeps per-bot GCRA reservations independent across bot tokens', async () => {
+  it('uses no shared hard GCRA dimension across independent bot tokens', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:00:00.000Z'));
     const firstService = createService(
       {},
       {
         MAX_API_GLOBAL_RPS: '1',
-        MAX_API_GLOBAL_RPS_INTERACTIVE: '2',
+        MAX_API_GLOBAL_RPS_BACKGROUND: '1',
+        MAX_API_MANAGED_REFRESH_RPS: '1',
       },
     );
     const secondService = createService(
       {},
       {
         MAX_API_GLOBAL_RPS: '1',
-        MAX_API_GLOBAL_RPS_INTERACTIVE: '2',
+        MAX_API_GLOBAL_RPS_BACKGROUND: '1',
+        MAX_API_MANAGED_REFRESH_RPS: '1',
       },
     );
 
     await expect(
-      (firstService as any).tryReserveRateLimitSlot('bot-a', 'chat-a', 'interactive'),
+      (firstService as any).tryReserveRateLimitSlot(
+        'bot-a',
+        'chat-a',
+        'background',
+        MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      ),
     ).resolves.toEqual({ ok: true });
     await expect(
-      (secondService as any).tryReserveRateLimitSlot('bot-b', 'chat-b', 'interactive'),
+      (secondService as any).tryReserveRateLimitSlot(
+        'bot-b',
+        'chat-b',
+        'background',
+        MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      ),
     ).resolves.toEqual({ ok: true });
+
+    const readLastDimensions = (service: MaxClientService) => {
+      const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } })
+        .limiterRedis;
+      const call = limiterRedis.eval.mock.calls.at(-1) as unknown[];
+      const keyCount = Number(call[1]);
+      return {
+        keyCount,
+        keys: call.slice(2, 2 + keyCount).map(String),
+        limiterRedis,
+      };
+    };
+    const first = readLastDimensions(firstService);
+    const second = readLastDimensions(secondService);
+    expect(first.keys).toEqual([
+      'maxapi:gcra:v1:bot:bot-a:all',
+      'maxapi:gcra:v1:service:api:bot:bot-a:class:background',
+      'maxapi:gcra:v1:chat:bot-a:chat-a',
+      'maxapi:gcra:v1:service:api:source:bot-a:managed_refresh',
+    ]);
+    expect(second.keys).toEqual([
+      'maxapi:gcra:v1:bot:bot-b:all',
+      'maxapi:gcra:v1:service:api:bot:bot-b:class:background',
+      'maxapi:gcra:v1:chat:bot-b:chat-b',
+      'maxapi:gcra:v1:service:api:source:bot-b:managed_refresh',
+    ]);
+    expect(first.keys.filter((key) => second.keys.includes(key))).toEqual([]);
+    expect([...first.keys, ...second.keys].some((key) => key.includes(':stack:'))).toBe(false);
+
+    for (let rejectedIndex = 1; rejectedIndex <= first.keyCount; rejectedIndex += 1) {
+      first.limiterRedis.eval.mockResolvedValueOnce([0, rejectedIndex, 1]);
+      const rejected = await (firstService as any).tryReserveRateLimitSlot(
+        'bot-a',
+        'chat-a',
+        'background',
+        MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      );
+      expect(rejected.reason).not.toContain('across all bots');
+    }
 
     await firstService.onModuleDestroy();
     await secondService.onModuleDestroy();
@@ -9939,7 +10004,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await serviceB.onModuleDestroy();
   });
 
-  it('caps the per-bot budget at 30 while scoping class and source budgets by service', async () => {
+  it('caps each token at 30 with only bot-scoped hard class and source dimensions', async () => {
     const service = createService(
       { request: jest.fn() },
       {
@@ -9973,12 +10038,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
       'maxapi:gcra:v1:bot:777000_bot:all',
       'maxapi:gcra:v1:service:api_action_a:bot:777000_bot:class:background',
       'maxapi:gcra:v1:chat:777000_bot:chat-1',
-      'maxapi:gcra:v1:service:api_action_a:stack:class:background',
       'maxapi:gcra:v1:service:api_action_a:source:777000_bot:managed_refresh',
-      'maxapi:gcra:v1:service:api_action_a:source:stack:managed_refresh',
     ]);
     expect(limits[0]).toBe('30');
-    expect(limits.slice(-2)).toEqual(['2', '2']);
+    expect(limits.at(-1)).toBe('2');
 
     await service.onModuleDestroy();
   });
@@ -10012,7 +10075,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService, {
       MAX_API_MANAGED_REFRESH_RPS: '1',
-      MAX_API_MANAGED_REFRESH_STACK_RPS: '1',
       MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: '0',
     });
 

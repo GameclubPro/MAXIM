@@ -34,6 +34,8 @@ import {
   MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
 } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
+import { PublisherEntityBindingLifecycleService } from '../publisher/publisher-entity-binding-lifecycle.service';
 import {
   buildWebhookSemanticEventKey,
   readWebhookEventTimestamp,
@@ -209,6 +211,7 @@ export class WebhookService {
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
   private readonly botSelfAccessRecoveryInFlight = new Map<string, Promise<string | null>>();
   private readonly executionOwnerRecheckBackoffUntilMs = new Map<string, number>();
+  private readonly publisherBotId: string;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -222,7 +225,13 @@ export class WebhookService {
     @Optional() private readonly managedEntityHandshakeService?: ManagedEntityHandshakeService,
     @Optional()
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
+    @Optional()
+    private readonly publisherBindingLifecycle?: PublisherEntityBindingLifecycleService,
   ) {
+    const configuredPublisherBotId = configService.get<unknown>('MAX_PUBLISHER_BOT_ID');
+    this.publisherBotId = buildPublisherBotDescriptor({
+      id: typeof configuredPublisherBotId === 'string' ? configuredPublisherBotId : null,
+    }).id;
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
     this.canonicalExecutionMode = normalizeWebhookCanonicalExecutionMode(
       configService.get<string>('WEBHOOK_CANONICAL_EXECUTION_MODE', 'shadow'),
@@ -258,6 +267,10 @@ export class WebhookService {
   }
 
   async repairDuplicateReceiptReadModels(update: MaxUpdate): Promise<void> {
+    if (this.isPublisherUpdate(update)) {
+      await this.requirePublisherBindingLifecycle().observeWebhook(update);
+      return;
+    }
     await Promise.all([
       this.persistMembershipTransition(update),
       this.persistUserDisplayNameSnapshots(update),
@@ -327,6 +340,32 @@ export class WebhookService {
     }
 
     const update = event.normalizedPayload as MaxUpdate;
+    if (this.isPublisherUpdate(update)) {
+      await this.requirePublisherBindingLifecycle().observeWebhook(update);
+      await this.prisma.webhookEvent.updateMany({
+        where: {
+          id: webhookEventId,
+          status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+        },
+        data: {
+          normalizedPayload: this.sanitizeForJsonStorage(update),
+          status: WebhookStatus.PROCESSED,
+          processedAt: new Date(),
+          queueName: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          errorMessage: null,
+        },
+      });
+      return {
+        canonical: false,
+        prepared: true,
+        normalizedPayload: update,
+        executionBotId: null,
+        enforced: true,
+      };
+    }
+
     const semanticKey =
       buildWebhookSemanticEventKey(update) ?? `receipt:${event.dedupKey || webhookEventId}`;
     const enforceCanonicalExecution = shouldEnforceCanonicalWebhookExecution({
@@ -682,6 +721,20 @@ export class WebhookService {
     webhookEventId: string,
     update: MaxUpdate,
   ): Promise<{ update: MaxUpdate; executionBotId: string | null }> {
+    if (this.isPublisherUpdate(update)) {
+      await this.requirePublisherBindingLifecycle().observeWebhook(update);
+      await this.prisma.webhookEvent.updateMany({
+        where: {
+          id: webhookEventId,
+          status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+        },
+        data: {
+          normalizedPayload: this.sanitizeForJsonStorage(update),
+        },
+      });
+      return { update, executionBotId: null };
+    }
+
     await this.persistMembershipTransition(update);
     this.deferBackgroundTask(
       () => this.invalidateMembershipCacheFromWebhook(update),
@@ -773,6 +826,10 @@ export class WebhookService {
   }
 
   private async touchMirroredReceiptMembership(update: MaxUpdate): Promise<void> {
+    if (this.isPublisherUpdate(update)) {
+      await this.requirePublisherBindingLifecycle().observeWebhook(update);
+      return;
+    }
     const chatId = update.message?.chatId?.trim() ?? '';
     const observedBotId = update.botId?.trim() ?? '';
     if (!chatId.startsWith('-') || !observedBotId) {
@@ -792,6 +849,17 @@ export class WebhookService {
 
   private isUniqueConstraintError(error: unknown): boolean {
     return (error as { code?: string }).code === 'P2002';
+  }
+
+  private isPublisherUpdate(update: Pick<MaxUpdate, 'botId'>): boolean {
+    return update.botId?.trim() === this.publisherBotId;
+  }
+
+  private requirePublisherBindingLifecycle(): PublisherEntityBindingLifecycleService {
+    if (!this.publisherBindingLifecycle) {
+      throw new Error('Publisher webhook lifecycle boundary is unavailable');
+    }
+    return this.publisherBindingLifecycle;
   }
 
   private async stageManagedEntityPendingBootstrap(update: MaxUpdate): Promise<void> {

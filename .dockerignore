@@ -3,6 +3,9 @@
 .env.*
 *.env
 *.log
+/token
+/publik-webhook.json
+/publik-init-data-keys.json
 
 node_modules
 dist

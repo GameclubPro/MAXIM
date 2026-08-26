@@ -10,6 +10,7 @@ import {
   type PublicationEntityFilter,
   type PublicationTarget,
 } from './publication-model';
+import './publication-target-picker.css';
 
 type PublicationTargetPickerProps = {
   choices: PublicationTarget[];
@@ -109,6 +110,9 @@ export function PublicationTargetPicker({
   }, [expanded, shouldRevealEditor]);
 
   function toggleTarget(target: PublicationTarget) {
+    if (target.readiness && !target.readiness.canPublish) {
+      return;
+    }
     const key = getPublicationTargetKey(target);
     if (!selectedKeys.has(key) && value.length >= maxTargets) {
       onLimitReached?.();
@@ -237,17 +241,32 @@ export function PublicationTargetPicker({
             {visibleChoices.length > 0 ? (
               visibleChoices.map((choice) => {
                 const selected = selectedKeys.has(getPublicationTargetKey(choice));
+                const unavailable = Boolean(choice.readiness && !choice.readiness.canPublish);
+                const readinessLabel =
+                  choice.readiness?.state === 'disabled'
+                    ? 'Публик выключен'
+                    : choice.readiness?.state === 'temporarily_unavailable'
+                      ? 'Временно недоступен'
+                      : unavailable
+                        ? 'Нужно подключить Публик'
+                        : choice.entityType === 'channel'
+                          ? 'Канал'
+                          : 'Чат';
                 return (
                   <button
                     key={getPublicationTargetKey(choice)}
                     type="button"
-                    className={cn('publication-target-row', selected && 'is-selected')}
+                    className={cn(
+                      'publication-target-row',
+                      selected && 'is-selected',
+                      unavailable && 'is-unavailable',
+                    )}
                     aria-pressed={selected}
                     aria-label={`${selected ? 'Убрать' : 'Выбрать'} ${choice.title}, ${
                       choice.entityType === 'channel' ? 'канал' : 'чат'
                     }`}
                     onClick={() => toggleTarget(choice)}
-                    disabled={disabled}
+                    disabled={disabled || unavailable}
                   >
                     <EntityAvatar
                       title={choice.title}
@@ -257,7 +276,7 @@ export function PublicationTargetPicker({
                     />
                     <span className="publication-target-row__copy">
                       <strong>{choice.title}</strong>
-                      <small>{choice.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
+                      <small>{readinessLabel}</small>
                     </span>
                     <span className="publication-target-row__check" aria-hidden>
                       {selected ? <Check /> : null}

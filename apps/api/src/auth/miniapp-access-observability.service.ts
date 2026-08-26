@@ -4,7 +4,7 @@ const ACCESS_REJECTION_LOG_WINDOW_MS = 60_000;
 const MAX_ACCESS_REJECTION_BUCKETS = 16;
 
 export type MiniappAccessRejectionMetric = {
-  scope: 'auth' | 'settings_screen';
+  scope: 'auth' | 'profile' | 'settings_screen';
   code: string;
   retryable: boolean;
   recovery: string;

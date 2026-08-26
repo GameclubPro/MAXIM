@@ -29,7 +29,15 @@ function readComposeApiServices(fileName: string): Record<string, ComposeService
 
 describe('runtime-topology', () => {
   it('normalizes app roles from the shared role registry', () => {
-    expect(APP_ROLES).toEqual(['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action']);
+    expect(APP_ROLES).toEqual([
+      'all',
+      'ingress',
+      'admin',
+      'enqueue',
+      'moderation',
+      'action',
+      'publisher',
+    ]);
     expect(normalizeAppRole(' MODERATION ')).toBe('moderation');
     expect(normalizeAppRole('unknown', 'ingress')).toBe('ingress');
   });
@@ -78,6 +86,18 @@ describe('runtime-topology', () => {
       appRole: 'action',
       queueProfile: 'max-action-dispatch',
       backgroundTasksEnabled: true,
+    });
+  });
+
+  it('keeps Publik headless and isolated from ordinary action dispatch', () => {
+    expect(RUNTIME_SERVICE_PROFILES['api-publisher']).toMatchObject({
+      appRole: 'publisher',
+      queueProfile: 'publisher-dispatch',
+      backgroundTasksEnabled: true,
+      capabilities: {
+        actionEnabled: false,
+        publisherEnabled: true,
+      },
     });
   });
 

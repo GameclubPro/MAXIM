@@ -2,6 +2,7 @@ import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job
 
 export const VK_PARSING_SYNC_QUEUE = 'vk-parsing-sync';
 export const VK_PARSING_PUBLISH_QUEUE = 'vk-parsing-publish';
+export const VK_PARSING_PUBLISHER_QUEUE = 'vk-parsing-publisher';
 
 export const VK_PARSING_SYNC_RETRY_POLICY = {
   attempts: 3,
@@ -43,3 +44,32 @@ export type VkParsingPublishJob = QueueJobEnvelope<
     createdAt?: string;
   }
 >;
+
+export type VkParsingPublisherJob = QueueJobEnvelope<
+  {
+    kind: 'publish' | 'rollback-delete';
+    postId: string;
+    chatId: string;
+    requiredBotId: string;
+    dispatchProfile?: 'PUBLIK_V1';
+    reason?: VkParsingPublishReason;
+    messageId?: string;
+  },
+  {
+    idempotencyKey: string;
+    retryPolicyName?: Extract<QueueRetryPolicyName, 'vk-parsing-publish'>;
+    createdAt?: string;
+  }
+>;
+
+export type VkParsingPublisherPublishJob = VkParsingPublisherJob & {
+  kind: 'publish';
+  dispatchProfile: 'PUBLIK_V1';
+  reason: VkParsingPublishReason;
+  requiredBotId: string;
+};
+
+export type VkParsingPublisherRollbackJob = VkParsingPublisherJob & {
+  kind: 'rollback-delete';
+  messageId: string;
+};

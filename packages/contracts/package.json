@@ -62,6 +62,10 @@
       "types": "./dist/publication.d.ts",
       "default": "./dist/publication.js"
     },
+    "./publisher": {
+      "types": "./dist/publisher.d.ts",
+      "default": "./dist/publisher.js"
+    },
     "./safety-desk": {
       "types": "./dist/safety-desk.d.ts",
       "default": "./dist/safety-desk.js"

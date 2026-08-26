@@ -28,6 +28,7 @@ WEBHOOK_ROLLOUT_HELPER=""
 APPLIED_MIGRATIONS_FILE=""
 RECOVERY_BASE_MANIFEST=""
 TARGET_HAS_MEDIA_ANALYSIS=0
+TARGET_HAS_PUBLISHER=0
 TARGET_HAS_MEDIA_ANALYSIS_RASTER_SMOKE=0
 TARGET_COMMERCIAL_OCR_VERSION=""
 ROLLBACK_RUNTIME_STARTED=0
@@ -90,6 +91,17 @@ else
   fi
   maxim_topology_remove_service SERVICES "$MAXIM_MEDIA_ANALYSIS_SERVICE"
   echo "Runtime rollback target predates $MAXIM_MEDIA_ANALYSIS_SERVICE; the role will be removed."
+fi
+if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_PUBLISHER_SERVICE"; then
+  TARGET_HAS_PUBLISHER=1
+  maxim_topology_require_publisher_secret_files
+else
+  topology_status=$?
+  if [[ "$topology_status" -ne 1 ]]; then
+    exit "$topology_status"
+  fi
+  maxim_topology_remove_service SERVICES "$MAXIM_PUBLISHER_SERVICE"
+  echo "Runtime rollback target predates $MAXIM_PUBLISHER_SERVICE; the role will be removed."
 fi
 
 validate_release_retain() {
@@ -356,6 +368,28 @@ remove_incompatible_media_analysis_container() {
   docker rm -f "${container_ids[@]}" >/dev/null
 }
 
+remove_incompatible_publisher_container() {
+  local container_list
+  local container_ids=()
+
+  if ! container_list="$(
+    docker ps -a -q \
+      --filter "label=com.docker.compose.project=infra" \
+      --filter "label=com.docker.compose.service=$MAXIM_PUBLISHER_SERVICE"
+  )"; then
+    echo "Could not inspect the current $MAXIM_PUBLISHER_SERVICE container." >&2
+    return 1
+  fi
+  if [[ -z "$container_list" ]]; then
+    return 0
+  fi
+  mapfile -t container_ids <<<"$container_list"
+  ROLLBACK_RUNTIME_STARTED=1
+  echo "Stopping and removing $MAXIM_PUBLISHER_SERVICE for the pre-feature API target..."
+  docker stop --time 30 "${container_ids[@]}" >/dev/null
+  docker rm -f "${container_ids[@]}" >/dev/null
+}
+
 record_runtime_rollback_release() {
   local release_id
   local args=()
@@ -471,6 +505,9 @@ MAXIM_MIGRATION_API_IMAGE="$ROLLBACK_API_IMAGE" \
   docker compose "${MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never api-ingress \
   ./node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
+if [[ "$TARGET_HAS_PUBLISHER" -eq 0 ]]; then
+  remove_incompatible_publisher_container
+fi
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 0 ]]; then
   remove_incompatible_media_analysis_container
 else
@@ -495,7 +532,12 @@ recreate_runtime_api_wave() {
   done
 }
 
-recreate_runtime_api_wave non-webhook api-action api-admin api-ingress
+non_webhook_services=(api-action)
+if [[ "$TARGET_HAS_PUBLISHER" -eq 1 ]]; then
+  non_webhook_services+=(api-publisher)
+fi
+non_webhook_services+=(api-admin api-ingress)
+recreate_runtime_api_wave non-webhook "${non_webhook_services[@]}"
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
   recreate_runtime_api_wave media-analysis "$MAXIM_MEDIA_ANALYSIS_SERVICE"
 fi
@@ -508,9 +550,12 @@ for service in "${SERVICES[@]}"; do
   verify_service_image_id "$service" "$ROLLBACK_API_IMAGE_ID"
 done
 if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
+  publisher_policy="required"
+  [[ "$TARGET_HAS_PUBLISHER" -eq 1 ]] || publisher_policy="allow-absent"
   maxim_topology_verify_api_commercial_ocr_version \
     COMPOSE_FILES \
-    "$TARGET_COMMERCIAL_OCR_VERSION"
+    "$TARGET_COMMERCIAL_OCR_VERSION" \
+    "$publisher_policy"
 fi
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180

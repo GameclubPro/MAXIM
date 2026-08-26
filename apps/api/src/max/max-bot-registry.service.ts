@@ -14,6 +14,10 @@ import {
   isOperationalBotState,
 } from './max-bot-state.util';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
+import {
+  buildPublisherBotDescriptor,
+  type PublisherBotDescriptor,
+} from '../publisher/publisher-bot-descriptor';
 
 export type MaxBotDefinition = ResolvedMaxBotConfig & {
   webhookUrl: string | null;
@@ -28,6 +32,7 @@ export class MaxBotRegistryService {
   private readonly webhookBaseUrl: string | null;
   private readonly defaultBot: MaxBotDefinition;
   private readonly entryBot: MaxBotDefinition;
+  private readonly publisherBot: PublisherBotDescriptor;
   private readonly knownBotUserIdVariants: ReadonlySet<string>;
   private readonly botIdByUserIdVariant: ReadonlyMap<string, string>;
   private readonly ambiguousBotUserIdVariants: ReadonlySet<string>;
@@ -61,6 +66,19 @@ export class MaxBotRegistryService {
       maskedWebhookUrl: this.maskWebhookUrl(this.buildWebhookUrl(bot.id, bot.webhookSecretPath)),
     }));
     this.botsById = new Map(this.bots.map((bot) => [bot.id, bot]));
+    this.publisherBot = buildPublisherBotDescriptor({
+      id: configService.get<string>('MAX_PUBLISHER_BOT_ID'),
+    });
+    const publisherRuntime = configService.get<string>('APP_ROLE')?.trim() === 'publisher';
+    if (publisherRuntime) {
+      if (this.bots.length !== 1 || this.defaultBotId(this.bots) !== this.publisherBot.id) {
+        throw new Error('Publisher runtime must configure only MAX_PUBLISHER_BOT_ID');
+      }
+    } else if (this.botsById.has(this.publisherBot.id)) {
+      throw new Error(
+        `MAX_PUBLISHER_BOT_ID must not be configured as a normal MAX action bot: ${this.publisherBot.id}`,
+      );
+    }
     this.defaultBot = this.bots[0]!;
     this.entryBot = this.resolveEntryBot(configService.get<string>('MAX_ENTRY_BOT_ID'));
     const botIdByUserIdVariant = new Map<string, string>();
@@ -75,6 +93,14 @@ export class MaxBotRegistryService {
         botIdByUserIdVariant.set(variant, bot.id);
       }
     }
+    for (const variant of buildBotIdVariants(this.publisherBot.id)) {
+      const existingBotId = botIdByUserIdVariant.get(variant);
+      if (existingBotId && existingBotId !== this.publisherBot.id) {
+        ambiguousBotUserIdVariants.add(variant);
+        continue;
+      }
+      botIdByUserIdVariant.set(variant, this.publisherBot.id);
+    }
     this.botIdByUserIdVariant = botIdByUserIdVariant;
     this.ambiguousBotUserIdVariants = ambiguousBotUserIdVariants;
     this.knownBotUserIdVariants = new Set(botIdByUserIdVariant.keys());
@@ -86,6 +112,10 @@ export class MaxBotRegistryService {
 
   getEntryBot(): MaxBotDefinition {
     return this.entryBot;
+  }
+
+  getPublisherBotDescriptor(): PublisherBotDescriptor {
+    return this.publisherBot;
   }
 
   getAllBots(): readonly MaxBotDefinition[] {
@@ -124,7 +154,11 @@ export class MaxBotRegistryService {
   }
 
   getValidationTokensForBot(botId: string | null | undefined): readonly string[] {
-    const bot = this.getBotById(botId) ?? this.defaultBot;
+    const normalizedBotId = typeof botId === 'string' ? botId.trim() : '';
+    const bot = normalizedBotId ? this.getBotById(normalizedBotId) : this.defaultBot;
+    if (!bot) {
+      return [];
+    }
     if (!canAuthenticateInitDataForBotState(bot.state)) {
       return [];
     }
@@ -199,8 +233,9 @@ export class MaxBotRegistryService {
     url: string | null;
     maskedUrl: string | null;
   } {
-    const bot = this.getBotById(botId) ?? this.defaultBot;
-    if (!isOperationalBotState(bot.state)) {
+    const normalizedBotId = botId.trim();
+    const bot = normalizedBotId ? this.getBotById(normalizedBotId) : this.defaultBot;
+    if (!bot || !isOperationalBotState(bot.state)) {
       return {
         url: null,
         maskedUrl: null,
@@ -215,6 +250,10 @@ export class MaxBotRegistryService {
   private normalizeAppBaseUrl(value: string | undefined): string | null {
     const normalized = typeof value === 'string' ? value.trim() : '';
     return normalized ? normalized.replace(/\/+$/u, '') : null;
+  }
+
+  private defaultBotId(bots: readonly MaxBotDefinition[]): string | null {
+    return bots.find((bot) => bot.isDefault)?.id ?? bots[0]?.id ?? null;
   }
 
   private resolveEntryBot(configuredBotId: string | undefined): MaxBotDefinition {

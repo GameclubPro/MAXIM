@@ -4,7 +4,15 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const MAX_INSPECT_BYTES = 16 * 1024 * 1024;
-const API_ROLES = new Set(['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action']);
+const API_ROLES = new Set([
+  'all',
+  'ingress',
+  'admin',
+  'enqueue',
+  'moderation',
+  'action',
+  'publisher',
+]);
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/u;
 const expectedAppRoleByService = Object.freeze({
   'api-ingress': 'ingress',
@@ -19,6 +27,7 @@ const expectedAppRoleByService = Object.freeze({
   'api-moderation-background': 'moderation',
   'api-media-analysis': 'moderation',
   'api-action': 'action',
+  'api-publisher': 'publisher',
 });
 
 export function classifyCommercialOcrApiContainerInventory(
@@ -31,8 +40,8 @@ export function classifyCommercialOcrApiContainerInventory(
     throw new Error('Docker inspection must be an array.');
   }
   const expected = new Set(expectedServices);
-  if (expected.size !== expectedServices.length || expected.size !== 12) {
-    throw new Error('Commercial OCR inventory requires 12 unique expected services.');
+  if (expected.size !== expectedServices.length || expected.size !== 13) {
+    throw new Error('Commercial OCR inventory requires 13 unique expected services.');
   }
   if (expectedImageId !== null && !imageIdPattern.test(expectedImageId)) {
     throw new Error('Commercial OCR inventory expected image id is invalid.');
@@ -168,9 +177,9 @@ function readContainerId(value) {
 
 function main(argv) {
   const [expectedImageIdRaw, ...expectedServices] = argv;
-  if (expectedServices.length !== 12 || new Set(expectedServices).size !== 12) {
+  if (expectedServices.length !== 13 || new Set(expectedServices).size !== 13) {
     throw new Error(
-      'Usage: commercial-ocr-runtime-inventory.mjs <none|expected-image-id> <12 expected services>',
+      'Usage: commercial-ocr-runtime-inventory.mjs <none|expected-image-id> <13 expected services>',
     );
   }
   const expectedImageId = expectedImageIdRaw === 'none' ? null : expectedImageIdRaw;

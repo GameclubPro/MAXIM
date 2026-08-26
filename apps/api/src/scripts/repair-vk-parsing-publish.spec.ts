@@ -41,6 +41,7 @@ function createFacts(overrides: Partial<RepairCandidateFacts> = {}): RepairCandi
     publishAttemptCount: 0,
     publishIdempotencyKey: 'ownership-key-1',
     publishReason: 'autopublish',
+    dispatchProfile: 'LEGACY_ROUTED',
     lastError: null,
     source: {
       status: 'ACTIVE',
@@ -157,6 +158,7 @@ function createRepairPostRow(facts: RepairCandidateFacts): Record<string, unknow
     publishAttemptCount: facts.publishAttemptCount,
     publishIdempotencyKey: facts.publishIdempotencyKey,
     publishReason: facts.publishReason,
+    dispatchProfile: facts.dispatchProfile,
     lastError: facts.lastError,
     source: {
       id: facts.sourceId,

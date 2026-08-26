@@ -21,6 +21,7 @@ import {
 import { useOptionalManagedEntityNavigation } from '../lib/managed-entity-navigation-context';
 import { runNativeBackHandlers, useNativeBackHandlersAvailable } from '../lib/native-back';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 
 type ScreenInfo = {
   title: string;
@@ -197,7 +198,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   };
 }
 
-export function Shell() {
+export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -270,7 +271,8 @@ export function Shell() {
       ? routeEntityType
       : lastEntityType;
   const resolvedChatId = chatId;
-  const homeRoute = buildManagedEntitiesRoute(resolvedEntityType);
+  const homeRoute =
+    profile === 'publisher' ? '/publications' : buildManagedEntitiesRoute(resolvedEntityType);
 
   const resolvedChatTitle = useMemo(() => {
     if (!resolvedChatId) {
@@ -298,7 +300,7 @@ export function Shell() {
     location.pathname === '/publications' || location.pathname === '/autoposts';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
-  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute;
+  const shouldShowBottomNav = profile === 'moderation' && (isChatsRoute || isPublicationsRoute);
   const hasTopbar =
     !isChatsRoute &&
     !isPublicationsRoute &&
@@ -382,9 +384,9 @@ export function Shell() {
         <header className="shell-topbar glass-card glass-card--sm">
           <div className="shell-topbar__brand-row">
             <Link to={homeRoute} className="shell-brand">
-              Панель
+              {profile === 'publisher' ? 'Публик' : 'Панель'}
             </Link>
-            <span className="shell-chip">Панель</span>
+            <span className="shell-chip">{profile === 'publisher' ? 'Посты' : 'Панель'}</span>
           </div>
           <div className="shell-topbar__content">
             <h2>{screen.title}</h2>

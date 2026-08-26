@@ -98,6 +98,7 @@ else
     "api-moderation-background"
     "api-media-analysis"
     "api-action"
+    "api-publisher"
     "miniapp-major-static"
     "admin-static"
   )

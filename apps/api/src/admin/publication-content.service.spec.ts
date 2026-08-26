@@ -145,6 +145,59 @@ describe('PublicationContentService', () => {
     );
   });
 
+  it('rejects a token-scoped video payload for a Publik publication', async () => {
+    const service = createService();
+    const prepared = await service.prepareContentRevision({
+      text: '',
+      textFormat: 'plain',
+      buttons: [],
+      media: [
+        {
+          type: 'video',
+          payload: { token: 'upload-token-owned-by-another-bot' },
+          base64: '',
+          mimeType: 'video/mp4',
+          fileName: 'saved.mp4',
+        },
+      ],
+    });
+
+    await expect(
+      service.assertPublisherCompatibleContent(prepared, 'actor-a'),
+    ).rejects.toThrow('Выберите видеофайл снова');
+  });
+
+  it('allows a saved video reference for Publik only when durable bytes are present', async () => {
+    const findFirst = jest
+      .fn()
+      .mockResolvedValueOnce({ bytes: null, mimeType: 'video/mp4' })
+      .mockResolvedValueOnce({ bytes: TINY_VALID_MP4, mimeType: 'video/mp4' });
+    const service = createService({ publicationAsset: { findFirst } });
+    const prepared = await service.prepareContentRevision({
+      text: '',
+      textFormat: 'plain',
+      buttons: [],
+      media: [{ type: 'video-ref', assetId: 'saved-video' }],
+    });
+
+    await expect(
+      service.assertPublisherCompatibleContent(prepared, 'actor-a'),
+    ).rejects.toThrow('Выберите видеофайл снова');
+    await expect(
+      service.assertPublisherCompatibleContent(prepared, 'actor-a'),
+    ).resolves.toBeUndefined();
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'saved-video',
+        actorUserId: 'actor-a',
+        contentLinks: {
+          some: { contentRevision: { publication: { actorUserId: 'actor-a' } } },
+        },
+      },
+      select: { bytes: true, mimeType: true },
+    });
+  });
+
   it('rejects malformed inline media before creating a content revision or asset', async () => {
     const tx = createTransaction();
     const service = createService();

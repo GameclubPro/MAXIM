@@ -1,5 +1,7 @@
 import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
+import { CurrentMiniappProfile, MiniappProfiles } from '../auth/miniapp-profile';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { ManagedEntitiesService } from './managed-entities.service';
 
@@ -9,15 +11,18 @@ export class AdminManagedEntitiesController {
   constructor(private readonly entitiesService: ManagedEntitiesService) {}
 
   @Get('me')
+  @MiniappProfiles('moderation', 'publisher')
   me(
     @CurrentUser() user: AuthUser,
     @Query('chatId') chatId: string | undefined,
     @Query('entityType') entityType: string | undefined,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     return this.entitiesService.getMe(user, {
       chatId,
       entityType: entityType === 'channel' ? 'channel' : entityType === 'chat' ? 'chat' : undefined,
       enrichFromMax: Boolean(chatId?.trim()),
+      profile,
     });
   }
 

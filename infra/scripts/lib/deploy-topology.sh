@@ -13,9 +13,35 @@ MAXIM_PRODUCTION_API_SERVICES=(
   "api-moderation-background"
   "api-media-analysis"
   "api-action"
+  "api-publisher"
 )
 
 MAXIM_MEDIA_ANALYSIS_SERVICE="api-media-analysis"
+MAXIM_PUBLISHER_SERVICE="api-publisher"
+MAXIM_PUBLISHER_SECRET_FILES=(
+  "/var/lib/maxim-secrets/publik-bot-token"
+  "/var/lib/maxim-secrets/publik-webhook.json"
+  "/var/lib/maxim-secrets/publik-init-data-keys.json"
+)
+
+maxim_topology_require_publisher_secret_files() {
+  local path
+  local mode
+  local size
+
+  for path in "${MAXIM_PUBLISHER_SECRET_FILES[@]}"; do
+    if [[ ! -f "$path" || -L "$path" ]]; then
+      echo "Publisher runtime secret file is missing or unsafe: $path" >&2
+      return 1
+    fi
+    mode="$(stat -c '%a' "$path" 2>/dev/null || true)"
+    size="$(stat -c '%s' "$path" 2>/dev/null || true)"
+    if [[ "$mode" != "600" || ! "$size" =~ ^[1-9][0-9]{0,4}$ || "$size" -gt 16384 ]]; then
+      echo "Publisher runtime secret file must be a bounded regular 0600 file: $path" >&2
+      return 1
+    fi
+  done
+}
 
 maxim_topology_contains() {
   local needle="$1"
@@ -107,6 +133,7 @@ maxim_topology_git_commercial_ocr_version() {
 maxim_topology_require_api_commercial_ocr_version_config() {
   local compose_args_var="$1"
   local expected_version="$2"
+  local publisher_policy="${3:-required}"
   local -n compose_args_ref="$compose_args_var"
   local config
 
@@ -117,17 +144,24 @@ maxim_topology_require_api_commercial_ocr_version_config() {
   if ! printf '%s' "$config" | node -e '
       const { readFileSync } = require("node:fs");
       const expectedVersion = process.argv[1];
-      const services = process.argv.slice(2);
+      const publisherPolicy = process.argv[2];
+      const services = process.argv.slice(3);
       const config = JSON.parse(readFileSync(0, "utf8"));
+      const configuredServices = services.filter((service) => config?.services?.[service]);
+      const missingServices = services.filter((service) => !config?.services?.[service]);
       const valid =
-        services.length === 12 &&
+        services.length === 13 &&
         new Set(services).size === services.length &&
-        services.every(
+        (missingServices.length === 0 ||
+          (publisherPolicy === "allow-absent" &&
+            missingServices.length === 1 &&
+            missingServices[0] === "api-publisher")) &&
+        configuredServices.every(
           (service) =>
             config?.services?.[service]?.environment?.COMMERCIAL_OCR_VERSION === expectedVersion,
         );
       process.exit(valid ? 0 : 1);
-    ' "$expected_version" "${MAXIM_PRODUCTION_API_SERVICES[@]}" >/dev/null 2>&1; then
+    ' "$expected_version" "$publisher_policy" "${MAXIM_PRODUCTION_API_SERVICES[@]}" >/dev/null 2>&1; then
     echo "Refusing API rollout unless every production API role has the target COMMERCIAL_OCR_VERSION." >&2
     return 1
   fi
@@ -140,6 +174,7 @@ maxim_topology_prepare_commercial_ocr_target() {
   local version_var="$4"
   local topology_status
   local resolved_version
+  local publisher_policy="required"
 
   printf -v "$has_media_analysis_var" '%s' 0
   printf -v "$version_var" '%s' ''
@@ -158,13 +193,25 @@ maxim_topology_prepare_commercial_ocr_target() {
   fi
   printf -v "$version_var" '%s' "$resolved_version"
   export COMMERCIAL_OCR_VERSION="$resolved_version"
-  maxim_topology_require_api_commercial_ocr_version_config "$compose_args_var" "$resolved_version"
+  if maxim_topology_git_compose_has_service "$commit_sha" "$MAXIM_PUBLISHER_SERVICE"; then
+    :
+  else
+    local publisher_status=$?
+    if [[ "$publisher_status" -eq 1 ]]; then
+      publisher_policy="allow-absent"
+    else
+      return "$publisher_status"
+    fi
+  fi
+  maxim_topology_require_api_commercial_ocr_version_config \
+    "$compose_args_var" "$resolved_version" "$publisher_policy"
   maxim_topology_require_media_analysis_shadow_config "$compose_args_var"
 }
 
 maxim_topology_verify_api_commercial_ocr_version() {
   local compose_args_var="$1"
   local expected_version="$2"
+  local publisher_policy="${3:-required}"
   local -n compose_args_ref="$compose_args_var"
   local service
   local container_id
@@ -173,11 +220,14 @@ maxim_topology_verify_api_commercial_ocr_version() {
   local actual_version
   local matches
 
-  if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 12 ]]; then
-    echo "Commercial OCR version verification requires the reviewed 12-role API topology." >&2
+  if [[ "${#MAXIM_PRODUCTION_API_SERVICES[@]}" -ne 13 ]]; then
+    echo "Commercial OCR version verification requires the reviewed 13-role API topology." >&2
     return 1
   fi
   for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
+    if [[ "$service" == "$MAXIM_PUBLISHER_SERVICE" && "$publisher_policy" == "allow-absent" ]]; then
+      continue
+    fi
     container_id="$(docker compose "${compose_args_ref[@]}" ps -q "$service" 2>/dev/null || true)"
     if [[ -z "$container_id" ]]; then
       echo "Cannot verify commercial OCR version for missing API service container: $service" >&2

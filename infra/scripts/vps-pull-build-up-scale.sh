@@ -42,6 +42,7 @@ else
     "api-moderation-background"
     "api-media-analysis"
     "api-action"
+    "api-publisher"
     "miniapp-major-static"
   )
 fi
@@ -535,6 +536,7 @@ TARGET_SHA="$(git rev-parse HEAD)"
 TARGET_HAS_MEDIA_ANALYSIS=0
 TARGET_COMMERCIAL_OCR_VERSION=""
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_require_publisher_secret_files
   maxim_topology_prepare_commercial_ocr_target \
     "$TARGET_SHA" \
     COMPOSE_FILES \
@@ -592,6 +594,7 @@ fi
 recreate_service_wave "worker" \
   "api-enqueue" \
   "api-action" \
+  "api-publisher" \
   "api-moderation" \
   "api-moderation-critical" \
   "api-moderation-join" \

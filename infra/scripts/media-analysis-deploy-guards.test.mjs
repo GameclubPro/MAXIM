@@ -19,6 +19,7 @@ const apiServices = [
   'api-moderation-background',
   'api-media-analysis',
   'api-action',
+  'api-publisher',
 ];
 
 function read(path) {
@@ -145,7 +146,7 @@ printf '%s|%s|%s' "$has_media" "$version" "$COMMERCIAL_OCR_VERSION"
   assert.equal(withMediaAnalysis.stdout, '1|tesseract-rus-eng-v1|tesseract-rus-eng-v1');
 });
 
-test('effective OCR version preflight requires the target version on all 12 API roles', () => {
+test('effective OCR version preflight requires the target version on all 13 API roles', () => {
   const matchingConfig = commercialOcrComposeConfig('tesseract-rus-eng-v2');
   const matching = runTopologyProbe(`
 docker() { printf '%s' '${matchingConfig}'; }
@@ -414,7 +415,7 @@ test('deploy and rollback pin OCR identity and order media before webhook roles'
   );
   assert.ok(
     deploy.lastIndexOf('maxim_topology_stop_media_analysis_before_api_transition') <
-      deploy.lastIndexOf('recreate_service_wave "action"'),
+      deploy.lastIndexOf('recreate_service_wave "action and publisher"'),
   );
   assert.ok(
     deploy.lastIndexOf('recreate_service_wave "ingress"') <

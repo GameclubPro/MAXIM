@@ -11,6 +11,7 @@ type BroadcastPublishBarProps = {
   meta?: string;
   issues?: BroadcastPublishIssueAction[];
   busy?: boolean;
+  showTest?: boolean;
   testLabel: string;
   compactTestLabel?: string;
   testAriaLabel: string;
@@ -29,6 +30,7 @@ export function BroadcastPublishBar({
   meta = '',
   issues = [],
   busy = false,
+  showTest = true,
   testLabel,
   compactTestLabel,
   testAriaLabel,
@@ -73,22 +75,24 @@ export function BroadcastPublishBar({
         </div>
       ) : null}
 
-      <button
-        type="button"
-        className="button button--ghost broadcast-publish-bar__test"
-        onClick={onTest}
-        disabled={testDisabled}
-        aria-label={testAriaLabel}
-        title={testAriaLabel}
-      >
-        <TestGlyph aria-hidden focusable="false" />
-        <span className={cn(compactTestLabel && 'broadcast-publish-bar__test-label--regular')}>
-          {testLabel}
-        </span>
-        {compactTestLabel ? (
-          <span className="broadcast-publish-bar__test-label--compact">{compactTestLabel}</span>
-        ) : null}
-      </button>
+      {showTest ? (
+        <button
+          type="button"
+          className="button button--ghost broadcast-publish-bar__test"
+          onClick={onTest}
+          disabled={testDisabled}
+          aria-label={testAriaLabel}
+          title={testAriaLabel}
+        >
+          <TestGlyph aria-hidden focusable="false" />
+          <span className={cn(compactTestLabel && 'broadcast-publish-bar__test-label--regular')}>
+            {testLabel}
+          </span>
+          {compactTestLabel ? (
+            <span className="broadcast-publish-bar__test-label--compact">{compactTestLabel}</span>
+          ) : null}
+        </button>
+      ) : null}
 
       {showSecondary ? (
         <button

@@ -33,6 +33,7 @@ export type ChannelSuggestionPublicationContextV1 = {
   messageDigest: string;
   contextDigest: string;
   botId: string;
+  dialogBotId?: string;
   threadId: string | null;
   buttons: MaxMessageButton[][];
   includeCommentsButton: boolean;
@@ -156,6 +157,7 @@ export function readChannelSuggestionPublicationContextV1(
   const messageDigest = readSha256(raw.messageDigest);
   const contextDigest = readSha256(raw.contextDigest);
   const botId = readString(raw.botId);
+  const dialogBotId = readString(raw.dialogBotId);
   const buttons = readButtonRows(raw.buttons);
   const author = readRecord(raw.authorAttribution);
   const authorUserId = readString(author?.userId);
@@ -196,6 +198,7 @@ export function readChannelSuggestionPublicationContextV1(
     preparedAt,
     messageDigest,
     botId,
+    ...(dialogBotId ? { dialogBotId } : {}),
     threadId,
     buttons,
     includeCommentsButton: raw.includeCommentsButton,
@@ -233,6 +236,7 @@ export function buildChannelSuggestionPublicationContextDigest(
     preparedAt: context.preparedAt,
     messageDigest: context.messageDigest,
     botId: context.botId,
+    ...(context.dialogBotId ? { dialogBotId: context.dialogBotId } : {}),
     threadId: context.threadId,
     buttons: context.buttons,
     includeCommentsButton: context.includeCommentsButton,

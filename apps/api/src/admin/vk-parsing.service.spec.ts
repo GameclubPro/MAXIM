@@ -4696,7 +4696,7 @@ describe('VkParsingService', () => {
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
     });
     maxClient.uploadImage.mockRejectedValue(
-      new Error('MAX API background rate limit exceeded across all bots'),
+      new Error('MAX API background rate limit exceeded for bot publisher-bot'),
     );
     global.fetch = jest
       .fn()
@@ -4830,7 +4830,7 @@ describe('VkParsingService', () => {
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
     });
     maxClient.uploadImage.mockRejectedValue(
-      new Error('MAX API background rate limit exceeded across all bots'),
+      new Error('MAX API background rate limit exceeded for bot publisher-bot'),
     );
     global.fetch = jest
       .fn()

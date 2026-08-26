@@ -18,6 +18,7 @@ const apiServices = [
   'api-moderation-background',
   'api-media-analysis',
   'api-action',
+  'api-publisher',
 ];
 
 function read(path) {
@@ -272,6 +273,19 @@ test('journals release inventory before mutation and fences inherited components
       runtimeRollback.indexOf('./node_modules/.bin/prisma migrate deploy'),
   );
   assert.match(runtimeRollback, /verify_inherited_static_components/u);
+});
+
+test('ref rollback never recreates Publik for a pre-feature target', () => {
+  const rollback = read('infra/scripts/vps-runtime-rollback.sh');
+
+  assert.match(
+    rollback,
+    /non_webhook_services=\(api-action\)[\s\S]*if \[\[ "\$TARGET_HAS_PUBLISHER" -eq 1 \]\]; then[\s\S]*non_webhook_services\+=\(api-publisher\)[\s\S]*recreate_runtime_api_wave non-webhook "\$\{non_webhook_services\[@\]\}"/u,
+  );
+  assert.doesNotMatch(
+    rollback,
+    /recreate_runtime_api_wave non-webhook api-action api-publisher/u,
+  );
 });
 
 test('keeps backup preflight read-only and reclaims only manifest-aware release images', () => {

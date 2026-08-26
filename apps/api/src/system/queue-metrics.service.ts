@@ -8,7 +8,12 @@ import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from '../admin/admin-managed-ent
 import { ADMIN_MANUAL_FANOUT_QUEUE } from '../admin/admin-manual-fanout.queue';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from '../admin/admin-suggestion-delivery.queue';
 import { ADMIN_SUPER_BAN_QUEUE } from '../admin/admin-super-ban.queue';
-import { VK_PARSING_PUBLISH_QUEUE, VK_PARSING_SYNC_QUEUE } from '../admin/vk-parsing.queue';
+import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
+import {
+  VK_PARSING_PUBLISH_QUEUE,
+  VK_PARSING_PUBLISHER_QUEUE,
+  VK_PARSING_SYNC_QUEUE,
+} from '../admin/vk-parsing.queue';
 import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from '../max/max-chat-admin-roster-sync.queue';
 import {
   MAX_ACTION_ALL_QUEUE_NAMES,
@@ -16,6 +21,8 @@ import {
   type MaxActionQueueName,
 } from '../max/max-action.queue';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { PUBLISHER_BINDING_REFRESH_QUEUE } from '../publisher/publisher-binding-refresh.queue';
+import { PUBLISHER_CHAT_COMMENT_QUEUE } from '../publisher/publisher-chat-comment.queue';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
 import { COMMERCIAL_OCR_QUEUE } from '../moderation/commercial-ocr/commercial-ocr.queue';
 import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
@@ -54,6 +61,10 @@ export const AUXILIARY_QUEUE_NAMES = [
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
   VK_PARSING_SYNC_QUEUE,
   VK_PARSING_PUBLISH_QUEUE,
+  VK_PARSING_PUBLISHER_QUEUE,
+  PUBLISHER_BINDING_REFRESH_QUEUE,
+  PUBLISHER_CHAT_COMMENT_QUEUE,
+  PUBLISHER_SUGGESTION_PUBLICATION_QUEUE,
   NIGHT_MODE_TRANSITION_QUEUE,
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
   ADMIN_MANUAL_FANOUT_QUEUE,

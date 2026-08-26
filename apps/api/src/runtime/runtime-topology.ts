@@ -16,6 +16,7 @@ export type RuntimeRoleCapabilities = {
   enqueueEnabled: boolean;
   moderationEnabled: boolean;
   actionEnabled: boolean;
+  publisherEnabled: boolean;
 };
 
 export type DefaultWebhookWorkerGroupName =
@@ -39,7 +40,8 @@ export type RuntimeServiceName =
   | 'api-moderation-realtime-d'
   | 'api-moderation-background'
   | 'api-media-analysis'
-  | 'api-action';
+  | 'api-action'
+  | 'api-publisher';
 
 export type RuntimeQueueProfile =
   | 'all-in-one'
@@ -50,7 +52,8 @@ export type RuntimeQueueProfile =
   | 'webhook-default'
   | 'webhook-background'
   | 'commercial-image-ocr'
-  | 'max-action-dispatch';
+  | 'max-action-dispatch'
+  | 'publisher-dispatch';
 
 export type RuntimeQueuePriority =
   | 'all'
@@ -60,7 +63,8 @@ export type RuntimeQueuePriority =
   | 'user-facing-critical'
   | 'user-facing-realtime'
   | 'background'
-  | 'action-dispatch';
+  | 'action-dispatch'
+  | 'publisher-dispatch';
 
 export type RuntimeTopologySource =
   | 'declared-service'
@@ -95,6 +99,7 @@ export const RUNTIME_ROLE_CAPABILITIES = Object.freeze({
     enqueueEnabled: true,
     moderationEnabled: true,
     actionEnabled: true,
+    publisherEnabled: false,
   },
   ingress: {
     httpEnabled: true,
@@ -103,6 +108,7 @@ export const RUNTIME_ROLE_CAPABILITIES = Object.freeze({
     enqueueEnabled: false,
     moderationEnabled: false,
     actionEnabled: false,
+    publisherEnabled: false,
   },
   admin: {
     httpEnabled: true,
@@ -111,6 +117,7 @@ export const RUNTIME_ROLE_CAPABILITIES = Object.freeze({
     enqueueEnabled: false,
     moderationEnabled: false,
     actionEnabled: false,
+    publisherEnabled: false,
   },
   enqueue: {
     httpEnabled: false,
@@ -119,6 +126,7 @@ export const RUNTIME_ROLE_CAPABILITIES = Object.freeze({
     enqueueEnabled: true,
     moderationEnabled: false,
     actionEnabled: false,
+    publisherEnabled: false,
   },
   moderation: {
     httpEnabled: false,
@@ -127,6 +135,7 @@ export const RUNTIME_ROLE_CAPABILITIES = Object.freeze({
     enqueueEnabled: false,
     moderationEnabled: true,
     actionEnabled: false,
+    publisherEnabled: false,
   },
   action: {
     httpEnabled: false,
@@ -135,6 +144,16 @@ export const RUNTIME_ROLE_CAPABILITIES = Object.freeze({
     enqueueEnabled: false,
     moderationEnabled: false,
     actionEnabled: true,
+    publisherEnabled: false,
+  },
+  publisher: {
+    httpEnabled: false,
+    ingressEnabled: false,
+    adminEnabled: false,
+    enqueueEnabled: false,
+    moderationEnabled: false,
+    actionEnabled: false,
+    publisherEnabled: true,
   },
 } as const satisfies Record<AppRole, RuntimeRoleCapabilities>);
 
@@ -185,6 +204,7 @@ export const RUNTIME_SERVICE_NAMES = Object.freeze([
   'api-moderation-background',
   'api-media-analysis',
   'api-action',
+  'api-publisher',
 ] as const satisfies readonly RuntimeServiceName[]);
 
 const DEFAULT_CANARY_SHARDS = Object.freeze([
@@ -362,6 +382,19 @@ export const RUNTIME_SERVICE_PROFILES = Object.freeze({
     canaryShardIds: [],
     backgroundTasksEnabled: true,
   },
+  'api-publisher': {
+    serviceName: 'api-publisher',
+    serviceTitle: 'Publik isolated dispatch worker',
+    appRole: 'publisher',
+    capabilities: RUNTIME_ROLE_CAPABILITIES.publisher,
+    queueProfile: 'publisher-dispatch',
+    queuePriority: 'publisher-dispatch',
+    moderationQueues: [],
+    dynamicLeasesMode: 'off',
+    dynamicLeasesWorkerGroup: null,
+    canaryShardIds: [],
+    backgroundTasksEnabled: true,
+  },
 } as const satisfies Record<RuntimeServiceName, RuntimeServiceProfile>);
 
 const SERVICE_BY_DEFAULT_WORKER_GROUP = Object.freeze(
@@ -455,6 +488,8 @@ function serviceNameByRole(role: AppRole): RuntimeServiceName {
       return 'api-enqueue';
     case 'action':
       return 'api-action';
+    case 'publisher':
+      return 'api-publisher';
     case 'moderation':
       return 'api-moderation';
     case 'all':
