@@ -15798,6 +15798,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         button: buttons[0]![0]!,
       });
     } catch (error: unknown) {
+      if (error instanceof PublisherChatCommentAdmissionError) {
+        await this.replacementAttachMarkerStore.skipChatAutoCommentAfterPublisherAdmissionFailure({
+          markerId,
+          chatId,
+          messageId,
+          lockToken: claim.lockToken,
+          botId: autoAttachBotId,
+          reason: error.reason,
+        });
+        this.logger.debug(
+          { chatId, messageId, reason: error.reason },
+          'Skipped optional publisher chat-comment attach while admission is closed',
+        );
+        return;
+      }
       await this.replacementAttachMarkerStore.releaseChatAutoComment({
         chatId,
         messageId,
@@ -15807,13 +15822,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         lastError: this.extractErrorSummary(error),
         lastStatusCode: this.extractStatusCode(error),
       });
-      if (error instanceof PublisherChatCommentAdmissionError) {
-        this.logger.debug(
-          { chatId, messageId, reason: error.reason },
-          'Skipped optional publisher chat-comment attach while admission is closed',
-        );
-        return;
-      }
       throw error;
     }
   }

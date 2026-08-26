@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { PrismaService } from '../prisma/prisma.service';
 import { MAX_SEND_AMBIGUOUS_ERROR_PREFIX } from '../max/max-send-ambiguity.util';
+import type { PublisherChatCommentAdmissionFailureReason } from '../publisher/publisher-chat-comment.queue';
 import {
   CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
   CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
@@ -481,6 +482,51 @@ export class ReplacementAttachMarkerStore {
     lastStatusCode: number | null;
   }): Promise<void> {
     return this.complete('chat_auto_comment', params);
+  }
+
+  async skipChatAutoCommentAfterPublisherAdmissionFailure(params: {
+    markerId: string;
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    botId: string | null;
+    reason: PublisherChatCommentAdmissionFailureReason;
+  }): Promise<void> {
+    const updated = await this.getDelegate('chat_auto_comment')?.updateMany?.({
+      where: {
+        id: params.markerId,
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: 'IN_PROGRESS',
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+        cleanupIntentId: null,
+      },
+      data: {
+        status: 'SKIPPED',
+        lockToken: null,
+        lockedAt: null,
+        source: 'webhook',
+        botId: params.botId,
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+        cleanupIntentId: null,
+        lastError: `Publisher chat-comment admission failed: ${params.reason}`,
+        lastStatusCode: null,
+      },
+    });
+    if (!updated || updated.count !== 1) {
+      throw new Error('Failed to terminalize the publisher chat-comment admission marker');
+    }
   }
 
   async completeChatAutoCommentAuditRecovery(params: {

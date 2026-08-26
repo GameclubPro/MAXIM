@@ -47,6 +47,7 @@ type MarkerRow = {
   replacementSendStartedAt: Date | null;
   publishedUrl: string | null;
   originalDeleted: boolean;
+  cleanupIntentId: string | null;
   lastError: string | null;
   lastStatusCode: number | null;
 };
@@ -92,6 +93,7 @@ function createMarkerStore() {
           replacementSendStartedAt: null,
           publishedUrl: null,
           originalDeleted: false,
+          cleanupIntentId: null,
           lastError: null,
           lastStatusCode: null,
         });
@@ -105,9 +107,13 @@ function createMarkerStore() {
             messageId?: string;
             lockToken?: string;
             status?: string | { in: string[] };
+            deliveryMode?: string | null;
             replacementMessageId?: string | null;
             replyMessageId?: string | null;
             replacementSendStartedAt?: Date | null;
+            publishedUrl?: string | null;
+            originalDeleted?: boolean;
+            cleanupIntentId?: string | null;
             OR?: Array<{ lockedAt?: null | { lt?: Date } }>;
           };
           data?: Partial<MarkerRow>;
@@ -128,9 +134,13 @@ function createMarkerStore() {
           return { count: 0 };
         }
         for (const field of [
+          'deliveryMode',
           'replacementMessageId',
           'replyMessageId',
           'replacementSendStartedAt',
+          'publishedUrl',
+          'originalDeleted',
+          'cleanupIntentId',
         ] as const) {
           if (field in where && where[field] !== row[field]) return { count: 0 };
         }
@@ -299,7 +309,7 @@ describe('ModerationService publisher chat-comment producer', () => {
   });
 
   it.each(['heartbeat_missing', 'dispatch_disabled'] as const)(
-    'releases the marker and completes the webhook when publisher admission is %s',
+    'terminalizes the marker and completes the webhook when publisher admission is %s',
     async (reason) => {
       const harness = createHarness();
       harness.queue.enqueueAttach.mockRejectedValue(new PublisherChatCommentAdmissionError(reason));
@@ -309,15 +319,50 @@ describe('ModerationService publisher chat-comment producer', () => {
 
       expect(harness.queue.enqueueAttach).toHaveBeenCalledTimes(1);
       expect(harness.marker.rows.get(`chat-1:message-${reason}`)).toMatchObject({
-        status: 'IN_PROGRESS',
+        status: 'SKIPPED',
         lockToken: null,
         lockedAt: null,
         replacementSendStartedAt: null,
         lastError: expect.stringContaining(reason),
       });
+      await expect(harness.service.handleUpdate(update)).resolves.toBeUndefined();
+
+      expect(harness.queue.enqueueAttach).toHaveBeenCalledTimes(1);
       expect(harness.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     },
   );
+
+  it('does not terminalize an admission skip after the marker claim changes owner', async () => {
+    const harness = createHarness();
+    let rejectAdmission!: (error: unknown) => void;
+    harness.queue.enqueueAttach.mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        rejectAdmission = reject;
+      }),
+    );
+    const update = createChatMessageUpdate({ messageId: 'message-admission-cas' });
+
+    const handling = harness.service.handleUpdate(update);
+    while (harness.queue.enqueueAttach.mock.calls.length === 0) await Promise.resolve();
+    const claimed = harness.marker.rows.get('chat-1:message-admission-cas');
+    expect(claimed?.lockToken).toEqual(expect.any(String));
+    harness.marker.rows.set('chat-1:message-admission-cas', {
+      ...claimed!,
+      lockToken: 'new-owner-lock',
+      lockedAt: new Date('2026-08-26T09:01:00.000Z'),
+    });
+
+    rejectAdmission(new PublisherChatCommentAdmissionError('heartbeat_missing'));
+    await expect(handling).rejects.toThrow(
+      'Failed to terminalize the publisher chat-comment admission marker',
+    );
+
+    expect(harness.marker.rows.get('chat-1:message-admission-cas')).toMatchObject({
+      status: 'IN_PROGRESS',
+      lockToken: 'new-owner-lock',
+      lockedAt: new Date('2026-08-26T09:01:00.000Z'),
+    });
+  });
 
   it('does not enqueue a duplicate while the first claim is being handed to Redis', async () => {
     const harness = createHarness();
@@ -359,6 +404,7 @@ describe('ModerationService publisher chat-comment producer', () => {
       replacementSendStartedAt: null,
       publishedUrl: null,
       originalDeleted: false,
+      cleanupIntentId: null,
       lastError: null,
       lastStatusCode: null,
     });
@@ -392,6 +438,7 @@ describe('ModerationService publisher chat-comment producer', () => {
       replacementSendStartedAt: new Date('2020-01-01T00:00:01.000Z'),
       publishedUrl: null,
       originalDeleted: false,
+      cleanupIntentId: null,
       lastError: null,
       lastStatusCode: null,
     });

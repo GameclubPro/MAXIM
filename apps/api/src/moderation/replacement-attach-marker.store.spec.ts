@@ -4,6 +4,7 @@ import {
 } from './replacement-attach-marker.store';
 
 type TestMarkerRow = {
+  id: string;
   chatId: string;
   messageId: string;
   status: 'IN_PROGRESS' | 'SUCCEEDED' | 'SKIPPED';
@@ -16,6 +17,9 @@ type TestMarkerRow = {
   replacementMessageId: string | null;
   replyMessageId: string | null;
   replacementSendStartedAt: Date | null;
+  publishedUrl: string | null;
+  originalDeleted: boolean;
+  cleanupIntentId: string | null;
   lastError: string | null;
   lastStatusCode?: number | null;
 };
@@ -44,6 +48,7 @@ function createMarkerDelegate(initial: TestMarkerRow | null = null) {
         return { count: 0 };
       }
       for (const field of [
+        'id',
         'status',
         'lockToken',
         'lockedAt',
@@ -51,6 +56,9 @@ function createMarkerDelegate(initial: TestMarkerRow | null = null) {
         'replacementMessageId',
         'replyMessageId',
         'replacementSendStartedAt',
+        'publishedUrl',
+        'originalDeleted',
+        'cleanupIntentId',
         'lastError',
       ] as const) {
         if (Object.prototype.hasOwnProperty.call(where, field) && row[field] !== where[field]) {
@@ -84,6 +92,7 @@ function createMarkerDelegate(initial: TestMarkerRow | null = null) {
 
 function legacySkippedEdit(messageId: string): TestMarkerRow {
   return {
+    id: `marker-${messageId}`,
     chatId: 'channel-1',
     messageId,
     status: 'SKIPPED',
@@ -96,6 +105,9 @@ function legacySkippedEdit(messageId: string): TestMarkerRow {
     replacementMessageId: null,
     replyMessageId: null,
     replacementSendStartedAt: null,
+    publishedUrl: null,
+    originalDeleted: false,
+    cleanupIntentId: null,
     lastError: 'Error on message edit',
     lastStatusCode: 400,
   };
@@ -108,6 +120,113 @@ const channelClaim = {
   linkType: null,
   hasEngagementButtons: true,
 };
+
+function publisherAdmissionMarker(
+  overrides: Partial<TestMarkerRow> = {},
+): TestMarkerRow {
+  return {
+    id: 'ccr1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    chatId: 'chat-1',
+    messageId: 'message-1',
+    status: 'IN_PROGRESS',
+    lockToken: 'claim-lock-1',
+    lockedAt: new Date('2026-08-26T09:00:00.000Z'),
+    source: 'webhook',
+    botId: 'main-bot',
+    linkType: null,
+    deliveryMode: null,
+    replacementMessageId: null,
+    replyMessageId: null,
+    replacementSendStartedAt: null,
+    publishedUrl: null,
+    originalDeleted: false,
+    cleanupIntentId: null,
+    lastError: null,
+    lastStatusCode: null,
+    ...overrides,
+  };
+}
+
+describe('ReplacementAttachMarkerStore publisher admission terminalization', () => {
+  const terminalize = (store: ReplacementAttachMarkerStore) =>
+    store.skipChatAutoCommentAfterPublisherAdmissionFailure({
+      markerId: 'ccr1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      lockToken: 'claim-lock-1',
+      botId: 'main-bot',
+      reason: 'heartbeat_missing',
+    });
+
+  it('terminalizes only the exact unfenced claim with stable admission evidence', async () => {
+    const marker = createMarkerDelegate(publisherAdmissionMarker());
+    const store = new ReplacementAttachMarkerStore({
+      chatAutoCommentAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(terminalize(store)).resolves.toBeUndefined();
+
+    expect(marker.delegate.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'ccr1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        lockToken: 'claim-lock-1',
+        status: 'IN_PROGRESS',
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+        cleanupIntentId: null,
+      },
+      data: {
+        status: 'SKIPPED',
+        lockToken: null,
+        lockedAt: null,
+        source: 'webhook',
+        botId: 'main-bot',
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+        cleanupIntentId: null,
+        lastError: 'Publisher chat-comment admission failed: heartbeat_missing',
+        lastStatusCode: null,
+      },
+    });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        lockToken: null,
+        lockedAt: null,
+        lastError: 'Publisher chat-comment admission failed: heartbeat_missing',
+        lastStatusCode: null,
+      }),
+    );
+  });
+
+  it.each([
+    ['token ownership', { lockToken: 'new-owner-lock' }],
+    ['send fence', { replacementSendStartedAt: new Date('2026-08-26T09:00:01.000Z') }],
+    ['persisted result', { replyMessageId: 'publisher-reply-1' }],
+    ['terminal status', { status: 'SUCCEEDED' as const }],
+  ] as const)('rejects a stale admission outcome after %s changes', async (_label, override) => {
+    const initial = publisherAdmissionMarker(override);
+    const marker = createMarkerDelegate(initial);
+    const store = new ReplacementAttachMarkerStore({
+      chatAutoCommentAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(terminalize(store)).rejects.toThrow(
+      'Failed to terminalize the publisher chat-comment admission marker',
+    );
+    expect(marker.row).toEqual(initial);
+  });
+});
 
 describe('ReplacementAttachMarkerStore legacy channel edit recovery', () => {
   it('persists only explicit MAX circuit and internal-limiter predispatch proofs', () => {
