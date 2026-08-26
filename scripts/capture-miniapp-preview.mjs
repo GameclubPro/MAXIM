@@ -361,6 +361,51 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publisher-entities',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entities-page__list').waitFor({ state: 'visible' });
+      await page.getByText('Готов к публикации', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-channels',
+    beforeShot: async (page) => {
+      await page.getByRole('list', { name: 'Каналы Публика' }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-empty',
+    beforeShot: async (page) => {
+      await page.getByText('Чатов пока нет', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-error',
+    beforeShot: async (page) => {
+      await page
+        .getByText('Не удалось загрузить получателей', { exact: true })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-large',
+    beforeShot: async (page) => {
+      const loadMore = page.locator('.publisher-entities-page__load-more');
+      await loadMore.waitFor({ state: 'visible' });
+      await loadMore.click();
+      await page.getByText('60 из 200', { exact: true }).waitFor({ state: 'visible' });
+      await loadMore.click();
+      await page.getByText('90 из 200', { exact: true }).waitFor({ state: 'visible' });
+      const list = page.locator('.publisher-entities-page__list.is-virtual');
+      await list.waitFor({ state: 'visible' });
+      await list.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+      });
+      await page.waitForTimeout(120);
+    },
+  },
+  {
     name: 'publications',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });
@@ -377,37 +422,27 @@ const scenarioBehaviors = [
   {
     name: 'publications-publisher-readiness',
     beforeShot: async (page) => {
-      await page.locator('.publisher-readiness-overview__summary').click();
-      await page.locator('.publisher-readiness-overview__list').waitFor({ state: 'visible' });
+      await page.getByRole('link', { name: 'Чаты и каналы' }).waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publications-publisher-empty',
     beforeShot: async (page) => {
-      await page.locator('.publisher-readiness-overview__summary').click();
-      await page.getByText('Получателей пока нет', { exact: true }).waitFor({ state: 'visible' });
+      await page
+        .getByText('Нет подключённых получателей', { exact: true })
+        .waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publications-publisher-large',
     beforeShot: async (page) => {
-      await page.locator('.publisher-readiness-overview__summary').click();
-      const list = page.locator('.publisher-readiness-overview__list.is-virtual');
-      await list.waitFor({ state: 'visible' });
-      await list.evaluate((element) => {
-        element.scrollTop = element.scrollHeight;
-        element.dispatchEvent(new Event('scroll'));
-      });
-      await page.getByText('Афиша района 400', { exact: true }).waitFor({ state: 'visible' });
+      await page.locator('.publisher-readiness-overview').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publications-publisher-error',
     beforeShot: async (page) => {
-      await page.locator('.publisher-readiness-overview__summary').click();
-      await page
-        .getByText('Получатели временно недоступны', { exact: true })
-        .waitFor({ state: 'visible' });
+      await page.getByText('Не удалось проверить', { exact: true }).waitFor({ state: 'visible' });
     },
   },
   {
@@ -423,13 +458,28 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.locator('.publications-editor').waitFor({ state: 'visible' });
       await page.locator('.publication-target-picker__summary').click();
+      const loadMore = page.locator('.publication-target-picker__load-more');
+      await loadMore.waitFor({ state: 'visible' });
+      await loadMore.click();
+      await page.getByText('60 из 400', { exact: true }).waitFor({ state: 'visible' });
+      await loadMore.click();
+      await page.getByText('90 из 400', { exact: true }).waitFor({ state: 'visible' });
       const list = page.locator('.publication-target-picker__list.is-virtual');
       await list.waitFor({ state: 'visible' });
       await list.evaluate((element) => {
         element.scrollTop = element.scrollHeight;
         element.dispatchEvent(new Event('scroll'));
       });
-      await page.getByText('Афиша района 400', { exact: true }).waitFor({ state: 'visible' });
+      await page.locator('.publication-target-row').last().waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-compose-missing-target',
+    beforeShot: async (page) => {
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page
+        .getByText('Не удалось выбрать получателя из ссылки', { exact: true })
+        .waitFor({ state: 'visible' });
     },
   },
   {
@@ -438,7 +488,9 @@ const scenarioBehaviors = [
       const card = page.locator('.publisher-policy-card');
       await card.waitFor({ state: 'visible' });
       await card.scrollIntoViewIfNeeded();
-      await page.getByText('Публик не администратор', { exact: true }).waitFor({ state: 'visible' });
+      await page
+        .getByText('Публик не администратор', { exact: true })
+        .waitFor({ state: 'visible' });
     },
   },
   {

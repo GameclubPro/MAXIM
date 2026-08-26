@@ -70,7 +70,6 @@ import {
   isIsolatedPublicationEditor,
   isPublicationOccurrenceContentStale,
   isPublicationRevisionConflictError,
-  isPublicationDraftEmpty,
   normalizePublicationEntityFilter,
   normalizePublicationQuery,
   normalizePublicationStatusFilter,
@@ -102,9 +101,15 @@ import {
 } from '../features/publications/publication-request-identity';
 import { PublicationRetrySheet } from '../features/publications/publication-retry-sheet';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
+import { useInitialPublicationTargetRoute } from '../features/publications/use-initial-publication-target-route';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
 import { usePublicationRequestIds } from '../features/publications/use-publication-request-ids';
 import { usePublicationTargetSources } from '../features/publications/use-publication-target-sources';
+import {
+  hasUnavailablePublisherDraftTargets,
+  usePublisherDraftTargetHydration,
+} from '../features/publications/use-publisher-draft-target-hydration';
+import { usePublisherTargetErrorFeedback } from '../features/publications/use-publisher-target-error-feedback';
 import {
   createPublication,
   cancelPublication,
@@ -135,7 +140,7 @@ import {
 import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
-import { maxImpact, maxNotify, openMaxBotLinkAndClose } from '../lib/max-bridge';
+import { maxImpact, maxNotify } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/publications-page.css';
@@ -224,10 +229,6 @@ function normalizeLegacyEntityFilter(value: string | null): PublicationEntityFil
 
 function normalizeLegacyQuery(value: string | null): string {
   return value?.trim().slice(0, 120) ?? '';
-}
-
-function normalizeEntityType(value: string | null): 'chat' | 'channel' | null {
-  return value === 'chat' || value === 'channel' ? value : null;
 }
 
 function formatDateTime(value: string | null, timezone = 'Europe/Moscow'): string {
@@ -379,11 +380,9 @@ const MAX_PUBLICATION_VIDEO_FILE_BYTES = 24_000_000;
 export function PublicationsPage({
   api,
   profile = 'moderation',
-  botDialogUrl = null,
 }: {
   api: ApiTransport;
   profile?: MiniappProfile;
-  botDialogUrl?: string | null;
 }) {
   const isPublisherProfile = profile === 'publisher';
   const queryClient = useQueryClient();
@@ -402,7 +401,6 @@ export function PublicationsPage({
   const savedCreateDraftRef = useRef<PublicationDraft | null>(null);
   const isolatedDraftBaselineRef = useRef<PublicationDraft | null>(null);
   const initialComposeRouteAppliedRef = useRef(false);
-  const initialTargetRouteAppliedRef = useRef(false);
   const editorReturnFocusRef = useRef<HTMLElement | null>(null);
   const editorReturnPublicationIdRef = useRef<string | null>(null);
   const editorTitleRef = useRef<HTMLHeadingElement | null>(null);
@@ -469,6 +467,26 @@ export function PublicationsPage({
     unavailable: sourcesUnavailable,
     ready: sourcesReady,
   } = targetSources;
+  const initialTargetRoute = useInitialPublicationTargetRoute({
+    api,
+    hydrated,
+    publisherProfile: isPublisherProfile,
+    searchParams,
+    targets,
+    sourcesReady,
+    setDraft,
+  });
+  const publisherDraftHydration = usePublisherDraftTargetHydration({
+    api,
+    enabled: isPublisherProfile && hydrated && isEditor,
+    targets: draft.targets,
+    setDraft,
+  });
+  usePublisherTargetErrorFeedback({
+    directTargetError: initialTargetRoute.error,
+    draftHydrationError: publisherDraftHydration.error,
+    draftHydrationFailed: publisherDraftHydration.isError,
+  });
   const [calendarRange, setCalendarRange] = useState(() => getPublicationCalendarRange());
   const calendarTargetsKey = useMemo(
     () =>
@@ -966,15 +984,16 @@ export function PublicationsPage({
     hasBroadcastLinkButtonErrors(validateBroadcastLinkButtons(draft.buttons));
   const selectedPublisherTargetUnavailable =
     isPublisherProfile &&
-    sourcesReady &&
-    draft.targets.some((selected) => {
-      const current = targets.find(
-        (target) => getPublicationTargetKey(target) === getPublicationTargetKey(selected),
-      );
-      return !current?.readiness?.canPublish;
+    !publisherDraftHydration.isPending &&
+    hasUnavailablePublisherDraftTargets({
+      selectedTargets: draft.targets,
+      currentTargets: targets,
+      hydrationFailed: publisherDraftHydration.isError,
     });
   const publisherHasReadyTarget =
-    !isPublisherProfile || targets.some((target) => target.readiness?.canPublish === true);
+    !isPublisherProfile ||
+    (targetSources.publisherSummary?.ready ??
+      targets.filter((target) => target.readiness?.canPublish === true).length) > 0;
   const publisherCanCreate =
     !isPublisherProfile || (sourcesReady && !sourcesHaveError && publisherHasReadyTarget);
   const isBusy =
@@ -984,6 +1003,8 @@ export function PublicationsPage({
     actionMutation.isPending ||
     retryMutation.isPending ||
     refreshEditedPublicationMutation.isPending ||
+    initialTargetRoute.pending ||
+    publisherDraftHydration.isPending ||
     videoPreparing;
   const anyBusy = isBusy || resolveAmbiguousMutation.isPending;
   const recurrenceError = getRecurrenceError(draft);
@@ -1095,42 +1116,6 @@ export function PublicationsPage({
       setEditorContext({ kind: 'create' });
     }
   }, [hydrated, searchParams]);
-
-  useEffect(() => {
-    if (!hydrated || initialTargetRouteAppliedRef.current) {
-      return;
-    }
-    const entityType =
-      normalizeEntityType(searchParams.get('entityType')) ??
-      normalizeEntityType(searchParams.get('sourceType'));
-    const entityId = searchParams.get('entityId') ?? searchParams.get('sourceId') ?? '';
-    if (!entityId) {
-      initialTargetRouteAppliedRef.current = true;
-      return;
-    }
-    const routeTarget = targets.find(
-      (target) => target.id === entityId && (!entityType || target.entityType === entityType),
-    );
-    if (routeTarget) {
-      initialTargetRouteAppliedRef.current = true;
-      setDraft((current) =>
-        current.targets.some(
-          (target) => getPublicationTargetKey(target) === getPublicationTargetKey(routeTarget),
-        )
-          ? current
-          : {
-              ...current,
-              targets: isPublicationDraftEmpty(current)
-                ? [routeTarget]
-                : [...current.targets, routeTarget],
-            },
-      );
-      return;
-    }
-    if (sourcesReady) {
-      initialTargetRouteAppliedRef.current = true;
-    }
-  }, [hydrated, searchParams, setDraft, sourcesReady, targets]);
 
   useEffect(() => {
     if (targets.length === 0) {
@@ -1891,17 +1876,12 @@ export function PublicationsPage({
           publisherProfile={isPublisherProfile}
           canCreate={publisherCanCreate}
           targets={targets}
+          publisherSummary={targetSources.publisherSummary}
           sourcesLoading={sourcesLoading}
           sourcesFetching={sourcesFetching}
           sourcesHaveError={sourcesHaveError}
-          botDialogUrl={botDialogUrl}
           onCreate={openCreateEditor}
           onRefresh={() => void targetSources.refetch()}
-          onOpenBot={() => {
-            if (!botDialogUrl || !openMaxBotLinkAndClose(botDialogUrl)) {
-              pushToast({ tone: 'danger', title: 'Не удалось открыть Публик' });
-            }
-          }}
         />
 
         <div className="publications-tabs" role="group" aria-label="Раздел постов">
@@ -2544,10 +2524,42 @@ export function PublicationsPage({
                 </button>
               </div>
             ) : null}
+            {publisherDraftHydration.isError ? (
+              <div className="publications-inline-notice is-danger" role="alert">
+                <span>Не удалось проверить получателей черновика</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void publisherDraftHydration.refetch();
+                  }}
+                  disabled={publisherDraftHydration.isPending}
+                >
+                  <Refresh aria-hidden />
+                  <span>{publisherDraftHydration.isPending ? 'Проверяю' : 'Повторить'}</span>
+                </button>
+              </div>
+            ) : null}
             <PublicationTargetPicker
               choices={targets}
               value={draft.targets}
-              disabled={isBusy || (sourcesLoading && targets.length === 0)}
+              remoteSource={
+                isPublisherProfile
+                  ? {
+                      query: targetSources.publisherInputQuery,
+                      entityFilter: targetSources.publisherEntityFilter,
+                      settling: targetSources.publisherSearchSettling,
+                      loading: sourcesLoading,
+                      filteredTotal: targetSources.filteredTotal,
+                      hasNextPage: targetSources.hasNextPage,
+                      fetchingNextPage: targetSources.fetchingNextPage,
+                      fetchNextPageError: targetSources.fetchNextPageError,
+                      onQueryChange: targetSources.setPublisherInputQuery,
+                      onEntityFilterChange: targetSources.setPublisherEntityFilter,
+                      onLoadMore: () => void targetSources.fetchNextPage(),
+                    }
+                  : undefined
+              }
+              disabled={isBusy || (!isPublisherProfile && sourcesLoading && targets.length === 0)}
               error={fieldError.includes('получател') ? fieldError : null}
               onLimitReached={() =>
                 pushToast({

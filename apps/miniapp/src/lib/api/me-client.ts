@@ -54,6 +54,12 @@ function parseMe(value: unknown): Me {
     : profile === 'publisher'
       ? (['publisher_workspace', 'publisher_entities', 'chat_comments'] as MiniappCapability[])
       : (['moderation_workspace', 'publisher_policy_write'] as MiniappCapability[]);
+  const homeRoute =
+    value.homeRoute === '/' || value.homeRoute === '/publications'
+      ? value.homeRoute
+      : profile === 'publisher'
+        ? '/publications'
+        : '/';
 
   return {
     userId: value.userId,
@@ -66,7 +72,7 @@ function parseMe(value: unknown): Me {
     ...(value.canAccessSystem === true ? { canAccessSystem: true } : {}),
     profile,
     capabilities,
-    homeRoute: profile === 'publisher' ? '/publications' : '/',
+    homeRoute,
   };
 }
 

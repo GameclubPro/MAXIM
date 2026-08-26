@@ -144,6 +144,14 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     pattern: new RegExp(`^/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/policy$`),
   },
   {
+    method: 'POST',
+    pattern: new RegExp(`^/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/refresh$`),
+  },
+  {
+    method: 'POST',
+    pattern: /^\/publisher\/entities\/resolve$/u,
+  },
+  {
     method: 'PUT',
     pattern: new RegExp(`^/publications/${ENTITY_ID_SEGMENT}$`),
   },

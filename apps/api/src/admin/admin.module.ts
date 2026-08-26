@@ -84,6 +84,7 @@ import { SafetyDeskService } from './safety-desk.service';
 import { SupportRequestsController } from './support-requests.controller';
 import { SupportRequestsService } from './support-requests.service';
 import { PublisherController } from './publisher.controller';
+import { PublisherEntityRefreshService } from './publisher-entity-refresh.service';
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
@@ -166,6 +167,7 @@ import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-p
     PublicationRunnerService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherPublicationDispatchRunnerService] : []),
     PublisherPolicyService,
+    PublisherEntityRefreshService,
     PublisherReadinessService,
     PublisherSuggestionPublicationQueueService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherSuggestionPublicationProcessor] : []),

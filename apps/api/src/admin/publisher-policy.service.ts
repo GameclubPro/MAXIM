@@ -1,13 +1,26 @@
 import {
+  decodePublisherEntitiesCursor,
+  encodePublisherEntitiesCursor,
+  publisherEntitiesCursorQuerySchema,
+  publisherEntitiesCursorResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntitySchema,
+  resolvePublisherEntitiesRequestSchema,
+  resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
   type ManagedEntityPublicationPolicy,
   type ManagedEntityType,
+  type PublisherEntitiesCursorQuery,
   type PublisherEntitiesResponse,
   type PublisherEntity,
+  type ResolvePublisherEntitiesResponse,
 } from '@maxim/contracts/publisher';
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   ChatBotMembershipStatus,
@@ -17,28 +30,142 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import { buildChannelOverview } from './admin-legacy-utils';
 import { ManagedEntitiesService } from './managed-entities.service';
+import {
+  PublisherEntitiesCursorStore,
+  type PublisherEntitiesCursorScope,
+  type PublisherEntitiesCursorSnapshot,
+} from './publisher-entities-cursor.store';
+
+const PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE = 200;
+const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
+const MAX_PRESENTATION_URL_LENGTH = 2_048;
+
+type PublisherCatalogPresentation = {
+  avatarUrl: string | null;
+  entityUrl: string | null;
+};
 
 @Injectable()
 export class PublisherPolicyService {
+  private readonly cursorStore = new PublisherEntitiesCursorStore();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly botRegistry: MaxBotRegistryService,
     private readonly readinessService: PublisherReadinessService,
     private readonly managedEntitiesService: ManagedEntitiesService,
+    private readonly maxBotLinkService: MaxBotLinkService,
   ) {}
 
-  async listEntities(user: AuthUser): Promise<PublisherEntitiesResponse> {
+  async listEntities(user: AuthUser, query?: unknown): Promise<PublisherEntitiesResponse> {
+    const pagination = this.readPaginationMode(query);
+    if (pagination === undefined) {
+      return publisherEntitiesResponseSchema.parse({
+        items: await this.loadScopedEntities(user),
+      });
+    }
+
+    const parsed = publisherEntitiesCursorQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    return this.listEntitiesPage(user, parsed.data);
+  }
+
+  private async loadScopedEntities(
+    user: AuthUser,
+    entityIds?: readonly string[],
+  ): Promise<PublisherEntity[]> {
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
     const actionableBotIds = new Set(this.botRegistry.getActionableBots().map((bot) => bot.id));
     const now = new Date();
     const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
-    const runtimeAvailable = await this.readinessService.isRuntimeAvailable();
+    const [runtimeAvailable, edges] = await Promise.all([
+      this.readinessService.isRuntimeAvailable(),
+      this.prisma.managedEntityAccessEdge.findMany({
+        where: {
+          ...(entityIds ? { chatId: { in: [...entityIds] } } : {}),
+          userId: user.userId,
+          state: ManagedEntityAccessState.GRANTED,
+          userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+          OR: [
+            { expiresAt: { gt: now } },
+            { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
+          ],
+          botId: { not: publisherBotId },
+        },
+        orderBy: [{ checkedAt: 'desc' }, { chatId: 'asc' }],
+        include: {
+          chat: {
+            select: {
+              id: true,
+              title: true,
+              entityType: true,
+              channelSettings: {
+                select: {
+                  commentsEnabled: true,
+                  postSuggestionsEnabled: true,
+                  commentsModerationEnabled: true,
+                },
+              },
+              publicationPolicy: true,
+              publisherBinding: true,
+              botMemberships: {
+                where: { status: ChatBotMembershipStatus.ACTIVE },
+                select: { botId: true },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const eligibleEdges: typeof edges = [];
+    const seenEntityIds = new Set<string>();
+    for (const edge of edges) {
+      if (
+        seenEntityIds.has(edge.chatId) ||
+        edge.entityType !== edge.chat.entityType ||
+        !actionableBotIds.has(edge.botId) ||
+        !edge.chat.botMemberships.some((membership) => membership.botId === edge.botId)
+      ) {
+        continue;
+      }
+      seenEntityIds.add(edge.chatId);
+      eligibleEdges.push(edge);
+    }
+
+    const catalogPresentations = await this.loadCatalogPresentations(eligibleEdges);
+    return eligibleEdges
+      .map((edge) =>
+        this.presentEntity(
+          edge.chat,
+          { now, runtimeAvailable },
+          catalogPresentations.get(this.catalogKey(edge.botId, edge.chatId)),
+        ),
+      )
+      .sort((left, right) => this.compareEntities(left, right));
+  }
+
+  async getEntity(
+    entityType: ManagedEntityType,
+    entityId: string,
+    user: AuthUser,
+  ): Promise<PublisherEntity> {
+    const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
+    const actionableBotIds = new Set(this.botRegistry.getActionableBots().map((bot) => bot.id));
+    const now = new Date();
+    const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
     const edges = await this.prisma.managedEntityAccessEdge.findMany({
       where: {
+        chatId: entityId,
         userId: user.userId,
+        entityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
         OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
@@ -68,40 +195,47 @@ export class PublisherPolicyService {
         },
       },
     });
-
-    const entitiesById = new Map<string, PublisherEntity>();
-    for (const edge of edges) {
-      if (
-        entitiesById.has(edge.chatId) ||
-        !actionableBotIds.has(edge.botId) ||
-        !edge.chat.botMemberships.some((membership) => membership.botId === edge.botId)
-      ) {
-        continue;
-      }
-      entitiesById.set(edge.chatId, this.presentEntity(edge.chat, runtimeAvailable));
-    }
-
-    return publisherEntitiesResponseSchema.parse({
-      items: [...entitiesById.values()].sort(
-        (left, right) =>
-          left.entityType.localeCompare(right.entityType) || left.title.localeCompare(right.title),
-      ),
-    });
-  }
-
-  async getEntity(
-    entityType: ManagedEntityType,
-    entityId: string,
-    user: AuthUser,
-  ): Promise<PublisherEntity> {
-    const response = await this.listEntities(user);
-    const entity = response.items.find(
-      (item) => item.id === entityId && item.entityType === entityType,
+    const edge = edges.find(
+      (candidate) =>
+        candidate.chat.entityType ===
+          (entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT) &&
+        actionableBotIds.has(candidate.botId) &&
+        candidate.chat.botMemberships.some((membership) => membership.botId === candidate.botId),
     );
-    if (!entity) {
+    if (!edge) {
       throw new BadRequestException('Managed entity is unavailable');
     }
-    return entity;
+    const catalogPresentation = await this.loadTargetedCatalogPresentation(edge);
+    return this.presentEntity(
+      edge.chat,
+      {
+        now,
+        runtimeAvailable: await this.readinessService.isRuntimeAvailable(),
+      },
+      catalogPresentation,
+    );
+  }
+
+  async resolveEntities(user: AuthUser, body: unknown): Promise<ResolvePublisherEntitiesResponse> {
+    const parsed = resolvePublisherEntitiesRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const requested = new Map(
+      parsed.data.targets.map((target) => [`${target.entityType}:${target.id}`, target]),
+    );
+    const entities = await this.loadScopedEntities(user, [
+      ...new Set([...requested.values()].map((target) => target.id)),
+    ]);
+    const entitiesByKey = new Map(
+      entities.map((entity) => [`${entity.entityType}:${entity.id}`, entity]),
+    );
+    return resolvePublisherEntitiesResponseSchema.parse({
+      items: [...requested.keys()].flatMap((key) => {
+        const entity = entitiesByKey.get(key);
+        return entity ? [entity] : [];
+      }),
+    });
   }
 
   async updatePolicy(
@@ -210,20 +344,346 @@ export class PublisherPolicyService {
         PublisherReadinessService['resolveReadiness']
       >[0]['publisherBinding'];
     },
-    runtimeAvailable: boolean,
+    snapshot: { now: Date; runtimeAvailable: boolean },
+    catalogPresentation?: PublisherCatalogPresentation,
   ): PublisherEntity {
+    const entityType = source.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
     return publisherEntitySchema.parse({
       id: source.id,
       title: source.title,
-      entityType: source.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
-      avatarUrl: null,
+      entityType,
+      avatarUrl: catalogPresentation?.avatarUrl ?? null,
+      entityUrl: catalogPresentation?.entityUrl ?? null,
+      settingsHandoffUrl: this.buildSettingsHandoffUrl(entityType, source.id),
       channelOverview:
         source.entityType === ChatEntityType.CHANNEL && source.channelSettings
-          ? source.channelSettings
+          ? buildChannelOverview(source.channelSettings)
           : null,
       policy: this.readinessService.resolvePolicy(source.publicationPolicy),
-      readiness: this.readinessService.resolveReadiness(source, { runtimeAvailable }),
+      readiness: this.readinessService.resolveReadiness(source, snapshot),
     });
+  }
+
+  private async loadCatalogPresentations(
+    edges: readonly {
+      botId: string;
+      chatId: string;
+      chat: { entityType: ChatEntityType };
+    }[],
+  ): Promise<Map<string, PublisherCatalogPresentation>> {
+    const presentations = new Map<string, PublisherCatalogPresentation>();
+    for (let offset = 0; offset < edges.length; offset += PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE) {
+      const batch = edges.slice(offset, offset + PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE);
+      const rows = await this.prisma.managedBotChatCatalog.findMany({
+        where: {
+          status: 'ACTIVE',
+          OR: batch.map((edge) => ({
+            botId: edge.botId,
+            chatId: edge.chatId,
+            entityType: edge.chat.entityType,
+          })),
+        },
+        select: {
+          botId: true,
+          chatId: true,
+          link: true,
+          avatarUrl: true,
+        },
+      });
+      for (const row of rows) {
+        presentations.set(this.catalogKey(row.botId, row.chatId), {
+          avatarUrl: this.normalizeHttpPresentationUrl(row.avatarUrl),
+          entityUrl: this.normalizeMaxEntityUrl(row.link),
+        });
+      }
+    }
+    return presentations;
+  }
+
+  private async loadTargetedCatalogPresentation(edge: {
+    botId: string;
+    chatId: string;
+    chat: { entityType: ChatEntityType };
+  }): Promise<PublisherCatalogPresentation | undefined> {
+    const row = await this.prisma.managedBotChatCatalog.findFirst({
+      where: {
+        botId: edge.botId,
+        chatId: edge.chatId,
+        entityType: edge.chat.entityType,
+        status: 'ACTIVE',
+      },
+      select: {
+        link: true,
+        avatarUrl: true,
+      },
+    });
+    return row
+      ? {
+          avatarUrl: this.normalizeHttpPresentationUrl(row.avatarUrl),
+          entityUrl: this.normalizeMaxEntityUrl(row.link),
+        }
+      : undefined;
+  }
+
+  private buildSettingsHandoffUrl(entityType: ManagedEntityType, entityId: string): string | null {
+    const route = `/${entityType}/${encodeURIComponent(entityId)}/settings`;
+    const payload = Buffer.from(JSON.stringify({ v: 1, k: 'route', r: route }), 'utf8').toString(
+      'base64url',
+    );
+    return this.maxBotLinkService.buildEntryMiniappStartUrlSync(
+      `${MINIAPP_ROUTE_START_PARAM_PREFIX}${payload}`,
+    );
+  }
+
+  private normalizeMaxEntityUrl(value: string | null): string | null {
+    const parsed = this.parsePresentationUrl(value);
+    if (
+      !parsed ||
+      parsed.protocol !== 'https:' ||
+      (parsed.hostname !== 'max.ru' && parsed.hostname !== 'www.max.ru') ||
+      parsed.port.length > 0 ||
+      parsed.hash.length > 0 ||
+      parsed.pathname === '/'
+    ) {
+      return null;
+    }
+    parsed.hostname = 'max.ru';
+    return parsed.toString();
+  }
+
+  private normalizeHttpPresentationUrl(value: string | null): string | null {
+    const parsed = this.parsePresentationUrl(value);
+    if (!parsed || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
+      return null;
+    }
+    return parsed.toString();
+  }
+
+  private parsePresentationUrl(value: string | null): URL | null {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (
+      normalized.length === 0 ||
+      normalized.length > MAX_PRESENTATION_URL_LENGTH ||
+      [...normalized].some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return (
+          /\s/u.test(character) || codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+        );
+      })
+    ) {
+      return null;
+    }
+    try {
+      const parsed = new URL(normalized);
+      return parsed.username.length === 0 && parsed.password.length === 0 ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private catalogKey(botId: string, chatId: string): string {
+    return JSON.stringify([botId, chatId]);
+  }
+
+  private async listEntitiesPage(
+    user: AuthUser,
+    query: PublisherEntitiesCursorQuery,
+  ): Promise<PublisherEntitiesResponse> {
+    const cursor = query.cursor ? decodePublisherEntitiesCursor(query.cursor) : null;
+    if (
+      query.cursor &&
+      (!cursor ||
+        cursor.query !== query.query ||
+        cursor.entityType !== (query.entityType ?? null) ||
+        cursor.readiness !== (query.readiness ?? null))
+    ) {
+      throw this.invalidEntitiesCursor();
+    }
+
+    const scope = this.cursorScope(user, query);
+    if (cursor) {
+      const snapshot = this.cursorStore.read(cursor.snapshotId, scope);
+      if (!snapshot || cursor.offset >= snapshot.items.length) {
+        throw this.invalidEntitiesCursor();
+      }
+      return this.buildSnapshotPage(
+        user,
+        cursor.snapshotId,
+        snapshot,
+        cursor.offset,
+        query.limit,
+        scope,
+      );
+    }
+
+    const reusable = this.cursorStore.findReusable(scope);
+    if (reusable) {
+      return this.buildSnapshotPage(
+        user,
+        reusable.snapshotId,
+        reusable.snapshot,
+        0,
+        query.limit,
+        scope,
+      );
+    }
+
+    const entities = await this.loadScopedEntities(user);
+    const summary = this.summarizeEntities(entities);
+    const normalizedQuery = query.query.toLocaleLowerCase('ru-RU');
+    const filtered = entities.filter((entity) => {
+      if (query.entityType && entity.entityType !== query.entityType) {
+        return false;
+      }
+      if (
+        query.readiness &&
+        (query.readiness === 'ready' ? !entity.readiness.canPublish : entity.readiness.canPublish)
+      ) {
+        return false;
+      }
+      return (
+        normalizedQuery.length === 0 ||
+        `${entity.title} ${entity.id}`.toLocaleLowerCase('ru-RU').includes(normalizedQuery)
+      );
+    });
+
+    if (filtered.length <= query.limit) {
+      return publisherEntitiesCursorResponseSchema.parse({
+        items: filtered,
+        nextCursor: null,
+        filteredTotal: filtered.length,
+        summary,
+      });
+    }
+
+    const snapshotHandle = this.cursorStore.createOrReuse({
+      ...scope,
+      filteredTotal: filtered.length,
+      summary,
+      items: filtered.map((entity) => ({ id: entity.id, entityType: entity.entityType })),
+    });
+    if (!snapshotHandle) {
+      throw new ServiceUnavailableException('Список получателей слишком велик для пагинации.');
+    }
+    return this.buildSnapshotPage(
+      user,
+      snapshotHandle.snapshotId,
+      snapshotHandle.snapshot,
+      0,
+      query.limit,
+      scope,
+      entities,
+    );
+  }
+
+  private async buildSnapshotPage(
+    user: AuthUser,
+    snapshotId: string,
+    snapshot: PublisherEntitiesCursorSnapshot,
+    offset: number,
+    limit: number,
+    scope: PublisherEntitiesCursorScope,
+    availableEntities?: readonly PublisherEntity[],
+  ): Promise<PublisherEntitiesResponse> {
+    const endIndex = Math.min(offset + limit, snapshot.items.length);
+    const candidates = snapshot.items.slice(offset, endIndex);
+    const entities =
+      availableEntities ??
+      (await this.loadScopedEntities(user, [
+        ...new Set(candidates.map((candidate) => candidate.id)),
+      ]));
+    const entitiesByKey = new Map(
+      entities.map((entity) => [this.entityKey(entity.entityType, entity.id), entity]),
+    );
+    const items = candidates.flatMap((candidate) => {
+      const entity = entitiesByKey.get(this.entityKey(candidate.entityType, candidate.id));
+      return entity ? [entity] : [];
+    });
+    const nextCursor =
+      endIndex < snapshot.items.length
+        ? encodePublisherEntitiesCursor({
+            v: 1,
+            snapshotId,
+            offset: endIndex,
+            query: scope.query,
+            entityType: scope.entityType,
+            readiness: scope.readiness,
+          })
+        : null;
+    const response = publisherEntitiesCursorResponseSchema.parse({
+      items,
+      nextCursor,
+      filteredTotal: snapshot.filteredTotal,
+      summary: snapshot.summary,
+    });
+    if (!nextCursor) {
+      this.cursorStore.complete(snapshotId, scope);
+    }
+    return response;
+  }
+
+  private cursorScope(
+    user: AuthUser,
+    query: PublisherEntitiesCursorQuery,
+  ): PublisherEntitiesCursorScope {
+    return {
+      userId: user.userId,
+      query: query.query,
+      entityType: query.entityType ?? null,
+      readiness: query.readiness ?? null,
+    };
+  }
+
+  private entityKey(entityType: ManagedEntityType, entityId: string): string {
+    return JSON.stringify([entityType, entityId]);
+  }
+
+  private summarizeEntities(entities: readonly PublisherEntity[]): {
+    total: number;
+    chat: number;
+    channel: number;
+    ready: number;
+    attention: number;
+  } {
+    let chat = 0;
+    let channel = 0;
+    let ready = 0;
+    for (const entity of entities) {
+      if (entity.entityType === 'channel') {
+        channel += 1;
+      } else {
+        chat += 1;
+      }
+      if (entity.readiness.canPublish) {
+        ready += 1;
+      }
+    }
+    return {
+      total: entities.length,
+      chat,
+      channel,
+      ready,
+      attention: entities.length - ready,
+    };
+  }
+
+  private compareEntities(left: PublisherEntity, right: PublisherEntity): number {
+    return (
+      left.entityType.localeCompare(right.entityType) ||
+      left.title.localeCompare(right.title) ||
+      left.id.localeCompare(right.id)
+    );
+  }
+
+  private readPaginationMode(query: unknown): unknown {
+    if (!query || typeof query !== 'object' || Array.isArray(query)) {
+      return undefined;
+    }
+    return (query as Record<string, unknown>).pagination;
+  }
+
+  private invalidEntitiesCursor(): BadRequestException {
+    return new BadRequestException('Курсор списка получателей недействителен.');
   }
 
   private policyConflict(): ConflictException {

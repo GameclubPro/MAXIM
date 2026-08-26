@@ -208,8 +208,12 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   const hasNativeBackHandlers = useNativeBackHandlersAvailable();
   const isChatsRoute = location.pathname === '/';
   const selectedRootEntityType = useMemo(
-    () => normalizeEntityType(new URLSearchParams(location.search).get('view'), lastEntityType),
-    [lastEntityType, location.search],
+    () =>
+      normalizeEntityType(
+        new URLSearchParams(location.search).get('view'),
+        profile === 'publisher' ? 'chat' : lastEntityType,
+      ),
+    [lastEntityType, location.search, profile],
   );
   const routeEntityType: LastEntityType = location.pathname.includes('/channel/')
     ? 'channel'
@@ -257,13 +261,13 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   }, [chatId]);
 
   useEffect(() => {
-    if (!isChatsRoute) {
+    if (!isChatsRoute || profile !== 'moderation') {
       return;
     }
 
     saveLastEntityType(selectedRootEntityType);
     setLastEntityType(selectedRootEntityType);
-  }, [isChatsRoute, selectedRootEntityType]);
+  }, [isChatsRoute, profile, selectedRootEntityType]);
 
   const resolvedEntityType: LastEntityType = isChatsRoute
     ? selectedRootEntityType
@@ -271,8 +275,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
       ? routeEntityType
       : lastEntityType;
   const resolvedChatId = chatId;
-  const homeRoute =
-    profile === 'publisher' ? '/publications' : buildManagedEntitiesRoute(resolvedEntityType);
+  const homeRoute = profile === 'publisher' ? '/' : buildManagedEntitiesRoute(resolvedEntityType);
 
   const resolvedChatTitle = useMemo(() => {
     if (!resolvedChatId) {
@@ -300,7 +303,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     location.pathname === '/publications' || location.pathname === '/autoposts';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
-  const shouldShowBottomNav = profile === 'moderation' && (isChatsRoute || isPublicationsRoute);
+  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute;
   const hasTopbar =
     !isChatsRoute &&
     !isPublicationsRoute &&

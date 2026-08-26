@@ -543,11 +543,21 @@ export function hasSamePublicationTargetMetadata(
   left: PublicationTarget,
   right: PublicationTarget,
 ): boolean {
+  const leftReadiness = left.readiness ?? null;
+  const rightReadiness = right.readiness ?? null;
   return (
     left.title === right.title &&
     left.avatarUrl === right.avatarUrl &&
     left.channelOverview?.commentsEnabled === right.channelOverview?.commentsEnabled &&
-    left.channelOverview?.postSuggestionsEnabled === right.channelOverview?.postSuggestionsEnabled
+    left.channelOverview?.postSuggestionsEnabled ===
+      right.channelOverview?.postSuggestionsEnabled &&
+    leftReadiness?.state === rightReadiness?.state &&
+    leftReadiness?.canPublish === rightReadiness?.canPublish &&
+    leftReadiness?.canUseChatComments === rightReadiness?.canUseChatComments &&
+    leftReadiness?.canPublishSuggestions === rightReadiness?.canPublishSuggestions &&
+    leftReadiness?.blockerCode === rightReadiness?.blockerCode &&
+    leftReadiness?.checkedAt === rightReadiness?.checkedAt &&
+    leftReadiness?.retryAt === rightReadiness?.retryAt
   );
 }
 

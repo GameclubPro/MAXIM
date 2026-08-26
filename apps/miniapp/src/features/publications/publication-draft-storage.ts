@@ -1,4 +1,5 @@
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
+import { publisherEntityReadinessSchema } from '@maxim/contracts/publisher';
 import { formatLocalDateTimeInputValue } from '../../lib/broadcast-schedule';
 import { getInitDataUserId } from '../../lib/init-data';
 import {
@@ -65,6 +66,11 @@ function readChannelOverview(value: unknown): PublicationTarget['channelOverview
   };
 }
 
+function readPublisherReadiness(value: unknown): PublicationTarget['readiness'] {
+  const parsed = publisherEntityReadinessSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 function readTargets(value: unknown): PublicationTarget[] {
   if (!Array.isArray(value)) {
     return [];
@@ -87,6 +93,7 @@ function readTargets(value: unknown): PublicationTarget[] {
         avatarUrl: typeof item.avatarUrl === 'string' ? item.avatarUrl : null,
         channelOverview:
           entityType === 'channel' ? readChannelOverview(item.channelOverview) : null,
+        readiness: readPublisherReadiness(item.readiness),
       },
     ];
   });

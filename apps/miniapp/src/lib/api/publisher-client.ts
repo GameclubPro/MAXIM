@@ -1,20 +1,72 @@
 import {
   managedEntityPublicationPolicySchema,
+  publisherEntitiesCursorQuerySchema,
+  publisherEntitiesCursorResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntitySchema,
+  publisherEntityRefreshResponseSchema,
+  resolvePublisherEntitiesRequestSchema,
+  resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
   type ManagedEntityPublicationPolicy,
   type ManagedEntityType,
+  type PublisherEntitiesCursorQuery,
+  type PublisherEntitiesCursorResponse,
   type PublisherEntitiesResponse,
   type PublisherEntity,
+  type PublisherEntityRefreshResponse,
+  type ResolvePublisherEntitiesRequest,
+  type ResolvePublisherEntitiesResponse,
   type UpdateManagedEntityPublicationPolicyRequest,
 } from '@maxim/contracts/publisher';
 import type { ApiTransport } from './transport';
 
+export type ListPublisherEntitiesCursorOptions = Omit<
+  PublisherEntitiesCursorQuery,
+  'cursor' | 'limit' | 'query'
+> & {
+  cursor?: string | null;
+  limit?: number;
+  query?: string;
+  signal?: AbortSignal;
+};
+
+export function listPublisherEntities(
+  api: ApiTransport,
+  options: ListPublisherEntitiesCursorOptions,
+): Promise<PublisherEntitiesCursorResponse>;
+export function listPublisherEntities(
+  api: ApiTransport,
+  options?: { signal?: AbortSignal },
+): Promise<PublisherEntitiesResponse>;
 export async function listPublisherEntities(
   api: ApiTransport,
-  options: { signal?: AbortSignal } = {},
+  options: ListPublisherEntitiesCursorOptions | { signal?: AbortSignal } = {},
 ): Promise<PublisherEntitiesResponse> {
+  if ('pagination' in options) {
+    const { signal, cursor, ...rawQuery } = options;
+    const query = publisherEntitiesCursorQuerySchema.parse({
+      ...rawQuery,
+      ...(cursor ? { cursor } : {}),
+    });
+    const search = new URLSearchParams({ pagination: query.pagination });
+    search.set('limit', String(query.limit));
+    if (query.query) {
+      search.set('query', query.query);
+    }
+    if (query.entityType) {
+      search.set('entityType', query.entityType);
+    }
+    if (query.readiness) {
+      search.set('readiness', query.readiness);
+    }
+    if (query.cursor) {
+      search.set('cursor', query.cursor);
+    }
+    const response = await api.request(`/publisher/entities?${search.toString()}`, { signal });
+    return publisherEntitiesCursorResponseSchema.parse(response);
+  }
+
   const response = await api.request('/publisher/entities', { signal: options.signal });
   return publisherEntitiesResponseSchema.parse(response);
 }
@@ -30,6 +82,32 @@ export async function getPublisherEntity(
     { signal: options.signal },
   );
   return publisherEntitySchema.parse(response);
+}
+
+export async function refreshPublisherEntity(
+  api: ApiTransport,
+  entityType: ManagedEntityType,
+  entityId: string,
+): Promise<PublisherEntityRefreshResponse> {
+  const response = await api.request(
+    `/publisher/entities/${entityType}/${encodeURIComponent(entityId)}/refresh`,
+    { method: 'POST' },
+  );
+  return publisherEntityRefreshResponseSchema.parse(response);
+}
+
+export async function resolvePublisherEntities(
+  api: ApiTransport,
+  payload: ResolvePublisherEntitiesRequest,
+  options: { signal?: AbortSignal } = {},
+): Promise<ResolvePublisherEntitiesResponse> {
+  const body = resolvePublisherEntitiesRequestSchema.parse(payload);
+  const response = await api.request('/publisher/entities/resolve', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+  return resolvePublisherEntitiesResponseSchema.parse(response);
 }
 
 export async function updatePublisherPolicy(

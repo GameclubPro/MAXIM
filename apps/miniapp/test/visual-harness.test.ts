@@ -177,8 +177,36 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     publisherState: 'large',
     compose: '1',
   });
+  assert.deepEqual(
+    scenarios.get('publications-publisher-compose-missing-target')?.searchParams,
+    {
+      profile: 'publisher',
+      compose: '1',
+      entityType: 'chat',
+      entityId: 'preview-missing-chat',
+    },
+  );
   assert.ok(scenarios.get('publications-publisher-compose')?.features.includes('publisher'));
   assert.ok(scenarios.get('publications-publisher-readiness')?.features.includes('publisher'));
+  assert.deepEqual(scenarios.get('publisher-entities')?.searchParams, {
+    profile: 'publisher',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-channels')?.searchParams, {
+    profile: 'publisher',
+    view: 'channel',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-empty')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'empty',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-error')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'error',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-large')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'large',
+  });
   assert.deepEqual(scenarios.get('chat-settings-publisher-policy-setup')?.searchParams, {
     publisherPolicyState: 'setup',
   });
@@ -190,7 +218,7 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
 test('Publik entry route and publisher source files select workspace visual scenarios', () => {
   const publik = MINIAPP_VISUAL_SCENARIOS.find((scenario) => scenario.name === 'publik');
   assert.equal(publik?.path, '/publik');
-  assert.equal(publik?.readySelector, '.publications-page');
+  assert.equal(publik?.readySelector, '.publisher-entities-page');
   assert.deepEqual(publik?.searchParams, { profile: 'publisher' });
   assert.ok(publik?.features.includes('publisher'));
 
@@ -199,6 +227,7 @@ test('Publik entry route and publisher source files select workspace visual scen
     'apps/miniapp/src/features/publications/publication-hub-header.css',
     'apps/miniapp/src/features/publications/publication-target-picker.css',
     'apps/miniapp/src/features/publications/publisher-readiness-overview.tsx',
+    'apps/miniapp/src/pages/publisher-entities-page.tsx',
     'apps/miniapp/src/lib/publisher-readiness.ts',
     'apps/miniapp/src/lib/publisher-readiness-label.ts',
     'packages/contracts/src/publisher.ts',
@@ -208,6 +237,7 @@ test('Publik entry route and publisher source files select workspace visual scen
     }).scenarios.map((scenario) => scenario.name);
     assert.ok(selectedNames.includes('publications-publisher'), changedFile);
     assert.ok(selectedNames.includes('publications-publisher-compose'), changedFile);
+    assert.ok(selectedNames.includes('publisher-entities'), changedFile);
   }
 });
 

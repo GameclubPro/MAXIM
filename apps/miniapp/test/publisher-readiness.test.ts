@@ -7,6 +7,12 @@ import type {
 import { togglePublicationTargetSelection } from '../src/features/publications/publication-target-selection';
 import type { PublicationTarget } from '../src/features/publications/publication-model';
 import { getPublisherReadinessPresentation } from '../src/lib/publisher-readiness';
+import { shouldFetchInitialPublisherTarget } from '../src/features/publications/use-initial-publication-target-route';
+import {
+  getPublisherDraftTargetsNeedingHydration,
+  hasUnavailablePublisherDraftTargets,
+  mergePublisherResolvedTargets,
+} from '../src/features/publications/use-publisher-draft-target-hydration';
 
 function readiness(
   blockerCode: PublisherReadinessBlockerCode | null,
@@ -61,6 +67,20 @@ test('publisher readiness presents every server blocker as a specific user-facin
   }
   assert.equal(getPublisherReadinessPresentation(readiness(null)).label, 'Готов к публикации');
 });
+
+test('publisher readiness exposes required permissions and quarantine recovery time', () => {
+  assert.match(
+    getPublisherReadinessPresentation(readiness('write_permission_missing')).detail,
+    /доступ ко всем сообщениям/u,
+  );
+  const quarantined = readiness('route_quarantined');
+  quarantined.retryAt = '2026-08-27T12:30:00.000Z';
+  assert.match(
+    getPublisherReadinessPresentation(quarantined).detail,
+    /восстановится автоматически после/u,
+  );
+});
+
 test('an unavailable selected target can be removed from a stale draft', () => {
   const unavailable = target('chat-unavailable', readiness('bot_not_admin'));
   const result = togglePublicationTargetSelection([unavailable], unavailable);
@@ -77,8 +97,76 @@ test('an unavailable target cannot be added and the target limit remains enforce
     targets: [],
     outcome: 'blocked_unavailable',
   });
-  assert.deepEqual(togglePublicationTargetSelection([ready], target('chat-2', readiness(null)), 1), {
-    targets: [ready],
-    outcome: 'blocked_limit',
-  });
+  assert.deepEqual(
+    togglePublicationTargetSelection([ready], target('chat-2', readiness(null)), 1),
+    {
+      targets: [ready],
+      outcome: 'blocked_limit',
+    },
+  );
+});
+
+test('draft target hydration updates readiness and fails closed for a missing entity', () => {
+  const stale = { ...target('chat-stale', readiness(null)), readiness: null };
+  const missing = { ...target('chat-missing', readiness(null)), readiness: null };
+  const resolved = target('chat-stale', readiness(null));
+
+  const merged = mergePublisherResolvedTargets([stale, missing], [stale, missing], [resolved]);
+
+  assert.equal(merged[0]?.readiness?.canPublish, true);
+  assert.equal(merged[1]?.readiness, null);
+});
+
+test('draft hydration revalidates the restored set once and excludes fresh choices', () => {
+  const restored = target('chat-restored', readiness('bot_access_expired'));
+  const fresh = target('chat-fresh', readiness(null));
+  const initialKeys = new Set(['chat:chat-restored']);
+
+  assert.deepEqual(
+    getPublisherDraftTargetsNeedingHydration([restored, fresh], initialKeys, new Set()),
+    [restored],
+  );
+  assert.deepEqual(
+    getPublisherDraftTargetsNeedingHydration(
+      [restored, fresh],
+      initialKeys,
+      new Set(['chat:chat-restored']),
+    ),
+    [],
+  );
+
+  const merged = mergePublisherResolvedTargets(
+    [restored, fresh],
+    [restored],
+    [target('chat-restored', readiness('bot_not_admin'))],
+  );
+  assert.equal(merged[0]?.readiness?.blockerCode, 'bot_not_admin');
+  assert.equal(merged[1], fresh);
+});
+
+test('a failed restored-target check blocks stale ready metadata until retry succeeds', () => {
+  const staleReady = target('chat-stale-ready', readiness(null));
+
+  assert.equal(
+    hasUnavailablePublisherDraftTargets({
+      selectedTargets: [staleReady],
+      currentTargets: [],
+      hydrationFailed: true,
+    }),
+    true,
+  );
+});
+
+test('a direct publisher target already present on the first page skips the disabled query', () => {
+  assert.equal(
+    shouldFetchInitialPublisherTarget({
+      publisherProfile: true,
+      hydrated: true,
+      routeApplied: false,
+      entityType: 'chat',
+      entityId: 'chat-ready',
+      targetInPages: true,
+    }),
+    false,
+  );
 });

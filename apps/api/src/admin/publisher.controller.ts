@@ -3,25 +3,33 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
+  Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import type { ManagedEntityType } from '@maxim/contracts/publisher';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { MiniappProfiles } from '../auth/miniapp-profile';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
+import { PublisherEntityRefreshService } from './publisher-entity-refresh.service';
 import { PublisherPolicyService } from './publisher-policy.service';
 
 @Controller('v1/publisher')
 @UseGuards(InitDataGuard)
 @MiniappProfiles('moderation', 'publisher')
 export class PublisherController {
-  constructor(private readonly policyService: PublisherPolicyService) {}
+  constructor(
+    private readonly policyService: PublisherPolicyService,
+    private readonly entityRefreshService: PublisherEntityRefreshService,
+  ) {}
 
   @Get('entities')
-  listEntities(@CurrentUser() user: AuthUser) {
-    return this.policyService.listEntities(user);
+  listEntities(@CurrentUser() user: AuthUser, @Query() query?: unknown) {
+    return this.policyService.listEntities(user, query);
   }
 
   @Get('entities/:entityType/:entityId')
@@ -31,6 +39,11 @@ export class PublisherController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.policyService.getEntity(this.parseEntityType(entityType), entityId, user);
+  }
+
+  @Post('entities/resolve')
+  resolveEntities(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.policyService.resolveEntities(user, body);
   }
 
   @Get('entities/:entityType/:entityId/policy')
@@ -53,6 +66,20 @@ export class PublisherController {
     @Body() body: unknown,
   ) {
     return this.policyService.updatePolicy(this.parseEntityType(entityType), entityId, user, body);
+  }
+
+  @Post('entities/:entityType/:entityId/refresh')
+  @HttpCode(HttpStatus.ACCEPTED)
+  refreshEntity(
+    @Param('entityType') entityType: string,
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.entityRefreshService.requestRefresh(
+      this.parseEntityType(entityType),
+      entityId,
+      user,
+    );
   }
 
   private parseEntityType(value: string): ManagedEntityType {

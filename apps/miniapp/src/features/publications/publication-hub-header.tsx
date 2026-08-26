@@ -1,5 +1,6 @@
 import { Plus, Post } from 'iconoir-react';
 import { lazy, Suspense } from 'react';
+import type { PublisherEntitiesSummary } from '@maxim/contracts/publisher';
 import type { PublicationTarget } from './publication-model';
 import './publication-hub-header.css';
 
@@ -12,24 +13,22 @@ export function PublicationHubHeader({
   publisherProfile,
   canCreate,
   targets,
+  publisherSummary,
   sourcesLoading,
   sourcesFetching,
   sourcesHaveError,
-  botDialogUrl,
   onCreate,
   onRefresh,
-  onOpenBot,
 }: {
   publisherProfile: boolean;
   canCreate: boolean;
   targets: PublicationTarget[];
+  publisherSummary: PublisherEntitiesSummary | null;
   sourcesLoading: boolean;
   sourcesFetching: boolean;
   sourcesHaveError: boolean;
-  botDialogUrl?: string | null;
   onCreate: () => void;
   onRefresh: () => void;
-  onOpenBot: () => void;
 }) {
   return (
     <>
@@ -58,12 +57,11 @@ export function PublicationHubHeader({
         <Suspense fallback={null}>
           <LazyPublisherReadinessOverview
             targets={targets}
+            serverSummary={publisherSummary}
             loading={sourcesLoading}
             fetching={sourcesFetching}
             error={sourcesHaveError}
-            botDialogUrl={botDialogUrl}
             onRefresh={onRefresh}
-            onOpenBot={onOpenBot}
           />
         </Suspense>
       ) : null}

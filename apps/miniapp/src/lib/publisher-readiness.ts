@@ -37,7 +37,7 @@ const BLOCKER_PRESENTATION: Record<
     tone: 'setup',
   },
   write_permission_missing: {
-    detail: 'Разрешите Публику отправлять сообщения и публикации.',
+    detail: 'Включите доступ ко всем сообщениям и право отправлять сообщения.',
     tone: 'setup',
   },
   route_quarantined: {
@@ -49,6 +49,22 @@ const BLOCKER_PRESENTATION: Record<
     tone: 'temporary',
   },
 };
+
+function formatPublisherRetryAt(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const retryAt = new Date(value);
+  if (!Number.isFinite(retryAt.getTime())) {
+    return null;
+  }
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(retryAt);
+}
 
 export function getPublisherReadinessPresentation(
   readiness: PublisherEntityReadiness | null | undefined,
@@ -62,9 +78,14 @@ export function getPublisherReadinessPresentation(
   }
 
   if (readiness.blockerCode) {
+    const retryAt =
+      readiness.blockerCode === 'route_quarantined'
+        ? formatPublisherRetryAt(readiness.retryAt)
+        : null;
     return {
       label: getPublisherReadinessLabel(readiness),
       ...BLOCKER_PRESENTATION[readiness.blockerCode],
+      ...(retryAt ? { detail: `Отправка восстановится автоматически после ${retryAt}.` } : {}),
     };
   }
 

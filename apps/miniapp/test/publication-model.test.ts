@@ -455,6 +455,24 @@ test('compares refreshed publication target engagement metadata', () => {
     }),
     false,
   );
+  assert.equal(
+    hasSamePublicationTargetMetadata(
+      { ...channelTarget, readiness: null },
+      {
+        ...channelTarget,
+        readiness: {
+          state: 'ready',
+          canPublish: true,
+          canUseChatComments: false,
+          canPublishSuggestions: false,
+          blockerCode: null,
+          checkedAt: '2026-08-27T10:00:00.000Z',
+          retryAt: null,
+        },
+      },
+    ),
+    false,
+  );
 });
 
 test('deduplicates system button previews across mixed publication targets', () => {
@@ -657,6 +675,27 @@ test('omits session video bytes while preserving the rest of an autosaved public
   assert.equal(restored?.mediaFileName, 'clip.mp4');
   assert.equal(restored ? publicationDraftNeedsVideoReselection(restored) : false, true);
   assert.equal(draft.mediaBase64, 'dmlkZW8=');
+});
+
+test('restores publisher readiness with an autosaved off-page target', () => {
+  const readiness = {
+    state: 'ready' as const,
+    canPublish: true,
+    canUseChatComments: true,
+    canPublishSuggestions: false,
+    blockerCode: null,
+    checkedAt: '2026-08-27T10:00:00.000Z',
+    retryAt: null,
+  };
+  const draft = createEmptyPublicationDraft([{ ...chatTarget, readiness }]);
+
+  const restored = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-08-27T10:01:00.000Z',
+    draft: preparePublicationDraftForPersistence(draft),
+  });
+
+  assert.deepEqual(restored?.targets[0]?.readiness, readiness);
 });
 
 test('recognizes publication revision conflicts without matching unrelated failures', () => {

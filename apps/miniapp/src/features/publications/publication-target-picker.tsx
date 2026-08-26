@@ -26,6 +26,19 @@ import './publication-target-picker.css';
 type PublicationTargetPickerProps = {
   choices: PublicationTarget[];
   value: PublicationTarget[];
+  remoteSource?: {
+    query: string;
+    entityFilter: PublicationEntityFilter;
+    settling: boolean;
+    loading: boolean;
+    filteredTotal: number | null;
+    hasNextPage: boolean;
+    fetchingNextPage: boolean;
+    fetchNextPageError: boolean;
+    onQueryChange: (query: string) => void;
+    onEntityFilterChange: (filter: PublicationEntityFilter) => void;
+    onLoadMore: () => void;
+  };
   disabled?: boolean;
   error?: string | null;
   maxTargets?: number;
@@ -46,14 +59,15 @@ const TARGET_LIST_OVERSCAN = 3;
 export function PublicationTargetPicker({
   choices,
   value,
+  remoteSource,
   disabled = false,
   error = null,
   maxTargets = MAX_PUBLICATION_TARGETS,
   onChange,
   onLimitReached,
 }: PublicationTargetPickerProps) {
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<PublicationEntityFilter>('all');
+  const [localQuery, setLocalQuery] = useState('');
+  const [localFilter, setLocalFilter] = useState<PublicationEntityFilter>('all');
   const [expanded, setExpanded] = useState(false);
   const [shouldRevealEditor, setShouldRevealEditor] = useState(false);
   const [listScrollTop, setListScrollTop] = useState(0);
@@ -61,6 +75,8 @@ export function PublicationTargetPicker({
   const listRef = useRef<HTMLDivElement | null>(null);
   const editorId = useId();
   const errorId = useId();
+  const query = remoteSource?.query ?? localQuery;
+  const filter = remoteSource?.entityFilter ?? localFilter;
   const deferredQuery = useDeferredValue(query.trim());
   const selectedKeys = useMemo(
     () => new Set(value.map((target) => getPublicationTargetKey(target))),
@@ -68,12 +84,16 @@ export function PublicationTargetPicker({
   );
   const filteredChoices = useMemo(
     () =>
-      choices.filter(
-        (choice) =>
-          (filter === 'all' || choice.entityType === filter) &&
-          matchesPublicationSearch([choice.title], deferredQuery),
-      ),
-    [choices, deferredQuery, filter],
+      remoteSource
+        ? remoteSource.settling
+          ? []
+          : choices
+        : choices.filter(
+            (choice) =>
+              (filter === 'all' || choice.entityType === filter) &&
+              matchesPublicationSearch([choice.title], deferredQuery),
+          ),
+    [choices, deferredQuery, filter, remoteSource],
   );
   const shouldVirtualize = filteredChoices.length > TARGET_LIST_VIRTUALIZATION_THRESHOLD;
   const virtualRange = useMemo(
@@ -169,6 +189,22 @@ export function PublicationTargetPicker({
 
     setExpanded(true);
     setShouldRevealEditor(true);
+  }
+
+  function changeQuery(nextQuery: string): void {
+    if (remoteSource) {
+      remoteSource.onQueryChange(nextQuery);
+      return;
+    }
+    setLocalQuery(nextQuery);
+  }
+
+  function changeFilter(nextFilter: PublicationEntityFilter): void {
+    if (remoteSource) {
+      remoteSource.onEntityFilterChange(nextFilter);
+      return;
+    }
+    setLocalFilter(nextFilter);
   }
 
   function renderChoice(choice: PublicationTarget) {
@@ -284,13 +320,13 @@ export function PublicationTargetPicker({
               maxLength={120}
               placeholder="Найти чат или канал"
               aria-label="Найти получателя"
-              onChange={(event) => setQuery(event.currentTarget.value)}
+              onChange={(event) => changeQuery(event.currentTarget.value)}
               disabled={disabled}
             />
             {query ? (
               <button
                 type="button"
-                onClick={() => setQuery('')}
+                onClick={() => changeQuery('')}
                 aria-label="Очистить поиск"
                 disabled={disabled}
               >
@@ -310,7 +346,7 @@ export function PublicationTargetPicker({
                 type="button"
                 aria-pressed={filter === item.value}
                 className={cn(filter === item.value && 'is-active')}
-                onClick={() => setFilter(item.value)}
+                onClick={() => changeFilter(item.value)}
                 disabled={disabled}
               >
                 {item.label}
@@ -320,10 +356,7 @@ export function PublicationTargetPicker({
 
           <div
             ref={listRef}
-            className={cn(
-              'publication-target-picker__list',
-              shouldVirtualize && 'is-virtual',
-            )}
+            className={cn('publication-target-picker__list', shouldVirtualize && 'is-virtual')}
             role="group"
             aria-label="Получатели"
             onScroll={
@@ -348,12 +381,37 @@ export function PublicationTargetPicker({
               ) : (
                 renderedChoices.map(renderChoice)
               )
+            ) : remoteSource?.loading || remoteSource?.settling ? (
+              <span className="publication-target-picker__empty" role="status">
+                Загружаю получателей
+              </span>
             ) : (
               <span className="publication-target-picker__empty" role="status">
                 Ничего не найдено
               </span>
             )}
           </div>
+          {remoteSource && !remoteSource.settling && remoteSource.filteredTotal !== null ? (
+            <span className="publication-target-picker__loaded" role="status">
+              {filteredChoices.length === remoteSource.filteredTotal
+                ? `Получателей: ${remoteSource.filteredTotal}`
+                : `${filteredChoices.length} из ${remoteSource.filteredTotal}`}
+            </span>
+          ) : null}
+          {remoteSource?.hasNextPage && !remoteSource.settling ? (
+            <button
+              type="button"
+              className="publication-target-picker__load-more"
+              onClick={remoteSource.onLoadMore}
+              disabled={disabled || remoteSource.fetchingNextPage}
+            >
+              {remoteSource.fetchingNextPage
+                ? 'Загрузка...'
+                : remoteSource.fetchNextPageError
+                  ? 'Повторить'
+                  : 'Показать ещё'}
+            </button>
+          ) : null}
         </div>
       ) : null}
 

@@ -422,6 +422,8 @@ describe('MiniappMutationTunnelController', () => {
     ['POST', '/publications'],
     ['POST', '/publications/test'],
     ['POST', '/publications/calendar-availability'],
+    ['POST', '/publisher/entities/channel/channel-1/refresh'],
+    ['POST', '/publisher/entities/resolve'],
     ['PUT', '/publications/publication-1'],
     ['DELETE', '/publications/publication-1'],
     ['POST', '/publications/publication-1/pause'],

@@ -125,11 +125,16 @@ function createMaxBotExecutionPlannerMock() {
   };
 }
 
-function createMaxBotRegistryMock() {
+function createMaxBotRegistryMock(publisherBotId = 'se14088825_bot') {
   return {
     getBotById: jest.fn((botId?: string | null) =>
       botId ? { id: botId, label: botId === 'bot-1' ? 'Основной бот' : botId } : null,
     ),
+    getPublisherBotDescriptor: jest.fn().mockReturnValue({
+      id: publisherBotId,
+      label: 'Публик',
+      kind: 'publisher',
+    }),
   };
 }
 
@@ -293,6 +298,64 @@ describe('ManagedEntitiesService getMe', () => {
       }),
     );
     expect(maxBotLinkService.buildInitDataBotUrlSync).toHaveBeenCalledWith('launch-bot');
+    expect(maxBotLinkService.buildBotUrlSync).not.toHaveBeenCalled();
+  });
+
+  it('returns the canonical publisher dialog URL without normal-bot fallback', async () => {
+    const publisherBotId = 'publisher bot/1';
+    const maxBotLinkService = {
+      buildInitDataBotUrlSync: jest.fn().mockReturnValue(null),
+      buildBotUrlSync: jest.fn().mockReturnValue('https://max.ru/entry-bot'),
+    };
+    const maxBotRegistry = createMaxBotRegistryMock(publisherBotId);
+    const { service } = createService({ maxBotLinkService, maxBotRegistry });
+
+    await expect(
+      service.getMe(
+        {
+          userId: 'admin-1',
+          launchBotId: 'stale-entry-bot',
+          username: null,
+          displayName: null,
+        },
+        { profile: 'publisher' },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        botDialogUrl: 'https://max.ru/publisher%20bot%2F1',
+        profile: 'publisher',
+      }),
+    );
+    expect(maxBotRegistry.getPublisherBotDescriptor).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.buildInitDataBotUrlSync).not.toHaveBeenCalled();
+    expect(maxBotLinkService.buildBotUrlSync).not.toHaveBeenCalled();
+  });
+
+  it('returns the canonical publisher dialog URL when launch bot id is missing', async () => {
+    const maxBotLinkService = {
+      buildInitDataBotUrlSync: jest.fn().mockReturnValue(null),
+      buildBotUrlSync: jest.fn().mockReturnValue('https://max.ru/entry-bot'),
+    };
+    const maxBotRegistry = createMaxBotRegistryMock();
+    const { service } = createService({ maxBotLinkService, maxBotRegistry });
+
+    await expect(
+      service.getMe(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+        },
+        { profile: 'publisher' },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        botDialogUrl: 'https://max.ru/se14088825_bot',
+        profile: 'publisher',
+      }),
+    );
+    expect(maxBotRegistry.getPublisherBotDescriptor).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.buildInitDataBotUrlSync).not.toHaveBeenCalled();
     expect(maxBotLinkService.buildBotUrlSync).not.toHaveBeenCalled();
   });
 

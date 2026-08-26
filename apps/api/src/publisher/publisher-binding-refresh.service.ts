@@ -93,7 +93,7 @@ export class PublisherBindingRefreshService {
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         botId: this.publisherBotId,
-        trafficClass: 'background',
+        trafficClass: job.reason === 'manual_recheck' ? 'interactive' : 'background',
         sourceTag: 'publisher_readiness',
         bypassCache: true,
         timeoutMs: 5_000,

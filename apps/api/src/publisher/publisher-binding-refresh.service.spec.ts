@@ -101,6 +101,22 @@ describe('PublisherBindingRefreshService', () => {
     expect(dispatchHealth.recordAuthenticatedSuccess).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the publisher interactive lane for an explicit user recheck', async () => {
+    const { service, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+
+    await service.refresh({ ...job, reason: 'manual_recheck' });
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ trafficClass: 'interactive' }),
+    );
+  });
+
   it('maps a targeted 403 probe to LOST without retrying through a main bot', async () => {
     const error = Object.assign(new Error('denied'), { response: { status: 403 } });
     const { service, prisma, dispatchHealth } = createHarness(error);

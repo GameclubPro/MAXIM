@@ -4,6 +4,8 @@ import { getMe } from '../src/lib/api/me-client';
 import {
   getPublisherEntity,
   listPublisherEntities,
+  refreshPublisherEntity,
+  resolvePublisherEntities,
   updatePublisherPolicy,
 } from '../src/lib/api/publisher-client';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
@@ -61,6 +63,46 @@ test('publisher entities preserve unready targets for the picker', async () => {
   assert.equal(response.items[0]?.readiness.canPublish, false);
 });
 
+test('publisher entity cursor client sends bound server filters and validates page metadata', async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const api = {
+    request: async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return {
+        items: [],
+        nextCursor: 'next_cursor',
+        filteredTotal: 14,
+        summary: { total: 40, chat: 26, channel: 14, ready: 30, attention: 10 },
+      };
+    },
+  };
+  const signal = new AbortController().signal;
+
+  const response = await listPublisherEntities(api as never, {
+    pagination: 'cursor',
+    limit: 25,
+    query: ' Новости ',
+    entityType: 'channel',
+    readiness: 'ready',
+    cursor: 'page_cursor',
+    signal,
+  });
+
+  const url = new URL(calls[0]!.path, 'https://preview.local');
+  assert.deepEqual(Object.fromEntries(url.searchParams.entries()), {
+    pagination: 'cursor',
+    limit: '25',
+    query: 'Новости',
+    entityType: 'channel',
+    readiness: 'ready',
+    cursor: 'page_cursor',
+  });
+  assert.equal(calls[0]?.init?.signal, signal);
+  assert.equal(response.nextCursor, 'next_cursor');
+  assert.equal(response.filteredTotal, 14);
+  assert.equal(response.summary.total, 40);
+});
+
 test('publisher entity client encodes ids and validates policy update payloads', async () => {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const entity = {
@@ -96,14 +138,8 @@ test('publisher entity client encodes ids and validates policy update payloads',
     suggestionsViaPublik: true,
   });
 
-  assert.equal(
-    calls[0]?.path,
-    '/publisher/entities/channel/channel%2Fwith%3Fsymbols',
-  );
-  assert.equal(
-    calls[1]?.path,
-    '/publisher/entities/channel/channel%2Fwith%3Fsymbols/policy',
-  );
+  assert.equal(calls[0]?.path, '/publisher/entities/channel/channel%2Fwith%3Fsymbols');
+  assert.equal(calls[1]?.path, '/publisher/entities/channel/channel%2Fwith%3Fsymbols/policy');
   assert.equal(calls[1]?.init?.method, 'PATCH');
   assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
     expectedRevision: 4,
@@ -128,6 +164,41 @@ test('publisher update rejects an empty policy change before transport', async (
   assert.equal(requested, false);
 });
 
+test('publisher entity refresh is target-specific and encodes the entity id', async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const api = {
+    request: async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return { accepted: true };
+    },
+  };
+
+  const response = await refreshPublisherEntity(api as never, 'chat', 'chat/with?symbols');
+
+  assert.deepEqual(response, { accepted: true });
+  assert.equal(calls[0]?.path, '/publisher/entities/chat/chat%2Fwith%3Fsymbols/refresh');
+  assert.equal(calls[0]?.init?.method, 'POST');
+});
+
+test('publisher entity hydration sends one bounded exact-target request', async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const api = {
+    request: async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return { items: [] };
+    },
+  };
+  const targets = [
+    { id: 'chat-1', entityType: 'chat' as const },
+    { id: 'channel-1', entityType: 'channel' as const },
+  ];
+
+  assert.deepEqual(await resolvePublisherEntities(api as never, { targets }), { items: [] });
+  assert.equal(calls[0]?.path, '/publisher/entities/resolve');
+  assert.equal(calls[0]?.init?.method, 'POST');
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), { targets });
+});
+
 test('preview publisher list includes ready, setup, temporary, empty, and error states', async () => {
   const mixed = await listPublisherEntities(
     createPreviewApiTransport({ search: '?profile=publisher' }),
@@ -135,6 +206,8 @@ test('preview publisher list includes ready, setup, temporary, empty, and error 
   assert.equal(mixed.items.length, 4);
   assert.ok(mixed.items.some((item) => item.readiness.state === 'ready'));
   assert.ok(mixed.items.some((item) => item.readiness.blockerCode === 'bot_not_connected'));
+  assert.ok(mixed.items.every((item) => item.entityUrl?.startsWith('https://max.ru/join/')));
+  assert.ok(mixed.items.every((item) => item.settingsHandoffUrl?.includes('startapp=mr-')));
   assert.ok(
     mixed.items.some((item) => item.readiness.blockerCode === 'publisher_runtime_unavailable'),
   );
@@ -149,6 +222,37 @@ test('preview publisher list includes ready, setup, temporary, empty, and error 
   );
   assert.equal(large.items.length, 400);
   assert.equal(new Set(large.items.map((item) => item.id)).size, 400);
+
+  const pagedApi = createPreviewApiTransport({
+    search: '?profile=publisher&publisherState=large',
+  });
+  const firstPage = await listPublisherEntities(pagedApi, {
+    pagination: 'cursor',
+    limit: 30,
+    entityType: 'chat',
+  });
+  assert.equal(firstPage.items.length, 30);
+  assert.equal(firstPage.filteredTotal, 200);
+  assert.equal(firstPage.summary.total, 400);
+  assert.ok(firstPage.items.every((item) => item.entityType === 'chat'));
+  assert.ok(firstPage.nextCursor);
+
+  const secondPage = await listPublisherEntities(pagedApi, {
+    pagination: 'cursor',
+    limit: 30,
+    entityType: 'chat',
+    cursor: firstPage.nextCursor,
+  });
+  assert.equal(secondPage.items.length, 30);
+  assert.equal(new Set([...firstPage.items, ...secondPage.items].map((item) => item.id)).size, 60);
+
+  const searched = await listPublisherEntities(pagedApi, {
+    pagination: 'cursor',
+    query: firstPage.items[0]!.id,
+    entityType: 'chat',
+  });
+  assert.equal(searched.filteredTotal, 1);
+  assert.equal(searched.items[0]?.id, firstPage.items[0]?.id);
 
   await assert.rejects(
     listPublisherEntities(
@@ -169,4 +273,20 @@ test('preview can render the isolated publisher profile', () => {
     'publisher_entities',
     'chat_comments',
   ]);
+});
+
+test('preview target-specific refresh can transition a blocked publisher entity to ready', async () => {
+  const api = createPreviewApiTransport({
+    search: '?profile=publisher',
+    clock: { now: () => new Date('2026-08-27T10:00:00.000Z') },
+  });
+  const before = await getPublisherEntity(api, 'chat', 'preview-chat-2');
+  const response = await refreshPublisherEntity(api, 'chat', 'preview-chat-2');
+  const after = await getPublisherEntity(api, 'chat', 'preview-chat-2');
+
+  assert.equal(before.readiness.blockerCode, 'bot_not_connected');
+  assert.deepEqual(response, { accepted: true });
+  assert.equal(after.readiness.state, 'ready');
+  assert.equal(after.readiness.canPublish, true);
+  assert.equal(after.readiness.checkedAt, '2026-08-27T10:00:00.001Z');
 });

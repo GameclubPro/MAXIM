@@ -236,7 +236,7 @@ export class ManagedEntitiesService {
             profileHandoffBotId,
           )
         : null,
-      botDialogUrl: this.buildBotDialogUrl(user.launchBotId),
+      botDialogUrl: this.buildBotDialogUrl(user.launchBotId, profileProjection.profile),
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
       ...profileProjection,
     };
@@ -308,8 +308,18 @@ export class ManagedEntitiesService {
     }
   }
 
-  private buildBotDialogUrl(launchBotId: string | null | undefined): string | null {
+  private buildBotDialogUrl(
+    launchBotId: string | null | undefined,
+    profile: MiniappProfile,
+  ): string | null {
     const normalizedLaunchBotId = normalizeOwnBotUserId(launchBotId ?? undefined);
+    if (profile === 'publisher') {
+      const publisherBotId = normalizeOwnBotUserId(
+        this.maxBotRegistry?.getPublisherBotDescriptor().id,
+      );
+      return publisherBotId ? `https://max.ru/${encodeURIComponent(publisherBotId)}` : null;
+    }
+
     if (this.maxBotLinkService) {
       return (
         this.maxBotLinkService.buildInitDataBotUrlSync(normalizedLaunchBotId) ??

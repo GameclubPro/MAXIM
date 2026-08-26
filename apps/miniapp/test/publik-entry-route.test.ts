@@ -22,9 +22,13 @@ test('authenticated /publik entry redirects to the launch profile home and prese
   );
   assert.match(
     authenticatedRoutes,
-    /path="\/publik" element=\{<ProfileHomeRedirect homeRoute=\{me\.homeRoute\} \/>\}/u,
+    /path="\/publik" element=\{<ProfileHomeRedirect homeRoute=\{profileHomeRoute\} \/>\}/u,
   );
   assert.doesNotMatch(authenticatedRoutes, /path="\/publik" element=\{<LazyPublikPage \/>\}/u);
+  assert.match(
+    authenticatedRoutes,
+    /moderationProfile[\s\S]*?<Route path="\/" element=\{<LazyChatsPage[\s\S]*?<LazyPublisherEntitiesPage/u,
+  );
 });
 
 test('unauthenticated /publik entry cannot bypass the startup auth gate', () => {

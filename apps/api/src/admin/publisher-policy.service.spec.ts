@@ -1,12 +1,17 @@
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import {
+  decodePublisherEntitiesCursor,
+  encodePublisherEntitiesCursor,
+} from '@maxim/contracts/publisher';
+import {
   ChatEntityType,
   ManagedEntityAccessRole,
   ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import { PublisherPolicyService } from './publisher-policy.service';
 
-function createReadiness() {
+function createReadiness(readyEntityIds: readonly string[] = []) {
+  const readyIds = new Set(readyEntityIds);
   return {
     isRuntimeAvailable: jest.fn().mockResolvedValue(true),
     resolvePolicy: jest.fn(
@@ -24,15 +29,23 @@ function createReadiness() {
         updatedAt: row?.updatedAt.toISOString() ?? null,
       }),
     ),
-    resolveReadiness: jest.fn().mockReturnValue({
-      state: 'setup_required',
-      canPublish: false,
-      canUseChatComments: false,
-      canPublishSuggestions: false,
-      blockerCode: 'bot_not_connected',
-      checkedAt: null,
-      retryAt: null,
-    }),
+    resolveReadiness: jest.fn(
+      (
+        source: { id: string; entityType: ChatEntityType },
+        _snapshot?: { now: Date; runtimeAvailable: boolean },
+      ) => {
+        const ready = readyIds.has(source.id);
+        return {
+          state: ready ? 'ready' : 'setup_required',
+          canPublish: ready,
+          canUseChatComments: ready && source.entityType === ChatEntityType.CHAT,
+          canPublishSuggestions: false,
+          blockerCode: ready ? null : 'bot_not_connected',
+          checkedAt: null,
+          retryAt: null,
+        };
+      },
+    ),
   };
 }
 
@@ -43,11 +56,69 @@ function createBotRegistry() {
   };
 }
 
+function createMaxBotLinkService() {
+  return {
+    buildEntryMiniappStartUrlSync: jest.fn(
+      (startParam: string) => `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
+    ),
+    buildMiniappStartUrlSync: jest
+      .fn()
+      .mockReturnValue('https://max.ru/publik-bot?startapp=fallback'),
+  };
+}
+
 const user = {
   userId: 'user-1',
   username: null,
   displayName: null,
 };
+
+function createListEntity(id: string, title: string, entityType: ChatEntityType) {
+  return {
+    id,
+    title,
+    entityType,
+    channelSettings: null,
+    publicationPolicy: null,
+    publisherBinding: null,
+    botMemberships: [{ botId: 'main-bot' }],
+  };
+}
+
+function createListFixture(
+  entities: ReturnType<typeof createListEntity>[],
+  readyEntityIds: readonly string[] = [],
+) {
+  const findMany = jest
+    .fn()
+    .mockImplementation((request?: { where?: { chatId?: { in?: string[] } } }) => {
+      const requestedIds = request?.where?.chatId?.in;
+      return Promise.resolve(
+        entities
+          .filter((chat) => !requestedIds || requestedIds.includes(chat.id))
+          .map((chat) => ({
+            chatId: chat.id,
+            botId: 'main-bot',
+            entityType: chat.entityType,
+            chat,
+          })),
+      );
+    });
+  const catalogFindMany = jest.fn().mockResolvedValue([]);
+  const readiness = createReadiness(readyEntityIds);
+  const maxBotLinkService = createMaxBotLinkService();
+  const service = new PublisherPolicyService(
+    {
+      managedEntityAccessEdge: { findMany },
+      managedBotChatCatalog: { findMany: catalogFindMany },
+    } as never,
+    createBotRegistry() as never,
+    readiness as never,
+    {} as never,
+    maxBotLinkService as never,
+  );
+  return { catalogFindMany, findMany, maxBotLinkService, readiness, service };
+}
 
 function createPolicyMutationFixture(
   options: {
@@ -96,6 +167,7 @@ function createPolicyMutationFixture(
     createBotRegistry() as never,
     readiness as never,
     managedEntities as never,
+    createMaxBotLinkService() as never,
   );
 
   return { managedEntities, prisma, readiness, service, storedPolicy, transaction, tx };
@@ -115,14 +187,17 @@ describe('PublisherPolicyService', () => {
     const prisma = {
       managedEntityAccessEdge: {
         findMany: jest.fn().mockResolvedValue([
-          { chatId: 'chat-1', botId: 'main-bot', chat },
-          { chatId: 'chat-1', botId: 'main-bot', chat },
+          { chatId: 'chat-1', botId: 'main-bot', entityType: ChatEntityType.CHAT, chat },
+          { chatId: 'chat-1', botId: 'main-bot', entityType: ChatEntityType.CHAT, chat },
           {
             chatId: 'chat-2',
             botId: 'inactive-main-bot',
             chat: { ...chat, id: 'chat-2', botMemberships: [] },
           },
         ]),
+      },
+      managedBotChatCatalog: {
+        findMany: jest.fn().mockResolvedValue([]),
       },
     };
     const readiness = createReadiness();
@@ -131,6 +206,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       readiness as never,
       {} as never,
+      createMaxBotLinkService() as never,
     );
 
     const response = await service.listEntities({
@@ -141,6 +217,7 @@ describe('PublisherPolicyService', () => {
 
     expect(response.items).toHaveLength(1);
     expect(response.items[0]?.id).toBe('chat-1');
+    expect(Object.keys(response)).toEqual(['items']);
     expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -153,8 +230,528 @@ describe('PublisherPolicyService', () => {
     );
     expect(readiness.resolveReadiness).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'chat-1' }),
-      { runtimeAvailable: true },
+      expect.objectContaining({ now: expect.any(Date), runtimeAvailable: true }),
     );
+    expect(readiness.isRuntimeAvailable).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses only exact scoped catalog rows and builds settings handoffs through the entry bot', async () => {
+    const safeEntityId = 'chat/id ?';
+    const invalidLinkCases = [
+      ['credentials', 'https://user:secret@max.ru/team'],
+      ['foreign-host', 'https://example.com/team'],
+      ['http', 'http://max.ru/team'],
+      ['port', 'https://max.ru:8443/team'],
+      ['hash', 'https://max.ru/team#members'],
+      ['root', 'https://max.ru/'],
+    ] as const;
+    const entities = [
+      createListEntity(safeEntityId, 'Безопасный чат', ChatEntityType.CHAT),
+      ...invalidLinkCases.map(([id]) => createListEntity(id, id, ChatEntityType.CHAT)),
+    ];
+    const findMany = jest.fn().mockResolvedValue(
+      entities.map((chat) => ({
+        chatId: chat.id,
+        botId: 'main-bot',
+        entityType: chat.entityType,
+        chat,
+      })),
+    );
+    const catalogFindMany = jest.fn().mockResolvedValue([
+      {
+        botId: 'main-bot',
+        chatId: safeEntityId,
+        link: 'https://www.max.ru/team?from=catalog',
+        avatarUrl: 'https://cdn.example.com/avatar.png?size=small',
+      },
+      ...invalidLinkCases.map(([chatId, link]) => ({
+        botId: 'main-bot',
+        chatId,
+        link,
+        avatarUrl:
+          chatId === 'credentials' ? 'https://user:secret@cdn.example.com/avatar.png' : null,
+      })),
+      {
+        botId: 'inactive-main-bot',
+        chatId: safeEntityId,
+        link: 'https://max.ru/unrelated-route',
+        avatarUrl: 'https://cdn.example.com/unrelated.png',
+      },
+    ]);
+    const maxBotLinkService = createMaxBotLinkService();
+    const service = new PublisherPolicyService(
+      {
+        managedEntityAccessEdge: { findMany },
+        managedBotChatCatalog: { findMany: catalogFindMany },
+      } as never,
+      createBotRegistry() as never,
+      createReadiness() as never,
+      {} as never,
+      maxBotLinkService as never,
+    );
+
+    const response = await service.listEntities(user);
+    const entitiesById = new Map(response.items.map((entity) => [entity.id, entity]));
+    const safeEntity = entitiesById.get(safeEntityId);
+
+    expect(safeEntity).toMatchObject({
+      avatarUrl: 'https://cdn.example.com/avatar.png?size=small',
+      entityUrl: 'https://max.ru/team?from=catalog',
+      settingsHandoffUrl: expect.stringMatching(/^https:\/\/max\.ru\/entry-bot\?startapp=mr-/u),
+    });
+    for (const [id] of invalidLinkCases) {
+      expect(entitiesById.get(id)?.entityUrl).toBeNull();
+    }
+    expect(entitiesById.get('credentials')?.avatarUrl).toBeNull();
+    expect(catalogFindMany).toHaveBeenCalledWith({
+      where: {
+        status: 'ACTIVE',
+        OR: entities.map((entity) => ({
+          botId: 'main-bot',
+          chatId: entity.id,
+          entityType: ChatEntityType.CHAT,
+        })),
+      },
+      select: {
+        botId: true,
+        chatId: true,
+        link: true,
+        avatarUrl: true,
+      },
+    });
+    const handoffUrl = new URL(safeEntity?.settingsHandoffUrl ?? '');
+    const startParam = handoffUrl.searchParams.get('startapp') ?? '';
+    expect(
+      JSON.parse(Buffer.from(startParam.slice('mr-'.length), 'base64url').toString('utf8')),
+    ).toEqual({
+      v: 1,
+      k: 'route',
+      r: `/chat/${encodeURIComponent(safeEntityId)}/settings`,
+    });
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
+  });
+
+  it('loads catalog presentation in bounded batches without per-entity queries', async () => {
+    const entities = Array.from({ length: 201 }, (_, index) =>
+      createListEntity(`chat-${index}`, `Чат ${index}`, ChatEntityType.CHAT),
+    );
+    const fixture = createListFixture(entities);
+
+    await expect(fixture.service.listEntities(user)).resolves.toMatchObject({
+      items: expect.any(Array),
+    });
+
+    expect(fixture.catalogFindMany).toHaveBeenCalledTimes(2);
+    expect(fixture.catalogFindMany.mock.calls.map(([request]) => request.where.OR.length)).toEqual([
+      200, 1,
+    ]);
+  });
+
+  it('returns a valid channel overview without dropping chats from the entity list', async () => {
+    const channel = {
+      id: 'channel-1',
+      title: 'Канал',
+      entityType: ChatEntityType.CHANNEL,
+      channelSettings: {
+        commentsEnabled: false,
+        postSuggestionsEnabled: true,
+        commentsModerationEnabled: true,
+      },
+      publicationPolicy: null,
+      publisherBinding: null,
+      botMemberships: [{ botId: 'main-bot' }],
+    };
+    const chat = {
+      id: 'chat-1',
+      title: 'Чат',
+      entityType: ChatEntityType.CHAT,
+      channelSettings: null,
+      publicationPolicy: null,
+      publisherBinding: null,
+      botMemberships: [{ botId: 'main-bot' }],
+    };
+    const prisma = {
+      managedEntityAccessEdge: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: channel.id,
+            botId: 'main-bot',
+            entityType: ChatEntityType.CHANNEL,
+            chat: channel,
+          },
+          { chatId: chat.id, botId: 'main-bot', entityType: ChatEntityType.CHAT, chat },
+        ]),
+      },
+      managedBotChatCatalog: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const service = new PublisherPolicyService(
+      prisma as never,
+      createBotRegistry() as never,
+      createReadiness() as never,
+      {} as never,
+      createMaxBotLinkService() as never,
+    );
+
+    const response = await service.listEntities(user);
+
+    expect(response.items).toHaveLength(2);
+    expect(response.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: chat.id, entityType: 'chat', channelOverview: null }),
+        expect.objectContaining({
+          id: channel.id,
+          entityType: 'channel',
+          channelOverview: {
+            enabledScenariosCount: 1,
+            commentsEnabled: false,
+            postSuggestionsEnabled: true,
+            commentsModerationEnabled: false,
+          },
+        }),
+      ]),
+    );
+  });
+
+  it('paginates a stable deduplicated list and reports unfiltered summary totals', async () => {
+    const fixture = createListFixture(
+      [
+        createListEntity('chat-team', 'Команда', ChatEntityType.CHAT),
+        createListEntity('channel-beta', 'Бета', ChatEntityType.CHANNEL),
+        createListEntity('chat-alpha', 'Альфа', ChatEntityType.CHAT),
+        createListEntity('channel-alpha', 'Альфа', ChatEntityType.CHANNEL),
+      ],
+      ['channel-alpha', 'chat-team'],
+    );
+
+    const firstPage = await fixture.service.listEntities(user, {
+      pagination: 'cursor',
+      limit: '2',
+    });
+
+    expect(firstPage.items.map((entity) => entity.id)).toEqual(['channel-alpha', 'channel-beta']);
+    expect(firstPage.filteredTotal).toBe(4);
+    expect(firstPage.summary).toEqual({
+      total: 4,
+      chat: 2,
+      channel: 2,
+      ready: 2,
+      attention: 2,
+    });
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+    expect(decodePublisherEntitiesCursor(firstPage.nextCursor ?? '')).toEqual({
+      v: 1,
+      snapshotId: expect.any(String),
+      offset: 2,
+      query: '',
+      entityType: null,
+      readiness: null,
+    });
+    const firstSnapshotCalls = fixture.readiness.resolveReadiness.mock.calls;
+    expect(firstSnapshotCalls).toHaveLength(4);
+    expect(new Set(firstSnapshotCalls.map(([, snapshot]) => snapshot?.now)).size).toBe(1);
+    expect(firstSnapshotCalls[0]?.[1]).toEqual({
+      now: expect.any(Date),
+      runtimeAvailable: true,
+    });
+    expect(fixture.readiness.isRuntimeAvailable).toHaveBeenCalledTimes(1);
+
+    const secondPage = await fixture.service.listEntities(user, {
+      pagination: 'cursor',
+      limit: 2,
+      cursor: firstPage.nextCursor,
+    });
+
+    expect(secondPage.items.map((entity) => entity.id)).toEqual(['chat-alpha', 'chat-team']);
+    expect(secondPage.nextCursor).toBeNull();
+    expect(secondPage.filteredTotal).toBe(4);
+    expect(secondPage.summary).toEqual(firstPage.summary);
+    expect(fixture.readiness.isRuntimeAvailable).toHaveBeenCalledTimes(2);
+    expect(fixture.catalogFindMany).toHaveBeenCalledTimes(2);
+    expect(fixture.findMany).toHaveBeenCalledTimes(2);
+
+    await expect(
+      fixture.service.listEntities(user, {
+        pagination: 'cursor',
+        limit: 2,
+        cursor: firstPage.nextCursor,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(fixture.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses an identical first page through bounded hydration instead of another full scan', async () => {
+    const fixture = createListFixture([
+      createListEntity('chat-1', 'Один', ChatEntityType.CHAT),
+      createListEntity('chat-2', 'Два', ChatEntityType.CHAT),
+      createListEntity('chat-3', 'Три', ChatEntityType.CHAT),
+    ]);
+
+    const first = await fixture.service.listEntities(user, { pagination: 'cursor', limit: 1 });
+    const repeated = await fixture.service.listEntities(user, { pagination: 'cursor', limit: 1 });
+
+    expect(repeated.items.map((entity) => entity.id)).toEqual(
+      first.items.map((entity) => entity.id),
+    );
+    expect(decodePublisherEntitiesCursor(repeated.nextCursor ?? '')?.snapshotId).toBe(
+      decodePublisherEntitiesCursor(first.nextCursor ?? '')?.snapshotId,
+    );
+    expect(fixture.findMany).toHaveBeenCalledTimes(2);
+    expect(fixture.findMany.mock.calls[0]?.[0]?.where).not.toHaveProperty('chatId');
+    expect(fixture.findMany.mock.calls[1]?.[0]?.where).toEqual(
+      expect.objectContaining({ chatId: { in: [first.items[0]?.id] } }),
+    );
+  });
+
+  it('omits access revoked after the snapshot without losing later authorized items', async () => {
+    const entities = [
+      createListEntity('channel-a', 'Альфа', ChatEntityType.CHANNEL),
+      createListEntity('channel-b', 'Бета', ChatEntityType.CHANNEL),
+      createListEntity('channel-c', 'Гамма', ChatEntityType.CHANNEL),
+    ];
+    const fixture = createListFixture(entities);
+    const first = await fixture.service.listEntities(user, { pagination: 'cursor', limit: 1 });
+
+    fixture.findMany.mockImplementation((request?: { where?: { chatId?: { in?: string[] } } }) => {
+      const requestedIds = request?.where?.chatId?.in;
+      return Promise.resolve(
+        entities
+          .filter((chat) => chat.id !== 'channel-b')
+          .filter((chat) => !requestedIds || requestedIds.includes(chat.id))
+          .map((chat) => ({
+            chatId: chat.id,
+            botId: 'main-bot',
+            entityType: chat.entityType,
+            chat,
+          })),
+      );
+    });
+
+    const revokedPage = await fixture.service.listEntities(user, {
+      pagination: 'cursor',
+      limit: 1,
+      cursor: first.nextCursor,
+    });
+    expect(revokedPage.items).toEqual([]);
+    expect(revokedPage.nextCursor).toEqual(expect.any(String));
+
+    const finalPage = await fixture.service.listEntities(user, {
+      pagination: 'cursor',
+      limit: 1,
+      cursor: revokedPage.nextCursor,
+    });
+    expect(finalPage.items.map((entity) => entity.id)).toEqual(['channel-c']);
+    expect(finalPage.nextCursor).toBeNull();
+    expect(fixture.findMany.mock.calls[1]?.[0]?.where).toEqual(
+      expect.objectContaining({
+        chatId: { in: ['channel-b'] },
+        userId: user.userId,
+        state: ManagedEntityAccessState.GRANTED,
+      }),
+    );
+  });
+
+  it('filters cursor pages by entity type, readiness, title or id', async () => {
+    const fixture = createListFixture(
+      [
+        createListEntity('channel-news', 'Новости', ChatEntityType.CHANNEL),
+        createListEntity('chat-team', 'Команда', ChatEntityType.CHAT),
+        createListEntity('chat-help', 'Помощь', ChatEntityType.CHAT),
+      ],
+      ['channel-news', 'chat-team'],
+    );
+
+    await expect(
+      fixture.service.listEntities(user, {
+        pagination: 'cursor',
+        entityType: 'chat',
+        readiness: 'ready',
+        query: '  TEAM ',
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: 'chat-team' })],
+      nextCursor: null,
+      filteredTotal: 1,
+      summary: {
+        total: 3,
+        chat: 2,
+        channel: 1,
+        ready: 2,
+        attention: 1,
+      },
+    });
+
+    await expect(
+      fixture.service.listEntities(user, {
+        pagination: 'cursor',
+        readiness: 'attention',
+        query: 'ПОМОЩЬ',
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: 'chat-help' })],
+      filteredTotal: 1,
+    });
+  });
+
+  it('hydrates only requested user-scoped entities in request order', async () => {
+    const fixture = createListFixture([
+      createListEntity('chat-1', 'Чат', ChatEntityType.CHAT),
+      createListEntity('channel-1', 'Канал', ChatEntityType.CHANNEL),
+    ]);
+
+    await expect(
+      fixture.service.resolveEntities(user, {
+        targets: [
+          { id: 'channel-1', entityType: 'channel' },
+          { id: 'chat-1', entityType: 'chat' },
+          { id: 'chat-1', entityType: 'channel' },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({ id: 'channel-1', entityType: 'channel' }),
+        expect.objectContaining({ id: 'chat-1', entityType: 'chat' }),
+      ],
+    });
+    expect(fixture.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ chatId: { in: ['channel-1', 'chat-1'] } }),
+      }),
+    );
+  });
+
+  it('does not hydrate a batch target outside the requesting user scope', async () => {
+    const foreignChat = createListEntity('chat-foreign', 'Чужой чат', ChatEntityType.CHAT);
+    const findMany = jest
+      .fn()
+      .mockImplementation(({ where }: { where: { userId: string; chatId?: { in?: string[] } } }) =>
+        Promise.resolve(
+          where.userId === 'user-2' && where.chatId?.in?.includes(foreignChat.id)
+            ? [
+                {
+                  chatId: foreignChat.id,
+                  botId: 'main-bot',
+                  entityType: foreignChat.entityType,
+                  chat: foreignChat,
+                },
+              ]
+            : [],
+        ),
+      );
+    const service = new PublisherPolicyService(
+      {
+        managedEntityAccessEdge: { findMany },
+        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
+      } as never,
+      createBotRegistry() as never,
+      createReadiness() as never,
+      {} as never,
+      createMaxBotLinkService() as never,
+    );
+    const body = { targets: [{ id: foreignChat.id, entityType: 'chat' }] };
+
+    await expect(service.resolveEntities(user, body)).resolves.toEqual({ items: [] });
+    await expect(
+      service.resolveEntities({ ...user, userId: 'user-2' }, body),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: foreignChat.id, entityType: 'chat' })],
+    });
+    expect(findMany.mock.calls.map(([request]) => request.where.userId)).toEqual([
+      user.userId,
+      'user-2',
+    ]);
+  });
+
+  it('rejects invalid entity hydration before loading access edges', async () => {
+    const fixture = createListFixture([]);
+
+    await expect(fixture.service.resolveEntities(user, { targets: [] })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(fixture.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed or filter-mismatched cursors before loading user entities', async () => {
+    const fixture = createListFixture([
+      createListEntity('chat-1', 'Один', ChatEntityType.CHAT),
+      createListEntity('chat-2', 'Два', ChatEntityType.CHAT),
+    ]);
+    const firstPage = await fixture.service.listEntities(user, {
+      pagination: 'cursor',
+      limit: 1,
+    });
+    fixture.findMany.mockClear();
+    fixture.readiness.isRuntimeAvailable.mockClear();
+
+    await expect(
+      fixture.service.listEntities(user, {
+        pagination: 'cursor',
+        limit: 1,
+        query: 'другой фильтр',
+        cursor: firstPage.nextCursor,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      fixture.service.listEntities(user, {
+        pagination: 'cursor',
+        cursor: 'not-a-valid-cursor',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(fixture.findMany).not.toHaveBeenCalled();
+    expect(fixture.readiness.isRuntimeAvailable).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown cursor snapshot without loading the user catalog', async () => {
+    const fixture = createListFixture([
+      createListEntity('chat-visible', 'Доступный чат', ChatEntityType.CHAT),
+    ]);
+    const cursor = encodePublisherEntitiesCursor({
+      v: 1,
+      snapshotId: 'unknown_snapshot',
+      offset: 1,
+      query: '',
+      entityType: null,
+      readiness: null,
+    });
+
+    await expect(
+      fixture.service.listEntities(user, { pagination: 'cursor', cursor }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(fixture.findMany).not.toHaveBeenCalled();
+  });
+
+  it('validates explicit cursor mode but ignores pagination fields for legacy callers', async () => {
+    const fixture = createListFixture([
+      createListEntity('chat-1', 'Один', ChatEntityType.CHAT),
+      createListEntity('chat-2', 'Два', ChatEntityType.CHAT),
+    ]);
+
+    await expect(
+      fixture.service.listEntities(user, { limit: 1, query: 'нет совпадений' }),
+    ).resolves.toMatchObject({
+      items: expect.arrayContaining([expect.any(Object), expect.any(Object)]),
+    });
+    fixture.findMany.mockClear();
+    fixture.readiness.isRuntimeAvailable.mockClear();
+
+    await expect(
+      fixture.service.listEntities(user, { pagination: 'cursor', limit: 101 }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      fixture.service.listEntities(user, { pagination: 'offset' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      fixture.service.listEntities(user, {
+        pagination: 'cursor',
+        query: 'x'.repeat(121),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(fixture.findMany).not.toHaveBeenCalled();
+    expect(fixture.readiness.isRuntimeAvailable).not.toHaveBeenCalled();
   });
 
   it('does not return an entity from another user-scoped access list', async () => {
@@ -167,20 +764,33 @@ describe('PublisherPolicyService', () => {
       publisherBinding: null,
       botMemberships: [{ botId: 'main-bot' }],
     };
-    const findMany = jest
-      .fn()
-      .mockImplementation(({ where }: { where: { userId: string } }) =>
-        Promise.resolve(
-          where.userId === 'user-2'
-            ? [{ chatId: foreignChat.id, botId: 'main-bot', chat: foreignChat }]
-            : [],
-        ),
-      );
+    const findMany = jest.fn().mockImplementation(({ where }: { where: { userId: string } }) =>
+      Promise.resolve(
+        where.userId === 'user-2'
+          ? [
+              {
+                chatId: foreignChat.id,
+                botId: 'main-bot',
+                entityType: ChatEntityType.CHAT,
+                chat: foreignChat,
+              },
+            ]
+          : [],
+      ),
+    );
+    const catalogFindFirst = jest.fn().mockResolvedValue({
+      link: 'https://max.ru/scoped-chat',
+      avatarUrl: null,
+    });
     const service = new PublisherPolicyService(
-      { managedEntityAccessEdge: { findMany } } as never,
+      {
+        managedEntityAccessEdge: { findMany },
+        managedBotChatCatalog: { findFirst: catalogFindFirst },
+      } as never,
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
+      createMaxBotLinkService() as never,
     );
 
     await expect(
@@ -196,11 +806,40 @@ describe('PublisherPolicyService', () => {
         username: null,
         displayName: null,
       }),
-    ).resolves.toMatchObject({ id: foreignChat.id });
+    ).resolves.toMatchObject({ id: foreignChat.id, entityUrl: 'https://max.ru/scoped-chat' });
+    await expect(
+      service.getEntity('channel', foreignChat.id, {
+        userId: 'user-2',
+        username: null,
+        displayName: null,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
     expect(findMany.mock.calls.map(([request]) => request.where.userId)).toEqual([
       'user-1',
       'user-2',
+      'user-2',
     ]);
+    expect(findMany.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: foreignChat.id,
+          entityType: ChatEntityType.CHAT,
+        }),
+      }),
+    );
+    expect(catalogFindFirst).toHaveBeenCalledTimes(1);
+    expect(catalogFindFirst).toHaveBeenCalledWith({
+      where: {
+        botId: 'main-bot',
+        chatId: foreignChat.id,
+        entityType: ChatEntityType.CHAT,
+        status: 'ACTIVE',
+      },
+      select: {
+        link: true,
+        avatarUrl: true,
+      },
+    });
   });
 
   it('does not start a Prisma mutation when live caller admin access is denied', async () => {
@@ -216,6 +855,7 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       { assertManagedEntityAdminAccess } as never,
+      createMaxBotLinkService() as never,
     );
     await expect(
       service.updatePolicy('chat', 'chat-foreign', user, {

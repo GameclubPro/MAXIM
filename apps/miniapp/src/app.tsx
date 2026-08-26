@@ -57,6 +57,11 @@ const LazyPublicationsPage = lazy(async () => {
   return { default: module.PublicationsPage };
 });
 
+const LazyPublisherEntitiesPage = lazy(async () => {
+  const module = await import('./pages/publisher-entities-page');
+  return { default: module.PublisherEntitiesPage };
+});
+
 const LazyManagedEntityNavigationProvider = lazy(async () => {
   const module = await import('./lib/managed-entity-navigation');
   return { default: module.ManagedEntityNavigationProvider };
@@ -468,11 +473,12 @@ function AppRoutes({
   }, []);
 
   const moderationProfile = me.profile === 'moderation';
+  const profileHomeRoute = moderationProfile ? me.homeRoute : '/';
 
   return (
     <Suspense fallback={<RouteLoadingFallback />}>
       <Routes>
-        <Route path="/publik" element={<ProfileHomeRedirect homeRoute={me.homeRoute} />} />
+        <Route path="/publik" element={<ProfileHomeRedirect homeRoute={profileHomeRoute} />} />
         <Route
           element={
             <AppRouteShell
@@ -485,16 +491,15 @@ function AppRoutes({
         >
           {moderationProfile ? (
             <Route path="/" element={<LazyChatsPage api={apiClient} />} />
-          ) : null}
+          ) : (
+            <Route
+              path="/"
+              element={<LazyPublisherEntitiesPage api={apiClient} botDialogUrl={me.botDialogUrl} />}
+            />
+          )}
           <Route
             path="/publications"
-            element={
-              <LazyPublicationsPage
-                api={apiClient}
-                profile={me.profile}
-                botDialogUrl={me.botDialogUrl}
-              />
-            }
+            element={<LazyPublicationsPage api={apiClient} profile={me.profile} />}
           />
           {moderationProfile ? (
             <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
@@ -520,7 +525,7 @@ function AppRoutes({
           ) : null}
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
           <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
-          <Route path="*" element={<Navigate to={me.homeRoute} replace />} />
+          <Route path="*" element={<Navigate to={profileHomeRoute} replace />} />
         </Route>
         {moderationProfile ? (
           <Route

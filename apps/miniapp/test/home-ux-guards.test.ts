@@ -87,10 +87,9 @@ test('root navigation exposes chats, channels and posts as primary destinations'
   assert.doesNotMatch(chatsPageSource, /chats-command__tabs/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">Настройки/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">\{activityNavLabel\}/u);
-  assert.match(
-    shellSource,
-    /const shouldShowBottomNav = profile === 'moderation' && \(isChatsRoute \|\| isPublicationsRoute\)/u,
-  );
+  assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute/u);
+  assert.match(shellSource, /profile === 'publisher' \? '\/' : buildManagedEntitiesRoute/u);
+  assert.match(shellSource, /if \(!isChatsRoute \|\| profile !== 'moderation'\)/u);
   assert.match(shellSource, /\{shouldShowBottomNav \? \(/u);
 });
 
@@ -243,10 +242,7 @@ test('compact home controls keep direct 44px actions and one filter control', ()
     chatsPageSource,
     /favoriteLabelsStatus === 'chunk'[\s\S]*?window\.location\.reload\(\)[\s\S]*?favoriteLabelsStatus === 'api'[\s\S]*?setFavoriteLabelsRetryNonce/u,
   );
-  assert.match(
-    sheetsSource,
-    /disabled=\{props\.favoriteLabelsStatus === 'loading'\}/u,
-  );
+  assert.match(sheetsSource, /disabled=\{props\.favoriteLabelsStatus === 'loading'\}/u);
   assert.match(sheetsSource, /saveControllerRef\.current\?\.abort\(\)/u);
   assert.match(
     chatsPageNativeCss,

@@ -10,6 +10,7 @@ export type PublisherBindingRefreshReason =
   | 'webhook_observed'
   | 'bootstrap'
   | 'stale_access'
+  | 'manual_recheck'
   | 'send_access_lost';
 
 export type PublisherBindingRefreshJob = {
@@ -21,6 +22,21 @@ export type PublisherBindingRefreshJob = {
 };
 
 const PUBLISHER_REFRESH_JOB_BUCKET_MS = 60_000;
+const PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS = 5_000;
+
+function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
+  switch (reason) {
+    case 'manual_recheck':
+      return 1;
+    case 'bot_added':
+    case 'webhook_observed':
+    case 'send_access_lost':
+      return 5;
+    case 'bootstrap':
+    case 'stale_access':
+      return 20;
+  }
+}
 
 @Injectable()
 export class PublisherBindingRefreshQueueService {
@@ -43,9 +59,12 @@ export class PublisherBindingRefreshQueueService {
     }
 
     const requestedAt = params.requestedAt ?? new Date();
-    const discriminator = params.eventAt
-      ? params.eventAt.getTime()
-      : Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS);
+    const manualRecheck = params.reason === 'manual_recheck';
+    const discriminator = manualRecheck
+      ? requestedAt.getTime()
+      : params.eventAt
+        ? params.eventAt.getTime()
+        : Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS);
     const entityHash = createHash('sha256')
       .update(`${publisherBotId}\0${chatId}`)
       .digest('hex')
@@ -63,6 +82,15 @@ export class PublisherBindingRefreshQueueService {
       },
       {
         jobId,
+        priority: resolveRefreshPriority(params.reason),
+        ...(manualRecheck
+          ? {
+              deduplication: {
+                id: `publisher-binding-refresh-manual-${entityHash}`,
+                ttl: PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS,
+              },
+            }
+          : {}),
         attempts: 6,
         backoff: {
           type: 'exponential',

@@ -61,16 +61,146 @@ export const publisherEntitySchema = z.object({
   title: z.string(),
   entityType: managedEntityTypeSchema,
   avatarUrl: z.string().trim().url().nullable().default(null),
+  entityUrl: z.string().trim().url().nullable().default(null),
+  settingsHandoffUrl: z.string().trim().url().nullable().default(null),
   channelOverview: channelOverviewSchema.nullable().default(null),
   policy: managedEntityPublicationPolicySchema,
   readiness: publisherEntityReadinessSchema,
 });
 export type PublisherEntity = z.infer<typeof publisherEntitySchema>;
 
+export const MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH = 1_024;
+export const MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS = 500;
+
+export const publisherEntityReadinessFilterSchema = z.enum(['ready', 'attention']);
+export type PublisherEntityReadinessFilter = z.infer<typeof publisherEntityReadinessFilterSchema>;
+
+export const publisherEntitiesCursorPayloadSchema = z
+  .object({
+    v: z.literal(1),
+    snapshotId: z
+      .string()
+      .trim()
+      .min(8)
+      .max(64)
+      .regex(/^[A-Za-z0-9_-]+$/u),
+    offset: z.number().int().min(1).max(1_000_000),
+    query: z.string().max(120),
+    entityType: managedEntityTypeSchema.nullable(),
+    readiness: publisherEntityReadinessFilterSchema.nullable(),
+  })
+  .strict();
+export type PublisherEntitiesCursorPayload = z.infer<typeof publisherEntitiesCursorPayloadSchema>;
+
+export function encodePublisherEntitiesCursor(payload: PublisherEntitiesCursorPayload): string {
+  const parsed = publisherEntitiesCursorPayloadSchema.parse(payload);
+  const bytes = new TextEncoder().encode(JSON.stringify(parsed));
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return globalThis.btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
+}
+
+export function decodePublisherEntitiesCursor(
+  value: string,
+): PublisherEntitiesCursorPayload | null {
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/u.test(normalized)
+  ) {
+    return null;
+  }
+
+  try {
+    const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+    const binary = globalThis.atob(
+      `${normalized.replace(/-/gu, '+').replace(/_/gu, '/')}${padding}`,
+    );
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const decoded = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    const parsed = publisherEntitiesCursorPayloadSchema.safeParse(decoded);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+export const publisherEntitiesCursorQuerySchema = z.object({
+  pagination: z.literal('cursor'),
+  cursor: z.string().trim().min(1).max(MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  query: z.string().trim().max(120).default(''),
+  entityType: managedEntityTypeSchema.optional(),
+  readiness: publisherEntityReadinessFilterSchema.optional(),
+});
+export type PublisherEntitiesCursorQuery = z.infer<typeof publisherEntitiesCursorQuerySchema>;
+
+export const publisherEntitiesSummarySchema = z
+  .object({
+    total: z.number().int().min(0),
+    chat: z.number().int().min(0),
+    channel: z.number().int().min(0),
+    ready: z.number().int().min(0),
+    attention: z.number().int().min(0),
+  })
+  .strict();
+export type PublisherEntitiesSummary = z.infer<typeof publisherEntitiesSummarySchema>;
+
 export const publisherEntitiesResponseSchema = z.object({
   items: z.array(publisherEntitySchema),
+  nextCursor: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH)
+    .nullable()
+    .optional(),
+  filteredTotal: z.number().int().min(0).optional(),
+  summary: publisherEntitiesSummarySchema.optional(),
 });
 export type PublisherEntitiesResponse = z.infer<typeof publisherEntitiesResponseSchema>;
+
+export const publisherEntitiesCursorResponseSchema = publisherEntitiesResponseSchema.extend({
+  nextCursor: z.string().trim().min(1).max(MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH).nullable(),
+  filteredTotal: z.number().int().min(0),
+  summary: publisherEntitiesSummarySchema,
+});
+export type PublisherEntitiesCursorResponse = z.infer<typeof publisherEntitiesCursorResponseSchema>;
+
+export const publisherEntityRefreshResponseSchema = z
+  .object({
+    accepted: z.literal(true),
+  })
+  .strict();
+export type PublisherEntityRefreshResponse = z.infer<typeof publisherEntityRefreshResponseSchema>;
+
+export const resolvePublisherEntitiesRequestSchema = z
+  .object({
+    targets: z
+      .array(
+        z
+          .object({
+            id: z.string().trim().min(1).max(256),
+            entityType: managedEntityTypeSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS),
+  })
+  .strict();
+export type ResolvePublisherEntitiesRequest = z.infer<typeof resolvePublisherEntitiesRequestSchema>;
+
+export const resolvePublisherEntitiesResponseSchema = z
+  .object({ items: z.array(publisherEntitySchema).max(MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS) })
+  .strict();
+export type ResolvePublisherEntitiesResponse = z.infer<
+  typeof resolvePublisherEntitiesResponseSchema
+>;
 
 export const updateManagedEntityPublicationPolicyRequestSchema = z
   .object({
