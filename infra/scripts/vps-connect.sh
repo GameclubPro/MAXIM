@@ -625,8 +625,7 @@ preload_ci_image() (
   fi
 
   download_dir="$(mktemp -d /tmp/maxim-ci-image.XXXXXX)"
-  # Invoked indirectly by the EXIT trap below.
-  # shellcheck disable=SC2329
+  # Also invoked by the EXIT trap when preload exits before explicit cleanup.
   cleanup_download_dir() {
     if [[ "$download_dir" == /tmp/maxim-ci-image.* && -d "$download_dir" ]]; then
       find "$download_dir" -mindepth 1 -delete
@@ -758,6 +757,8 @@ REMOTE
   ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" \
     "bash -lc $(printf '%q' "$remote_load_command")" <"$archive_path"
 
+  cleanup_download_dir
+  trap - EXIT
   echo "Preloaded immutable MAXIM image: $image_ref"
 )
 
