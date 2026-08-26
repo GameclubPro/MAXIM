@@ -21,6 +21,7 @@ describe('PublisherPublicationDispatchRunnerService', () => {
     const runner = new PublisherPublicationDispatchRunnerService(
       service as never,
       identityAttestation as never,
+      { dispatchEnabled: true } as never,
     );
 
     await (runner as any).run('scheduled');
@@ -36,6 +37,7 @@ describe('PublisherPublicationDispatchRunnerService', () => {
     const runner = new PublisherPublicationDispatchRunnerService(
       { processDueImmediatePublicationBroadcasts: immediate } as never,
       { assertAttested: jest.fn() } as never,
+      { dispatchEnabled: true } as never,
     );
 
     await (runner as any).run('scheduled');
@@ -52,10 +54,35 @@ describe('PublisherPublicationDispatchRunnerService', () => {
     const runner = new PublisherPublicationDispatchRunnerService(
       { processDueImmediatePublicationBroadcasts: immediate } as never,
       identityAttestation as never,
+      { dispatchEnabled: true } as never,
     );
 
     await (runner as any).run('scheduled');
 
     expect(immediate).not.toHaveBeenCalled();
+  });
+
+  it('does not start or run publication scans while dispatch is disabled', async () => {
+    jest.useFakeTimers();
+    process.env.APP_ROLE = 'publisher';
+    try {
+      const immediate = jest.fn();
+      const identityAttestation = { assertAttested: jest.fn() };
+      const runner = new PublisherPublicationDispatchRunnerService(
+        { processDueImmediatePublicationBroadcasts: immediate } as never,
+        identityAttestation as never,
+        { dispatchEnabled: false } as never,
+      );
+
+      runner.onModuleInit();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await (runner as any).run('scheduled');
+
+      expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+      expect(immediate).not.toHaveBeenCalled();
+      runner.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

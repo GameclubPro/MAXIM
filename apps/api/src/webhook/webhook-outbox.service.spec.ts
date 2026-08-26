@@ -1258,6 +1258,113 @@ describe('WebhookOutboxService', () => {
     expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
   });
 
+  it('skips BullMQ lookups before activating a pristine received event', async () => {
+    const chatId = 'chat-pristine-received';
+    const queueName = resolveDefaultWebhookQueueNameForChatId(chatId);
+    const { service, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-pristine-received',
+          status: WebhookStatus.RECEIVED,
+          queueName: null,
+          enqueueAttempts: 0,
+          queuedAt: null,
+          nextEnqueueAt: null,
+          timeoutQuarantineExpiresAt: null,
+          errorMessage: null,
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId, messageId: 'message-pristine-received' },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    for (const queue of Object.values(queues)) {
+      expect(queue.getJob).not.toHaveBeenCalled();
+    }
+    expect(queues[queueName].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-pristine-received' },
+      expect.objectContaining({ jobId: 'evt-pristine-received' }),
+    );
+  });
+
+  it.each([
+    {
+      caseName: 'a prior enqueue attempt',
+      patch: { enqueueAttempts: 1 },
+    },
+    {
+      caseName: 'a stored queue',
+      patch: { queueName: 'moderation-default-0' },
+    },
+    {
+      caseName: 'a prior queued timestamp',
+      patch: { queuedAt: new Date('2026-03-24T00:00:00.000Z') },
+    },
+    {
+      caseName: 'a due retry timestamp',
+      patch: { nextEnqueueAt: new Date('2026-03-24T00:00:00.000Z') },
+    },
+    {
+      caseName: 'a prior enqueue error',
+      patch: { errorMessage: 'prior enqueue failure' },
+    },
+    {
+      caseName: 'a timeout quarantine timestamp',
+      patch: { timeoutQuarantineExpiresAt: new Date('2026-03-24T00:00:00.000Z') },
+    },
+    {
+      caseName: 'queued recovery state',
+      patch: {
+        status: WebhookStatus.QUEUED,
+        queueName: 'moderation-default-0',
+        enqueueAttempts: 1,
+        queuedAt: new Date('2026-03-24T00:00:00.000Z'),
+      },
+    },
+    {
+      caseName: 'failed recovery state',
+      patch: {
+        status: WebhookStatus.FAILED,
+        enqueueAttempts: 1,
+        nextEnqueueAt: new Date('2026-03-24T00:00:00.000Z'),
+        errorMessage: 'retryable enqueue failure',
+      },
+    },
+  ])('keeps BullMQ reconciliation when $caseName is present', async ({ caseName, patch }) => {
+    const { service, queues } = createService();
+    const event = {
+      id: `evt-recovery-${caseName.replaceAll(' ', '-')}`,
+      status: WebhookStatus.RECEIVED,
+      botId: null,
+      queueName: null,
+      enqueueAttempts: 0,
+      createdAt: new Date('2026-03-24T00:00:01.000Z'),
+      queuedAt: null,
+      nextEnqueueAt: null,
+      timeoutQuarantineExpiresAt: null,
+      errorMessage: null,
+      normalizedPayload: { type: 'message_created', message: { chatId: 'chat-recovery' } },
+      ...patch,
+    };
+
+    await (
+      service as unknown as {
+        enqueueOne: (
+          candidate: typeof event,
+          priority: number,
+          queueName: 'moderation-default-0',
+        ) => Promise<unknown>;
+      }
+    ).enqueueOne(event, 5, 'moderation-default-0');
+
+    expect(queues['moderation-default-0'].getJob).toHaveBeenCalledWith(event.id);
+  });
+
   it('does not increment attempts when existing job is already waiting', async () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('waiting'),

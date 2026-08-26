@@ -1,6 +1,7 @@
 import type { Job } from 'bullmq';
 import {
   PUBLISHER_CHAT_COMMENT_RECOVERY_BATCH_SIZE,
+  PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS,
   PUBLISHER_CHAT_COMMENT_RECOVERY_MIN_AGE_MS,
   PUBLISHER_CHAT_COMMENT_RECOVERY_STARTUP_DELAY_MS,
   PublisherChatCommentRecoveryService,
@@ -77,7 +78,7 @@ function createHarness(
           policyRevision: 1,
         }),
   };
-  const boundary = { assertDispatchEnabled: jest.fn() };
+  const boundary = { dispatchEnabled: true, assertDispatchEnabled: jest.fn() };
   const health = { assertDispatchAllowed: jest.fn().mockResolvedValue(undefined) };
   const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
   const service = new PublisherChatCommentRecoveryService(
@@ -195,6 +196,26 @@ describe('PublisherChatCommentRecoveryService', () => {
       await jest.advanceTimersByTimeAsync(PUBLISHER_CHAT_COMMENT_RECOVERY_STARTUP_DELAY_MS);
 
       expect(recover).toHaveBeenCalledTimes(1);
+      harness.service.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not schedule automatic recovery while dispatch is disabled', async () => {
+    jest.useFakeTimers();
+    try {
+      const harness = createHarness();
+      harness.boundary.dispatchEnabled = false;
+      const recover = jest.spyOn(harness.service, 'recoverOnce');
+
+      harness.service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(
+        PUBLISHER_CHAT_COMMENT_RECOVERY_STARTUP_DELAY_MS +
+          PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS * 2,
+      );
+
+      expect(recover).not.toHaveBeenCalled();
       harness.service.onModuleDestroy();
     } finally {
       jest.useRealTimers();

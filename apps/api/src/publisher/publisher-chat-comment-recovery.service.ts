@@ -63,6 +63,9 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
   }
 
   onModuleInit(): void {
+    if (!this.runtimeBoundary.dispatchEnabled) {
+      return;
+    }
     this.startupTimer = setTimeout(() => {
       this.startupTimer = null;
       this.triggerScheduledRecovery();

@@ -1,9 +1,16 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
+import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { readChannelSuggestionPublicationClaimV1 } from './admin-channel-suggestion-publication-protocol';
 import { CHANNEL_DIALOG_ACTION_SUGGEST } from './admin.service.support';
 import {
@@ -23,10 +30,11 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
     @InjectQueue(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE)
     private readonly queue: Queue<PublisherSuggestionPublicationJob>,
     private readonly prisma: PrismaService,
+    @Optional() private readonly runtimeBoundary?: PublisherRuntimeBoundaryService,
   ) {}
 
   onModuleInit(): void {
-    if (!this.recoveryEnabled) {
+    if (!this.recoveryEnabled || this.runtimeBoundary?.dispatchEnabled !== true) {
       return;
     }
     this.recoveryTimer = setInterval(() => void this.recover(), 60_000);
@@ -72,6 +80,9 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
   }
 
   private async recover(): Promise<void> {
+    if (!this.recoveryEnabled || this.runtimeBoundary?.dispatchEnabled !== true) {
+      return;
+    }
     try {
       const rows = await this.prisma.auditLog.findMany({
         where: {

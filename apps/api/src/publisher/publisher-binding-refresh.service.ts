@@ -5,6 +5,7 @@ import { ChatBotAccessState, ChatBotMembershipStatus, Prisma } from '../prisma/p
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
+import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import {
   type PublisherBindingRefreshJob,
   PublisherBindingRefreshQueueService,
@@ -34,12 +35,16 @@ export class PublisherBindingRefreshService {
     private readonly credentials: PublisherActionCredentialService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
+    private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
   ) {
     this.publisherBotId = credentials.getBotId();
     credentials.getRequiredActionToken(this.publisherBotId);
   }
 
   async refresh(job: PublisherBindingRefreshJob): Promise<void> {
+    if (!this.runtimeBoundary.dispatchEnabled) {
+      return;
+    }
     if (job.version !== 1 || job.publisherBotId.trim() !== this.publisherBotId) {
       throw new Error('Publisher binding refresh job targets a different bot');
     }
@@ -197,6 +202,7 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     private readonly refreshQueue: PublisherBindingRefreshQueueService,
     credentials: PublisherActionCredentialService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
+    private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
   ) {
     this.publisherBotId = credentials.getBotId();
     // FLAG: Resolve before scanning so this worker can never probe with another bot token.
@@ -204,6 +210,9 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
   }
 
   async onModuleInit(): Promise<void> {
+    if (!this.runtimeBoundary.dispatchEnabled) {
+      return;
+    }
     await this.scan('startup');
     this.timer = setInterval(() => {
       void this.scan('scheduled');
@@ -219,7 +228,7 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
   }
 
   async scan(reason: 'startup' | 'scheduled'): Promise<void> {
-    if (this.inFlight) {
+    if (!this.runtimeBoundary.dispatchEnabled || this.inFlight) {
       return;
     }
     this.inFlight = true;

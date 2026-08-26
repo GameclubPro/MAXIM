@@ -1,6 +1,7 @@
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { PublisherIdentityAttestationService } from '../publisher/publisher-identity-attestation.service';
+import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 
 const PUBLISHER_PUBLICATION_POLL_INTERVAL_MS = 15_000;
@@ -15,10 +16,11 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
   constructor(
     private readonly managedBroadcastService: ManagedBroadcastService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
+    private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
   ) {}
 
   onModuleInit(): void {
-    if (!this.enabled) {
+    if (!this.enabled || !this.runtimeBoundary.dispatchEnabled) {
       return;
     }
     this.timer = setInterval(
@@ -37,7 +39,7 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
   }
 
   private async run(reason: 'startup' | 'scheduled'): Promise<void> {
-    if (!this.enabled || this.inFlight) {
+    if (!this.enabled || !this.runtimeBoundary.dispatchEnabled || this.inFlight) {
       return;
     }
     this.inFlight = true;

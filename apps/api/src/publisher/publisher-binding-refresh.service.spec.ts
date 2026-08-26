@@ -1,11 +1,15 @@
 import { ChatBotAccessState, ChatBotMembershipStatus } from '../prisma/prisma-client';
-import { PublisherBindingRefreshService } from './publisher-binding-refresh.service';
+import {
+  PublisherBindingBootstrapSchedulerService,
+  PublisherBindingRefreshService,
+} from './publisher-binding-refresh.service';
 
 describe('PublisherBindingRefreshService', () => {
   function createHarness(
     accessResult:
       | { isAdmin: boolean; isOwner: boolean; permissions: string[]; permissionsKnown: boolean }
       | Error,
+    dispatchEnabled = true,
   ) {
     const prisma = {
       chat: {
@@ -46,6 +50,7 @@ describe('PublisherBindingRefreshService', () => {
       credentials as never,
       dispatchHealth as never,
       identityAttestation as never,
+      { dispatchEnabled } as never,
     );
     return { service, prisma, maxClient, dispatchHealth, identityAttestation };
   }
@@ -149,5 +154,82 @@ describe('PublisherBindingRefreshService', () => {
 
     expect(prisma.chat.findUnique).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not read candidates or probe MAX while dispatch is disabled', async () => {
+    const { service, prisma, maxClient, identityAttestation } = createHarness(
+      {
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      },
+      false,
+    );
+
+    await service.refresh(job);
+
+    expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not start binding bootstrap scans while dispatch is disabled', async () => {
+    jest.useFakeTimers();
+    try {
+      const prisma = {
+        $queryRaw: jest.fn(),
+        publisherEntityBinding: { findMany: jest.fn() },
+      };
+      const identityAttestation = { assertAttested: jest.fn() };
+      const scheduler = new PublisherBindingBootstrapSchedulerService(
+        prisma as never,
+        { ensureBinding: jest.fn() } as never,
+        { enqueue: jest.fn() } as never,
+        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+        identityAttestation as never,
+        { dispatchEnabled: false } as never,
+      );
+
+      await scheduler.onModuleInit();
+      await jest.advanceTimersByTimeAsync(120_000);
+      await scheduler.scan('scheduled');
+
+      expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.publisherEntityBinding.findMany).not.toHaveBeenCalled();
+      scheduler.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the bounded startup binding bootstrap while dispatch is enabled', async () => {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'chat-bootstrap' }]),
+      publisherEntityBinding: {
+        findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-stale' }]),
+      },
+    };
+    const refreshService = { ensureBinding: jest.fn().mockResolvedValue(undefined) };
+    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new PublisherBindingBootstrapSchedulerService(
+      prisma as never,
+      refreshService as never,
+      refreshQueue as never,
+      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+      identityAttestation as never,
+      { dispatchEnabled: true } as never,
+    );
+
+    await scheduler.onModuleInit();
+
+    expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
+    expect(refreshService.ensureBinding).toHaveBeenCalledWith('chat-bootstrap');
+    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(2);
+    scheduler.onModuleDestroy();
   });
 });

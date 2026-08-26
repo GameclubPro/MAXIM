@@ -1253,7 +1253,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     queueName: AnyWebhookQueueName,
   ): Promise<CandidateEnqueueOutcome> {
     const { id: webhookEventId, enqueueAttempts } = event;
-    const existingJob = await this.findExistingJob(webhookEventId, queueName);
+    // FLAG: Queue activation is committed before Queue.add, so this exact state cannot own a job.
+    const existingJob = this.canSkipExistingJobLookupForPristineReceivedEvent(event)
+      ? null
+      : await this.findExistingJob(webhookEventId, queueName);
     if (existingJob) {
       return this.handleExistingJob(event, existingJob.job, {
         queueName: existingJob.queueName,
@@ -1307,6 +1310,20 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         ? this.markClaimedQueueActivationFailed(claimedEvent, message)
         : this.markFailedWithBackoff(event, message);
     }
+  }
+
+  private canSkipExistingJobLookupForPristineReceivedEvent(
+    event: WebhookEnqueueCandidate,
+  ): boolean {
+    return (
+      event.status === WebhookStatus.RECEIVED &&
+      event.enqueueAttempts === 0 &&
+      event.queueName === null &&
+      event.queuedAt === null &&
+      event.nextEnqueueAt === null &&
+      event.timeoutQuarantineExpiresAt === null &&
+      event.errorMessage === null
+    );
   }
 
   private async prepareCandidateForCanonicalExecution(

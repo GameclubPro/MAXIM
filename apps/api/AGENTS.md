@@ -73,6 +73,7 @@
 
 ## Publishing And Outbound Actions
 
+- With `MAX_PUBLISHER_DISPATCH_ENABLED=false`, `api-publisher` may run identity attestation, heartbeat, webhook reconciliation, and passive lifecycle handling only; do not start publication, binding, suggestion, or chat-comment recovery scans and do not probe MAX entity access.
 - Managed broadcast/autopost MAX calls use `MAX_API_SOURCE_TAGS.MANAGED_BROADCAST`. User sends/tests are `interactive`; scheduled/startup delivery is `background` and honors governor pause/slow decisions. Uploads stay on the send lane.
 - Publication `NOW` is user-triggered even when recovered by the action poller: materialize it ahead of background work and dispatch through the immediate lane.
 - Keep DB-only publication rollups outside governor pauses; ambiguous sends require manual review.
