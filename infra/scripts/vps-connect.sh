@@ -626,7 +626,7 @@ preload_ci_image() (
 
   download_dir="$(mktemp -d /tmp/maxim-ci-image.XXXXXX)"
   # Invoked indirectly by the EXIT trap below.
-  # shellcheck disable=SC2317
+  # shellcheck disable=SC2329
   cleanup_download_dir() {
     if [[ "$download_dir" == /tmp/maxim-ci-image.* && -d "$download_dir" ]]; then
       find "$download_dir" -mindepth 1 -delete
@@ -882,6 +882,8 @@ printf '%s\n' 'Publisher secrets installed.'
 REMOTE
   printf -v remote_command 'cd %q && bash -c %q' "$MAXIM_VPS_REPO_DIR" "$remote_script"
   mapfile -d '' -t args < <(ssh_args)
+  # The fully quoted remote command is intentionally expanded by the local wrapper.
+  # shellcheck disable=SC2029
   tar -C "$bundle_dir" -cf - installer.mjs bundle.json |
     ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" \
       "bash -lc $(printf '%q' "$remote_command")"

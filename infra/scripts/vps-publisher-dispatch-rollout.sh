@@ -608,8 +608,8 @@ run_health_smokes() {
 }
 
 wait_for_heartbeat() {
-  local expected="$1" deadline=$((SECONDS + READINESS_TIMEOUT_SEC))
-  EXPECTED_HEARTBEAT_STATE="$expected"
+  local heartbeat_expected="$1" deadline=$((SECONDS + READINESS_TIMEOUT_SEC))
+  EXPECTED_HEARTBEAT_STATE="$heartbeat_expected"
   while ((SECONDS < deadline)); do
     if publisher_control assert-heartbeat >/dev/null 2>&1; then
       return 0
