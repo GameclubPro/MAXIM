@@ -187,11 +187,12 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   });
 });
 
-test('public Publik route and publisher source files select their visual scenarios', () => {
+test('Publik entry route and publisher source files select workspace visual scenarios', () => {
   const publik = MINIAPP_VISUAL_SCENARIOS.find((scenario) => scenario.name === 'publik');
   assert.equal(publik?.path, '/publik');
-  assert.equal(publik?.preview, false);
-  assert.equal(publik?.maxBridge, false);
+  assert.equal(publik?.readySelector, '.publications-page');
+  assert.deepEqual(publik?.searchParams, { profile: 'publisher' });
+  assert.ok(publik?.features.includes('publisher'));
 
   for (const changedFile of [
     'apps/miniapp/src/components/publisher-policy-card.tsx',
@@ -202,9 +203,9 @@ test('public Publik route and publisher source files select their visual scenari
     'apps/miniapp/src/lib/publisher-readiness-label.ts',
     'packages/contracts/src/publisher.ts',
   ]) {
-    const selectedNames = selectMiniappVisualScenarios({ changedFiles: [changedFile] }).scenarios.map(
-      (scenario) => scenario.name,
-    );
+    const selectedNames = selectMiniappVisualScenarios({
+      changedFiles: [changedFile],
+    }).scenarios.map((scenario) => scenario.name);
     assert.ok(selectedNames.includes('publications-publisher'), changedFile);
     assert.ok(selectedNames.includes('publications-publisher-compose'), changedFile);
   }

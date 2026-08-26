@@ -42,12 +42,6 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/styles/legal-page.css',
     'apps/miniapp/src/lib/public-legal-route.ts',
   ],
-  publik: [
-    'apps/miniapp/src/pages/publik-page.tsx',
-    'apps/miniapp/src/styles/publik-page.css',
-    'apps/miniapp/src/lib/max-bridge.ts',
-    'apps/miniapp/src/lib/public-legal-route.ts',
-  ],
   links: [
     'apps/miniapp/src/components/broadcast-link-*.tsx',
     'apps/miniapp/src/styles/settings-link-allowlist.css',
@@ -125,11 +119,11 @@ const ROUTE_DEFINITIONS = {
   publik: {
     pattern: '/publik',
     previewPath: '/publik',
-    manifestEntry: 'src/pages/publik-page.tsx',
-    readySelector: '.publik-page',
+    manifestEntry: 'src/pages/publications-page.tsx',
+    readySelector: '.publications-page',
     coldScenario: 'publik',
-    features: ['publik'],
-    sourceGlobs: FEATURE_SOURCE_GLOBS.publik,
+    features: ['publications', 'publisher'],
+    sourceGlobs: FEATURE_SOURCE_GLOBS.publisher,
   },
   autoposts: {
     pattern: '/autoposts',
@@ -525,10 +519,7 @@ const baseScenarios = [
     preview: false,
     maxBridge: false,
   }),
-  defineScenario('publik', 'publik', {
-    preview: false,
-    maxBridge: false,
-  }),
+  defineScenario('publik', 'publik', { searchParams: { profile: 'publisher' } }),
   defineScenario('legal-privacy', 'legal-privacy', {
     preview: false,
     maxBridge: false,

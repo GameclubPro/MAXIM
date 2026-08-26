@@ -41,7 +41,3 @@ export function resolveRouterPathnameFromWindow(routerMode: MiniappRouterMode): 
 export function isPublicLegalPathnameFromWindow(routerMode: MiniappRouterMode): boolean {
   return /^\/legal\/(?:agreement|privacy)\/?$/u.test(resolveRouterPathnameFromWindow(routerMode));
 }
-
-export function isPublicBotPathnameFromWindow(routerMode: MiniappRouterMode): boolean {
-  return /^\/publik\/?$/u.test(resolveRouterPathnameFromWindow(routerMode));
-}

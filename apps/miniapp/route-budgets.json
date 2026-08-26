@@ -88,13 +88,6 @@
       "limits": { "jsGzipBytes": 10240, "cssGzipBytes": 3072 }
     },
     {
-      "id": "publik",
-      "label": "Publik public page",
-      "entries": ["src/pages/publik-page.tsx"],
-      "baseline": "startup",
-      "limits": { "jsGzipBytes": 8192, "cssGzipBytes": 4096 }
-    },
-    {
       "id": "vk-parsing-card",
       "label": "VK parsing card",
       "entries": ["src/components/vk-parsing-card.tsx"],

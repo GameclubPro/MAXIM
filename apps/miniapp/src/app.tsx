@@ -38,10 +38,7 @@ import {
   syncMaxNativeEnvironment,
 } from './lib/max-bridge';
 import { PUBLIC_ROUTER_BASENAME } from './lib/public-config';
-import {
-  isPublicBotPathnameFromWindow,
-  isPublicLegalPathnameFromWindow,
-} from './lib/public-legal-route';
+import { isPublicLegalPathnameFromWindow } from './lib/public-legal-route';
 import {
   LazyChannelDialogPage,
   LazyChannelSuggestDialogPage,
@@ -60,11 +57,6 @@ const LazyPublicationsPage = lazy(async () => {
   return { default: module.PublicationsPage };
 });
 
-const LazyPublikPage = lazy(async () => {
-  const module = await import('./pages/publik-page');
-  return { default: module.PublikPage };
-});
-
 const LazyManagedEntityNavigationProvider = lazy(async () => {
   const module = await import('./lib/managed-entity-navigation');
   return { default: module.ManagedEntityNavigationProvider };
@@ -78,6 +70,11 @@ const LazyAppStartupState = lazy(async () => {
 function LegacyAutopostsRedirect() {
   const location = useLocation();
   return <Navigate to={`/publications${location.search}`} replace />;
+}
+
+function ProfileHomeRedirect({ homeRoute }: Pick<Me, 'homeRoute'>) {
+  const location = useLocation();
+  return <Navigate to={`${homeRoute}${location.search}`} replace />;
 }
 
 const HASH_ROUTER_ENABLED =
@@ -475,7 +472,7 @@ function AppRoutes({
   return (
     <Suspense fallback={<RouteLoadingFallback />}>
       <Routes>
-        <Route path="/publik" element={<LazyPublikPage />} />
+        <Route path="/publik" element={<ProfileHomeRedirect homeRoute={me.homeRoute} />} />
         <Route
           element={
             <AppRouteShell
@@ -486,7 +483,9 @@ function AppRoutes({
             />
           }
         >
-          {moderationProfile ? <Route path="/" element={<LazyChatsPage api={apiClient} />} /> : null}
+          {moderationProfile ? (
+            <Route path="/" element={<LazyChatsPage api={apiClient} />} />
+          ) : null}
           <Route
             path="/publications"
             element={
@@ -540,7 +539,10 @@ function AppRoutes({
               path="/channel/:chatId/settings"
               element={<LazyChannelSettingsPage api={apiClient} />}
             />
-            <Route path="/channel/:chatId/stats" element={<LazyChannelStatsPage api={apiClient} />} />
+            <Route
+              path="/channel/:chatId/stats"
+              element={<LazyChannelStatsPage api={apiClient} />}
+            />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
           </Route>
         ) : null}
@@ -620,10 +622,9 @@ function PublicLegalRoutes() {
     <AppRouter basename={ROUTER_BASENAME}>
       <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
-          <Route path="/publik" element={<LazyPublikPage />} />
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
           <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
-          <Route path="*" element={<Navigate to="/publik" replace />} />
+          <Route path="*" element={<Navigate to="/legal/agreement" replace />} />
         </Routes>
       </Suspense>
     </AppRouter>
@@ -855,10 +856,6 @@ export function App() {
   }
 
   if (!apiClient && isPublicLegalPathnameFromWindow(HASH_ROUTER_ENABLED ? 'hash' : 'browser')) {
-    return <PublicLegalRoutes />;
-  }
-
-  if (!apiClient && isPublicBotPathnameFromWindow(HASH_ROUTER_ENABLED ? 'hash' : 'browser')) {
     return <PublicLegalRoutes />;
   }
 
