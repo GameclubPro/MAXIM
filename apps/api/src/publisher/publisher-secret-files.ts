@@ -61,7 +61,7 @@ export function readPublisherWebhookCredentialFile(path: string): PublisherWebho
 }
 
 export function readPublisherInitDataKeysFile(path: string): PublisherInitDataKeys {
-  assertAbsoluteRegularSecretFile(path, 96, 1_024, 'init data keys');
+  assertAbsoluteRegularSecretFile(path, 64, 1_024, 'init data keys');
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));

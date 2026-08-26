@@ -157,7 +157,10 @@ const envSchema = z.object({
   MAX_BOT_LABEL: z.string().min(1).max(64).optional(),
   MAX_BOT_CHARACTER_NAME: z.string().min(1).max(128).optional(),
   MAX_BOT_SPEECH_PERSONA: botSpeechPersonaSchema.optional(),
-  MAX_BOT_CONTACT_ID: z.string().regex(/^\d+$/).optional(),
+  MAX_BOT_CONTACT_ID: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().regex(/^\d+$/).optional(),
+  ),
   MAX_BOT_STATE: maxBotLifecycleStateSchema.default('active'),
   MAX_BOT_OWNERSHIP_WEIGHT: z.coerce.number().finite().positive().max(1_000).default(1),
   MAX_ENTRY_BOT_ID: z.string().min(3).optional(),

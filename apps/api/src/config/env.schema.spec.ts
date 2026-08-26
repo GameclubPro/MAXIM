@@ -39,6 +39,7 @@ describe('validateEnv boolean parsing', () => {
       APP_ROLE: 'publisher',
       APP_SERVICE_NAME: 'api-publisher',
       MAX_BOT_ID: 'se14088825_bot',
+      MAX_BOT_CONTACT_ID: '',
       MAX_ENTRY_BOT_ID: 'se14088825_bot',
       MAX_BOT_TOKEN: '',
       MAX_BOT_TOKEN_PREVIOUS: '',
@@ -51,6 +52,7 @@ describe('validateEnv boolean parsing', () => {
     try {
       expect(validateEnv(raw)).toMatchObject({
         MAX_BOT_ID: 'se14088825_bot',
+        MAX_BOT_CONTACT_ID: undefined,
         MAX_ENTRY_BOT_ID: 'se14088825_bot',
         MAX_BOT_TOKEN: token,
         MAX_BOTS_JSON: undefined,

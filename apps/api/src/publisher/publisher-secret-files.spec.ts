@@ -70,4 +70,18 @@ describe('publisher secret files', () => {
       keys,
     });
   });
+
+  it('loads the single-key file emitted by the production secret installer', () => {
+    const path = join(directory, 'init-data.json');
+    const key = Buffer.alloc(32, 1).toString('base64');
+    const contents = `${JSON.stringify({ version: 1, botId: 'se14088825_bot', keys: [key] })}\n`;
+    expect(Buffer.byteLength(contents)).toBe(95);
+    writeFileSync(path, contents, { mode: 0o600 });
+
+    expect(readPublisherInitDataKeysFile(path)).toEqual({
+      version: 1,
+      botId: 'se14088825_bot',
+      keys: [key],
+    });
+  });
 });
