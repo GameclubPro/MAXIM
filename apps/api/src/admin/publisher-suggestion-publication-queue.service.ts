@@ -10,6 +10,7 @@ import type { Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
+import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { readChannelSuggestionPublicationClaimV1 } from './admin-channel-suggestion-publication-protocol';
 import { CHANNEL_DIALOG_ACTION_SUGGEST } from './admin.service.support';
@@ -30,6 +31,7 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
     @InjectQueue(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE)
     private readonly queue: Queue<PublisherSuggestionPublicationJob>,
     private readonly prisma: PrismaService,
+    private readonly dispatchHealth: PublisherDispatchHealthService,
     @Optional() private readonly runtimeBoundary?: PublisherRuntimeBoundaryService,
   ) {}
 
@@ -84,6 +86,9 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
       return;
     }
     try {
+      if (await this.dispatchHealth.isGloballyPaused()) {
+        return;
+      }
       const rows = await this.prisma.auditLog.findMany({
         where: {
           action: CHANNEL_DIALOG_ACTION_SUGGEST,

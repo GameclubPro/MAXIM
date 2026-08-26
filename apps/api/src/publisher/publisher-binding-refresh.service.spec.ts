@@ -182,11 +182,13 @@ describe('PublisherBindingRefreshService', () => {
         publisherEntityBinding: { findMany: jest.fn() },
       };
       const identityAttestation = { assertAttested: jest.fn() };
+      const dispatchHealth = { isGloballyPaused: jest.fn() };
       const scheduler = new PublisherBindingBootstrapSchedulerService(
         prisma as never,
         { ensureBinding: jest.fn() } as never,
         { enqueue: jest.fn() } as never,
         { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+        dispatchHealth as never,
         identityAttestation as never,
         { dispatchEnabled: false } as never,
       );
@@ -196,6 +198,7 @@ describe('PublisherBindingRefreshService', () => {
       await scheduler.scan('scheduled');
 
       expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+      expect(dispatchHealth.isGloballyPaused).not.toHaveBeenCalled();
       expect(prisma.$queryRaw).not.toHaveBeenCalled();
       expect(prisma.publisherEntityBinding.findMany).not.toHaveBeenCalled();
       scheduler.onModuleDestroy();
@@ -213,12 +216,14 @@ describe('PublisherBindingRefreshService', () => {
     };
     const refreshService = { ensureBinding: jest.fn().mockResolvedValue(undefined) };
     const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const dispatchHealth = { isGloballyPaused: jest.fn().mockResolvedValue(false) };
     const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
     const scheduler = new PublisherBindingBootstrapSchedulerService(
       prisma as never,
       refreshService as never,
       refreshQueue as never,
       { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+      dispatchHealth as never,
       identityAttestation as never,
       { dispatchEnabled: true } as never,
     );
@@ -231,5 +236,51 @@ describe('PublisherBindingRefreshService', () => {
     expect(refreshService.ensureBinding).toHaveBeenCalledWith('chat-bootstrap');
     expect(refreshQueue.enqueue).toHaveBeenCalledTimes(2);
     scheduler.onModuleDestroy();
+  });
+
+  it('keeps enabled bootstrap timers idle before identity, DB, or queue work while paused', async () => {
+    jest.useFakeTimers();
+    try {
+      const prisma = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
+      };
+      const refreshService = { ensureBinding: jest.fn() };
+      const refreshQueue = { enqueue: jest.fn() };
+      let globallyPaused = true;
+      const dispatchHealth = {
+        isGloballyPaused: jest.fn(async () => globallyPaused),
+      };
+      const identityAttestation = { assertAttested: jest.fn() };
+      const scheduler = new PublisherBindingBootstrapSchedulerService(
+        prisma as never,
+        refreshService as never,
+        refreshQueue as never,
+        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+        dispatchHealth as never,
+        identityAttestation as never,
+        { dispatchEnabled: true } as never,
+      );
+
+      await scheduler.onModuleInit();
+      await jest.advanceTimersByTimeAsync(60_000);
+
+      expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.publisherEntityBinding.findMany).not.toHaveBeenCalled();
+      expect(refreshService.ensureBinding).not.toHaveBeenCalled();
+      expect(refreshQueue.enqueue).not.toHaveBeenCalled();
+
+      globallyPaused = false;
+      await jest.advanceTimersByTimeAsync(60_000);
+
+      expect(dispatchHealth.isGloballyPaused).toHaveBeenCalledTimes(3);
+      expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
+      scheduler.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

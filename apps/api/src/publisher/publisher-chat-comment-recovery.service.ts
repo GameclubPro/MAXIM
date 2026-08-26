@@ -244,6 +244,9 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
   }
 
   private async runScheduledRecovery(): Promise<void> {
+    if (await this.dispatchHealth.isGloballyPaused()) {
+      return;
+    }
     const result = await this.recoverOnce();
     if (result.retried > 0 || result.missingJobs > 0 || result.errors > 0) {
       this.logger.log(

@@ -99,6 +99,15 @@ export class PublisherDispatchPausedError extends Error {
   }
 }
 
+export class PublisherDispatchHealthUnavailableError extends Error {
+  readonly code = 'PUBLISHER_DISPATCH_HEALTH_UNAVAILABLE';
+
+  constructor(cause: unknown) {
+    super('MAX publisher dispatch health is unavailable', { cause });
+    this.name = 'PublisherDispatchHealthUnavailableError';
+  }
+}
+
 export function extractPublisherMaxStatusCode(error: unknown): number | null {
   const visited = new Set<unknown>();
   let current: unknown = error;
@@ -177,7 +186,12 @@ export class PublisherDispatchHealthService implements OnModuleDestroy {
   }
 
   async assertDispatchAllowed(): Promise<void> {
-    const raw = await this.redis.get(buildPublisherDispatchPauseKey(this.publisherBotId));
+    let raw: string | null;
+    try {
+      raw = await this.redis.get(buildPublisherDispatchPauseKey(this.publisherBotId));
+    } catch (error: unknown) {
+      throw new PublisherDispatchHealthUnavailableError(error);
+    }
     if (!raw) {
       return;
     }

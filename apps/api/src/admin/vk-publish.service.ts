@@ -231,8 +231,10 @@ export class VkPublishService {
   private readonly mediaConcurrency: number;
   private readonly videoFailedPreflightTtlMs: number;
   private readonly newDispatchRoute: PublisherDispatchRoute | null;
+  private readonly publisherDispatchConfigured: boolean;
   private duePublishRecoveryCursorId: string | null = null;
   private futurePublishRecoveryCursor: VkPublishRecoveryCursor | null = null;
+  private publishRecoveryScope: 'all' | 'legacy' | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -266,6 +268,10 @@ export class VkPublishService {
     private readonly publisherDialogContextService?: PublisherDialogContextService,
   ) {
     this.newDispatchRoute = resolveNewPublicationDispatchRoute(configService);
+    this.publisherDispatchConfigured = configService.get<boolean>(
+      'MAX_PUBLISHER_DISPATCH_ENABLED',
+      false,
+    );
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
     this.publishLeaseTtlMs =
       configService.get<number>('VK_PARSING_PUBLISH_LEASE_TTL_MS') ??
@@ -291,8 +297,21 @@ export class VkPublishService {
   async recoverStalePublishJobs(): Promise<number> {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.publishLeaseTtlMs);
-    const recoveredRollbacks = await this.recoverStalePublisherRollbackJobs(staleLockBefore);
-    const posts = await this.findRecoverableStalePublishPosts(now, staleLockBefore);
+    const publisherRecoveryAllowed = await this.isPublisherRecoveryAllowed();
+    const recoveryScope = publisherRecoveryAllowed ? 'all' : 'legacy';
+    if (this.publishRecoveryScope !== recoveryScope) {
+      this.duePublishRecoveryCursorId = null;
+      this.futurePublishRecoveryCursor = null;
+      this.publishRecoveryScope = recoveryScope;
+    }
+    const recoveredRollbacks = publisherRecoveryAllowed
+      ? await this.recoverStalePublisherRollbackJobs(staleLockBefore)
+      : 0;
+    const posts = await this.findRecoverableStalePublishPosts(
+      now,
+      staleLockBefore,
+      publisherRecoveryAllowed,
+    );
     if (posts.length === 0) {
       return recoveredRollbacks;
     }
@@ -301,6 +320,12 @@ export class VkPublishService {
     let recovered = 0;
     let expiredAutoPublishRecoveries = 0;
     for (const post of posts) {
+      if (
+        !publisherRecoveryAllowed &&
+        post.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+      ) {
+        continue;
+      }
       const idempotencyKey = post.publishIdempotencyKey;
       if (!idempotencyKey) {
         continue;
@@ -387,11 +412,13 @@ export class VkPublishService {
   private async findRecoverableStalePublishPosts(
     now: Date,
     staleLockBefore: Date,
+    includePublisher: boolean,
   ): Promise<VkParsingPostWithSource[]> {
-    const baseWhere = {
+    const baseWhere: Prisma.VkParsingPostWhereInput = {
       publishQueuedAt: { not: null },
       publishIdempotencyKey: { not: null },
       OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
+      ...(includePublisher ? {} : { dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED }),
     };
     const recoverableReasonWhere = {
       OR: [
@@ -454,6 +481,25 @@ export class VkPublishService {
     }
 
     return [...duePosts, ...futurePosts];
+  }
+
+  private async isPublisherRecoveryAllowed(): Promise<boolean> {
+    if (
+      !this.publisherDispatchConfigured ||
+      !this.publisherQueue ||
+      !this.publisherDispatchHealthService
+    ) {
+      return false;
+    }
+    try {
+      return !(await this.publisherDispatchHealthService.isGloballyPaused());
+    } catch (error: unknown) {
+      this.logger.warn(
+        { errorType: error instanceof Error ? error.name : 'unknown' },
+        'Skipped Publik VK recovery because dispatch pause state is unavailable',
+      );
+      return false;
+    }
   }
 
   private buildFuturePublishRecoveryCursorWhere(

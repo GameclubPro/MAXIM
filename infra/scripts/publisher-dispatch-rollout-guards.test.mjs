@@ -494,6 +494,7 @@ best_effort_rearm_operator_pause() { events+=(rearm); }
 COMMAND=enable
 DESIRED_STATE=true
 EXPECTED_OCR_VERSION=ocr-v1
+RECONCILE_ONLY=0
 ROLLOUT_COMPLETE=0
 MANIFEST_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 set +e
@@ -557,6 +558,84 @@ test('fixed disable recovery adopts both owned fences and tolerates stopped revi
   assert.match(control, /run --rm --no-deps --pull never -T/u);
   assert.match(control, /api-action node - "\$action"/u);
   assert.match(control, /exec -T[\s\S]*api-admin node - "\$action"/u);
+});
+
+test('reconciles an already exact disabled runtime without recreating API roles', () => {
+  const preflight = functionBlock(rollout, 'rollout_preflight');
+  assert.match(
+    preflight,
+    /COMMAND" == "disable"[\s\S]*CURRENT_ENV_STATE" == "false"[\s\S]*verify_runtime false[\s\S]*RECONCILE_ONLY=1/u,
+  );
+
+  const apply = functionBlock(rollout, 'apply_rollout');
+  const execute = (failAt) =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail
+${apply}
+events=()
+runtime_calls=0
+heartbeat_calls=0
+fail() { return 1; }
+arm_operator_pause() { events+=(arm); }
+patch_dispatch_env() { events+=(patch); }
+verify_compose_config() { events+=(compose); }
+maxim_topology_require_api_commercial_ocr_version_config() { events+=(ocr-config); }
+maxim_topology_require_media_analysis_shadow_config() { events+=(shadow-config); }
+recreate_all_api_roles() { events+=(recreate); }
+verify_runtime() {
+  runtime_calls=$((runtime_calls + 1))
+  events+=("runtime:$runtime_calls")
+  [[ "$FAIL_AT" != runtime || "$runtime_calls" -lt 3 ]]
+}
+wait_for_url() { events+=(live); }
+wait_for_heartbeat() {
+  heartbeat_calls=$((heartbeat_calls + 1))
+  events+=("heartbeat:$heartbeat_calls:$1")
+  [[ "$FAIL_AT" != heartbeat || "$heartbeat_calls" -lt 2 ]]
+}
+maxim_webhook_resume_after_api_fence() { events+=(resume); }
+run_health_smokes() { events+=(health); }
+maxim_topology_verify_api_commercial_ocr_version() { events+=(ocr-version); }
+maxim_topology_smoke_media_analysis_tesseract() { events+=(ocr-smoke); }
+clear_operator_pause() { events+=(clear); }
+best_effort_rearm_operator_pause() { events+=(rearm); return 0; }
+COMMAND=disable
+DESIRED_STATE=false
+EXPECTED_OCR_VERSION=ocr-v1
+RECONCILE_ONLY=1
+POST_CLEAR_REARM_REQUIRED=0
+ROLLOUT_COMPLETE=0
+MANIFEST_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+set +e
+apply_rollout
+status=$?
+set -e
+printf 'status=%s complete=%s flag=%s events=%s\n' \
+  "$status" "$ROLLOUT_COMPLETE" "$POST_CLEAR_REARM_REQUIRED" "\${events[*]}"`,
+      ],
+      { encoding: 'utf8', env: { ...process.env, FAIL_AT: failAt } },
+    );
+
+  const success = execute('none');
+  assert.equal(success.status, 0, success.stderr);
+  assert.match(success.stdout, /status=0 complete=1 flag=0/u);
+  assert.match(success.stdout, /reconcile_only=true/u);
+  assert.doesNotMatch(success.stdout, /\b(?:patch|recreate|resume|rearm)\b/u);
+  assert.match(success.stdout, /arm compose ocr-config shadow-config runtime:1/u);
+  assert.match(
+    success.stdout,
+    /health runtime:2 ocr-version ocr-smoke clear heartbeat:2:false runtime:3/u,
+  );
+
+  for (const failAt of ['heartbeat', 'runtime']) {
+    const failure = execute(failAt);
+    assert.equal(failure.status, 0, failure.stderr);
+    assert.match(failure.stdout, /status=1 complete=0 flag=0/u);
+    assert.match(failure.stdout, /clear[\s\S]*rearm/u);
+  }
 });
 
 test('does not claim stale operator ownership after clear restores an authorization pause', () => {

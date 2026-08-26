@@ -74,6 +74,7 @@ OPERATOR_OWNER_TOKEN=""
 EXPECTED_HEARTBEAT_STATE=""
 OPERATOR_PAUSE_ARMED=0
 POST_CLEAR_REARM_REQUIRED=0
+RECONCILE_ONLY=0
 ROLLOUT_COMPLETE=0
 
 usage() {
@@ -947,6 +948,11 @@ rollout_preflight() {
     COMPOSE_FILES "$EXPECTED_OCR_VERSION" required
   maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
   require_stateful_services_ready
+  if [[ "$COMMAND" == "disable" && "$APPLY" -eq 1 &&
+        "$CURRENT_ENV_CONFIGURED" == "true" && "$CURRENT_ENV_STATE" == "false" ]] &&
+    verify_runtime false >/dev/null 2>&1; then
+    RECONCILE_ONLY=1
+  fi
   if [[ "$COMMAND" == "enable" ]]; then
     maxim_topology_require_publisher_secret_files
     verify_runtime "$current_expected"
@@ -958,18 +964,29 @@ rollout_preflight() {
 }
 
 apply_rollout() {
+  if [[ "$RECONCILE_ONLY" -eq 1 &&
+        ("$COMMAND" != "disable" || "$DESIRED_STATE" != "false") ]]; then
+    fail "Publisher reconcile-only mode is valid only for an exact disabled runtime."
+    return 1
+  fi
   arm_operator_pause
-  patch_dispatch_env
+  if [[ "$RECONCILE_ONLY" -ne 1 ]]; then
+    patch_dispatch_env
+  fi
   verify_compose_config "$DESIRED_STATE"
   maxim_topology_require_api_commercial_ocr_version_config \
     COMPOSE_FILES "$EXPECTED_OCR_VERSION" required
   maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
-  recreate_all_api_roles
+  if [[ "$RECONCILE_ONLY" -ne 1 ]]; then
+    recreate_all_api_roles
+  fi
   verify_runtime "$DESIRED_STATE"
   wait_for_url http://127.0.0.1:3001/api/health/live
   wait_for_url http://127.0.0.1:3002/api/health/live
   wait_for_heartbeat false
-  maxim_webhook_resume_after_api_fence COMPOSE_FILES
+  if [[ "$RECONCILE_ONLY" -ne 1 ]]; then
+    maxim_webhook_resume_after_api_fence COMPOSE_FILES
+  fi
   run_health_smokes
   verify_runtime "$DESIRED_STATE"
   maxim_topology_verify_api_commercial_ocr_version COMPOSE_FILES "$EXPECTED_OCR_VERSION"
@@ -989,13 +1006,27 @@ apply_rollout() {
     fi
     POST_CLEAR_REARM_REQUIRED=0
   else
+    if [[ "$RECONCILE_ONLY" -eq 1 ]]; then
+      POST_CLEAR_REARM_REQUIRED=1
+    fi
     clear_operator_pause
-    wait_for_heartbeat false
-    verify_runtime "$DESIRED_STATE"
+    if [[ "$RECONCILE_ONLY" -eq 1 ]]; then
+      if ! wait_for_heartbeat false || ! verify_runtime "$DESIRED_STATE"; then
+        if best_effort_rearm_operator_pause; then
+          POST_CLEAR_REARM_REQUIRED=0
+        fi
+        return 1
+      fi
+      POST_CLEAR_REARM_REQUIRED=0
+    else
+      wait_for_heartbeat false
+      verify_runtime "$DESIRED_STATE"
+    fi
   fi
   ROLLOUT_COMPLETE=1
-  printf 'Publik dispatch rollout complete: enabled=%s roles=13 image=%s\n' \
-    "$DESIRED_STATE" "$MANIFEST_SOURCE_SHA"
+  printf 'Publik dispatch rollout complete: enabled=%s roles=13 image=%s reconcile_only=%s\n' \
+    "$DESIRED_STATE" "$MANIFEST_SOURCE_SHA" \
+    "$([[ "$RECONCILE_ONLY" -eq 1 ]] && printf '%s' true || printf '%s' false)"
 }
 
 parse_args "$@"

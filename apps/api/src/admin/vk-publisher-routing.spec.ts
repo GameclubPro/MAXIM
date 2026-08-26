@@ -193,6 +193,7 @@ function createFixture() {
   const runtimeBoundary = { assertDispatchEnabled: jest.fn() };
   const health = {
     assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
+    isGloballyPaused: jest.fn().mockResolvedValue(false),
     recordSendSuccess: jest.fn().mockResolvedValue(undefined),
     recordSendFailure: jest.fn().mockResolvedValue('transient'),
   };
@@ -207,6 +208,7 @@ function createFixture() {
   const configService = {
     get: jest.fn((key: string) => {
       if (key === 'MAX_PUBLISHER_BOT_ID') return 'publisher-bot';
+      if (key === 'MAX_PUBLISHER_DISPATCH_ENABLED') return true;
       if (key === 'VK_PARSING_QUEUE_BATCH_SIZE') return 100;
       if (key === 'VK_PARSING_PUBLISH_LEASE_TTL_MS') return 120_000;
       return undefined;
@@ -250,6 +252,64 @@ function createFixture() {
 }
 
 describe('VK Publik routing', () => {
+  it('continues legacy stale recovery without scanning or enqueueing Publik while paused', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    try {
+      const fixture = createFixture();
+      fixture.health.isGloballyPaused.mockResolvedValue(true);
+      const legacyPost = createPost({
+        id: 'legacy-recovery-post',
+        dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+        publishQueuedAt: new Date('2026-08-26T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-08-26T10:05:00.000Z'),
+        publishLockedAt: null,
+        publishIdempotencyKey: 'legacy-recovery-key',
+        publishReason: 'manual-retry',
+      });
+      const publisherPost = createPost({
+        id: 'publisher-recovery-post',
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: 'publisher-bot',
+        dialogBotId: 'main-dialog-bot',
+        publishQueuedAt: new Date('2026-08-26T10:00:00.000Z'),
+        publishScheduledAt: new Date('2026-08-26T10:05:00.000Z'),
+        publishLockedAt: null,
+        publishIdempotencyKey: 'publisher-recovery-key',
+        publishReason: 'manual-retry',
+      });
+      fixture.prisma.vkParsingPost.findMany
+        .mockResolvedValueOnce([legacyPost, publisherPost])
+        .mockResolvedValueOnce([]);
+
+      await expect(fixture.service.recoverStalePublishJobs()).resolves.toBe(1);
+
+      expect(fixture.health.isGloballyPaused).toHaveBeenCalledTimes(1);
+      expect(fixture.prisma.vkParsingPost.findMany).toHaveBeenCalledTimes(2);
+      for (const [query] of fixture.prisma.vkParsingPost.findMany.mock.calls) {
+        expect(query.where).toEqual(
+          expect.objectContaining({
+            dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+          }),
+        );
+        expect(query.where).not.toEqual(
+          expect.objectContaining({ rollbackQueuedAt: expect.anything() }),
+        );
+      }
+      expect(fixture.legacyQueue.add).toHaveBeenCalledWith(
+        'publish-vk-post',
+        expect.objectContaining({
+          postId: 'legacy-recovery-post',
+          idempotencyKey: 'legacy-recovery-key',
+        }),
+        expect.any(Object),
+      );
+      expect(fixture.publisherQueue.getJob).not.toHaveBeenCalled();
+      expect(fixture.publisherQueue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('queues a new manual intent with an immutable Publik and dialog-bot route', async () => {
     const fixture = createFixture();
     const post = createPost();

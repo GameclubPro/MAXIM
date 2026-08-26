@@ -1,4 +1,6 @@
 import { DelayedError } from 'bullmq';
+import { PublisherDispatchPausedError } from '../publisher/publisher-dispatch-health.service';
+import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from '../publisher/publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationError } from '../publisher/publisher-identity-attestation.service';
 import { PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS } from '../publisher/publisher-identity-attestation-job-guard';
 import { VkParsingPublisherProcessor } from './vk-parsing-publisher.processor';
@@ -15,6 +17,10 @@ describe('VkParsingPublisherProcessor', () => {
     else process.env.APP_SERVICE_NAME = previousServiceName;
   });
 
+  const createDispatchHealth = () => ({
+    assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
+  });
+
   it('fails closed when the publisher queue is instantiated outside api-publisher', async () => {
     process.env.APP_ROLE = 'action';
     process.env.APP_SERVICE_NAME = 'api-action';
@@ -23,6 +29,7 @@ describe('VkParsingPublisherProcessor', () => {
     const processor = new VkParsingPublisherProcessor(
       service as never,
       identityAttestation as never,
+      createDispatchHealth() as never,
     );
 
     await expect(
@@ -52,6 +59,7 @@ describe('VkParsingPublisherProcessor', () => {
     const processor = new VkParsingPublisherProcessor(
       service as never,
       identityAttestation as never,
+      createDispatchHealth() as never,
     );
 
     await expect(
@@ -84,6 +92,7 @@ describe('VkParsingPublisherProcessor', () => {
     const processor = new VkParsingPublisherProcessor(
       service as never,
       identityAttestation as never,
+      createDispatchHealth() as never,
     );
 
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
@@ -122,6 +131,7 @@ describe('VkParsingPublisherProcessor', () => {
     const processor = new VkParsingPublisherProcessor(
       service as never,
       { assertAttested: jest.fn().mockRejectedValue(failure) } as never,
+      createDispatchHealth() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -143,5 +153,50 @@ describe('VkParsingPublisherProcessor', () => {
     await expect(processor.process(job as never, 'worker-token')).rejects.toBe(failure);
     expect(moveToDelayed).not.toHaveBeenCalled();
     expect(service.processPublishPostJob).not.toHaveBeenCalled();
+  });
+
+  it('delays a paused VK Publik job before domain recovery without consuming its attempt', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const service = {
+      processPublishPostJob: jest.fn(),
+      processPublisherRollbackJob: jest.fn(),
+    };
+    const dispatchHealth = {
+      assertDispatchAllowed: jest.fn().mockRejectedValue(new PublisherDispatchPausedError(null)),
+    };
+    const processor = new VkParsingPublisherProcessor(
+      service as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      dispatchHealth as never,
+    );
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: {
+        kind: 'publish',
+        postId: 'post-1',
+        chatId: 'channel-1',
+        requiredBotId: 'publisher-bot',
+        dispatchProfile: 'PUBLIK_V1',
+        reason: 'manual-retry',
+        idempotencyKey: 'intent-1',
+      },
+      attemptsMade: 4,
+      opts: { attempts: 5 },
+      token: 'job-token',
+      moveToDelayed,
+    };
+
+    await expect(processor.process(job as never, 'worker-token')).rejects.toBeInstanceOf(
+      DelayedError,
+    );
+    expect(moveToDelayed).toHaveBeenCalledWith(
+      Date.parse('2026-08-26T12:00:00.000Z') + PUBLISHER_DISPATCH_PAUSE_DEFER_MS,
+      'worker-token',
+    );
+    expect(job.attemptsMade).toBe(4);
+    expect(service.processPublishPostJob).not.toHaveBeenCalled();
+    expect(service.processPublisherRollbackJob).not.toHaveBeenCalled();
   });
 });

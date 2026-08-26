@@ -1,12 +1,10 @@
-import { DelayedError, type Job } from 'bullmq';
 import {
   PublisherIdentityAttestationError,
   PublisherIdentityAttestationService,
 } from './publisher-identity-attestation.service';
+import { delayPublisherJobOrRethrow, type PublisherDeferrableJob } from './publisher-job-delay';
 
 export const PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS = 60_000;
-
-type PublisherDeferrableJob = Pick<Job, 'moveToDelayed' | 'token'>;
 
 export async function assertPublisherIdentityOrDelay(
   identityAttestation: PublisherIdentityAttestationService,
@@ -19,16 +17,11 @@ export async function assertPublisherIdentityOrDelay(
     if (!(error instanceof PublisherIdentityAttestationError)) {
       throw error;
     }
-
-    const lockToken = workerToken?.trim() || job.token?.trim();
-    if (!lockToken) {
-      throw error;
-    }
-    try {
-      await job.moveToDelayed(Date.now() + PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS, lockToken);
-    } catch {
-      throw error;
-    }
-    throw new DelayedError();
+    await delayPublisherJobOrRethrow(
+      job,
+      workerToken,
+      PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS,
+      error,
+    );
   }
 }

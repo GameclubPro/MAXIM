@@ -201,6 +201,7 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     private readonly refreshService: PublisherBindingRefreshService,
     private readonly refreshQueue: PublisherBindingRefreshQueueService,
     credentials: PublisherActionCredentialService,
+    private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
   ) {
@@ -233,6 +234,9 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     }
     this.inFlight = true;
     try {
+      if (await this.dispatchHealth.isGloballyPaused()) {
+        return;
+      }
       await this.identityAttestation.assertAttested();
       const now = new Date();
       const [bootstrapCandidates, staleBindings] = await Promise.all([

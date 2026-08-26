@@ -11,6 +11,7 @@ import {
   type PublisherChatCommentAttachJob,
   type PublisherChatCommentJob,
 } from './publisher-chat-comment.queue';
+import { PublisherDispatchPausedError } from './publisher-dispatch-health.service';
 
 const MARKER_ID = `ccr1_${'d'.repeat(32)}`;
 const LOCK_TOKEN = 'exhausted-lock-1';
@@ -52,6 +53,8 @@ function createHarness(
     marker?: ReturnType<typeof buildMarker>;
     state?: string;
     readinessError?: Error;
+    globallyPaused?: boolean;
+    dispatchAllowedError?: Error;
   } = {},
 ) {
   const marker = options.marker ?? buildMarker();
@@ -79,7 +82,12 @@ function createHarness(
         }),
   };
   const boundary = { dispatchEnabled: true, assertDispatchEnabled: jest.fn() };
-  const health = { assertDispatchAllowed: jest.fn().mockResolvedValue(undefined) };
+  const health = {
+    assertDispatchAllowed: options.dispatchAllowedError
+      ? jest.fn().mockRejectedValue(options.dispatchAllowedError)
+      : jest.fn().mockResolvedValue(undefined),
+    isGloballyPaused: jest.fn().mockResolvedValue(options.globallyPaused ?? false),
+  };
   const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
   const service = new PublisherChatCommentRecoveryService(
     prisma as never,
@@ -90,7 +98,17 @@ function createHarness(
     { getBotId: () => 'publik-bot' } as never,
     identityAttestation as never,
   );
-  return { boundary, health, job, marker, prisma, queue, readiness, service };
+  return {
+    boundary,
+    health,
+    identityAttestation,
+    job,
+    marker,
+    prisma,
+    queue,
+    readiness,
+    service,
+  };
 }
 
 describe('PublisherChatCommentRecoveryService', () => {
@@ -156,6 +174,8 @@ describe('PublisherChatCommentRecoveryService', () => {
   ])('requeues $label without authorizing another remote send', async ({ marker }) => {
     const harness = createHarness({
       marker,
+      globallyPaused: true,
+      dispatchAllowedError: new PublisherDispatchPausedError('2026-08-26T09:30:00.000Z'),
       readinessError: new Error('readiness must not gate local recovery'),
     });
 
@@ -202,6 +222,50 @@ describe('PublisherChatCommentRecoveryService', () => {
     }
   });
 
+  it('keeps enabled recovery timers idle before identity, DB, or queue work while paused', async () => {
+    jest.useFakeTimers();
+    try {
+      const harness = createHarness({ globallyPaused: true });
+      const recover = jest.spyOn(harness.service, 'recoverOnce');
+
+      harness.service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS);
+
+      expect(recover).not.toHaveBeenCalled();
+      expect(harness.identityAttestation.assertAttested).not.toHaveBeenCalled();
+      expect(harness.prisma.chatAutoCommentAttachMarker.findMany).not.toHaveBeenCalled();
+      expect(harness.queue.getJob).not.toHaveBeenCalled();
+
+      harness.health.isGloballyPaused.mockResolvedValue(false);
+      await jest.advanceTimersByTimeAsync(PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS);
+
+      expect(harness.health.isGloballyPaused).toHaveBeenCalledTimes(3);
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(harness.identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
+      expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
+      expect(harness.queue.getJob).toHaveBeenCalledTimes(1);
+      harness.service.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('defers an explicit remote-send recovery while dispatch is paused', async () => {
+    const harness = createHarness({
+      globallyPaused: true,
+      dispatchAllowedError: new PublisherDispatchPausedError('2026-08-26T09:30:00.000Z'),
+    });
+
+    const result = await harness.service.recoverOnce();
+
+    expect(harness.health.isGloballyPaused).not.toHaveBeenCalled();
+    expect(harness.identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
+    expect(harness.health.assertDispatchAllowed).toHaveBeenCalledTimes(1);
+    expect(harness.job.retry).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ scanned: 1, deferred: 1, retried: 0 });
+  });
+
   it('does not schedule automatic recovery while dispatch is disabled', async () => {
     jest.useFakeTimers();
     try {
@@ -215,6 +279,7 @@ describe('PublisherChatCommentRecoveryService', () => {
           PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS * 2,
       );
 
+      expect(harness.health.isGloballyPaused).not.toHaveBeenCalled();
       expect(recover).not.toHaveBeenCalled();
       harness.service.onModuleDestroy();
     } finally {

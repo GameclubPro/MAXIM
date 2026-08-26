@@ -1,6 +1,8 @@
 import { DelayedError, type Job } from 'bullmq';
 import { PublisherChatCommentProcessor } from './publisher-chat-comment.processor';
 import type { PublisherChatCommentJob } from './publisher-chat-comment.queue';
+import { PublisherDispatchPausedError } from './publisher-dispatch-health.service';
+import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from './publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationError } from './publisher-identity-attestation.service';
 import { PUBLISHER_IDENTITY_ATTESTATION_DEFER_MS } from './publisher-identity-attestation-job-guard';
 
@@ -53,6 +55,9 @@ describe('PublisherChatCommentProcessor', () => {
   });
 
   const createAttestation = () => ({ assertAttested: jest.fn().mockResolvedValue(undefined) });
+  const createDispatchHealth = () => ({
+    assertDispatchAllowed: jest.fn().mockResolvedValue(undefined),
+  });
 
   it('rejects a publisher job on every non-publisher role', async () => {
     process.env.APP_ROLE = 'action';
@@ -61,6 +66,7 @@ describe('PublisherChatCommentProcessor', () => {
     const processor = new PublisherChatCommentProcessor(
       delivery as never,
       createAttestation() as never,
+      createDispatchHealth() as never,
     );
 
     await expect(
@@ -80,6 +86,7 @@ describe('PublisherChatCommentProcessor', () => {
     const processor = new PublisherChatCommentProcessor(
       delivery as never,
       createAttestation() as never,
+      createDispatchHealth() as never,
     );
 
     await expect(
@@ -99,6 +106,7 @@ describe('PublisherChatCommentProcessor', () => {
     const processor = new PublisherChatCommentProcessor(
       delivery as never,
       createAttestation() as never,
+      createDispatchHealth() as never,
     );
 
     await processor.process({
@@ -127,6 +135,7 @@ describe('PublisherChatCommentProcessor', () => {
     const processor = new PublisherChatCommentProcessor(
       delivery as never,
       identityAttestation as never,
+      createDispatchHealth() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -155,6 +164,7 @@ describe('PublisherChatCommentProcessor', () => {
     const processor = new PublisherChatCommentProcessor(
       delivery as never,
       identityAttestation as never,
+      createDispatchHealth() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -167,6 +177,37 @@ describe('PublisherChatCommentProcessor', () => {
 
     await expect(processor.process(job, 'worker-token')).rejects.toBe(failure);
     expect(moveToDelayed).not.toHaveBeenCalled();
+    expect(delivery.process).not.toHaveBeenCalled();
+  });
+
+  it('delays a paused comment job before delivery without consuming its attempt', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const delivery = { process: jest.fn() };
+    const dispatchHealth = {
+      assertDispatchAllowed: jest.fn().mockRejectedValue(new PublisherDispatchPausedError(null)),
+    };
+    const processor = new PublisherChatCommentProcessor(
+      delivery as never,
+      createAttestation() as never,
+      dispatchHealth as never,
+    );
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: attachJob,
+      attemptsMade: 7,
+      opts: { attempts: 8 },
+      token: 'job-token',
+      moveToDelayed,
+    } as unknown as Job<PublisherChatCommentJob>;
+
+    await expect(processor.process(job, 'worker-token')).rejects.toBeInstanceOf(DelayedError);
+    expect(moveToDelayed).toHaveBeenCalledWith(
+      Date.parse('2026-08-26T12:00:00.000Z') + PUBLISHER_DISPATCH_PAUSE_DEFER_MS,
+      'worker-token',
+    );
+    expect(job.attemptsMade).toBe(7);
     expect(delivery.process).not.toHaveBeenCalled();
   });
 });

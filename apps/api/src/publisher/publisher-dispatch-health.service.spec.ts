@@ -1,4 +1,8 @@
-import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
+import {
+  PublisherDispatchHealthService,
+  PublisherDispatchHealthUnavailableError,
+  PublisherDispatchPausedError,
+} from './publisher-dispatch-health.service';
 
 describe('PublisherDispatchHealthService', () => {
   function createHarness() {
@@ -120,6 +124,27 @@ describe('PublisherDispatchHealthService', () => {
 
     await service.recordAuthenticatedSuccess(new Date(Date.now() + 1_000));
     await expect(service.assertDispatchAllowed()).resolves.toBeUndefined();
+  });
+
+  it('wraps only a Redis pause lookup failure as unavailable', async () => {
+    const { service, redis } = createHarness();
+    const redisFailure = new Error('redis read failed');
+    redis.get.mockRejectedValueOnce(redisFailure);
+
+    await expect(service.assertDispatchAllowed()).rejects.toMatchObject({
+      name: PublisherDispatchHealthUnavailableError.name,
+      code: 'PUBLISHER_DISPATCH_HEALTH_UNAVAILABLE',
+      cause: redisFailure,
+    });
+  });
+
+  it('keeps an unreadable stored marker paused instead of classifying it as unavailable', async () => {
+    const { service, values } = createHarness();
+    values.set('publisher:dispatch:pause:v1:publik_bot', '{invalid-json');
+
+    await expect(service.assertDispatchAllowed()).rejects.toBeInstanceOf(
+      PublisherDispatchPausedError,
+    );
   });
 
   it('does not let a pre-401 in-flight success clear a newer global pause', async () => {

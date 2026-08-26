@@ -1,5 +1,6 @@
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
+import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import { PublisherIdentityAttestationService } from '../publisher/publisher-identity-attestation.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
@@ -17,6 +18,7 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
     private readonly managedBroadcastService: ManagedBroadcastService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
+    private readonly dispatchHealth: PublisherDispatchHealthService,
   ) {}
 
   onModuleInit(): void {
@@ -44,6 +46,9 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
     }
     this.inFlight = true;
     try {
+      if (await this.dispatchHealth.isGloballyPaused()) {
+        return;
+      }
       await this.identityAttestation.assertAttested();
       const verificationBudget =
         await this.managedBroadcastService.processDueImmediatePublicationBroadcasts();

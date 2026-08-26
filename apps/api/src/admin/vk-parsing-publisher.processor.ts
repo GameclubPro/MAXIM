@@ -1,6 +1,8 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
+import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
+import { assertPublisherDispatchAllowedOrDelay } from '../publisher/publisher-dispatch-job-guard';
 import { PublisherIdentityAttestationService } from '../publisher/publisher-identity-attestation.service';
 import { assertPublisherIdentityOrDelay } from '../publisher/publisher-identity-attestation-job-guard';
 import { VK_PARSING_PUBLISHER_QUEUE, type VkParsingPublisherJob } from './vk-parsing.queue';
@@ -13,6 +15,7 @@ export class VkParsingPublisherProcessor extends WorkerHost {
   constructor(
     private readonly vkParsingService: VkParsingService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
+    private readonly dispatchHealth: PublisherDispatchHealthService,
   ) {
     super();
   }
@@ -22,6 +25,7 @@ export class VkParsingPublisherProcessor extends WorkerHost {
       throw new Error('VK Publik queue may only be consumed by api-publisher');
     }
     await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
+    await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
 
     if (job.data.kind === 'rollback-delete') {
       if (!job.data.messageId) {
