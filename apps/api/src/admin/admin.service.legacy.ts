@@ -18033,7 +18033,7 @@ export class AdminService implements OnModuleDestroy {
   ) {
     const updated = await this.prisma.$transaction(async (tx) => {
       const lockKey = `channel-suggestion-delivery-sync:${row.id}`;
-      await tx.$queryRaw(
+      await tx.$executeRaw(
         Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0::BIGINT))`,
       );
       await tx.$queryRaw(Prisma.sql`

@@ -140,11 +140,14 @@ describe('channel suggestion delivery payload races', () => {
       deliveredResult,
     );
 
+    const advisoryLockSql = extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0]);
     const sql =
       prisma.$queryRaw.mock.calls
         .map((call) => extractSqlText(call[0]))
         .find((text) => text.includes('audit.payload::jsonb')) ?? '';
     const patch = readJsonPatch(prisma.$queryRaw);
+    expect(advisoryLockSql).toContain('pg_advisory_xact_lock');
+    expect(advisoryLockSql).toContain('channel-suggestion-delivery-sync:');
     expect(sql).toContain('audit.payload::jsonb');
     expect(sql).toContain('RETURNING');
     expect(patch).not.toHaveProperty('reviewStatus');
@@ -253,7 +256,9 @@ describe('channel suggestion delivery payload races', () => {
       { final: true, attemptsMade: 8, maxAttempts: 8 },
     );
 
-    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0])).toContain(
+      'pg_advisory_xact_lock',
+    );
     expect(syncReviewed).toHaveBeenCalledWith(
       'suggestion-late-sent-1',
       'channel-1',
