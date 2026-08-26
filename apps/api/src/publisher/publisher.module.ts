@@ -2,6 +2,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { Global, Module } from '@nestjs/common';
 import { MaxModule } from '../max/max.module';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
+import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherBindingRefreshProcessor } from './publisher-binding-refresh.processor';
 import {
   PUBLISHER_CHAT_COMMENT_QUEUE,
@@ -40,6 +41,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   : [];
 
 const sharedPublisherProviders = [
+  PublisherBackgroundWorkCoordinatorService,
   PublisherRuntimeHeartbeatReaderService,
   PublisherBindingRefreshQueueService,
   PublisherChatCommentQueueService,

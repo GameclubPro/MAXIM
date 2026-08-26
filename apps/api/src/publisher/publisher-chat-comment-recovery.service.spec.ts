@@ -89,6 +89,9 @@ function createHarness(
     isGloballyPaused: jest.fn().mockResolvedValue(options.globallyPaused ?? false),
   };
   const identityAttestation = { assertAttested: jest.fn().mockResolvedValue(undefined) };
+  const backgroundWork = {
+    runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
+  };
   const service = new PublisherChatCommentRecoveryService(
     prisma as never,
     queue as never,
@@ -97,9 +100,11 @@ function createHarness(
     health as never,
     { getBotId: () => 'publik-bot' } as never,
     identityAttestation as never,
+    backgroundWork as never,
   );
   return {
     boundary,
+    backgroundWork,
     health,
     identityAttestation,
     job,
@@ -197,25 +202,43 @@ describe('PublisherChatCommentRecoveryService', () => {
     expect(harness.job.retry).not.toHaveBeenCalled();
   });
 
+  it('coalesces explicit recovery calls while waiting for the background coordinator', async () => {
+    const harness = createHarness();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    harness.backgroundWork.runExclusive.mockImplementation(
+      async (_lane: string, operation: () => Promise<unknown>) => {
+        await gate;
+        return operation();
+      },
+    );
+
+    const first = harness.service.recoverOnce();
+    const second = harness.service.recoverOnce();
+    await Promise.resolve();
+
+    expect(harness.backgroundWork.runExclusive).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.chatAutoCommentAttachMarker.findMany).not.toHaveBeenCalled();
+    release();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.alreadyRunning).toBe(false);
+    expect(secondResult.alreadyRunning).toBe(true);
+    expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
+  });
+
   it('runs a bounded startup recovery after a publisher restart', async () => {
     jest.useFakeTimers();
     try {
       const harness = createHarness();
-      const recover = jest.spyOn(harness.service, 'recoverOnce').mockResolvedValue({
-        scanned: 1,
-        retried: 1,
-        deferred: 0,
-        missingJobs: 0,
-        skipped: 0,
-        races: 0,
-        errors: 0,
-        alreadyRunning: false,
-      });
 
       harness.service.onModuleInit();
       await jest.advanceTimersByTimeAsync(PUBLISHER_CHAT_COMMENT_RECOVERY_STARTUP_DELAY_MS);
 
-      expect(recover).toHaveBeenCalledTimes(1);
+      expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
+      expect(harness.job.retry).toHaveBeenCalledTimes(1);
       harness.service.onModuleDestroy();
     } finally {
       jest.useRealTimers();
@@ -226,12 +249,10 @@ describe('PublisherChatCommentRecoveryService', () => {
     jest.useFakeTimers();
     try {
       const harness = createHarness({ globallyPaused: true });
-      const recover = jest.spyOn(harness.service, 'recoverOnce');
 
       harness.service.onModuleInit();
       await jest.advanceTimersByTimeAsync(PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS);
 
-      expect(recover).not.toHaveBeenCalled();
       expect(harness.identityAttestation.assertAttested).not.toHaveBeenCalled();
       expect(harness.prisma.chatAutoCommentAttachMarker.findMany).not.toHaveBeenCalled();
       expect(harness.queue.getJob).not.toHaveBeenCalled();
@@ -239,8 +260,7 @@ describe('PublisherChatCommentRecoveryService', () => {
       harness.health.isGloballyPaused.mockResolvedValue(false);
       await jest.advanceTimersByTimeAsync(PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS);
 
-      expect(harness.health.isGloballyPaused).toHaveBeenCalledTimes(3);
-      expect(recover).toHaveBeenCalledTimes(1);
+      expect(harness.health.isGloballyPaused).toHaveBeenCalledTimes(4);
       expect(harness.identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
       expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
       expect(harness.queue.getJob).toHaveBeenCalledTimes(1);
@@ -248,6 +268,32 @@ describe('PublisherChatCommentRecoveryService', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('rechecks an operator pause after waiting for the shared background lane', async () => {
+    const harness = createHarness();
+    let globallyPaused = false;
+    harness.health.isGloballyPaused.mockImplementation(async () => globallyPaused);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    harness.backgroundWork.runExclusive.mockImplementation(
+      async (_lane: string, operation: () => Promise<unknown>) => {
+        await gate;
+        return operation();
+      },
+    );
+
+    const recovery = (harness.service as any).runScheduledRecovery() as Promise<void>;
+    while (harness.backgroundWork.runExclusive.mock.calls.length === 0) await Promise.resolve();
+    globallyPaused = true;
+    release();
+    await recovery;
+
+    expect(harness.health.isGloballyPaused).toHaveBeenCalledTimes(2);
+    expect(harness.identityAttestation.assertAttested).not.toHaveBeenCalled();
+    expect(harness.prisma.chatAutoCommentAttachMarker.findMany).not.toHaveBeenCalled();
   });
 
   it('defers an explicit remote-send recovery while dispatch is paused', async () => {

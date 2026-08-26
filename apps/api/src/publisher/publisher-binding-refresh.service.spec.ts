@@ -4,6 +4,10 @@ import {
   PublisherBindingRefreshService,
 } from './publisher-binding-refresh.service';
 
+const createBackgroundWork = () => ({
+  runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
+});
+
 describe('PublisherBindingRefreshService', () => {
   function createHarness(
     accessResult:
@@ -191,6 +195,7 @@ describe('PublisherBindingRefreshService', () => {
         dispatchHealth as never,
         identityAttestation as never,
         { dispatchEnabled: false } as never,
+        createBackgroundWork() as never,
       );
 
       await scheduler.onModuleInit();
@@ -226,16 +231,51 @@ describe('PublisherBindingRefreshService', () => {
       dispatchHealth as never,
       identityAttestation as never,
       { dispatchEnabled: true } as never,
+      createBackgroundWork() as never,
     );
 
-    await scheduler.onModuleInit();
+    const scan = jest.spyOn(scheduler, 'scan');
+    scheduler.onModuleInit();
+    await scan.mock.results[0]?.value;
 
     expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 100 }),
+    );
     expect(refreshService.ensureBinding).toHaveBeenCalledWith('chat-bootstrap');
     expect(refreshQueue.enqueue).toHaveBeenCalledTimes(2);
     scheduler.onModuleDestroy();
+  });
+
+  it('finishes bootstrap discovery before starting the stale-binding query', async () => {
+    let resolveBootstrap!: (rows: Array<{ id: string }>) => void;
+    const bootstrap = new Promise<Array<{ id: string }>>((resolve) => {
+      resolveBootstrap = resolve;
+    });
+    const prisma = {
+      $queryRaw: jest.fn().mockReturnValue(bootstrap),
+      publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const scheduler = new PublisherBindingBootstrapSchedulerService(
+      prisma as never,
+      { ensureBinding: jest.fn() } as never,
+      { enqueue: jest.fn() } as never,
+      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      { dispatchEnabled: true } as never,
+      createBackgroundWork() as never,
+    );
+
+    const scan = scheduler.scan('scheduled');
+    while (prisma.$queryRaw.mock.calls.length === 0) await Promise.resolve();
+
+    expect(prisma.publisherEntityBinding.findMany).not.toHaveBeenCalled();
+    resolveBootstrap([]);
+    await scan;
+
+    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('keeps enabled bootstrap timers idle before identity, DB, or queue work while paused', async () => {
@@ -260,6 +300,7 @@ describe('PublisherBindingRefreshService', () => {
         dispatchHealth as never,
         identityAttestation as never,
         { dispatchEnabled: true } as never,
+        createBackgroundWork() as never,
       );
 
       await scheduler.onModuleInit();

@@ -3,6 +3,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import type { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
+import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import {
   buildPublisherChatCommentAttachJobId,
   PUBLISHER_CHAT_COMMENT_QUEUE,
@@ -58,6 +59,7 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
     private readonly dispatchHealth: PublisherDispatchHealthService,
     credentials: PublisherActionCredentialService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
+    private readonly backgroundWork: PublisherBackgroundWorkCoordinatorService,
   ) {
     this.publisherBotId = credentials.getBotId();
   }
@@ -89,6 +91,13 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
   }
 
   async recoverOnce(now = new Date()): Promise<PublisherChatCommentRecoveryResult> {
+    return this.recoverCoordinated(now, false);
+  }
+
+  private async recoverCoordinated(
+    now: Date,
+    respectGlobalPause: boolean,
+  ): Promise<PublisherChatCommentRecoveryResult> {
     if (this.inFlight) {
       return {
         ...(await this.inFlight),
@@ -96,7 +105,12 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
       };
     }
 
-    const run = this.recoverBatch(now);
+    const run = this.backgroundWork.runExclusive('chat_comment_recovery', async () => {
+      if (respectGlobalPause && (await this.dispatchHealth.isGloballyPaused())) {
+        return this.emptyResult();
+      }
+      return this.recoverBatch(now);
+    });
     this.inFlight = run;
     try {
       return await run;
@@ -109,16 +123,7 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
 
   private async recoverBatch(now: Date): Promise<PublisherChatCommentRecoveryResult> {
     await this.identityAttestation.assertAttested();
-    const result: PublisherChatCommentRecoveryResult = {
-      scanned: 0,
-      retried: 0,
-      deferred: 0,
-      missingJobs: 0,
-      skipped: 0,
-      races: 0,
-      errors: 0,
-      alreadyRunning: false,
-    };
+    const result = this.emptyResult();
     const markers = (await this.prisma.chatAutoCommentAttachMarker.findMany({
       where: {
         id: this.scanCursorId ? { gt: this.scanCursorId } : undefined,
@@ -170,6 +175,19 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
       }
     }
     return result;
+  }
+
+  private emptyResult(): PublisherChatCommentRecoveryResult {
+    return {
+      scanned: 0,
+      retried: 0,
+      deferred: 0,
+      missingJobs: 0,
+      skipped: 0,
+      races: 0,
+      errors: 0,
+      alreadyRunning: false,
+    };
   }
 
   private async recoverMarker(
@@ -247,7 +265,7 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
     if (await this.dispatchHealth.isGloballyPaused()) {
       return;
     }
-    const result = await this.recoverOnce();
+    const result = await this.recoverCoordinated(new Date(), true);
     if (result.retried > 0 || result.missingJobs > 0 || result.errors > 0) {
       this.logger.log(
         {
@@ -263,6 +281,9 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
   }
 
   private triggerScheduledRecovery(): void {
+    if (this.inFlight) {
+      return;
+    }
     void this.runScheduledRecovery().catch((error: unknown) => {
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },

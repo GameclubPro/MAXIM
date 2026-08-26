@@ -10,6 +10,10 @@ import type { Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
+import {
+  PublisherBackgroundWorkCoordinatorClosedError,
+  PublisherBackgroundWorkCoordinatorService,
+} from '../publisher/publisher-background-work-coordinator.service';
 import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { readChannelSuggestionPublicationClaimV1 } from './admin-channel-suggestion-publication-protocol';
@@ -26,12 +30,14 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
   private readonly logger = new Logger(PublisherSuggestionPublicationQueueService.name);
   private readonly recoveryEnabled = roleRunsPublisher(getAppRole());
   private recoveryTimer: NodeJS.Timeout | null = null;
+  private recoveryInFlight: Promise<void> | null = null;
 
   constructor(
     @InjectQueue(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE)
     private readonly queue: Queue<PublisherSuggestionPublicationJob>,
     private readonly prisma: PrismaService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
+    private readonly backgroundWork: PublisherBackgroundWorkCoordinatorService,
     @Optional() private readonly runtimeBoundary?: PublisherRuntimeBoundaryService,
   ) {}
 
@@ -39,9 +45,9 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
     if (!this.recoveryEnabled || this.runtimeBoundary?.dispatchEnabled !== true) {
       return;
     }
-    this.recoveryTimer = setInterval(() => void this.recover(), 60_000);
+    this.recoveryTimer = setInterval(() => this.triggerRecovery(), 60_000);
     this.recoveryTimer.unref();
-    void this.recover();
+    this.triggerRecovery();
   }
 
   onModuleDestroy(): void {
@@ -85,6 +91,24 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
     if (!this.recoveryEnabled || this.runtimeBoundary?.dispatchEnabled !== true) {
       return;
     }
+    if (this.recoveryInFlight) {
+      await this.recoveryInFlight;
+      return;
+    }
+    const run = this.backgroundWork.runExclusive('suggestion_recovery', () =>
+      this.recoverExclusive(),
+    );
+    this.recoveryInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (this.recoveryInFlight === run) {
+        this.recoveryInFlight = null;
+      }
+    }
+  }
+
+  private async recoverExclusive(): Promise<void> {
     try {
       if (await this.dispatchHealth.isGloballyPaused()) {
         return;
@@ -117,5 +141,20 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
         'Failed to recover queued Publik suggestion publications',
       );
     }
+  }
+
+  private triggerRecovery(): void {
+    if (this.recoveryInFlight) {
+      return;
+    }
+    void this.recover().catch((error: unknown) => {
+      if (error instanceof PublisherBackgroundWorkCoordinatorClosedError) {
+        return;
+      }
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to schedule Publik suggestion recovery',
+      );
+    });
   }
 }

@@ -118,6 +118,32 @@ describe('publication managed broadcast due selection', () => {
     }
   });
 
+  it('serializes PUBLIK_V1 discovery queries to preserve a foreground pool slot', async () => {
+    let resolveExecution!: (rows: Array<{ id: string }>) => void;
+    const executionRows = new Promise<Array<{ id: string }>>((resolve) => {
+      resolveExecution = resolve;
+    });
+    const findMany = jest
+      .fn()
+      .mockReturnValueOnce(executionRows)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const selection = selectPublicationManagedBroadcastDueBatch(
+      { managedBroadcast: { findMany } } as never,
+      [PublicationScheduleMode.NOW],
+      10,
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+    await Promise.resolve();
+
+    expect(findMany).toHaveBeenCalledTimes(1);
+    resolveExecution([]);
+    await selection;
+
+    expect(findMany).toHaveBeenCalledTimes(3);
+  });
+
   it('uses the whole batch for verification when no send is due', async () => {
     const verificationRows = [{ id: 'verify-1' }, { id: 'verify-2' }, { id: 'verify-3' }];
     const findMany = jest

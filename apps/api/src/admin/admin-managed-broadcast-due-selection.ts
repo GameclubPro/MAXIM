@@ -190,7 +190,7 @@ export async function selectPublicationManagedBroadcastDueBatch(
       unverifiedDeliveryWhere,
     ],
   };
-  const [executionDueRows, verificationDueRows, fallbackDueRows] = await Promise.all([
+  const selectExecutionDueRows = () =>
     prisma.managedBroadcast.findMany({
       where: {
         ...baseWhere,
@@ -206,7 +206,8 @@ export async function selectPublicationManagedBroadcastDueBatch(
       orderBy,
       take: boundedLimit,
       select: { id: true },
-    }),
+    });
+  const selectVerificationDueRows = () =>
     prisma.managedBroadcast.findMany({
       where: {
         ...baseWhere,
@@ -222,7 +223,8 @@ export async function selectPublicationManagedBroadcastDueBatch(
       orderBy,
       take: boundedLimit,
       select: { id: true },
-    }),
+    });
+  const selectFallbackDueRows = () =>
     prisma.managedBroadcast.findMany({
       where: {
         AND: [
@@ -246,8 +248,19 @@ export async function selectPublicationManagedBroadcastDueBatch(
       orderBy,
       take: Math.min(100, boundedLimit * 2),
       select: { id: true },
-    }),
-  ]);
+    });
+  const [executionDueRows, verificationDueRows, fallbackDueRows] =
+    dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+      ? [
+          await selectExecutionDueRows(),
+          await selectVerificationDueRows(),
+          await selectFallbackDueRows(),
+        ]
+      : await Promise.all([
+          selectExecutionDueRows(),
+          selectVerificationDueRows(),
+          selectFallbackDueRows(),
+        ]);
 
   const executionIds = new Set(executionDueRows.map((row) => row.id));
   const verificationOnlyRows = verificationDueRows.filter((row) => !executionIds.has(row.id));

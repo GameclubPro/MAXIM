@@ -322,6 +322,66 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     );
   });
 
+  it('serializes publisher blocker cleanup writes within the two-connection pool', async () => {
+    let releaseOccurrence!: () => void;
+    const occurrenceGate = new Promise<{ count: number }>((resolve) => {
+      releaseOccurrence = () => resolve({ count: 1 });
+    });
+    const occurrenceUpdate = jest.fn().mockReturnValue(occurrenceGate);
+    const deliveryUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        publicationOccurrence: { updateMany: occurrenceUpdate },
+        managedBroadcastDelivery: { updateMany: deliveryUpdate },
+      },
+      publisherRuntimeBoundaryService: { assertDispatchEnabled: jest.fn() },
+    } as never);
+
+    const boundary = (runtime as any).publisherDispatch.ensureRuntimeBoundary(
+      { id: 'broadcast-publik', publicationOccurrenceId: 'occurrence-publik' },
+      1,
+      { lockToken: 'broadcast-lock' },
+    );
+    while (occurrenceUpdate.mock.calls.length === 0) await Promise.resolve();
+
+    expect(deliveryUpdate).not.toHaveBeenCalled();
+    releaseOccurrence();
+    await expect(boundary).resolves.toEqual({ ready: true });
+    expect(deliveryUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes claimed-delivery and occurrence deferral writes', async () => {
+    let releaseDelivery!: () => void;
+    const deliveryGate = new Promise<{ count: number }>((resolve) => {
+      releaseDelivery = () => resolve({ count: 1 });
+    });
+    const deliveryUpdate = jest.fn().mockReturnValue(deliveryGate);
+    const occurrenceUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        publicationOccurrence: { updateMany: occurrenceUpdate },
+        managedBroadcastDelivery: { updateMany: deliveryUpdate },
+      },
+    } as never);
+
+    const deferral = (runtime as any).publisherDispatch.deferClaimed({
+      row: {
+        id: 'broadcast-publik',
+        publicationOccurrenceId: 'occurrence-publik',
+        requiredBotId: 'publisher-bot',
+      },
+      delivery: { id: 'delivery-publik', targetChatId: 'chat-1' },
+      deliveryLockToken: 'delivery-lock',
+      blockerCode: 'PUBLISHER_RUNTIME_UNAVAILABLE',
+    });
+    while (deliveryUpdate.mock.calls.length === 0) await Promise.resolve();
+
+    expect(occurrenceUpdate).not.toHaveBeenCalled();
+    releaseDelivery();
+    await expect(deferral).resolves.toBeInstanceOf(Date);
+    expect(occurrenceUpdate).toHaveBeenCalledTimes(1);
+  });
+
   it('blocks an individual pending delivery when its policy is toggled off before claim', async () => {
     const deliveryUpdate = jest.fn().mockResolvedValue({ count: 1 });
     const runtime = new AdminManagedBroadcastRuntime({
@@ -335,7 +395,9 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
       publisherReadinessService: {
         assertEntityReady: jest
           .fn()
-          .mockRejectedValue(Object.assign(new Error('disabled'), { blockerCode: 'policy_disabled' })),
+          .mockRejectedValue(
+            Object.assign(new Error('disabled'), { blockerCode: 'policy_disabled' }),
+          ),
       },
     } as never);
 

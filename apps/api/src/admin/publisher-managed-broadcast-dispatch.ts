@@ -51,28 +51,26 @@ export class PublisherManagedBroadcastDispatch {
       return this.deferRuntime(row, occurrenceIndex, lease, error);
     }
 
-    await Promise.all([
-      row.publicationOccurrenceId
-        ? this.context.prisma.publicationOccurrence.updateMany({
-            where: {
-              id: row.publicationOccurrenceId,
-              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-              dispatchBlockerCode: PUBLISHER_RUNTIME_BLOCKER,
-            },
-            data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
-          })
-        : Promise.resolve(),
-      this.context.prisma.managedBroadcastDelivery.updateMany({
+    if (row.publicationOccurrenceId) {
+      await this.context.prisma.publicationOccurrence.updateMany({
         where: {
-          broadcastId: row.id,
-          occurrenceIndex,
+          id: row.publicationOccurrenceId,
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          status: ManagedBroadcastDeliveryStatus.PENDING,
           dispatchBlockerCode: PUBLISHER_RUNTIME_BLOCKER,
         },
         data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
-      }),
-    ]);
+      });
+    }
+    await this.context.prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        dispatchBlockerCode: PUBLISHER_RUNTIME_BLOCKER,
+      },
+      data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
+    });
     return { ready: true };
   }
 
@@ -128,26 +126,24 @@ export class PublisherManagedBroadcastDispatch {
           : PUBLISHER_RUNTIME_BLOCKER;
       const blockedAt = new Date();
       const retryAt = new Date(blockedAt.getTime() + PUBLISHER_BLOCKED_RETRY_MS);
-      await Promise.all([
-        this.context.prisma.managedBroadcastDelivery.updateMany({
+      await this.context.prisma.managedBroadcastDelivery.updateMany({
+        where: {
+          id: delivery.id,
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId,
+        },
+        data: { dispatchBlockerCode: blockerCode, dispatchBlockedAt: blockedAt },
+      });
+      if (row.publicationOccurrenceId) {
+        await this.context.prisma.publicationOccurrence.updateMany({
           where: {
-            id: delivery.id,
-            status: ManagedBroadcastDeliveryStatus.PENDING,
+            id: row.publicationOccurrenceId,
             dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-            requiredBotId,
           },
           data: { dispatchBlockerCode: blockerCode, dispatchBlockedAt: blockedAt },
-        }),
-        row.publicationOccurrenceId
-          ? this.context.prisma.publicationOccurrence.updateMany({
-              where: {
-                id: row.publicationOccurrenceId,
-                dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-              },
-              data: { dispatchBlockerCode: blockerCode, dispatchBlockedAt: blockedAt },
-            })
-          : Promise.resolve(),
-      ]);
+        });
+      }
       return retryAt;
     }
   }
@@ -160,36 +156,34 @@ export class PublisherManagedBroadcastDispatch {
   }): Promise<Date> {
     const blockedAt = new Date();
     const retryAt = new Date(blockedAt.getTime() + PUBLISHER_BLOCKED_RETRY_MS);
-    await Promise.all([
-      this.context.prisma.managedBroadcastDelivery.updateMany({
+    await this.context.prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        id: params.delivery.id,
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        lockToken: params.deliveryLockToken,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: params.row.requiredBotId,
+      },
+      data: {
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        lockedAt: null,
+        lockToken: null,
+        dispatchBlockerCode: params.blockerCode.slice(0, 96),
+        dispatchBlockedAt: blockedAt,
+      },
+    });
+    if (params.row.publicationOccurrenceId) {
+      await this.context.prisma.publicationOccurrence.updateMany({
         where: {
-          id: params.delivery.id,
-          status: ManagedBroadcastDeliveryStatus.SENDING,
-          lockToken: params.deliveryLockToken,
+          id: params.row.publicationOccurrenceId,
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          requiredBotId: params.row.requiredBotId,
         },
         data: {
-          status: ManagedBroadcastDeliveryStatus.PENDING,
-          lockedAt: null,
-          lockToken: null,
           dispatchBlockerCode: params.blockerCode.slice(0, 96),
           dispatchBlockedAt: blockedAt,
         },
-      }),
-      params.row.publicationOccurrenceId
-        ? this.context.prisma.publicationOccurrence.updateMany({
-            where: {
-              id: params.row.publicationOccurrenceId,
-              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-            },
-            data: {
-              dispatchBlockerCode: params.blockerCode.slice(0, 96),
-              dispatchBlockedAt: blockedAt,
-            },
-          })
-        : Promise.resolve(),
-    ]);
+      });
+    }
     return retryAt;
   }
 

@@ -4,6 +4,7 @@ import { MaxClientService } from '../max/max-client.service';
 import { ChatBotAccessState, ChatBotMembershipStatus, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
+import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import {
@@ -204,21 +205,22 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
+    private readonly backgroundWork: PublisherBackgroundWorkCoordinatorService,
   ) {
     this.publisherBotId = credentials.getBotId();
     // FLAG: Resolve before scanning so this worker can never probe with another bot token.
     credentials.getRequiredActionToken(this.publisherBotId);
   }
 
-  async onModuleInit(): Promise<void> {
+  onModuleInit(): void {
     if (!this.runtimeBoundary.dispatchEnabled) {
       return;
     }
-    await this.scan('startup');
     this.timer = setInterval(() => {
       void this.scan('scheduled');
     }, PUBLISHER_BOOTSTRAP_SCAN_INTERVAL_MS);
     this.timer.unref();
+    void this.scan('startup');
   }
 
   onModuleDestroy(): void {
@@ -234,14 +236,14 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     }
     this.inFlight = true;
     try {
-      if (await this.dispatchHealth.isGloballyPaused()) {
-        return;
-      }
-      await this.identityAttestation.assertAttested();
-      const now = new Date();
-      const [bootstrapCandidates, staleBindings] = await Promise.all([
-        this.readBootstrapCandidates(),
-        this.prisma.publisherEntityBinding.findMany({
+      await this.backgroundWork.runExclusive('binding_bootstrap', async () => {
+        if (await this.dispatchHealth.isGloballyPaused()) {
+          return;
+        }
+        await this.identityAttestation.assertAttested();
+        const now = new Date();
+        const bootstrapCandidates = await this.readBootstrapCandidates();
+        const staleBindings = await this.prisma.publisherEntityBinding.findMany({
           where: {
             publisherBotId: this.publisherBotId,
             status: ChatBotMembershipStatus.ACTIVE,
@@ -270,31 +272,31 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
           select: { chatId: true },
           orderBy: { chatId: 'asc' },
           take: PUBLISHER_STALE_REFRESH_BATCH_SIZE,
-        }),
-      ]);
-
-      for (const candidate of bootstrapCandidates) {
-        await this.refreshService.ensureBinding(candidate.id);
-        await this.refreshQueue.enqueue({
-          chatId: candidate.id,
-          publisherBotId: this.publisherBotId,
-          reason: 'bootstrap',
-          requestedAt: now,
         });
-      }
-      for (const binding of staleBindings) {
-        await this.refreshQueue.enqueue({
-          chatId: binding.chatId,
-          publisherBotId: this.publisherBotId,
-          reason: 'stale_access',
-          requestedAt: now,
-        });
-      }
 
-      this.cursor =
-        bootstrapCandidates.length < PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE
-          ? null
-          : (bootstrapCandidates.at(-1)?.id ?? null);
+        for (const candidate of bootstrapCandidates) {
+          await this.refreshService.ensureBinding(candidate.id);
+          await this.refreshQueue.enqueue({
+            chatId: candidate.id,
+            publisherBotId: this.publisherBotId,
+            reason: 'bootstrap',
+            requestedAt: now,
+          });
+        }
+        for (const binding of staleBindings) {
+          await this.refreshQueue.enqueue({
+            chatId: binding.chatId,
+            publisherBotId: this.publisherBotId,
+            reason: 'stale_access',
+            requestedAt: now,
+          });
+        }
+
+        this.cursor =
+          bootstrapCandidates.length < PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE
+            ? null
+            : (bootstrapCandidates.at(-1)?.id ?? null);
+      });
     } catch (error: unknown) {
       this.logger.warn(
         {
