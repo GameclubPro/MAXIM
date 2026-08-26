@@ -63,15 +63,24 @@ export function classifyCommercialOcrApiContainerInventory(
       const releaseProtected = labels['com.maxim.release-protected'] === 'true';
       const imageMatches = expectedImageId !== null && imageId === expectedImageId;
       const imageIsReviewed = expectedImageId === null || imageMatches;
+      const apiRoleSignal = appRole !== null && API_ROLES.has(appRole);
+      const apiLikeService = isApiLikeService(composeService);
+      const protectedApiSignal =
+        releaseProtected &&
+        (apiRoleSignal ||
+          apiLikeService ||
+          isApiLikeService(appService) ||
+          isApiLikeContainerName(name) ||
+          ocrVersion !== null ||
+          imageMatches ||
+          ownedName);
       const maximSpecificSignal =
         expected.has(composeService) ||
         expected.has(appService) ||
         ocrVersion !== null ||
-        releaseProtected ||
+        protectedApiSignal ||
         imageMatches ||
         ownedName;
-      const apiRoleSignal = appRole !== null && API_ROLES.has(appRole);
-      const apiLikeService = isApiLikeService(composeService);
       const candidate =
         (project === expectedProject && (apiLikeService || apiRoleSignal || maximSpecificSignal)) ||
         maximSpecificSignal ||
@@ -140,6 +149,12 @@ function parseEnvironment(value) {
 
 function isApiLikeService(value) {
   return typeof value === 'string' && /^api(?:-|$)/u.test(value);
+}
+
+function isApiLikeContainerName(value) {
+  if (typeof value !== 'string') return false;
+  const normalizedName = value.startsWith('/') ? value.slice(1) : value;
+  return /(?:^|[-_])api(?:[-_]|$)/u.test(normalizedName);
 }
 
 function isExpectedProjectApiContainerName(value, expectedProject, expectedServices) {

@@ -130,6 +130,69 @@ test('finds orphan, foreign-project, mismatched and duplicate API containers', (
   assert.doesNotMatch(JSON.stringify(result), /sensitive-value/u);
 });
 
+test('ignores release-protected static containers without API signals', () => {
+  const miniapp = container('1', {
+    service: 'miniapp-major-static',
+    name: '/infra-miniapp-major-static-1',
+    appService: '',
+    appRole: '',
+    ocrVersion: '',
+    releaseProtected: true,
+  });
+  const admin = container('2', {
+    service: 'admin-static',
+    name: '/infra-admin-static-1',
+    appService: '',
+    appRole: '',
+    ocrVersion: '',
+    releaseProtected: true,
+  });
+
+  assert.deepEqual(classifyCommercialOcrApiContainerInventory([miniapp, admin], services), {
+    ownedUnreviewedIds: [],
+    ambiguousIds: [],
+  });
+});
+
+test('keeps release-protected API-like foreign and orphan containers fail closed', () => {
+  const foreignService = container('1', {
+    project: 'sibling',
+    service: 'api-shadow',
+    appService: '',
+    appRole: '',
+    ocrVersion: '',
+    releaseProtected: true,
+  });
+  const foreignRole = container('2', {
+    project: 'sibling',
+    service: 'worker',
+    appService: '',
+    appRole: 'moderation',
+    ocrVersion: '',
+    releaseProtected: true,
+  });
+  const orphanName = container('3', {
+    project: null,
+    service: 'worker',
+    name: '/orphan-api-worker',
+    appService: '',
+    appRole: '',
+    ocrVersion: '',
+    releaseProtected: true,
+  });
+
+  assert.deepEqual(
+    classifyCommercialOcrApiContainerInventory(
+      [foreignService, foreignRole, orphanName],
+      services,
+    ),
+    {
+      ownedUnreviewedIds: [],
+      ambiguousIds: [foreignService.Id, foreignRole.Id, orphanName.Id].sort(),
+    },
+  );
+});
+
 test('keeps foreign legacy and all-role API containers ambiguous and never owned', () => {
   const foreignLegacy = container('a', {
     project: 'legacy',
