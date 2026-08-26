@@ -21,11 +21,13 @@ PUBLISHER_IDENTITY_PROBE_SCRIPT="apps/api/dist/apps/api/src/scripts/attest-publi
 PUBLISHER_IDENTITY_PROBE_SUCCESS="PUBLISHER_IDENTITY_ATTESTED"
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
-READINESS_TIMEOUT_SEC="${MAXIM_PUBLISHER_ROLLOUT_READINESS_TIMEOUT_SEC:-180}"
-STABILITY_WINDOW_SEC="${MAXIM_PUBLISHER_ROLLOUT_STABILITY_WINDOW_SEC:-5}"
-COMMAND_TIMEOUT_SEC=10
+READINESS_TIMEOUT_SEC="${MAXIM_PUBLISHER_ROLLOUT_READINESS_TIMEOUT_SEC:-600}"
+STABILITY_WINDOW_SEC="${MAXIM_PUBLISHER_ROLLOUT_STABILITY_WINDOW_SEC:-30}"
+COMMAND_TIMEOUT_SEC="${MAXIM_PUBLISHER_ROLLOUT_COMMAND_TIMEOUT_SEC:-30}"
+READINESS_PROBE_MAX_SEC=0
 IDENTITY_PROBE_TIMEOUT_SEC="${MAXIM_PUBLISHER_IDENTITY_PROBE_TIMEOUT_SEC:-20}"
 DOCKER_MUTATION_TIMEOUT_SEC=60
+READINESS_DIAGNOSTIC_MAX_BYTES=262144
 
 ACTION_AND_PUBLISHER_WAVE=("api-action" "api-publisher")
 ADMIN_WAVE=("api-admin")
@@ -71,6 +73,7 @@ PREVIEW_ENV_FILE=""
 OPERATOR_OWNER_TOKEN=""
 EXPECTED_HEARTBEAT_STATE=""
 OPERATOR_PAUSE_ARMED=0
+POST_CLEAR_REARM_REQUIRED=0
 ROLLOUT_COMPLETE=0
 
 usage() {
@@ -93,9 +96,22 @@ fail() {
 
 cleanup() {
   local status=$?
+  if [[ "$status" -ne 0 && "$APPLY" -eq 1 &&
+        "${POST_CLEAR_REARM_REQUIRED:-0}" -eq 1 && "$ROLLOUT_COMPLETE" -ne 1 ]]; then
+    if best_effort_rearm_operator_pause; then
+      POST_CLEAR_REARM_REQUIRED=0
+    fi
+  fi
   maxim_webhook_rollout_warn_if_paused || true
-  if [[ "$status" -ne 0 && "$APPLY" -eq 1 && "$OPERATOR_PAUSE_ARMED" -eq 1 && \
-        "$ROLLOUT_COMPLETE" -ne 1 ]]; then
+  if [[ "$status" -ne 0 && "$APPLY" -eq 1 &&
+        "${POST_CLEAR_REARM_REQUIRED:-0}" -eq 1 && "$ROLLOUT_COMPLETE" -ne 1 ]]; then
+    cat >&2 <<'RECOVERY'
+CRITICAL: Publik dispatch rollout did not complete and the operator pause could not be confirmed.
+Run the guarded recovery command immediately:
+  ./infra/scripts/vps-connect.sh publisher-dispatch-disable --apply
+RECOVERY
+  elif [[ "$status" -ne 0 && "$APPLY" -eq 1 && "$OPERATOR_PAUSE_ARMED" -eq 1 && \
+          "$ROLLOUT_COMPLETE" -ne 1 ]]; then
     cat >&2 <<'RECOVERY'
 CRITICAL: Publik dispatch rollout did not complete; the operator pause remains armed.
 Run the guarded recovery command after fixing the reported cause:
@@ -161,9 +177,13 @@ require_operational_limits() {
     fail "Publisher rollout readiness timeout must be between 30 and 600 seconds."
   fi
   if [[ ! "$STABILITY_WINDOW_SEC" =~ ^[0-9]{1,2}$ ]] ||
-    ((10#$STABILITY_WINDOW_SEC < 2 || 10#$STABILITY_WINDOW_SEC > 30 ||
+    ((10#$STABILITY_WINDOW_SEC < 30 || 10#$STABILITY_WINDOW_SEC > 90 ||
       10#$STABILITY_WINDOW_SEC >= 10#$READINESS_TIMEOUT_SEC)); then
-    fail "Publisher rollout stability window must be between 2 and 30 seconds and below readiness timeout."
+    fail "Publisher rollout stability window must be between 30 and 90 seconds and below readiness timeout."
+  fi
+  if [[ ! "$COMMAND_TIMEOUT_SEC" =~ ^[0-9]{2,3}$ ]] ||
+    ((10#$COMMAND_TIMEOUT_SEC < 20 || 10#$COMMAND_TIMEOUT_SEC > 120)); then
+    fail "Publisher rollout control/docker command timeout must be between 20 and 120 seconds."
   fi
   if [[ ! "$IDENTITY_PROBE_TIMEOUT_SEC" =~ ^[0-9]{2,3}$ ]] ||
     ((10#$IDENTITY_PROBE_TIMEOUT_SEC < 20 || 10#$IDENTITY_PROBE_TIMEOUT_SEC > 120)); then
@@ -171,7 +191,12 @@ require_operational_limits() {
   fi
   READINESS_TIMEOUT_SEC=$((10#$READINESS_TIMEOUT_SEC))
   STABILITY_WINDOW_SEC=$((10#$STABILITY_WINDOW_SEC))
+  COMMAND_TIMEOUT_SEC=$((10#$COMMAND_TIMEOUT_SEC))
   IDENTITY_PROBE_TIMEOUT_SEC=$((10#$IDENTITY_PROBE_TIMEOUT_SEC))
+  READINESS_PROBE_MAX_SEC=$((20 + 4 * COMMAND_TIMEOUT_SEC))
+  if ((READINESS_TIMEOUT_SEC < STABILITY_WINDOW_SEC + 2 * READINESS_PROBE_MAX_SEC)); then
+    fail "Publisher rollout readiness timeout is too short for two probes and its stability window."
+  fi
 }
 
 require_topology() {
@@ -474,6 +499,42 @@ arm_operator_pause() {
   printf '%s\n' "Publik operator pause armed."
 }
 
+best_effort_rearm_operator_pause() {
+  local random_hex summary result pause_kind
+  random_hex="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')" || {
+    printf '%s\n' \
+      'CRITICAL: Could not generate ownership while re-arming the Publik operator pause.' >&2
+    return 1
+  }
+  if [[ ! "$random_hex" =~ ^[a-f0-9]{64}$ ]]; then
+    printf '%s\n' \
+      'CRITICAL: Generated invalid ownership while re-arming the Publik operator pause.' >&2
+    return 1
+  fi
+  OPERATOR_OWNER_TOKEN="publisher-rollout:$random_hex"
+  # A timeout after the Redis request is ambiguous. Keep cleanup armed until a confirmed result.
+  OPERATOR_PAUSE_ARMED=1
+  if ! summary="$(publisher_control arm-disable)"; then
+    printf '%s\n' \
+      'CRITICAL: Publik operator pause re-arm was not confirmed; guarded disable is required.' >&2
+    return 1
+  fi
+  result="$(control_field "$summary" result)" || {
+    printf '%s\n' 'CRITICAL: Publik operator pause re-arm returned an invalid result.' >&2
+    return 1
+  }
+  pause_kind="$(control_field "$summary" pauseKind)" || {
+    printf '%s\n' 'CRITICAL: Publik operator pause re-arm returned an invalid pause state.' >&2
+    return 1
+  }
+  if [[ "$result" != "acquired" || "$pause_kind" != "operator" ]]; then
+    printf '%s\n' \
+      'CRITICAL: Publik operator pause re-arm did not acquire the reviewed operator marker.' >&2
+    return 1
+  fi
+  printf '%s\n' 'Publik operator pause re-armed after post-enable stability failure.'
+}
+
 clear_operator_pause() {
   local summary result pause_kind
   summary="$(publisher_control clear)" || fail "Could not clear the owned publisher operator pause."
@@ -555,44 +616,244 @@ wait_for_url() {
 }
 
 api_runtime_signature() {
-  local service container_ids_raw restart_count
+  local container_ids_raw inspect_raw service container_id restart_count state extra
   local container_ids=()
+  local -A signatures=()
+  container_ids_raw="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker compose "${COMPOSE_FILES[@]}" ps --status running -q \
+      "${MAXIM_PRODUCTION_API_SERVICES[@]}" 2>/dev/null
+  )" || return 1
+  [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
+  [[ "${#container_ids[@]}" -eq 13 ]] || return 1
+  inspect_raw="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker inspect --format \
+      '{{index .Config.Labels "com.docker.compose.service"}}|{{.Id}}|{{.RestartCount}}|{{.State.Status}}' \
+      "${container_ids[@]}" 2>/dev/null
+  )" || return 1
+  while IFS='|' read -r service container_id restart_count state extra; do
+    [[ -n "$service" && -n "$container_id" && -z "$extra" ]] || return 1
+    maxim_topology_contains "$service" "${MAXIM_PRODUCTION_API_SERVICES[@]}" || return 1
+    [[ -z "${signatures[$service]+present}" ]] || return 1
+    [[ "$container_id" =~ ^[a-f0-9]{64}$ && "$restart_count" =~ ^[0-9]+$ && \
+      "$state" == "running" ]] || return 1
+    signatures[$service]="$container_id|$restart_count"
+  done <<<"$inspect_raw"
   for service in "${MAXIM_PRODUCTION_API_SERVICES[@]}"; do
-    container_ids_raw="$(docker compose "${COMPOSE_FILES[@]}" ps --status running -q "$service")" ||
-      return 1
-    container_ids=()
-    [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
-    [[ "${#container_ids[@]}" -eq 1 ]] || return 1
-    restart_count="$(docker inspect --format '{{.RestartCount}}' "${container_ids[0]}")" || return 1
-    [[ "$restart_count" =~ ^[0-9]+$ ]] || return 1
-    printf '%s|%s|%s\n' "$service" "${container_ids[0]}" "$restart_count"
+    [[ -n "${signatures[$service]+present}" ]] || return 1
+    printf '%s|%s\n' "$service" "${signatures[$service]}"
   done
 }
 
-wait_for_api_readiness() {
-  local deadline=$((SECONDS + READINESS_TIMEOUT_SEC)) before after media_id
-  while ((SECONDS < deadline)); do
-    if curl -fsS --connect-timeout 2 --max-time 5 \
-      http://127.0.0.1:3001/api/health/ready >/dev/null 2>&1 &&
-      curl -fsS --connect-timeout 2 --max-time 5 \
-        http://127.0.0.1:3002/api/health/ready >/dev/null 2>&1; then
-      media_id="$(docker compose "${COMPOSE_FILES[@]}" ps --status running -q api-media-analysis)"
-      if [[ -n "$media_id" ]] && docker exec "$media_id" node -e \
-        'fetch("http://127.0.0.1:3001/api/health/ready", { signal: AbortSignal.timeout(3000) }).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1));' \
-        >/dev/null 2>&1; then
-        before="$(api_runtime_signature)" || before=""
-        if [[ -n "$before" && $((SECONDS + STABILITY_WINDOW_SEC)) -lt deadline ]]; then
-          sleep "$STABILITY_WINDOW_SEC"
-          after="$(api_runtime_signature)" || after=""
-          if [[ -n "$after" && "$after" == "$before" ]]; then
-            return 0
-          fi
+api_media_readiness_endpoint_ready() {
+  local container_ids_raw
+  local container_ids=()
+  container_ids_raw="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker compose "${COMPOSE_FILES[@]}" ps --status running -q api-media-analysis \
+      2>/dev/null
+  )" || return 1
+  [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
+  [[ "${#container_ids[@]}" -eq 1 ]] || return 1
+  timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+    docker exec "${container_ids[0]}" node -e \
+    'fetch("http://127.0.0.1:3001/api/health/ready", { signal: AbortSignal.timeout(3000) }).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1));' \
+    >/dev/null 2>&1
+}
+
+all_api_readiness_endpoints_ready() {
+  curl -fsS --connect-timeout 2 --max-time 5 \
+    http://127.0.0.1:3001/api/health/ready >/dev/null 2>&1 &&
+    curl -fsS --connect-timeout 2 --max-time 5 \
+      http://127.0.0.1:3002/api/health/ready >/dev/null 2>&1 &&
+    api_media_readiness_endpoint_ready
+}
+
+readiness_diagnostic_javascript() {
+  cat <<'NODE'
+const [service, url, maxBytesRaw] = process.argv.slice(1);
+const maxBytes = Number(maxBytesRaw);
+const finite = (value) => (Number.isFinite(value) ? value : null);
+const bounded = (value) => (typeof value === 'string' ? value.slice(0, 64) : null);
+void (async () => {
+  let httpStatus = null;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    httpStatus = response.status;
+    const declaredBytes = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) throw new Error('bounded');
+    if (!response.body) throw new Error('missing_body');
+    const reader = response.body.getReader();
+    const chunks = [];
+    let receivedBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      receivedBytes += value.byteLength;
+      if (receivedBytes > maxBytes) {
+        await reader.cancel();
+        throw new Error('bounded');
+      }
+      chunks.push(Buffer.from(value));
+    }
+    const body = Buffer.concat(chunks, receivedBytes).toString('utf8');
+    const snapshot = JSON.parse(body);
+    const queue = snapshot?.checks?.queueLag;
+    const ocr = snapshot?.checks?.ocr;
+    process.stdout.write(
+      `Publisher readiness diagnostic: ${JSON.stringify({
+        service,
+        probe: 'ok',
+        httpStatus,
+        ok: snapshot?.ok === true,
+        database: snapshot?.checks?.database === true,
+        redis: snapshot?.checks?.redis === true,
+        queue: queue
+          ? {
+              ok: queue.ok === true,
+              effectiveSec: finite(queue.effectiveLagSec),
+              breachSec: finite(queue.breachDurationSec),
+            }
+          : null,
+        ocr: ocr
+          ? {
+              ready: ocr.ready === true,
+              state: bounded(ocr.state),
+              liveWorkers: finite(ocr.workers?.live),
+              readyWorkers: finite(ocr.workers?.ready),
+              identity: bounded(ocr.behaviorIdentity?.state),
+            }
+          : null,
+      })}\n`,
+    );
+  } catch (error) {
+    const probe =
+      error?.message === 'bounded'
+        ? 'body_too_large'
+        : error?.name === 'AbortError' || error?.name === 'TimeoutError'
+          ? 'timeout'
+          : 'failed';
+    process.stdout.write(
+      `Publisher readiness diagnostic: ${JSON.stringify({ service, probe, httpStatus })}\n`,
+    );
+  }
+})().catch(() => {
+  process.stdout.write(
+    `Publisher readiness diagnostic: ${JSON.stringify({ service, probe: 'failed' })}\n`,
+  );
+});
+NODE
+}
+
+emit_api_readiness_endpoint_diagnostic() {
+  local service="$1" location="$2" url="$3" javascript container_ids_raw
+  local container_ids=()
+  javascript="$(readiness_diagnostic_javascript)"
+  if [[ "$location" == "host" ]]; then
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      node -e "$javascript" "$service" "$url" "$READINESS_DIAGNOSTIC_MAX_BYTES" ||
+      printf 'Publisher readiness diagnostic: service=%s probe=command_failed\n' "$service"
+    return
+  fi
+  container_ids_raw="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker compose "${COMPOSE_FILES[@]}" ps -a -q "$service" 2>/dev/null
+  )" || {
+    printf 'Publisher readiness diagnostic: service=%s probe=compose_failed\n' "$service"
+    return
+  }
+  [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
+  if [[ "${#container_ids[@]}" -ne 1 ]]; then
+    printf 'Publisher readiness diagnostic: service=%s container_count=%s\n' \
+      "$service" "${#container_ids[@]}"
+    return
+  fi
+  timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+    docker exec "${container_ids[0]}" node -e "$javascript" \
+      "$service" "$url" "$READINESS_DIAGNOSTIC_MAX_BYTES" ||
+    printf 'Publisher readiness diagnostic: service=%s probe=command_failed\n' "$service"
+}
+
+emit_api_runtime_signature_diagnostics() {
+  local baseline_signature="$1" current_signature compose_state
+  local service container_id restart_count extra match
+  local -A baseline=()
+  while IFS='|' read -r service container_id restart_count extra; do
+    [[ -n "$service" && -n "$container_id" && "$restart_count" =~ ^[0-9]+$ && \
+      -z "$extra" ]] || continue
+    baseline[$service]="$container_id|$restart_count"
+  done <<<"$baseline_signature"
+  current_signature="$(api_runtime_signature)" || current_signature=""
+  if [[ -n "$current_signature" ]]; then
+    while IFS='|' read -r service container_id restart_count extra; do
+      match=unavailable
+      if [[ -n "${baseline[$service]+present}" ]]; then
+        if [[ "${baseline[$service]}" == "$container_id|$restart_count" ]]; then
+          match=true
+        else
+          match=false
         fi
       fi
+      printf 'Publisher runtime diagnostic: service=%s state=running restarts=%s baseline_match=%s\n' \
+        "$service" "$restart_count" "$match"
+    done <<<"$current_signature"
+    return
+  fi
+  compose_state="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker compose "${COMPOSE_FILES[@]}" ps -a --format '{{.Service}}|{{.State}}' \
+      "${MAXIM_PRODUCTION_API_SERVICES[@]}" 2>/dev/null
+  )" || compose_state=""
+  printf '%s\n' 'Publisher runtime diagnostic: signature=unavailable'
+  while IFS='|' read -r service state extra; do
+    maxim_topology_contains "$service" "${MAXIM_PRODUCTION_API_SERVICES[@]}" || continue
+    printf 'Publisher runtime diagnostic: service=%s state=%s\n' "$service" "$state"
+  done <<<"$compose_state"
+}
+
+emit_api_readiness_timeout_diagnostics() {
+  local baseline_signature="$1"
+  emit_api_readiness_endpoint_diagnostic \
+    api-ingress host http://127.0.0.1:3001/api/health/ready
+  emit_api_readiness_endpoint_diagnostic \
+    api-admin host http://127.0.0.1:3002/api/health/ready
+  emit_api_readiness_endpoint_diagnostic \
+    api-media-analysis container http://127.0.0.1:3001/api/health/ready
+  emit_api_runtime_signature_diagnostics "$baseline_signature"
+}
+
+wait_for_api_readiness() {
+  local deadline=$((SECONDS + READINESS_TIMEOUT_SEC))
+  local probe_max_sec="${READINESS_PROBE_MAX_SEC:-1}"
+  local stable_since=-1 stable_signature="" current_signature="" last_signature=""
+  while ((SECONDS + probe_max_sec <= deadline)); do
+    if all_api_readiness_endpoints_ready; then
+      ((SECONDS < deadline)) || break
+      current_signature="$(api_runtime_signature)" || current_signature=""
+      ((SECONDS < deadline)) || break
+      if [[ -n "$current_signature" ]]; then
+        last_signature="$current_signature"
+        if [[ "$current_signature" != "$stable_signature" ]]; then
+          stable_signature="$current_signature"
+          stable_since=$SECONDS
+        elif ((SECONDS - stable_since >= STABILITY_WINDOW_SEC && SECONDS < deadline)); then
+          return 0
+        fi
+      else
+        stable_signature=""
+        stable_since=-1
+      fi
+    else
+      stable_signature=""
+      stable_since=-1
     fi
     ((SECONDS < deadline)) && sleep 1
   done
-  fail "All 13 API roles did not pass readiness and restart stability."
+  if [[ "${POST_CLEAR_REARM_REQUIRED:-0}" -ne 1 ]]; then
+    emit_api_readiness_timeout_diagnostics "$last_signature"
+  fi
+  fail "All 13 API roles did not pass continuous readiness and restart stability."
 }
 
 run_health_smokes() {
@@ -716,13 +977,22 @@ apply_rollout() {
 
   if [[ "$COMMAND" == "enable" ]]; then
     run_publisher_identity_probe
+    POST_CLEAR_REARM_REQUIRED=1
     clear_operator_pause
-    wait_for_heartbeat true
+    if ! wait_for_heartbeat true ||
+      ! wait_for_api_readiness ||
+      ! verify_runtime "$DESIRED_STATE"; then
+      if best_effort_rearm_operator_pause; then
+        POST_CLEAR_REARM_REQUIRED=0
+      fi
+      return 1
+    fi
+    POST_CLEAR_REARM_REQUIRED=0
   else
     clear_operator_pause
     wait_for_heartbeat false
+    verify_runtime "$DESIRED_STATE"
   fi
-  verify_runtime "$DESIRED_STATE"
   ROLLOUT_COMPLETE=1
   printf 'Publik dispatch rollout complete: enabled=%s roles=13 image=%s\n' \
     "$DESIRED_STATE" "$MANIFEST_SOURCE_SHA"

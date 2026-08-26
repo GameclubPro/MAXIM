@@ -133,6 +133,64 @@ cleanup`,
   assert.match(execution.stderr, /publisher-dispatch-disable --apply/u);
 });
 
+test('re-arms the operator pause from cleanup after a post-clear interruption', () => {
+  const cleanup = functionBlock(rollout, 'cleanup');
+  const execution = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set +e
+${cleanup}
+rearm_calls=0
+best_effort_rearm_operator_pause() {
+  rearm_calls=$((rearm_calls + 1))
+  OPERATOR_PAUSE_ARMED=1
+  return 0
+}
+maxim_webhook_rollout_warn_if_paused() { :; }
+release_deploy_lock() { :; }
+APPLY=1
+OPERATOR_PAUSE_ARMED=0
+POST_CLEAR_REARM_REQUIRED=1
+ROLLOUT_COMPLETE=0
+false
+cleanup
+cleanup_status=$?
+printf 'status=%s rearm=%s flag=%s armed=%s\n' \
+  "$cleanup_status" "$rearm_calls" "$POST_CLEAR_REARM_REQUIRED" "$OPERATOR_PAUSE_ARMED"`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /status=1 rearm=1 flag=0 armed=1/u);
+  assert.match(execution.stderr, /operator pause remains armed/u);
+});
+
+test('reports an unconfirmed pause when post-clear cleanup cannot re-arm it', () => {
+  const cleanup = functionBlock(rollout, 'cleanup');
+  const execution = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set +e
+${cleanup}
+best_effort_rearm_operator_pause() { OPERATOR_PAUSE_ARMED=1; return 1; }
+maxim_webhook_rollout_warn_if_paused() { :; }
+release_deploy_lock() { :; }
+APPLY=1
+OPERATOR_PAUSE_ARMED=0
+POST_CLEAR_REARM_REQUIRED=1
+ROLLOUT_COMPLETE=0
+false
+cleanup`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(execution.status, 1);
+  assert.match(execution.stderr, /operator pause could not be confirmed/u);
+  assert.doesNotMatch(execution.stderr, /operator pause remains armed/u);
+});
+
 test('reuses webhook quiescence and the reviewed wave order without builds or migrations', () => {
   const recreate = functionBlock(rollout, 'recreate_all_api_roles');
   const calls = [
@@ -185,6 +243,289 @@ test('rejects identity probe budgets below both sequential MAX request deadlines
   assert.match(limits, /IDENTITY_PROBE_TIMEOUT_SEC < 20/u);
   assert.match(limits, /IDENTITY_PROBE_TIMEOUT_SEC > 120/u);
   assert.match(limits, /between 20 and 120 seconds/u);
+});
+
+test('uses production-safe configurable rollout budgets and rejects the old command timeout', () => {
+  assert.match(
+    rollout,
+    /READINESS_TIMEOUT_SEC="\$\{MAXIM_PUBLISHER_ROLLOUT_READINESS_TIMEOUT_SEC:-600\}"/u,
+  );
+  assert.match(
+    rollout,
+    /STABILITY_WINDOW_SEC="\$\{MAXIM_PUBLISHER_ROLLOUT_STABILITY_WINDOW_SEC:-30\}"/u,
+  );
+  assert.match(
+    rollout,
+    /COMMAND_TIMEOUT_SEC="\$\{MAXIM_PUBLISHER_ROLLOUT_COMMAND_TIMEOUT_SEC:-30\}"/u,
+  );
+
+  const limits = functionBlock(rollout, 'require_operational_limits');
+  const execute = (commandTimeout, readinessTimeout = 600) =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail
+${limits}
+fail() { printf '%s\\n' "$1" >&2; return 1; }
+READINESS_TIMEOUT_SEC=${readinessTimeout}
+STABILITY_WINDOW_SEC=30
+COMMAND_TIMEOUT_SEC=${commandTimeout}
+IDENTITY_PROBE_TIMEOUT_SEC=20
+require_operational_limits
+printf '%s|%s|%s\\n' "$READINESS_TIMEOUT_SEC" "$STABILITY_WINDOW_SEC" "$COMMAND_TIMEOUT_SEC"`,
+      ],
+      { encoding: 'utf8' },
+    );
+
+  const accepted = execute(30);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(accepted.stdout.trim(), '600|30|30');
+  const rejected = execute(10);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /control\/docker command timeout must be between 20 and 120/u);
+  const tooShort = execute(30, 159);
+  assert.notEqual(tooShort.status, 0);
+  assert.match(tooShort.stderr, /readiness timeout is too short/u);
+});
+
+test('requires continuously green endpoints and an unchanged signature for the whole window', () => {
+  const waitForReadiness = functionBlock(rollout, 'wait_for_api_readiness');
+  const execution = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -euo pipefail
+${waitForReadiness}
+endpoint_calls=0
+diagnostic_calls=0
+all_api_readiness_endpoints_ready() {
+  endpoint_calls=$((endpoint_calls + 1))
+  [[ "$endpoint_calls" -ne 3 ]]
+}
+api_runtime_signature() { printf '%s\\n' 'api-ingress|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|0'; }
+emit_api_readiness_timeout_diagnostics() { diagnostic_calls=$((diagnostic_calls + 1)); }
+fail() { printf '%s\\n' "$1" >&2; return 1; }
+sleep() { SECONDS=$((SECONDS + $1)); }
+READINESS_TIMEOUT_SEC=12
+STABILITY_WINDOW_SEC=3
+SECONDS=0
+wait_for_api_readiness
+printf 'endpoint_calls=%s diagnostics=%s\\n' "$endpoint_calls" "$diagnostic_calls"`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(execution.status, 0, execution.stderr);
+  const endpointCalls = Number(execution.stdout.match(/endpoint_calls=(\d+)/u)?.[1]);
+  assert.ok(endpointCalls >= 5, execution.stdout);
+  assert.match(execution.stdout, /diagnostics=0/u);
+});
+
+test('emits bounded diagnostics only after the continuous-readiness deadline', () => {
+  const waitForReadiness = functionBlock(rollout, 'wait_for_api_readiness');
+  const execution = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -euo pipefail
+${waitForReadiness}
+diagnostic_calls=0
+all_api_readiness_endpoints_ready() { return 1; }
+api_runtime_signature() { return 1; }
+emit_api_readiness_timeout_diagnostics() {
+  diagnostic_calls=$((diagnostic_calls + 1))
+  printf '%s\\n' timeout-diagnostic
+}
+fail() { printf '%s\\n' "$1" >&2; return 1; }
+sleep() { SECONDS=$((SECONDS + $1)); }
+READINESS_TIMEOUT_SEC=3
+STABILITY_WINDOW_SEC=2
+SECONDS=0
+set +e
+wait_for_api_readiness
+status=$?
+set -e
+printf 'status=%s diagnostics=%s\\n' "$status" "$diagnostic_calls"`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /^timeout-diagnostic$/mu);
+  assert.match(execution.stdout, /status=1 diagnostics=1/u);
+
+  const diagnosticsStart = rollout.indexOf('readiness_diagnostic_javascript() {');
+  const diagnosticsEnd = rollout.indexOf('\nemit_api_readiness_endpoint_diagnostic() {');
+  assert.ok(diagnosticsStart >= 0 && diagnosticsEnd > diagnosticsStart);
+  const diagnostics = rollout.slice(diagnosticsStart, diagnosticsEnd);
+  assert.match(rollout, /READINESS_DIAGNOSTIC_MAX_BYTES=262144/u);
+  assert.match(diagnostics, /httpStatus/u);
+  assert.match(diagnostics, /effectiveLagSec/u);
+  assert.match(diagnostics, /behaviorIdentity\?\.state/u);
+  assert.match(diagnostics, /response\.body\.getReader\(\)/u);
+  assert.match(diagnostics, /reader\.cancel\(\)/u);
+  assert.doesNotMatch(diagnostics, /response\.text\(\)/u);
+  assert.doesNotMatch(diagnostics, /\.bots|oldestQueuedEventId|oldestReceivedEventId/u);
+});
+
+test('rejects a green readiness sample that completes after the deadline', () => {
+  const waitForReadiness = functionBlock(rollout, 'wait_for_api_readiness');
+  const execution = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -euo pipefail
+${waitForReadiness}
+endpoint_calls=0
+diagnostic_calls=0
+all_api_readiness_endpoints_ready() {
+  endpoint_calls=$((endpoint_calls + 1))
+  [[ "$endpoint_calls" -eq 1 ]] || SECONDS=$((SECONDS + 3))
+  return 0
+}
+api_runtime_signature() { printf '%s\n' 'api-ingress|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|0'; }
+emit_api_readiness_timeout_diagnostics() { diagnostic_calls=$((diagnostic_calls + 1)); }
+fail() { return 1; }
+sleep() { SECONDS=$((SECONDS + $1)); }
+READINESS_TIMEOUT_SEC=3
+READINESS_PROBE_MAX_SEC=1
+STABILITY_WINDOW_SEC=1
+POST_CLEAR_REARM_REQUIRED=0
+SECONDS=0
+set +e
+wait_for_api_readiness
+status=$?
+set -e
+printf 'status=%s endpoints=%s diagnostics=%s\n' \
+  "$status" "$endpoint_calls" "$diagnostic_calls"`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /status=1 endpoints=2 diagnostics=1/u);
+});
+
+test('skips slow diagnostics until a post-clear caller can re-arm the pause', () => {
+  const waitForReadiness = functionBlock(rollout, 'wait_for_api_readiness');
+  const execution = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -euo pipefail
+${waitForReadiness}
+diagnostic_calls=0
+all_api_readiness_endpoints_ready() { return 1; }
+emit_api_readiness_timeout_diagnostics() { diagnostic_calls=$((diagnostic_calls + 1)); }
+fail() { return 1; }
+sleep() { SECONDS=$((SECONDS + $1)); }
+READINESS_TIMEOUT_SEC=2
+READINESS_PROBE_MAX_SEC=1
+STABILITY_WINDOW_SEC=1
+POST_CLEAR_REARM_REQUIRED=1
+SECONDS=0
+set +e
+wait_for_api_readiness
+status=$?
+set -e
+printf 'status=%s diagnostics=%s\n' "$status" "$diagnostic_calls"`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /status=1 diagnostics=0/u);
+});
+
+test('re-arms a guarded operator pause when post-enable stability fails', () => {
+  const apply = functionBlock(rollout, 'apply_rollout');
+  const rearm = functionBlock(rollout, 'best_effort_rearm_operator_pause');
+  assert.match(rearm, /publisher_control arm-disable/u);
+  assert.match(rearm, /OPERATOR_PAUSE_ARMED=1/u);
+  const clear = apply.indexOf('clear_operator_pause');
+  const cleanupGuard = apply.indexOf('POST_CLEAR_REARM_REQUIRED=1');
+  const heartbeat = apply.indexOf('wait_for_heartbeat true', clear);
+  const stability = apply.indexOf('wait_for_api_readiness', heartbeat);
+  const finalRuntime = apply.indexOf('verify_runtime "$DESIRED_STATE"', stability);
+  const rearmCall = apply.indexOf('best_effort_rearm_operator_pause', finalRuntime);
+  assert.ok(
+    cleanupGuard >= 0 &&
+      cleanupGuard < clear &&
+      clear >= 0 &&
+      clear < heartbeat &&
+      heartbeat < stability &&
+      stability < finalRuntime &&
+      finalRuntime < rearmCall,
+  );
+
+  const execute = (failAt) =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail
+${apply}
+events=()
+runtime_verifications=0
+arm_operator_pause() { events+=(arm); }
+patch_dispatch_env() { events+=(patch); }
+verify_compose_config() { :; }
+maxim_topology_require_api_commercial_ocr_version_config() { :; }
+maxim_topology_require_media_analysis_shadow_config() { :; }
+recreate_all_api_roles() { events+=(recreate); }
+verify_runtime() {
+  runtime_verifications=$((runtime_verifications + 1))
+  events+=("runtime:$runtime_verifications")
+  [[ "$FAIL_AT" != runtime || "$runtime_verifications" -lt 3 ]]
+}
+wait_for_url() { :; }
+wait_for_heartbeat() {
+  events+=("heartbeat:$1")
+  [[ "$FAIL_AT" != heartbeat || "$1" != true ]]
+}
+maxim_webhook_resume_after_api_fence() { :; }
+run_health_smokes() { events+=(initial-stability); }
+maxim_topology_verify_api_commercial_ocr_version() { :; }
+maxim_topology_smoke_media_analysis_tesseract() { :; }
+run_publisher_identity_probe() { events+=(identity); }
+clear_operator_pause() { events+=(clear); }
+wait_for_api_readiness() {
+  events+=(post-enable-stability)
+  [[ "$FAIL_AT" != readiness ]]
+}
+best_effort_rearm_operator_pause() { events+=(rearm); }
+COMMAND=enable
+DESIRED_STATE=true
+EXPECTED_OCR_VERSION=ocr-v1
+ROLLOUT_COMPLETE=0
+MANIFEST_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+set +e
+apply_rollout
+status=$?
+set -e
+printf 'status=%s complete=%s events=%s\\n' "$status" "$ROLLOUT_COMPLETE" "\${events[*]}"`,
+      ],
+      { encoding: 'utf8', env: { ...process.env, FAIL_AT: failAt } },
+    );
+
+  const heartbeatFailure = execute('heartbeat');
+  assert.equal(heartbeatFailure.status, 0, heartbeatFailure.stderr);
+  assert.match(heartbeatFailure.stdout, /status=1 complete=0/u);
+  assert.match(heartbeatFailure.stdout, /identity clear heartbeat:true rearm/u);
+  assert.doesNotMatch(heartbeatFailure.stdout, /post-enable-stability/u);
+
+  const readinessFailure = execute('readiness');
+  assert.equal(readinessFailure.status, 0, readinessFailure.stderr);
+  assert.match(readinessFailure.stdout, /status=1 complete=0/u);
+  assert.match(
+    readinessFailure.stdout,
+    /initial-stability runtime:2 identity clear heartbeat:true post-enable-stability rearm/u,
+  );
+
+  const runtimeFailure = execute('runtime');
+  assert.equal(runtimeFailure.status, 0, runtimeFailure.stderr);
+  assert.match(runtimeFailure.stdout, /status=1 complete=0/u);
+  assert.match(
+    runtimeFailure.stdout,
+    /clear heartbeat:true post-enable-stability runtime:3 rearm/u,
+  );
 });
 
 test('requires publisher secrets only for enable and exposes guarded wrapper commands', () => {
