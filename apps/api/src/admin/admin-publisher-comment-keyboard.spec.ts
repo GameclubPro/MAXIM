@@ -1,5 +1,18 @@
 import { AdminService } from './admin.service';
+import { PublisherChatCommentAdmissionError } from '../publisher/publisher-chat-comment.queue';
 import { PublisherCommentKeyboardRouting } from './publisher-comment-keyboard-routing';
+
+const keyboardRoute = {
+  chatId: 'chat-1',
+  messageId: 'publik-reply-1',
+  threadId: 'thread-1',
+  entityType: 'chat' as const,
+  botId: 'publik-bot',
+  dialogBotId: 'main-bot',
+  buttons: [[{ type: 'link' as const, text: 'Комментарии', url: 'https://example.test' }]],
+  commentsButton: { rowIndex: 0, columnIndex: 0, baseText: 'Комментарии' },
+  count: 7,
+};
 
 function createService(rows: Array<{ id: string; action: string; payload: unknown }>) {
   const prisma = {
@@ -116,5 +129,47 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
       }),
     );
     expect(harness.maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+  });
+
+  it.each(['heartbeat_missing', 'dispatch_disabled'] as const)(
+    'treats publisher keyboard admission %s as a clean handled skip',
+    async (reason) => {
+      const queue = {
+        enqueueKeyboardEdit: jest
+          .fn()
+          .mockRejectedValue(new PublisherChatCommentAdmissionError(reason)),
+      };
+      const logger = { debug: jest.fn(), warn: jest.fn() };
+      const routing = new PublisherCommentKeyboardRouting(
+        { getPublisherBotDescriptor: () => ({ id: 'publik-bot' }) } as never,
+        queue as never,
+        logger as never,
+      );
+
+      await expect(routing.tryEnqueue(keyboardRoute)).resolves.toBe(true);
+
+      expect(queue.enqueueKeyboardEdit).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.objectContaining({ reason }),
+        'Skipped publisher-origin comments counter while admission is closed',
+      );
+    },
+  );
+
+  it('keeps generic publisher keyboard enqueue failures on the existing error path', async () => {
+    const failure = new Error('queue unavailable');
+    const queue = { enqueueKeyboardEdit: jest.fn().mockRejectedValue(failure) };
+    const logger = { debug: jest.fn(), warn: jest.fn() };
+    const routing = new PublisherCommentKeyboardRouting(
+      { getPublisherBotDescriptor: () => ({ id: 'publik-bot' }) } as never,
+      queue as never,
+      logger as never,
+    );
+
+    await expect(routing.tryEnqueue(keyboardRoute)).rejects.toBe(failure);
+
+    expect(logger.debug).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });

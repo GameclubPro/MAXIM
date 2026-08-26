@@ -2,7 +2,10 @@ import type { Logger } from '@nestjs/common';
 import type { ManagedEntityType } from '@maxim/contracts';
 import type { MaxMessageButton } from '../max/max-client.service';
 import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
-import type { PublisherChatCommentQueueService } from '../publisher/publisher-chat-comment.queue';
+import {
+  PublisherChatCommentAdmissionError,
+  type PublisherChatCommentQueueService,
+} from '../publisher/publisher-chat-comment.queue';
 
 export class PublisherCommentKeyboardRouting {
   constructor(
@@ -40,18 +43,33 @@ export class PublisherCommentKeyboardRouting {
       );
       return true;
     }
-    await this.queue.enqueueKeyboardEdit({
-      entityType: params.entityType,
-      readinessFeature: params.entityType === 'chat' ? 'chat_comments' : 'publication',
-      chatId: params.chatId,
-      messageId: params.messageId,
-      threadId: params.threadId,
-      requiredBotId: publisherBotId,
-      dialogBotId: params.dialogBotId,
-      buttons: params.buttons,
-      commentsButton: params.commentsButton,
-      countSnapshot: params.count,
-    });
+    try {
+      await this.queue.enqueueKeyboardEdit({
+        entityType: params.entityType,
+        readinessFeature: params.entityType === 'chat' ? 'chat_comments' : 'publication',
+        chatId: params.chatId,
+        messageId: params.messageId,
+        threadId: params.threadId,
+        requiredBotId: publisherBotId,
+        dialogBotId: params.dialogBotId,
+        buttons: params.buttons,
+        commentsButton: params.commentsButton,
+        countSnapshot: params.count,
+      });
+    } catch (error: unknown) {
+      if (!(error instanceof PublisherChatCommentAdmissionError)) {
+        throw error;
+      }
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          entityType: params.entityType,
+          messageId: params.messageId,
+          reason: error.reason,
+        },
+        'Skipped publisher-origin comments counter while admission is closed',
+      );
+    }
     return true;
   }
 }

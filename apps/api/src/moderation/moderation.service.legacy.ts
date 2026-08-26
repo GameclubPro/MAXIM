@@ -148,7 +148,10 @@ import {
 } from './commercial-ocr/commercial-ocr-enqueue-candidate';
 import { consumeLegacyParticipantModerationImmunity } from './participant-moderation-immunity.service';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
-import { PublisherChatCommentQueueService } from '../publisher/publisher-chat-comment.queue';
+import {
+  PublisherChatCommentAdmissionError,
+  PublisherChatCommentQueueService,
+} from '../publisher/publisher-chat-comment.queue';
 import type { PhotoDuplicateModerationActionRequest } from './photo-duplicate/photo-duplicate-moderation.actions';
 import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
 import {
@@ -15804,6 +15807,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         lastError: this.extractErrorSummary(error),
         lastStatusCode: this.extractStatusCode(error),
       });
+      if (error instanceof PublisherChatCommentAdmissionError) {
+        this.logger.debug(
+          { chatId, messageId, reason: error.reason },
+          'Skipped optional publisher chat-comment attach while admission is closed',
+        );
+        return;
+      }
       throw error;
     }
   }

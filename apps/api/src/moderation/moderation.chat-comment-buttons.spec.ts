@@ -1,4 +1,5 @@
 import { chatSettingsSchema, type MaxUpdate } from '@maxim/contracts';
+import { PublisherChatCommentAdmissionError } from '../publisher/publisher-chat-comment.queue';
 import { ModerationService } from './moderation.service';
 
 function createChatMessageUpdate(options?: {
@@ -296,6 +297,27 @@ describe('ModerationService publisher chat-comment producer', () => {
     expect(harness.queue.enqueueAttach).toHaveBeenCalledTimes(2);
     expect(harness.marker.rows.get('chat-1:message-retry')?.lockToken).toEqual(expect.any(String));
   });
+
+  it.each(['heartbeat_missing', 'dispatch_disabled'] as const)(
+    'releases the marker and completes the webhook when publisher admission is %s',
+    async (reason) => {
+      const harness = createHarness();
+      harness.queue.enqueueAttach.mockRejectedValue(new PublisherChatCommentAdmissionError(reason));
+      const update = createChatMessageUpdate({ messageId: `message-${reason}` });
+
+      await expect(harness.service.handleUpdate(update)).resolves.toBeUndefined();
+
+      expect(harness.queue.enqueueAttach).toHaveBeenCalledTimes(1);
+      expect(harness.marker.rows.get(`chat-1:message-${reason}`)).toMatchObject({
+        status: 'IN_PROGRESS',
+        lockToken: null,
+        lockedAt: null,
+        replacementSendStartedAt: null,
+        lastError: expect.stringContaining(reason),
+      });
+      expect(harness.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not enqueue a duplicate while the first claim is being handed to Redis', async () => {
     const harness = createHarness();
