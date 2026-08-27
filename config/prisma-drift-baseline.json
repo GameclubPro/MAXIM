@@ -1,14 +1,14 @@
 {
   "format": 1,
-  "normalizedSha256": "d12bfd089ad289f3d5cb6fa0b5229b385442b736ed1f0eab8c3fab177d2094ee",
+  "normalizedSha256": "efeb2428345108e725ac633aa1f2c859357ec75db90b2d4bcd41f15d6ef1980d",
   "classifications": {
     "prisma-unrepresentable": {
       "description": "PostgreSQL INCLUDE columns on these covering indexes are not represented by the current Prisma schema syntax.",
       "remediation": "Keep the exact reviewed operations until Prisma can model the covering indexes without losing INCLUDE columns."
     },
     "schema-alignment-debt": {
-      "description": "Raw SQL retained database defaults and TIMESTAMPTZ semantics that Prisma can represent but the current schema does not declare.",
-      "remediation": "Align @default and native-type annotations in a dedicated compatibility change, then remove the resolved operations."
+      "description": "Raw SQL retained database defaults, TIMESTAMPTZ semantics, and temporary expand-phase indexes that Prisma can represent but the current schema does not declare.",
+      "remediation": "Align annotations in dedicated compatibility changes and remove temporary indexes only after every runtime uses the replacement conflict targets."
     },
     "missing-migration-debt": {
       "description": "Database objects retained for two-phase removals are omitted by the compatible runtime schema but do not yet have their second-phase drop migrations.",
@@ -25,6 +25,14 @@
         "-- DropIndex\nDROP INDEX \"global_spammer_candidates_user_metrics_cover_idx\";",
         "-- DropIndex\nDROP INDEX \"global_spammer_candidates_user_status_rank_cover_idx\";",
         "-- DropIndex\nDROP INDEX \"spammer_observations_user_diagnostics_cover_idx\";"
+      ]
+    },
+    {
+      "classification": "schema-alignment-debt",
+      "operations": [
+        "-- DropIndex\nDROP INDEX \"vk_parsing_posts_chat_vk_post_key\";",
+        "-- DropIndex\nDROP INDEX \"vk_parsing_settings_chat_id_key\";",
+        "-- DropIndex\nDROP INDEX \"vk_parsing_sources_chat_wall_owner_key\";"
       ]
     },
     {
