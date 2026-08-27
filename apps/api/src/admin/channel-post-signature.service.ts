@@ -87,13 +87,6 @@ export class ChannelPostSignatureService {
           postSignatureUrl: next.url,
         },
       });
-      await tx.vkParsingSettings.updateMany({
-        where: { chatId },
-        data: {
-          appendChannelLinkEnabled: next.enabled,
-          channelLinkText: next.text,
-        },
-      });
       await tx.auditLog.create({
         data: {
           chatId,
@@ -105,32 +98,6 @@ export class ChannelPostSignatureService {
     });
 
     return next;
-  }
-
-  async updateFromLegacyVkSettings(
-    chatId: string,
-    settings: Partial<ChannelPostSignatureSettings>,
-  ): Promise<void> {
-    await this.assertChannel(chatId);
-    const current = await this.getSettings(chatId);
-    const next = channelPostSignatureSettingsSchema.parse({ ...current, ...settings });
-    if (next.enabled && !next.url) {
-      await this.resolveChannelLink(chatId, 'interactive');
-    }
-    await this.prisma.channelSettings.upsert({
-      where: { chatId },
-      create: {
-        chatId,
-        postSignatureEnabled: next.enabled,
-        postSignatureText: next.text,
-        postSignatureUrl: next.url,
-      },
-      update: {
-        postSignatureEnabled: next.enabled,
-        postSignatureText: next.text,
-        postSignatureUrl: next.url,
-      },
-    });
   }
 
   async preparePostText(

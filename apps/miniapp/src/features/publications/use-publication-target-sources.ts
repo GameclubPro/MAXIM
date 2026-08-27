@@ -1,21 +1,13 @@
-import {
-  type PublisherEntitiesSummary,
-  type PublisherEntity,
-} from '@maxim/contracts/publisher';
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type PublisherEntitiesSummary, type PublisherEntity } from '@maxim/contracts/publisher';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { getChats, getChannels } from '../../lib/api/root-client';
 import {
   isInvalidPublisherEntitiesCursorError,
   listPublisherEntities,
   refreshPublisherEntities,
 } from '../../lib/api/publisher-client';
 import type { ApiTransport } from '../../lib/api/transport';
-import {
-  toPublicationTarget,
-  type PublicationEntityFilter,
-  type PublicationTarget,
-} from './publication-model';
+import { type PublicationEntityFilter, type PublicationTarget } from './publication-model';
 
 const PUBLISHER_TARGET_PAGE_SIZE = 30;
 const PUBLISHER_RECHECK_SETTLE_MS = 15_500;
@@ -28,18 +20,19 @@ export function publisherEntityToPublicationTarget(source: PublisherEntity): Pub
     entityType: source.entityType,
     title: source.title.trim() || (source.entityType === 'channel' ? 'Канал' : 'Чат'),
     avatarUrl: source.avatarUrl,
-    channelOverview:
-      source.entityType === 'channel' && source.channelOverview
-        ? {
-            commentsEnabled: source.channelOverview.commentsEnabled,
-            postSuggestionsEnabled: source.channelOverview.postSuggestionsEnabled,
-          }
-        : null,
+    channelOverview: null,
+    publisherChatCommentsEnabled:
+      source.entityType === 'chat' &&
+      source.moduleSettings.chatComments?.commentsEnabled === true &&
+      source.moduleSettings.chatComments.commentsChatBroadcastsEnabled === true,
+    publisherChannelSuggestionsEnabled:
+      source.entityType === 'channel' &&
+      source.moduleSettings.channelSuggestionsEnabled === true,
     readiness: source.readiness,
   };
 }
 
-export function usePublicationTargetSources(api: ApiTransport, publisherProfile: boolean) {
+export function usePublicationTargetSources(api: ApiTransport, enabled: boolean) {
   const queryClient = useQueryClient();
   const [publisherInputQuery, setPublisherInputQuery] = useState('');
   const [publisherQuery, setPublisherQuery] = useState('');
@@ -52,16 +45,6 @@ export function usePublicationTargetSources(api: ApiTransport, publisherProfile:
     const timeoutId = window.setTimeout(() => setPublisherQuery(publisherInputQuery.trim()), 250);
     return () => window.clearTimeout(timeoutId);
   }, [publisherInputQuery]);
-  const chats = useQuery({
-    queryKey: ['publications', 'sources', 'chats'],
-    queryFn: () => getChats(api, { fresh: false }),
-    enabled: !publisherProfile,
-  });
-  const channels = useQuery({
-    queryKey: ['publications', 'sources', 'channels'],
-    queryFn: () => getChannels(api, { fresh: false }),
-    enabled: !publisherProfile,
-  });
   const publisherQueryKey = [
     'publications',
     'sources',
@@ -83,18 +66,18 @@ export function usePublicationTargetSources(api: ApiTransport, publisherProfile:
       }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: publisherProfile,
+    enabled,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
   const targets = useMemo(
     () =>
-      publisherProfile
+      enabled
         ? (publisher.data?.pages ?? [])
             .flatMap((page) => page.items)
             .map(publisherEntityToPublicationTarget)
-        : [...(chats.data ?? []), ...(channels.data ?? [])].map(toPublicationTarget),
-    [channels.data, chats.data, publisher.data?.pages, publisherProfile],
+        : [],
+    [enabled, publisher.data?.pages],
   );
   const publisherSummary: PublisherEntitiesSummary | null =
     publisher.data?.pages[0]?.summary ?? null;
@@ -110,31 +93,27 @@ export function usePublicationTargetSources(api: ApiTransport, publisherProfile:
     setPublisherEntityFilter,
     publisherSummary,
     filteredTotal: publisher.data?.pages[0]?.filteredTotal ?? null,
-    hasNextPage: publisherProfile && Boolean(publisher.hasNextPage),
-    fetchingNextPage: publisherProfile && publisher.isFetchingNextPage,
-    fetchNextPageError: publisherProfile && publisher.isFetchNextPageError,
+    hasNextPage: enabled && Boolean(publisher.hasNextPage),
+    fetchingNextPage: enabled && publisher.isFetchingNextPage,
+    fetchNextPageError: enabled && publisher.isFetchNextPageError,
     fetchNextPage: async () => {
       const result = await publisher.fetchNextPage();
       if (result.isError && isInvalidPublisherEntitiesCursorError(result.error)) {
         await queryClient.resetQueries({ queryKey: publisherQueryKey, exact: true });
       }
     },
-    loading: publisherProfile ? publisher.isLoading : chats.isLoading || channels.isLoading,
-    fetching: publisherProfile
-      ? publisher.isFetching || publisherRechecking
-      : chats.isFetching || channels.isFetching,
-    hasError: publisherProfile ? publisherInitialError : chats.isError || channels.isError,
-    unavailable: publisherProfile ? publisherInitialError : chats.isError && channels.isError,
-    ready: publisherProfile
-      ? publisher.isSuccess || publisherHasData
-      : chats.isSuccess && channels.isSuccess,
-    chatsFailed: chats.isError,
+    loading: enabled && publisher.isLoading,
+    fetching: enabled && (publisher.isFetching || publisherRechecking),
+    hasError: enabled && publisherInitialError,
+    unavailable: enabled && publisherInitialError,
+    ready: enabled && (publisher.isSuccess || publisherHasData),
+    chatsFailed: false,
     refetch: () =>
-      publisherProfile
+      enabled
         ? queryClient.resetQueries({ queryKey: publisherQueryKey, exact: true })
-        : Promise.all([chats.refetch(), channels.refetch()]).then(() => undefined),
+        : Promise.resolve(),
     recheck: async () => {
-      if (!publisherProfile || publisherRechecking) {
+      if (!enabled || publisherRechecking) {
         return;
       }
       setPublisherRechecking(true);
@@ -154,6 +133,5 @@ export function usePublicationTargetSources(api: ApiTransport, publisherProfile:
         throw error;
       }
     },
-    setupHandoffUrl: publisher.data?.pages[0]?.setupHandoffUrl ?? null,
   };
 }

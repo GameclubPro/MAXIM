@@ -1,9 +1,8 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { PublisherEntitiesSummary, PublisherEntity } from '@maxim/contracts/publisher';
 import {
   CheckCircle,
-  OpenNewWindow,
-  Plus,
+  NavArrowRight,
   Refresh,
   Search,
   WarningCircle,
@@ -15,32 +14,25 @@ import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
-import {
-  getPublisherEntity,
-  listPublisherEntities,
-  refreshPublisherEntity,
-  updatePublisherPolicy,
-} from '../lib/api/publisher-client';
+import { getPublisherEntity, listPublisherEntities, refreshPublisherEntity } from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
-import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { resolveVirtualListRange } from '../lib/virtual-list';
 import {
-  getPublisherEntityCapabilities,
   normalizePublisherEntityView,
   pollPublisherEntityRefresh,
   PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS,
-  resolvePublisherEntityPrimaryAction,
   retryPublisherEntitiesNextPage,
   shouldOfferPublisherRecheck,
   type PublisherEntityReadinessFilter,
 } from './publisher-entities-page-model';
+import { buildPublisherEntityModulesRoute } from './publisher-entity-modules-page-model';
 import './publisher-entities-page.css';
 
 const PUBLISHER_ENTITIES_QUERY_ROOT = ['publications', 'sources', 'publisher'] as const;
 const PUBLISHER_ENTITY_PAGE_SIZE = 30;
-const PUBLISHER_ENTITY_ROW_HEIGHT = 196;
+const PUBLISHER_ENTITY_ROW_HEIGHT = 154;
 const PUBLISHER_ENTITY_LIST_INITIAL_HEIGHT = 680;
 const PUBLISHER_ENTITY_VIRTUALIZATION_THRESHOLD = 60;
 const PUBLISHER_ENTITY_LIST_OVERSCAN = 4;
@@ -103,7 +95,6 @@ function formatEntityListStatus(
 
 export function PublisherEntitiesPage({
   api,
-  botDialogUrl = null,
 }: {
   api: ApiTransport;
   botDialogUrl?: string | null;
@@ -150,22 +141,6 @@ export function PublisherEntitiesPage({
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
-  });
-  const policyMutation = useMutation({
-    mutationFn: ({ entity, enabled }: { entity: PublisherEntity; enabled: boolean }) =>
-      updatePublisherPolicy(api, entity.entityType, entity.id, {
-        expectedRevision: entity.policy.revision,
-        suggestionsViaPublik: enabled,
-      }),
-    onSuccess: async () => {
-      await queryClient.resetQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: describeUserFacingError(error, 'Не удалось сохранить настройки предложек'),
-      });
-    },
   });
   const entities = useMemo(
     () => entitiesQuery.data?.pages.flatMap((page) => page.items) ?? [],
@@ -320,12 +295,6 @@ export function PublisherEntitiesPage({
     }
   }
 
-  function handleOpenMaxAction(url: string, label: string): void {
-    if (!openMaxBotLinkAndClose(url)) {
-      pushToast({ tone: 'danger', title: `Не удалось ${label.toLocaleLowerCase('ru-RU')}` });
-    }
-  }
-
   function renderEntity(entity: PublisherEntity, renderedIndex: number) {
     const presentation = getPublisherReadinessPresentation(entity.readiness);
     const entityKey = `${entity.entityType}:${entity.id}`;
@@ -334,13 +303,7 @@ export function PublisherEntitiesPage({
     const absoluteIndex = shouldVirtualize
       ? virtualRange.startIndex + renderedIndex
       : renderedIndex;
-    const primaryAction = resolvePublisherEntityPrimaryAction(entity, botDialogUrl);
     const canRecheck = shouldOfferPublisherRecheck(entity);
-    const capabilities = getPublisherEntityCapabilities(entity).filter(
-      (capability) =>
-        capability.key !== 'suggestions' &&
-        !(capability.key === 'posting' && primaryAction.kind === 'compose'),
-    );
 
     return (
       <article
@@ -384,75 +347,32 @@ export function PublisherEntitiesPage({
           </p>
         ) : null}
 
-        <div className="publisher-entity-row__capabilities" aria-label="Возможности получателя">
-          {primaryAction.kind === 'compose' ? (
-            <Link
-              to={primaryAction.href}
-              className="publisher-entity-row__module-action"
-              aria-label={`Создать пост для ${entity.title || entity.id}`}
+        <div className="publisher-entity-row__actions">
+          <Link
+            to={buildPublisherEntityModulesRoute(entity)}
+            className="publisher-entity-row__module-action"
+            aria-label={`Открыть модули для ${entity.title || entity.id}`}
+          >
+            <span>Модули</span>
+            <NavArrowRight aria-hidden />
+          </Link>
+          {canRecheck ? (
+            <button
+              type="button"
+              className={cn('publisher-entity-row__refresh', refreshing && 'is-refreshing')}
+              aria-label={
+                refreshing
+                  ? `Проверяется доступ для ${entity.title || entity.id}`
+                  : `Обновить доступ для ${entity.title || entity.id}`
+              }
+              title={refreshing ? 'Проверяю доступ' : 'Обновить доступ'}
+              disabled={Boolean(entityRefresh)}
+              onClick={() => void handleRefreshEntity(entity)}
             >
-              <Plus aria-hidden />
-              <span>{primaryAction.label}</span>
-            </Link>
-          ) : null}
-          {capabilities.map((capability) => (
-            <span key={capability.key} className={`is-${capability.tone}`}>
-              {capability.label}
-            </span>
-          ))}
-          {entity.entityType === 'channel' ? (
-            <label className="publisher-entity-row__module-toggle">
-              <span>Предложки</span>
-              <input
-                type="checkbox"
-                checked={entity.policy.suggestionsViaPublik}
-                disabled={policyMutation.isPending || !entity.policy.publikEnabled}
-                aria-label={`${
-                  entity.policy.suggestionsViaPublik ? 'Выключить' : 'Включить'
-                } предложки через Публик для ${entity.title || entity.id}`}
-                onChange={(event) =>
-                  policyMutation.mutate({ entity, enabled: event.target.checked })
-                }
-              />
-              <span className="publisher-entity-row__module-track" aria-hidden>
-                <span className="publisher-entity-row__module-thumb" />
-              </span>
-            </label>
+              <Refresh aria-hidden />
+            </button>
           ) : null}
         </div>
-
-        {primaryAction.kind !== 'compose' || canRecheck ? (
-          <div className="publisher-entity-row__actions">
-            {primaryAction.kind === 'max_link' ? (
-              <button
-                type="button"
-                className="publisher-entity-row__primary"
-                onClick={() => handleOpenMaxAction(primaryAction.url, primaryAction.label)}
-              >
-                <OpenNewWindow aria-hidden />
-                <span>{primaryAction.label}</span>
-              </button>
-            ) : primaryAction.kind === 'note' ? (
-              <span className="publisher-entity-row__action-note">{primaryAction.label}</span>
-            ) : null}
-            {canRecheck ? (
-              <button
-                type="button"
-                className={cn('publisher-entity-row__refresh', refreshing && 'is-refreshing')}
-                aria-label={
-                  refreshing
-                    ? `Проверяется доступ для ${entity.title || entity.id}`
-                    : `Обновить доступ для ${entity.title || entity.id}`
-                }
-                title={refreshing ? 'Проверяю доступ' : 'Обновить доступ'}
-                disabled={Boolean(entityRefresh)}
-                onClick={() => void handleRefreshEntity(entity)}
-              >
-                <Refresh aria-hidden />
-              </button>
-            ) : null}
-          </div>
-        ) : null}
       </article>
     );
   }

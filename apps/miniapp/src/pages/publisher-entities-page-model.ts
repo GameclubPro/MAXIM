@@ -4,17 +4,6 @@ import { isInvalidPublisherEntitiesCursorError } from '../lib/api/publisher-clie
 export type PublisherEntityView = 'chat' | 'channel';
 export type PublisherEntityReadinessFilter = 'all' | 'ready' | 'attention';
 
-export type PublisherEntityCapability = {
-  key: 'comments' | 'posting' | 'suggestions';
-  label: string;
-  tone: 'available' | 'blocked' | 'external';
-};
-
-export type PublisherEntityPrimaryAction =
-  | { kind: 'compose'; label: string; href: string }
-  | { kind: 'max_link'; label: string; url: string }
-  | { kind: 'note'; label: string };
-
 export const PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS = [
   750, 1_250, 2_500, 4_500, 7_500, 10_500,
 ] as const;
@@ -39,31 +28,6 @@ export async function retryPublisherEntitiesNextPage(options: {
   return 'reset';
 }
 
-const ACTION_NOTES: Record<PublisherReadinessBlockerCode, string> = {
-  policy_disabled: 'Включите Публик в основном боте',
-  bot_not_connected: 'Добавьте Публик в MAX',
-  bot_access_unconfirmed: 'Перепроверьте доступ',
-  bot_access_expired: 'Обновите проверку доступа',
-  bot_not_admin: 'Выдайте Публику права администратора в MAX',
-  write_permission_missing: 'Разрешите Публику читать все сообщения и публиковать в MAX',
-  route_quarantined: 'Дождитесь автоматического восстановления',
-  publisher_runtime_unavailable: 'Обновите список позднее',
-};
-
-const PRIMARY_ACTION_BY_BLOCKER: Record<
-  PublisherReadinessBlockerCode,
-  'settings' | 'publisher' | 'entity' | 'none'
-> = {
-  policy_disabled: 'settings',
-  bot_not_connected: 'publisher',
-  bot_access_unconfirmed: 'none',
-  bot_access_expired: 'none',
-  bot_not_admin: 'entity',
-  write_permission_missing: 'entity',
-  route_quarantined: 'none',
-  publisher_runtime_unavailable: 'none',
-};
-
 const RECHECK_BY_BLOCKER: Record<PublisherReadinessBlockerCode, boolean> = {
   policy_disabled: false,
   bot_not_connected: true,
@@ -73,6 +37,7 @@ const RECHECK_BY_BLOCKER: Record<PublisherReadinessBlockerCode, boolean> = {
   write_permission_missing: true,
   route_quarantined: false,
   publisher_runtime_unavailable: false,
+  module_disabled: false,
 };
 
 export function normalizePublisherEntityView(value: string | null): PublisherEntityView {
@@ -91,45 +56,6 @@ export function buildPublisherComposeRoute(
   return `/publications?compose=1&entityType=${entity.entityType}&entityId=${encodeURIComponent(
     entity.id,
   )}`;
-}
-
-export function resolvePublisherEntityPrimaryAction(
-  entity: PublisherEntity,
-  botDialogUrl: string | null,
-): PublisherEntityPrimaryAction {
-  if (entity.readiness.canPublish) {
-    return {
-      kind: 'compose',
-      label: 'Создать пост',
-      href: buildPublisherComposeRoute(entity),
-    };
-  }
-
-  const blockerCode = entity.readiness.blockerCode;
-  if (!blockerCode) {
-    return { kind: 'note', label: 'Обновите список позднее' };
-  }
-
-  switch (PRIMARY_ACTION_BY_BLOCKER[blockerCode]) {
-    case 'settings':
-      return entity.settingsHandoffUrl
-        ? { kind: 'max_link', label: 'Открыть настройки', url: entity.settingsHandoffUrl }
-        : { kind: 'note', label: ACTION_NOTES[blockerCode] };
-    case 'publisher':
-      return botDialogUrl
-        ? { kind: 'max_link', label: 'Открыть Публик', url: botDialogUrl }
-        : { kind: 'note', label: ACTION_NOTES[blockerCode] };
-    case 'entity':
-      return entity.entityUrl
-        ? {
-            kind: 'max_link',
-            label: entity.entityType === 'channel' ? 'Открыть канал' : 'Открыть чат',
-            url: entity.entityUrl,
-          }
-        : { kind: 'note', label: ACTION_NOTES[blockerCode] };
-    case 'none':
-      return { kind: 'note', label: ACTION_NOTES[blockerCode] };
-  }
 }
 
 export function shouldOfferPublisherRecheck(entity: Pick<PublisherEntity, 'readiness'>): boolean {
@@ -198,44 +124,4 @@ export async function pollPublisherEntityRefresh(options: {
   return lastReadFailed
     ? { status: 'read_failed', entity: lastEntity, attempts, error: lastReadError }
     : { status: 'timed_out', entity: lastEntity, attempts };
-}
-
-export function getPublisherEntityCapabilities(
-  entity: PublisherEntity,
-): PublisherEntityCapability[] {
-  const capabilities: PublisherEntityCapability[] = [
-    {
-      key: 'posting',
-      label: entity.readiness.canPublish ? 'Постинг доступен' : 'Постинг недоступен',
-      tone: entity.readiness.canPublish ? 'available' : 'blocked',
-    },
-  ];
-
-  if (entity.entityType === 'chat') {
-    capabilities.push({
-      key: 'comments',
-      label: entity.readiness.canUseChatComments
-        ? 'Комментарии доступны'
-        : 'Комментарии недоступны',
-      tone: entity.readiness.canUseChatComments ? 'available' : 'blocked',
-    });
-    return capabilities;
-  }
-
-  capabilities.push(
-    entity.policy.suggestionsViaPublik
-      ? {
-          key: 'suggestions',
-          label: entity.readiness.canPublishSuggestions
-            ? 'Предложки через Публик'
-            : 'Предложки ждут подключения',
-          tone: entity.readiness.canPublishSuggestions ? 'available' : 'blocked',
-        }
-      : {
-          key: 'suggestions',
-          label: 'Предложки выключены',
-          tone: 'blocked',
-        },
-  );
-  return capabilities;
 }

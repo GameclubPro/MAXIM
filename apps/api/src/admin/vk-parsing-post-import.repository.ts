@@ -5,7 +5,7 @@ import {
 } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Prisma } from '../prisma/prisma-client';
+import { Prisma, type VkParsingOwnerProfile } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { VkParsingTextFormat } from './vk-parsing-content';
 
@@ -22,6 +22,8 @@ export type VkParsingPostImportSource = {
   id: string;
   chatId: string;
   wallOwnerId: number;
+  ownerProfile: VkParsingOwnerProfile;
+  ownerBotId: string;
 };
 
 export type VkParsingNormalizedPostForImport = {
@@ -76,6 +78,8 @@ export class VkParsingPostImportRepository {
       ? this.prisma.vkParsingPost.findMany({
           where: {
             chatId: source.chatId,
+            ownerProfile: source.ownerProfile,
+            ownerBotId: source.ownerBotId,
             vkOwnerId: source.wallOwnerId,
             vkPostId: { in: posts.map((post) => post.vkPostId) },
           },
@@ -129,6 +133,8 @@ export class VkParsingPostImportRepository {
     const candidates = await this.prisma.vkParsingPost.findMany({
       where: {
         sourceId: source.id,
+        ownerProfile: source.ownerProfile,
+        ownerBotId: source.ownerBotId,
         vkPublishedAt: { gte: oldestFetchedAt },
         vkPostId: { notIn: posts.map((post) => post.vkPostId) },
         status: {
@@ -153,6 +159,8 @@ export class VkParsingPostImportRepository {
       await this.prisma.vkParsingPost.updateMany({
         where: {
           id: { in: belowThreshold.map((post) => post.id) },
+          ownerProfile: source.ownerProfile,
+          ownerBotId: source.ownerBotId,
           status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
         },
         data: {
@@ -176,6 +184,8 @@ export class VkParsingPostImportRepository {
       await this.prisma.vkParsingPost.updateMany({
         where: {
           id: { in: thresholdCandidates.map((post) => post.id) },
+          ownerProfile: source.ownerProfile,
+          ownerBotId: source.ownerBotId,
           status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
         },
         data: {
@@ -202,6 +212,8 @@ export class VkParsingPostImportRepository {
       await this.prisma.vkParsingPost.updateMany({
         where: {
           id: { in: foundIds },
+          ownerProfile: source.ownerProfile,
+          ownerBotId: source.ownerBotId,
           status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
         },
         data: {
@@ -216,6 +228,8 @@ export class VkParsingPostImportRepository {
       await this.prisma.vkParsingPost.updateMany({
         where: {
           id: { in: missingIds },
+          ownerProfile: source.ownerProfile,
+          ownerBotId: source.ownerBotId,
           status: { in: VK_POST_MISSING_RECONCILIATION_STATUSES },
         },
         data: {
@@ -248,6 +262,8 @@ export class VkParsingPostImportRepository {
         ${this.createDatabaseId('vkpost')},
         ${source.id},
         ${source.chatId},
+        CAST(${source.ownerProfile} AS "VkParsingOwnerProfile"),
+        ${source.ownerBotId},
         ${post.vkOwnerId},
         ${post.vkPostId},
         ${post.vkPublishedAt},
@@ -277,6 +293,8 @@ export class VkParsingPostImportRepository {
         "id",
         "source_id",
         "chat_id",
+        "owner_profile",
+        "owner_bot_id",
         "vk_owner_id",
         "vk_post_id",
         "vk_published_at",
@@ -300,7 +318,13 @@ export class VkParsingPostImportRepository {
         "updated_at"
       )
       VALUES ${Prisma.join(rows)}
-      ON CONFLICT ("chat_id", "vk_owner_id", "vk_post_id")
+      ON CONFLICT (
+        "chat_id",
+        "owner_profile",
+        "owner_bot_id",
+        "vk_owner_id",
+        "vk_post_id"
+      )
       DO UPDATE SET
         "source_id" = EXCLUDED."source_id",
         "vk_published_at" = EXCLUDED."vk_published_at",

@@ -19,6 +19,7 @@ for (const fileName of ['docker-compose.yml', 'docker-compose.scale.yml']) {
     const publisher = readServiceBlock(compose, 'api-publisher');
     const ingress = readServiceBlock(compose, 'api-ingress');
     const admin = readServiceBlock(compose, 'api-admin');
+    const action = readServiceBlock(compose, 'api-action');
 
     assert.match(publisher, /^\s+APP_ROLE: publisher$/mu);
     assert.match(publisher, /^\s+MAX_BOT_TOKEN: ''$/mu);
@@ -26,13 +27,24 @@ for (const fileName of ['docker-compose.yml', 'docker-compose.scale.yml']) {
     assert.match(publisher, /^\s+MAX_BOTS_JSON: ''$/mu);
     assert.match(publisher, /^\s+- max_publisher_bot_token$/mu);
     assert.match(publisher, /^\s+- max_publisher_webhook_credentials$/mu);
+    assert.match(publisher, /^\s+- max_publisher_dialog_signing_keys$/mu);
     assert.doesNotMatch(publisher, /max_publisher_init_data_keys/u);
 
     assert.match(ingress, /^\s+- max_publisher_webhook_credentials$/mu);
-    assert.doesNotMatch(ingress, /max_publisher_bot_token|max_publisher_init_data_keys/u);
+    assert.doesNotMatch(
+      ingress,
+      /max_publisher_bot_token|max_publisher_init_data_keys|max_publisher_dialog_signing_keys/u,
+    );
 
     assert.match(admin, /^\s+- max_publisher_init_data_keys$/mu);
+    assert.match(admin, /^\s+- max_publisher_dialog_signing_keys$/mu);
     assert.doesNotMatch(admin, /max_publisher_bot_token|max_publisher_webhook_credentials/u);
+
+    assert.match(action, /^\s+- max_publisher_dialog_signing_keys$/mu);
+    assert.doesNotMatch(
+      action,
+      /max_publisher_bot_token|max_publisher_webhook_credentials|max_publisher_init_data_keys/u,
+    );
 
     const withoutPublisher = compose.replace(`\n  api-publisher:\n${publisher}`, '');
     assert.doesNotMatch(withoutPublisher, /^\s+- max_publisher_bot_token$/mu);
@@ -45,6 +57,7 @@ test('production secret sources stay outside the repository', () => {
     '/var/lib/maxim-secrets/publik-bot-token',
     '/var/lib/maxim-secrets/publik-webhook.json',
     '/var/lib/maxim-secrets/publik-init-data-keys.json',
+    '/var/lib/maxim-secrets/publik-dialog-signing-keys.json',
   ]) {
     assert.match(compose, new RegExp(`file: ${path.replaceAll('/', '\\/')}`, 'u'));
   }
@@ -59,7 +72,12 @@ test('publisher source credentials never enter a root Docker build context', () 
       .filter((line) => line && !line.startsWith('#')),
   );
 
-  for (const path of ['/token', '/publik-webhook.json', '/publik-init-data-keys.json']) {
+  for (const path of [
+    '/token',
+    '/publik-webhook.json',
+    '/publik-init-data-keys.json',
+    '/publik-dialog-signing-keys.json',
+  ]) {
     assert.equal(exclusions.has(path), true, `${path} must be excluded from Docker context`);
   }
 
@@ -70,6 +88,6 @@ test('publisher source credentials never enter a root Docker build context', () 
   );
   assert.doesNotMatch(
     buildInputSnapshot,
-    /(?:^|\s)(?:token|publik-webhook\.json|publik-init-data-keys\.json)(?:\s|$)/u,
+    /(?:^|\s)(?:token|publik-webhook\.json|publik-init-data-keys\.json|publik-dialog-signing-keys\.json)(?:\s|$)/u,
   );
 });

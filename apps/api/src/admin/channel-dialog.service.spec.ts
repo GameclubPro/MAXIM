@@ -216,6 +216,7 @@ describe('ChannelDialogService reactions', () => {
       messageId: 'message-1',
       token: 'reaction-token-1',
       emoji: '👍',
+      dialogProfile: 'moderation',
     });
   });
 });

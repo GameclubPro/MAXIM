@@ -81,7 +81,6 @@ import {
   getChannelManagedBroadcastCalendar,
   getChannelManagedBroadcast,
   getChannelSettingsScreen,
-  getChannelVkParsingCapability,
   recheckChannelManagedEntityAccess,
   retryChannelManagedBroadcast,
   sendChannelBroadcast,
@@ -95,7 +94,6 @@ import type { ApiTransport } from '../lib/api/transport';
 import { shouldRetryTransientApiError } from '../lib/api-retry';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
-import { describeVkParsingCapability } from '../lib/vk-parsing-capability';
 import { findTerminalSettingsLoadError } from '../lib/settings-load-error';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/shared-types';
 import {
@@ -236,7 +234,6 @@ type ChannelSettingsSectionKey =
   | 'postSignature'
   | 'comments'
   | 'postSuggestions'
-  | 'vkParsing'
   | 'broadcast'
   | 'polls'
   | 'giveaway';
@@ -290,7 +287,6 @@ const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boole
   postSignature: false,
   comments: false,
   postSuggestions: false,
-  vkParsing: false,
   broadcast: false,
   polls: false,
   giveaway: false,
@@ -330,9 +326,6 @@ const LazyBroadcastContentComposer = lazy(() => import('../components/broadcast-
 const LazyBroadcastButtonsSheet = lazy(() => import('../components/broadcast-buttons-sheet'));
 const LazyBroadcastPublishReviewSheet = lazy(
   () => import('../components/broadcast-publish-review-sheet'),
-);
-const LazyVkParsingCard = lazy(() =>
-  import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
 );
 const LazyManagedAutopostRuleCard = lazy(() =>
   import('../components/managed-autopost-rule-card').then((module) => ({
@@ -1130,8 +1123,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'comments' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'polls' &&
-      focusSection !== 'postSuggestions' &&
-      focusSection !== 'vkParsing'
+      focusSection !== 'postSuggestions'
     ) {
       return;
     }
@@ -1144,9 +1136,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           ? { comments: true }
           : focusSection === 'postSuggestions'
             ? { postSuggestions: true }
-            : focusSection === 'vkParsing'
-              ? { vkParsing: true }
-              : focusSection === 'polls'
+            : focusSection === 'polls'
                 ? { polls: true }
                 : focusSection === 'giveaway'
                   ? { giveaway: true }
@@ -1162,17 +1152,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   };
   const channelHeader = settingsScreenQuery.data?.header ?? null;
   const loadedPostSignature = settingsScreenQuery.data?.postSignature ?? null;
-  const vkParsingCapabilityQuery = useQuery({
-    queryKey: queryKeys.channelVkParsingCapability(chatId),
-    queryFn: () => getChannelVkParsingCapability(api, chatId ?? ''),
-    enabled: Boolean(chatId),
-    staleTime: 5 * 60_000,
-    refetchOnWindowFocus: false,
-  });
-  const vkParsingCapability = vkParsingCapabilityQuery.data ?? null;
-  const canAccessVkParsing = vkParsingCapability?.canUse === true;
-  const shouldShowVkParsingSection =
-    canAccessVkParsing || vkParsingCapability?.reasonCode === 'NOT_CONFIGURED';
   const broadcastTargetContextLabel = channelHeader?.title?.trim() || 'Текущий канал';
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
   const broadcastCalendarQuery = useQuery({
@@ -1539,7 +1518,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       (section === 'broadcast' && focusSection === 'broadcast') ||
       (section === 'comments' && focusSection === 'comments') ||
       (section === 'postSuggestions' && focusSection === 'postSuggestions') ||
-      (section === 'vkParsing' && focusSection === 'vkParsing') ||
       (section === 'polls' && focusSection === 'polls') ||
       (section === 'giveaway' && focusSection === 'giveaway')
     ) {
@@ -3024,7 +3002,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
+    navigate('/publications');
   }
 
   function handleCloseBroadcastPublishReview() {
@@ -3088,7 +3066,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       if (!(await saveChannelSettingsForBroadcast())) {
         return;
       }
-      navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
+      navigate('/publications');
       return;
     }
 
@@ -3125,7 +3103,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       if (!(await saveChannelSettingsForBroadcast())) {
         return;
       }
-      navigate(`/publications?compose=1&entityType=channel&entityId=${encodeURIComponent(chatId)}`);
+      navigate('/publications');
       return;
     }
 
@@ -3629,69 +3607,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </SettingsDrilldownPanel>
       </GlassCard>
 
-      {shouldShowVkParsingSection ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <SettingsSectionToggle
-              title="Посты из VK"
-              summary="Импорт и автопубликация из VK"
-              status="Импорт"
-              icon="links"
-              tone="ink"
-              open={expandedSections.vkParsing}
-              controls="channel-settings-vk-parsing"
-              onClick={() => toggleSection('vkParsing')}
-            />
-          </div>
-
-          <SettingsDrilldownPanel
-            id="channel-settings-vk-parsing"
-            open={expandedSections.vkParsing}
-            title="Посты из VK"
-            tone="ink"
-            className="settings-drilldown__panel--campaign settings-drilldown__panel--vk-parsing"
-            onClose={() => toggleSection('vkParsing')}
-          >
-            <div
-              id="channel-settings-vk-parsing"
-              className={cn('settings-section__collapse', expandedSections.vkParsing && 'is-open')}
-            >
-              {expandedSections.vkParsing ? (
-                <div className="settings-section__collapse-inner">
-                  {canAccessVkParsing ? (
-                    <Suspense fallback={<SkeletonCard lines={4} />}>
-                      <LazyVkParsingCard
-                        api={api}
-                        chatId={chatId}
-                        active={expandedSections.vkParsing}
-                        channelLinkUrl={fallbackPostSignatureUrl}
-                        postSignature={postSignature}
-                      />
-                    </Suspense>
-                  ) : vkParsingCapability ? (
-                    <StatusState
-                      tone="warning"
-                      title="Импорт из VK не настроен"
-                      description={describeVkParsingCapability(vkParsingCapability)}
-                      action={
-                        <button
-                          type="button"
-                          className="button button--ghost"
-                          disabled={vkParsingCapabilityQuery.isFetching}
-                          onClick={() => void vkParsingCapabilityQuery.refetch()}
-                        >
-                          Проверить снова
-                        </button>
-                      }
-                    />
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          </SettingsDrilldownPanel>
-        </GlassCard>
-      ) : null}
-
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
@@ -3820,7 +3735,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           className="channel-settings-card settings-home-entry settings-home-entry--priority"
           elevated
           padding="sm"
-          aria-label="Посты"
+          aria-label="Расписания"
         >
           <PublicationWorkspaceHandoff
             entityType="channel"

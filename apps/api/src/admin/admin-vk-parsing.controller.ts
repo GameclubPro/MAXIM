@@ -12,11 +12,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
+import { MiniappProfiles } from '../auth/miniapp-profile';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { VkParsingService } from './vk-parsing.service';
 
 @Controller('v1')
 @UseGuards(InitDataGuard)
+@MiniappProfiles('publisher')
 export class AdminVkParsingController {
   constructor(private readonly vkParsingService: VkParsingService) {}
 

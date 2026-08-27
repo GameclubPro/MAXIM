@@ -117,6 +117,18 @@ export function getChannelSettingsNormalizationChanges(
   return changes;
 }
 
+export async function readPublicChannelSettings(
+  prisma: PrismaService,
+  chatId: string,
+): Promise<ChannelSettings> {
+  const settings = await prisma.channelSettings.findUnique({ where: { chatId } });
+  if (!settings) {
+    return DEFAULT_CHANNEL_SETTINGS;
+  }
+  const parsed = channelSettingsSchema.safeParse(sanitizeStoredChannelSettings(settings));
+  return parsed.success ? normalizeChannelSettings(parsed.data, chatId) : DEFAULT_CHANNEL_SETTINGS;
+}
+
 export async function readChannelSettings(params: {
   prisma: PrismaService;
   logger: Pick<Logger, 'warn'>;

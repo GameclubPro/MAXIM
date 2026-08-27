@@ -128,7 +128,11 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   );
 }
 
-function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
+function resolveScreenInfo(
+  pathname: string,
+  chatLabel: string,
+  profile: MiniappProfile,
+): ScreenInfo {
   if (pathname.startsWith('/legal/')) {
     return {
       title: 'Правовые документы',
@@ -145,7 +149,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
 
   if (pathname === '/publications' || pathname === '/autoposts') {
     return {
-      title: 'Посты',
+      title: profile === 'publisher' ? 'Посты' : 'Расписания',
     };
   }
 
@@ -304,6 +308,8 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   const isEventsRoute = location.pathname.includes('/events');
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
+  const isPublisherEntityModulesRoute =
+    profile === 'publisher' && /^\/publisher\/(?:chat|channel)\/[^/]+\/?$/u.test(location.pathname);
   const shouldShowBottomNav = isChatsRoute || isPublicationsRoute;
   const hasTopbar =
     !isChatsRoute &&
@@ -312,12 +318,13 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     !isEventsRoute &&
     !isDialogRoute &&
     !isChannelStatsRoute &&
+    !isPublisherEntityModulesRoute &&
     !isGiveawayRoute &&
     !isLegalRoute;
 
   const screen = useMemo(
-    () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
-    [location.pathname, resolvedChatId, resolvedChatTitle],
+    () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId, profile),
+    [location.pathname, profile, resolvedChatId, resolvedChatTitle],
   );
 
   useEffect(() => {
@@ -409,7 +416,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             'bottom-nav bottom-nav--primary glass-card',
             isKeyboardOpen && 'is-keyboard-open',
           )}
-          aria-label="Навигация приложения"
+          aria-label={profile === 'publisher' ? 'Навигация Публика' : 'Навигация Майора'}
         >
           <Link
             to={buildManagedEntitiesRoute('chat')}
@@ -446,7 +453,9 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="publications" />
             </span>
-            <span className="bottom-nav__label">Посты</span>
+            <span className="bottom-nav__label">
+              {profile === 'publisher' ? 'Посты' : 'Расписания'}
+            </span>
           </NavLink>
         </nav>
       ) : null}

@@ -7,11 +7,9 @@ import {
 } from '@maxim/contracts/publisher';
 import {
   buildPublisherComposeRoute,
-  getPublisherEntityCapabilities,
   isPublisherEntityRefreshObserved,
   normalizePublisherEntityView,
   pollPublisherEntityRefresh,
-  resolvePublisherEntityPrimaryAction,
   retryPublisherEntitiesNextPage,
   shouldOfferPublisherRecheck,
 } from '../src/pages/publisher-entities-page-model';
@@ -24,10 +22,9 @@ function publisherEntity(
     title?: string;
     ready?: boolean;
     blockerCode?: PublisherReadinessBlockerCode | null;
-    suggestionsViaPublik?: boolean;
+    channelSuggestionsEnabled?: boolean;
     checkedAt?: string | null;
     entityUrl?: string | null;
-    settingsHandoffUrl?: string | null;
   } = {},
 ): PublisherEntity {
   const ready = options.ready ?? true;
@@ -37,12 +34,23 @@ function publisherEntity(
     title: options.title ?? id,
     entityType,
     entityUrl: options.entityUrl ?? null,
-    settingsHandoffUrl: options.settingsHandoffUrl ?? null,
     policy: {
       publikEnabled: blockerCode !== 'policy_disabled',
-      suggestionsViaPublik: options.suggestionsViaPublik ?? false,
       revision: 0,
       updatedAt: null,
+    },
+    moduleSettings: {
+      revision: 0,
+      chatComments:
+        entityType === 'chat'
+          ? {
+              commentsEnabled: ready,
+              commentsAdminsEnabled: ready,
+              commentsChatBroadcastsEnabled: false,
+            }
+          : null,
+      channelSuggestionsEnabled:
+        entityType === 'channel' ? (options.channelSuggestionsEnabled ?? false) : null,
     },
     readiness: {
       state: ready
@@ -55,7 +63,7 @@ function publisherEntity(
       canPublish: ready,
       canUseChatComments: entityType === 'chat' && ready,
       canPublishSuggestions:
-        entityType === 'channel' && ready && options.suggestionsViaPublik === true,
+        entityType === 'channel' && ready && options.channelSuggestionsEnabled === true,
       blockerCode,
       checkedAt: options.checkedAt ?? null,
       retryAt: null,
@@ -76,86 +84,9 @@ test('publisher cabinet builds an encoded compose deep link', () => {
   );
 });
 
-test('publisher cabinet maps every blocker to a truthful primary action', () => {
-  const botDialogUrl = 'https://max.ru/publik-bot';
-  const blockedChat = publisherEntity('chat-setup', 'chat', {
-    ready: false,
-    entityUrl: 'https://max.ru/join/chat-setup',
-    settingsHandoffUrl: 'https://max.ru/entry?startapp=mr-settings',
-  });
-  assert.deepEqual(resolvePublisherEntityPrimaryAction(blockedChat, botDialogUrl), {
-    kind: 'max_link',
-    label: 'Открыть Публик',
-    url: botDialogUrl,
-  });
-  assert.deepEqual(
-    resolvePublisherEntityPrimaryAction(
-      publisherEntity('chat-disabled', 'chat', {
-        ready: false,
-        blockerCode: 'policy_disabled',
-        settingsHandoffUrl: 'https://max.ru/entry?startapp=mr-settings',
-      }),
-      botDialogUrl,
-    ),
-    {
-      kind: 'max_link',
-      label: 'Открыть настройки',
-      url: 'https://max.ru/entry?startapp=mr-settings',
-    },
-  );
-  for (const blockerCode of ['bot_not_admin', 'write_permission_missing'] as const) {
-    assert.deepEqual(
-      resolvePublisherEntityPrimaryAction(
-        publisherEntity('channel-rights', 'channel', {
-          ready: false,
-          blockerCode,
-          entityUrl: 'https://max.ru/channel/rights',
-        }),
-        botDialogUrl,
-      ),
-      {
-        kind: 'max_link',
-        label: 'Открыть канал',
-        url: 'https://max.ru/channel/rights',
-      },
-    );
-  }
-  assert.deepEqual(
-    resolvePublisherEntityPrimaryAction(
-      publisherEntity('chat-unconfirmed', 'chat', {
-        ready: false,
-        blockerCode: 'bot_access_unconfirmed',
-      }),
-      botDialogUrl,
-    ),
-    { kind: 'note', label: 'Перепроверьте доступ' },
-  );
-  assert.deepEqual(
-    resolvePublisherEntityPrimaryAction(
-      publisherEntity('chat-admin', 'chat', {
-        ready: false,
-        blockerCode: 'bot_not_admin',
-      }),
-      botDialogUrl,
-    ),
-    { kind: 'note', label: 'Выдайте Публику права администратора в MAX' },
-  );
-  assert.deepEqual(
-    resolvePublisherEntityPrimaryAction(publisherEntity('chat-ready', 'chat'), botDialogUrl),
-    {
-      kind: 'compose',
-      label: 'Создать пост',
-      href: '/publications?compose=1&entityType=chat&entityId=chat-ready',
-    },
-  );
-});
-
-test('publisher cabinet exposes rechecks only for access blockers and shows capabilities', () => {
+test('publisher cabinet exposes rechecks only for access blockers', () => {
   const blockedChat = publisherEntity('chat-setup', 'chat', { ready: false });
   const externalSuggestions = publisherEntity('channel-main', 'channel');
-  const publikSuggestions = publisherEntity('channel-publik', 'channel', {
-    suggestionsViaPublik: true,
-  });
 
   assert.equal(shouldOfferPublisherRecheck(blockedChat), true);
   assert.equal(shouldOfferPublisherRecheck(externalSuggestions), false);
@@ -177,15 +108,6 @@ test('publisher cabinet exposes rechecks only for access blockers and shows capa
     ),
     false,
   );
-  assert.deepEqual(
-    getPublisherEntityCapabilities(blockedChat).map(({ key, tone }) => [key, tone]),
-    [
-      ['posting', 'blocked'],
-      ['comments', 'blocked'],
-    ],
-  );
-  assert.equal(getPublisherEntityCapabilities(externalSuggestions)[1]?.tone, 'blocked');
-  assert.equal(getPublisherEntityCapabilities(publikSuggestions)[1]?.tone, 'available');
 });
 
 test('publisher cabinet retries transient next-page failures without discarding loaded pages', async () => {

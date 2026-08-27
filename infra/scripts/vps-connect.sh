@@ -858,20 +858,36 @@ target=/var/lib/maxim-secrets
 suffix="new.$$"
 cleanup() {
   rm -rf -- "$stage"
-  rm -f -- "$target/publik-bot-token.$suffix" "$target/publik-webhook.json.$suffix" "$target/publik-init-data-keys.json.$suffix"
+  rm -f -- "$target/publik-bot-token.$suffix" "$target/publik-webhook.json.$suffix" "$target/publik-init-data-keys.json.$suffix" "$target/publik-dialog-signing-keys.json.$suffix"
 }
 trap cleanup EXIT
 tar -xf - -C "$stage" --no-same-owner --no-same-permissions
 node "$stage/installer.mjs" stage "$stage/bundle.json" "$stage/output"
-names=(publik-bot-token publik-webhook.json publik-init-data-keys.json)
+legacy_names=(publik-bot-token publik-webhook.json publik-init-data-keys.json)
+dialog_name=publik-dialog-signing-keys.json
+names=()
 exec 9>/tmp/maxim-publisher-secret-install.lock
 flock -n 9 || { echo "Another publisher secret installation is running." >&2; exit 1; }
-for name in "${names[@]}"; do
+legacy_count=0
+for name in "${legacy_names[@]}"; do
   if sudo -n test -e "$target/$name"; then
-    echo "Publisher secrets already exist; use a reviewed rotation procedure." >&2
-    exit 1
+    legacy_count=$((legacy_count + 1))
   fi
 done
+dialog_exists=0
+sudo -n test -e "$target/$dialog_name" && dialog_exists=1
+if [[ "$legacy_count" -eq 0 && "$dialog_exists" -eq 0 ]]; then
+  names=("${legacy_names[@]}" "$dialog_name")
+elif [[ "$legacy_count" -eq 3 && "$dialog_exists" -eq 0 ]]; then
+  sudo -n cmp -s "$target/publik-bot-token" "$stage/output/publik-bot-token" || {
+    echo "Publisher token differs from installed credentials; use a reviewed rotation procedure." >&2
+    exit 1
+  }
+  names=("$dialog_name")
+else
+  echo "Publisher secrets already exist or are incomplete; use a reviewed rotation procedure." >&2
+  exit 1
+fi
 sudo -n install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" "$target"
 for name in "${names[@]}"; do
   install -m 0600 "$stage/output/$name" "$target/$name.$suffix"

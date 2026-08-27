@@ -53,7 +53,7 @@ function createReviewPost(overrides: Record<string, unknown> = {}) {
     chat: {
       title: 'Канал администраторов',
       entityType: ChatEntityType.CHANNEL,
-      vkParsingSettings: null,
+      vkParsingSettings: [],
       channelSettings: null,
     },
     source: {
@@ -902,6 +902,23 @@ describe('SafetyDeskService', () => {
     expect(queue.items[0]?.checks.map((check) => check.label)).toContain(
       'До решения владельца в MAX ничего не отправляется',
     );
+    expect(prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          chat: expect.objectContaining({
+            select: expect.objectContaining({
+              vkParsingSettings: {
+                where: {
+                  ownerProfile: 'MAJOR',
+                  ownerBotId: '',
+                },
+                take: 1,
+              },
+            }),
+          }),
+        }),
+      }),
+    );
   });
 
   it('treats VK and MAX links as trusted Safety Desk domains', async () => {
@@ -943,12 +960,14 @@ describe('SafetyDeskService', () => {
         chat: {
           title: 'Канал администраторов',
           entityType: ChatEntityType.CHANNEL,
-          vkParsingSettings: {
-            stripLinksEnabled: false,
-            skipAdsEnabled: false,
-            appendChannelLinkEnabled: true,
-            channelLinkText: 'Наш канал',
-          },
+          vkParsingSettings: [
+            {
+              stripLinksEnabled: false,
+              skipAdsEnabled: false,
+              appendChannelLinkEnabled: true,
+              channelLinkText: 'Наш канал',
+            },
+          ],
           channelSettings: {
             postSignatureEnabled: true,
             postSignatureText: 'Наш канал',

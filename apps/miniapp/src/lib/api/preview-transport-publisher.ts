@@ -9,12 +9,16 @@ import {
   publisherEntitiesRefreshResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntitySchema,
+  publisherEntityModuleSettingsSchema,
   publisherEntityRefreshResponseSchema,
+  publisherSuggestionsResponseSchema,
   resolvePublisherEntitiesRequestSchema,
   resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
+  updatePublisherEntityModuleSettingsRequestSchema,
   type ManagedEntityPublicationPolicy,
   type ManagedEntityType,
+  type PublisherChatCommentSettings,
   type PublisherEntity,
 } from '@maxim/contracts/publisher';
 import { PREVIEW_CHAT_ID } from '../design-preview';
@@ -22,9 +26,6 @@ import { ApiRequestError } from '../api-request-error';
 import { PREVIEW_NOT_HANDLED, type PreviewRequestHandler } from './preview-transport-runtime';
 import { parseJsonBody } from './preview-transport-shared';
 import type { PreviewState } from './preview-transport-state';
-
-const PREVIEW_PUBLISHER_SETUP_HANDOFF_URL =
-  'https://max.ru/preview-entry?startapp=mr-preview-home';
 
 function getPreviewPublisherPolicies(
   state: PreviewState,
@@ -44,6 +45,30 @@ function getPreviewPublisherRefreshes(state: PreviewState): Record<string, strin
   return extended.publisherRefreshes;
 }
 
+function getPreviewPublisherChatComments(
+  state: PreviewState,
+): Record<string, PublisherChatCommentSettings> {
+  const extended = state as PreviewState & {
+    publisherChatComments?: Record<string, PublisherChatCommentSettings>;
+  };
+  extended.publisherChatComments ??= {};
+  return extended.publisherChatComments;
+}
+
+function getPreviewPublisherModuleRevisions(state: PreviewState): Record<string, number> {
+  const extended = state as PreviewState & { publisherModuleRevisions?: Record<string, number> };
+  extended.publisherModuleRevisions ??= {};
+  return extended.publisherModuleRevisions;
+}
+
+function getPreviewPublisherChannelSuggestions(state: PreviewState): Record<string, boolean> {
+  const extended = state as PreviewState & {
+    publisherChannelSuggestions?: Record<string, boolean>;
+  };
+  extended.publisherChannelSuggestions ??= {};
+  return extended.publisherChannelSuggestions;
+}
+
 function buildPreviewPublisherEntity(
   state: PreviewState,
   entityType: ManagedEntityType,
@@ -59,7 +84,6 @@ function buildPreviewPublisherEntity(
     getPreviewPublisherPolicies(state)[`${entityType}:${entityId}`] ??
     managedEntityPublicationPolicySchema.parse({
       publikEnabled: true,
-      suggestionsViaPublik: false,
       revision: 0,
       updatedAt: null,
     });
@@ -106,8 +130,12 @@ function buildPreviewPublisherEntity(
         : {
             state: 'ready' as const,
             canPublish: true,
-            canUseChatComments: entityType === 'chat',
-            canPublishSuggestions: entityType === 'channel' && policy.suggestionsViaPublik,
+            canUseChatComments:
+              entityType === 'chat' &&
+              getPreviewPublisherChatComments(state)[entityId]?.commentsEnabled === true,
+            canPublishSuggestions:
+              entityType === 'channel' &&
+              getPreviewPublisherChannelSuggestions(state)[entityId] === true,
             blockerCode: null,
             checkedAt,
             retryAt: null,
@@ -118,9 +146,22 @@ function buildPreviewPublisherEntity(
     entityType,
     avatarUrl: source.avatarUrl ?? null,
     entityUrl: `https://max.ru/join/${encodeURIComponent(source.id)}`,
-    settingsHandoffUrl: 'https://max.ru/preview-entry?startapp=mr-preview-settings',
-    channelOverview: entityType === 'channel' ? (source.channelOverview ?? null) : null,
     policy,
+    moduleSettings: {
+      revision: getPreviewPublisherModuleRevisions(state)[entityKey] ?? 0,
+      chatComments:
+        entityType === 'chat'
+          ? (getPreviewPublisherChatComments(state)[entityId] ?? {
+              commentsEnabled: false,
+              commentsAdminsEnabled: false,
+              commentsChatBroadcastsEnabled: false,
+            })
+          : null,
+      channelSuggestionsEnabled:
+        entityType === 'channel'
+          ? (getPreviewPublisherChannelSuggestions(state)[entityId] ?? false)
+          : null,
+    },
     readiness,
   });
 }
@@ -202,7 +243,6 @@ function listPreviewPublisherEntitiesPage(state: PreviewState, url: URL) {
 
   return publisherEntitiesCursorResponseSchema.parse({
     items,
-    setupHandoffUrl: PREVIEW_PUBLISHER_SETUP_HANDOFF_URL,
     nextCursor:
       hasMore && last
         ? encodePublisherEntitiesCursor({
@@ -234,7 +274,6 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       ? listPreviewPublisherEntitiesPage(state, url)
       : publisherEntitiesResponseSchema.parse({
           items: listPreviewPublisherEntities(state),
-          setupHandoffUrl: PREVIEW_PUBLISHER_SETUP_HANDOFF_URL,
         });
   }
   if (url.pathname === '/publisher/entities/refresh' && method === 'POST') {
@@ -282,7 +321,11 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
 
   const entityType = segments[2];
   const entityId = decodeURIComponent(segments[3]);
-  if (state.publisherPolicyVariant === 'error' && segments.length === 4 && method === 'GET') {
+  if (
+    state.publisherPolicyVariant === 'error' &&
+    method === 'GET' &&
+    (segments.length === 4 || (segments.length === 5 && segments[4] === 'policy'))
+  ) {
     throw new ApiRequestError(503, '', 'Preview publisher policy unavailable');
   }
   const entity = buildPreviewPublisherEntity(state, entityType, entityId);
@@ -291,6 +334,9 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
   }
   if (segments.length === 4 && method === 'GET') {
     return entity;
+  }
+  if (segments.length === 5 && segments[4] === 'policy' && method === 'GET') {
+    return entity.policy;
   }
   if (segments.length === 5 && segments[4] === 'refresh' && method === 'POST') {
     const refreshes = getPreviewPublisherRefreshes(state);
@@ -305,19 +351,48 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     ).toISOString();
     return publisherEntityRefreshResponseSchema.parse({ accepted: true });
   }
+  if (
+    entityType === 'channel' &&
+    segments.length === 5 &&
+    segments[4] === 'suggestions' &&
+    method === 'GET'
+  ) {
+    return publisherSuggestionsResponseSchema.parse({ items: [] });
+  }
   if (segments[4] === 'policy' && method === 'PATCH') {
     const request = updateManagedEntityPublicationPolicyRequestSchema.parse(parseJsonBody(init));
     const policy = managedEntityPublicationPolicySchema.parse({
       ...entity.policy,
       ...(request.publikEnabled !== undefined ? { publikEnabled: request.publikEnabled } : {}),
-      ...(entityType === 'channel' && request.suggestionsViaPublik !== undefined
-        ? { suggestionsViaPublik: request.suggestionsViaPublik }
-        : {}),
       revision: entity.policy.revision + 1,
       updatedAt: state.clock.now().toISOString(),
     });
     getPreviewPublisherPolicies(state)[`${entityType}:${entityId}`] = policy;
     return policy;
+  }
+  if (segments[4] === 'modules' && method === 'PATCH') {
+    const request = updatePublisherEntityModuleSettingsRequestSchema.parse(parseJsonBody(init));
+    if (entityType === 'chat' && request.chatComments) {
+      getPreviewPublisherChatComments(state)[entityId] = request.chatComments;
+    }
+    if (entityType === 'channel' && request.channelSuggestionsEnabled !== undefined) {
+      getPreviewPublisherChannelSuggestions(state)[entityId] =
+        request.channelSuggestionsEnabled;
+    }
+    const revision = entity.moduleSettings.revision + 1;
+    getPreviewPublisherModuleRevisions(state)[`${entityType}:${entityId}`] = revision;
+    return publisherEntityModuleSettingsSchema.parse({
+      revision,
+      chatComments:
+        entityType === 'chat'
+          ? (getPreviewPublisherChatComments(state)[entityId] ??
+            entity.moduleSettings.chatComments)
+          : null,
+      channelSuggestionsEnabled:
+        entityType === 'channel'
+          ? (getPreviewPublisherChannelSuggestions(state)[entityId] ?? false)
+          : null,
+    });
   }
   return PREVIEW_NOT_HANDLED;
 };

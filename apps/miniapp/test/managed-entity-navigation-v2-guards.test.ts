@@ -374,7 +374,7 @@ test('all managed detail screens provide authoritative identity to the shared he
 test('chat and channel settings register save and discard leave guards', () => {
   assert.match(
     chatSettingsSource,
-    /const isHeaderSaving =\s*isSavingSettings \|\|\s*isSavingComments \|\|\s*isSavingRules \|\|\s*isSavingSpeechStyle \|\|\s*updateRulesAttachMutation\.isPending;/u,
+    /const isHeaderSaving =\s*isSavingSettings \|\|\s*isSavingRules \|\|\s*isSavingSpeechStyle \|\|\s*updateRulesAttachMutation\.isPending;/u,
   );
   assert.match(
     chatSettingsSource,

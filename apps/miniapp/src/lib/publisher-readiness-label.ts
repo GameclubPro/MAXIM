@@ -12,6 +12,7 @@ const BLOCKER_LABELS: Record<PublisherReadinessBlockerCode, string> = {
   write_permission_missing: 'Нет права публиковать',
   route_quarantined: 'Отправка приостановлена',
   publisher_runtime_unavailable: 'Публик временно недоступен',
+  module_disabled: 'Модуль выключен',
 };
 
 export function getPublisherReadinessLabel(

@@ -650,7 +650,7 @@ test('never prints or passes publisher token material through the rollout CLI', 
   assert.doesNotMatch(rollout, /(?:^|[/ ])token(?:$|[ ."'])/imu);
   assert.doesNotMatch(
     rollout,
-    /publik-bot-token|publik-webhook\.json|publik-init-data-keys\.json/u,
+    /publik-bot-token|publik-webhook\.json|publik-init-data-keys\.json|publik-dialog-signing-keys\.json/u,
   );
   assert.doesNotMatch(rollout, /docker inspect[^\n]*Config\.Env[^|\n]*$/mu);
   assert.match(rollout, /container_env_summary/u);

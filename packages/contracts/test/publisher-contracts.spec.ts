@@ -11,9 +11,11 @@ import {
   publisherEntitiesRefreshResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntityRefreshResponseSchema,
+  publisherEntitySchema,
   resolvePublisherEntitiesRequestSchema,
   resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
+  updatePublisherEntityModuleSettingsRequestSchema,
 } from '../src/publisher.js';
 import { systemRuntimeProfileSchema } from '../src/system-core.js';
 
@@ -48,7 +50,6 @@ describe('publisher contracts', () => {
           entityType: 'channel',
           policy: {
             publikEnabled: true,
-            suggestionsViaPublik: false,
             revision: 0,
             updatedAt: null,
           },
@@ -69,20 +70,61 @@ describe('publisher contracts', () => {
     expect(response.items[0]).toMatchObject({
       avatarUrl: null,
       entityUrl: null,
-      settingsHandoffUrl: null,
+      moduleSettings: {
+        revision: 0,
+        chatComments: null,
+        channelSuggestionsEnabled: null,
+      },
     });
   });
 
-  it('accepts nullable publisher navigation links and validates URL values', () => {
+  it('keeps Publik-owned chat comment module settings separate from Major presentation data', () => {
+    const entity = publisherEntitySchema.parse({
+      id: 'chat-1',
+      title: 'Команда',
+      entityType: 'chat',
+      policy: {
+        publikEnabled: true,
+        revision: 3,
+        updatedAt: null,
+      },
+      moduleSettings: {
+        revision: 2,
+        chatComments: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: false,
+          commentsChatBroadcastsEnabled: true,
+        },
+        channelSuggestionsEnabled: null,
+      },
+      readiness: {
+        state: 'ready',
+        canPublish: true,
+        canUseChatComments: true,
+        canPublishSuggestions: false,
+        blockerCode: null,
+        checkedAt: null,
+        retryAt: null,
+      },
+    });
+
+    expect(entity.moduleSettings.chatComments).toEqual({
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    });
+    expect(entity).not.toHaveProperty('settingsHandoffUrl');
+    expect(entity).not.toHaveProperty('channelOverview');
+  });
+
+  it('accepts exact Publisher presentation links and rejects Major-owned fields', () => {
     const entity = {
       id: 'chat-1',
       title: 'Команда',
       entityType: 'chat',
       entityUrl: 'https://max.ru/team',
-      settingsHandoffUrl: 'https://max.ru/entry_bot?startapp=mr-route',
       policy: {
         publikEnabled: true,
-        suggestionsViaPublik: false,
         revision: 0,
         updatedAt: null,
       },
@@ -99,24 +141,29 @@ describe('publisher contracts', () => {
 
     expect(publisherEntitiesResponseSchema.parse({ items: [entity] }).items[0]).toMatchObject({
       entityUrl: entity.entityUrl,
-      settingsHandoffUrl: entity.settingsHandoffUrl,
     });
     expect(
       publisherEntitiesResponseSchema.safeParse({
         items: [{ ...entity, entityUrl: 'not-a-url' }],
       }).success,
     ).toBe(false);
+    expect(
+      publisherEntitiesResponseSchema.safeParse({
+        items: [{ ...entity, settingsHandoffUrl: 'https://max.ru/major' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      publisherEntitiesResponseSchema.safeParse({
+        items: [{ ...entity, channelOverview: null }],
+      }).success,
+    ).toBe(false);
   });
 
-  it('keeps the legacy entity-list response compatible while retaining cursor metadata', () => {
-    expect(publisherEntitiesResponseSchema.parse({ items: [] })).toEqual({
-      items: [],
-      setupHandoffUrl: null,
-    });
+  it('keeps entity-list cursor metadata without a Major setup handoff', () => {
+    expect(publisherEntitiesResponseSchema.parse({ items: [] })).toEqual({ items: [] });
 
     const cursorResponse = publisherEntitiesCursorResponseSchema.parse({
       items: [],
-      setupHandoffUrl: 'https://max.ru/entry-bot?startapp=mr-home',
       nextCursor: null,
       filteredTotal: 2,
       summary: {
@@ -186,7 +233,7 @@ describe('publisher contracts', () => {
     expect(decodePublisherEntitiesCursor(`${cursor}!`)).toBeNull();
   });
 
-  it('requires an optimistic revision and at least one policy change', () => {
+  it('keeps Major policy and Publisher module mutations separate', () => {
     expect(
       updateManagedEntityPublicationPolicyRequestSchema.safeParse({ expectedRevision: 0 }).success,
     ).toBe(false);
@@ -196,6 +243,33 @@ describe('publisher contracts', () => {
         publikEnabled: false,
       }),
     ).toEqual({ expectedRevision: 2, publikEnabled: false });
+    expect(
+      updatePublisherEntityModuleSettingsRequestSchema.parse({
+        expectedRevision: 4,
+        chatComments: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: true,
+          commentsChatBroadcastsEnabled: false,
+        },
+      }),
+    ).toEqual({
+      expectedRevision: 4,
+      chatComments: {
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsChatBroadcastsEnabled: false,
+      },
+    });
+    expect(
+      updateManagedEntityPublicationPolicyRequestSchema.safeParse({
+        expectedRevision: 4,
+        chatComments: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: true,
+          commentsChatBroadcastsEnabled: false,
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('keeps an accepted publisher refresh response free of routing details', () => {

@@ -31,7 +31,7 @@ test('publisher virtual list uses the same stable row height in TypeScript and C
     )?.[1],
   );
 
-  assert.equal(sourceHeight, 196);
+  assert.equal(sourceHeight, 154);
   assert.equal(cssHeight, sourceHeight);
   assert.match(pageCss, /overflow-y: auto;[\s\S]*?touch-action: pan-y;/u);
   assert.match(
@@ -42,7 +42,6 @@ test('publisher virtual list uses the same stable row height in TypeScript and C
 
 test('publisher entity actions keep native touch targets at least 44px tall', () => {
   assert.match(pageCss, /\.publisher-entity-row__module-action \{[\s\S]*?min-height: 44px;/u);
-  assert.match(pageCss, /\.publisher-entity-row__primary \{[\s\S]*?min-height: 44px;/u);
   assert.match(
     pageCss,
     /\.publisher-entity-row__refresh \{\s*width: 44px;\s*min-width: 44px;\s*height: 44px;/u,
@@ -76,4 +75,6 @@ test('publisher catalog relies on bottom navigation without duplicate type tabs'
   assert.doesNotMatch(pageSource, /SegmentedControl|publisher-entities-page__tabs/u);
   assert.match(pageSource, /view === 'channel' \? 'Каналы' : 'Чаты'/u);
   assert.match(pageSource, /Добавьте Публик/u);
+  assert.match(pageSource, /buildPublisherEntityModulesRoute\(entity\)/u);
+  assert.doesNotMatch(pageSource, /suggestionsViaPublik: enabled/u);
 });

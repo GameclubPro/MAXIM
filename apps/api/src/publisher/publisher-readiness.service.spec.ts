@@ -9,10 +9,21 @@ import {
   type PublisherReadinessSource,
 } from './publisher-readiness.service';
 
-function createService() {
+function createService(
+  options: {
+    source?: PublisherReadinessSource | null;
+    runtimeAvailable?: boolean;
+  } = {},
+) {
   return new PublisherReadinessService(
-    {} as never,
-    { read: jest.fn() } as never,
+    {
+      chat: { findUnique: jest.fn().mockResolvedValue(options.source ?? null) },
+    } as never,
+    {
+      read: jest.fn().mockResolvedValue({
+        dispatchEnabled: options.runtimeAvailable ?? true,
+      }),
+    } as never,
     {
       get: jest.fn((key: string, fallback?: unknown) => {
         if (key === 'MAX_PUBLISHER_BOT_ID') return 'publik-bot';
@@ -29,6 +40,10 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
     id: 'chat-1',
     entityType: ChatEntityType.CHAT,
     publicationPolicy: null,
+    publisherSettings: {
+      chatCommentsEnabled: true,
+      channelSuggestionsEnabled: false,
+    },
     publisherBinding: {
       publisherBotId: 'publik-bot',
       status: ChatBotMembershipStatus.ACTIVE,
@@ -78,15 +93,55 @@ describe('PublisherReadinessService', () => {
       entityType: ChatEntityType.CHANNEL,
       publicationPolicy: {
         publikEnabled: true,
-        suggestionsViaPublik: true,
         revision: 2,
         updatedAt: new Date(),
+      },
+      publisherSettings: {
+        chatCommentsEnabled: false,
+        channelSuggestionsEnabled: true,
       },
     });
     expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
       canPublish: true,
       canUseChatComments: false,
       canPublishSuggestions: true,
+    });
+  });
+
+  it.each([
+    [
+      'chat comments',
+      'chat_comments' as const,
+      readySource({
+        publisherSettings: {
+          chatCommentsEnabled: false,
+          channelSuggestionsEnabled: false,
+        },
+      }),
+    ],
+    [
+      'channel suggestions',
+      'suggestion_publish' as const,
+      readySource({
+        entityType: ChatEntityType.CHANNEL,
+        publisherSettings: {
+          chatCommentsEnabled: false,
+          channelSuggestionsEnabled: false,
+        },
+      }),
+    ],
+  ])('rejects disabled %s without disabling Publisher posting', async (_label, feature, source) => {
+    const service = createService({ source, runtimeAvailable: true });
+
+    expect(service.resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
+      state: 'ready',
+      canPublish: true,
+    });
+    await expect(service.assertEntityReady(source.id, feature)).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'PUBLISHER_SETUP_REQUIRED',
+        blockerCode: 'module_disabled',
+      }),
     });
   });
 });

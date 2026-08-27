@@ -18,6 +18,11 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,256}$/u;
 const BOT_ID_PATTERN = /^[A-Za-z0-9_-]{3,128}$/u;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const MAX_BUNDLE_BYTES = 8 * 1024;
+const PUBLISHER_DIALOG_SIGNING_DOMAIN = 'MAXIM Publisher Dialog Links v1';
+
+export function derivePublisherDialogSigningKey(token) {
+  return createHmac('sha256', PUBLISHER_DIALOG_SIGNING_DOMAIN).update(token).digest('base64');
+}
 
 export function buildPublisherSecretBundle(tokenBytes, botId = 'se14088825_bot') {
   const rawToken = Buffer.isBuffer(tokenBytes) ? tokenBytes.toString('utf8') : String(tokenBytes);
@@ -34,6 +39,7 @@ export function buildPublisherSecretBundle(tokenBytes, botId = 'se14088825_bot')
   const secretPath = randomBytes(32).toString('base64url');
   const headerSecret = randomBytes(32).toString('base64url');
   const initDataKey = createHmac('sha256', 'WebAppData').update(token).digest('base64');
+  const dialogSigningKey = derivePublisherDialogSigningKey(token);
   return {
     version: 1,
     botId,
@@ -49,6 +55,11 @@ export function buildPublisherSecretBundle(tokenBytes, botId = 'se14088825_bot')
       botId,
       keys: [initDataKey],
     },
+    dialogSigning: {
+      version: 1,
+      botId,
+      keys: [dialogSigningKey],
+    },
   };
 }
 
@@ -57,13 +68,28 @@ export function validatePublisherSecretBundle(value) {
     throw new Error('Publisher secret bundle is invalid.');
   }
   const { botId, actionToken, webhook, initData } = value;
-  const decodedKeys = Array.isArray(initData?.keys)
-    ? initData.keys.map((key) => {
-        if (typeof key !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/u.test(key)) return null;
-        const bytes = Buffer.from(key, 'base64');
-        return bytes.toString('base64') === key && bytes.length === 32 ? bytes : null;
-      })
-    : [];
+  const dialogSigning =
+    value.dialogSigning ??
+    (typeof actionToken === 'string' &&
+    TOKEN_PATTERN.test(actionToken) &&
+    typeof botId === 'string' &&
+    BOT_ID_PATTERN.test(botId)
+      ? {
+          version: 1,
+          botId,
+          keys: [derivePublisherDialogSigningKey(actionToken)],
+        }
+      : null);
+  const decodeKeys = (container) =>
+    Array.isArray(container?.keys)
+      ? container.keys.map((key) => {
+          if (typeof key !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/u.test(key)) return null;
+          const bytes = Buffer.from(key, 'base64');
+          return bytes.toString('base64') === key && bytes.length === 32 ? bytes : null;
+        })
+      : [];
+  const decodedKeys = decodeKeys(initData);
+  const decodedDialogSigningKeys = decodeKeys(dialogSigning);
   if (
     value.version !== 1 ||
     typeof botId !== 'string' ||
@@ -85,11 +111,16 @@ export function validatePublisherSecretBundle(value) {
     initData?.botId !== botId ||
     decodedKeys.length < 1 ||
     decodedKeys.length > 2 ||
-    decodedKeys.some((key) => key === null)
+    decodedKeys.some((key) => key === null) ||
+    dialogSigning?.version !== 1 ||
+    dialogSigning?.botId !== botId ||
+    decodedDialogSigningKeys.length < 1 ||
+    decodedDialogSigningKeys.length > 2 ||
+    decodedDialogSigningKeys.some((key) => key === null)
   ) {
     throw new Error('Publisher secret bundle fields are invalid.');
   }
-  return value;
+  return { ...value, dialogSigning };
 }
 
 function writePrivateExclusive(path, contents) {
@@ -149,6 +180,10 @@ function runCli(argv) {
     writePrivateExclusive(
       join(outputDirectory, 'publik-init-data-keys.json'),
       `${JSON.stringify(bundle.initData)}\n`,
+    );
+    writePrivateExclusive(
+      join(outputDirectory, 'publik-dialog-signing-keys.json'),
+      `${JSON.stringify(bundle.dialogSigning)}\n`,
     );
     return;
   }

@@ -163,7 +163,7 @@ export function VkParsingCard({
   active,
   entityType = 'channel',
   channelLinkUrl,
-  postSignature = { enabled: false, text: CHANNEL_POST_SIGNATURE_DEFAULT_TEXT, url: '' },
+  postSignature,
 }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;
@@ -172,6 +172,11 @@ export function VkParsingCard({
       ? sources.reduce((sum, source) => sum + source.publishedPostCount, 0)
       : posts.filter((post) => post.status === 'PUBLISHED').length;
   const autopostStatus = feed ? buildAutopostStatus(settings, sources) : null;
+  const effectivePostSignature = postSignature ?? {
+    enabled: settings.appendChannelLinkEnabled,
+    text: settings.channelLinkText || CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
+    url: '',
+  };
 
   return (
     <div className="vk-parsing-card">
@@ -247,7 +252,7 @@ export function VkParsingCard({
         <PostList
           posts={posts}
           settings={settings}
-          postSignature={postSignature}
+          postSignature={effectivePostSignature}
           channelLinkUrl={channelLinkUrl}
           editingPostId={state.editingPostId}
           publishingPostId={state.publishingPostId}

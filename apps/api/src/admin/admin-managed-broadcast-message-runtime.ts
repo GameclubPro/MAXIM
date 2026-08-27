@@ -1,10 +1,7 @@
 import { ServiceUnavailableException, type Logger } from '@nestjs/common';
 import type { ManagedEntityType, SendBroadcastRequest } from '@maxim/contracts';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
-import {
-  MAX_API_SOURCE_TAGS,
-  type MaxSendMessageOptions,
-} from '../max/max-client.service';
+import { MAX_API_SOURCE_TAGS, type MaxSendMessageOptions } from '../max/max-client.service';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import type { ManagedBroadcastCommentDialogReference } from './admin-managed-broadcast-ledger';
 import type { ManagedBroadcastResolvedMedia } from './admin.service.support';
@@ -41,7 +38,7 @@ export class AdminManagedBroadcastMessageRuntime {
       : null;
     if (publisherDialog?.required && !preparedDialog) {
       throw new ServiceUnavailableException(
-        'Publisher delivery is missing its main-bot signed dialog context',
+        'Publisher delivery is missing its Publisher-signed dialog context',
       );
     }
     const resolvedDialog = preparedDialog
@@ -76,17 +73,18 @@ export class AdminManagedBroadcastMessageRuntime {
           ? ' '
           : '';
     const baseTextFormat: MaxSendMessageOptions['textFormat'] = richText ? 'html' : undefined;
-    const preparedText = this.context.channelPostSignatureService
-      ? await this.context.channelPostSignatureService.preparePostText(
-          chatId,
-          { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
-          {
-            entityType,
-            trafficClass: 'background',
-            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-          },
-        )
-      : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
+    const preparedText =
+      !publisherDialog?.required && this.context.channelPostSignatureService
+        ? await this.context.channelPostSignatureService.preparePostText(
+            chatId,
+            { text: baseText, ...(baseTextFormat ? { textFormat: baseTextFormat } : {}) },
+            {
+              entityType,
+              trafficClass: 'background',
+              sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+            },
+          )
+        : { text: baseText, textFormat: baseTextFormat, signatureApplied: false };
     const messageOptions =
       buttons.length > 0 || hasMedia || preparedText.textFormat
         ? {

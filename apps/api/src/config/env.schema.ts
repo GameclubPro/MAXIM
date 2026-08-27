@@ -23,6 +23,7 @@ import { parseCanonicalCommercialOcrApprovalPublicKeyBase64 } from '../moderatio
 import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
 import {
   readPublisherActionTokenFile,
+  readPublisherDialogSigningKeysFile,
   readPublisherWebhookCredentialFile,
 } from '../publisher/publisher-secret-files';
 
@@ -174,6 +175,10 @@ const envSchema = z.object({
   MAX_PUBLISHER_BOT_TOKEN_FILE: z.string().trim().min(1).optional(),
   MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: z.string().trim().min(1).optional(),
   MAX_PUBLISHER_INIT_DATA_KEYS_FILE: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().trim().min(1).optional(),
+  ),
+  MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: z.preprocess(
     (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.string().trim().min(1).optional(),
   ),
@@ -806,16 +811,18 @@ function resolvePublisherRuntimeSecrets(config: Record<string, unknown>): Record
 
   const tokenFile = readTrimmedEnvValue(config.MAX_PUBLISHER_BOT_TOKEN_FILE);
   const webhookFile = readTrimmedEnvValue(config.MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE);
-  if (!tokenFile || !webhookFile) {
+  const dialogSigningKeyFile = readTrimmedEnvValue(config.MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE);
+  if (!tokenFile || !webhookFile || !dialogSigningKeyFile) {
     throw new Error(
-      'Environment validation failed: publisher runtime requires file-mounted bot and webhook credentials',
+      'Environment validation failed: publisher runtime requires file-mounted bot, webhook, and dialog signing credentials',
     );
   }
   const token = readPublisherActionTokenFile(tokenFile);
   const webhook = readPublisherWebhookCredentialFile(webhookFile);
-  if (webhook.botId !== publisherBotId) {
+  const dialogSigningKeys = readPublisherDialogSigningKeysFile(dialogSigningKeyFile);
+  if (webhook.botId !== publisherBotId || dialogSigningKeys.botId !== publisherBotId) {
     throw new Error(
-      'Environment validation failed: publisher webhook credential bot id does not match MAX_PUBLISHER_BOT_ID',
+      'Environment validation failed: publisher credential bot id does not match MAX_PUBLISHER_BOT_ID',
     );
   }
 

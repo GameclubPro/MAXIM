@@ -26,6 +26,10 @@ import {
   type AdminActionSource,
   type ApplySettingsToAllChatsResult,
 } from './admin.service.support';
+import {
+  DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
+  omitPublisherOwnedChatSettings,
+} from './publisher-owned-chat-settings';
 
 type SettingsApplyReadinessRefresh = {
   chatIds: readonly string[];
@@ -175,6 +179,12 @@ export async function applySettingsToAllChats(params: {
           ...settingsUpdatePayload,
         }
       : normalizedSettings;
+  // FLAG: Major bulk UPDATE payloads omit Publisher-owned comment fields entirely.
+  const majorSettingsUpdatePayload = omitPublisherOwnedChatSettings(settingsUpdatePayload);
+  const majorSettingsCreatePayload = {
+    ...omitPublisherOwnedChatSettings(settingsCreatePayload),
+    ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
+  };
 
   await mapWithConcurrencyLimit(
     appliedChatIds,
@@ -196,14 +206,18 @@ export async function applySettingsToAllChats(params: {
               botSpeechMediaKeys,
             )
           : normalizedSettings.botSpeechMedia;
-      const updatePayloadForChat =
-        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
-          ? { ...settingsUpdatePayload, botSpeechMedia: scopedBotSpeechMedia }
-          : settingsUpdatePayload;
-      const createPayloadForChat =
-        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
-          ? { ...settingsCreatePayload, botSpeechMedia: scopedBotSpeechMedia }
-          : settingsCreatePayload;
+      const updatePayloadForChat = {
+        ...majorSettingsUpdatePayload,
+        ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+          ? { botSpeechMedia: scopedBotSpeechMedia }
+          : {}),
+      };
+      const createPayloadForChat = {
+        ...majorSettingsCreatePayload,
+        ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+          ? { botSpeechMedia: scopedBotSpeechMedia }
+          : {}),
+      };
       await params.prisma.$transaction([
         params.prisma.chat.upsert({
           where: { id: chatId },

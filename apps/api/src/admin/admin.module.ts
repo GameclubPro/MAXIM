@@ -72,6 +72,7 @@ import { VkApiClientService } from './vk-api-client.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
+import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import { VkParsingPostImportRepository } from './vk-parsing-post-import.repository';
 import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 import { VkParsingService } from './vk-parsing.service';
@@ -86,6 +87,7 @@ import { SupportRequestsService } from './support-requests.service';
 import { PublisherController } from './publisher.controller';
 import { PublisherEntityRefreshService } from './publisher-entity-refresh.service';
 import { PublisherPolicyService } from './publisher-policy.service';
+import { PublisherSuggestionService } from './publisher-suggestion.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherSuggestionPublicationProcessor } from './publisher-suggestion-publication.processor';
@@ -167,6 +169,7 @@ import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-p
     PublicationRunnerService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherPublicationDispatchRunnerService] : []),
     PublisherPolicyService,
+    PublisherSuggestionService,
     PublisherEntityRefreshService,
     PublisherReadinessService,
     PublisherSuggestionPublicationQueueService,
@@ -180,6 +183,7 @@ import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-p
     VkSyncService,
     VkPublishService,
     VkParsingMediaCacheService,
+    VkParsingOwnershipService,
     VkParsingPostImportRepository,
     VkParsingService,
     SafetyDeskAdminGuard,
@@ -224,6 +228,7 @@ import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-p
     VkSyncService,
     VkPublishService,
     VkParsingMediaCacheService,
+    VkParsingOwnershipService,
     VkParsingPostImportRepository,
     VkParsingService,
     SupportRequestsService,

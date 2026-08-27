@@ -6,6 +6,7 @@
 /token
 /publik-webhook.json
 /publik-init-data-keys.json
+/publik-dialog-signing-keys.json
 
 node_modules
 dist

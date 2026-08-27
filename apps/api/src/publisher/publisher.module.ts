@@ -26,6 +26,9 @@ import {
   PublisherRuntimeHeartbeatWriterService,
 } from './publisher-runtime-heartbeat.service';
 import { PublisherWebhookSubscriptionReconcilerService } from './publisher-webhook-subscription-reconciler.service';
+import { PublisherDialogLinkService } from './publisher-dialog-link.service';
+import { PublisherChatCommentProducerService } from './publisher-chat-comment-producer.service';
+import { PublisherDialogSigningKeyService } from './publisher-dialog-signing-key.service';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -47,6 +50,9 @@ const sharedPublisherProviders = [
   PublisherChatCommentQueueService,
   PublisherDispatchHealthService,
   PublisherEntityBindingLifecycleService,
+  PublisherDialogSigningKeyService,
+  PublisherDialogLinkService,
+  PublisherChatCommentProducerService,
 ];
 
 @Global()

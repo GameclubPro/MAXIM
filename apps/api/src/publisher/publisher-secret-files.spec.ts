@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   readPublisherActionTokenFile,
+  readPublisherDialogSigningKeysFile,
   readPublisherInitDataKeysFile,
   readPublisherWebhookCredentialFile,
 } from './publisher-secret-files';
@@ -82,6 +83,20 @@ describe('publisher secret files', () => {
       version: 1,
       botId: 'se14088825_bot',
       keys: [key],
+    });
+  });
+
+  it('loads isolated Publisher dialog signing keys without a bot token', () => {
+    const path = join(directory, 'dialog-signing.json');
+    const keys = [Buffer.alloc(32, 3).toString('base64'), Buffer.alloc(32, 4).toString('base64')];
+    writeFileSync(path, JSON.stringify({ version: 1, botId: 'se14088825_bot', keys }), {
+      mode: 0o600,
+    });
+
+    expect(readPublisherDialogSigningKeysFile(path)).toEqual({
+      version: 1,
+      botId: 'se14088825_bot',
+      keys,
     });
   });
 });

@@ -114,8 +114,6 @@ import {
   updateRules,
   updateSettings,
 } from '../lib/api/chat-settings-client';
-import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
-import { describeVkParsingCapability } from '../lib/vk-parsing-capability';
 import { buildBroadcastSendFeedback } from '../lib/broadcast-send-feedback';
 import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
 import { getMe } from '../lib/api/me-client';
@@ -206,7 +204,6 @@ import {
   resolveLegacyBroadcastEditorTarget,
   resolveLegacyPublicationReturnPath,
 } from '../features/publications/legacy-autoposts';
-import { SettingsCommentsSection } from './settings/settings-comments-section';
 import { SettingsCommercialFilterSection } from './settings/settings-commercial-filter-section';
 import {
   formatDuplicatePhotoCoverageLabel,
@@ -222,14 +219,12 @@ import { SettingsStopWordsSection } from './settings/settings-stop-words-section
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
   BOT_SPEECH_SYNC_SETTING_KEYS,
-  COMMENTS_SETTING_KEYS,
   SECTION_SETTING_KEYS,
   type ApplySectionKey,
   applyRequiredSubscriptionChannelAddition,
   enableDefaultSanctionStages,
   hasSectionBotSpeechMediaChanges,
   mergeBotSpeechStyleSettings,
-  mergeCommentsSettings,
   mergeSectionSettings,
 } from './settings-page-state';
 import {
@@ -265,7 +260,6 @@ import {
   LazySettingsHandoffState as HandoffState,
   LazyManagedGiveawayCard,
   LazyActionConfirmMarkdownPreview,
-  LazyVkParsingCard,
   LazyManagedAutopostRuleCard,
   LazyManagedBroadcastHistoryCard,
   LazySettingsTimeFields,
@@ -856,13 +850,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const vkParsingCapabilityQuery = useQuery({
-    queryKey: ['vk-parsing-capability', 'chat', chatId],
-    queryFn: () => getVkParsingCapability(api, 'chat', chatId ?? ''),
-    enabled: Boolean(chatId),
-    staleTime: 5 * 60_000,
-    refetchOnWindowFocus: false,
-  });
   const spammerReviewMetricsQuery = useQuery({
     queryKey: ['global-spammer-review-metrics', chatId, 'summary'],
     queryFn: ({ signal }) =>
@@ -871,10 +858,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const vkParsingCapability = vkParsingCapabilityQuery.data ?? null;
-  const canAccessVkParsing = vkParsingCapability?.canUse === true;
-  const shouldShowVkParsingSection =
-    canAccessVkParsing || vkParsingCapability?.reasonCode === 'NOT_CONFIGURED';
   const adminContactProfileUrl = useMemo(
     () => resolveAdminContactProfileUrl(meQuery.data ?? {}),
     [meQuery.data],
@@ -1324,28 +1307,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const savingSection = saveSectionMutation.variables?.section ?? null;
   const mutateSettingsAsync = saveSectionMutation.mutateAsync;
 
-  const saveCommentsMutation = useMutation({
-    mutationFn: (payload: ChatSettings) => updateSettings(api, chatId ?? '', payload),
-    onSuccess: (saved) => {
-      syncSavedCommentsSettings(saved);
-      pushToast({
-        tone: 'success',
-        title: 'Комментарии сохранены',
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось сохранить комментарии',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-  const isSavingComments = saveCommentsMutation.isPending;
-  const mutateCommentsAsync = saveCommentsMutation.mutateAsync;
-
   const recheckAccessMutation = useMutation({
     mutationFn: () => recheckManagedEntityAccess(api, 'chat', chatId ?? ''),
     onSuccess: () => {
@@ -1507,7 +1468,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const isHeaderSaving =
     isSavingSettings ||
-    isSavingComments ||
     isSavingRules ||
     isSavingSpeechStyle ||
     updateRulesAttachMutation.isPending;
@@ -2189,24 +2149,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function clearCommentsErrors() {
-    setFieldErrors((current) => {
-      let changed = false;
-      const next = { ...current };
-
-      for (const key of COMMENTS_SETTING_KEYS) {
-        if (!next[key]) {
-          continue;
-        }
-
-        delete next[key];
-        changed = true;
-      }
-
-      return changed ? next : current;
-    });
-  }
-
   function clearBotSpeechErrors() {
     setFieldErrors((current) => {
       let changed = false;
@@ -2242,21 +2184,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 normalizedSaved,
                 section,
               ),
-            }
-          : current,
-    );
-  }
-
-  function syncSavedCommentsSettings(saved: ChatSettings) {
-    setDraft((current) => (current ? mergeCommentsSettings(current, saved) : saved));
-    clearCommentsErrors();
-    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-      ['settings-screen', chatId],
-      (current) =>
-        current
-          ? {
-              ...current,
-              settings: mergeCommentsSettings(current.settings, saved),
             }
           : current,
     );
@@ -3316,9 +3243,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    navigate(
-      `/publications?compose=1&entityType=chat&entityId=${encodeURIComponent(chatId ?? '')}`,
-    );
+    navigate('/publications');
   }
 
   function handleCloseMailingPublishReview() {
@@ -3371,7 +3296,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (!editingManagedAutopostRule) {
-      navigate(`/publications?compose=1&entityType=chat&entityId=${encodeURIComponent(chatId)}`);
+      navigate('/publications');
       return;
     }
 
@@ -3418,7 +3343,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (!editingManagedBroadcast && !hasLegacyBroadcastHandoff) {
-      navigate(`/publications?compose=1&entityType=chat&entityId=${encodeURIComponent(chatId)}`);
+      navigate('/publications');
       return;
     }
 
@@ -4724,24 +4649,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
-  const commentsTargetSummary = [
-    draft?.commentsAdminsEnabled ? 'сообщения админов' : null,
-    draft?.commentsChatBroadcastsEnabled ? 'автопостинг' : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-  const commentsCardSummary = !draft?.commentsEnabled
-    ? 'обсуждение выключено'
-    : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const commentsCardStatus = !draft?.commentsEnabled
-    ? 'Выкл'
-    : draft.commentsAdminsEnabled && draft.commentsChatBroadcastsEnabled
-      ? '2 зоны'
-      : draft.commentsAdminsEnabled
-        ? 'Админ'
-        : draft.commentsChatBroadcastsEnabled
-          ? 'Авто'
-          : 'Вкл';
   const mailingAudiencePreviewBundle = buildBroadcastAudiencePreviewBundle({
     targetChatIds:
       mailingTargetMode === 'all'
@@ -5012,15 +4919,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  function isCommentsDirty() {
-    if (!draft || !settingsQuery.data) {
-      return false;
-    }
-
-    const savedSettings = settingsQuery.data;
-    return COMMENTS_SETTING_KEYS.some((key) => draft[key] !== savedSettings[key]);
-  }
-
   function discardSectionChanges(section: ApplySectionKey) {
     const savedSettings = settingsQuery.data;
     if (!savedSettings) {
@@ -5030,15 +4928,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setDraft((current) =>
       current ? mergeSectionSettings(current, savedSettings, section) : current,
     );
-  }
-
-  function discardCommentsChanges() {
-    const savedSettings = settingsQuery.data;
-    if (!savedSettings) {
-      return;
-    }
-
-    setDraft((current) => (current ? mergeCommentsSettings(current, savedSettings) : current));
   }
 
   function buildSectionPayload(section: ApplySectionKey) {
@@ -5056,14 +4945,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : draft;
 
     return validateDraft(mergeSectionSettings(baseSettings, draftSettings, section));
-  }
-
-  function buildCommentsPayload() {
-    if (!draft || !settingsQuery.data) {
-      return null;
-    }
-
-    return validateDraft(mergeCommentsSettings(settingsQuery.data, draft));
   }
 
   function buildBotSpeechStylePayload(style: BotSpeechStyle) {
@@ -5097,34 +4978,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     try {
       await mutateSettingsAsync({ section, payload });
       closeSection(section);
-    } catch {
-      // Errors are handled by the mutation.
-    }
-  }
-
-  async function handleSaveComments() {
-    if (!chatId) {
-      return;
-    }
-
-    if (!isCommentsDirty()) {
-      closeSection('comments');
-      return;
-    }
-
-    const payload = buildCommentsPayload();
-    if (!payload) {
-      pushToast({
-        tone: 'danger',
-        title: 'Исправьте блок «Комментарии»',
-        description: 'В блоке есть ошибки, их нужно исправить перед сохранением.',
-      });
-      return;
-    }
-
-    try {
-      await mutateCommentsAsync(payload);
-      closeSection('comments');
     } catch {
       // Errors are handled by the mutation.
     }
@@ -5384,9 +5237,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <h2 className="settings-home-group-head__title">Контент</h2>
             </div>
 
-            <div className="settings-home-group-head stagger-in" style={{ order: 30 }}>
-              <h2 className="settings-home-group-head__title">Бот</h2>
-            </div>
             {chatId ? (
               <PublisherPolicyCardEntry api={api} entityType="chat" entityId={chatId} />
             ) : null}
@@ -6996,7 +6846,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <GlassCard
                 className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
                 style={{ animationDelay: '315ms', order: 5 }}
-                aria-label="Посты"
+                aria-label="Расписания"
                 padding="sm"
               >
                 <PublicationWorkspaceHandoff
@@ -7428,109 +7278,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </SettingsDrilldownPanel>
               </GlassCard>
             ) : null}
-
-            {shouldShowVkParsingSection ? (
-              <GlassCard
-                className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-                style={{ animationDelay: '326ms', order: 6 }}
-                aria-label="Посты из VK"
-              >
-                <div
-                  className={cn('settings-section__head', 'settings-section__head--interactive')}
-                >
-                  <SettingsSectionToggle
-                    title="Посты из VK"
-                    summary="Импорт и автопубликация из VK"
-                    status="Импорт"
-                    icon="links"
-                    tone="ink"
-                    open={expandedSections.vkParsing}
-                    controls="settings-vk-parsing-content"
-                    onClick={() => toggleSection('vkParsing')}
-                  />
-                </div>
-
-                <SettingsDrilldownPanel
-                  id="settings-vk-parsing-content"
-                  open={expandedSections.vkParsing}
-                  title="Посты из VK"
-                  tone="ink"
-                  className="settings-drilldown__panel--campaign settings-drilldown__panel--vk-parsing"
-                  onClose={() => toggleSection('vkParsing')}
-                >
-                  <div
-                    id="settings-vk-parsing-content"
-                    className={cn(
-                      'settings-section__collapse',
-                      expandedSections.vkParsing && 'is-open',
-                    )}
-                  >
-                    {expandedSections.vkParsing ? (
-                      <div className="settings-section__collapse-inner">
-                        {canAccessVkParsing ? (
-                          <Suspense fallback={<SkeletonCard lines={4} />}>
-                            <LazyVkParsingCard
-                              api={api}
-                              chatId={chatId ?? ''}
-                              active={expandedSections.vkParsing}
-                              entityType="chat"
-                            />
-                          </Suspense>
-                        ) : vkParsingCapability ? (
-                          <StatusState
-                            tone="warning"
-                            title="Импорт из VK не настроен"
-                            description={describeVkParsingCapability(vkParsingCapability)}
-                            action={
-                              <button
-                                type="button"
-                                className="button button--ghost"
-                                disabled={vkParsingCapabilityQuery.isFetching}
-                                onClick={() => void vkParsingCapabilityQuery.refetch()}
-                              >
-                                Проверить снова
-                              </button>
-                            }
-                          />
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </SettingsDrilldownPanel>
-              </GlassCard>
-            ) : null}
-
-            <SettingsCommentsSection
-              draft={draft}
-              expanded={expandedSections.comments}
-              summary={commentsCardSummary}
-              status={commentsCardStatus}
-              openHintKey={openHintKey}
-              isSaving={isSavingComments}
-              canSave={isCommentsDirty()}
-              onToggleSection={() => toggleSection('comments')}
-              onToggleHint={toggleHint}
-              onSave={() => void handleSaveComments()}
-              onDiscardChanges={discardCommentsChanges}
-              onToggleCommentsEnabled={(enabled) =>
-                setDraft((current) =>
-                  current
-                    ? {
-                        ...current,
-                        commentsEnabled: enabled,
-                        commentsAdminsEnabled:
-                          enabled &&
-                          !current.commentsAdminsEnabled &&
-                          !current.commentsChatBroadcastsEnabled
-                            ? true
-                            : current.commentsAdminsEnabled,
-                        commentsAllEnabled: false,
-                      }
-                    : current,
-                )
-              }
-              onFieldChange={(key, value) => setFieldValue(key, value)}
-            />
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"

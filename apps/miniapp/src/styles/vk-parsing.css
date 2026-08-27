@@ -1,6 +1,6 @@
 @layer pages {
   /* VK parsing: compact operational layout. */
-  .settings-drilldown__panel--vk-parsing {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) {
     --settings-panel-accent: #0a7cff;
     --settings-panel-accent-soft: rgba(10, 124, 255, 0.08);
     --settings-panel-accent-soft-strong: rgba(10, 124, 255, 0.14);
@@ -81,18 +81,18 @@
     border: 0;
   }
 
-  .settings-drilldown__panel--vk-parsing .settings-native-switch,
-  .settings-drilldown__panel--vk-parsing .toggle-switch {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) .settings-native-switch,
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) .toggle-switch {
     width: 34px;
     height: 20px;
   }
 
-  .settings-drilldown__panel--vk-parsing .toggle-switch__thumb {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) .toggle-switch__thumb {
     width: 14px;
     height: 14px;
   }
 
-  .settings-drilldown__panel--vk-parsing
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     .settings-native-switch
     input:checked
     + .toggle-switch
@@ -123,6 +123,52 @@
     grid-template-columns: minmax(96px, 1fr) minmax(76px, auto) minmax(126px, 132px);
     align-items: center;
     gap: 6px;
+  }
+
+  .vk-autopost-mode,
+  .vk-source-mode-control {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--vk-line);
+    border-radius: var(--vk-radius);
+    background: var(--vk-soft);
+  }
+
+  .vk-autopost-mode {
+    grid-column: 1 / -1;
+  }
+
+  :is(.vk-autopost-mode, .vk-source-mode-control) button {
+    min-width: 0;
+    min-height: 40px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    color: var(--vk-muted-strong);
+    background: transparent;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 720;
+    cursor: pointer;
+  }
+
+  :is(.vk-autopost-mode, .vk-source-mode-control) button.is-active {
+    color: var(--vk-accent-dark);
+    background: var(--vk-surface);
+    box-shadow: var(--vk-shadow);
+  }
+
+  :is(.vk-autopost-mode, .vk-source-mode-control) button:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+
+  .vk-source-mode-control button {
+    min-height: 44px;
+    padding-inline: 6px;
+    font-size: 0.72rem;
   }
 
   .vk-autopost-status {
@@ -2290,7 +2336,8 @@
     }
   }
 
-  html[data-max-theme='dark'] .settings-drilldown__panel--vk-parsing {
+  html[data-max-theme='dark']
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) {
     color-scheme: dark;
 
     --settings-panel-accent: #6ab8ff;
@@ -2325,7 +2372,9 @@
     --vk-danger: #ff909d;
     --vk-danger-soft: rgba(255, 144, 157, 0.15);
     --vk-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  }
 
+  html[data-max-theme='dark'] .settings-drilldown__panel--vk-parsing {
     border-color: var(--vk-line-strong);
     background: var(--vk-bg);
     box-shadow:
@@ -2373,7 +2422,7 @@
   }
 
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     :is(
       .vk-setup-switch,
       .vk-source-toggle,
@@ -2397,7 +2446,7 @@
   }
 
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     :is(
       .vk-segmented-buttons button.is-active,
       .vk-parsing-filter-chip.is-active,
@@ -2409,7 +2458,7 @@
   }
 
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     :is(
       .vk-parsing-source-input input,
       .vk-quick-custom-field input,
@@ -2429,21 +2478,21 @@
   }
 
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     :is(input, textarea)::placeholder {
     color: var(--vk-muted);
     opacity: 1;
   }
 
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     :is(select option, select optgroup) {
     color: var(--vk-ink);
     background: var(--vk-surface);
   }
 
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     :is(.vk-parsing-hint-popover, .vk-parsing-video-preview__play) {
     border-color: var(--vk-line-strong);
     color: var(--vk-accent-dark);
@@ -2451,21 +2500,21 @@
   }
 
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     .vk-parsing-post-card__unsupported-video
     span,
   html[data-max-theme='dark']
-    .settings-drilldown__panel--vk-parsing
+    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
     .vk-parsing-post-card__unsupported-video
     a {
     background: var(--vk-control-surface);
   }
 
-  .settings-drilldown__panel--vk-parsing .vk-parsing-filter-bar {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) .vk-parsing-filter-bar {
     grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(50px, 0.8fr);
   }
 
-  .settings-drilldown__panel--vk-parsing .vk-parsing-filter-more {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) .vk-parsing-filter-more {
     position: relative;
     min-width: 0;
     min-height: 38px;
@@ -2480,18 +2529,21 @@
     color: var(--vk-muted-strong);
   }
 
-  .settings-drilldown__panel--vk-parsing .vk-parsing-filter-more.is-active {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
+    .vk-parsing-filter-more.is-active {
     border-color: var(--settings-panel-accent-border);
     background: var(--vk-control-surface-active);
     color: var(--vk-accent-dark);
   }
 
-  .settings-drilldown__panel--vk-parsing .vk-parsing-filter-more:focus-within {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
+    .vk-parsing-filter-more:focus-within {
     border-color: var(--vk-accent);
     box-shadow: 0 0 0 3px var(--app-focus-ring);
   }
 
-  .settings-drilldown__panel--vk-parsing .vk-parsing-filter-more select {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
+    .vk-parsing-filter-more select {
     min-width: 0;
     width: 100%;
     border: 0;
@@ -2504,7 +2556,8 @@
     font-weight: 740;
   }
 
-  .settings-drilldown__panel--vk-parsing .vk-parsing-filter-more > svg {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
+    .vk-parsing-filter-more > svg {
     width: 14px;
     height: 14px;
     pointer-events: none;

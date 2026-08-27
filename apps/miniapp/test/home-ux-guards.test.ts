@@ -73,7 +73,7 @@ test('entity cards expose settings, favorite, statistics and category edit targe
   assert.doesNotMatch(sheetsSource, /home-actions__panel|<strong>Статистика<\/strong>/u);
 });
 
-test('moderation and Publik navigation keep chats, channels and posts', () => {
+test('moderation and Publik navigation keep profile-aware publishing labels', () => {
   const labels = shellSource.match(/className="bottom-nav__label"/gu) ?? [];
 
   assert.equal(labels.length, 3);
@@ -81,7 +81,7 @@ test('moderation and Publik navigation keep chats, channels and posts', () => {
   assert.match(shellSource, /buildManagedEntitiesRoute\('channel'\)/u);
   assert.match(shellSource, />Чаты</u);
   assert.match(shellSource, />Каналы</u);
-  assert.match(shellSource, />Посты</u);
+  assert.match(shellSource, /profile === 'publisher' \? 'Посты' : 'Расписания'/u);
   assert.match(shellSource, /selectedRootEntityType === 'chat'/u);
   assert.match(shellSource, /selectedRootEntityType === 'channel'/u);
   assert.doesNotMatch(chatsPageSource, /chats-command__tabs/u);

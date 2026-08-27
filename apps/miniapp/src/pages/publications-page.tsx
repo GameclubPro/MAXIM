@@ -41,6 +41,7 @@ import {
   PUBLICATION_STATUS_FILTERS as STATUS_FILTERS_BY_VIEW,
   PUBLICATION_VIEW_OPTIONS as VIEW_OPTIONS,
   PUBLICATION_WEEKDAYS as WEEKDAYS,
+  stripPublisherOnlyPublicationRouteParams,
 } from '../features/publications/publication-page-options';
 import {
   PublicationFeedCard,
@@ -61,6 +62,7 @@ import {
   getPublicationEditActionLabel,
   getPublicationLifecycleLabel,
   getPublicationListPollingInterval,
+  getPublicationPrimaryActionLabel,
   getPublicationTargetKey,
   getPublicationTargetTitle,
   hasSamePublicationTargetMetadata,
@@ -392,13 +394,14 @@ export function PublicationsPage({
   const requestIds = usePublicationRequestIds();
   const [searchParams, setSearchParams] = useSearchParams();
   const [editorContext, setEditorContext] = useState<PublicationEditorContext | null>(null);
-  const isEditor = editorContext !== null;
+  const isEditor = isPublisherProfile && editorContext !== null;
   const legacyRouteRequested = searchParams.get('legacy') === '1';
   const isLegacyView = !isPublisherProfile && legacyRouteRequested && !isEditor;
   const persistenceEnabled = shouldPersistPublicationDraft(editorContext?.kind ?? null);
   const { draft, setDraft, hydrated, hasSavedDraft, clearDraft } = usePublicationComposer(
     isEditor,
     persistenceEnabled,
+    isPublisherProfile,
   );
   const savedCreateDraftRef = useRef<PublicationDraft | null>(null);
   const isolatedDraftBaselineRef = useRef<PublicationDraft | null>(null);
@@ -999,7 +1002,7 @@ export function PublicationsPage({
     (targetSources.publisherSummary?.ready ??
       targets.filter((target) => target.readiness?.canPublish === true).length) > 0;
   const publisherCanCreate =
-    !isPublisherProfile || (sourcesReady && !sourcesHaveError && publisherHasReadyTarget);
+    isPublisherProfile && sourcesReady && !sourcesHaveError && publisherHasReadyTarget;
   const isBusy =
     saveMutation.isPending ||
     testMutation.isPending ||
@@ -1112,14 +1115,22 @@ export function PublicationsPage({
   }, [isEditor]);
 
   useEffect(() => {
-    if (!hydrated || initialComposeRouteAppliedRef.current) {
+    if (!isPublisherProfile || !hydrated || initialComposeRouteAppliedRef.current) {
       return;
     }
     initialComposeRouteAppliedRef.current = true;
     if (searchParams.get('compose') === '1') {
       setEditorContext({ kind: 'create' });
     }
-  }, [hydrated, searchParams]);
+  }, [hydrated, isPublisherProfile, searchParams]);
+
+  useEffect(() => {
+    const next = isPublisherProfile ? null : stripPublisherOnlyPublicationRouteParams(searchParams);
+    if (!next) {
+      return;
+    }
+    setSearchParams(next, { replace: true });
+  }, [isPublisherProfile, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (targets.length === 0) {
@@ -1369,11 +1380,17 @@ export function PublicationsPage({
   }
 
   function openPublicationEditor(publication: PublicationSummary, mode: 'edit' | 'duplicate') {
+    if (!isPublisherProfile) {
+      return;
+    }
     rememberEditorReturnFocus(publication.id);
     openPublicationMutation.mutate({ publication, mode });
   }
 
   function openCreateEditor() {
+    if (!isPublisherProfile) {
+      return;
+    }
     rememberEditorReturnFocus();
     setEditorContext({ kind: 'create' });
     setButtonErrors(validateBroadcastLinkButtons(draft.buttons));
@@ -1778,11 +1795,11 @@ export function PublicationsPage({
         busy={pending}
         meta={[formatPublicationTargets(publication), formatPublicationSchedule(publication)]}
         primaryAction={{ label: 'Открыть детали', onClick: () => setDetailsTarget(publication) }}
-        canEdit={actionCapabilities.canEdit}
+        canEdit={isPublisherProfile && actionCapabilities.canEdit}
         canPause={actionCapabilities.canPause}
         canResume={actionCapabilities.canResume}
         canRetry={actionCapabilities.canRetry}
-        canDuplicate
+        canDuplicate={isPublisherProfile}
         canCancel={actionCapabilities.canCancel}
         editLabel={getPublicationEditActionLabel(actionCapabilities.editScope)}
         cancelLabel={
@@ -1843,7 +1860,7 @@ export function PublicationsPage({
                     ? 'Расписаний пока нет'
                     : 'Текущих постов нет'}
             </strong>
-            {view !== 'history' && !query.trim() && publisherCanCreate ? (
+            {isPublisherProfile && view !== 'history' && !query.trim() && publisherCanCreate ? (
               <button type="button" className="publications-primary" onClick={openCreateEditor}>
                 <Plus aria-hidden />
                 <span>Новая публикация</span>
@@ -1879,7 +1896,6 @@ export function PublicationsPage({
           canCreate={publisherCanCreate}
           targets={targets}
           publisherSummary={targetSources.publisherSummary}
-          setupHandoffUrl={targetSources.setupHandoffUrl}
           sourcesLoading={sourcesLoading}
           sourcesFetching={sourcesFetching}
           sourcesHaveError={sourcesHaveError}
@@ -1926,7 +1942,7 @@ export function PublicationsPage({
           )}
         </div>
 
-        {hasSavedDraft ? (
+        {isPublisherProfile && hasSavedDraft ? (
           <button type="button" className="publication-draft-resume" onClick={openCreateEditor}>
             <span>
               <strong>Черновик</strong>
@@ -2467,15 +2483,11 @@ export function PublicationsPage({
           : 'Новый пост';
     const retainedVideo = draft.retainedAssets.some((asset) => asset.type === 'video');
     const retainedImages = draft.retainedAssets.filter((asset) => asset.type === 'image').length;
-    const primaryLabel = validationIssues.length > 0
-      ? 'Проверить'
-      : editing
-        ? 'Сохранить'
-        : draft.timingMode === 'now'
-          ? 'Опубликовать'
-          : draft.timingMode === 'once'
-            ? 'Запланировать'
-            : 'Сохранить расписание';
+    const primaryLabel = getPublicationPrimaryActionLabel({
+      hasValidationIssues: validationIssues.length > 0,
+      editing,
+      timingMode: draft.timingMode,
+    });
     return (
       <>
         <header className="publications-editor-header">
@@ -2777,6 +2789,7 @@ export function PublicationsPage({
           confirmLabel={primaryLabel}
           confirmBusyLabel="Сохраняем..."
           isBusy={saveMutation.isPending}
+          showExtraAction={!isPublisherProfile}
           extraActionBusy={testMutation.isPending}
           extraActionDisabled={
             !hasContent || videoNeedsReselection || draft.targets.length === 0 || hasButtonErrors
@@ -2907,6 +2920,7 @@ export function PublicationsPage({
       <PublicationDetailsSheet
         api={api}
         publication={detailsTarget}
+        allowEdit={isPublisherProfile}
         busy={anyBusy}
         covered={retryChoiceTarget !== null || ambiguousTarget !== null}
         onClose={() => setDetailsTarget(null)}

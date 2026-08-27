@@ -36,8 +36,9 @@ test('dedicated channel suggestions track rich editor focus for keyboard visibil
 test('pasted images use the suggestion attachment preparation pipeline', () => {
   assert.match(
     suggestionPageSource,
-    /<MaxRichTextEditor[\s\S]*?onPasteFiles=\{prepareDraftImagesFromFiles\}[\s\S]*?\/>/u,
+    /<MaxRichTextEditor[\s\S]*?onPasteFiles=\{canUploadImages \? prepareDraftImagesFromFiles : undefined\}[\s\S]*?\/>/u,
   );
+  assert.match(suggestionPageSource, /const canUploadImages = profile === 'moderation'/u);
 });
 
 test('overlapping pasted images share an immediate preparation and submit guard', () => {

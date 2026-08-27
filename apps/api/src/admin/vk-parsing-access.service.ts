@@ -4,13 +4,13 @@ import { ConfigService } from '@nestjs/config';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
-import { AdminService } from './admin.service';
+import { PublisherPolicyService } from './publisher-policy.service';
 
 @Injectable()
 export class VkParsingAccessService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly adminService: AdminService,
+    private readonly publisherPolicyService: PublisherPolicyService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -29,10 +29,10 @@ export class VkParsingAccessService {
     }
 
     try {
-      await this.adminService.assertChatAdmin(
+      await this.publisherPolicyService.getEntity(
+        this.resolvePublisherEntityType(chat.entityType),
         chatId,
-        user.userId,
-        this.resolveAdminEntityType(chat.entityType),
+        user,
       );
     } catch {
       return {
@@ -64,10 +64,10 @@ export class VkParsingAccessService {
       throw new NotFoundException('Чат или канал не найден.');
     }
 
-    await this.adminService.assertChatAdmin(
+    await this.publisherPolicyService.getEntity(
+      this.resolvePublisherEntityType(chat.entityType),
       chatId,
-      user.userId,
-      this.resolveAdminEntityType(chat.entityType),
+      user,
     );
     this.assertConfigured();
     return chat.entityType;
@@ -81,7 +81,7 @@ export class VkParsingAccessService {
     return chat?.entityType ?? null;
   }
 
-  private resolveAdminEntityType(entityType: ChatEntityType): 'chat' | 'channel' {
+  private resolvePublisherEntityType(entityType: ChatEntityType): 'chat' | 'channel' {
     return entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
   }
 

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import type { MaxMessageButton } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { AdminDialogLinkService } from './admin-dialog-link.service';
+import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
 import {
   buildManagedBroadcastLinkButtonRows,
   normalizeManagedBroadcastButtons,
@@ -71,7 +71,7 @@ export function readPublisherPreparedDialogContext(
 export class PublisherDialogContextService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly dialogLinks: AdminDialogLinkService,
+    private readonly dialogLinks: PublisherDialogLinkService,
   ) {}
 
   async prepare(params: {
@@ -94,20 +94,19 @@ export class PublisherDialogContextService {
     }
 
     if (params.entityType === 'chat') {
-      const settings = await this.prisma.chatSettings.upsert({
+      const settings = await this.prisma.publisherEntitySettings.upsert({
         where: { chatId: params.chatId },
         create: { chatId: params.chatId },
         update: {},
-        select: { commentsEnabled: true, commentsChatBroadcastsEnabled: true },
+        select: { chatCommentsEnabled: true, chatCommentsPostsEnabled: true },
       });
-      if (settings.commentsEnabled && settings.commentsChatBroadcastsEnabled) {
+      if (settings.chatCommentsEnabled && settings.chatCommentsPostsEnabled) {
         buttons.push([
           this.dialogLinks.buildChatDialogButton(
             params.chatId,
             'comments',
             threadId,
             formatCommentsButtonText('💬 Комментарии', 0),
-            params.dialogBotId,
           ),
         ]);
         reference = {
@@ -123,50 +122,31 @@ export class PublisherDialogContextService {
         };
       }
     } else {
-      const settings = await this.prisma.channelSettings.upsert({
+      const settings = await this.prisma.publisherEntitySettings.upsert({
         where: { chatId: params.chatId },
-        create: { chatId: params.chatId, commentsEnabled: false },
+        create: { chatId: params.chatId },
         update: {},
-        select: {
-          commentsEnabled: true,
-          postSuggestionsEnabled: true,
-          postSuggestionsEntryMode: true,
-          postSuggestionsButtonText: true,
-        },
+        select: { channelSuggestionsEnabled: true },
       });
-      const suggestText = settings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
-      if (settings.commentsEnabled) {
-        buttons.push([
-          this.dialogLinks.buildChannelDialogButton(
-            params.chatId,
-            'comments',
-            threadId,
-            formatCommentsButtonText('💬 Комментарии', 0),
-            params.dialogBotId,
-          ),
-        ]);
-      }
-      if (settings.postSuggestionsEnabled) {
+      const suggestText = '📰 Предложить пост';
+      if (settings.channelSuggestionsEnabled) {
         buttons.push([
           this.dialogLinks.buildChannelDialogButton(
             params.chatId,
             'suggest',
             threadId,
             suggestText,
-            params.dialogBotId,
-            settings.postSuggestionsEntryMode,
+            'MINIAPP',
           ),
         ]);
-      }
-      if (settings.commentsEnabled || settings.postSuggestionsEnabled) {
         reference = {
           entityType: 'channel',
           threadId,
-          includeCommentsButton: settings.commentsEnabled,
-          includeSuggestButton: settings.postSuggestionsEnabled,
-          suggestButtonText: settings.postSuggestionsEnabled ? suggestText : null,
+          includeCommentsButton: false,
+          includeSuggestButton: true,
+          suggestButtonText: suggestText,
           customButtons,
-          suggestionEntryMode: settings.postSuggestionsEntryMode,
+          suggestionEntryMode: 'MINIAPP',
           botId: null,
           dialogBotId: params.dialogBotId,
         };

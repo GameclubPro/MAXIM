@@ -8,7 +8,7 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 123520,
+        "jsGzipBytes": 124032,
         "cssGzipBytes": 43008
       },
       "allowances": [
@@ -71,7 +71,7 @@
       "label": "Publications",
       "entries": ["src/pages/publications-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 146432, "cssGzipBytes": 28672 }
+      "limits": { "jsGzipBytes": 146496, "cssGzipBytes": 28672 }
     },
     {
       "id": "publisher-entities",
@@ -79,6 +79,13 @@
       "entries": ["src/pages/publisher-entities-page.tsx"],
       "baseline": "startup",
       "limits": { "jsGzipBytes": 45056, "cssGzipBytes": 12288 }
+    },
+    {
+      "id": "publisher-entity-modules",
+      "label": "Publisher entity modules",
+      "entries": ["src/pages/publisher-entity-modules-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 49152, "cssGzipBytes": 6144 }
     },
     {
       "id": "giveaway",

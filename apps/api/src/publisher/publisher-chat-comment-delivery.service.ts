@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
-import { CHANNEL_DIALOG_ACTION_COMMENT } from '../admin/admin.service.support';
+import { PUBLISHER_CHAT_DIALOG_ACTION_COMMENT } from '../admin/admin.service.support';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { extractHttpStatusCode } from '../common/http-error.util';
 import {
@@ -34,12 +34,28 @@ import {
 } from './publisher-dispatch-health.service';
 import { PublisherReadinessService, type PublisherReadyRoute } from './publisher-readiness.service';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
+import { PublisherDialogLinkService } from './publisher-dialog-link.service';
+import { PublisherBindingRefreshService } from './publisher-binding-refresh.service';
+import {
+  ChatEntityType,
+  ManagedEntityAccessRole,
+  ManagedEntityAccessState,
+} from '../prisma/prisma-client';
 
 type PublisherJobAttempt = {
   final: boolean;
   attemptsMade: number;
   maxAttempts: number;
 };
+
+const PUBLISHER_COMMENT_SENDER_ACCESS_FRESH_MS = 15 * 60_000;
+
+class PublisherCommentSenderNotAdminError extends Error {
+  constructor() {
+    super('Publisher chat-comment source message sender is not an administrator');
+    this.name = 'PublisherCommentSenderNotAdminError';
+  }
+}
 
 @Injectable()
 export class PublisherChatCommentDeliveryService {
@@ -53,6 +69,8 @@ export class PublisherChatCommentDeliveryService {
     private readonly readiness: PublisherReadinessService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
     credentials: PublisherActionCredentialService,
+    private readonly dialogLinks: PublisherDialogLinkService,
+    private readonly bindingRefresh: PublisherBindingRefreshService,
     @Optional() private readonly dispatchHealth?: PublisherDispatchHealthService,
   ) {
     this.markerStore = new ReplacementAttachMarkerStore(prisma);
@@ -118,6 +136,10 @@ export class PublisherChatCommentDeliveryService {
     try {
       route = await this.assertReady(job.chatId, 'chat_comments');
       this.assertAttachIdentity(job, route);
+      if (!(await this.isSenderAdmin(job, true))) {
+        await this.skipNonAdminAttach(job);
+        return;
+      }
     } catch (error: unknown) {
       await this.handlePredispatchFailure(job, error, attempt);
       throw error;
@@ -152,11 +174,19 @@ export class PublisherChatCommentDeliveryService {
     let sendFenceStartedAt: Date | null = null;
     let replyMessageId: string;
     try {
+      const button =
+        job.button ??
+        this.dialogLinks.buildChatDialogButton(
+          job.chatId,
+          'comments',
+          job.markerId,
+          formatCommentsButtonText('💬 Комментарии', 0),
+        );
       const sent = await this.maxClient.sendMessageImmediateWithResolvedLink(
         job.chatId,
         CHAT_COMMENTS_REPLY_TEXT,
         {
-          buttons: [[job.button]],
+          buttons: [[button]],
           messageLink: {
             type: 'reply',
             mid: job.messageId,
@@ -164,6 +194,9 @@ export class PublisherChatCommentDeliveryService {
           beforeSend: async () => {
             const immediateRoute = await this.assertReady(job.chatId, 'chat_comments');
             this.assertAttachIdentity(job, immediateRoute);
+            if (!(await this.isSenderAdmin(job, false))) {
+              throw new PublisherCommentSenderNotAdminError();
+            }
             route = immediateRoute;
             sendFenceStartedAt = await this.markerStore.recordChatReplySendStarted({
               chatId: job.chatId,
@@ -187,6 +220,10 @@ export class PublisherChatCommentDeliveryService {
       replyMessageId = sent.messageId;
     } catch (error: unknown) {
       const attempted = sendFenceStartedAt !== null || wasMaxMessageSendAttempted(error);
+      if (!attempted && error instanceof PublisherCommentSenderNotAdminError) {
+        await this.skipNonAdminAttach(job);
+        return;
+      }
       if (attempted && isAmbiguousMaxSendError(error)) {
         await this.recordSendFailure(job.chatId, error);
         await this.quarantineAmbiguousAttach(
@@ -302,7 +339,7 @@ export class PublisherChatCommentDeliveryService {
     const currentCount = await this.prisma.auditLog.count({
       where: {
         chatId: job.chatId,
-        action: CHANNEL_DIALOG_ACTION_COMMENT,
+        action: PUBLISHER_CHAT_DIALOG_ACTION_COMMENT,
         payload: {
           path: ['threadId'],
           equals: job.threadId,
@@ -347,6 +384,60 @@ export class PublisherChatCommentDeliveryService {
     await this.recordSendSuccess(job.chatId);
   }
 
+  private async isSenderAdmin(
+    job: PublisherChatCommentAttachJob,
+    refreshWhenUnknown: boolean,
+  ): Promise<boolean> {
+    const readFreshAccess = async () => {
+      const now = new Date();
+      return this.prisma.managedEntityAccessEdge.findFirst({
+        where: {
+          chatId: job.chatId,
+          userId: job.senderId,
+          botId: this.publisherBotId,
+          entityType: ChatEntityType.CHAT,
+          checkedAt: {
+            gt: new Date(now.getTime() - PUBLISHER_COMMENT_SENDER_ACCESS_FRESH_MS),
+          },
+          expiresAt: { gt: now },
+        },
+        select: { state: true, userRole: true },
+      });
+    };
+    let access = await readFreshAccess();
+    if (!access && refreshWhenUnknown) {
+      await this.bindingRefresh.refresh({
+        version: 1,
+        chatId: job.chatId,
+        publisherBotId: this.publisherBotId,
+        candidateUserId: job.senderId,
+        reason: 'webhook_observed',
+        requestedAt: new Date().toISOString(),
+      });
+      access = await readFreshAccess();
+    }
+    return (
+      access?.state === ManagedEntityAccessState.GRANTED &&
+      (access.userRole === ManagedEntityAccessRole.ADMIN ||
+        access.userRole === ManagedEntityAccessRole.OWNER)
+    );
+  }
+
+  private skipNonAdminAttach(job: PublisherChatCommentAttachJob): Promise<void> {
+    return this.markerStore.completeChatAutoComment({
+      chatId: job.chatId,
+      messageId: job.messageId,
+      lockToken: job.lockToken,
+      status: CHAT_AUTO_COMMENT_ATTACH_STATUS.SKIPPED,
+      source: 'webhook',
+      botId: this.publisherBotId,
+      deliveryMode: 'reply_message',
+      originalDeleted: false,
+      lastError: 'Publisher chat-comment source sender is not an administrator',
+      lastStatusCode: null,
+    });
+  }
+
   private async assertReady(
     chatId: string,
     feature: 'publication' | 'chat_comments',
@@ -367,9 +458,6 @@ export class PublisherChatCommentDeliveryService {
     if (route.requiredBotId !== this.publisherBotId || job.requiredBotId !== route.requiredBotId) {
       throw new UnrecoverableError('Publisher chat-comment readiness selected another bot');
     }
-    if (job.dialogBotId === route.requiredBotId) {
-      throw new UnrecoverableError('Publisher chat-comment dialog bot must remain a main bot');
-    }
   }
 
   private assertKeyboardIdentity(
@@ -380,9 +468,6 @@ export class PublisherChatCommentDeliveryService {
       throw new UnrecoverableError(
         'Publisher comment keyboard origin bot does not match readiness',
       );
-    }
-    if (job.dialogBotId === route.requiredBotId) {
-      throw new UnrecoverableError('Publisher comment keyboard dialog bot must remain a main bot');
     }
     if (
       (job.entityType === 'chat' && route.entityType !== 'chat') ||
@@ -579,9 +664,8 @@ export class PublisherChatCommentDeliveryService {
     if (requiredStrings.some((value) => typeof value !== 'string' || !value.trim())) {
       throw new UnrecoverableError('Publisher chat-comment job identity is invalid');
     }
-    if (job.dialogBotId === this.publisherBotId) {
-      throw new UnrecoverableError('Publisher comment dialog bot must remain a main bot');
-    }
+    // FLAG: New chat dialogs are Publisher-signed; distinct main-bot dialog ids remain valid only
+    // for already persisted compatibility envelopes.
     if (job.requiredBotId !== this.publisherBotId) {
       throw new UnrecoverableError('Publisher comment job targets another publisher bot');
     }

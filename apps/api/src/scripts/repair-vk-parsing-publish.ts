@@ -14,6 +14,7 @@ import {
   MaxActionLedgerStatus,
   PublicationDispatchProfile,
   Prisma,
+  VkParsingOwnerProfile,
   createPrismaClient,
   type PrismaClient,
 } from '../prisma/prisma-client';
@@ -101,6 +102,11 @@ const REPAIR_POST_SELECT = {
       routingState: true,
       updatedAt: true,
       vkParsingSettings: {
+        where: {
+          ownerProfile: VkParsingOwnerProfile.MAJOR,
+          ownerBotId: '',
+        },
+        take: 1,
         select: {
           autoPublishEnabled: true,
           autoPublishEnabledAt: true,
@@ -757,7 +763,7 @@ function buildAccessEvidence(row: RepairPostRow, at: Date): RepairAccessEvidence
 }
 
 function toCandidateFacts(row: RepairPostRow, at: Date): RepairCandidateFacts {
-  const settings = row.chat.vkParsingSettings;
+  const settings = row.chat.vkParsingSettings[0] ?? null;
   return {
     postId: row.id,
     chatId: row.chatId,
@@ -1430,7 +1436,15 @@ async function scanRepairOrphans(
   const currentRows =
     postIds.length > 0
       ? await prisma.vkParsingPost.findMany({
-          where: { id: { in: postIds } },
+          where: {
+            id: { in: postIds },
+            ownerProfile: VkParsingOwnerProfile.MAJOR,
+            ownerBotId: '',
+            source: {
+              ownerProfile: VkParsingOwnerProfile.MAJOR,
+              ownerBotId: '',
+            },
+          },
           select: {
             id: true,
             chatId: true,
@@ -1498,12 +1512,24 @@ export async function buildVkPublishRepairPlan(
   const observedAt = new Date();
   const where = {
     dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+    ownerProfile: VkParsingOwnerProfile.MAJOR,
+    ownerBotId: '',
+    source: {
+      ownerProfile: VkParsingOwnerProfile.MAJOR,
+      ownerBotId: '',
+    },
     publishQueuedAt: { not: null, lte: options.cutoff },
     publishIdempotencyKey: { not: null },
     ...(options.chatIds.length > 0 ? { chatId: { in: options.chatIds } } : {}),
   } satisfies Prisma.VkParsingPostWhereInput;
   const afterCutoffWhere = {
     dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+    ownerProfile: VkParsingOwnerProfile.MAJOR,
+    ownerBotId: '',
+    source: {
+      ownerProfile: VkParsingOwnerProfile.MAJOR,
+      ownerBotId: '',
+    },
     publishQueuedAt: { gt: options.cutoff },
     publishIdempotencyKey: { not: null },
     ...(options.chatIds.length > 0 ? { chatId: { in: options.chatIds } } : {}),

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { LOCAL_USER_DISPLAY_NAME_EVENT_TYPES } from '../common/local-user-display-name-events';
 
@@ -6,6 +6,10 @@ const LOCAL_DISPLAY_NAME_EVENTS = LOCAL_USER_DISPLAY_NAME_EVENT_TYPES;
 
 function readMigration(name: string): string {
   return readFileSync(resolve(__dirname, '../../prisma/migrations', name, 'migration.sql'), 'utf8');
+}
+
+function hasMigration(name: string): boolean {
+  return existsSync(resolve(__dirname, '../../prisma/migrations', name, 'migration.sql'));
 }
 
 function readSchema(): string {
@@ -892,6 +896,114 @@ describe('Prisma migrations', () => {
     expect(compact).toContain('publication delivery route is immutable');
     expect(compact).not.toMatch(
       /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
+
+  it('allows Publisher-owned dialog routes without weakening context checks', () => {
+    const migration = readMigration('20260827120000_allow_publisher_owned_dialog_routes');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'ADD CONSTRAINT "managed_broadcast_deliveries_dispatch_route_publisher_owned_check" CHECK',
+    );
+    expect(compact).toContain(
+      'VALIDATE CONSTRAINT "managed_broadcast_deliveries_dispatch_route_publisher_owned_check"',
+    );
+    expect(compact).toContain(
+      'ADD CONSTRAINT "vk_parsing_posts_dispatch_route_publisher_owned_check" CHECK',
+    );
+    expect(compact).toContain(
+      '"is_valid_publisher_dialog_context"("publish_dialog_context", "dialog_bot_id")',
+    );
+    expect(compact).toContain(
+      'RENAME CONSTRAINT "managed_broadcast_deliveries_dispatch_route_publisher_owned_check" TO "managed_broadcast_deliveries_dispatch_route_check"',
+    );
+    expect(compact).toContain(
+      'RENAME CONSTRAINT "vk_parsing_posts_dispatch_route_publisher_owned_check" TO "vk_parsing_posts_dispatch_route_check"',
+    );
+    expect(compact).not.toContain('"dialog_bot_id" <> "required_bot_id"');
+    expect(migration.match(/NOT VALID/g)).toHaveLength(2);
+    expect(migration.match(/VALIDATE CONSTRAINT/g)).toHaveLength(2);
+    expect(compact).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b/i,
+    );
+  });
+
+  it('isolates Publisher module settings with independent defaults for exact bindings', () => {
+    const migration = readMigration('20260827121000_add_publisher_entity_settings');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain('CREATE TABLE "publisher_entity_settings"');
+    expect(compact).toContain('"chat_comments_enabled" BOOLEAN NOT NULL DEFAULT false');
+    expect(compact).toContain('"chat_comments_admins_enabled" BOOLEAN NOT NULL DEFAULT false');
+    expect(compact).toContain('"chat_comments_posts_enabled" BOOLEAN NOT NULL DEFAULT false');
+    expect(compact).toContain('"channel_suggestions_enabled" BOOLEAN NOT NULL DEFAULT false');
+    expect(compact).toContain(
+      'FOREIGN KEY ("chat_id") REFERENCES "chats"("id") ON DELETE CASCADE ON UPDATE CASCADE',
+    );
+    expect(compact).toContain('FROM "publisher_entity_bindings" AS binding');
+    expect(compact).toContain(
+      'INNER JOIN "managed_bot_chat_catalog" AS catalog ON catalog."chat_id" = binding."chat_id" AND catalog."bot_id" = binding."publisher_bot_id"',
+    );
+    expect(compact).toContain('WHERE binding."status" = \'ACTIVE\'::"ChatBotMembershipStatus"');
+    expect(compact).not.toContain('JOIN "chat_settings"');
+    expect(compact).not.toContain('suggestions_via_publik');
+    expect(compact).toContain('ON CONFLICT ("chat_id") DO NOTHING');
+    expect(compact).not.toMatch(/\b(?:DROP|TRUNCATE)\b|\bDELETE\s+FROM\b/i);
+  });
+
+  it('adds additive VK owner scopes while preserving legacy rows as Major-owned', () => {
+    const migration = readMigration('20260827122000_add_vk_parsing_owner_scope');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      "CREATE TYPE \"VkParsingOwnerProfile\" AS ENUM ('MAJOR', 'PUBLISHER')",
+    );
+    for (const table of ['vk_parsing_settings', 'vk_parsing_sources', 'vk_parsing_posts']) {
+      expect(compact).toContain(
+        `ALTER TABLE "${table}" ADD COLUMN "owner_profile" "VkParsingOwnerProfile" NOT NULL DEFAULT 'MAJOR', ADD COLUMN "owner_bot_id" TEXT NOT NULL DEFAULT ''`,
+      );
+      expect(compact).toContain(`"${table}_owner_scope_check"`);
+      expect(compact).toContain(`VALIDATE CONSTRAINT "${table}_owner_scope_check"`);
+    }
+    expect(compact).not.toContain('CREATE INDEX');
+    expect(compact).not.toContain('DROP INDEX');
+    expect(compact).not.toMatch(/\b(?:DROP\s+(?:TABLE|COLUMN|TYPE)|TRUNCATE)\b|\bDELETE\s+FROM\b/i);
+
+    const indexes = readMigration('20260827123000_create_vk_parsing_owner_scope_indexes');
+    expect(indexes).toContain('CREATE UNIQUE INDEX CONCURRENTLY "vk_parsing_settings_owner_key"');
+    expect(indexes).toContain(
+      'CREATE UNIQUE INDEX CONCURRENTLY "vk_parsing_sources_owner_wall_key"',
+    );
+    expect(indexes).toContain(
+      'CREATE UNIQUE INDEX CONCURRENTLY "vk_parsing_posts_owner_vk_post_key"',
+    );
+    expect(indexes).toContain(
+      'CREATE INDEX CONCURRENTLY "vk_parsing_sources_owner_chat_status_idx"',
+    );
+    expect(indexes).toContain(
+      'CREATE INDEX CONCURRENTLY "vk_parsing_posts_owner_chat_status_published_idx"',
+    );
+
+    const contractMigrationNames = [
+      '20260827124000_drop_vk_parsing_settings_legacy_unique',
+      '20260827125000_drop_vk_parsing_sources_legacy_unique',
+      '20260827126000_drop_vk_parsing_posts_legacy_unique',
+    ];
+    const contractPresence = contractMigrationNames.map(hasMigration);
+    expect(new Set(contractPresence).size).toBe(1);
+    if (!contractPresence[0]) {
+      return;
+    }
+
+    expect(readMigration(contractMigrationNames[0]).trim()).toBe(
+      'DROP INDEX CONCURRENTLY IF EXISTS "vk_parsing_settings_chat_id_key";',
+    );
+    expect(readMigration(contractMigrationNames[1]).trim()).toBe(
+      'DROP INDEX CONCURRENTLY IF EXISTS "vk_parsing_sources_chat_wall_owner_key";',
+    );
+    expect(readMigration(contractMigrationNames[2]).trim()).toBe(
+      'DROP INDEX CONCURRENTLY IF EXISTS "vk_parsing_posts_chat_vk_post_key";',
     );
   });
 });

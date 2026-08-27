@@ -39,7 +39,7 @@ export type PublisherChatCommentAttachJob = QueueJobEnvelope<
     senderId: string;
     requiredBotId: string;
     dialogBotId: string;
-    button: MaxMessageButton;
+    button?: MaxMessageButton;
   },
   PublisherCommentJobMetadata
 >;
@@ -104,7 +104,7 @@ export class PublisherChatCommentQueueService {
     messageId: string;
     senderId: string;
     dialogBotId: string;
-    button: MaxMessageButton;
+    button?: MaxMessageButton;
     createdAt?: Date;
   }): Promise<void> {
     const markerId = this.requireString(params.markerId, 'markerId');
@@ -128,7 +128,7 @@ export class PublisherChatCommentQueueService {
         senderId,
         requiredBotId: this.publisherBotId,
         dialogBotId,
-        button: params.button,
+        ...(params.button ? { button: params.button } : {}),
         idempotencyKey: markerId,
         sourceTag: 'chat_auto_comment',
         retryPolicyName: 'publisher-chat-comment',

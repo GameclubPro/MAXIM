@@ -6,6 +6,10 @@ const settingsPageSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
+const publisherModulesSource = readFileSync(
+  new URL('../src/pages/publisher-entity-modules-page.tsx', import.meta.url),
+  'utf8',
+);
 const settingsSectionToggleSource = readFileSync(
   new URL('../src/components/ui/settings-section-toggle.tsx', import.meta.url),
   'utf8',
@@ -27,12 +31,10 @@ const speechStyleSource = readFileSync(
   'utf8',
 );
 
-test('comments remain a local draft until the explicit save action', () => {
-  assert.doesNotMatch(settingsPageSource, /saveCommentsMutation\.mutate\(payload\)/u);
-  assert.match(
-    settingsPageSource,
-    /async function handleSaveComments\(\)[\s\S]*?await mutateCommentsAsync\(payload\)/u,
-  );
+test('chat comment settings belong to Publik instead of Major settings', () => {
+  assert.doesNotMatch(settingsPageSource, /handleSaveComments|mutateCommentsAsync/u);
+  assert.match(publisherModulesSource, /chatComments: updatePublisherChatCommentSetting/u);
+  assert.match(publisherModulesSource, /updatePublisherModules/u);
 });
 
 test('overview settings tiles expose context, current state, and navigation affordance', () => {

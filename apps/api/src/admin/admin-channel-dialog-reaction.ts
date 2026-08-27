@@ -7,6 +7,7 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 
 type DialogCommentSettings = {
   commentsEnabled: boolean;
@@ -19,6 +20,7 @@ export async function toggleDialogReactionValue(params: {
   dialogTypeRaw: string;
   messageId: string;
   body: unknown;
+  dialogProfile?: MiniappProfile;
   loadCommentSettings: (chatId: string) => Promise<DialogCommentSettings>;
   toggleReaction: (options: {
     chatId: string;
@@ -28,6 +30,7 @@ export async function toggleDialogReactionValue(params: {
     messageId: string;
     token: string;
     emoji: string;
+    dialogProfile?: MiniappProfile;
   }) => Promise<ToggleChannelDialogReactionResponse>;
 }): Promise<ToggleChannelDialogReactionResponse> {
   const dialogType = channelDialogTypeSchema.parse(params.dialogTypeRaw);
@@ -53,5 +56,6 @@ export async function toggleDialogReactionValue(params: {
     messageId: params.messageId,
     token: parsed.data.token,
     emoji: parsed.data.emoji,
+    ...(params.dialogProfile ? { dialogProfile: params.dialogProfile } : {}),
   });
 }

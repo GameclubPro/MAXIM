@@ -6,10 +6,15 @@ import {
   publisherEntitiesRefreshResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntitySchema,
+  publisherEntityModuleSettingsSchema,
   publisherEntityRefreshResponseSchema,
+  publisherSuggestionsResponseSchema,
+  reviewPublisherSuggestionRequestSchema,
+  reviewPublisherSuggestionResponseSchema,
   resolvePublisherEntitiesRequestSchema,
   resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
+  updatePublisherEntityModuleSettingsRequestSchema,
   type ManagedEntityPublicationPolicy,
   type ManagedEntityType,
   type PublisherEntitiesCursorQuery,
@@ -17,10 +22,15 @@ import {
   type PublisherEntitiesRefreshResponse,
   type PublisherEntitiesResponse,
   type PublisherEntity,
+  type PublisherEntityModuleSettings,
   type PublisherEntityRefreshResponse,
+  type PublisherSuggestionsResponse,
+  type ReviewPublisherSuggestionRequest,
+  type ReviewPublisherSuggestionResponse,
   type ResolvePublisherEntitiesRequest,
   type ResolvePublisherEntitiesResponse,
   type UpdateManagedEntityPublicationPolicyRequest,
+  type UpdatePublisherEntityModuleSettingsRequest,
 } from '@maxim/contracts/publisher';
 import type { ApiTransport } from './transport';
 
@@ -98,6 +108,19 @@ export async function getPublisherEntity(
   return publisherEntitySchema.parse(response);
 }
 
+export async function getPublisherPolicy(
+  api: ApiTransport,
+  entityType: ManagedEntityType,
+  entityId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ManagedEntityPublicationPolicy> {
+  const response = await api.request(
+    `/publisher/entities/${entityType}/${encodeURIComponent(entityId)}/policy`,
+    { signal: options.signal },
+  );
+  return managedEntityPublicationPolicySchema.parse(response);
+}
+
 export async function refreshPublisherEntity(
   api: ApiTransport,
   entityType: ManagedEntityType,
@@ -143,4 +166,46 @@ export async function updatePublisherPolicy(
     { method: 'PATCH', body: JSON.stringify(body) },
   );
   return managedEntityPublicationPolicySchema.parse(response);
+}
+
+export async function updatePublisherModules(
+  api: ApiTransport,
+  entityType: ManagedEntityType,
+  entityId: string,
+  payload: UpdatePublisherEntityModuleSettingsRequest,
+): Promise<PublisherEntityModuleSettings> {
+  const body = updatePublisherEntityModuleSettingsRequestSchema.parse(payload);
+  const response = await api.request(
+    `/publisher/entities/${entityType}/${encodeURIComponent(entityId)}/modules`,
+    { method: 'PATCH', body: JSON.stringify(body) },
+  );
+  return publisherEntityModuleSettingsSchema.parse(response);
+}
+
+export async function listPublisherSuggestions(
+  api: ApiTransport,
+  entityId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<PublisherSuggestionsResponse> {
+  const response = await api.request(
+    `/publisher/entities/channel/${encodeURIComponent(entityId)}/suggestions`,
+    { signal: options.signal },
+  );
+  return publisherSuggestionsResponseSchema.parse(response);
+}
+
+export async function reviewPublisherSuggestion(
+  api: ApiTransport,
+  entityId: string,
+  suggestionId: string,
+  payload: ReviewPublisherSuggestionRequest,
+): Promise<ReviewPublisherSuggestionResponse> {
+  const body = reviewPublisherSuggestionRequestSchema.parse(payload);
+  const response = await api.request(
+    `/publisher/entities/channel/${encodeURIComponent(entityId)}/suggestions/${encodeURIComponent(
+      suggestionId,
+    )}/review`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+  return reviewPublisherSuggestionResponseSchema.parse(response);
 }

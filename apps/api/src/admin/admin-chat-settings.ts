@@ -29,6 +29,10 @@ import {
   type AdminActionSource,
 } from './admin.service.support';
 import { buildStoredLinkButtonState } from './admin-chat-rules';
+import {
+  DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
+  omitPublisherOwnedChatSettings,
+} from './publisher-owned-chat-settings';
 
 function readLegacyPrimaryAdminCommandName(value: unknown, fallback: string): string {
   if (typeof value !== 'string') {
@@ -547,6 +551,33 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
   return normalizedSettings;
 }
 
+export type PublicChatCommentSettings = Pick<
+  ChatSettings,
+  | 'commentsEnabled'
+  | 'commentsAdminsEnabled'
+  | 'commentsAllEnabled'
+  | 'commentsChatBroadcastsEnabled'
+>;
+
+export async function readPublicChatCommentSettings(
+  prisma: PrismaService,
+  chatId: string,
+): Promise<PublicChatCommentSettings> {
+  const settings = await prisma.chatSettings.findUnique({ where: { chatId } });
+  const parsed = settings
+    ? chatSettingsSchema.safeParse(sanitizeStoredChatSettings(settings))
+    : null;
+  const normalized = parsed?.success
+    ? normalizeChatSettings(parsed.data, undefined, chatId)
+    : DEFAULT_CHAT_SETTINGS;
+  return {
+    commentsEnabled: normalized.commentsEnabled,
+    commentsAdminsEnabled: normalized.commentsAdminsEnabled,
+    commentsAllEnabled: normalized.commentsAllEnabled,
+    commentsChatBroadcastsEnabled: normalized.commentsChatBroadcastsEnabled,
+  };
+}
+
 export function getChatSettingsNormalizationChanges(
   current: ChatSettings,
   normalized: ChatSettings,
@@ -792,6 +823,13 @@ export async function saveChatSettings(params: {
   normalizedSettings =
     (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
   const botAssignmentData = await params.resolveBotAssignmentData();
+  // FLAG: Major never includes Publisher-owned comment fields in UPDATE, so concurrent Publisher
+  // writes cannot be overwritten by a stale read-modify-write cycle.
+  const majorOwnedSettings = omitPublisherOwnedChatSettings(normalizedSettings);
+  const createSettings = {
+    ...majorOwnedSettings,
+    ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
+  };
 
   const updateSettings = params.prisma.chat.upsert({
     where: { id: params.chatId },
@@ -802,21 +840,15 @@ export async function saveChatSettings(params: {
       catalogKind: ChatCatalogKind.MANAGED,
       ...botAssignmentData,
       settings: {
-        create: {
-          ...normalizedSettings,
-        },
+        create: createSettings,
       },
     },
     update: {
       catalogKind: ChatCatalogKind.MANAGED,
       settings: {
         upsert: {
-          update: {
-            ...normalizedSettings,
-          },
-          create: {
-            ...normalizedSettings,
-          },
+          update: majorOwnedSettings,
+          create: createSettings,
         },
       },
     },
@@ -835,10 +867,34 @@ export async function saveChatSettings(params: {
     },
   });
   await params.prisma.$transaction([updateSettings, writeAudit]);
+  const publisherOwnedSettings = await params.prisma.chatSettings.findUnique({
+    where: { chatId: params.chatId },
+    select: {
+      commentsEnabled: true,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: true,
+      commentsChatBroadcastsEnabled: true,
+    },
+  });
+  const resultingSettings = {
+    ...normalizedSettings,
+    commentsEnabled:
+      publisherOwnedSettings?.commentsEnabled ??
+      DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS.commentsEnabled,
+    commentsAdminsEnabled:
+      publisherOwnedSettings?.commentsAdminsEnabled ??
+      DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS.commentsAdminsEnabled,
+    commentsAllEnabled:
+      publisherOwnedSettings?.commentsAllEnabled ??
+      DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS.commentsAllEnabled,
+    commentsChatBroadcastsEnabled:
+      publisherOwnedSettings?.commentsChatBroadcastsEnabled ??
+      DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS.commentsChatBroadcastsEnabled,
+  };
   await params.chatContextCache.invalidate(params.chatId);
-  await params.refreshExecutionReadiness(normalizedSettings);
+  await params.refreshExecutionReadiness(resultingSettings);
 
-  return normalizedSettings;
+  return resultingSettings;
 }
 
 function hasOwnSetting(body: unknown, key: string): boolean {

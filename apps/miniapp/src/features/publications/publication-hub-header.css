@@ -79,14 +79,10 @@
     background: transparent;
     font: inherit;
     text-align: left;
+    text-decoration: none;
   }
 
-  .publication-publisher-status__copy:disabled {
-    cursor: default;
-    opacity: 1;
-  }
-
-  .publication-publisher-status__copy:not(:disabled) {
+  a.publication-publisher-status__copy {
     cursor: pointer;
   }
 

@@ -62,6 +62,11 @@ const LazyPublisherEntitiesPage = lazy(async () => {
   return { default: module.PublisherEntitiesPage };
 });
 
+const LazyPublisherEntityModulesPage = lazy(async () => {
+  const module = await import('./pages/publisher-entity-modules-page');
+  return { default: module.PublisherEntityModulesPage };
+});
+
 const LazyManagedEntityNavigationProvider = lazy(async () => {
   const module = await import('./lib/managed-entity-navigation');
   return { default: module.ManagedEntityNavigationProvider };
@@ -417,9 +422,21 @@ function RouteLoadingFallback() {
   );
 }
 
-function KeyedChannelSuggestDialogPage({ api }: { api: ReturnType<typeof createApiTransport> }) {
+function KeyedChannelSuggestDialogPage({
+  api,
+  profile,
+}: {
+  api: ReturnType<typeof createApiTransport>;
+  profile: MiniappProfile;
+}) {
   const location = useLocation();
-  return <LazyChannelSuggestDialogPage key={location.pathname + location.search} api={api} />;
+  return (
+    <LazyChannelSuggestDialogPage
+      key={location.pathname + location.search}
+      api={api}
+      profile={profile}
+    />
+  );
 }
 
 function AppRouteShell({
@@ -497,29 +514,40 @@ function AppRoutes({
               element={<LazyPublisherEntitiesPage api={apiClient} botDialogUrl={me.botDialogUrl} />}
             />
           )}
-          <Route
-            path="/publications"
-            element={<LazyPublicationsPage api={apiClient} profile={me.profile} />}
-          />
+          {moderationProfile ? (
+            <Route
+              path="/publications"
+              element={<LazyPublicationsPage api={apiClient} profile="moderation" />}
+            />
+          ) : (
+            <Route
+              path="/publications"
+              element={<LazyPublicationsPage api={apiClient} profile="publisher" />}
+            />
+          )}
           {moderationProfile ? (
             <Route path="/autoposts" element={<LegacyAutopostsRedirect />} />
+          ) : null}
+          {!moderationProfile ? (
+            <Route
+              path="/publisher/:entityType/:entityId"
+              element={<LazyPublisherEntityModulesPage api={apiClient} />}
+            />
           ) : null}
           {moderationProfile ? (
             <Route
               path="/channel/:chatId/dialog/comments"
-              element={<LazyChannelDialogPage api={apiClient} />}
+              element={<LazyChannelDialogPage api={apiClient} profile="moderation" />}
             />
           ) : null}
           <Route
             path="/chat/:chatId/dialog/comments"
-            element={<LazyChannelDialogPage api={apiClient} />}
+            element={<LazyChannelDialogPage api={apiClient} profile={me.profile} />}
           />
-          {moderationProfile ? (
-            <Route
-              path="/channel/:chatId/dialog/suggest"
-              element={<KeyedChannelSuggestDialogPage api={apiClient} />}
-            />
-          ) : null}
+          <Route
+            path="/channel/:chatId/dialog/suggest"
+            element={<KeyedChannelSuggestDialogPage api={apiClient} profile={me.profile} />}
+          />
           {moderationProfile ? (
             <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
           ) : null}

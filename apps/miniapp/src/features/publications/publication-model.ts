@@ -34,6 +34,23 @@ import {
 export type PublicationView = 'current' | 'schedules' | 'history';
 export type PublicationEditorKind = 'create' | 'edit' | 'duplicate';
 export type PublicationTimingMode = 'now' | 'once' | 'schedule';
+
+export function getPublicationPrimaryActionLabel(options: {
+  hasValidationIssues: boolean;
+  editing: boolean;
+  timingMode: PublicationTimingMode;
+}): string {
+  if (options.hasValidationIssues) {
+    return 'Проверить';
+  }
+  if (options.editing) {
+    return 'Сохранить';
+  }
+  if (options.timingMode === 'now') {
+    return 'Опубликовать';
+  }
+  return options.timingMode === 'once' ? 'Запланировать' : 'Сохранить расписание';
+}
 export type PublicationScheduleKind = 'slots' | 'recurrence';
 export type PublicationRecurrenceFrequency = 'daily' | 'weekly';
 export type PublicationEntityFilter = 'all' | ManagedEntityType;
@@ -96,6 +113,8 @@ export type PublicationTarget = {
   title: string;
   avatarUrl: string | null;
   channelOverview: Pick<ChannelOverview, 'commentsEnabled' | 'postSuggestionsEnabled'> | null;
+  publisherChatCommentsEnabled?: boolean;
+  publisherChannelSuggestionsEnabled?: boolean;
   readiness?: PublisherEntityReadiness | null;
 };
 
@@ -521,14 +540,25 @@ export function toPublicationTarget(source: ChatSummary): PublicationTarget {
 }
 
 export function buildPublicationSystemButtons(
-  targets: readonly Pick<PublicationTarget, 'channelOverview' | 'entityType'>[],
+  targets: readonly Pick<
+    PublicationTarget,
+    | 'channelOverview'
+    | 'entityType'
+    | 'publisherChannelSuggestionsEnabled'
+    | 'publisherChatCommentsEnabled'
+  >[],
 ): BroadcastSystemButtonPreview[] {
   return buildChannelBroadcastSystemButtons({
     commentsEnabled: targets.some(
-      (target) => target.entityType === 'channel' && target.channelOverview?.commentsEnabled,
+      (target) =>
+        (target.entityType === 'chat' && target.publisherChatCommentsEnabled === true) ||
+        (target.entityType === 'channel' && target.channelOverview?.commentsEnabled),
     ),
     postSuggestionsEnabled: targets.some(
-      (target) => target.entityType === 'channel' && target.channelOverview?.postSuggestionsEnabled,
+      (target) =>
+        target.entityType === 'channel' &&
+        (target.publisherChannelSuggestionsEnabled === true ||
+          target.channelOverview?.postSuggestionsEnabled),
     ),
   });
 }
@@ -551,6 +581,10 @@ export function hasSamePublicationTargetMetadata(
     left.channelOverview?.commentsEnabled === right.channelOverview?.commentsEnabled &&
     left.channelOverview?.postSuggestionsEnabled ===
       right.channelOverview?.postSuggestionsEnabled &&
+    Boolean(left.publisherChatCommentsEnabled) ===
+      Boolean(right.publisherChatCommentsEnabled) &&
+    Boolean(left.publisherChannelSuggestionsEnabled) ===
+      Boolean(right.publisherChannelSuggestionsEnabled) &&
     leftReadiness?.state === rightReadiness?.state &&
     leftReadiness?.canPublish === rightReadiness?.canPublish &&
     leftReadiness?.canUseChatComments === rightReadiness?.canUseChatComments &&

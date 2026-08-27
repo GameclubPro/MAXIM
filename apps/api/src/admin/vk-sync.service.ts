@@ -430,6 +430,8 @@ export class VkSyncService {
         ? await this.prisma.vkParsingPost.findMany({
             where: {
               chatId: source.chatId,
+              ownerProfile: source.ownerProfile,
+              ownerBotId: source.ownerBotId,
               vkOwnerId: source.wallOwnerId,
               vkPostId: { in: importedNormalizedPosts.map((post) => post.vkPostId) },
               status: VK_POST_STATUS_NEW,

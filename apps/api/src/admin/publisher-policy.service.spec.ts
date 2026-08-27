@@ -21,13 +21,11 @@ function createReadiness(readyEntityIds: readonly string[] = []) {
       (
         row: {
           publikEnabled: boolean;
-          suggestionsViaPublik: boolean;
           revision: number;
           updatedAt: Date;
         } | null,
       ) => ({
         publikEnabled: row?.publikEnabled ?? true,
-        suggestionsViaPublik: row?.suggestionsViaPublik ?? false,
         revision: row?.revision ?? 0,
         updatedAt: row?.updatedAt.toISOString() ?? null,
       }),
@@ -56,17 +54,6 @@ function createBotRegistry() {
   return {
     getPublisherBotDescriptor: () => ({ id: 'publik-bot' }),
     getActionableBots: () => [{ id: 'main-bot' }, { id: 'inactive-main-bot' }],
-  };
-}
-
-function createMaxBotLinkService() {
-  return {
-    buildEntryMiniappStartUrlSync: jest.fn(
-      (startParam: string) => `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
-    ),
-    buildMiniappStartUrlSync: jest
-      .fn()
-      .mockReturnValue('https://max.ru/publik-bot?startapp=fallback'),
   };
 }
 
@@ -104,10 +91,15 @@ function createListEntity(
   id: string;
   title: string;
   entityType: ChatEntityType;
-  channelSettings: null;
+  publisherSettings: {
+    revision: number;
+    chatCommentsEnabled: boolean;
+    chatCommentsAdminsEnabled: boolean;
+    chatCommentsPostsEnabled: boolean;
+    channelSuggestionsEnabled: boolean;
+  } | null;
   publicationPolicy: {
     publikEnabled: boolean;
-    suggestionsViaPublik: boolean;
     revision: number;
     updatedAt: Date;
   } | null;
@@ -118,7 +110,7 @@ function createListEntity(
     id,
     title,
     entityType,
-    channelSettings: null,
+    publisherSettings: null,
     publicationPolicy: null,
     publisherBinding,
     botMemberships: [{ botId: 'main-bot' }],
@@ -151,10 +143,66 @@ function createListFixture(
         );
       },
     );
-  const catalogFindMany = jest.fn().mockResolvedValue([]);
-  const catalogFindFirst = jest.fn().mockResolvedValue(null);
+  const catalogFindMany = jest.fn().mockImplementation(
+    (request?: {
+      where?: {
+        OR?: Array<{ botId: string; chatId: string; entityType: ChatEntityType }>;
+        chatId?: { in?: string[] };
+      };
+      select?: { entityType?: boolean; title?: boolean };
+    }) => {
+      const requestedIds = request?.where?.chatId?.in;
+      const targets =
+        request?.where?.OR ??
+        entities
+          .filter((entity) => !requestedIds || requestedIds.includes(entity.id))
+          .map((entity) => ({
+            botId: 'publik-bot',
+            chatId: entity.id,
+            entityType: entity.entityType,
+          }));
+      return Promise.resolve(
+        targets.flatMap((target) => {
+          const entity = entities.find(
+            (candidate) =>
+              candidate.id === target.chatId && candidate.entityType === target.entityType,
+          );
+          return entity
+            ? [
+                {
+                  botId: target.botId,
+                  chatId: target.chatId,
+                  entityType: target.entityType,
+                  title: entity.title,
+                  link: null,
+                  avatarUrl: null,
+                },
+              ]
+            : [];
+        }),
+      );
+    },
+  );
+  const catalogFindFirst = jest.fn().mockImplementation(
+    (request?: { where?: { chatId?: string; entityType?: ChatEntityType } }) => {
+      const entity = entities.find(
+        (candidate) =>
+          candidate.id === request?.where?.chatId &&
+          candidate.entityType === request?.where?.entityType,
+      );
+      return Promise.resolve(
+        entity
+          ? {
+              entityType: entity.entityType,
+              title: entity.title,
+              link: null,
+              avatarUrl: null,
+            }
+          : null,
+      );
+    },
+  );
   const readiness = createReadiness(readyEntityIds);
-  const maxBotLinkService = createMaxBotLinkService();
   const service = new PublisherPolicyService(
     {
       managedEntityAccessEdge: { findMany },
@@ -163,13 +211,11 @@ function createListFixture(
     createBotRegistry() as never,
     readiness as never,
     {} as never,
-    maxBotLinkService as never,
   );
   return {
     catalogFindFirst,
     catalogFindMany,
     findMany,
-    maxBotLinkService,
     readiness,
     service,
   };
@@ -179,23 +225,46 @@ function createPolicyMutationFixture(
   options: {
     storedEntityType?: ChatEntityType;
     publicationPolicy?: object | null;
+    publisherSettings?: object | null;
   } = {},
 ) {
   const updatedAt = new Date('2026-08-26T10:00:00.000Z');
   const storedPolicy = {
     chatId: 'channel-1',
     publikEnabled: true,
-    suggestionsViaPublik: true,
     revision: 1,
     updatedByUserId: user.userId,
     createdAt: updatedAt,
     updatedAt,
   };
+  const storedPublisherSettings = {
+    chatId: 'channel-1',
+    chatCommentsEnabled: true,
+    chatCommentsAdminsEnabled: false,
+    chatCommentsPostsEnabled: true,
+    channelSuggestionsEnabled: true,
+    revision: 1,
+    updatedByUserId: user.userId,
+    createdAt: updatedAt,
+    updatedAt,
+  };
+  const existingPublisherSettings =
+    options.publisherSettings === undefined
+      ? null
+      : { ...storedPublisherSettings, ...options.publisherSettings };
+  const updatedPublisherSettings = existingPublisherSettings
+    ? { ...existingPublisherSettings, revision: existingPublisherSettings.revision + 1 }
+    : storedPublisherSettings;
   const tx = {
     managedEntityPublicationPolicy: {
       create: jest.fn().mockResolvedValue(storedPolicy),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUniqueOrThrow: jest.fn().mockResolvedValue(storedPolicy),
+    },
+    publisherEntitySettings: {
+      create: jest.fn().mockResolvedValue(storedPublisherSettings),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      findUniqueOrThrow: jest.fn().mockResolvedValue(updatedPublisherSettings),
     },
     auditLog: {
       create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
@@ -208,7 +277,11 @@ function createPolicyMutationFixture(
     chat: {
       findUnique: jest.fn().mockResolvedValue({
         entityType: options.storedEntityType ?? ChatEntityType.CHANNEL,
-        publicationPolicy: options.publicationPolicy ?? null,
+        publicationPolicy:
+          options.publicationPolicy === undefined
+            ? null
+            : { ...storedPolicy, ...options.publicationPolicy },
+        publisherSettings: existingPublisherSettings,
       }),
     },
     $transaction: transaction,
@@ -222,10 +295,18 @@ function createPolicyMutationFixture(
     createBotRegistry() as never,
     readiness as never,
     managedEntities as never,
-    createMaxBotLinkService() as never,
   );
 
-  return { managedEntities, prisma, readiness, service, storedPolicy, transaction, tx };
+  return {
+    managedEntities,
+    prisma,
+    readiness,
+    service,
+    storedPolicy,
+    storedPublisherSettings,
+    transaction,
+    tx,
+  };
 }
 
 describe('PublisherPolicyService', () => {
@@ -234,7 +315,7 @@ describe('PublisherPolicyService', () => {
       id: 'chat-1',
       title: 'Команда',
       entityType: ChatEntityType.CHAT,
-      channelSettings: null,
+      publisherSettings: null,
       publicationPolicy: null,
       publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [],
@@ -252,7 +333,16 @@ describe('PublisherPolicyService', () => {
         ]),
       },
       managedBotChatCatalog: {
-        findMany: jest.fn().mockResolvedValue([]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            botId: 'publik-bot',
+            chatId: chat.id,
+            entityType: ChatEntityType.CHAT,
+            title: 'Команда Публика',
+            link: null,
+            avatarUrl: null,
+          },
+        ]),
       },
     };
     const readiness = createReadiness();
@@ -261,7 +351,6 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       readiness as never,
       {} as never,
-      createMaxBotLinkService() as never,
     );
 
     const response = await service.listEntities({
@@ -272,8 +361,8 @@ describe('PublisherPolicyService', () => {
 
     expect(response.items).toHaveLength(1);
     expect(response.items[0]?.id).toBe('chat-1');
-    expect(Object.keys(response)).toEqual(['items', 'setupHandoffUrl']);
-    expect(response.setupHandoffUrl).toMatch(/^https:\/\/max\.ru\/entry-bot\?startapp=mr-/u);
+    expect(response.items[0]?.title).toBe('Команда Публика');
+    expect(Object.keys(response)).toEqual(['items']);
     expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -373,7 +462,6 @@ describe('PublisherPolicyService', () => {
       ...createListEntity('chat-disabled', 'Публик выключен', ChatEntityType.CHAT),
       publicationPolicy: {
         publikEnabled: false,
-        suggestionsViaPublik: false,
         revision: 1,
         updatedAt: new Date('2026-08-26T11:00:00.000Z'),
       },
@@ -413,15 +501,6 @@ describe('PublisherPolicyService', () => {
     await expect(fixture.service.getEntity('chat', disabled.id, user)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    await expect(
-      fixture.service.getEntityForPolicy('chat', bootstrapOnly.id, user),
-    ).resolves.toMatchObject({ id: bootstrapOnly.id, readiness: { state: 'setup_required' } });
-    await expect(
-      fixture.service.getEntityForPolicy('chat', disabled.id, user),
-    ).resolves.toMatchObject({
-      id: disabled.id,
-      policy: { publikEnabled: false },
-    });
   });
 
   it('selects only bounded user-authorized refresh candidates with Publik evidence', async () => {
@@ -471,14 +550,36 @@ describe('PublisherPolicyService', () => {
         refreshRow('removed', { status: ChatBotMembershipStatus.REMOVED }),
         refreshRow('wrong-access-bot', { accessBotId: 'main-bot' }),
         refreshRow('edge-type-mismatch', { accessEntityType: ChatEntityType.CHANNEL }),
+        refreshRow('missing-catalog'),
+        refreshRow('wrong-catalog-type'),
       ])
       .mockResolvedValueOnce(readyIds.map((id) => refreshRow(id)));
+    const catalogFindMany = jest.fn().mockImplementation(
+      ({ where }: { where: { chatId: { in: string[] } } }) =>
+        Promise.resolve(
+          where.chatId.in.flatMap((chatId) =>
+            chatId === 'missing-catalog'
+              ? []
+              : [
+                  {
+                    chatId,
+                    entityType:
+                      chatId === 'wrong-catalog-type'
+                        ? ChatEntityType.CHANNEL
+                        : ChatEntityType.CHAT,
+                  },
+                ],
+          ),
+        ),
+    );
     const service = new PublisherPolicyService(
-      { publisherEntityBinding: { findMany } } as never,
+      {
+        publisherEntityBinding: { findMany },
+        managedBotChatCatalog: { findMany: catalogFindMany },
+      } as never,
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
-      createMaxBotLinkService() as never,
     );
 
     await expect(service.listRefreshableEntityIds(user, 500, ['already-queued'])).resolves.toEqual([
@@ -487,6 +588,7 @@ describe('PublisherPolicyService', () => {
       ...readyIds.slice(0, 48),
     ]);
     expect(findMany).toHaveBeenCalledTimes(2);
+    expect(catalogFindMany).toHaveBeenCalledTimes(2);
     expect(findMany).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -581,12 +683,16 @@ describe('PublisherPolicyService', () => {
       {
         botId: 'publik-bot',
         chatId: safeEntityId,
+        entityType: ChatEntityType.CHAT,
+        title: 'Каталог Публика',
         link: 'https://www.max.ru/team?from=catalog',
         avatarUrl: 'https://cdn.example.com/avatar.png?size=small',
       },
       ...invalidLinkCases.map(([chatId, link]) => ({
         botId: 'publik-bot',
         chatId,
+        entityType: ChatEntityType.CHAT,
+        title: `Публик ${chatId}`,
         link,
         avatarUrl:
           chatId === 'credentials' ? 'https://user:secret@cdn.example.com/avatar.png' : null,
@@ -594,11 +700,12 @@ describe('PublisherPolicyService', () => {
       {
         botId: 'main-bot',
         chatId: mainOnlyEntityId,
+        entityType: ChatEntityType.CHAT,
+        title: 'Только Майор',
         link: 'https://max.ru/unrelated-route',
         avatarUrl: 'https://cdn.example.com/unrelated.png',
       },
     ]);
-    const maxBotLinkService = createMaxBotLinkService();
     const service = new PublisherPolicyService(
       {
         managedEntityAccessEdge: { findMany },
@@ -607,7 +714,6 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
-      maxBotLinkService as never,
     );
 
     const response = await service.listEntities(user);
@@ -615,22 +721,16 @@ describe('PublisherPolicyService', () => {
     const safeEntity = entitiesById.get(safeEntityId);
 
     expect(safeEntity).toMatchObject({
+      title: 'Каталог Публика',
       avatarUrl: 'https://cdn.example.com/avatar.png?size=small',
       entityUrl: 'https://max.ru/team?from=catalog',
-      settingsHandoffUrl: expect.stringMatching(/^https:\/\/max\.ru\/entry-bot\?startapp=mr-/u),
     });
-    const setupHandoffUrl = new URL(response.setupHandoffUrl ?? '');
-    const setupStartParam = setupHandoffUrl.searchParams.get('startapp') ?? '';
-    expect(
-      JSON.parse(Buffer.from(setupStartParam.slice('mr-'.length), 'base64url').toString('utf8')),
-    ).toEqual({ v: 1, k: 'route', r: '/' });
+    expect(safeEntity).not.toHaveProperty('settingsHandoffUrl');
+    expect(safeEntity).not.toHaveProperty('channelOverview');
     for (const [id] of invalidLinkCases) {
       expect(entitiesById.get(id)?.entityUrl).toBeNull();
     }
-    expect(entitiesById.get(mainOnlyEntityId)).toMatchObject({
-      avatarUrl: null,
-      entityUrl: null,
-    });
+    expect(entitiesById.has(mainOnlyEntityId)).toBe(false);
     expect(entitiesById.get('credentials')?.avatarUrl).toBeNull();
     expect(catalogFindMany).toHaveBeenCalledWith({
       where: {
@@ -644,20 +744,12 @@ describe('PublisherPolicyService', () => {
       select: {
         botId: true,
         chatId: true,
+        entityType: true,
+        title: true,
         link: true,
         avatarUrl: true,
       },
     });
-    const handoffUrl = new URL(safeEntity?.settingsHandoffUrl ?? '');
-    const startParam = handoffUrl.searchParams.get('startapp') ?? '';
-    expect(
-      JSON.parse(Buffer.from(startParam.slice('mr-'.length), 'base64url').toString('utf8')),
-    ).toEqual({
-      v: 1,
-      k: 'route',
-      r: `/chat/${encodeURIComponent(safeEntityId)}/settings`,
-    });
-    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
   });
 
   it('loads catalog presentation in bounded batches without per-entity queries', async () => {
@@ -676,16 +768,31 @@ describe('PublisherPolicyService', () => {
     ]);
   });
 
-  it('returns a valid channel overview without dropping chats from the entity list', async () => {
+  it('uses the entity id instead of the Major title when the Publisher catalog title is empty', async () => {
+    const entity = createListEntity('publisher-chat-id', 'Название из Майора', ChatEntityType.CHAT);
+    const fixture = createListFixture([entity]);
+    fixture.catalogFindMany.mockResolvedValueOnce([
+      {
+        botId: 'publik-bot',
+        chatId: entity.id,
+        entityType: ChatEntityType.CHAT,
+        title: '   ',
+        link: null,
+        avatarUrl: null,
+      },
+    ]);
+
+    await expect(fixture.service.listEntities(user)).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: entity.id, title: entity.id })],
+    });
+  });
+
+  it('exposes Publik chat modules without importing Major channel overview data', async () => {
     const channel = {
       id: 'channel-1',
       title: 'Канал',
       entityType: ChatEntityType.CHANNEL,
-      channelSettings: {
-        commentsEnabled: false,
-        postSuggestionsEnabled: true,
-        commentsModerationEnabled: true,
-      },
+      publisherSettings: null,
       publicationPolicy: null,
       publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
@@ -694,7 +801,13 @@ describe('PublisherPolicyService', () => {
       id: 'chat-1',
       title: 'Чат',
       entityType: ChatEntityType.CHAT,
-      channelSettings: null,
+      publisherSettings: {
+        revision: 3,
+        chatCommentsEnabled: true,
+        chatCommentsAdminsEnabled: false,
+        chatCommentsPostsEnabled: true,
+        channelSuggestionsEnabled: false,
+      },
       publicationPolicy: null,
       publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
@@ -712,7 +825,24 @@ describe('PublisherPolicyService', () => {
         ]),
       },
       managedBotChatCatalog: {
-        findMany: jest.fn().mockResolvedValue([]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            botId: 'publik-bot',
+            chatId: channel.id,
+            entityType: ChatEntityType.CHANNEL,
+            title: channel.title,
+            link: null,
+            avatarUrl: null,
+          },
+          {
+            botId: 'publik-bot',
+            chatId: chat.id,
+            entityType: ChatEntityType.CHAT,
+            title: chat.title,
+            link: null,
+            avatarUrl: null,
+          },
+        ]),
       },
     };
     const service = new PublisherPolicyService(
@@ -720,7 +850,6 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
-      createMaxBotLinkService() as never,
     );
 
     const response = await service.listEntities(user);
@@ -728,15 +857,26 @@ describe('PublisherPolicyService', () => {
     expect(response.items).toHaveLength(2);
     expect(response.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: chat.id, entityType: 'chat', channelOverview: null }),
+        expect.objectContaining({
+          id: chat.id,
+          entityType: 'chat',
+          moduleSettings: {
+            revision: 3,
+            chatComments: {
+              commentsEnabled: true,
+              commentsAdminsEnabled: false,
+              commentsChatBroadcastsEnabled: true,
+            },
+            channelSuggestionsEnabled: null,
+          },
+        }),
         expect.objectContaining({
           id: channel.id,
           entityType: 'channel',
-          channelOverview: {
-            enabledScenariosCount: 1,
-            commentsEnabled: false,
-            postSuggestionsEnabled: true,
-            commentsModerationEnabled: false,
+          moduleSettings: {
+            revision: 0,
+            chatComments: null,
+            channelSuggestionsEnabled: false,
           },
         }),
       ]),
@@ -761,7 +901,7 @@ describe('PublisherPolicyService', () => {
 
     expect(firstPage.items.map((entity) => entity.id)).toEqual(['channel-alpha', 'channel-beta']);
     expect(firstPage.filteredTotal).toBe(4);
-    expect(firstPage.setupHandoffUrl).toMatch(/^https:\/\/max\.ru\/entry-bot\?startapp=mr-/u);
+    expect(firstPage).not.toHaveProperty('setupHandoffUrl');
     expect(firstPage.summary).toEqual({
       total: 4,
       chat: 2,
@@ -1026,12 +1166,22 @@ describe('PublisherPolicyService', () => {
     const service = new PublisherPolicyService(
       {
         managedEntityAccessEdge: { findMany },
-        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
+        managedBotChatCatalog: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              botId: 'publik-bot',
+              chatId: foreignChat.id,
+              entityType: ChatEntityType.CHAT,
+              title: 'Publisher-scoped chat',
+              link: null,
+              avatarUrl: null,
+            },
+          ]),
+        },
       } as never,
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
-      createMaxBotLinkService() as never,
     );
     const body = { targets: [{ id: foreignChat.id, entityType: 'chat' }] };
 
@@ -1143,7 +1293,7 @@ describe('PublisherPolicyService', () => {
       id: 'chat-foreign',
       title: 'Чужой чат',
       entityType: ChatEntityType.CHAT,
-      channelSettings: null,
+      publisherSettings: null,
       publicationPolicy: null,
       publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
@@ -1163,6 +1313,8 @@ describe('PublisherPolicyService', () => {
       ),
     );
     const catalogFindFirst = jest.fn().mockResolvedValue({
+      entityType: ChatEntityType.CHAT,
+      title: 'Чат Публика',
       link: 'https://max.ru/scoped-chat',
       avatarUrl: null,
     });
@@ -1174,7 +1326,6 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       {} as never,
-      createMaxBotLinkService() as never,
     );
 
     await expect(
@@ -1190,7 +1341,11 @@ describe('PublisherPolicyService', () => {
         username: null,
         displayName: null,
       }),
-    ).resolves.toMatchObject({ id: foreignChat.id, entityUrl: 'https://max.ru/scoped-chat' });
+    ).resolves.toMatchObject({
+      id: foreignChat.id,
+      title: 'Чат Публика',
+      entityUrl: 'https://max.ru/scoped-chat',
+    });
     await expect(
       service.getEntity('channel', foreignChat.id, {
         userId: 'user-2',
@@ -1220,6 +1375,33 @@ describe('PublisherPolicyService', () => {
         status: 'ACTIVE',
       },
       select: {
+        entityType: true,
+        title: true,
+        link: true,
+        avatarUrl: true,
+      },
+    });
+  });
+
+  it('rejects a Publisher entity without its exact active catalog row', async () => {
+    const entity = createListEntity('publisher-chat', 'Название из Майора', ChatEntityType.CHAT);
+    const fixture = createListFixture([entity]);
+    fixture.catalogFindFirst.mockResolvedValueOnce(null);
+
+    await expect(fixture.service.getEntity('chat', entity.id, user)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(fixture.readiness.isRuntimeAvailable).not.toHaveBeenCalled();
+    expect(fixture.catalogFindFirst).toHaveBeenCalledWith({
+      where: {
+        botId: 'publik-bot',
+        chatId: entity.id,
+        entityType: ChatEntityType.CHAT,
+        status: 'ACTIVE',
+      },
+      select: {
+        entityType: true,
+        title: true,
         link: true,
         avatarUrl: true,
       },
@@ -1239,7 +1421,6 @@ describe('PublisherPolicyService', () => {
       createBotRegistry() as never,
       createReadiness() as never,
       { assertManagedEntityAdminAccess } as never,
-      createMaxBotLinkService() as never,
     );
     await expect(
       service.updatePolicy('chat', 'chat-foreign', user, {
@@ -1259,30 +1440,23 @@ describe('PublisherPolicyService', () => {
       .mockResolvedValue({ id: 'channel-1' } as never);
 
     await expect(
-      fixture.service.updatePolicy(
-        'channel',
-        'channel-1',
-        user,
-        {
-          expectedRevision: 0,
-          suggestionsViaPublik: true,
-        },
-        'publisher',
-      ),
+      fixture.service.updateModuleSettings('channel', 'channel-1', user, {
+        expectedRevision: 0,
+        channelSuggestionsEnabled: true,
+      }),
     ).resolves.toEqual({
-      publikEnabled: true,
-      suggestionsViaPublik: true,
       revision: 1,
-      updatedAt: '2026-08-26T10:00:00.000Z',
+      chatComments: null,
+      channelSuggestionsEnabled: true,
     });
 
     expect(getEntity).toHaveBeenCalledWith('channel', 'channel-1', user);
     expect(fixture.managedEntities.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
-    expect(fixture.tx.managedEntityPublicationPolicy.create).toHaveBeenCalledWith({
+    expect(fixture.tx.managedEntityPublicationPolicy.create).not.toHaveBeenCalled();
+    expect(fixture.tx.publisherEntitySettings.create).toHaveBeenCalledWith({
       data: {
         chatId: 'channel-1',
-        publikEnabled: true,
-        suggestionsViaPublik: true,
+        channelSuggestionsEnabled: true,
         updatedByUserId: user.userId,
       },
     });
@@ -1290,14 +1464,65 @@ describe('PublisherPolicyService', () => {
       data: {
         chatId: 'channel-1',
         actorUserId: user.userId,
-        action: 'UPDATE_PUBLICATION_POLICY',
+        action: 'UPDATE_PUBLISHER_MODULE_SETTINGS',
         payload: {
-          changed: { suggestionsViaPublik: true },
+          changed: { channelSuggestionsEnabled: true },
           revision: 1,
         },
       },
     });
-    expect(fixture.readiness.resolvePolicy).toHaveBeenCalledWith(fixture.storedPolicy);
+    expect(fixture.readiness.resolvePolicy).not.toHaveBeenCalled();
+  });
+
+  it('updates all Publik-owned chat comment settings in their own transaction', async () => {
+    const fixture = createPolicyMutationFixture({
+      storedEntityType: ChatEntityType.CHAT,
+      publisherSettings: { revision: 4 },
+    });
+    const getEntity = jest
+      .spyOn(fixture.service, 'getEntity')
+      .mockResolvedValue({ id: 'chat-1' } as never);
+    const chatComments = {
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    };
+
+    await expect(
+      fixture.service.updateModuleSettings('chat', 'chat-1', user, {
+        expectedRevision: 4,
+        chatComments,
+      }),
+    ).resolves.toEqual({
+      revision: 5,
+      chatComments,
+      channelSuggestionsEnabled: null,
+    });
+
+    expect(getEntity).toHaveBeenCalledWith('chat', 'chat-1', user);
+    expect(fixture.managedEntities.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    expect(fixture.tx.managedEntityPublicationPolicy.updateMany).not.toHaveBeenCalled();
+    expect(fixture.tx.publisherEntitySettings.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1', revision: 4 },
+      data: {
+        chatCommentsEnabled: true,
+        chatCommentsAdminsEnabled: false,
+        chatCommentsPostsEnabled: true,
+        revision: { increment: 1 },
+        updatedByUserId: user.userId,
+      },
+    });
+    expect(fixture.tx.auditLog.create).toHaveBeenCalledWith({
+      data: {
+        chatId: 'chat-1',
+        actorUserId: user.userId,
+        action: 'UPDATE_PUBLISHER_MODULE_SETTINGS',
+        payload: {
+          changed: { chatComments },
+          revision: 5,
+        },
+      },
+    });
   });
 
   it('keeps the Major toggle and Publisher secondary-module writes disjoint', async () => {
@@ -1307,21 +1532,49 @@ describe('PublisherPolicyService', () => {
     await expect(
       fixture.service.updatePolicy('channel', 'channel-1', user, {
         expectedRevision: 0,
-        suggestionsViaPublik: true,
+        publikEnabled: true,
+        channelSuggestionsEnabled: true,
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     await expect(
-      fixture.service.updatePolicy(
-        'channel',
-        'channel-1',
-        user,
-        { expectedRevision: 0, publikEnabled: false },
-        'publisher',
-      ),
+      fixture.service.updatePolicy('chat', 'chat-1', user, {
+        expectedRevision: 0,
+        publikEnabled: true,
+        chatComments: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: true,
+          commentsChatBroadcastsEnabled: true,
+        },
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      fixture.service.updateModuleSettings('channel', 'channel-1', user, {
+        expectedRevision: 0,
+        publikEnabled: false,
+        channelSuggestionsEnabled: true,
+      }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(fixture.managedEntities.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
     expect(getEntity).not.toHaveBeenCalled();
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects chat comment module writes for channels before access checks', async () => {
+    const fixture = createPolicyMutationFixture();
+
+    await expect(
+      fixture.service.updateModuleSettings('channel', 'channel-1', user, {
+        expectedRevision: 0,
+        chatComments: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: false,
+          commentsChatBroadcastsEnabled: false,
+        },
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(fixture.prisma.chat.findUnique).not.toHaveBeenCalled();
     expect(fixture.transaction).not.toHaveBeenCalled();
   });
 
@@ -1340,20 +1593,40 @@ describe('PublisherPolicyService', () => {
     );
   });
 
+  it('reads the Major toggle without loading Publisher catalog or readiness state', async () => {
+    const fixture = createPolicyMutationFixture({
+      publicationPolicy: { revision: 1 },
+    });
+
+    await expect(
+      fixture.service.getPolicyForModeration('channel', 'channel-1', user),
+    ).resolves.toEqual({
+      publikEnabled: true,
+      revision: 1,
+      updatedAt: '2026-08-26T10:00:00.000Z',
+    });
+
+    expect(fixture.managedEntities.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
+      'channel-1',
+      user,
+      'channel',
+    );
+    expect(fixture.prisma.chat.findUnique).toHaveBeenCalledWith({
+      where: { id: 'channel-1' },
+      select: { entityType: true, publicationPolicy: true },
+    });
+    expect(fixture.readiness.isRuntimeAvailable).not.toHaveBeenCalled();
+    expect(fixture.readiness.resolveReadiness).not.toHaveBeenCalled();
+  });
+
   it('rejects enabling suggestions for a chat before access checks or database reads', async () => {
     const fixture = createPolicyMutationFixture({ storedEntityType: ChatEntityType.CHAT });
 
     await expect(
-      fixture.service.updatePolicy(
-        'chat',
-        'chat-1',
-        user,
-        {
-          expectedRevision: 0,
-          suggestionsViaPublik: true,
-        },
-        'publisher',
-      ),
+      fixture.service.updateModuleSettings('chat', 'chat-1', user, {
+        expectedRevision: 0,
+        channelSuggestionsEnabled: true,
+      }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(fixture.managedEntities.assertManagedEntityAdminAccess).not.toHaveBeenCalled();

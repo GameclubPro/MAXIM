@@ -4,6 +4,7 @@ import {
   PublicationDispatchProfile,
 } from '../prisma/prisma-client';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
+import { ensureManagedBroadcastActorAccessBeforeExecution } from './admin-managed-broadcast-authorization';
 
 const user = { userId: 'user-1', username: null, displayName: null };
 
@@ -183,56 +184,7 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     expect(createMany).not.toHaveBeenCalled();
   });
 
-  it('separates the Publik transport bot from the main dialog bot in post buttons', async () => {
-    const resolveBroadcastButtonContext = jest.fn().mockResolvedValue({
-      buttons: [[{ type: 'link', text: 'Комментарии', url: 'https://max.ru/main-bot' }]],
-      commentDialogReference: {
-        entityType: 'channel',
-        threadId: 'thread-1',
-        includeCommentsButton: true,
-        includeSuggestButton: false,
-        suggestButtonText: null,
-        customButtons: [],
-        suggestionEntryMode: 'BOT',
-        botId: 'main-bot',
-      },
-    });
-    const runtime = new AdminManagedBroadcastRuntime({
-      prisma: {},
-      resolveBroadcastButtonContext,
-    } as never);
-
-    const message = await (runtime as any).messageRuntime.buildMessage(
-      'channel-1',
-      'channel',
-      {
-        textFormat: 'plain',
-        buttons: [],
-        buttonEnabled: false,
-        buttonText: '',
-        buttonUrl: '',
-      },
-      'Публикация',
-      {},
-      'publisher-bot',
-      'main-bot',
-    );
-
-    expect(resolveBroadcastButtonContext).toHaveBeenCalledWith(
-      'channel-1',
-      'channel',
-      expect.any(Object),
-      'main-bot',
-    );
-    expect(message.commentDialogReference).toEqual(
-      expect.objectContaining({
-        botId: 'publisher-bot',
-        dialogBotId: 'main-bot',
-      }),
-    );
-  });
-
-  it('uses the persisted main-signed keyboard without rebuilding it in publisher runtime', async () => {
+  it('uses the persisted Publisher-signed keyboard without rebuilding it in publisher runtime', async () => {
     const resolveBroadcastButtonContext = jest.fn();
     const runtime = new AdminManagedBroadcastRuntime({
       prisma: {},
@@ -240,8 +192,8 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     } as never);
     const signedButton = {
       type: 'link',
-      text: 'Комментарии · 0',
-      url: 'https://max.ru/main-bot?startapp=signed-main-context',
+      text: 'Предложить пост',
+      url: 'https://max.ru/publisher-bot?startapp=signed-publisher-context',
     };
 
     const message = await (runtime as any).messageRuntime.buildMessage(
@@ -257,11 +209,11 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
       'Публикация',
       {},
       'publisher-bot',
-      'main-bot',
+      'publisher-bot',
       {
         value: {
           version: 1,
-          dialogBotId: 'main-bot',
+          dialogBotId: 'publisher-bot',
           buttons: [[signedButton]],
           reference: null,
         },
@@ -271,6 +223,276 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
 
     expect(resolveBroadcastButtonContext).not.toHaveBeenCalled();
     expect(message.messageOptions?.buttons).toEqual([[signedButton]]);
+  });
+
+  it('does not apply Major channel signatures to Publisher deliveries', async () => {
+    const preparePostText = jest.fn();
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {},
+      resolveBroadcastButtonContext: jest.fn(),
+      channelPostSignatureService: { preparePostText },
+    } as never);
+
+    const message = await (runtime as any).messageRuntime.buildMessage(
+      'channel-1',
+      'channel',
+      {
+        textFormat: 'plain',
+        buttons: [],
+        buttonEnabled: false,
+        buttonText: '',
+        buttonUrl: '',
+      },
+      'Текст Публика',
+      {},
+      'publisher-bot',
+      'publisher-bot',
+      {
+        value: {
+          version: 1,
+          dialogBotId: 'publisher-bot',
+          buttons: [],
+          reference: null,
+        },
+        required: true,
+      },
+    );
+
+    expect(preparePostText).not.toHaveBeenCalled();
+    expect(message.messageText).toBe('Текст Публика');
+  });
+
+  it('rechecks Publisher actor access only through exact Publisher edges', async () => {
+    const findMany = jest
+      .fn()
+      .mockResolvedValue([{ chatId: 'chat-publisher-only' }, { chatId: 'chat-shared' }]);
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: { managedEntityAccessEdge: { findMany } },
+    } as never);
+
+    await expect(
+      (runtime as any).publisherDispatch.assertActorAdminAccess({
+        targetChatIds: ['chat-publisher-only', 'chat-shared'],
+        actorUserId: 'admin-1',
+        entityType: 'chat',
+        requiredBotId: 'publisher-bot',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: { in: ['chat-publisher-only', 'chat-shared'] },
+          userId: 'admin-1',
+          botId: 'publisher-bot',
+          chat: expect.objectContaining({
+            publisherBinding: expect.any(Object),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('defers Publisher execution when any exact Publisher access edge is missing', async () => {
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedEntityAccessEdge: {
+          findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-1' }]),
+        },
+      },
+    } as never);
+
+    await expect(
+      (runtime as any).publisherDispatch.assertActorAdminAccess({
+        targetChatIds: ['chat-1', 'chat-2'],
+        actorUserId: 'admin-1',
+        entityType: 'chat',
+        requiredBotId: 'publisher-bot',
+      }),
+    ).rejects.toMatchObject({ blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED' });
+  });
+
+  it('clears only the exact Publisher actor-access blocker after access returns', async () => {
+    const broadcastUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const occurrenceUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const deliveryUpdate = jest.fn().mockResolvedValue({ count: 2 });
+    const tx = {
+      managedBroadcast: { updateMany: broadcastUpdate },
+      publicationOccurrence: { updateMany: occurrenceUpdate },
+      managedBroadcastDelivery: { updateMany: deliveryUpdate },
+    };
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedEntityAccessEdge: {
+          findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-1' }, { chatId: 'chat-2' }]),
+        },
+        $transaction: (callback: (client: typeof tx) => unknown) => callback(tx),
+      },
+    } as never);
+
+    await expect(
+      (runtime as any).publisherDispatch.ensureActorAdminAccess({
+        row: {
+          id: 'broadcast-publik',
+          publicationOccurrenceId: 'occurrence-publik',
+          requiredBotId: 'publisher-bot',
+        },
+        occurrenceIndex: 1,
+        lease: { lockedAt: new Date('2026-08-27T10:00:00.000Z'), lockToken: 'lease-1' },
+        targetChatIds: ['chat-1', 'chat-2'],
+        actorUserId: 'admin-1',
+        entityType: 'chat',
+        requiredBotId: 'publisher-bot',
+      }),
+    ).resolves.toEqual({ ready: true });
+
+    expect(broadcastUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          lockedAt: new Date('2026-08-27T10:00:00.000Z'),
+          lockToken: 'lease-1',
+        }),
+        data: { lockedAt: new Date('2026-08-27T10:00:00.000Z') },
+      }),
+    );
+    expect(occurrenceUpdate).toHaveBeenCalledWith({
+      where: {
+        id: 'occurrence-publik',
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+      },
+      data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
+    });
+    expect(deliveryUpdate).toHaveBeenCalledWith({
+      where: {
+        broadcastId: 'broadcast-publik',
+        occurrenceIndex: 1,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+      },
+      data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
+    });
+  });
+
+  it('does not write actor blockers when the managed broadcast lease is already lost', async () => {
+    const broadcastUpdate = jest.fn().mockResolvedValue({ count: 0 });
+    const occurrenceUpdate = jest.fn();
+    const deliveryUpdate = jest.fn();
+    const tx = {
+      managedBroadcast: { updateMany: broadcastUpdate },
+      publicationOccurrence: { updateMany: occurrenceUpdate },
+      managedBroadcastDelivery: { updateMany: deliveryUpdate },
+    };
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
+        $transaction: (callback: (client: typeof tx) => unknown) => callback(tx),
+      },
+      logger: { warn: jest.fn() },
+    } as never);
+    const lockedAt = new Date('2026-08-27T10:00:00.000Z');
+
+    await expect(
+      (runtime as any).publisherDispatch.ensureActorAdminAccess({
+        row: {
+          id: 'broadcast-publik',
+          publicationOccurrenceId: 'occurrence-publik',
+          requiredBotId: 'publisher-bot',
+        },
+        occurrenceIndex: 1,
+        lease: { lockedAt, lockToken: 'lost-lease' },
+        targetChatIds: ['chat-1'],
+        actorUserId: 'admin-1',
+        entityType: 'chat',
+        requiredBotId: 'publisher-bot',
+      }),
+    ).resolves.toEqual({ ready: false, leaseLost: true, retryAt: null });
+
+    expect(broadcastUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ lockedAt, lockToken: 'lost-lease' }),
+      }),
+    );
+    expect(occurrenceUpdate).not.toHaveBeenCalled();
+    expect(deliveryUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does not clear recovered actor blockers after its cleanup lease is lost', async () => {
+    const broadcastUpdate = jest.fn().mockResolvedValue({ count: 0 });
+    const occurrenceUpdate = jest.fn();
+    const deliveryUpdate = jest.fn();
+    const tx = {
+      managedBroadcast: { updateMany: broadcastUpdate },
+      publicationOccurrence: { updateMany: occurrenceUpdate },
+      managedBroadcastDelivery: { updateMany: deliveryUpdate },
+    };
+    const runtime = new AdminManagedBroadcastRuntime({
+      prisma: {
+        managedEntityAccessEdge: {
+          findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-1' }]),
+        },
+        $transaction: (callback: (client: typeof tx) => unknown) => callback(tx),
+      },
+    } as never);
+
+    await expect(
+      (runtime as any).publisherDispatch.ensureActorAdminAccess({
+        row: {
+          id: 'broadcast-publik',
+          publicationOccurrenceId: 'occurrence-publik',
+          requiredBotId: 'publisher-bot',
+        },
+        occurrenceIndex: 1,
+        lease: {
+          lockedAt: new Date('2026-08-27T10:00:00.000Z'),
+          lockToken: 'stale-cleanup-lease',
+        },
+        targetChatIds: ['chat-1'],
+        actorUserId: 'admin-1',
+        entityType: 'chat',
+        requiredBotId: 'publisher-bot',
+      }),
+    ).resolves.toEqual({ ready: false, leaseLost: true, retryAt: null });
+
+    expect(broadcastUpdate).toHaveBeenCalledTimes(1);
+    expect(occurrenceUpdate).not.toHaveBeenCalled();
+    expect(deliveryUpdate).not.toHaveBeenCalled();
+  });
+
+  it('returns the persisted outcome when actor-access deferral loses its lease', async () => {
+    const persisted = {
+      status: 'ACTIVE',
+      currentOccurrence: 1,
+      sentChatIds: [],
+      failedChatIds: [],
+      pendingChatIds: ['chat-1'],
+      canRetry: false,
+      firstSendError: null,
+      nextSendAt: null,
+    };
+    const readLostLeaseResult = jest.fn().mockResolvedValue(persisted);
+
+    await expect(
+      ensureManagedBroadcastActorAccessBeforeExecution({
+        context: {} as never,
+        prisma: {} as never,
+        logger: {} as never,
+        publisherDispatch: {
+          ensureActorAdminAccess: jest
+            .fn()
+            .mockResolvedValue({ ready: false, leaseLost: true, retryAt: null }),
+        } as never,
+        row: { id: 'broadcast-publik', actorUserId: 'admin-1' } as never,
+        occurrenceIndex: 1,
+        lease: { lockedAt: new Date('2026-08-27T10:00:00.000Z'), lockToken: 'lost' },
+        targetChatIds: ['chat-1'],
+        entityType: 'chat',
+        requiredPublisherBotId: 'publisher-bot',
+        readLostLeaseResult,
+      }),
+    ).resolves.toBe(persisted);
+    expect(readLostLeaseResult).toHaveBeenCalledTimes(1);
   });
 
   it('leaves Publik deliveries pending when the publisher runtime boundary is disabled', async () => {
@@ -329,10 +551,14 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     });
     const occurrenceUpdate = jest.fn().mockReturnValue(occurrenceGate);
     const deliveryUpdate = jest.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      managedBroadcast: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      publicationOccurrence: { updateMany: occurrenceUpdate },
+      managedBroadcastDelivery: { updateMany: deliveryUpdate },
+    };
     const runtime = new AdminManagedBroadcastRuntime({
       prisma: {
-        publicationOccurrence: { updateMany: occurrenceUpdate },
-        managedBroadcastDelivery: { updateMany: deliveryUpdate },
+        $transaction: (callback: (client: typeof tx) => unknown) => callback(tx),
       },
       publisherRuntimeBoundaryService: { assertDispatchEnabled: jest.fn() },
     } as never);
@@ -340,7 +566,7 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
     const boundary = (runtime as any).publisherDispatch.ensureRuntimeBoundary(
       { id: 'broadcast-publik', publicationOccurrenceId: 'occurrence-publik' },
       1,
-      { lockToken: 'broadcast-lock' },
+      { lockedAt: new Date('2026-08-27T10:00:00.000Z'), lockToken: 'broadcast-lock' },
     );
     while (occurrenceUpdate.mock.calls.length === 0) await Promise.resolve();
 

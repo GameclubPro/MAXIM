@@ -11,12 +11,16 @@ import {
 } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '../prisma/prisma-client';
+import { Prisma, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveEffectiveVkParsingTextFormat } from './vk-parsing-content';
 import { VK_MEDIA_STATUS_FAILED } from './vk-parsing-media-cache.service';
 import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 import type { VkParsingUnsupportedAttachmentSummary } from './vk-parsing-attachments';
+import {
+  MAJOR_VK_OWNER_SCOPE,
+  type VkParsingOwnerScope,
+} from './vk-parsing-ownership.service';
 
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
 type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }>;
@@ -92,6 +96,7 @@ export class VkParsingFeedService {
       reason: null,
     },
     rawQuery: unknown = {},
+    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
   ): Promise<VkParsingFeed> {
     const parsedQuery = vkParsingFeedQuerySchema.safeParse(rawQuery);
     const query: VkParsingFeedQuery = parsedQuery.success
@@ -108,7 +113,8 @@ export class VkParsingFeedService {
           : { status: query.status };
     const postWhere: Prisma.VkParsingPostWhereInput = {
       chatId,
-      source: { status: VK_SOURCE_STATUS_ACTIVE },
+      ...ownerScope,
+      source: { status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
       ...statusWhere,
       ...(query.sourceId ? { sourceId: query.sourceId } : {}),
     };
@@ -116,10 +122,15 @@ export class VkParsingFeedService {
     const [settings, sources, posts, total, summary, queue, auditEvents, sourceStats] =
       await Promise.all([
         this.prisma.vkParsingSettings.findUnique({
-          where: { chatId },
+          where: {
+            chatId_ownerProfile_ownerBotId: {
+              chatId,
+              ...ownerScope,
+            },
+          },
         }),
         this.prisma.vkParsingSource.findMany({
-          where: { chatId, status: VK_SOURCE_STATUS_ACTIVE },
+          where: { chatId, status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
           orderBy: [{ createdAt: 'asc' }],
         }),
         this.prisma.vkParsingPost.findMany({
@@ -130,13 +141,14 @@ export class VkParsingFeedService {
           take: query.limit,
         }),
         this.prisma.vkParsingPost.count({ where: postWhere }),
-        this.buildHealthSummary(chatId),
+        this.buildHealthSummary(chatId, ownerScope),
         this.prisma.vkParsingPost.findMany({
           where: {
             chatId,
+            ...ownerScope,
             publishQueuedAt: { not: null },
             status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
-            source: { status: VK_SOURCE_STATUS_ACTIVE },
+            source: { status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
           },
           include: { source: true },
           orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }],
@@ -146,11 +158,29 @@ export class VkParsingFeedService {
           where: {
             chatId,
             action: { startsWith: 'VK_PARSING_' },
+            ...(ownerScope.ownerProfile === VkParsingOwnerProfile.PUBLISHER
+              ? {
+                  AND: [
+                    {
+                      payload: {
+                        path: ['ownerProfile'],
+                        equals: ownerScope.ownerProfile,
+                      },
+                    },
+                    {
+                      payload: {
+                        path: ['ownerBotId'],
+                        equals: ownerScope.ownerBotId,
+                      },
+                    },
+                  ],
+                }
+              : {}),
           },
           orderBy: [{ createdAt: 'desc' }],
           take: 12,
         }) ?? Promise.resolve([]),
-        this.loadSourcePostStats(chatId),
+        this.loadSourcePostStats(chatId, ownerScope),
       ]);
     const nextOffset = query.offset + query.limit;
 
@@ -172,7 +202,10 @@ export class VkParsingFeedService {
     };
   }
 
-  async buildHealthSummary(chatId: string): Promise<VkParsingHealthSummary> {
+  async buildHealthSummary(
+    chatId: string,
+    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+  ): Promise<VkParsingHealthSummary> {
     const now = new Date();
     const staleBefore = new Date(now.getTime() - this.maxSyncIntervalMs * 2);
     const [
@@ -188,11 +221,12 @@ export class VkParsingFeedService {
       vkApiMetrics,
     ] = await Promise.all([
       this.prisma.vkParsingSource.count({
-        where: { chatId, status: VK_SOURCE_STATUS_ACTIVE },
+        where: { chatId, status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
       }),
       this.prisma.vkParsingSource.count({
         where: {
           chatId,
+          ...ownerScope,
           status: VK_SOURCE_STATUS_ACTIVE,
           OR: [
             { syncStatus: VK_SOURCE_SYNC_STATUS_ERROR },
@@ -202,16 +236,17 @@ export class VkParsingFeedService {
         },
       }),
       this.prisma.vkParsingPost.aggregate({
-        where: { chatId, lastSeenAt: { not: null } },
+        where: { chatId, lastSeenAt: { not: null }, ...ownerScope },
         _max: { lastSeenAt: true },
       }),
       this.prisma.vkParsingPost.aggregate({
-        where: { chatId, publishQueuedAt: { not: null } },
+        where: { chatId, publishQueuedAt: { not: null }, ...ownerScope },
         _min: { publishQueuedAt: true },
       }),
       this.prisma.vkParsingPost.count({
         where: {
           chatId,
+          ...ownerScope,
           publishQueuedAt: { not: null },
           status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
         },
@@ -219,6 +254,7 @@ export class VkParsingFeedService {
       this.prisma.vkParsingSource.count({
         where: {
           chatId,
+          ...ownerScope,
           status: VK_SOURCE_STATUS_ACTIVE,
           syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
           OR: [
@@ -230,7 +266,7 @@ export class VkParsingFeedService {
           ],
         },
       }),
-      this.loadSourceRuntimeStats(chatId),
+      this.loadSourceRuntimeStats(chatId, ownerScope),
       this.prisma.vkParsingMediaCache.count(),
       this.prisma.vkParsingMediaCache.count({ where: { status: VK_MEDIA_STATUS_FAILED } }),
       this.vkRateLimitService.getRecentVkApiMetrics(300).catch(() => ({
@@ -271,7 +307,10 @@ export class VkParsingFeedService {
     };
   }
 
-  private async loadSourceRuntimeStats(chatId: string): Promise<Record<string, unknown>> {
+  private async loadSourceRuntimeStats(
+    chatId: string,
+    ownerScope: VkParsingOwnerScope,
+  ): Promise<Record<string, unknown>> {
     const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
       select
         count(*) filter (where last_sync_at is not null)::int as "attemptedSources",
@@ -286,12 +325,17 @@ export class VkParsingFeedService {
         ) as "p95SyncDurationMs"
       from vk_parsing_sources
       where chat_id = ${chatId}
+        and owner_profile = CAST(${ownerScope.ownerProfile} AS "VkParsingOwnerProfile")
+        and owner_bot_id = ${ownerScope.ownerBotId}
         and status = ${VK_SOURCE_STATUS_ACTIVE}
     `;
     return rows[0] ?? {};
   }
 
-  private async loadSourcePostStats(chatId: string): Promise<Map<string, SourcePostStats>> {
+  private async loadSourcePostStats(
+    chatId: string,
+    ownerScope: VkParsingOwnerScope,
+  ): Promise<Map<string, SourcePostStats>> {
     const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
       select
         source_id as "sourceId",
@@ -309,6 +353,8 @@ export class VkParsingFeedService {
         count(*) filter (where status = ${VK_POST_STATUS_FAILED})::int as "failedPostCount"
       from vk_parsing_posts
       where chat_id = ${chatId}
+        and owner_profile = CAST(${ownerScope.ownerProfile} AS "VkParsingOwnerProfile")
+        and owner_bot_id = ${ownerScope.ownerBotId}
       group by source_id
     `;
     return new Map(

@@ -179,9 +179,6 @@ function createHarness(
       readPublisherPreparedDialogContext(value, dialogBotId),
     ),
   };
-  const maxBotLinkService = {
-    getStoredChatPrimaryBotId: jest.fn().mockResolvedValue('main-dialog-bot'),
-  };
   const context: AdminChannelSuggestionPublicationRuntimeContext = {
     logger: { warn: jest.fn() } as never,
     prisma: prisma as never,
@@ -191,7 +188,6 @@ function createHarness(
       loadStoredImages: jest.fn().mockResolvedValue(options.images ?? []),
     } as never,
     publisherDialogContextService: publisherDialogContextService as never,
-    maxBotLinkService: maxBotLinkService as never,
     assertChatAdmin: jest.fn().mockResolvedValue(undefined),
     ensureEntityType: jest.fn().mockResolvedValue(undefined),
     resolveChannelSuggestionPublicationBotAssignment: jest.fn().mockResolvedValue({
@@ -241,7 +237,6 @@ function createHarness(
     context,
     maxClient,
     maxRoutedPublicationService,
-    maxBotLinkService,
     prisma,
     publisherDialogContextService,
     runtime: new AdminChannelSuggestionPublicationRuntime(context),
@@ -249,91 +244,30 @@ function createHarness(
 }
 
 describe('AdminChannelSuggestionPublicationRuntime', () => {
-  it('claims and queues an opted-in suggestion without sending from the main runtime', async () => {
-    const {
-      context,
-      maxBotLinkService,
-      maxRoutedPublicationService,
-      prisma,
-      publisherDialogContextService,
-      runtime,
-    } = createHarness();
-    (prisma as any).managedEntityPublicationPolicy = {
-      findUnique: jest.fn().mockResolvedValue({ suggestionsViaPublik: true }),
+  it('keeps Major suggestions on the Major route when the Publisher module is enabled', async () => {
+    const { context, maxRoutedPublicationService, prisma, publisherDialogContextService, runtime } =
+      createHarness();
+    (prisma as any).publisherEntitySettings = {
+      findUnique: jest.fn().mockResolvedValue({ channelSuggestionsEnabled: true }),
     };
     const enqueue = jest.fn().mockResolvedValue(undefined);
     (context as any).publisherSuggestionPublicationQueue = { enqueue };
-    (context as any).publisherReadinessService = {
-      assertEntityReady: jest.fn().mockResolvedValue({
-        chatId: 'channel-1',
-        entityType: 'channel',
-        requiredBotId: 'publisher-bot',
-        policyRevision: 7,
-      }),
-    };
+    const assertEntityReady = jest.fn();
+    (context as any).publisherReadinessService = { assertEntityReady };
 
     await expect(runtime.review('suggestion-1', reviewer, 'publish')).resolves.toEqual({
-      status: 'review_in_progress',
-      reviewStatus: 'processing',
-      publishedUrl: null,
+      status: 'reviewed',
+      reviewStatus: 'published',
+      publishedUrl: 'https://max.ru/chats/channel-1/message/mid-1',
     });
 
-    expect(enqueue).toHaveBeenCalledWith('suggestion-1', expect.any(String));
-    expect(maxRoutedPublicationService.publish).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(assertEntityReady).not.toHaveBeenCalled();
+    expect(maxRoutedPublicationService.publish).toHaveBeenCalledTimes(1);
+    expect(publisherDialogContextService.prepare).not.toHaveBeenCalled();
     const claimSql = extractSqlText(prisma.$executeRaw.mock.calls[0]?.[0]);
-    expect(claimSql).toContain("'reviewDispatchProfile'");
-    expect(claimSql).toContain('PUBLIK_V1');
-    expect(claimSql).toContain("'reviewDialogBotId'");
-    expect(publisherDialogContextService.prepare).toHaveBeenCalledWith({
-      chatId: 'channel-1',
-      entityType: 'channel',
-      dialogBotId: 'main-dialog-bot',
-      customButtons: [],
-    });
-    expect(maxBotLinkService.getStoredChatPrimaryBotId).toHaveBeenCalledWith('channel-1', {
-      bypassCache: true,
-    });
+    expect(claimSql).not.toContain('PUBLIK_V1');
   });
-
-  it.each([
-    ['stale primary', { primaryBotId: 'stale-main', botId: 'legacy-main' }, null],
-    ['raw unknown bot', { primaryBotId: 'raw-unknown-main', botId: null }, null],
-    ['missing main route', { primaryBotId: null, botId: null }, null],
-    ['publisher as dialog bot', { primaryBotId: 'publisher-bot', botId: null }, 'publisher-bot'],
-  ])(
-    'rejects %s before preparing or claiming a Publik suggestion',
-    async (_label, rawChat, routeBotId) => {
-      const { context, maxBotLinkService, prisma, publisherDialogContextService, runtime } =
-        createHarness();
-      (prisma as any).managedEntityPublicationPolicy = {
-        findUnique: jest.fn().mockResolvedValue({ suggestionsViaPublik: true }),
-      };
-      prisma.chat.findUnique.mockResolvedValue(rawChat);
-      maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(routeBotId);
-      const enqueue = jest.fn();
-      (context as any).publisherSuggestionPublicationQueue = { enqueue };
-      (context as any).publisherReadinessService = {
-        assertEntityReady: jest.fn().mockResolvedValue({
-          chatId: 'channel-1',
-          entityType: 'channel',
-          requiredBotId: 'publisher-bot',
-          policyRevision: 7,
-        }),
-      };
-
-      await expect(runtime.review('suggestion-1', reviewer, 'publish')).rejects.toThrow(
-        'не найден основной бот канала',
-      );
-
-      expect(maxBotLinkService.getStoredChatPrimaryBotId).toHaveBeenCalledWith('channel-1', {
-        bypassCache: true,
-      });
-      expect(prisma.chat.findUnique).not.toHaveBeenCalled();
-      expect(publisherDialogContextService.prepare).not.toHaveBeenCalled();
-      expect(enqueue).not.toHaveBeenCalled();
-      expect(prisma.$executeRaw).not.toHaveBeenCalled();
-    },
-  );
 
   it('publishes a queued suggestion through the immutable Publik route and main dialog bot', async () => {
     const persistedDialogContext = createPublisherDialogContext();

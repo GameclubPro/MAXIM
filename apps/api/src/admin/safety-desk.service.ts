@@ -30,7 +30,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ChatEntityType, Prisma } from '../prisma/prisma-client';
+import { ChatEntityType, Prisma, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import {
   isFreshMembershipAccessSnapshot,
   normalizeMembershipAccessSnapshot,
@@ -70,7 +70,13 @@ type ReviewPostRow = Prisma.VkParsingPostGetPayload<{
       select: {
         title: true;
         entityType: true;
-        vkParsingSettings: true;
+        vkParsingSettings: {
+          where: {
+            ownerProfile: typeof VkParsingOwnerProfile.MAJOR;
+            ownerBotId: '';
+          };
+          take: 1;
+        };
         channelSettings: {
           select: {
             postSignatureEnabled: true;
@@ -1395,7 +1401,13 @@ export class SafetyDeskService {
           select: {
             title: true,
             entityType: true,
-            vkParsingSettings: true,
+            vkParsingSettings: {
+              where: {
+                ownerProfile: VkParsingOwnerProfile.MAJOR,
+                ownerBotId: '',
+              },
+              take: 1,
+            },
             channelSettings: {
               select: {
                 postSignatureEnabled: true,
@@ -1425,7 +1437,13 @@ export class SafetyDeskService {
           select: {
             title: true,
             entityType: true,
-            vkParsingSettings: true,
+            vkParsingSettings: {
+              where: {
+                ownerProfile: VkParsingOwnerProfile.MAJOR,
+                ownerBotId: '',
+              },
+              take: 1,
+            },
             channelSettings: {
               select: {
                 postSignatureEnabled: true,
@@ -1871,9 +1889,10 @@ export class SafetyDeskService {
   }
 
   private resolveVkParsingSettings(post: ReviewPostRow) {
+    const settings = post.chat.vkParsingSettings[0];
     return {
-      stripLinksEnabled: post.chat.vkParsingSettings?.stripLinksEnabled ?? false,
-      skipAdsEnabled: post.chat.vkParsingSettings?.skipAdsEnabled ?? false,
+      stripLinksEnabled: settings?.stripLinksEnabled ?? false,
+      skipAdsEnabled: settings?.skipAdsEnabled ?? false,
     };
   }
 

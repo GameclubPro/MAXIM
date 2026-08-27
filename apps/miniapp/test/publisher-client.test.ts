@@ -3,11 +3,13 @@ import test from 'node:test';
 import { getMe } from '../src/lib/api/me-client';
 import {
   getPublisherEntity,
+  getPublisherPolicy,
   listPublisherEntities,
   refreshPublisherEntities,
   refreshPublisherEntity,
   resolvePublisherEntities,
   updatePublisherPolicy,
+  updatePublisherModules,
 } from '../src/lib/api/publisher-client';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { createInitialState } from '../src/lib/api/preview-transport-state';
@@ -41,7 +43,6 @@ test('publisher entities preserve unready targets for the picker', async () => {
           entityType: 'chat',
           policy: {
             publikEnabled: true,
-            suggestionsViaPublik: false,
             revision: 0,
             updatedAt: null,
           },
@@ -112,7 +113,6 @@ test('publisher entity client encodes ids and validates policy update payloads',
     entityType: 'channel',
     policy: {
       publikEnabled: true,
-      suggestionsViaPublik: false,
       revision: 4,
       updatedAt: null,
     },
@@ -136,7 +136,7 @@ test('publisher entity client encodes ids and validates policy update payloads',
   await getPublisherEntity(api as never, 'channel', entity.id);
   const policy = await updatePublisherPolicy(api as never, 'channel', entity.id, {
     expectedRevision: 4,
-    suggestionsViaPublik: true,
+    publikEnabled: false,
   });
 
   assert.equal(calls[0]?.path, '/publisher/entities/channel/channel%2Fwith%3Fsymbols');
@@ -144,9 +144,30 @@ test('publisher entity client encodes ids and validates policy update payloads',
   assert.equal(calls[1]?.init?.method, 'PATCH');
   assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
     expectedRevision: 4,
-    suggestionsViaPublik: true,
+    publikEnabled: false,
   });
   assert.equal(policy.revision, 5);
+});
+
+test('Major reads only the policy endpoint without requesting Publisher inventory', async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const api = {
+    request: async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return {
+        publikEnabled: true,
+        revision: 3,
+        updatedAt: null,
+      };
+    },
+  };
+  const signal = new AbortController().signal;
+
+  const policy = await getPublisherPolicy(api as never, 'chat', 'chat/with?symbols', { signal });
+
+  assert.equal(calls[0]?.path, '/publisher/entities/chat/chat%2Fwith%3Fsymbols/policy');
+  assert.equal(calls[0]?.init?.signal, signal);
+  assert.equal(policy.revision, 3);
 });
 
 test('publisher update rejects an empty policy change before transport', async () => {
@@ -160,9 +181,43 @@ test('publisher update rejects an empty policy change before transport', async (
 
   await assert.rejects(
     updatePublisherPolicy(api as never, 'chat', 'chat-1', { expectedRevision: 0 }),
-    /Specify at least one publication policy field/u,
+    /Invalid input/u,
   );
   assert.equal(requested, false);
+});
+
+test('publisher client sends all chat comment module settings as one revisioned change', async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const api = {
+    request: async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return {
+        revision: 8,
+        chatComments: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: false,
+          commentsChatBroadcastsEnabled: true,
+        },
+        channelSuggestionsEnabled: null,
+      };
+    },
+  };
+  const chatComments = {
+    commentsEnabled: true,
+    commentsAdminsEnabled: false,
+    commentsChatBroadcastsEnabled: true,
+  };
+
+  await updatePublisherModules(api as never, 'chat', 'chat/one', {
+    expectedRevision: 7,
+    chatComments,
+  });
+
+  assert.equal(calls[0]?.path, '/publisher/entities/chat/chat%2Fone/modules');
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    expectedRevision: 7,
+    chatComments,
+  });
 });
 
 test('publisher entity refresh is target-specific and encodes the entity id', async () => {
@@ -225,7 +280,8 @@ test('preview publisher list includes ready, setup, temporary, empty, and error 
   assert.ok(mixed.items.some((item) => item.readiness.state === 'ready'));
   assert.ok(mixed.items.some((item) => item.readiness.blockerCode === 'write_permission_missing'));
   assert.ok(mixed.items.every((item) => item.entityUrl?.startsWith('https://max.ru/join/')));
-  assert.ok(mixed.items.every((item) => item.settingsHandoffUrl?.includes('startapp=mr-')));
+  assert.ok(mixed.items.every((item) => !Object.hasOwn(item, 'settingsHandoffUrl')));
+  assert.ok(mixed.items.every((item) => !Object.hasOwn(item, 'channelOverview')));
   assert.ok(
     mixed.items.some((item) => item.readiness.blockerCode === 'publisher_runtime_unavailable'),
   );
@@ -307,4 +363,27 @@ test('preview target-specific refresh can transition a blocked publisher entity 
   assert.equal(after.readiness.state, 'ready');
   assert.equal(after.readiness.canPublish, true);
   assert.equal(after.readiness.checkedAt, '2026-08-27T10:00:00.001Z');
+});
+
+test('preview persists Publik-owned chat comment module settings', async () => {
+  const api = createPreviewApiTransport({ search: '?profile=publisher' });
+  const listed = await listPublisherEntities(api);
+  const chat = listed.items.find((entity) => entity.entityType === 'chat');
+  assert.ok(chat);
+  const before = await getPublisherEntity(api, 'chat', chat.id);
+  const chatComments = {
+    commentsEnabled: true,
+    commentsAdminsEnabled: true,
+    commentsChatBroadcastsEnabled: false,
+  };
+
+  await updatePublisherModules(api, 'chat', before.id, {
+    expectedRevision: before.moduleSettings.revision,
+    chatComments,
+  });
+  const after = await getPublisherEntity(api, 'chat', before.id);
+
+  assert.deepEqual(after.moduleSettings.chatComments, chatComments);
+  assert.equal(Object.hasOwn(after, 'settingsHandoffUrl'), false);
+  assert.equal(Object.hasOwn(after, 'channelOverview'), false);
 });

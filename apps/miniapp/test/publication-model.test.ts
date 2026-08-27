@@ -13,6 +13,7 @@ import {
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
   getPublicationListPollingInterval,
+  getPublicationPrimaryActionLabel,
   getPublicationRecurrenceIntervalNotice,
   getPublicationTargetTitle,
   hasSamePublicationTargetMetadata,
@@ -47,6 +48,7 @@ import {
   updatePublication,
 } from '../src/lib/api/publication-client';
 import type { ApiRequestInit, ApiTransport } from '../src/lib/api/transport';
+import { publisherEntityToPublicationTarget } from '../src/features/publications/use-publication-target-sources';
 
 const chatTarget = {
   id: 'chat-1',
@@ -73,6 +75,41 @@ test('isolates edit and duplicate drafts from the persisted create draft', () =>
   assert.equal(shouldPersistPublicationDraft('duplicate'), false);
   assert.equal(isIsolatedPublicationEditor('edit'), true);
   assert.equal(isIsolatedPublicationEditor('duplicate'), true);
+});
+
+test('labels publisher actions from validation and timing state', () => {
+  assert.equal(
+    getPublicationPrimaryActionLabel({
+      hasValidationIssues: true,
+      editing: false,
+      timingMode: 'now',
+    }),
+    'Проверить',
+  );
+  assert.equal(
+    getPublicationPrimaryActionLabel({
+      hasValidationIssues: false,
+      editing: true,
+      timingMode: 'schedule',
+    }),
+    'Сохранить',
+  );
+  assert.equal(
+    getPublicationPrimaryActionLabel({
+      hasValidationIssues: false,
+      editing: false,
+      timingMode: 'once',
+    }),
+    'Запланировать',
+  );
+  assert.equal(
+    getPublicationPrimaryActionLabel({
+      hasValidationIssues: false,
+      editing: false,
+      timingMode: 'schedule',
+    }),
+    'Сохранить расписание',
+  );
 });
 
 test('explains that a 31-day recurrence is not a calendar month', () => {
@@ -449,9 +486,23 @@ test('preserves channel engagement toggles and previews their system buttons', (
 test('compares refreshed publication target engagement metadata', () => {
   assert.equal(hasSamePublicationTargetMetadata(channelTarget, { ...channelTarget }), true);
   assert.equal(
+    hasSamePublicationTargetMetadata(chatTarget, {
+      ...chatTarget,
+      publisherChatCommentsEnabled: true,
+    }),
+    false,
+  );
+  assert.equal(
     hasSamePublicationTargetMetadata(channelTarget, {
       ...channelTarget,
       channelOverview: { commentsEnabled: true, postSuggestionsEnabled: false },
+    }),
+    false,
+  );
+  assert.equal(
+    hasSamePublicationTargetMetadata(channelTarget, {
+      ...channelTarget,
+      publisherChannelSuggestionsEnabled: true,
     }),
     false,
   );
@@ -473,6 +524,44 @@ test('compares refreshed publication target engagement metadata', () => {
     ),
     false,
   );
+});
+
+test('previews Publisher-owned chat comments without importing Major channel modules', () => {
+  assert.deepEqual(
+    buildPublicationSystemButtons([
+      { ...chatTarget, channelOverview: null, publisherChatCommentsEnabled: true },
+    ]),
+    [{ kind: 'comments', text: '💬 Комментарии' }],
+  );
+});
+
+test('previews Publisher-owned channel suggestions without importing Major channel modules', () => {
+  const target = publisherEntityToPublicationTarget({
+    id: 'publisher-channel-1',
+    entityType: 'channel',
+    title: 'Публик: новости',
+    avatarUrl: null,
+    moduleSettings: {
+      revision: 3,
+      chatComments: null,
+      channelSuggestionsEnabled: true,
+    },
+    readiness: {
+      state: 'ready',
+      canPublish: true,
+      canUseChatComments: false,
+      canPublishSuggestions: true,
+      blockerCode: null,
+      checkedAt: '2026-08-27T10:00:00.000Z',
+      retryAt: null,
+    },
+  } as never);
+
+  assert.equal(target.channelOverview, null);
+  assert.equal(target.publisherChannelSuggestionsEnabled, true);
+  assert.deepEqual(buildPublicationSystemButtons([target]), [
+    { kind: 'suggest', text: '📰 Предложить пост' },
+  ]);
 });
 
 test('deduplicates system button previews across mixed publication targets', () => {
@@ -696,6 +785,26 @@ test('restores publisher readiness with an autosaved off-page target', () => {
   });
 
   assert.deepEqual(restored?.targets[0]?.readiness, readiness);
+});
+
+test('restores Publisher-owned system button metadata from an autosaved draft', () => {
+  const draft = createEmptyPublicationDraft([
+    { ...chatTarget, publisherChatCommentsEnabled: true },
+    { ...channelTarget, channelOverview: null, publisherChannelSuggestionsEnabled: true },
+  ]);
+
+  const restored = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-08-27T10:01:00.000Z',
+    draft: preparePublicationDraftForPersistence(draft),
+  });
+
+  assert.equal(restored?.targets[0]?.publisherChatCommentsEnabled, true);
+  assert.equal(restored?.targets[1]?.publisherChannelSuggestionsEnabled, true);
+  assert.deepEqual(buildPublicationSystemButtons(restored?.targets ?? []), [
+    { kind: 'comments', text: '💬 Комментарии' },
+    { kind: 'suggest', text: '📰 Предложить пост' },
+  ]);
 });
 
 test('recognizes publication revision conflicts without matching unrelated failures', () => {

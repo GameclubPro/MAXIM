@@ -48,6 +48,10 @@ const BLOCKER_PRESENTATION: Record<
     detail: 'Сервис отправки не отвечает. Созданные расписания сохранятся.',
     tone: 'temporary',
   },
+  module_disabled: {
+    detail: 'Включите модуль в кабинете Публика.',
+    tone: 'disabled',
+  },
 };
 
 function formatPublisherRetryAt(value: string | null): string | null {

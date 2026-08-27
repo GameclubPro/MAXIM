@@ -201,7 +201,7 @@ describe('ChannelPostSignatureService', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
-  it('updates the channel setting, rollback fields, and audit in one transaction', async () => {
+  it('updates only the Major channel signature and audit in one transaction', async () => {
     const { prisma, service } = createFixture();
 
     await expect(
@@ -230,13 +230,7 @@ describe('ChannelPostSignatureService', () => {
         postSignatureUrl: 'https://max.ru/advertising',
       },
     });
-    expect(prisma.vkParsingSettings.updateMany).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1' },
-      data: {
-        appendChannelLinkEnabled: true,
-        channelLinkText: 'Новый текст',
-      },
-    });
+    expect(prisma.vkParsingSettings.updateMany).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: {
         chatId: 'channel-1',
@@ -249,33 +243,6 @@ describe('ChannelPostSignatureService', () => {
             url: 'https://max.ru/advertising',
           },
         },
-      },
-    });
-    expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
-  });
-
-  it('preserves an explicit URL when legacy VK settings update only the label', async () => {
-    const { prisma, service } = createFixture();
-    prisma.channelSettings.findUnique.mockResolvedValue({
-      postSignatureEnabled: true,
-      postSignatureText: 'Заказать рекламу',
-      postSignatureUrl: 'https://max.ru/advertising',
-    });
-
-    await service.updateFromLegacyVkSettings('channel-1', { text: 'Связаться' });
-
-    expect(prisma.channelSettings.upsert).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1' },
-      create: {
-        chatId: 'channel-1',
-        postSignatureEnabled: true,
-        postSignatureText: 'Связаться',
-        postSignatureUrl: 'https://max.ru/advertising',
-      },
-      update: {
-        postSignatureEnabled: true,
-        postSignatureText: 'Связаться',
-        postSignatureUrl: 'https://max.ru/advertising',
       },
     });
     expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();

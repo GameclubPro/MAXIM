@@ -153,7 +153,6 @@ import {
 import { AdminManagedBroadcastMessageRuntime } from './admin-managed-broadcast-message-runtime';
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -319,8 +318,7 @@ import {
 } from './admin-legacy-utils';
 import {
   assertManagedBroadcastTargetAdminAccess,
-  failManagedBroadcastAfterTargetAccessDenied,
-  resolveManagedBroadcastAccessDeniedMessage,
+  ensureManagedBroadcastActorAccessBeforeExecution,
 } from './admin-managed-broadcast-authorization';
 import { failManagedBroadcastAfterFatalProcessingError as failManagedBroadcastAfterFatalProcessingErrorValue } from './admin-managed-broadcast-terminal-failure';
 import {
@@ -3170,7 +3168,9 @@ export class AdminManagedBroadcastRuntime {
 
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
     const isPublikExecution = rowDispatchProfile === PrismaPublicationDispatchProfile.PUBLIK_V1;
-    const requiredPublisherBotId = isPublikExecution ? row.requiredBotId?.trim() : null;
+    const requiredPublisherBotId = isPublikExecution
+      ? (row.requiredBotId?.trim() ?? null)
+      : null;
     if (isPublikExecution && !requiredPublisherBotId) {
       throw new ServiceUnavailableException({
         code: PUBLISHER_SETUP_REQUIRED_CODE,
@@ -3228,6 +3228,9 @@ export class AdminManagedBroadcastRuntime {
           activeLease,
         );
         if (!boundary.ready) {
+          if ('leaseLost' in boundary && boundary.leaseLost) {
+            return this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], null);
+          }
           return {
             status: PrismaManagedBroadcastStatus.ACTIVE,
             currentOccurrence,
@@ -3240,39 +3243,23 @@ export class AdminManagedBroadcastRuntime {
           };
         }
       }
-      try {
-        await assertManagedBroadcastTargetAdminAccess(
-          this.context,
-          targetChatIds,
-          row.actorUserId,
-          row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
-        );
-      } catch (error: unknown) {
-        if (!(error instanceof ForbiddenException)) {
-          throw error;
-        }
-        const accessDeniedMessage = resolveManagedBroadcastAccessDeniedMessage(error);
-        const updated = await failManagedBroadcastAfterTargetAccessDenied({
-          prisma: this.prisma,
-          logger: this.logger,
-          row,
-          occurrenceIndex: currentOccurrence,
-          failureMessage: accessDeniedMessage,
-          lease: activeLease,
-        });
-        if (!updated) {
-          return this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], error);
-        }
-        return {
-          status: PrismaManagedBroadcastStatus.FAILED,
-          currentOccurrence,
-          sentChatIds: [],
-          failedChatIds: [],
-          pendingChatIds: [],
-          canRetry: false,
-          firstSendError: error,
-          nextSendAt: null,
-        };
+      const entityType = row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
+      const accessResult = await ensureManagedBroadcastActorAccessBeforeExecution({
+        context: this.context,
+        prisma: this.prisma,
+        logger: this.logger,
+        publisherDispatch: this.publisherDispatch,
+        row,
+        occurrenceIndex: currentOccurrence,
+        lease: activeLease,
+        targetChatIds,
+        entityType,
+        requiredPublisherBotId,
+        readLostLeaseResult: (error) =>
+          this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], error),
+      });
+      if (accessResult) {
+        return accessResult;
       }
       let initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
         where: {
@@ -3768,6 +3755,7 @@ export class AdminManagedBroadcastRuntime {
                 const dialogBotId = await this.publisherDispatch.resolveDialogBotId(
                   delivery,
                   deliveryLockToken,
+                  exactBotId,
                 );
                 resolvedBotId = exactBotId;
                 const persistedExactRoute = await this.prisma.managedBroadcastDelivery.updateMany({

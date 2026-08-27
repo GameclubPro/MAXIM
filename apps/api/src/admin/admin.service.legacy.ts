@@ -9,7 +9,6 @@ import {
   type ChannelDialogNotificationScope,
   type ChannelDialogNotificationSettings,
   channelDialogTypeSchema,
-  channelSettingsSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
   deleteChannelDialogMessageRequestSchema,
@@ -49,7 +48,6 @@ import {
   type ChatSettingsScreenResponse,
   type ChatRules,
   type ChatSettings,
-  chatSettingsSchema,
   type ChannelSettingsScreenResponse,
   type DomainAllowlistEntry,
   type LogsDashboardRange,
@@ -97,6 +95,7 @@ import {
   type PrismaPoolConfig,
 } from '../prisma/prisma-client';
 import { ConfigService } from '@nestjs/config';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import {
   BadRequestException,
   ForbiddenException,
@@ -305,17 +304,22 @@ import {
   previewApplySettingsSectionTarget as previewApplySettingsSectionTargetValue,
 } from './admin-settings-apply';
 import {
-  normalizeChannelSettings,
+  readPublicChannelSettings as readPublicChannelSettingsValue,
   readChannelSettings as readChannelSettingsValue,
   saveChannelSettings as saveChannelSettingsValue,
-  sanitizeStoredChannelSettings,
 } from './admin-channel-settings';
+import {
+  isPublisherChatAutoAttachPayload,
+  resolveDialogAuditAction,
+  resolveDialogCommentsTargetMessageId,
+} from './admin-dialog-profile-helpers';
 import {
   isRequiredSubscriptionCurrentlyActive,
   normalizeChatSettings,
+  readPublicChatCommentSettings as readPublicChatCommentSettingsValue,
   readChatSettings as readChatSettingsValue,
   saveChatSettings as saveChatSettingsValue,
-  sanitizeStoredChatSettings,
+  type PublicChatCommentSettings,
   type ResolvedBotAssignmentData,
 } from './admin-chat-settings';
 import {
@@ -359,7 +363,13 @@ import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-
 import { PublisherChatCommentQueueService } from '../publisher/publisher-chat-comment.queue';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
-import { createCommentsButtonPosition, PublisherCommentKeyboardRouting } from './publisher-comment-keyboard-routing';
+import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
+import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
+import { AdminDialogAdminAccessRuntime } from './admin-dialog-admin-access-runtime';
+import {
+  createCommentsButtonPosition,
+  PublisherCommentKeyboardRouting,
+} from './publisher-comment-keyboard-routing';
 import { ChannelPostSignatureService } from './channel-post-signature.service';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
@@ -449,11 +459,11 @@ import {
   COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH,
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
+  DEFAULT_DIALOG_NOTIFICATION_SETTINGS,
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
   CHAT_DIALOG_ACTION_AUTO_ATTACH,
   PRIVATE_CONTROL_CALLBACK_PREFIX,
-  DEFAULT_CHAT_SETTINGS,
   DEFAULT_CHANNEL_SETTINGS,
   MANAGED_ENTITY_FAVORITE_TYPE_ORDER,
   PRISMA_FAVORITE_TYPE_BY_CONTRACT,
@@ -662,6 +672,8 @@ export class AdminService implements OnModuleDestroy {
     createAdminManagedBroadcastRuntimeContext(this),
   );
   private readonly publisherCommentKeyboardRouting: PublisherCommentKeyboardRouting;
+  private readonly publisherDialogProfileRuntime: PublisherDialogProfileRuntime;
+  private readonly dialogAdminAccessRuntime: AdminDialogAdminAccessRuntime;
   private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(
     createAdminChatRulesTextRuntimeContext(this),
   );
@@ -671,10 +683,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly channelSuggestionImageRuntime = new AdminChannelSuggestionImageRuntime(
     createAdminChannelSuggestionImageRuntimeContext(this),
   );
-  readonly channelSuggestionPublicationRuntime =
-    new AdminChannelSuggestionPublicationRuntime(
-      createAdminChannelSuggestionPublicationRuntimeContext(this),
-    );
+  readonly channelSuggestionPublicationRuntime = new AdminChannelSuggestionPublicationRuntime(
+    createAdminChannelSuggestionPublicationRuntimeContext(this),
+  );
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(
     createAdminChannelStatsRuntimeContext(this),
   );
@@ -826,13 +837,21 @@ export class AdminService implements OnModuleDestroy {
     private readonly injectedModerationSanctionStateFence?: ModerationSanctionStateFenceService,
     @Optional() private readonly publisherRuntimeBoundaryService?: PublisherRuntimeBoundaryService,
     @Optional() private readonly publisherReadinessService?: PublisherReadinessService,
-    @Optional() private readonly publisherSuggestionPublicationQueue?: PublisherSuggestionPublicationQueueService,
+    @Optional()
+    private readonly publisherSuggestionPublicationQueue?: PublisherSuggestionPublicationQueueService,
     @Optional() private readonly publisherDispatchHealthService?: PublisherDispatchHealthService,
-    @Optional() private readonly publisherChatCommentQueueService?: PublisherChatCommentQueueService,
+    @Optional()
+    private readonly publisherChatCommentQueueService?: PublisherChatCommentQueueService,
     @Optional()
     private readonly publisherDialogContextService?: PublisherDialogContextService,
+    @Optional()
+    private readonly publisherDialogLinkService?: PublisherDialogLinkService,
   ) {
-    this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(this.maxBotRegistry, this.publisherChatCommentQueueService, this.logger);
+    this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(
+      this.maxBotRegistry,
+      this.publisherChatCommentQueueService,
+      this.logger,
+    );
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
       configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
@@ -860,6 +879,21 @@ export class AdminService implements OnModuleDestroy {
       maxBotTokenValidationSecrets: this.maxBotTokenValidationSecrets,
       maxBotLinkService: this.maxBotLinkService,
       maxBotRegistry: this.maxBotRegistry,
+    });
+    this.publisherDialogProfileRuntime = new PublisherDialogProfileRuntime({
+      prisma: this.prisma,
+      majorDialogLinks: this.dialogLinkHelper,
+      publisherDialogLinks: this.publisherDialogLinkService,
+      publisherReadiness: this.publisherReadinessService,
+      maxBotRegistry: this.maxBotRegistry,
+    });
+    this.dialogAdminAccessRuntime = new AdminDialogAdminAccessRuntime({
+      prisma: this.prisma,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      maxChatAdminRosterSyncService: this.maxChatAdminRosterSyncService,
+      resolveBackgroundReadBotAssignment: async (chatId) =>
+        (await this.resolveBackgroundReadBotAssignment(chatId)) ?? null,
     });
     const registryBotIds =
       typeof this.maxBotRegistry?.getOperationalBots === 'function'
@@ -6977,8 +7011,18 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     dialogTypeRaw: string,
     token: string | null,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    if (dialogProfile === 'publisher') {
+      return this.publisherDialogProfileRuntime.getChannelSuggestionDialog({
+        chatId,
+        user,
+        dialogTypeRaw,
+        token,
+        mapAuditLog: (...args) => this.mapChannelDialogAuditLog(...args),
+      });
+    }
     const threadId = this.dialogLinkHelper.resolveChannelDialogThreadId(chatId, dialogType, token);
     const action =
       dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
@@ -7004,7 +7048,7 @@ export class AdminService implements OnModuleDestroy {
         take: CHANNEL_DIALOG_MESSAGES_LIMIT,
       }),
       dialogType === 'comments'
-        ? this.readPersistedDialogAdminUserIds(chatId, 'channel')
+        ? this.dialogAdminAccessRuntime.readPersisted(chatId, 'channel')
         : Promise.resolve(new Set<string>()),
       dialogType === 'comments'
         ? this.readEntityDialogNotificationSettings({
@@ -7013,7 +7057,7 @@ export class AdminService implements OnModuleDestroy {
             threadId,
             userId: user.userId,
           })
-        : Promise.resolve(this.defaultDialogNotificationSettings()),
+        : Promise.resolve(DEFAULT_DIALOG_NOTIFICATION_SETTINGS),
     ]);
 
     const messages = rows
@@ -7045,6 +7089,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     dialogTypeRaw: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     return this.createChannelDialogMessageInternal(
@@ -7053,6 +7098,7 @@ export class AdminService implements OnModuleDestroy {
       dialogType,
       body,
       'miniapp_dialog',
+      dialogProfile,
     );
   }
 
@@ -7121,7 +7167,13 @@ export class AdminService implements OnModuleDestroy {
     return this.getPublicChatCommentSettings(chatId);
   }
 
-  toggleEntityDialogReactionForDialog(params: {
+  getPublicPublisherChatCommentSettingsForDialog(
+    chatId: string,
+  ): Promise<Pick<ChatSettings, 'commentsEnabled'>> {
+    return this.publisherDialogProfileRuntime.readChatCommentSettings(chatId);
+  }
+
+  async toggleEntityDialogReactionForDialog(params: {
     chatId: string;
     entityType: ManagedEntityType;
     userId: string;
@@ -7129,7 +7181,11 @@ export class AdminService implements OnModuleDestroy {
     messageId: string;
     token: string;
     emoji: string;
+    dialogProfile?: MiniappProfile;
   }): Promise<ToggleChannelDialogReactionResponse> {
+    if (params.dialogProfile === 'publisher') {
+      await this.publisherDialogProfileRuntime.assertChatReady(params.chatId);
+    }
     return this.toggleEntityDialogReaction(params);
   }
 
@@ -7186,7 +7242,17 @@ export class AdminService implements OnModuleDestroy {
     dialogType: ChannelDialogType,
     body: unknown,
     source: ChannelDialogMessageSource,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
+    if (dialogProfile === 'publisher') {
+      return this.publisherDialogProfileRuntime.createChannelSuggestion({
+        chatId,
+        user,
+        dialogType,
+        body,
+        mapAuditLog: (...args) => this.mapChannelDialogAuditLog(...args),
+      });
+    }
     const parsed = createChannelDialogMessageRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -7293,10 +7359,25 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
-  async getChatDialog(chatId: string, user: AuthUser, dialogTypeRaw: string, token: string | null) {
+  async getChatDialog(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    token: string | null,
+    dialogProfile: MiniappProfile = 'moderation',
+  ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     if (dialogType !== 'comments') {
       throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
+    }
+    if (dialogProfile === 'publisher') {
+      return this.publisherDialogProfileRuntime.getChatCommentsDialog({
+        chatId,
+        user,
+        dialogTypeRaw,
+        token,
+        mapAuditLog: (...args) => this.mapChannelDialogAuditLog(...args),
+      });
     }
 
     const threadId = this.dialogLinkHelper.resolveChatDialogThreadId(chatId, dialogType, token);
@@ -7320,7 +7401,7 @@ export class AdminService implements OnModuleDestroy {
         },
         take: CHANNEL_DIALOG_MESSAGES_LIMIT,
       }),
-      this.readPersistedDialogAdminUserIds(chatId, 'chat'),
+      this.dialogAdminAccessRuntime.readPersisted(chatId, 'chat'),
       this.readEntityDialogNotificationSettings({
         entityType: 'chat',
         chatId,
@@ -7352,6 +7433,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     dialogTypeRaw: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     return this.createChatDialogMessageInternal(
       chatId,
@@ -7359,6 +7441,7 @@ export class AdminService implements OnModuleDestroy {
       dialogTypeRaw,
       body,
       'miniapp_dialog',
+      dialogProfile,
     );
   }
 
@@ -7391,11 +7474,19 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     dialogTypeRaw: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
-    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    const chatSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChatCommentSettings(chatId)
+        : await this.getPublicChatCommentSettings(chatId);
     if (dialogType !== 'comments') {
       throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
+    }
+    if (dialogProfile === 'publisher') {
+      await this.publisherDialogProfileRuntime.assertChatReady(chatId);
+      throw new BadRequestException('Уведомления для комментариев Публика пока недоступны.');
     }
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
@@ -7416,10 +7507,14 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     body: unknown,
     source: ChannelDialogMessageSource,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     if (dialogType !== 'comments') {
       throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
+    }
+    if (dialogProfile === 'publisher') {
+      await this.publisherDialogProfileRuntime.assertChatReady(chatId);
     }
 
     const parsed = createChannelDialogMessageRequestSchema.safeParse(body);
@@ -7427,15 +7522,19 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const threadId = this.dialogLinkHelper.resolveChatDialogThreadId(
+    const threadId = this.publisherDialogProfileRuntime.resolveChatThreadId(
       chatId,
       dialogType,
       parsed.data.token,
+      dialogProfile,
     );
     const text = parsed.data.text.trim();
     const normalizedAttachments = this.normalizeChannelDialogCommentInputAttachments(
       parsed.data.attachments,
     );
+    if (dialogProfile === 'publisher' && normalizedAttachments.length > 0) {
+      throw new BadRequestException('В комментариях Публика пока доступен только текст.');
+    }
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -7444,8 +7543,12 @@ export class AdminService implements OnModuleDestroy {
       dialogType,
       threadId,
       replyToMessageId: parsed.data.replyToMessageId ?? null,
+      dialogProfile,
     });
-    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    const chatSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChatCommentSettings(chatId)
+        : await this.getPublicChatCommentSettings(chatId);
 
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
@@ -7467,6 +7570,7 @@ export class AdminService implements OnModuleDestroy {
       source,
       authorDisplayName,
       authorAvatarUrl,
+      dialogProfile,
     });
   }
 
@@ -7482,6 +7586,7 @@ export class AdminService implements OnModuleDestroy {
     source: ChannelDialogMessageSource;
     authorDisplayName: string | null;
     authorAvatarUrl: string | null;
+    dialogProfile?: MiniappProfile;
   }) {
     const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
       params.chatId,
@@ -7492,7 +7597,7 @@ export class AdminService implements OnModuleDestroy {
       data: {
         chatId: params.chatId,
         actorUserId: params.user.userId,
-        action: CHANNEL_DIALOG_ACTION_COMMENT,
+        action: resolveDialogAuditAction(params.dialogType, params.dialogProfile),
         payload: {
           type: params.dialogType,
           threadId: params.threadId,
@@ -7518,6 +7623,7 @@ export class AdminService implements OnModuleDestroy {
               }
             : {}),
           source: params.source,
+          ...(params.dialogProfile === 'publisher' ? { publisherProfile: true } : {}),
         },
       },
     });
@@ -7528,7 +7634,10 @@ export class AdminService implements OnModuleDestroy {
       text: params.text,
       authorUserId: params.user.userId,
       authorDisplayName: params.authorDisplayName ?? null,
-      isAdmin: (await this.readDialogAdminUserIds(params.chatId)).has(params.user.userId),
+      isAdmin: (params.dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readAdminUserIds(params.chatId)
+        : await this.dialogAdminAccessRuntime.readRemoteOrPersisted(params.chatId)
+      ).has(params.user.userId),
       avatarUrl: params.authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
       editedAt: null,
@@ -7546,36 +7655,39 @@ export class AdminService implements OnModuleDestroy {
         chatId: params.chatId,
         entityType: params.entityType,
         threadId: params.threadId,
+        dialogProfile: params.dialogProfile,
       });
     }
 
-    await this.ensureEntityDialogReplySubscription({
-      entityType: params.entityType,
-      chatId: params.chatId,
-      threadId: params.threadId,
-      userId: params.user.userId,
-    });
-    void this.deliverEntityDialogCommentNotifications({
-      entityType: params.entityType,
-      chatId: params.chatId,
-      threadId: params.threadId,
-      messageId: created.id,
-      authorUserId: params.user.userId,
-      authorDisplayName: params.authorDisplayName,
-      text: params.text,
-      attachmentCount: uploadedAttachments.length,
-      replyToMessageId: params.replyTo?.messageId ?? null,
-    }).catch((error: unknown) => {
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          entityType: params.entityType,
-          messageId: created.id,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to schedule comment dialog notifications',
-      );
-    });
+    if (params.dialogProfile !== 'publisher') {
+      await this.ensureEntityDialogReplySubscription({
+        entityType: params.entityType,
+        chatId: params.chatId,
+        threadId: params.threadId,
+        userId: params.user.userId,
+      });
+      void this.deliverEntityDialogCommentNotifications({
+        entityType: params.entityType,
+        chatId: params.chatId,
+        threadId: params.threadId,
+        messageId: created.id,
+        authorUserId: params.user.userId,
+        authorDisplayName: params.authorDisplayName,
+        text: params.text,
+        attachmentCount: uploadedAttachments.length,
+        replyToMessageId: params.replyTo?.messageId ?? null,
+      }).catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            entityType: params.entityType,
+            messageId: created.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule comment dialog notifications',
+        );
+      });
+    }
 
     return createChannelDialogMessageResponseSchema.parse({
       ok: true,
@@ -7689,14 +7801,21 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     const parsed = updateChannelDialogMessageRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    if (dialogProfile === 'publisher') {
+      await this.publisherDialogProfileRuntime.assertChatReady(chatId);
+    }
 
-    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    const chatSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChatCommentSettings(chatId)
+        : await this.getPublicChatCommentSettings(chatId);
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
@@ -7709,6 +7828,7 @@ export class AdminService implements OnModuleDestroy {
       messageId,
       token: parsed.data.token,
       text: parsed.data.text,
+      dialogProfile,
     });
   }
 
@@ -7718,14 +7838,21 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     const parsed = deleteChannelDialogMessageRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    if (dialogProfile === 'publisher') {
+      await this.publisherDialogProfileRuntime.assertChatReady(chatId);
+    }
 
-    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    const chatSettings =
+      dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readChatCommentSettings(chatId)
+        : await this.getPublicChatCommentSettings(chatId);
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
@@ -7737,6 +7864,7 @@ export class AdminService implements OnModuleDestroy {
       dialogType,
       messageId,
       token: parsed.data.token,
+      dialogProfile,
     });
   }
 
@@ -7765,6 +7893,7 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     messageId: string,
     body: unknown,
+    dialogProfile: MiniappProfile = 'moderation',
   ) {
     return toggleDialogReactionValue({
       chatId,
@@ -7773,7 +7902,11 @@ export class AdminService implements OnModuleDestroy {
       user,
       dialogTypeRaw,
       body,
-      loadCommentSettings: (chatId) => this.getPublicChatCommentSettings(chatId),
+      dialogProfile,
+      loadCommentSettings: (chatId) =>
+        dialogProfile === 'publisher'
+          ? this.publisherDialogProfileRuntime.readChatCommentSettings(chatId)
+          : this.getPublicChatCommentSettings(chatId),
       toggleReaction: (options) => this.toggleEntityDialogReaction(options),
     });
   }
@@ -14940,54 +15073,11 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async getPublicChannelSettings(chatId: string): Promise<ChannelSettings> {
-    const settings = await this.prisma.channelSettings.findUnique({
-      where: { chatId },
-    });
-
-    if (!settings) {
-      return DEFAULT_CHANNEL_SETTINGS;
-    }
-
-    const parsed = channelSettingsSchema.safeParse(sanitizeStoredChannelSettings(settings));
-    return parsed.success
-      ? normalizeChannelSettings(parsed.data, chatId)
-      : DEFAULT_CHANNEL_SETTINGS;
+    return readPublicChannelSettingsValue(this.prisma, chatId);
   }
 
-  private async getPublicChatCommentSettings(
-    chatId: string,
-  ): Promise<
-    Pick<
-      ChatSettings,
-      | 'commentsEnabled'
-      | 'commentsAdminsEnabled'
-      | 'commentsAllEnabled'
-      | 'commentsChatBroadcastsEnabled'
-    >
-  > {
-    const settings = await this.prisma.chatSettings.findUnique({
-      where: { chatId },
-    });
-
-    if (!settings) {
-      return {
-        commentsEnabled: DEFAULT_CHAT_SETTINGS.commentsEnabled,
-        commentsAdminsEnabled: DEFAULT_CHAT_SETTINGS.commentsAdminsEnabled,
-        commentsAllEnabled: DEFAULT_CHAT_SETTINGS.commentsAllEnabled,
-        commentsChatBroadcastsEnabled: DEFAULT_CHAT_SETTINGS.commentsChatBroadcastsEnabled,
-      };
-    }
-
-    const parsed = chatSettingsSchema.safeParse(sanitizeStoredChatSettings(settings));
-    const normalized = parsed.success
-      ? normalizeChatSettings(parsed.data, undefined, chatId)
-      : DEFAULT_CHAT_SETTINGS;
-    return {
-      commentsEnabled: normalized.commentsEnabled,
-      commentsAdminsEnabled: normalized.commentsAdminsEnabled,
-      commentsAllEnabled: normalized.commentsAllEnabled,
-      commentsChatBroadcastsEnabled: normalized.commentsChatBroadcastsEnabled,
-    };
+  private async getPublicChatCommentSettings(chatId: string): Promise<PublicChatCommentSettings> {
+    return readPublicChatCommentSettingsValue(this.prisma, chatId);
   }
 
   private shouldIncludeChatCommentsButton(
@@ -15408,6 +15498,7 @@ export class AdminService implements OnModuleDestroy {
     dialogType: ChannelDialogType;
     threadId: string | null;
     replyToMessageId: string | null | undefined;
+    dialogProfile?: MiniappProfile;
   }): Promise<ChannelDialogReplyPreview | null> {
     const replyToMessageId = this.readTrimmedString(params.replyToMessageId);
     if (!replyToMessageId) {
@@ -15422,7 +15513,7 @@ export class AdminService implements OnModuleDestroy {
       where: {
         id: replyToMessageId,
         chatId: params.chatId,
-        action: this.resolveDialogAction(params.dialogType),
+        action: resolveDialogAuditAction(params.dialogType, params.dialogProfile),
         ...(params.threadId
           ? {
               payload: {
@@ -15456,6 +15547,7 @@ export class AdminService implements OnModuleDestroy {
     dialogType: ChannelDialogType;
     messageId: string;
     token: string;
+    dialogProfile?: MiniappProfile;
   }): Promise<{
     row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date };
     payload: Record<string, unknown>;
@@ -15468,10 +15560,11 @@ export class AdminService implements OnModuleDestroy {
             params.dialogType,
             params.token,
           )
-        : this.dialogLinkHelper.resolveChatDialogThreadId(
+        : this.publisherDialogProfileRuntime.resolveChatThreadId(
             params.chatId,
             params.dialogType,
             params.token,
+            params.dialogProfile ?? 'moderation',
           );
     const messageId = this.readTrimmedString(params.messageId);
     if (!messageId) {
@@ -15482,7 +15575,7 @@ export class AdminService implements OnModuleDestroy {
       where: {
         id: messageId,
         chatId: params.chatId,
-        action: this.resolveDialogAction(params.dialogType),
+        action: resolveDialogAuditAction(params.dialogType, params.dialogProfile),
         ...(threadId
           ? {
               payload: {
@@ -15519,6 +15612,7 @@ export class AdminService implements OnModuleDestroy {
     messageId: string;
     token: string;
     text: string;
+    dialogProfile?: MiniappProfile;
   }) {
     if (params.dialogType !== 'comments') {
       throw new BadRequestException('Редактирование доступно только в комментариях.');
@@ -15553,7 +15647,10 @@ export class AdminService implements OnModuleDestroy {
         createdAt: true,
       },
     });
-    const adminUserIds = await this.readDialogAdminUserIds(params.chatId);
+    const adminUserIds =
+      params.dialogProfile === 'publisher'
+        ? await this.publisherDialogProfileRuntime.readAdminUserIds(params.chatId)
+        : await this.dialogAdminAccessRuntime.readRemoteOrPersisted(params.chatId);
 
     return updateChannelDialogMessageResponseSchema.parse({
       ok: true,
@@ -15573,6 +15670,7 @@ export class AdminService implements OnModuleDestroy {
     dialogType: ChannelDialogType;
     messageId: string;
     token: string;
+    dialogProfile?: MiniappProfile;
   }) {
     if (params.dialogType !== 'comments') {
       throw new BadRequestException('Удаление доступно только в комментариях.');
@@ -15580,8 +15678,12 @@ export class AdminService implements OnModuleDestroy {
 
     const target = await this.resolveEntityDialogMessageTarget(params);
     if (target.row.actorUserId !== params.userId) {
-      await this.assertChatAdmin(params.chatId, params.userId, params.entityType);
-      await this.ensureEntityType(params.chatId, params.userId, params.entityType);
+      if (params.dialogProfile === 'publisher') {
+        await this.publisherDialogProfileRuntime.assertAdminAccess(params.chatId, params.userId);
+      } else {
+        await this.assertChatAdmin(params.chatId, params.userId, params.entityType);
+        await this.ensureEntityType(params.chatId, params.userId, params.entityType);
+      }
     }
 
     await this.prisma.auditLog.delete({
@@ -15595,6 +15697,7 @@ export class AdminService implements OnModuleDestroy {
         chatId: params.chatId,
         entityType: params.entityType,
         threadId: target.threadId,
+        dialogProfile: params.dialogProfile,
       });
     }
 
@@ -15612,6 +15715,7 @@ export class AdminService implements OnModuleDestroy {
     messageId: string;
     token: string;
     emoji: string;
+    dialogProfile?: MiniappProfile;
   }) {
     if (params.dialogType !== 'comments') {
       throw new BadRequestException('Реакции доступны только в комментариях.');
@@ -15640,9 +15744,11 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     const adminUserIds =
-      params.dialogType === 'comments'
-        ? await this.readDialogAdminUserIds(params.chatId)
-        : new Set<string>();
+      params.dialogType !== 'comments'
+        ? new Set<string>()
+        : params.dialogProfile === 'publisher'
+          ? await this.publisherDialogProfileRuntime.readAdminUserIds(params.chatId)
+          : await this.dialogAdminAccessRuntime.readRemoteOrPersisted(params.chatId);
 
     return toggleChannelDialogReactionResponseSchema.parse({
       ok: true,
@@ -15653,26 +15759,6 @@ export class AdminService implements OnModuleDestroy {
         adminUserIds,
       ),
     });
-  }
-
-  private defaultDialogNotificationSettings(): ChannelDialogNotificationSettings {
-    return {
-      mode: 'off',
-      canUseAll: true,
-      scope: 'thread',
-      thread: {
-        mode: 'off',
-        explicit: false,
-      },
-      channel: {
-        mode: 'off',
-        explicit: false,
-      },
-      allChannels: {
-        mode: 'off',
-        explicit: false,
-      },
-    };
   }
 
   private async readEntityDialogNotificationSettings(params: {
@@ -16931,122 +17017,13 @@ export class AdminService implements OnModuleDestroy {
     ].join('\n');
   }
 
-  private async readDialogAdminUserIds(chatId: string): Promise<Set<string>> {
-    try {
-      const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
-      return new Set(
-        (
-          await this.maxClient.getChatAdminIds(chatId, {
-            trafficClass: 'interactive',
-            actionHealthLane: 'background',
-            ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
-            ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-          })
-        )
-          .map((userId) => userId.trim())
-          .filter((userId) => userId.length > 0),
-      );
-    } catch (error: unknown) {
-      const persistedAdminIds = (
-        await this.prisma.chatAdminAllowlist.findMany({
-          where: { chatId },
-          select: { userId: true },
-        })
-      )
-        .map((row) => row.userId.trim())
-        .filter((userId) => userId.length > 0);
-
-      if (persistedAdminIds.length > 0) {
-        this.logger.warn(
-          {
-            chatId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Using persisted admin allowlist for dialog admin accents',
-        );
-        return new Set(persistedAdminIds);
-      }
-
-      this.logger.warn(
-        {
-          chatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve admin ids for dialog messages',
-      );
-      return new Set();
-    }
-  }
-
-  private async readPersistedDialogAdminUserIds(
-    chatId: string,
-    entityType: ManagedEntityType,
-  ): Promise<Set<string>> {
-    try {
-      const persistedAdminIds = (
-        await this.prisma.chatAdminAllowlist.findMany({
-          where: { chatId },
-          select: { userId: true },
-        })
-      )
-        .map((row) => row.userId.trim())
-        .filter((userId) => userId.length > 0);
-
-      if (persistedAdminIds.length === 0) {
-        this.scheduleDialogAdminRosterWarmup(chatId, entityType, 'persisted_allowlist_miss');
-      }
-
-      return new Set(persistedAdminIds);
-    } catch (error: unknown) {
-      this.scheduleDialogAdminRosterWarmup(chatId, entityType, 'persisted_allowlist_error');
-      this.logger.warn(
-        {
-          chatId,
-          entityType,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to read persisted dialog admin ids',
-      );
-      return new Set<string>();
-    }
-  }
-
-  private scheduleDialogAdminRosterWarmup(
-    chatId: string,
-    entityType: ManagedEntityType,
-    reason: 'persisted_allowlist_miss' | 'persisted_allowlist_error',
-  ): void {
-    if (!this.maxChatAdminRosterSyncService) {
-      return;
-    }
-
-    void this.maxChatAdminRosterSyncService
-      .scheduleChatAdminRosterSync({
-        chatId,
-        entityType,
-      })
-      .catch((error: unknown) => {
-        this.logger.warn(
-          {
-            chatId,
-            entityType,
-            reason,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to schedule dialog admin roster warmup',
-        );
-      });
-  }
-
   private channelCommentContainsLink(value: string): boolean {
     CHANNEL_COMMENT_LINK_PATTERN.lastIndex = 0;
     return CHANNEL_COMMENT_LINK_PATTERN.test(value);
   }
 
-  private resolveDialogAction(dialogType: ChannelDialogType): string {
-    return dialogType === 'comments'
-      ? CHANNEL_DIALOG_ACTION_COMMENT
-      : CHANNEL_DIALOG_ACTION_SUGGEST;
+  private readDialogAdminUserIds(chatId: string): Promise<Set<string>> {
+    return this.dialogAdminAccessRuntime.readRemoteOrPersisted(chatId);
   }
 
   private normalizeChannelCommentText(value: string): string {
@@ -17207,6 +17184,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string;
     entityType: ManagedEntityType;
     threadId: string;
+    dialogProfile?: MiniappProfile;
   }): Promise<void> {
     const { chatId, entityType, threadId } = params;
 
@@ -17214,7 +17192,7 @@ export class AdminService implements OnModuleDestroy {
       const count = await this.prisma.auditLog.count({
         where: {
           chatId,
-          action: CHANNEL_DIALOG_ACTION_COMMENT,
+          action: resolveDialogAuditAction('comments', params.dialogProfile),
           payload: {
             path: ['threadId'],
             equals: threadId,
@@ -17227,7 +17205,7 @@ export class AdminService implements OnModuleDestroy {
         return;
       }
 
-      await this.syncChatCommentsButtonCount(chatId, threadId, count);
+      await this.syncChatCommentsButtonCount(chatId, threadId, count, params.dialogProfile);
     } catch (error) {
       this.logger.warn(
         {
@@ -17338,7 +17316,7 @@ export class AdminService implements OnModuleDestroy {
         continue;
       }
 
-      const messageId = this.resolveChannelCommentsTargetMessageId(payload);
+      const messageId = resolveDialogCommentsTargetMessageId(payload);
       const botId = this.readTrimmedString(payload.botId);
       const dialogBotId = this.readTrimmedString(payload.dialogBotId) ?? botId;
       const includeCommentsButton = payload.includeCommentsButton !== false;
@@ -17400,24 +17378,11 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private resolveChannelCommentsTargetMessageId(payload: Record<string, unknown>): string | null {
-    const deliveryMode = this.readTrimmedString(payload.deliveryMode);
-
-    if (deliveryMode === 'replace_with_bot_message') {
-      return this.readTrimmedString(payload.replacementMessageId);
-    }
-
-    if (deliveryMode === 'reply_message') {
-      return this.readTrimmedString(payload.replyMessageId);
-    }
-
-    return this.readTrimmedString(payload.messageId);
-  }
-
   private async syncChatCommentsButtonCount(
     chatId: string,
     threadId: string,
     count: number,
+    dialogProfile: MiniappProfile = 'moderation',
   ): Promise<void> {
     const rows = await this.prisma.auditLog.findMany({
       where: {
@@ -17444,10 +17409,22 @@ export class AdminService implements OnModuleDestroy {
       }
 
       const payload = this.readObjectPayload(row.payload);
-      const messageId = this.resolveChatCommentsTargetMessageId(payload);
+      const publisherOrigin = isPublisherChatAutoAttachPayload(payload);
+      if ((dialogProfile === 'publisher') !== publisherOrigin) {
+        continue;
+      }
+      const messageId = resolveDialogCommentsTargetMessageId(payload);
       const botId = this.readTrimmedString(payload.botId);
       const dialogBotId = this.readTrimmedString(payload.dialogBotId) ?? botId;
+      const publisherBotId = this.readTrimmedString(payload.publisherBotId);
       if (!messageId) {
+        continue;
+      }
+      if (publisherOrigin && (!publisherBotId || botId !== publisherBotId)) {
+        this.logger.warn(
+          { chatId, threadId, messageId },
+          'Skipped Publisher comments counter because its origin attribution is invalid',
+        );
         continue;
       }
 
@@ -17455,15 +17432,29 @@ export class AdminService implements OnModuleDestroy {
         this.normalizeManagedBroadcastButtons(payload.customButtons),
       );
       const commentsButtonPosition = createCommentsButtonPosition(buttons, '💬 Комментарии');
-      buttons.push([
-        this.dialogLinkHelper.buildChatDialogButton(
-          chatId,
-          'comments',
-          threadId,
-          formatCommentsButtonText('💬 Комментарии', count),
-          dialogBotId,
-        ),
-      ]);
+      const commentsButton =
+        publisherOrigin && dialogBotId === publisherBotId
+          ? this.publisherDialogLinkService?.buildChatDialogButton(
+              chatId,
+              'comments',
+              threadId,
+              formatCommentsButtonText('💬 Комментарии', count),
+            )
+          : this.dialogLinkHelper.buildChatDialogButton(
+              chatId,
+              'comments',
+              threadId,
+              formatCommentsButtonText('💬 Комментарии', count),
+              dialogBotId,
+            );
+      if (!commentsButton) {
+        this.logger.warn(
+          { chatId, threadId, messageId },
+          'Skipped Publisher comments counter because its signing service is unavailable',
+        );
+        continue;
+      }
+      buttons.push([commentsButton]);
 
       if (
         await this.publisherCommentKeyboardRouting.tryEnqueue({
@@ -17482,20 +17473,6 @@ export class AdminService implements OnModuleDestroy {
       }
       await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'chat', botId);
     }
-  }
-
-  private resolveChatCommentsTargetMessageId(payload: Record<string, unknown>): string | null {
-    const deliveryMode = this.readTrimmedString(payload.deliveryMode);
-
-    if (deliveryMode === 'replace_with_bot_message') {
-      return this.readTrimmedString(payload.replacementMessageId);
-    }
-
-    if (deliveryMode === 'reply_message') {
-      return this.readTrimmedString(payload.replyMessageId);
-    }
-
-    return this.readTrimmedString(payload.messageId);
   }
 
   private async safeUpdateCommentsButton(

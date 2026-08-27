@@ -14,3 +14,5 @@ secrets:
     file: ${MAXIM_PUBLISHER_WEBHOOK_SECRET_FILE:-../publik-webhook.json}
   max_publisher_init_data_keys:
     file: ${MAXIM_PUBLISHER_INIT_DATA_KEYS_SECRET_FILE:-../publik-init-data-keys.json}
+  max_publisher_dialog_signing_keys:
+    file: ${MAXIM_PUBLISHER_DIALOG_SIGNING_KEYS_SECRET_FILE:-../publik-dialog-signing-keys.json}

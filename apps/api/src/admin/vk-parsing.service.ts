@@ -15,12 +15,12 @@ import {
   type VkParsingHealthSummary,
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
-import { ChannelPostSignatureService } from './channel-post-signature.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
+import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import { type VkParsingPublishReason, type VkParsingSyncReason } from './vk-parsing.queue';
 import { VkPublishService } from './vk-publish.service';
 import { VkSourceService } from './vk-source.service';
@@ -45,8 +45,7 @@ export class VkParsingService {
     private readonly sourceService: VkSourceService,
     private readonly syncService: VkSyncService,
     private readonly publishService: VkPublishService,
-    @Optional()
-    private readonly channelPostSignatureService?: ChannelPostSignatureService,
+    private readonly ownership: VkParsingOwnershipService,
   ) {}
 
   getSyncIntervalMs(): number {
@@ -59,7 +58,12 @@ export class VkParsingService {
 
   async listVkParsing(chatId: string, user: AuthUser, query: unknown = {}): Promise<VkParsingFeed> {
     await this.accessService.assertAccess(chatId, user);
-    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY, query);
+    return this.feedService.buildFeed(
+      chatId,
+      VK_PARSING_AVAILABLE_CAPABILITY,
+      query,
+      this.ownership.getPublisherScope(),
+    );
   }
 
   async updateSettings(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
@@ -69,7 +73,15 @@ export class VkParsingService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const existingSettings = await this.prisma.vkParsingSettings.findUnique({ where: { chatId } });
+    const ownerScope = this.ownership.getPublisherScope();
+    const existingSettings = await this.prisma.vkParsingSettings.findUnique({
+      where: {
+        chatId_ownerProfile_ownerBotId: {
+          chatId,
+          ...ownerScope,
+        },
+      },
+    });
     const now = new Date();
     const nextAutoPublishEnabled =
       parsed.data.autoPublishEnabled ?? existingSettings?.autoPublishEnabled ?? false;
@@ -98,23 +110,16 @@ export class VkParsingService {
       ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
     };
 
-    if (
-      this.channelPostSignatureService &&
-      (parsed.data.appendChannelLinkEnabled !== undefined ||
-        parsed.data.channelLinkText !== undefined)
-    ) {
-      await this.channelPostSignatureService.updateFromLegacyVkSettings(chatId, {
-        ...(parsed.data.appendChannelLinkEnabled !== undefined
-          ? { enabled: parsed.data.appendChannelLinkEnabled }
-          : {}),
-        ...(parsed.data.channelLinkText !== undefined ? { text: parsed.data.channelLinkText } : {}),
-      });
-    }
-
     await this.prisma.vkParsingSettings.upsert({
-      where: { chatId },
+      where: {
+        chatId_ownerProfile_ownerBotId: {
+          chatId,
+          ...ownerScope,
+        },
+      },
       create: {
         chatId,
+        ...ownerScope,
         autoPublishEnabled: nextAutoPublishEnabled,
         autoPublishEnabledAt: nextAutoPublishEnabled ? (autoPublishEnabledAt ?? now) : null,
         autoPublishKillSwitchEnabled: parsed.data.autoPublishKillSwitchEnabled ?? false,
@@ -140,18 +145,24 @@ export class VkParsingService {
       parsed.data.autoPublishEnabled === false ||
       parsed.data.autoPublishKillSwitchEnabled === true
     ) {
-      await this.publishService.clearQueuedAutoPublishForChat(chatId);
+      await this.publishService.clearQueuedAutoPublishForChat(chatId, ownerScope);
     }
     await this.writeAuditLog(chatId, user.userId, 'VK_PARSING_UPDATE_SETTINGS', {
+      ...ownerScope,
       changed: parsed.data,
     });
 
-    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
+    return this.feedService.buildFeed(
+      chatId,
+      VK_PARSING_AVAILABLE_CAPABILITY,
+      {},
+      ownerScope,
+    );
   }
 
   async getHealthSummary(chatId: string, user: AuthUser): Promise<VkParsingHealthSummary> {
     await this.accessService.assertAccess(chatId, user);
-    return this.feedService.buildHealthSummary(chatId);
+    return this.feedService.buildHealthSummary(chatId, this.ownership.getPublisherScope());
   }
 
   async addSource(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingRefreshResult> {
@@ -161,7 +172,11 @@ export class VkParsingService {
 
   async removeSource(chatId: string, sourceId: string, user: AuthUser): Promise<VkParsingFeed> {
     await this.accessService.assertAccess(chatId, user);
-    await this.publishService.clearQueuedAutoPublishForSource(chatId, sourceId);
+    await this.publishService.clearQueuedAutoPublishForSource(
+      chatId,
+      sourceId,
+      this.ownership.getPublisherScope(),
+    );
     return this.sourceService.removeSource(chatId, sourceId);
   }
 
@@ -182,7 +197,11 @@ export class VkParsingService {
       parsed.data.importEnabled === false ||
       parsed.data.publishMode === 'REVIEW'
     ) {
-      await this.publishService.clearQueuedAutoPublishForSource(chatId, sourceId);
+      await this.publishService.clearQueuedAutoPublishForSource(
+        chatId,
+        sourceId,
+        this.ownership.getPublisherScope(),
+      );
     }
     return feed;
   }
@@ -195,7 +214,11 @@ export class VkParsingService {
     }
     const feed = await this.sourceService.applyBulkPreset(chatId, user, parsed.data);
     if (parsed.data.preset === 'REVIEW') {
-      await this.publishService.clearQueuedAutoPublishForSources(chatId, parsed.data.sourceIds);
+      await this.publishService.clearQueuedAutoPublishForSources(
+        chatId,
+        parsed.data.sourceIds,
+        this.ownership.getPublisherScope(),
+      );
     }
     if (parsed.data.preset === 'CLEAN') {
       return this.updateSettings(chatId, user, {
@@ -251,7 +274,12 @@ export class VkParsingService {
     }
 
     const post = await this.prisma.vkParsingPost.findFirst({
-      where: { id: postId, chatId },
+      where: {
+        id: postId,
+        chatId,
+        ...this.ownership.getPublisherScope(),
+        source: this.ownership.getPublisherScope(),
+      },
       include: { source: true },
     });
     if (!post || post.source.publishMode !== 'REVIEW') {
@@ -275,11 +303,12 @@ export class VkParsingService {
       where: {
         id: post.id,
         chatId,
+        ...this.ownership.getPublisherScope(),
         status: { notIn: ['PUBLISHED', 'UNAVAILABLE', 'SKIPPED'] },
         updatedAt: post.updatedAt,
         publishCancelledAt: null,
         publishLockedAt: null,
-        source: { publishMode: 'REVIEW' },
+        source: { ...this.ownership.getPublisherScope(), publishMode: 'REVIEW' },
       },
       data: {
         status: 'NEW',
@@ -302,7 +331,12 @@ export class VkParsingService {
       throw new NotFoundException('Пост на модерации уже обработан или недоступен.');
     }
 
-    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
+    return this.feedService.buildFeed(
+      chatId,
+      VK_PARSING_AVAILABLE_CAPABILITY,
+      {},
+      this.ownership.getPublisherScope(),
+    );
   }
 
   async retryPost(

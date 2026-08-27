@@ -23,6 +23,7 @@ describe('validateEnv boolean parsing', () => {
     const directory = mkdtempSync(join(tmpdir(), 'maxim-publisher-env-'));
     const tokenFile = join(directory, 'token');
     const webhookFile = join(directory, 'webhook.json');
+    const dialogSigningKeyFile = join(directory, 'dialog-signing.json');
     const token = 'P'.repeat(40);
     writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
     writeFileSync(
@@ -32,6 +33,15 @@ describe('validateEnv boolean parsing', () => {
         botId: 'se14088825_bot',
         secretPath: 'publisher_path_12345678',
         headerSecrets: ['publisher_header_123456'],
+      }),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      dialogSigningKeyFile,
+      JSON.stringify({
+        version: 1,
+        botId: 'se14088825_bot',
+        keys: [Buffer.alloc(32, 3).toString('base64')],
       }),
       { mode: 0o600 },
     );
@@ -47,6 +57,7 @@ describe('validateEnv boolean parsing', () => {
       MAX_PUBLISHER_BOT_ID: 'se14088825_bot',
       MAX_PUBLISHER_BOT_TOKEN_FILE: tokenFile,
       MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: webhookFile,
+      MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: dialogSigningKeyFile,
     });
 
     try {

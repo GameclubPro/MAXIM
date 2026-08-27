@@ -60,6 +60,7 @@
 - `/publications` is the ordinary chat/channel publishing workspace. Chat/channel settings are compatibility handoff surfaces; VK parsing is a separate flow.
 - The Publisher profile home is its own `/` cabinet with `Чаты`, `Каналы`, and `Посты` navigation. Its entity catalog comes from exact Publik connections, never from the Major catalog.
 - Major chat/channel settings expose exactly one compact `Публик` enable switch. Keep readiness, recheck actions, suggestions routing, and future Publisher module controls inside the Publik profile; do not add secondary Publik rows or explanatory status copy to Major.
+- Publik entity module screens own chat comments, channel suggestions, and VK import. Major keeps channel comments, but its chat settings must not render chat comments or VK controls.
 - Open legacy publishing only for `workspace=autoposts`, an exact `legacyKind` + `legacyId`, or `handoff=1` backed by a real private-bot draft. A bare handoff flag cannot restore legacy creation.
 - Publication search, entity/status filters, and schedules are server-side and cursor-bound; never fetch every page for client filtering.
 - Rows with `publicationOccurrenceId != null` are Publication envelopes and must stay hidden from legacy broadcast/autopost APIs and UI.

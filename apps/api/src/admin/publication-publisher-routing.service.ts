@@ -7,7 +7,6 @@ import { BadRequestException, ConflictException, Injectable, Logger } from '@nes
 import { ConfigService } from '@nestjs/config';
 import type { BroadcastLinkButton, ManagedEntityType } from '@maxim/contracts';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { MaxBotLinkService } from '../max/max-bot-link.service';
 import {
   ChatEntityType,
   Prisma,
@@ -31,7 +30,7 @@ import { PublisherDialogContextService } from './publisher-dialog-context.servic
 import { PublisherPolicyService } from './publisher-policy.service';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
-const ROUTE_LOOKUP_CONCURRENCY = 4;
+const DIALOG_CONTEXT_PREPARE_CONCURRENCY = 4;
 const PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY = 4;
 export const LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE = 'LEGACY_PUBLICATION_EXECUTION_IMMUTABLE';
 
@@ -74,7 +73,6 @@ export class PublicationPublisherRoutingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-    private readonly maxBotLinkService: MaxBotLinkService,
     private readonly readiness: PublisherReadinessService,
     private readonly dialogContexts: PublisherDialogContextService,
     private readonly managedEntitiesService: ManagedEntitiesService,
@@ -222,72 +220,20 @@ export class PublicationPublisherRoutingService {
       };
     }
     const routes = await this.assertTargetsReady(targets, requiredBotId);
-    const resolvedDialogBots = await mapWithConcurrencyLimit(
-      [...targets],
-      ROUTE_LOOKUP_CONCURRENCY,
-      async (target) => {
-        try {
-          return {
-            chatId: target.chatId,
-            botId: await this.maxBotLinkService.getStoredChatPrimaryBotId(target.chatId, {
-              bypassCache: true,
-            }),
-          };
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId: target.chatId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Skipped Major dialog buttons after primary-bot lookup failure',
-          );
-          return { chatId: target.chatId, botId: null };
-        }
-      },
-    );
     const preparedContexts = await mapWithConcurrencyLimit(
       [...targets],
-      ROUTE_LOOKUP_CONCURRENCY,
-      async (target) => {
-        const mainDialogBotId = resolvedDialogBots.find(
-          (item) => item.chatId === target.chatId,
-        )?.botId;
-        if (mainDialogBotId && mainDialogBotId !== requiredBotId) {
-          try {
-            return {
-              chatId: target.chatId,
-              dialogBotId: mainDialogBotId,
-              context: await this.dialogContexts.prepare({
-                chatId: target.chatId,
-                entityType: target.entityType,
-                dialogBotId: mainDialogBotId,
-                customButtons,
-                includeManagedDialogs: true,
-              }),
-            };
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId: target.chatId,
-                dialogBotId: mainDialogBotId,
-                err: error instanceof Error ? error.message : String(error),
-              },
-              'Dropped Major dialog buttons after context preparation failure',
-            );
-          }
-        }
-        return {
+      DIALOG_CONTEXT_PREPARE_CONCURRENCY,
+      async (target) => ({
+        chatId: target.chatId,
+        dialogBotId: requiredBotId!,
+        context: await this.dialogContexts.prepare({
           chatId: target.chatId,
+          entityType: target.entityType,
           dialogBotId: requiredBotId!,
-          context: await this.dialogContexts.prepare({
-            chatId: target.chatId,
-            entityType: target.entityType,
-            dialogBotId: requiredBotId!,
-            customButtons,
-            includeManagedDialogs: false,
-          }),
-        };
-      },
+          customButtons,
+          includeManagedDialogs: target.entityType === 'chat',
+        }),
+      }),
     );
     const routeByChatId = new Map(routes.map((route) => [route.chatId, route]));
     const dialogBotIds = new Map(preparedContexts.map((item) => [item.chatId, item.dialogBotId]));

@@ -927,6 +927,44 @@ describe('AdminSettingsService chat rules', () => {
     expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
   });
 
+  it('preserves Publik-owned chat comment settings on Major settings writes', async () => {
+    const currentSettings = createPersistedChatSettings({
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    });
+    const { prisma, service } = createService({ currentSettings });
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      commentsEnabled: false,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: true,
+      commentsChatBroadcastsEnabled: false,
+    });
+
+    expect(result).toMatchObject({
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    });
+    const settingsUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'chat-1',
+    )?.[0];
+    const updatePayload = settingsUpsert?.update?.settings?.upsert?.update;
+    expect(updatePayload).not.toHaveProperty('commentsEnabled');
+    expect(updatePayload).not.toHaveProperty('commentsAdminsEnabled');
+    expect(updatePayload).not.toHaveProperty('commentsAllEnabled');
+    expect(updatePayload).not.toHaveProperty('commentsChatBroadcastsEnabled');
+    expect(settingsUpsert?.update?.settings?.upsert?.create).toMatchObject({
+      commentsEnabled: false,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: false,
+    });
+  });
+
   it('keeps UPDATE_SETTINGS audit metadata bounded and excludes bot speech media content', async () => {
     const { prisma, service } = createService();
     const mediaBase64 = 'A'.repeat(1_000_000);
@@ -1620,6 +1658,41 @@ describe('AdminSettingsService chat rules', () => {
       requiredSubscriptionChannelIds: [],
     });
     expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(['chat-1', 'chat-2']);
+  });
+
+  it('does not copy Publik-owned chat comments during Major bulk settings apply', async () => {
+    const { prisma, service } = createService({
+      applyTargetChats: [createChatSummary({ id: 'chat-2', title: 'Второй чат' })],
+      currentSettings: createPersistedChatSettings({
+        commentsEnabled: true,
+        commentsAdminsEnabled: false,
+        commentsAllEnabled: false,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    });
+    const sourceSettings = chatSettingsSchema.parse({
+      commentsEnabled: false,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: true,
+      commentsChatBroadcastsEnabled: false,
+    });
+
+    await service.applySettingsToAllChats('chat-1', user as never, sourceSettings);
+
+    const targetSettingsUpsert = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'chat-2',
+    )?.[0];
+    const updatePayload = targetSettingsUpsert?.update?.settings?.upsert?.update;
+    expect(updatePayload).not.toHaveProperty('commentsEnabled');
+    expect(updatePayload).not.toHaveProperty('commentsAdminsEnabled');
+    expect(updatePayload).not.toHaveProperty('commentsAllEnabled');
+    expect(updatePayload).not.toHaveProperty('commentsChatBroadcastsEnabled');
+    expect(targetSettingsUpsert?.update?.settings?.upsert?.create).toMatchObject({
+      commentsEnabled: false,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: false,
+    });
   });
 
   it('preserves source profanity sensitivity for a stale full apply-to-all body', async () => {

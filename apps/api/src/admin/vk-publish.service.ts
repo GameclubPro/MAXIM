@@ -45,7 +45,12 @@ import {
   MaxRoutedPublicationService,
   type MaxRoutedPublicationResult,
 } from '../max/max-routed-publication.service';
-import { ChatEntityType, Prisma, PublicationDispatchProfile } from '../prisma/prisma-client';
+import {
+  ChatEntityType,
+  Prisma,
+  PublicationDispatchProfile,
+  VkParsingOwnerProfile,
+} from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import {
@@ -95,6 +100,11 @@ import {
   isMaxAttachmentNotReadyError,
 } from './vk-parsing-errors';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
+import {
+  MAJOR_VK_OWNER_SCOPE,
+  type VkParsingOwnerScope,
+  VkParsingOwnershipService,
+} from './vk-parsing-ownership.service';
 import {
   VK_IMAGE_FETCH_TIMEOUT_MS,
   VK_IMAGE_MAX_BYTES,
@@ -247,6 +257,7 @@ export class VkPublishService {
     @InjectQueue(VK_PARSING_PUBLISH_QUEUE)
     private readonly publishQueue: Queue<VkParsingPublishJob>,
     configService: ConfigService,
+    private readonly ownership: VkParsingOwnershipService,
     @Optional()
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional()
@@ -288,10 +299,11 @@ export class VkPublishService {
     chatId: string,
     trafficClass: MaxApiTrafficClass = 'interactive',
   ): Promise<void> {
-    if (this.channelPostSignatureService) {
-      return this.channelPostSignatureService.assertChannelLinkAvailable(chatId, trafficClass);
+    const publisherBotId = this.newDispatchRoute?.requiredBotId?.trim() ?? '';
+    if (!publisherBotId) {
+      throw new ServiceUnavailableException('Публик не настроен для получения ссылки канала.');
     }
-    await this.resolveChannelLink(chatId, trafficClass);
+    await this.resolveChannelLink(chatId, trafficClass, publisherBotId);
   }
 
   async recoverStalePublishJobs(): Promise<number> {
@@ -316,7 +328,7 @@ export class VkPublishService {
       return recoveredRollbacks;
     }
 
-    const settingsByChatId = new Map<string, VkParsingSettingsLike>();
+    const settingsByScope = new Map<string, VkParsingSettingsLike>();
     let recovered = 0;
     let expiredAutoPublishRecoveries = 0;
     for (const post of posts) {
@@ -361,10 +373,12 @@ export class VkPublishService {
         continue;
       }
 
-      let settings = settingsByChatId.get(recoverablePost.chatId);
+      const ownerScope = this.ownerScopeFromRow(recoverablePost);
+      const settingsKey = this.ownerScopeKey(recoverablePost.chatId, ownerScope);
+      let settings = settingsByScope.get(settingsKey);
       if (!settings) {
-        settings = await this.getSettingsForChat(recoverablePost.chatId);
-        settingsByChatId.set(recoverablePost.chatId, settings);
+        settings = await this.getSettingsForChat(recoverablePost.chatId, ownerScope);
+        settingsByScope.set(settingsKey, settings);
       }
 
       if (reason === 'autopublish' && !this.canAutoPublishPost(recoverablePost, settings)) {
@@ -414,11 +428,32 @@ export class VkPublishService {
     staleLockBefore: Date,
     includePublisher: boolean,
   ): Promise<VkParsingPostWithSource[]> {
+    const publisherOwnerScope = this.getPublisherOwnerScope();
+    const ownershipWhere: Prisma.VkParsingPostWhereInput = includePublisher
+      ? {
+          OR: [
+            {
+              dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+              ...MAJOR_VK_OWNER_SCOPE,
+              source: MAJOR_VK_OWNER_SCOPE,
+            },
+            {
+              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+              ...publisherOwnerScope,
+              requiredBotId: publisherOwnerScope.ownerBotId,
+              source: publisherOwnerScope,
+            },
+          ],
+        }
+      : {
+          dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+          ...MAJOR_VK_OWNER_SCOPE,
+          source: MAJOR_VK_OWNER_SCOPE,
+        };
     const baseWhere: Prisma.VkParsingPostWhereInput = {
       publishQueuedAt: { not: null },
       publishIdempotencyKey: { not: null },
       OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
-      ...(includePublisher ? {} : { dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED }),
     };
     const recoverableReasonWhere = {
       OR: [
@@ -436,6 +471,7 @@ export class VkPublishService {
       where: {
         ...baseWhere,
         AND: [
+          ownershipWhere,
           recoverableReasonWhere,
           {
             OR: [{ publishScheduledAt: null }, { publishScheduledAt: { lte: now } }],
@@ -459,6 +495,7 @@ export class VkPublishService {
       where: {
         ...baseWhere,
         AND: [
+          ownershipWhere,
           recoverableReasonWhere,
           ...(this.futurePublishRecoveryCursor
             ? [this.buildFuturePublishRecoveryCursorWhere(this.futurePublishRecoveryCursor)]
@@ -559,8 +596,9 @@ export class VkPublishService {
       throw new BadRequestException(parsed.error.format());
     }
 
+    const ownerScope = this.getPublisherOwnerScope();
     const post = await this.prisma.vkParsingPost.findFirst({
-      where: { id: postId, chatId },
+      where: { id: postId, chatId, ...ownerScope, source: ownerScope },
       include: { source: true },
     });
     if (!post) {
@@ -578,7 +616,7 @@ export class VkPublishService {
     const photoUrls = this.assertSelectedUrls(parsed.data.photoUrls, storedPhotoUrls, 'фото');
     const videoUrls = this.assertSelectedUrls(parsed.data.videoUrls, storedVideoUrls, 'видео');
     const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
-    const settings = await this.getSettingsForChat(chatId);
+    const settings = await this.getSettingsForChat(chatId, ownerScope);
     const preservedLinkUrls = this.resolveStripPreservedLinkUrls(post);
     const storedDraft: VkParsingStoredDraft = {
       text: parsed.data.text,
@@ -623,7 +661,7 @@ export class VkPublishService {
         storedDraft,
       });
       const updated = await this.prisma.vkParsingPost.findFirst({
-        where: { id: post.id, chatId },
+        where: { id: post.id, chatId, ...ownerScope, source: ownerScope },
         include: { source: true },
       });
       return publishVkParsingPostResultSchema.parse({
@@ -637,7 +675,13 @@ export class VkPublishService {
     }
     let maxMessage: VkParsingMaxMessageText;
     try {
-      maxMessage = await this.prepareMaxMessageText(chatId, prepared, settings, 'interactive');
+      maxMessage = await this.prepareMaxMessageText(
+        chatId,
+        prepared,
+        settings,
+        'interactive',
+        PublicationDispatchProfile.LEGACY_ROUTED,
+      );
     } catch (error) {
       try {
         await this.releaseManualPublishLock(post.id, chatId, publishLockAt, post.publishReason);
@@ -702,8 +746,9 @@ export class VkPublishService {
     postId: string,
     actorUserId?: string,
   ): Promise<RetryVkParsingPostResult> {
+    const ownerScope = this.getPublisherOwnerScope();
     const post = await this.prisma.vkParsingPost.findFirst({
-      where: { id: postId, chatId },
+      where: { id: postId, chatId, ...ownerScope, source: ownerScope },
       include: { source: true },
     });
     if (!post) {
@@ -722,7 +767,7 @@ export class VkPublishService {
       actorUserId,
     });
     const updated = await this.prisma.vkParsingPost.findFirst({
-      where: { id: post.id, chatId },
+      where: { id: post.id, chatId, ...ownerScope, source: ownerScope },
       include: { source: true },
     });
     return retryVkParsingPostResultSchema.parse({
@@ -737,7 +782,8 @@ export class VkPublishService {
     scheduledAtIso: string,
     actorUserId: string,
   ): Promise<RetryVkParsingPostResult> {
-    const post = await this.findSchedulablePost(chatId, postId);
+    const ownerScope = this.getPublisherOwnerScope();
+    const post = await this.findSchedulablePost(chatId, postId, ownerScope);
     this.assertNoAmbiguousMaxSendQuarantine(post);
     this.assertReviewSourceOwnerAction(post, actorUserId);
     const scheduledAt = new Date(scheduledAtIso);
@@ -748,12 +794,13 @@ export class VkPublishService {
       actorUserId,
     });
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_SCHEDULE_POST', {
+      ...ownerScope,
       postId,
       sourceId: post.sourceId,
       scheduledAt: scheduledAt.toISOString(),
     });
     const updated = await this.prisma.vkParsingPost.findFirst({
-      where: { id: post.id, chatId },
+      where: { id: post.id, chatId, ...ownerScope, source: ownerScope },
       include: { source: true },
     });
     return retryVkParsingPostResultSchema.parse({
@@ -767,12 +814,14 @@ export class VkPublishService {
     postId: string,
     actorUserId: string,
   ): Promise<RetryVkParsingPostResult> {
-    const post = await this.findSchedulablePost(chatId, postId);
+    const ownerScope = this.getPublisherOwnerScope();
+    const post = await this.findSchedulablePost(chatId, postId, ownerScope);
     const now = new Date();
     const cancelled = await this.prisma.vkParsingPost.updateMany({
       where: {
         id: post.id,
         chatId,
+        ...ownerScope,
         status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
         publishScheduledAt: post.publishScheduledAt,
         publishIdempotencyKey: post.publishIdempotencyKey,
@@ -793,11 +842,12 @@ export class VkPublishService {
       throw new BadRequestException('Этот VK-пост уже нельзя отменить.');
     }
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_CANCEL_POST', {
+      ...ownerScope,
       postId,
       sourceId: post.sourceId,
     });
     const updated = await this.prisma.vkParsingPost.findFirst({
-      where: { id: post.id, chatId },
+      where: { id: post.id, chatId, ...ownerScope, source: ownerScope },
       include: { source: true },
     });
     return retryVkParsingPostResultSchema.parse({
@@ -811,18 +861,20 @@ export class VkPublishService {
     postId: string,
     actorUserId: string,
   ): Promise<RetryVkParsingPostResult> {
-    const post = await this.findSchedulablePost(chatId, postId);
+    const ownerScope = this.getPublisherOwnerScope();
+    const post = await this.findSchedulablePost(chatId, postId, ownerScope);
     this.assertNoAmbiguousMaxSendQuarantine(post);
     this.assertReviewSourceOwnerAction(post, actorUserId);
     const queued = await this.enqueuePostPublish(post, 'manual-retry', new Date(), {
       actorUserId,
     });
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_PUBLISH_NOW', {
+      ...ownerScope,
       postId,
       sourceId: post.sourceId,
     });
     const updated = await this.prisma.vkParsingPost.findFirst({
-      where: { id: post.id, chatId },
+      where: { id: post.id, chatId, ...ownerScope, source: ownerScope },
       include: { source: true },
     });
     return retryVkParsingPostResultSchema.parse({
@@ -837,10 +889,12 @@ export class VkPublishService {
         ? String(this.asRecord(query)?.sourceId).trim()
         : null;
     const now = new Date();
-    const settings = await this.getSettingsForChat(chatId);
+    const ownerScope = this.getPublisherOwnerScope();
+    const settings = await this.getSettingsForChat(chatId, ownerScope);
     const sources = await this.prisma.vkParsingSource.findMany({
       where: {
         chatId,
+        ...ownerScope,
         status: VK_SOURCE_STATUS_ACTIVE,
         ...(sourceId ? { id: sourceId } : {}),
       },
@@ -867,6 +921,7 @@ export class VkPublishService {
           this.prisma.vkParsingPost.count({
             where: {
               chatId,
+              ...ownerScope,
               sourceId: source.id,
               status: VK_POST_STATUS_NEW,
               publishQueuedAt: null,
@@ -876,7 +931,7 @@ export class VkPublishService {
             },
           }),
           this.prisma.vkParsingPost.aggregate({
-            where: { chatId, sourceId: source.id, status: VK_POST_STATUS_NEW },
+            where: { chatId, sourceId: source.id, status: VK_POST_STATUS_NEW, ...ownerScope },
             _max: { vkPublishedAt: true },
           }),
         ]);
@@ -920,9 +975,12 @@ export class VkPublishService {
     if (until.getTime() < since.getTime()) {
       throw new BadRequestException('Конец периода раньше начала.');
     }
+    const ownerScope = this.getPublisherOwnerScope();
     const posts = await this.prisma.vkParsingPost.findMany({
       where: {
         chatId,
+        ...ownerScope,
+        source: ownerScope,
         autoPublishedAt: { gte: since, lte: until },
         ...(request.sourceId ? { sourceId: request.sourceId } : {}),
       },
@@ -973,6 +1031,7 @@ export class VkPublishService {
     }
 
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_ROLLBACK', {
+      ...ownerScope,
       since: since.toISOString(),
       until: until.toISOString(),
       sourceId: request.sourceId ?? null,
@@ -997,6 +1056,8 @@ export class VkPublishService {
       VkParsingPostWithSource,
       | 'id'
       | 'chatId'
+      | 'ownerProfile'
+      | 'ownerBotId'
       | 'dispatchProfile'
       | 'requiredBotId'
       | 'publishedBotId'
@@ -1009,6 +1070,8 @@ export class VkPublishService {
   ): Promise<boolean> {
     if (
       post.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+      post.ownerProfile !== VkParsingOwnerProfile.PUBLISHER ||
+      post.ownerBotId !== post.requiredBotId ||
       !post.requiredBotId?.trim() ||
       post.publishedBotId !== post.requiredBotId ||
       !post.publishedMessageId?.trim() ||
@@ -1041,6 +1104,8 @@ export class VkPublishService {
         id: post.id,
         chatId: post.chatId,
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: post.requiredBotId,
         requiredBotId: post.requiredBotId,
         publishedBotId: post.requiredBotId,
         publishedMessageId: post.publishedMessageId,
@@ -1079,6 +1144,9 @@ export class VkPublishService {
     attemptsMade?: number;
     maxAttempts?: number;
   }): Promise<void> {
+    if (params.requiredBotId !== this.getPublisherOwnerScope().ownerBotId) {
+      return;
+    }
     try {
       this.assertPublisherRuntimeBeforeClaim();
       await this.assertPublisherHealthAllowed();
@@ -1097,6 +1165,8 @@ export class VkPublishService {
         id: params.postId,
         chatId: params.chatId,
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: params.requiredBotId,
         requiredBotId: params.requiredBotId,
         publishedBotId: params.requiredBotId,
         publishedMessageId: params.messageId,
@@ -1183,9 +1253,12 @@ export class VkPublishService {
     if (!this.publisherQueue) {
       return 0;
     }
+    const publisherOwnerScope = this.getPublisherOwnerScope();
     const posts = await this.prisma.vkParsingPost.findMany({
       where: {
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        ...publisherOwnerScope,
+        requiredBotId: publisherOwnerScope.ownerBotId,
         rollbackQueuedAt: { not: null },
         rollbackIdempotencyKey: { not: null },
         rollbackDeletedAt: null,
@@ -1201,6 +1274,7 @@ export class VkPublishService {
         !post.rollbackIdempotencyKey ||
         !post.publishedMessageId ||
         !post.requiredBotId ||
+        post.ownerBotId !== post.requiredBotId ||
         post.publishedBotId !== post.requiredBotId
       ) {
         continue;
@@ -1335,9 +1409,19 @@ export class VkPublishService {
       params.dispatchProfile === 'PUBLIK_V1'
         ? PublicationDispatchProfile.PUBLIK_V1
         : PublicationDispatchProfile.LEGACY_ROUTED;
+    const expectedOwnerScope =
+      expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? {
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: params.requiredBotId?.trim() ?? '',
+          }
+        : MAJOR_VK_OWNER_SCOPE;
     if (expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
       if (!params.requiredBotId?.trim()) {
         throw new Error('Publik VK queue job is missing requiredBotId');
+      }
+      if (params.requiredBotId !== this.getPublisherOwnerScope().ownerBotId) {
+        return;
       }
       try {
         this.assertPublisherRuntimeBeforeClaim();
@@ -1368,6 +1452,7 @@ export class VkPublishService {
         publishIdempotencyKey: params.idempotencyKey,
         publishReason: params.reason,
         dispatchProfile: expectedDispatchProfile,
+        ...expectedOwnerScope,
         requiredBotId:
           expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1
             ? params.requiredBotId
@@ -1391,14 +1476,21 @@ export class VkPublishService {
         publishIdempotencyKey: params.idempotencyKey,
         publishReason: params.reason,
         dispatchProfile: expectedDispatchProfile,
+        ...expectedOwnerScope,
         requiredBotId:
           expectedDispatchProfile === PublicationDispatchProfile.PUBLIK_V1
             ? params.requiredBotId
             : null,
+        source: expectedOwnerScope,
       },
       include: { source: true },
     });
-    if (!post || post.status === VK_POST_STATUS_PUBLISHED) {
+    if (
+      !post ||
+      !this.isExactOwnerScope(post, expectedOwnerScope) ||
+      !this.isExactOwnerScope(post.source, expectedOwnerScope) ||
+      post.status === VK_POST_STATUS_PUBLISHED
+    ) {
       return;
     }
     if (
@@ -1436,7 +1528,7 @@ export class VkPublishService {
         }
       }
 
-      const settings = await this.getSettingsForChat(post.chatId);
+      const settings = await this.getSettingsForChat(post.chatId, this.ownerScopeFromRow(post));
       if (params.reason === 'autopublish') {
         if (!this.canAutoPublishPost(post, settings)) {
           await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
@@ -1514,7 +1606,18 @@ export class VkPublishService {
       return;
     }
 
-    const settings = await this.getSettingsForChat(chatId);
+    const ownerScope = this.ownerScopeFromRow(posts[0]!);
+    if (
+      posts.some(
+        (post) =>
+          post.chatId !== chatId ||
+          !this.isExactOwnerScope(post, ownerScope) ||
+          !this.isExactOwnerScope(post.source, ownerScope),
+      )
+    ) {
+      throw new Error('VK autopublish candidates cross an ownership scope');
+    }
+    const settings = await this.getSettingsForChat(chatId, ownerScope);
     if (
       !settings.autoPublishEnabled ||
       !settings.autoPublishEnabledAt ||
@@ -1564,10 +1667,14 @@ export class VkPublishService {
     }
   }
 
-  async clearQueuedAutoPublishForChat(chatId: string): Promise<void> {
+  async clearQueuedAutoPublishForChat(
+    chatId: string,
+    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+  ): Promise<void> {
     await this.prisma.vkParsingPost.updateMany({
       where: {
         chatId,
+        ...ownerScope,
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
         publishReason: 'autopublish',
         OR: [
@@ -1588,11 +1695,19 @@ export class VkPublishService {
     });
   }
 
-  async clearQueuedAutoPublishForSource(chatId: string, sourceId: string): Promise<void> {
-    await this.clearQueuedAutoPublishForSources(chatId, [sourceId]);
+  async clearQueuedAutoPublishForSource(
+    chatId: string,
+    sourceId: string,
+    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+  ): Promise<void> {
+    await this.clearQueuedAutoPublishForSources(chatId, [sourceId], ownerScope);
   }
 
-  async clearQueuedAutoPublishForSources(chatId: string, sourceIds: string[]): Promise<void> {
+  async clearQueuedAutoPublishForSources(
+    chatId: string,
+    sourceIds: string[],
+    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+  ): Promise<void> {
     const uniqueSourceIds = [...new Set(sourceIds.filter(Boolean))];
     if (uniqueSourceIds.length === 0) {
       return;
@@ -1600,6 +1715,7 @@ export class VkPublishService {
     await this.prisma.vkParsingPost.updateMany({
       where: {
         chatId,
+        ...ownerScope,
         sourceId: { in: uniqueSourceIds },
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
         publishReason: 'autopublish',
@@ -1696,7 +1812,7 @@ export class VkPublishService {
             if (!publisherDialogContext) {
               throw new PublisherVkDispatchBlockedError(
                 'dialog_context_unavailable',
-                new Error('Publik VK intent is missing its main-signed dialog context'),
+                new Error('Publik VK intent is missing its Publisher-signed dialog context'),
               );
             }
             if (publisherDialogContext.buttons.length > 0) {
@@ -2323,7 +2439,27 @@ export class VkPublishService {
     const hasActiveIntent = Boolean(
       post.publishIdempotencyKey?.trim() || post.publishQueuedAt || post.publishReason?.trim(),
     );
-    if (hasActiveIntent || !this.newDispatchRoute) {
+    const ownerScope = this.ownerScopeFromRow(post);
+    if (ownerScope.ownerProfile === VkParsingOwnerProfile.MAJOR) {
+      if (persisted.dispatchProfile !== PublicationDispatchProfile.LEGACY_ROUTED) {
+        throw new Error('Major-owned VK data has a non-legacy dispatch intent');
+      }
+      return persisted;
+    }
+    if (
+      !this.newDispatchRoute ||
+      ownerScope.ownerBotId !== this.newDispatchRoute.requiredBotId ||
+      !this.isExactOwnerScope(post.source, ownerScope)
+    ) {
+      throw new PublisherSetupRequiredException([post.chatId], 'publisher_bot_changed');
+    }
+    if (hasActiveIntent) {
+      if (
+        persisted.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+        persisted.requiredBotId !== ownerScope.ownerBotId
+      ) {
+        throw new PublisherSetupRequiredException([post.chatId], 'publisher_route_invalid');
+      }
       return persisted;
     }
     if (!this.publisherReadinessService) {
@@ -2345,10 +2481,7 @@ export class VkPublishService {
     if (ready.requiredBotId !== this.newDispatchRoute.requiredBotId) {
       throw new PublisherSetupRequiredException([post.chatId], 'publisher_bot_changed');
     }
-    const dialogBotId = await this.maxBotLinkService.resolveBotIdForSend({ chatId: post.chatId });
-    if (!dialogBotId || dialogBotId === ready.requiredBotId) {
-      throw new PublisherSetupRequiredException([post.chatId], 'dialog_bot_unavailable');
-    }
+    const dialogBotId = ready.requiredBotId;
     if (!this.publisherDialogContextService) {
       throw new ServiceUnavailableException('Publik dialog context service is unavailable.');
     }
@@ -2703,6 +2836,8 @@ export class VkPublishService {
       where: {
         chatId: post.chatId,
         sourceId: post.sourceId,
+        ownerProfile: post.ownerProfile,
+        ownerBotId: post.ownerBotId,
         OR: [
           { publishQueuedAt: { gte: windowStart }, publishReason: 'autopublish' },
           { autoPublishedAt: { gte: windowStart } },
@@ -2732,6 +2867,8 @@ export class VkPublishService {
       VK_PARSING_SYSTEM_ACTOR_USER_ID,
       'VK_PARSING_CIRCUIT_OPEN',
       {
+        ownerProfile: source.ownerProfile,
+        ownerBotId: source.ownerBotId,
         sourceId: source.id,
         windowMinutes: settings.circuitBreakerWindowMinutes,
         limit: settings.circuitBreakerPostLimit,
@@ -2752,6 +2889,8 @@ export class VkPublishService {
       where: {
         chatId: post.chatId,
         sourceId: post.sourceId,
+        ownerProfile: post.ownerProfile,
+        ownerBotId: post.ownerBotId,
         publishQueuedAt: { not: null },
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
       },
@@ -2784,6 +2923,8 @@ export class VkPublishService {
       ? await this.prisma.vkParsingPost.aggregate({
           where: {
             chatId: post.chatId,
+            ownerProfile: post.ownerProfile,
+            ownerBotId: post.ownerBotId,
             publishQueuedAt: { not: null },
             status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
           },
@@ -2814,6 +2955,8 @@ export class VkPublishService {
       where: {
         chatId: post.chatId,
         sourceId: post.sourceId,
+        ownerProfile: post.ownerProfile,
+        ownerBotId: post.ownerBotId,
         autoPublishedAt: { gte: dayStart, lt: dayEnd },
       },
     });
@@ -2961,9 +3104,10 @@ export class VkPublishService {
   private async findSchedulablePost(
     chatId: string,
     postId: string,
+    ownerScope: VkParsingOwnerScope,
   ): Promise<VkParsingPostWithSource> {
     const post = await this.prisma.vkParsingPost.findFirst({
-      where: { id: postId, chatId },
+      where: { id: postId, chatId, ...ownerScope, source: ownerScope },
       include: { source: true },
     });
     if (!post) {
@@ -3093,6 +3237,8 @@ export class VkPublishService {
       prepared,
       settings,
       'background',
+      post.dispatchProfile,
+      post.requiredBotId,
     );
 
     await this.publishPreparedPostToMax(post, prepared, maxMessage, {
@@ -3122,16 +3268,23 @@ export class VkPublishService {
   private async assertPublisherIntentReady(
     post: Pick<
       VkParsingPostWithSource,
-      'chatId' | 'dispatchProfile' | 'requiredBotId' | 'dialogBotId' | 'publishDialogContext'
+      | 'chatId'
+      | 'ownerProfile'
+      | 'ownerBotId'
+      | 'dispatchProfile'
+      | 'requiredBotId'
+      | 'dialogBotId'
+      | 'publishDialogContext'
     >,
   ): Promise<PublisherReadyRoute> {
     this.assertPublisherRuntimeBeforeClaim();
     await this.assertPublisherHealthAllowed();
     if (
       post.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+      post.ownerProfile !== VkParsingOwnerProfile.PUBLISHER ||
+      post.ownerBotId !== post.requiredBotId ||
       !post.requiredBotId?.trim() ||
       !post.dialogBotId?.trim() ||
-      post.requiredBotId === post.dialogBotId ||
       !this.readPublisherDialogContext(post.publishDialogContext, post.dialogBotId)
     ) {
       throw new PublisherVkDispatchBlockedError(
@@ -3215,12 +3368,18 @@ export class VkPublishService {
     reason: VkParsingPublishReason,
     blockerCode: string,
   ): Promise<void> {
+    const requiredBotId = post.requiredBotId?.trim();
+    if (!requiredBotId) {
+      return;
+    }
     const normalizedBlocker = blockerCode.trim().slice(0, 96) || 'publisher_setup_required';
     await this.prisma.vkParsingPost.updateMany({
       where: {
         id: post.id,
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-        requiredBotId: post.requiredBotId,
+        requiredBotId,
+        ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+        ownerBotId: requiredBotId,
         publishIdempotencyKey: idempotencyKey,
         publishReason: reason,
         status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
@@ -4122,6 +4281,8 @@ export class VkPublishService {
     payload: PreparedVkPublishPayload,
     settings: Pick<VkParsingSettingsLike, 'appendChannelLinkEnabled' | 'channelLinkText'>,
     trafficClass: MaxApiTrafficClass,
+    dispatchProfile: PublicationDispatchProfile,
+    requiredPublisherBotId?: string | null,
   ): Promise<VkParsingMaxMessageText> {
     const usesRichText = payload.textFormat === 'markdown';
     const renderedText = usesRichText
@@ -4145,7 +4306,10 @@ export class VkPublishService {
           .join('\n')
       : payload.text;
 
-    if (this.channelPostSignatureService) {
+    if (
+      dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 &&
+      this.channelPostSignatureService
+    ) {
       const signed = await this.channelPostSignatureService.preparePostText(
         chatId,
         {
@@ -4179,7 +4343,11 @@ export class VkPublishService {
     if (!linkText) {
       throw new BadRequestException('Укажите текст ссылки на канал.');
     }
-    const channelLink = await this.resolveChannelLink(chatId, trafficClass);
+    const channelLink = await this.resolveChannelLink(
+      chatId,
+      trafficClass,
+      dispatchProfile === PublicationDispatchProfile.PUBLIK_V1 ? requiredPublisherBotId : null,
+    );
     const baseHtml = usesRichText ? contentHtml : escapeMaxHtmlText(renderedText);
     const signatureHtml = `<a href="${escapeMaxHtmlAttribute(channelLink)}">${escapeMaxHtmlText(
       linkText,
@@ -4211,27 +4379,31 @@ export class VkPublishService {
   private async resolveChannelLink(
     chatId: string,
     trafficClass: MaxApiTrafficClass,
+    exactPublisherBotId?: string | null,
   ): Promise<string> {
     const entityType = await this.accessService.resolvePublicationEntityType(chatId);
     if (entityType !== ChatEntityType.CHANNEL) {
       throw new BadRequestException('Ссылка в конце доступна только для канала.');
     }
 
-    try {
-      const audienceSnapshot = await this.prisma.channelAudienceSnapshot.findFirst({
-        where: {
-          chatId,
-          link: { not: null },
-        },
-        orderBy: { capturedAt: 'desc' },
-        select: { link: true },
-      });
-      const knownLink = normalizeMaxChannelLink(audienceSnapshot?.link);
-      if (knownLink) {
-        return knownLink;
+    const publisherBotId = exactPublisherBotId?.trim() ?? '';
+    if (!publisherBotId) {
+      try {
+        const audienceSnapshot = await this.prisma.channelAudienceSnapshot.findFirst({
+          where: {
+            chatId,
+            link: { not: null },
+          },
+          orderBy: { capturedAt: 'desc' },
+          select: { link: true },
+        });
+        const knownLink = normalizeMaxChannelLink(audienceSnapshot?.link);
+        if (knownLink) {
+          return knownLink;
+        }
+      } catch (error) {
+        this.logger.warn({ chatId, err: error }, 'Failed to read cached MAX channel audience link');
       }
-    } catch (error) {
-      this.logger.warn({ chatId, err: error }, 'Failed to read cached MAX channel audience link');
     }
 
     const catalogDelegate = this.prisma.managedBotChatCatalog;
@@ -4240,6 +4412,7 @@ export class VkPublishService {
         const catalogEntry = await catalogDelegate.findFirst({
           where: {
             chatId,
+            ...(publisherBotId ? { botId: publisherBotId } : {}),
             entityType: ChatEntityType.CHANNEL,
             status: 'ACTIVE',
             link: { not: null },
@@ -4257,7 +4430,8 @@ export class VkPublishService {
     }
 
     try {
-      const botId = await this.maxBotLinkService.resolveBotIdForSend({ chatId });
+      const botId =
+        publisherBotId || (await this.maxBotLinkService.resolveBotIdForSend({ chatId }));
       if (!botId || typeof this.maxClient.getChatSnapshot !== 'function') {
         throw new Error('No bot can resolve the MAX channel link');
       }
@@ -4437,8 +4611,18 @@ export class VkPublishService {
     };
   }
 
-  private async getSettingsForChat(chatId: string): Promise<VkParsingSettingsLike> {
-    const settings = await this.prisma.vkParsingSettings.findUnique({ where: { chatId } });
+  private async getSettingsForChat(
+    chatId: string,
+    ownerScope: VkParsingOwnerScope,
+  ): Promise<VkParsingSettingsLike> {
+    const settings = await this.prisma.vkParsingSettings.findUnique({
+      where: {
+        chatId_ownerProfile_ownerBotId: {
+          chatId,
+          ...ownerScope,
+        },
+      },
+    });
     const defaults = this.getDefaultSettings(chatId);
     const legacySchedulerDefaults =
       settings && !Object.prototype.hasOwnProperty.call(settings, 'workHoursStart')
@@ -4449,6 +4633,29 @@ export class VkPublishService {
       ...legacySchedulerDefaults,
       ...(settings ?? {}),
     };
+  }
+
+  private getPublisherOwnerScope(): VkParsingOwnerScope {
+    return this.ownership.getPublisherScope();
+  }
+
+  private ownerScopeFromRow(
+    row: Pick<VkParsingPostWithSource, 'ownerProfile' | 'ownerBotId'>,
+  ): VkParsingOwnerScope {
+    return this.ownership.fromRow(row);
+  }
+
+  private isExactOwnerScope(
+    row: Pick<VkParsingPostWithSource, 'ownerProfile' | 'ownerBotId'>,
+    ownerScope: VkParsingOwnerScope,
+  ): boolean {
+    return (
+      row.ownerProfile === ownerScope.ownerProfile && row.ownerBotId === ownerScope.ownerBotId
+    );
+  }
+
+  private ownerScopeKey(chatId: string, ownerScope: VkParsingOwnerScope): string {
+    return JSON.stringify([chatId, ownerScope.ownerProfile, ownerScope.ownerBotId]);
   }
 
   private readStringArray(value: Prisma.JsonValue | unknown): string[] {

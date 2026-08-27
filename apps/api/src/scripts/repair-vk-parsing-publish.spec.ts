@@ -173,12 +173,14 @@ function createRepairPostRow(facts: RepairCandidateFacts): Record<string, unknow
       routingState: facts.access.routingState,
       updatedAt: new Date(facts.updatedAt),
       vkParsingSettings: facts.settings
-        ? {
-            ...facts.settings,
-            autoPublishEnabledAt: toDate(facts.settings.autoPublishEnabledAt),
-            updatedAt: new Date(facts.settings.updatedAt),
-          }
-        : null,
+        ? [
+            {
+              ...facts.settings,
+              autoPublishEnabledAt: toDate(facts.settings.autoPublishEnabledAt),
+              updatedAt: new Date(facts.settings.updatedAt),
+            },
+          ]
+        : [],
       botMemberships: facts.access.memberships.map((membership) => ({
         botId: membership.botId,
         status: membership.status,

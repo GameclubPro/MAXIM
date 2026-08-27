@@ -5,6 +5,7 @@ import {
 } from '@maxim/contracts/publication';
 import {
   ManagedBroadcastDeliveryStatus,
+  PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
@@ -170,6 +171,47 @@ describe('Publication performance and pagination', () => {
     );
   });
 
+  it('scopes list reads to the immutable dispatch profile', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const { service } = createPublicationService({
+      publication: { findMany },
+      managedBroadcastDelivery: { groupBy: jest.fn() },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    });
+
+    await service.list(
+      { userId: 'user-1' } as never,
+      { view: 'plan', limit: 30 },
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          actorUserId: 'user-1',
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        }),
+      }),
+    );
+  });
+
+  it('hides publication details owned by another dispatch profile', async () => {
+    const { presenter, service } = createPublicationService({});
+    jest.spyOn(presenter, 'loadPublicationDetailsRow').mockResolvedValue({
+      dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+    } as never);
+    const mapDetails = jest.spyOn(presenter, 'mapPublicationDetails');
+
+    await expect(
+      service.get(
+        'publication-legacy',
+        { userId: 'user-1' } as never,
+        PublicationDispatchProfile.PUBLIK_V1,
+      ),
+    ).rejects.toThrow('Публикация не найдена.');
+    expect(mapDetails).not.toHaveBeenCalled();
+  });
+
   it('uses the same current-revision failure selector for immediate publications', async () => {
     const queryRaw = jest.fn().mockResolvedValue([]);
     const findMany = jest.fn();
@@ -179,15 +221,25 @@ describe('Publication performance and pagination', () => {
       $queryRaw: queryRaw,
     });
 
-    await service.list({ userId: 'user-1' } as never, {
-      view: 'current',
-      status: 'failed',
-      limit: 30,
-    });
+    await service.list(
+      { userId: 'user-1' } as never,
+      {
+        view: 'current',
+        status: 'failed',
+        limit: 30,
+      },
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
 
     const selectorSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
     expect(selectorSql).toContain('schedule."mode" = \'NOW\'::"PublicationScheduleMode"');
     expect(selectorSql).toContain('occurrence."schedule_revision" = schedule."revision"');
+    expect(selectorSql).toContain(
+      'publication."dispatch_profile" = CAST(? AS "PublicationDispatchProfile")',
+    );
+    expect(extractSqlValues(queryRaw.mock.calls[0]?.[0])).toContain(
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
     expect(findMany).not.toHaveBeenCalled();
   });
 

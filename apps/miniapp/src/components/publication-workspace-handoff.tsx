@@ -12,8 +12,6 @@ type PublicationWorkspaceHandoffProps = {
 };
 
 export function PublicationWorkspaceHandoff({
-  entityType,
-  entityId,
   variant = 'action',
 }: PublicationWorkspaceHandoffProps) {
   return (
@@ -24,14 +22,12 @@ export function PublicationWorkspaceHandoff({
         variant === 'settings-tile' &&
           'publication-workspace-handoff--settings-tile settings-section__toggle is-stateless',
       )}
-      to={`/publications?compose=1&entityType=${entityType}&entityId=${encodeURIComponent(entityId)}`}
+      to="/publications"
       aria-label={
-        variant !== 'action' ? 'Посты. Публикации и расписание. Статус: открыть' : undefined
+        variant !== 'action' ? 'Расписания. Старые публикации. Статус: открыть' : undefined
       }
       data-settings-search={
-        variant !== 'action'
-          ? 'Посты Публикации и расписание автопостинг отправка создать'
-          : undefined
+        variant !== 'action' ? 'Расписания старые публикации автопостинг' : undefined
       }
     >
       {variant === 'settings-tile' ? (
@@ -40,7 +36,7 @@ export function PublicationWorkspaceHandoff({
             <SettingsSectionIcon name="send" />
           </span>
           <span className="settings-section__toggle-main">
-            <span className="settings-section__title">Посты</span>
+            <span className="settings-section__title">Расписания</span>
           </span>
           <span className="settings-section__chevron" aria-hidden>
             <NavArrowRight className="settings-section__chevron-icon" />
@@ -52,13 +48,13 @@ export function PublicationWorkspaceHandoff({
             <SettingsSectionIcon name="send" />
           </span>
           <span className="publication-workspace-handoff__copy">
-            <strong>Посты</strong>
-            <small>Публикации и расписание</small>
+            <strong>Расписания</strong>
+            <small>Старые публикации</small>
           </span>
           <span className="publication-workspace-handoff__status">Открыть</span>
         </>
       ) : (
-        <span>Открыть публикации</span>
+        <span>Открыть расписания</span>
       )}
       {variant === 'settings-tile' ? null : <NavArrowRight aria-hidden />}
     </Link>

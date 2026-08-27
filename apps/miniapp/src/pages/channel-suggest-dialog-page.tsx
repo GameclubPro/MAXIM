@@ -3,6 +3,7 @@ import type {
   ChannelDialogResponse,
   CreateChannelDialogMessageResponse,
 } from '@maxim/contracts/channel-dialog';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Attachment as IconoirAttachment,
@@ -263,7 +264,13 @@ function SuggestionRequirements({ text }: { text: string }) {
   );
 }
 
-export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
+export function ChannelSuggestDialogPage({
+  api,
+  profile,
+}: {
+  api: ApiTransport;
+  profile: MiniappProfile;
+}) {
   const { chatId = '' } = useParams();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
@@ -289,6 +296,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   );
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const canUploadImages = profile === 'moderation';
   const fileInputActivationMode = resolveFileInputActivationMode(
     typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
   );
@@ -339,7 +347,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
   const canSubmitMessage =
     !isPreparingImage &&
     draftLength <= SUGGEST_DRAFT_MAX_LENGTH &&
-    (draftLength > 0 || draftAttachments.length > 0);
+    (draftLength > 0 || (canUploadImages && draftAttachments.length > 0));
   const suggestPreparingImageSlots = preparingImageState?.total ?? 0;
   const suggestVisibleImageCount = Math.min(
     draftAttachments.length + suggestPreparingImageSlots,
@@ -365,6 +373,16 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     },
     [],
   );
+
+  useEffect(() => {
+    if (canUploadImages) {
+      return;
+    }
+    imagePreparationGuard.cancel();
+    setDraftAttachments([]);
+    setPreparingImageState(null);
+    resetAttachmentPicker();
+  }, [canUploadImages, imagePreparationGuard]);
 
   useLayoutEffect(() => {
     const screen = screenRef.current;
@@ -883,7 +901,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
         token,
         text: payload.text,
         textFormat: 'markdown',
-        images: payload.attachments.map((attachment) => ({
+        images: (canUploadImages ? payload.attachments : []).map((attachment) => ({
           base64: attachment.base64,
           mimeType: attachment.mimeType,
           fileName: attachment.fileName,
@@ -955,7 +973,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
       !chatId ||
       !token ||
       draftLength > SUGGEST_DRAFT_MAX_LENGTH ||
-      (!text && draftAttachments.length === 0)
+      (!text && (!canUploadImages || draftAttachments.length === 0))
     ) {
       return;
     }
@@ -963,7 +981,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     void loadChannelSuggestionHistory().catch(() => undefined);
     sendMutation.mutate({
       text,
-      attachments: draftAttachments,
+      attachments: canUploadImages ? draftAttachments : [],
     });
   };
 
@@ -1000,7 +1018,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  const suggestImageControl = (
+  const suggestImageControl = canUploadImages ? (
     <div className="channel-suggest-composer__tools">
       {useNativeTapFileInputs ? (
         <label
@@ -1082,7 +1100,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
         </span>
       ) : null}
     </div>
-  );
+  ) : null;
 
   const suggestBar =
     !dialogQuery.isLoading && !dialogQuery.error ? (
@@ -1214,7 +1232,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
                   )}
                 >
                   <div className="channel-suggest-composer__bubble">
-                    {suggestVisibleImageCount > 0 ? (
+                    {canUploadImages && suggestVisibleImageCount > 0 ? (
                       <Suspense
                         fallback={
                           <div
@@ -1264,7 +1282,7 @@ export function ChannelSuggestDialogPage({ api }: { api: ApiTransport }) {
                         disabled={isSubmitPending}
                         ariaLabel="Текст предложки"
                         className="channel-suggest-composer__rich-editor"
-                        onPasteFiles={prepareDraftImagesFromFiles}
+                        onPasteFiles={canUploadImages ? prepareDraftImagesFromFiles : undefined}
                       />
                     </div>
 

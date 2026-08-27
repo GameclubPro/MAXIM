@@ -32,23 +32,35 @@ export class AdminDialogController {
   }
 
   @Get('channels/:chatId/dialog/:dialogType')
+  @MiniappProfiles('moderation', 'publisher')
   getChannelDialog(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @CurrentUser() user: AuthUser,
     @Query('token') token: string | undefined,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.dialogService.getChannelDialog(chatId, user, dialogType, token ?? null);
+    this.assertChannelDialogProfile(profile, dialogType);
+    return this.dialogService.getChannelDialog(chatId, user, dialogType, token ?? null, profile);
   }
 
   @Post('channels/:chatId/dialog/:dialogType/messages')
+  @MiniappProfiles('moderation', 'publisher')
   createChannelDialogMessage(
     @Param('chatId') chatId: string,
     @Param('dialogType') dialogType: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.dialogService.createChannelDialogMessage(chatId, user, dialogType, body);
+    this.assertChannelDialogProfile(profile, dialogType);
+    return this.dialogService.createChannelDialogMessage(
+      chatId,
+      user,
+      dialogType,
+      body,
+      profile,
+    );
   }
 
   @Put('channels/:chatId/dialog/:dialogType/notifications')
@@ -110,7 +122,7 @@ export class AdminDialogController {
     @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     this.assertChatDialogProfile(profile, dialogType);
-    return this.dialogService.getChatDialog(chatId, user, dialogType, token ?? null);
+    return this.dialogService.getChatDialog(chatId, user, dialogType, token ?? null, profile);
   }
 
   @Post('chats/:chatId/dialog/:dialogType/messages')
@@ -123,7 +135,7 @@ export class AdminDialogController {
     @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     this.assertChatDialogProfile(profile, dialogType);
-    return this.dialogService.createChatDialogMessage(chatId, user, dialogType, body);
+    return this.dialogService.createChatDialogMessage(chatId, user, dialogType, body, profile);
   }
 
   @Put('chats/:chatId/dialog/:dialogType/notifications')
@@ -136,7 +148,13 @@ export class AdminDialogController {
     @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     this.assertChatDialogProfile(profile, dialogType);
-    return this.dialogService.updateChatDialogNotifications(chatId, user, dialogType, body);
+    return this.dialogService.updateChatDialogNotifications(
+      chatId,
+      user,
+      dialogType,
+      body,
+      profile,
+    );
   }
 
   @Patch('chats/:chatId/dialog/:dialogType/messages/:messageId')
@@ -150,7 +168,14 @@ export class AdminDialogController {
     @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     this.assertChatDialogProfile(profile, dialogType);
-    return this.dialogService.updateChatDialogMessage(chatId, user, dialogType, messageId, body);
+    return this.dialogService.updateChatDialogMessage(
+      chatId,
+      user,
+      dialogType,
+      messageId,
+      body,
+      profile,
+    );
   }
 
   @Delete('chats/:chatId/dialog/:dialogType/messages/:messageId')
@@ -164,7 +189,14 @@ export class AdminDialogController {
     @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     this.assertChatDialogProfile(profile, dialogType);
-    return this.dialogService.deleteChatDialogMessage(chatId, user, dialogType, messageId, body);
+    return this.dialogService.deleteChatDialogMessage(
+      chatId,
+      user,
+      dialogType,
+      messageId,
+      body,
+      profile,
+    );
   }
 
   @Post('chats/:chatId/dialog/:dialogType/messages/:messageId/reactions')
@@ -178,11 +210,24 @@ export class AdminDialogController {
     @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     this.assertChatDialogProfile(profile, dialogType);
-    return this.dialogService.toggleChatDialogReaction(chatId, user, dialogType, messageId, body);
+    return this.dialogService.toggleChatDialogReaction(
+      chatId,
+      user,
+      dialogType,
+      messageId,
+      body,
+      profile,
+    );
   }
 
   private assertChatDialogProfile(profile: MiniappProfile, dialogType: string): void {
     if (profile === 'publisher' && dialogType !== 'comments') {
+      throw new MiniappProfileForbiddenException();
+    }
+  }
+
+  private assertChannelDialogProfile(profile: MiniappProfile, dialogType: string): void {
+    if (profile === 'publisher' && dialogType !== 'suggest') {
       throw new MiniappProfileForbiddenException();
     }
   }

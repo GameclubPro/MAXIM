@@ -201,6 +201,7 @@ describe('admin domain controllers', () => {
       user,
       'comments',
       body,
+      'moderation',
     );
   });
 });

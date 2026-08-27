@@ -344,6 +344,11 @@ enum PublicationDispatchProfile {
   PUBLIK_V1
 }
 
+enum VkParsingOwnerProfile {
+  MAJOR
+  PUBLISHER
+}
+
 enum ManagedEntityFavoriteType {
   IMPORTANT
   WATCH
@@ -397,11 +402,12 @@ model Chat {
   publicationTargets                PublicationTarget[]
   managedGiveaways                  ManagedGiveaway[]
   managedPolls                      ManagedPoll[]
-  vkParsingSettings                 VkParsingSettings?
+  vkParsingSettings                 VkParsingSettings[]
   vkParsingSources                  VkParsingSource[]
   vkParsingPosts                    VkParsingPost[]
   botMemberships                    ChatBotMembership[]
   publisherBinding                  PublisherEntityBinding?
+  publisherSettings                 PublisherEntitySettings?
   publicationPolicy                 ManagedEntityPublicationPolicy?
   accessEdges                       ManagedEntityAccessEdge[]
   adminMembers                      ManagedEntityAdminMember[]
@@ -491,6 +497,22 @@ model PublisherEntityBinding {
   @@index([botAccessState, botAccessCheckedAt(sort: Desc)], map: "publisher_entity_bindings_access_checked_idx")
   @@index([status, sendRouteQuarantinedUntil], map: "publisher_entity_bindings_status_quarantine_idx")
   @@map("publisher_entity_bindings")
+}
+
+model PublisherEntitySettings {
+  chatId                       String   @id @map("chat_id")
+  chatCommentsEnabled          Boolean  @default(false) @map("chat_comments_enabled")
+  chatCommentsAdminsEnabled    Boolean  @default(false) @map("chat_comments_admins_enabled")
+  chatCommentsPostsEnabled     Boolean  @default(false) @map("chat_comments_posts_enabled")
+  channelSuggestionsEnabled    Boolean  @default(false) @map("channel_suggestions_enabled")
+  revision                     Int      @default(0)
+  updatedByUserId              String?  @map("updated_by_user_id")
+  createdAt                    DateTime @default(now()) @map("created_at")
+  updatedAt                    DateTime @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("publisher_entity_settings")
 }
 
 model ManagedEntityPublicationPolicy {
@@ -2503,6 +2525,8 @@ model ManagedBroadcastIdempotencyRecord {
 model VkParsingSource {
   id                        String    @id @default(cuid())
   chatId                    String    @map("chat_id")
+  ownerProfile              VkParsingOwnerProfile @default(MAJOR) @map("owner_profile")
+  ownerBotId                String    @default("") @map("owner_bot_id")
   ownerId                   Int       @map("owner_id")
   wallOwnerId               Int       @map("wall_owner_id")
   screenName                String    @map("screen_name")
@@ -2555,8 +2579,9 @@ model VkParsingSource {
   chat  Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
   posts VkParsingPost[]
 
-  @@unique([chatId, wallOwnerId], map: "vk_parsing_sources_chat_wall_owner_key")
+  @@unique([chatId, ownerProfile, ownerBotId, wallOwnerId], map: "vk_parsing_sources_owner_wall_key")
   @@index([chatId, status], map: "vk_parsing_sources_chat_status_idx")
+  @@index([ownerProfile, ownerBotId, chatId, status], map: "vk_parsing_sources_owner_chat_status_idx")
   @@index([chatId, status, importEnabled, nextSyncAt], map: "vk_parsing_sources_scheduler_idx")
   @@index([status, lastSyncAt], map: "vk_parsing_sources_status_last_sync_at_idx")
   @@index([status, nextSyncAt], map: "vk_parsing_sources_status_next_sync_at_idx")
@@ -2568,7 +2593,9 @@ model VkParsingSource {
 
 model VkParsingSettings {
   id                           String    @id @default(cuid())
-  chatId                       String    @unique @map("chat_id")
+  chatId                       String    @map("chat_id")
+  ownerProfile                 VkParsingOwnerProfile @default(MAJOR) @map("owner_profile")
+  ownerBotId                   String    @default("") @map("owner_bot_id")
   autoPublishEnabled           Boolean   @default(false) @map("auto_publish_enabled")
   autoPublishEnabledAt         DateTime? @map("auto_publish_enabled_at")
   autoPublishKillSwitchEnabled Boolean   @default(false) @map("auto_publish_kill_switch_enabled")
@@ -2591,6 +2618,7 @@ model VkParsingSettings {
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
+  @@unique([chatId, ownerProfile, ownerBotId], map: "vk_parsing_settings_owner_key")
   @@map("vk_parsing_settings")
 }
 
@@ -2598,6 +2626,8 @@ model VkParsingPost {
   id                        String                     @id @default(cuid())
   sourceId                  String                     @map("source_id")
   chatId                    String                     @map("chat_id")
+  ownerProfile              VkParsingOwnerProfile      @default(MAJOR) @map("owner_profile")
+  ownerBotId                String                     @default("") @map("owner_bot_id")
   vkOwnerId                 Int                        @map("vk_owner_id")
   vkPostId                  Int                        @map("vk_post_id")
   vkPublishedAt             DateTime?                  @map("vk_published_at")
@@ -2660,8 +2690,9 @@ model VkParsingPost {
   chat   Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
   source VkParsingSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
 
-  @@unique([chatId, vkOwnerId, vkPostId], map: "vk_parsing_posts_chat_vk_post_key")
+  @@unique([chatId, ownerProfile, ownerBotId, vkOwnerId, vkPostId], map: "vk_parsing_posts_owner_vk_post_key")
   @@index([sourceId, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_source_published_at_idx")
+  @@index([ownerProfile, ownerBotId, chatId, status, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_owner_chat_status_published_idx")
   @@index([chatId, status, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_chat_status_published_idx")
   @@index([sourceId, lastSeenAt], map: "vk_parsing_posts_source_last_seen_at_idx")
   @@index([status, skipReason], map: "vk_parsing_posts_status_skip_reason_idx")

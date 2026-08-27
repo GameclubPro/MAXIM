@@ -118,7 +118,6 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
     managedEntitiesService as never,
     publisherPolicyService as never,
   );
@@ -4954,6 +4953,50 @@ describe('PublicationService', () => {
     expect(managedEntitiesService.listChannels).not.toHaveBeenCalled();
     expect(managedEntitiesService.assertChatAdminAccess).not.toHaveBeenCalled();
     expect(managedEntitiesService.assertChannelAdminAccess).not.toHaveBeenCalled();
+  });
+
+  it('scopes publication ownership checks to the requested dispatch profile', async () => {
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const { service } = createService({ publication: { findFirst } });
+
+    await expect(
+      (service as any).assertPublicationOwner(
+        'publication-1',
+        'user-1',
+        PublicationDispatchProfile.PUBLIK_V1,
+      ),
+    ).rejects.toThrow('Публикация не найдена.');
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'publication-1',
+          actorUserId: 'user-1',
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        },
+      }),
+    );
+  });
+
+  it('rejects legacy-profile calendar work before resolving any Major audience', async () => {
+    const { managedEntitiesService, publisherPolicyService, service } = createService();
+
+    await expect(
+      service.getCalendarAvailability(
+        { userId: 'user-1' } as never,
+        {
+          audience: {
+            selection: 'SELECTED',
+            mode: 'SNAPSHOT',
+            targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+          },
+          from: '2026-07-11T00:00:00.000Z',
+          to: '2026-07-31T23:59:59.999Z',
+        },
+        PublicationDispatchProfile.LEGACY_ROUTED,
+      ),
+    ).rejects.toThrow('Новые публикации создаются только через Публик.');
+    expect(publisherPolicyService.resolvePublicationTargets).not.toHaveBeenCalled();
+    expect(managedEntitiesService.assertChatAdminAccess).not.toHaveBeenCalled();
   });
 
   it('keeps LEGACY_ROUTED occurrence authorization on Major while PUBLIK_V1 uses Publisher', async () => {

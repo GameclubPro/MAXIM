@@ -28,9 +28,13 @@ export type PublisherFeature =
 
 type PublicationPolicyRow = {
   publikEnabled: boolean;
-  suggestionsViaPublik: boolean;
   revision: number;
   updatedAt: Date;
+} | null;
+
+type PublisherSettingsRow = {
+  chatCommentsEnabled: boolean;
+  channelSuggestionsEnabled: boolean;
 } | null;
 
 type PublisherBindingRow = {
@@ -47,6 +51,7 @@ export type PublisherReadinessSource = {
   id: string;
   entityType: ChatEntityType;
   publicationPolicy: PublicationPolicyRow;
+  publisherSettings: PublisherSettingsRow;
   publisherBinding: PublisherBindingRow;
 };
 
@@ -87,7 +92,6 @@ export class PublisherReadinessService {
   resolvePolicy(row: PublicationPolicyRow): ManagedEntityPublicationPolicy {
     return {
       publikEnabled: row?.publikEnabled ?? true,
-      suggestionsViaPublik: row?.suggestionsViaPublik ?? false,
       revision: row?.revision ?? 0,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
@@ -203,8 +207,9 @@ export class PublisherReadinessService {
     return publisherEntityReadinessSchema.parse({
       state: 'ready',
       canPublish: true,
-      canUseChatComments: isChat,
-      canPublishSuggestions: !isChat && policy.suggestionsViaPublik,
+      canUseChatComments: isChat && source.publisherSettings?.chatCommentsEnabled === true,
+      canPublishSuggestions:
+        !isChat && source.publisherSettings?.channelSuggestionsEnabled === true,
       blockerCode: null,
       checkedAt,
       retryAt: null,
@@ -221,6 +226,7 @@ export class PublisherReadinessService {
         id: true,
         entityType: true,
         publicationPolicy: true,
+        publisherSettings: true,
         publisherBinding: true,
       },
     });
@@ -241,6 +247,7 @@ export class PublisherReadinessService {
         id: true,
         entityType: true,
         publicationPolicy: true,
+        publisherSettings: true,
         publisherBinding: true,
       },
     });
@@ -260,7 +267,7 @@ export class PublisherReadinessService {
     if (!allowed) {
       throw new PublisherSetupRequiredException(
         [chatId],
-        readiness.blockerCode ?? 'policy_disabled',
+        readiness.blockerCode ?? 'module_disabled',
       );
     }
     return {

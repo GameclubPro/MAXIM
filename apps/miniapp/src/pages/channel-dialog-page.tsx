@@ -7,6 +7,7 @@ import type {
   ChannelDialogResponse,
   ChannelDialogType,
 } from '@maxim/contracts/channel-dialog';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import {
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64,
@@ -82,6 +83,7 @@ import {
 } from '../lib/channel-suggestion-keyboard-layout';
 import { resolveSuggestionStatus } from '../lib/channel-suggestion-status';
 import { cn } from '../lib/cn';
+import { resolveChannelDialogProfileCapabilities } from '../lib/channel-dialog-profile-capabilities';
 import {
   formatDialogAttachmentSize,
   prepareCommentDialogFileAttachment,
@@ -1361,13 +1363,21 @@ function resolveDialogEntityType(pathname: string): LastEntityType {
   return pathname.includes('/channel/') ? 'channel' : 'chat';
 }
 
-export function ChannelDialogPage({ api }: { api: ApiTransport }) {
+export function ChannelDialogPage({
+  api,
+  profile,
+}: {
+  api: ApiTransport;
+  profile: MiniappProfile;
+}) {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(location.pathname);
   const entityType = resolveDialogEntityType(location.pathname);
+  const { canManageCommentNotifications, canUploadCommentAttachments } =
+    resolveChannelDialogProfileCapabilities(profile);
   const viewModel = useMemo(() => buildViewModel(dialogType), [dialogType]);
   const [draft, setDraft] = useState('');
   const [draftAttachments, setDraftAttachments] = useState<CommentDraftAttachment[]>([]);
@@ -1576,7 +1586,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const showComposeMeta = isPreparingAttachment || draftLength > 0 || editingAttachmentCount > 0;
   const canSubmitMessage =
     !isPreparingAttachment &&
-    (draftLength > 0 || draftAttachmentCount > 0 || editingAttachmentCount > 0);
+    (draftLength > 0 ||
+      (canUploadCommentAttachments && draftAttachmentCount > 0) ||
+      editingAttachmentCount > 0);
   const activeMessageIsOwn = activeMessage ? currentUserId === activeMessage.authorUserId : false;
   const unreadStartIndex = useMemo(
     () =>
@@ -1856,8 +1868,23 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       setIsNotificationSettingsOpen(false);
       return true;
     },
-    { enabled: isNotificationSettingsOpen, priority: 625 },
+    { enabled: canManageCommentNotifications && isNotificationSettingsOpen, priority: 625 },
   );
+
+  useEffect(() => {
+    if (canManageCommentNotifications) {
+      return;
+    }
+    setIsNotificationSettingsOpen(false);
+  }, [canManageCommentNotifications]);
+
+  useEffect(() => {
+    if (canUploadCommentAttachments) {
+      return;
+    }
+    setDraftAttachments((current) => (current.length > 0 ? [] : current));
+    setPreparingAttachmentState(null);
+  }, [canUploadCommentAttachments]);
 
   useNativeBackHandler(
     () => {
@@ -2111,7 +2138,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [activeMessageId]);
 
   useEffect(() => {
-    if (!isNotificationSettingsOpen) {
+    if (!canManageCommentNotifications || !isNotificationSettingsOpen) {
       return;
     }
 
@@ -2119,10 +2146,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setNotificationDraftMode(
       getNotificationSettingsForScope(notificationSettings, notificationScope).mode,
     );
-  }, [isNotificationSettingsOpen, notificationScope, notificationSettings]);
+  }, [
+    canManageCommentNotifications,
+    isNotificationSettingsOpen,
+    notificationScope,
+    notificationSettings,
+  ]);
 
   useEffect(() => {
-    if (!isNotificationSettingsOpen || typeof document === 'undefined') {
+    if (
+      !canManageCommentNotifications ||
+      !isNotificationSettingsOpen ||
+      typeof document === 'undefined'
+    ) {
       return undefined;
     }
 
@@ -2138,10 +2174,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isNotificationSettingsOpen]);
+  }, [canManageCommentNotifications, isNotificationSettingsOpen]);
 
   useLayoutEffect(() => {
-    if (dialogType !== 'comments' || typeof window === 'undefined') {
+    if (
+      !canManageCommentNotifications ||
+      dialogType !== 'comments' ||
+      typeof window === 'undefined'
+    ) {
       commentsNotificationTopNudgeRef.current = 0;
       setCommentsNotificationTopNudge(0);
       return undefined;
@@ -2188,7 +2228,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       window.visualViewport?.removeEventListener('resize', requestUpdate);
       window.visualViewport?.removeEventListener('scroll', requestUpdate);
     };
-  }, [dialogType]);
+  }, [canManageCommentNotifications, dialogType]);
 
   useEffect(() => {
     if (!activeMessageId || typeof document === 'undefined') {
@@ -2367,7 +2407,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [activeMessageId, reactionPopoverLayout]);
 
   const appendDraftAttachments = (nextAttachments: CommentDraftAttachment[]) => {
-    if (nextAttachments.length === 0) {
+    if (!canUploadCommentAttachments || nextAttachments.length === 0) {
       return;
     }
 
@@ -2475,7 +2515,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     files.map((file) => [file.name, file.size, file.type, file.lastModified].join(':')).join('|');
 
   const prepareDraftAttachmentsFromFiles = async (kind: AttachmentInputKind, files: File[]) => {
-    if (files.length === 0 || editingMessage) {
+    if (!canUploadCommentAttachments || files.length === 0 || editingMessage) {
       resetAttachmentPickers();
       return;
     }
@@ -2706,12 +2746,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     text: string;
     attachments: CommentDraftAttachment[];
   }) => {
+    const attachments = canUploadCommentAttachments ? payload.attachments : [];
     if (dialogType === 'suggest') {
       return {
         token,
         text: payload.text,
         textFormat: 'markdown' as const,
-        images: payload.attachments
+        images: attachments
           .filter((attachment) => attachment.type === 'image')
           .map((attachment) => ({
             base64: attachment.base64,
@@ -2725,7 +2766,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       token,
       text: payload.text,
       replyToMessageId: replyToMessageId,
-      attachments: payload.attachments.map((attachment) => ({
+      attachments: attachments.map((attachment) => ({
         type: attachment.type,
         base64: attachment.base64,
         mimeType: attachment.mimeType,
@@ -3266,7 +3307,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   };
 
   const handleNotificationDraftModeSelect = (mode: ChannelDialogNotificationMode) => {
-    if (dialogType !== 'comments' || isNotificationPending) {
+    if (!canManageCommentNotifications || dialogType !== 'comments' || isNotificationPending) {
       return;
     }
 
@@ -3275,7 +3316,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   };
 
   const handleNotificationSettingsApply = () => {
-    if (dialogType !== 'comments' || isNotificationPending) {
+    if (!canManageCommentNotifications || dialogType !== 'comments' || isNotificationPending) {
       return;
     }
 
@@ -3432,13 +3473,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (!text && draftAttachments.length === 0) {
+    if (!text && (!canUploadCommentAttachments || draftAttachments.length === 0)) {
       return;
     }
 
     sendMutation.mutate({
       text,
-      attachments: draftAttachments,
+      attachments: canUploadCommentAttachments ? draftAttachments : [],
     });
   };
   const selectedDraftScope = notificationDraftScope;
@@ -3454,7 +3495,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const notificationToggleLabel =
     notificationMode === 'off' ? 'Уведомления выключены' : 'Уведомления включены';
   const commentsScreenStyle =
-    dialogType === 'comments' && commentsNotificationTopNudge > 0
+    canManageCommentNotifications && dialogType === 'comments' && commentsNotificationTopNudge > 0
       ? ({
           '--comments-dialog-notification-top-nudge': `${commentsNotificationTopNudge}px`,
         } as CSSProperties)
@@ -3709,7 +3750,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }
 
   const suggestImageControl =
-    dialogType === 'suggest' ? (
+    dialogType === 'suggest' && canUploadCommentAttachments ? (
       <div className="channel-suggest-composer__tools">
         {useNativeTapFileInputs ? (
           <label
@@ -3826,33 +3867,35 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               ) : null}
             </div>
 
-            <div className="channel-dialog-notifications">
-              <button
-                ref={notificationToggleRef}
-                type="button"
-                className={cn(
-                  'channel-dialog-notifications__toggle',
-                  notificationMode !== 'off' && 'is-active',
-                  isNotificationSettingsOpen && 'is-open',
-                )}
-                onClick={() => {
-                  maxImpact('light');
-                  dismissMessageActions();
-                  setIsComposeEmojiOpen(false);
-                  setIsNotificationSettingsOpen((current) => !current);
-                }}
-                aria-label="Настройки уведомлений"
-                aria-expanded={isNotificationSettingsOpen}
-                title={notificationToggleLabel}
-                disabled={isNotificationPending}
-              >
-                {notificationMode === 'off' ? (
-                  <IconoirBellOff aria-hidden focusable="false" />
-                ) : (
-                  <IconoirBell aria-hidden focusable="false" />
-                )}
-              </button>
-            </div>
+            {canManageCommentNotifications ? (
+              <div className="channel-dialog-notifications">
+                <button
+                  ref={notificationToggleRef}
+                  type="button"
+                  className={cn(
+                    'channel-dialog-notifications__toggle',
+                    notificationMode !== 'off' && 'is-active',
+                    isNotificationSettingsOpen && 'is-open',
+                  )}
+                  onClick={() => {
+                    maxImpact('light');
+                    dismissMessageActions();
+                    setIsComposeEmojiOpen(false);
+                    setIsNotificationSettingsOpen((current) => !current);
+                  }}
+                  aria-label="Настройки уведомлений"
+                  aria-expanded={isNotificationSettingsOpen}
+                  title={notificationToggleLabel}
+                  disabled={isNotificationPending}
+                >
+                  {notificationMode === 'off' ? (
+                    <IconoirBellOff aria-hidden focusable="false" />
+                  ) : (
+                    <IconoirBell aria-hidden focusable="false" />
+                  )}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -4346,7 +4389,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   <CommentComposeImageStrip attachments={editingImageAttachments} />
                   <CommentComposeFileList attachments={editingFileAttachments} />
                 </>
-              ) : !editingMessage && draftAttachments.length > 0 ? (
+              ) : !editingMessage && canUploadCommentAttachments && draftAttachments.length > 0 ? (
                 <>
                   <CommentComposeImageStrip
                     attachments={draftImageAttachments}
@@ -4405,7 +4448,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     <IconoirEmoji aria-hidden focusable="false" />
                   </button>
 
-                  {!editingMessage ? (
+                  {!editingMessage && canUploadCommentAttachments ? (
                     useNativeTapFileInputs ? (
                       <>
                         <label
@@ -4980,7 +5023,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           )
         : null}
 
-      {dialogType === 'comments' && isNotificationSettingsOpen ? (
+      {canManageCommentNotifications && dialogType === 'comments' && isNotificationSettingsOpen ? (
         <Suspense fallback={null}>
           <LazyChannelDialogNotificationSheet
             portalTarget={screenRef.current ?? document.body}

@@ -148,10 +148,6 @@ import {
 } from './commercial-ocr/commercial-ocr-enqueue-candidate';
 import { consumeLegacyParticipantModerationImmunity } from './participant-moderation-immunity.service';
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
-import {
-  PublisherChatCommentAdmissionError,
-  PublisherChatCommentQueueService,
-} from '../publisher/publisher-chat-comment.queue';
 import type { PhotoDuplicateModerationActionRequest } from './photo-duplicate/photo-duplicate-moderation.actions';
 import type { LogicalPhotoAlbum } from './photo-duplicate/photo-attachment-extractor';
 import {
@@ -276,7 +272,6 @@ import {
   GlobalSpammerIntelligenceService,
   type GlobalSpammerObservationSource,
 } from './global-spammer-intelligence.service';
-import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { extractHttpStatusCode } from '../common/http-error.util';
 import {
   buildChannelAutoPostButtons,
@@ -736,8 +731,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly photoDuplicateEnqueueService?: PhotoDuplicateEnqueueService,
     @Optional()
     private readonly commercialOcrEnqueueService?: CommercialOcrEnqueueService,
-    @Optional()
-    private readonly publisherChatCommentQueueService?: PublisherChatCommentQueueService,
   ) {
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
     this.channelAutoPostMutationGuard = new ChannelAutoPostMutationGuard({
@@ -2068,13 +2061,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           { chatId, userId: senderId },
           'Duplicate moderation bypassed for participant immunity',
         );
-        if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
-          await this.tryAutoAttachChatMessageComments({
-            chatId,
-            messageId,
-            senderId,
-          });
-        }
         return;
       }
       if (hasUnsuppressedDuplicateOutcome) {
@@ -2141,14 +2127,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       if (violations.length === 0) {
         await enqueueCommercialOcr(commercialOcrActionEligible);
-        if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
-          await this.tryAutoAttachChatMessageComments({
-            chatId,
-            messageId,
-            senderId,
-          });
-        }
-
         return;
       }
 
@@ -2234,14 +2212,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Moderation bypassed for participant immunity',
         );
-
-        if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
-          await this.tryAutoAttachChatMessageComments({
-            chatId,
-            messageId,
-            senderId,
-          });
-        }
 
         return;
       }
@@ -14122,14 +14092,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (messageId && this.shouldAutoAttachChatCommentsButton(settings, true)) {
-      await this.tryAutoAttachChatMessageComments({
-        chatId,
-        messageId,
-        senderId,
-      });
-    }
-
     this.logger.debug(
       {
         chatId,
@@ -15696,134 +15658,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isChannelMessage(update: MaxUpdate): boolean {
     return isChannelAutoPostMessage(update);
-  }
-
-  private shouldAutoAttachChatCommentsButton(
-    settings: Pick<ChatSettings, 'commentsEnabled' | 'commentsAdminsEnabled'>,
-    isSenderAdmin: boolean,
-  ): boolean {
-    if (!settings.commentsEnabled) {
-      return false;
-    }
-
-    return isSenderAdmin && settings.commentsAdminsEnabled;
-  }
-
-  private async tryAutoAttachChatMessageComments(params: {
-    chatId: string;
-    messageId: string;
-    senderId: string;
-  }): Promise<void> {
-    const { chatId, messageId, senderId } = params;
-    const sendRoute = await this.resolveUnifiedBotRoute({
-      purpose: 'send_message',
-      chatId,
-      fallbackToPrimary: true,
-    });
-    const autoAttachBotId = sendRoute?.botId?.trim() || null;
-    if (!autoAttachBotId) {
-      this.logger.warn(
-        {
-          chatId,
-          messageId,
-          quarantinedCandidateBotIds:
-            sendRoute?.purpose === 'send_message'
-              ? sendRoute.quarantinedCandidateBotIds
-              : undefined,
-          retryAt: sendRoute?.purpose === 'send_message' ? sendRoute.retryAt : undefined,
-        },
-        'Skipped chat comments reply because no executable MAX send route is available',
-      );
-      return;
-    }
-    const claim = await this.replacementAttachMarkerStore.claimChatAutoComment({
-      chatId,
-      messageId,
-      source: 'webhook',
-      botId: autoAttachBotId,
-    });
-    if (claim.status === 'recover_audit') {
-      await this.recoverChatAutoCommentAudit({
-        recovery: claim,
-        chatId,
-        messageId,
-        senderId,
-        fallbackBotId: autoAttachBotId,
-      });
-      return;
-    }
-    if (claim.status === 'done' || claim.status === 'in_progress') {
-      return;
-    }
-    if (claim.status !== 'claimed') {
-      return;
-    }
-
-    const markerId = claim.markerId?.trim() || '';
-    if (!buildChatAutoCommentAuditId(markerId)) {
-      await this.replacementAttachMarkerStore.releaseChatAutoComment({
-        chatId,
-        messageId,
-        lockToken: claim.lockToken,
-        source: 'webhook',
-        botId: autoAttachBotId,
-        lastError: 'Chat auto-comment claim did not provide a recoverable marker id',
-        lastStatusCode: null,
-      });
-      throw new Error('Chat auto-comment claim did not provide a recoverable marker id');
-    }
-    const threadId = markerId;
-    const buttons = [
-      [
-        this.buildChatDialogButton(
-          chatId,
-          'comments',
-          threadId,
-          formatCommentsButtonText('💬 Комментарии', 0),
-          autoAttachBotId,
-        ),
-      ],
-    ];
-    try {
-      if (!this.publisherChatCommentQueueService) {
-        throw new Error('Publisher chat-comment queue is unavailable');
-      }
-      await this.publisherChatCommentQueueService.enqueueAttach({
-        markerId,
-        lockToken: claim.lockToken,
-        chatId,
-        messageId,
-        senderId,
-        dialogBotId: autoAttachBotId,
-        button: buttons[0]![0]!,
-      });
-    } catch (error: unknown) {
-      if (error instanceof PublisherChatCommentAdmissionError) {
-        await this.replacementAttachMarkerStore.skipChatAutoCommentAfterPublisherAdmissionFailure({
-          markerId,
-          chatId,
-          messageId,
-          lockToken: claim.lockToken,
-          botId: autoAttachBotId,
-          reason: error.reason,
-        });
-        this.logger.debug(
-          { chatId, messageId, reason: error.reason },
-          'Skipped optional publisher chat-comment attach while admission is closed',
-        );
-        return;
-      }
-      await this.replacementAttachMarkerStore.releaseChatAutoComment({
-        chatId,
-        messageId,
-        lockToken: claim.lockToken,
-        source: 'webhook',
-        botId: autoAttachBotId,
-        lastError: this.extractErrorSummary(error),
-        lastStatusCode: this.extractStatusCode(error),
-      });
-      throw error;
-    }
   }
 
   private async tryRecoverChatMessageCommentsAudit(params: {

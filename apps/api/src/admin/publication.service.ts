@@ -21,7 +21,6 @@ import {
   type PublicationAudienceInput,
   type PublicationContentInput,
   type PublicationDetails,
-  type PublicationListCursorPayload,
   type PublicationScheduleInput,
   type PublicationSummary,
   type PublicationTargetInput,
@@ -67,6 +66,7 @@ import {
   resolvePublicationOccurrenceRollupStatus,
 } from './publication-delivery-verification-state';
 import { PublicationContentService } from './publication-content.service';
+import { selectCurrentRevisionFailedPublicationPage } from './publication-failed-page-query';
 import {
   PublicationPublisherRoutingService,
   type ResolvedPublicationTarget,
@@ -143,7 +143,11 @@ export class PublicationService {
     private readonly publisherRouting: PublicationPublisherRoutingService,
   ) {}
 
-  async list(user: AuthUser, query: unknown): Promise<ListPublicationsResponse> {
+  async list(
+    user: AuthUser,
+    query: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
+  ): Promise<ListPublicationsResponse> {
     const parsed = listPublicationsQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -270,19 +274,21 @@ export class PublicationService {
 
     const publicationWhere: Prisma.PublicationWhereInput = {
       actorUserId: user.userId,
+      ...(dispatchProfile ? { dispatchProfile } : {}),
       lifecycle: { in: lifecycle },
       ...(filters.length > 0 ? { AND: filters } : {}),
     };
     let failedPageIdentifiers: Array<{ id: string; updatedAt: Date }> = [];
     let rows: any[];
     if (usesCurrentRevisionFailedSelector) {
-      failedPageIdentifiers = await this.selectCurrentRevisionFailedPublicationPage({
+      failedPageIdentifiers = await selectCurrentRevisionFailedPublicationPage(this.prisma, {
         actorUserId: user.userId,
         view: parsed.data.view as 'current' | 'schedules',
         query: parsed.data.query,
         entityType: parsed.data.entityType,
         cursor,
         limit: parsed.data.limit + 1,
+        dispatchProfile,
       });
       if (failedPageIdentifiers.length === 0) {
         rows = [];
@@ -350,134 +356,10 @@ export class PublicationService {
     });
   }
 
-  private async selectCurrentRevisionFailedPublicationPage(params: {
-    actorUserId: string;
-    view: 'current' | 'schedules';
-    query: string;
-    entityType?: 'chat' | 'channel';
-    cursor: PublicationListCursorPayload | null;
-    limit: number;
-  }): Promise<Array<{ id: string; updatedAt: Date }>> {
-    if (!Number.isSafeInteger(params.limit) || params.limit <= 0) {
-      return [];
-    }
-    const boundedLimit = Math.min(params.limit, 101);
-    const scheduleModeFilter =
-      params.view === 'current'
-        ? Prisma.sql`schedule."mode" = 'NOW'::"PublicationScheduleMode"`
-        : Prisma.sql`schedule."mode" IN (
-            'ONCE'::"PublicationScheduleMode",
-            'SLOTS'::"PublicationScheduleMode",
-            'RECURRENCE'::"PublicationScheduleMode"
-          )`;
-    const searchPattern = `%${params.query}%`;
-    const searchFilter = params.query
-      ? Prisma.sql`
-          AND (
-            publication."title" ILIKE ${searchPattern}
-            OR EXISTS (
-              SELECT 1
-              FROM "publication_content_revisions" AS content
-              WHERE content."id" = publication."canonical_content_revision_id"
-                AND content."text" ILIKE ${searchPattern}
-            )
-            OR EXISTS (
-              SELECT 1
-              FROM "publication_targets" AS target
-              INNER JOIN "chats" AS chat ON chat."id" = target."target_chat_id"
-              WHERE target."publication_id" = publication."id"
-                AND chat."title" ILIKE ${searchPattern}
-            )
-          )
-        `
-      : Prisma.empty;
-    const entityType = params.entityType ? this.toPrismaEntityType(params.entityType) : null;
-    const audienceSelection =
-      params.entityType === 'channel'
-        ? PublicationAudienceSelection.ALL_CHANNELS
-        : PublicationAudienceSelection.ALL_CHATS;
-    const entityFilter = entityType
-      ? Prisma.sql`
-          AND (
-            publication."audience_selection" =
-              'ALL_MANAGED'::"PublicationAudienceSelection"
-            OR publication."audience_selection" =
-              CAST(${audienceSelection} AS "PublicationAudienceSelection")
-            OR EXISTS (
-              SELECT 1
-              FROM "publication_targets" AS target
-              WHERE target."publication_id" = publication."id"
-                AND target."entity_type" = CAST(${entityType} AS "ChatEntityType")
-            )
-          )
-        `
-      : Prisma.empty;
-    const cursorUpdatedAt = params.cursor ? new Date(params.cursor.updatedAt) : null;
-    const cursorFilter = params.cursor
-      ? Prisma.sql`
-          AND (
-            publication."updated_at" < ${cursorUpdatedAt}
-            OR (
-              publication."updated_at" = ${cursorUpdatedAt}
-              AND publication."id" < ${params.cursor.id}
-            )
-          )
-        `
-      : Prisma.empty;
-
-    // FLAG: Keep the current schedule revision equality inside this cursor-bound selector.
-    // Obsolete failed occurrences are history and must never consume a current/schedules page.
-    return this.prisma.$queryRaw<Array<{ id: string; updatedAt: Date }>>(Prisma.sql`
-      SELECT
-        publication."id" AS "id",
-        publication."updated_at" AS "updatedAt"
-      FROM "publications" AS publication
-      INNER JOIN "publication_schedules" AS schedule
-        ON schedule."publication_id" = publication."id"
-      WHERE publication."actor_user_id" = ${params.actorUserId}
-        AND publication."lifecycle" IN (
-          'ACTIVE'::"PublicationLifecycle",
-          'PAUSED'::"PublicationLifecycle",
-          'ERROR'::"PublicationLifecycle"
-        )
-        AND ${scheduleModeFilter}
-        AND (
-          publication."lifecycle" = 'ERROR'::"PublicationLifecycle"
-          OR EXISTS (
-            SELECT 1
-            FROM "publication_occurrences" AS occurrence
-            WHERE occurrence."publication_id" = publication."id"
-              AND occurrence."schedule_id" = schedule."id"
-              AND occurrence."schedule_revision" = schedule."revision"
-              AND (
-                occurrence."status" IN (
-                  'FAILED'::"PublicationOccurrenceStatus",
-                  'PARTIAL'::"PublicationOccurrenceStatus",
-                  'AMBIGUOUS'::"PublicationOccurrenceStatus"
-                )
-                OR EXISTS (
-                  SELECT 1
-                  FROM "managed_broadcast_deliveries" AS delivery
-                  WHERE delivery."publication_occurrence_id" = occurrence."id"
-                    AND delivery."status" IN (
-                      'FAILED'::"ManagedBroadcastDeliveryStatus",
-                      'AMBIGUOUS'::"ManagedBroadcastDeliveryStatus"
-                    )
-                )
-              )
-          )
-        )
-        ${searchFilter}
-        ${entityFilter}
-        ${cursorFilter}
-      ORDER BY publication."updated_at" DESC, publication."id" DESC
-      LIMIT ${boundedLimit}
-    `);
-  }
-
   async getCalendarAvailability(
     user: AuthUser,
     body: unknown,
+    dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.PUBLIK_V1,
   ): Promise<PublicationCalendarAvailabilityResponse> {
     const parsed = publicationCalendarAvailabilityRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -485,13 +367,22 @@ export class PublicationService {
     }
 
     const request = parsed.data;
+    this.assertNewPublicationProfile(dispatchProfile);
     const excludedPublication = request.excludePublicationId
-      ? await this.assertPublicationOwner(request.excludePublicationId, user.userId)
+      ? await this.assertPublicationOwner(
+          request.excludePublicationId,
+          user.userId,
+          dispatchProfile,
+        )
       : null;
-    const dispatchProfile =
+    const targetDispatchProfile =
       excludedPublication?.dispatchProfile ??
       this.publisherRouting.requireNewRoute().dispatchProfile;
-    const targets = await this.resolveAudienceTargets(user, request.audience, dispatchProfile);
+    const targets = await this.resolveAudienceTargets(
+      user,
+      request.audience,
+      targetDispatchProfile,
+    );
     const from = new Date(request.from);
     const to = new Date(request.to);
     const targetKeys = new Set(
@@ -602,28 +493,37 @@ export class PublicationService {
     });
   }
 
-  async get(publicationId: string, user: AuthUser): Promise<PublicationDetails> {
+  async get(
+    publicationId: string,
+    user: AuthUser,
+    dispatchProfile?: PublicationDispatchProfile,
+  ): Promise<PublicationDetails> {
     const row = await this.publicationPresenterService.loadPublicationDetailsRow(
       publicationId,
       user.userId,
     );
-    if (!row) {
+    if (!row || (dispatchProfile && row.dispatchProfile !== dispatchProfile)) {
       throw new NotFoundException('Публикация не найдена.');
     }
     return this.publicationPresenterService.mapPublicationDetails(row);
   }
 
-  async create(user: AuthUser, body: unknown): Promise<PublicationDetails> {
+  async create(
+    user: AuthUser,
+    body: unknown,
+    dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.PUBLIK_V1,
+  ): Promise<PublicationDetails> {
     const parsed = createPublicationRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
 
     const request = this.normalizeCreateRequest(parsed.data);
+    this.assertNewPublicationProfile(dispatchProfile);
     const requestHash = this.hashMutationRequest(request);
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
-      return this.get(replay.publicationId, user);
+      return this.get(replay.publicationId, user, dispatchProfile);
     }
     const dispatchRoute = this.publisherRouting.requireNewRoute();
 
@@ -758,16 +658,21 @@ export class PublicationService {
           requestHash,
         );
         if (concurrentReplay) {
-          return this.get(concurrentReplay.publicationId, user);
+          return this.get(concurrentReplay.publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
 
-    return this.get(publicationId, user);
+    return this.get(publicationId, user, dispatchProfile);
   }
 
-  async update(publicationId: string, user: AuthUser, body: unknown): Promise<PublicationDetails> {
+  async update(
+    publicationId: string,
+    user: AuthUser,
+    body: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
+  ): Promise<PublicationDetails> {
     const parsed = updatePublicationRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -777,11 +682,15 @@ export class PublicationService {
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
-      return this.get(publicationId, user);
+      return this.get(publicationId, user, dispatchProfile);
     }
 
     const existing = await this.prisma.publication.findFirst({
-      where: { id: publicationId, actorUserId: user.userId },
+      where: {
+        id: publicationId,
+        actorUserId: user.userId,
+        ...(dispatchProfile ? { dispatchProfile } : {}),
+      },
       include: {
         schedule: true,
         targets: { orderBy: { position: 'asc' } },
@@ -904,6 +813,7 @@ export class PublicationService {
           where: {
             id: publicationId,
             actorUserId: user.userId,
+            dispatchProfile: existing.dispatchProfile,
             version: request.expectedRevision,
             lifecycle: existing.lifecycle,
           },
@@ -1145,13 +1055,13 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
-          return this.get(publicationId, user);
+          return this.get(publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
 
-    return this.get(publicationId, user);
+    return this.get(publicationId, user, dispatchProfile);
   }
 
   async sendTest(user: AuthUser, body: unknown) {
@@ -1178,24 +1088,40 @@ export class PublicationService {
         );
   }
 
-  async pause(publicationId: string, user: AuthUser, body: unknown): Promise<PublicationDetails> {
-    return this.transitionPublication(publicationId, user, body, 'pause');
+  async pause(
+    publicationId: string,
+    user: AuthUser,
+    body: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
+  ): Promise<PublicationDetails> {
+    return this.transitionPublication(publicationId, user, body, 'pause', dispatchProfile);
   }
 
-  async resume(publicationId: string, user: AuthUser, body: unknown): Promise<PublicationDetails> {
-    return this.transitionPublication(publicationId, user, body, 'resume');
+  async resume(
+    publicationId: string,
+    user: AuthUser,
+    body: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
+  ): Promise<PublicationDetails> {
+    return this.transitionPublication(publicationId, user, body, 'resume', dispatchProfile);
   }
 
-  async cancel(publicationId: string, user: AuthUser, body: unknown): Promise<PublicationDetails> {
-    return this.transitionPublication(publicationId, user, body, 'cancel');
+  async cancel(
+    publicationId: string,
+    user: AuthUser,
+    body: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
+  ): Promise<PublicationDetails> {
+    return this.transitionPublication(publicationId, user, body, 'cancel', dispatchProfile);
   }
 
   async listDeliveries(
     publicationId: string,
     user: AuthUser,
     query: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
   ): Promise<ListPublicationDeliveriesResponse> {
-    await this.assertPublicationOwner(publicationId, user.userId);
+    await this.assertPublicationOwner(publicationId, user.userId, dispatchProfile);
     const parsed = listPublicationDeliveriesQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -1264,6 +1190,7 @@ export class PublicationService {
     occurrenceId: string,
     user: AuthUser,
     body: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
   ): Promise<PublicationDetails> {
     const parsed = retryPublicationOccurrenceRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -1273,9 +1200,13 @@ export class PublicationService {
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
-      return this.get(publicationId, user);
+      return this.get(publicationId, user, dispatchProfile);
     }
-    const publication = await this.assertPublicationOwner(publicationId, user.userId);
+    const publication = await this.assertPublicationOwner(
+      publicationId,
+      user.userId,
+      dispatchProfile,
+    );
     await this.resolvePersistedPublicationTargets(
       user,
       publication.targets,
@@ -1427,6 +1358,7 @@ export class PublicationService {
           where: {
             id: publicationId,
             actorUserId: user.userId,
+            dispatchProfile: publication.dispatchProfile,
             lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
             ...(contentMode === 'latest'
               ? {
@@ -1578,12 +1510,12 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
-          return this.get(publicationId, user);
+          return this.get(publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
-    return this.get(publicationId, user);
+    return this.get(publicationId, user, dispatchProfile);
   }
 
   async resolveAmbiguousDelivery(
@@ -1591,6 +1523,7 @@ export class PublicationService {
     occurrenceId: string,
     user: AuthUser,
     body: unknown,
+    dispatchProfile?: PublicationDispatchProfile,
   ): Promise<PublicationDetails> {
     const parsed = resolvePublicationAmbiguousDeliveryRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -1600,9 +1533,13 @@ export class PublicationService {
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
-      return this.get(publicationId, user);
+      return this.get(publicationId, user, dispatchProfile);
     }
-    const publication = await this.assertPublicationOwner(publicationId, user.userId);
+    const publication = await this.assertPublicationOwner(
+      publicationId,
+      user.userId,
+      dispatchProfile,
+    );
     await this.resolvePersistedPublicationTargets(
       user,
       publication.targets,
@@ -1674,14 +1611,14 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
-          return this.get(publicationId, user);
+          return this.get(publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
     await this.rollupOccurrence(occurrenceId);
     await this.rollupPublicationLifecycle(publicationId);
-    return this.get(publicationId, user);
+    return this.get(publicationId, user, dispatchProfile);
   }
 
   async processDuePublications(reason: 'startup' | 'scheduled'): Promise<void> {
@@ -2697,6 +2634,7 @@ export class PublicationService {
     user: AuthUser,
     body: unknown,
     action: 'pause' | 'resume' | 'cancel',
+    dispatchProfile?: PublicationDispatchProfile,
   ): Promise<PublicationDetails> {
     const parsed = publicationActionRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -2706,9 +2644,13 @@ export class PublicationService {
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
       this.assertReplayPublication(replay.publicationId, publicationId);
-      return this.get(publicationId, user);
+      return this.get(publicationId, user, dispatchProfile);
     }
-    const publication = await this.assertPublicationOwner(publicationId, user.userId);
+    const publication = await this.assertPublicationOwner(
+      publicationId,
+      user.userId,
+      dispatchProfile,
+    );
     const allowedLifecycle =
       action === 'resume'
         ? publication.lifecycle === PublicationLifecycle.PAUSED
@@ -2754,6 +2696,7 @@ export class PublicationService {
           where: {
             id: publicationId,
             actorUserId: user.userId,
+            dispatchProfile: publication.dispatchProfile,
             version: parsed.data.expectedRevision,
             lifecycle: publication.lifecycle,
           },
@@ -2867,12 +2810,12 @@ export class PublicationService {
         );
         if (concurrentReplay) {
           this.assertReplayPublication(concurrentReplay.publicationId, publicationId);
-          return this.get(publicationId, user);
+          return this.get(publicationId, user, dispatchProfile);
         }
       }
       throw error;
     }
-    return this.get(publicationId, user);
+    return this.get(publicationId, user, dispatchProfile);
   }
 
   private async resolveAudienceTargets(
@@ -3722,9 +3665,17 @@ export class PublicationService {
     });
   }
 
-  private async assertPublicationOwner(publicationId: string, actorUserId: string) {
+  private async assertPublicationOwner(
+    publicationId: string,
+    actorUserId: string,
+    dispatchProfile?: PublicationDispatchProfile,
+  ) {
     const publication = await this.prisma.publication.findFirst({
-      where: { id: publicationId, actorUserId },
+      where: {
+        id: publicationId,
+        actorUserId,
+        ...(dispatchProfile ? { dispatchProfile } : {}),
+      },
       select: {
         id: true,
         version: true,
@@ -3742,6 +3693,12 @@ export class PublicationService {
       throw new NotFoundException('Публикация не найдена.');
     }
     return publication;
+  }
+
+  private assertNewPublicationProfile(dispatchProfile: PublicationDispatchProfile): void {
+    if (dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1) {
+      throw new BadRequestException('Новые публикации создаются только через Публик.');
+    }
   }
 
   private async assertTargetAdminAccess(target: PublicationTargetInput, user: AuthUser) {

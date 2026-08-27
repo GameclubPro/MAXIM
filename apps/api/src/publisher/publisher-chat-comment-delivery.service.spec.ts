@@ -124,6 +124,9 @@ function createHarness() {
   const marker = createMarkerDelegate(row);
   const prisma = {
     chatAutoCommentAttachMarker: marker,
+    managedEntityAccessEdge: {
+      findFirst: jest.fn().mockResolvedValue({ state: 'GRANTED', userRole: 'ADMIN' }),
+    },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue(undefined),
@@ -153,15 +156,30 @@ function createHarness() {
     recordSendFailure: jest.fn().mockResolvedValue('retryable'),
     recordSendSuccess: jest.fn().mockResolvedValue(undefined),
   };
+  const dialogLinks = { buildChatDialogButton: jest.fn() };
+  const bindingRefresh = { refresh: jest.fn().mockResolvedValue(undefined) };
   const service = new PublisherChatCommentDeliveryService(
     prisma as never,
     maxClient as never,
     readiness as never,
     boundary as never,
     { getBotId: () => 'publik-bot' } as never,
+    dialogLinks as never,
+    bindingRefresh as never,
     health as never,
   );
-  return { row, marker, prisma, maxClient, readiness, boundary, health, service };
+  return {
+    row,
+    marker,
+    prisma,
+    maxClient,
+    readiness,
+    boundary,
+    health,
+    dialogLinks,
+    bindingRefresh,
+    service,
+  };
 }
 
 const firstAttempt = { final: false, attemptsMade: 1, maxAttempts: 12 };

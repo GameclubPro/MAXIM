@@ -93,6 +93,10 @@ function readTargets(value: unknown): PublicationTarget[] {
         avatarUrl: typeof item.avatarUrl === 'string' ? item.avatarUrl : null,
         channelOverview:
           entityType === 'channel' ? readChannelOverview(item.channelOverview) : null,
+        publisherChatCommentsEnabled:
+          entityType === 'chat' && item.publisherChatCommentsEnabled === true,
+        publisherChannelSuggestionsEnabled:
+          entityType === 'channel' && item.publisherChannelSuggestionsEnabled === true,
         readiness: readPublisherReadiness(item.readiness),
       },
     ];

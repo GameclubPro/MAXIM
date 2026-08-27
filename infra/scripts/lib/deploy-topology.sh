@@ -22,6 +22,7 @@ MAXIM_PUBLISHER_SECRET_FILES=(
   "/var/lib/maxim-secrets/publik-bot-token"
   "/var/lib/maxim-secrets/publik-webhook.json"
   "/var/lib/maxim-secrets/publik-init-data-keys.json"
+  "/var/lib/maxim-secrets/publik-dialog-signing-keys.json"
 )
 
 maxim_topology_require_publisher_secret_files() {

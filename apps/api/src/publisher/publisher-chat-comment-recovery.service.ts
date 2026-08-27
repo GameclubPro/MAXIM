@@ -238,8 +238,7 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
       data.lockToken === lockToken &&
       data.chatId === marker.chatId &&
       data.messageId === marker.messageId &&
-      data.requiredBotId === this.publisherBotId &&
-      data.dialogBotId !== this.publisherBotId
+      data.requiredBotId === this.publisherBotId
     );
   }
 

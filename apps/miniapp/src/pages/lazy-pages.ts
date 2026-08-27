@@ -1,4 +1,5 @@
 import { createElement, lazy, type ComponentType } from 'react';
+import type { MiniappProfile } from '@maxim/contracts/publisher';
 import type { ApiTransport } from '../lib/api/transport';
 import {
   preloadChannelDialogPage,
@@ -23,6 +24,10 @@ export {
 
 type RoutedPageProps = {
   api: ApiTransport;
+};
+
+type ProfiledRoutedPageProps = RoutedPageProps & {
+  profile: MiniappProfile;
 };
 
 function LazyPageLoadFailure() {
@@ -71,11 +76,11 @@ export const LazyChannelStatsPage = lazyPage<RoutedPageProps>(
   preloadChannelStatsPage,
   'ChannelStatsPage',
 );
-export const LazyChannelDialogPage = lazyPage<RoutedPageProps>(
+export const LazyChannelDialogPage = lazyPage<ProfiledRoutedPageProps>(
   preloadChannelDialogPage,
   'ChannelDialogPage',
 );
-export const LazyChannelSuggestDialogPage = lazyPage<RoutedPageProps>(
+export const LazyChannelSuggestDialogPage = lazyPage<ProfiledRoutedPageProps>(
   preloadChannelSuggestDialogPage,
   'ChannelSuggestDialogPage',
 );

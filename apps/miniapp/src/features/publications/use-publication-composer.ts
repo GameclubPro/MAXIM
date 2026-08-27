@@ -30,6 +30,7 @@ type PublicationComposerState = {
 export function usePublicationComposer(
   editorOpen: boolean,
   persistenceEnabled = true,
+  enabled = true,
 ): PublicationComposerState {
   const [draft, setDraft] = useState<PublicationDraft>(() => createEmptyPublicationDraft());
   const [hydrated, setHydrated] = useState(false);
@@ -37,6 +38,10 @@ export function usePublicationComposer(
   const saveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      setHydrated(true);
+      return undefined;
+    }
     let cancelled = false;
     void loadPublicationDraft().then((stored) => {
       if (cancelled) {
@@ -51,10 +56,10 @@ export function usePublicationComposer(
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
-    if (!hydrated || !persistenceEnabled) {
+    if (!enabled || !hydrated || !persistenceEnabled) {
       return undefined;
     }
     if (saveTimerRef.current !== null) {
@@ -74,9 +79,9 @@ export function usePublicationComposer(
         window.clearTimeout(saveTimerRef.current);
       }
     };
-  }, [draft, hydrated, persistenceEnabled]);
+  }, [draft, enabled, hydrated, persistenceEnabled]);
 
-  const shouldProtectClose = editorOpen && !isPublicationDraftEmpty(draft);
+  const shouldProtectClose = enabled && editorOpen && !isPublicationDraftEmpty(draft);
   useEffect(() => {
     setMaxClosingConfirmation(shouldProtectClose);
     if (!shouldProtectClose) {

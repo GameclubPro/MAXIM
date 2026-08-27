@@ -36,6 +36,7 @@ import {
 type PublicationDetailsSheetProps = {
   api: ApiTransport;
   publication: PublicationSummary | null;
+  allowEdit?: boolean;
   busy?: boolean;
   covered?: boolean;
   onClose: () => void;
@@ -118,6 +119,7 @@ function resolvePublicationDetailsPortalTarget(): Element | null {
 export function PublicationDetailsSheet({
   api,
   publication,
+  allowEdit = true,
   busy = false,
   covered = false,
   onClose,
@@ -593,7 +595,7 @@ export function PublicationDetailsSheet({
         </div>
 
         <footer className="publication-details-sheet__footer">
-          {actionCapabilities.canEdit ? (
+          {allowEdit && actionCapabilities.canEdit ? (
             <button
               type="button"
               className="publications-primary"

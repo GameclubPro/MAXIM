@@ -20,7 +20,14 @@ test('route budget config covers new route CSS surfaces', () => {
     routeBudgets.budgets.map((budget: { id: string }) => [budget.id, budget]),
   );
 
-  for (const id of ['publications', 'events', 'suggest', 'legal', 'stats']) {
+  for (const id of [
+    'publications',
+    'publisher-entity-modules',
+    'events',
+    'suggest',
+    'legal',
+    'stats',
+  ]) {
     const budget = budgetById.get(id) as { limits?: { cssGzipBytes?: number } } | undefined;
     assert.ok(budget?.limits?.cssGzipBytes, `${id} must have a CSS budget`);
   }

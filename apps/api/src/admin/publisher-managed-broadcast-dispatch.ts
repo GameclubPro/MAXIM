@@ -1,5 +1,9 @@
 import { ServiceUnavailableException, type Logger } from '@nestjs/common';
 import {
+  ChatEntityType,
+  ManagedEntityAccessRole,
+  ManagedEntityAccessState,
+  ManagedBroadcastStatus,
   ManagedBroadcastDeliveryStatus,
   PublicationDispatchProfile,
 } from '../prisma/prisma-client';
@@ -8,9 +12,12 @@ import {
   type PublisherFailureClassification,
 } from '../publisher/publisher-dispatch-health.service';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import { publisherConnectedBindingWhere } from '../publisher/publisher-entity-connection.util';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const PUBLISHER_RUNTIME_BLOCKER = 'PUBLISHER_RUNTIME_UNAVAILABLE';
+const PUBLISHER_ACTOR_ACCESS_BLOCKER = 'PUBLISHER_ACTOR_ACCESS_REQUIRED';
+const PUBLISHER_ACCESS_LEGACY_GRACE_MS = 7 * 24 * 60 * 60_000;
 
 type PublisherBroadcastRow = {
   id: string;
@@ -23,6 +30,16 @@ type PublisherDeliveryRow = {
   targetChatId: string;
   dialogBotId: string | null;
 };
+
+type PublisherBroadcastLease = {
+  lockedAt: Date;
+  lockToken: string;
+};
+
+export type PublisherGuardResult =
+  | { ready: true }
+  | { ready: false; retryAt: Date }
+  | { ready: false; leaseLost: true; retryAt: null };
 
 export class PublisherDeliveryDeferredError extends Error {
   constructor(readonly blockerCode: string) {
@@ -40,8 +57,8 @@ export class PublisherManagedBroadcastDispatch {
   async ensureRuntimeBoundary(
     row: PublisherBroadcastRow,
     occurrenceIndex: number,
-    lease: { lockToken: string },
-  ): Promise<{ ready: true } | { ready: false; retryAt: Date }> {
+    lease: PublisherBroadcastLease,
+  ): Promise<PublisherGuardResult> {
     try {
       if (!this.context.publisherRuntimeBoundaryService) {
         throw new Error('Publisher runtime boundary is unavailable');
@@ -51,26 +68,15 @@ export class PublisherManagedBroadcastDispatch {
       return this.deferRuntime(row, occurrenceIndex, lease, error);
     }
 
-    if (row.publicationOccurrenceId) {
-      await this.context.prisma.publicationOccurrence.updateMany({
-        where: {
-          id: row.publicationOccurrenceId,
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          dispatchBlockerCode: PUBLISHER_RUNTIME_BLOCKER,
-        },
-        data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
-      });
+    const cleared = await this.clearExactBlocker(
+      row,
+      occurrenceIndex,
+      lease,
+      PUBLISHER_RUNTIME_BLOCKER,
+    );
+    if (!cleared) {
+      return { ready: false, leaseLost: true, retryAt: null };
     }
-    await this.context.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex,
-        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-        status: ManagedBroadcastDeliveryStatus.PENDING,
-        dispatchBlockerCode: PUBLISHER_RUNTIME_BLOCKER,
-      },
-      data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
-    });
     return { ready: true };
   }
 
@@ -99,6 +105,86 @@ export class PublisherManagedBroadcastDispatch {
             ? 'PUBLISHER_AUTH_PAUSED'
             : PUBLISHER_RUNTIME_BLOCKER;
       throw new PublisherDeliveryDeferredError(blockerCode.slice(0, 96));
+    }
+  }
+
+  async assertActorAdminAccess(params: {
+    targetChatIds: readonly string[];
+    actorUserId: string;
+    entityType: 'chat' | 'channel';
+    requiredBotId: string;
+  }): Promise<void> {
+    const targetChatIds = [...new Set(params.targetChatIds.map((chatId) => chatId.trim()))].filter(
+      Boolean,
+    );
+    const actorUserId = params.actorUserId.trim();
+    const requiredBotId = params.requiredBotId.trim();
+    if (targetChatIds.length === 0 || !actorUserId || !requiredBotId) {
+      throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER);
+    }
+
+    const now = new Date();
+    const legacyGraceStart = new Date(now.getTime() - PUBLISHER_ACCESS_LEGACY_GRACE_MS);
+    const entityType =
+      params.entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
+    const edges = await this.context.prisma.managedEntityAccessEdge.findMany({
+      where: {
+        chatId: { in: targetChatIds },
+        userId: actorUserId,
+        botId: requiredBotId,
+        entityType,
+        state: ManagedEntityAccessState.GRANTED,
+        userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+        OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
+        chat: {
+          entityType,
+          OR: [
+            { publicationPolicy: { is: null } },
+            { publicationPolicy: { is: { publikEnabled: true } } },
+          ],
+          publisherBinding: { is: publisherConnectedBindingWhere(requiredBotId) },
+        },
+      },
+      select: { chatId: true },
+    });
+    const authorizedChatIds = new Set(edges.map((edge) => edge.chatId));
+    if (targetChatIds.some((chatId) => !authorizedChatIds.has(chatId))) {
+      throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER);
+    }
+  }
+
+  async ensureActorAdminAccess(params: {
+    row: PublisherBroadcastRow;
+    occurrenceIndex: number;
+    lease: PublisherBroadcastLease;
+    targetChatIds: readonly string[];
+    actorUserId: string;
+    entityType: 'chat' | 'channel';
+    requiredBotId: string;
+  }): Promise<PublisherGuardResult> {
+    try {
+      await this.assertActorAdminAccess(params);
+      const cleared = await this.clearExactBlocker(
+        params.row,
+        params.occurrenceIndex,
+        params.lease,
+        PUBLISHER_ACTOR_ACCESS_BLOCKER,
+      );
+      if (!cleared) {
+        return { ready: false, leaseLost: true, retryAt: null };
+      }
+      return { ready: true };
+    } catch (error: unknown) {
+      if (!(error instanceof PublisherDeliveryDeferredError)) {
+        throw error;
+      }
+      return this.deferBlocked(
+        params.row,
+        params.occurrenceIndex,
+        params.lease,
+        error.blockerCode,
+        error,
+      );
     }
   }
 
@@ -190,20 +276,17 @@ export class PublisherManagedBroadcastDispatch {
   async resolveDialogBotId(
     delivery: PublisherDeliveryRow,
     deliveryLockToken: string,
+    requiredBotId: string,
   ): Promise<string> {
     const persisted = delivery.dialogBotId?.trim();
     if (persisted) {
       return persisted;
     }
-    const chat = await this.context.prisma.chat.findUnique({
-      where: { id: delivery.targetChatId },
-      select: { primaryBotId: true, botId: true },
-    });
-    const dialogBotId = (chat?.primaryBotId ?? chat?.botId)?.trim();
+    const dialogBotId = requiredBotId.trim();
     if (!dialogBotId) {
       throw new ServiceUnavailableException({
         code: 'PUBLISHER_SETUP_REQUIRED',
-        message: 'Для публикации не найден основной бот, который откроет комментарии.',
+        message: 'Для публикации не найден бот Публик.',
         chatId: delivery.targetChatId,
       });
     }
@@ -263,12 +346,91 @@ export class PublisherManagedBroadcastDispatch {
   private async deferRuntime(
     row: PublisherBroadcastRow,
     occurrenceIndex: number,
-    lease: { lockToken: string },
+    lease: PublisherBroadcastLease,
     error: unknown,
-  ): Promise<{ ready: false; retryAt: Date }> {
+  ): Promise<PublisherGuardResult> {
+    return this.deferBlocked(row, occurrenceIndex, lease, PUBLISHER_RUNTIME_BLOCKER, error);
+  }
+
+  private async clearExactBlocker(
+    row: PublisherBroadcastRow,
+    occurrenceIndex: number,
+    lease: PublisherBroadcastLease,
+    blockerCode: string,
+  ): Promise<boolean> {
+    return this.context.prisma.$transaction(async (tx) => {
+      const leaseCheck = await tx.managedBroadcast.updateMany({
+        where: {
+          id: row.id,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          status: {
+            in: [
+              ManagedBroadcastStatus.ACTIVE,
+              ManagedBroadcastStatus.PARTIAL,
+              ManagedBroadcastStatus.FAILED,
+            ],
+          },
+          lockedAt: lease.lockedAt,
+          lockToken: lease.lockToken,
+        },
+        data: { lockedAt: lease.lockedAt },
+      });
+      if (leaseCheck.count !== 1) {
+        return false;
+      }
+      if (row.publicationOccurrenceId) {
+        await tx.publicationOccurrence.updateMany({
+          where: {
+            id: row.publicationOccurrenceId,
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            dispatchBlockerCode: blockerCode,
+          },
+          data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
+        });
+      }
+      await tx.managedBroadcastDelivery.updateMany({
+        where: {
+          broadcastId: row.id,
+          occurrenceIndex,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          status: ManagedBroadcastDeliveryStatus.PENDING,
+          dispatchBlockerCode: blockerCode,
+        },
+        data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
+      });
+      return true;
+    });
+  }
+
+  private async deferBlocked(
+    row: PublisherBroadcastRow,
+    occurrenceIndex: number,
+    lease: PublisherBroadcastLease,
+    blockerCode: string,
+    error: unknown,
+  ): Promise<PublisherGuardResult> {
     const blockedAt = new Date();
     const retryAt = new Date(blockedAt.getTime() + PUBLISHER_BLOCKED_RETRY_MS);
-    await this.context.prisma.$transaction(async (tx) => {
+    const deferred = await this.context.prisma.$transaction(async (tx) => {
+      const leaseClaim = await tx.managedBroadcast.updateMany({
+        where: {
+          id: row.id,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          status: {
+            in: [
+              ManagedBroadcastStatus.ACTIVE,
+              ManagedBroadcastStatus.PARTIAL,
+              ManagedBroadcastStatus.FAILED,
+            ],
+          },
+          lockedAt: lease.lockedAt,
+          lockToken: lease.lockToken,
+        },
+        data: { nextSendAt: retryAt, lockedAt: null, lockToken: null },
+      });
+      if (leaseClaim.count !== 1) {
+        return false;
+      }
       if (row.publicationOccurrenceId) {
         await tx.publicationOccurrence.updateMany({
           where: {
@@ -276,7 +438,7 @@ export class PublisherManagedBroadcastDispatch {
             dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
           },
           data: {
-            dispatchBlockerCode: PUBLISHER_RUNTIME_BLOCKER,
+            dispatchBlockerCode: blockerCode,
             dispatchBlockedAt: blockedAt,
           },
         });
@@ -289,26 +451,22 @@ export class PublisherManagedBroadcastDispatch {
           status: ManagedBroadcastDeliveryStatus.PENDING,
         },
         data: {
-          dispatchBlockerCode: PUBLISHER_RUNTIME_BLOCKER,
+          dispatchBlockerCode: blockerCode,
           dispatchBlockedAt: blockedAt,
         },
       });
-      await tx.managedBroadcast.updateMany({
-        where: {
-          id: row.id,
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          lockToken: lease.lockToken,
-        },
-        data: { nextSendAt: retryAt, lockedAt: null, lockToken: null },
-      });
+      return true;
     });
+    if (!deferred) {
+      return { ready: false, leaseLost: true, retryAt: null };
+    }
     this.logger.warn(
       {
         broadcastId: row.id,
         occurrenceIndex,
         err: error instanceof Error ? error.message : String(error),
       },
-      'Deferred Publik publication because its dispatch runtime is unavailable',
+      'Deferred Publik publication because a Publisher-owned guard is unavailable',
     );
     return { ready: false, retryAt };
   }

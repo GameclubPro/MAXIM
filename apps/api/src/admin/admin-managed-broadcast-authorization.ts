@@ -10,6 +10,8 @@ import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import { normalizeManagedBroadcastTargetChatIds } from './admin-managed-broadcast-planner';
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './publication-access-loss-recovery';
+import type { BroadcastOccurrenceResult } from './admin.service.support';
+import type { PublisherManagedBroadcastDispatch } from './publisher-managed-broadcast-dispatch';
 
 const MANAGED_BROADCAST_ACCESS_CHECK_CONCURRENCY = 4;
 
@@ -126,4 +128,79 @@ export async function failManagedBroadcastAfterTargetAccessDenied(options: {
     'Managed broadcast was stopped after target admin access was denied',
   );
   return true;
+}
+
+export async function ensureManagedBroadcastActorAccessBeforeExecution(options: {
+  context: AdminManagedBroadcastRuntimeContext;
+  prisma: PrismaService;
+  logger: Logger;
+  publisherDispatch: PublisherManagedBroadcastDispatch;
+  row: ManagedBroadcast;
+  occurrenceIndex: number;
+  lease: { lockedAt: Date; lockToken: string };
+  targetChatIds: string[];
+  entityType: ManagedEntityType;
+  requiredPublisherBotId: string | null;
+  readLostLeaseResult: (error: unknown) => Promise<BroadcastOccurrenceResult>;
+}): Promise<BroadcastOccurrenceResult | null> {
+  if (options.requiredPublisherBotId) {
+    const actorAccess = await options.publisherDispatch.ensureActorAdminAccess({
+      row: options.row,
+      occurrenceIndex: options.occurrenceIndex,
+      lease: options.lease,
+      targetChatIds: options.targetChatIds,
+      actorUserId: options.row.actorUserId,
+      entityType: options.entityType,
+      requiredBotId: options.requiredPublisherBotId,
+    });
+    if (actorAccess.ready) {
+      return null;
+    }
+    if ('leaseLost' in actorAccess && actorAccess.leaseLost) {
+      return options.readLostLeaseResult(
+        new Error('Publisher actor-access guard lost its managed broadcast lease'),
+      );
+    }
+    return {
+      status: ManagedBroadcastStatus.ACTIVE,
+      currentOccurrence: options.occurrenceIndex,
+      sentChatIds: [],
+      failedChatIds: [],
+      pendingChatIds: options.targetChatIds,
+      canRetry: false,
+      firstSendError: null,
+      nextSendAt: actorAccess.retryAt,
+    };
+  }
+
+  try {
+    await assertManagedBroadcastTargetAdminAccess(
+      options.context,
+      options.targetChatIds,
+      options.row.actorUserId,
+      options.entityType,
+    );
+    return null;
+  } catch (error: unknown) {
+    if (!(error instanceof ForbiddenException)) throw error;
+    const updated = await failManagedBroadcastAfterTargetAccessDenied({
+      prisma: options.prisma,
+      logger: options.logger,
+      row: options.row,
+      occurrenceIndex: options.occurrenceIndex,
+      failureMessage: resolveManagedBroadcastAccessDeniedMessage(error),
+      lease: options.lease,
+    });
+    if (!updated) return options.readLostLeaseResult(error);
+    return {
+      status: ManagedBroadcastStatus.FAILED,
+      currentOccurrence: options.occurrenceIndex,
+      sentChatIds: [],
+      failedChatIds: [],
+      pendingChatIds: [],
+      canRetry: false,
+      firstSendError: error,
+      nextSendAt: null,
+    };
+  }
 }

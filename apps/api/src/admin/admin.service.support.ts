@@ -9,6 +9,7 @@ import {
   type BroadcastTextFormat,
   type BotSpeechMediaFieldKey,
   type ChannelSettings,
+  type ChannelDialogNotificationSettings,
   type ChannelStatsResponse,
   type ChatSettings,
   type ChatSummary,
@@ -549,6 +550,16 @@ export const COMMENT_NOTIFICATION_DELIVERY_CONCURRENCY = 4;
 export const COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH = 180;
 export const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 export const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
+export const PUBLISHER_CHAT_DIALOG_ACTION_COMMENT = 'PUBLISHER_CHAT_DIALOG_COMMENT';
+export const PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION';
+export const DEFAULT_DIALOG_NOTIFICATION_SETTINGS = {
+  mode: 'off',
+  canUseAll: true,
+  scope: 'thread',
+  thread: { mode: 'off', explicit: false },
+  channel: { mode: 'off', explicit: false },
+  allChannels: { mode: 'off', explicit: false },
+} satisfies ChannelDialogNotificationSettings;
 export const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
 export const CHANNEL_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 export const CHAT_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHAT_COMMENTS';

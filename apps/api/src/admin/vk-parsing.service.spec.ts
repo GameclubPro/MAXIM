@@ -1,5 +1,5 @@
 import { VK_PARSING_MAX_PUBLISH_TEXT_LENGTH } from '@maxim/contracts';
-import { ChatEntityType } from '../prisma/prisma-client';
+import { ChatEntityType, VkParsingOwnerProfile } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import {
   VK_MEDIA_CACHE_UPLOAD_BOT_ID_FIELD,
@@ -11,6 +11,7 @@ import { VkApiClientService } from './vk-api-client.service';
 import { computeVkParsingPostContentHash } from './vk-parsing-content';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import { VkParsingService } from './vk-parsing.service';
+import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import { VkPublishService } from './vk-publish.service';
 import { VkSourceService } from './vk-source.service';
 import { VkSyncService } from './vk-sync.service';
@@ -179,6 +180,7 @@ describe('VkParsingService', () => {
       },
       auditLog: {
         create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
+        findMany: jest.fn().mockResolvedValue([]),
       },
       $executeRaw: jest.fn().mockResolvedValue(1),
       $queryRaw: jest.fn().mockResolvedValue([
@@ -207,6 +209,14 @@ describe('VkParsingService', () => {
         suggestionEntryMode: 'BOT',
       }),
       recordChannelPublicationEngagement: jest.fn().mockResolvedValue(undefined),
+    };
+    const publisherPolicyService = {
+      getEntity: jest.fn(
+        async (entityType: 'chat' | 'channel', chatId: string, user: { userId: string }) => {
+          await adminService.assertChatAdmin(chatId, user.userId, entityType);
+          return { id: chatId, entityType };
+        },
+      ),
     };
     const maxClient = {
       uploadImage: jest.fn(),
@@ -258,10 +268,13 @@ describe('VkParsingService', () => {
       ...config,
     });
     const mediaCache = new VkParsingMediaCacheService(prisma as never, configService as never);
+    const ownership = new VkParsingOwnershipService(
+      createConfig({ MAX_PUBLISHER_BOT_ID: 'publisher-bot' }) as never,
+    );
     const postImportRepository = new VkParsingPostImportRepository(prisma as never);
     const accessService = new VkParsingAccessService(
       prisma as never,
-      adminService as never,
+      publisherPolicyService as never,
       configService as never,
     );
     const feedService = new VkParsingFeedService(
@@ -276,6 +289,7 @@ describe('VkParsingService', () => {
       vkApiClient,
       syncQueue as never,
       configService as never,
+      ownership,
     );
     const publishService = new VkPublishService(
       prisma as never,
@@ -287,6 +301,7 @@ describe('VkParsingService', () => {
       feedService,
       publishQueue as never,
       configService as never,
+      ownership,
       undefined,
       managedEntityAccessLossService as never,
       dependencies.maxRoutedPublicationService as never,
@@ -307,6 +322,7 @@ describe('VkParsingService', () => {
       sourceService,
       syncService,
       publishService,
+      ownership,
     );
 
     return {
@@ -335,6 +351,8 @@ describe('VkParsingService', () => {
     return {
       id: 'source-1',
       chatId: 'channel-1',
+      ownerProfile: VkParsingOwnerProfile.MAJOR,
+      ownerBotId: '',
       ownerId: 36819802,
       wallOwnerId: -36819802,
       screenName: 'avto_prodaja_rb',
@@ -404,6 +422,8 @@ describe('VkParsingService', () => {
       id: 'post-1',
       sourceId: source.id,
       chatId: source.chatId,
+      ownerProfile: source.ownerProfile,
+      ownerBotId: source.ownerBotId,
       vkOwnerId: -36819802,
       vkPostId: 101,
       vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -483,7 +503,7 @@ describe('VkParsingService', () => {
   });
 
   it('allows any channel admin to use VK parsing', async () => {
-    const { service, adminService } = createFixture();
+    const { service, prisma, adminService } = createFixture();
 
     await expect(
       service.listVkParsing('channel-1', { userId: 'not-allowlisted' } as never),
@@ -494,6 +514,48 @@ describe('VkParsingService', () => {
       'channel-1',
       'not-allowlisted',
       'channel',
+    );
+    expect(prisma.vkParsingSettings.findUnique).toHaveBeenCalledWith({
+      where: {
+        chatId_ownerProfile_ownerBotId: {
+          chatId: 'channel-1',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+        },
+      },
+    });
+    expect(prisma.vkParsingSource.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'channel-1',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+        }),
+      }),
+    );
+    for (const [request] of prisma.vkParsingPost.findMany.mock.calls) {
+      expect(request.where).toEqual(
+        expect.objectContaining({
+          chatId: 'channel-1',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+          source: expect.objectContaining({
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: 'publisher-bot',
+          }),
+        }),
+      );
+    }
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'channel-1',
+          AND: expect.arrayContaining([
+            { payload: { path: ['ownerProfile'], equals: VkParsingOwnerProfile.PUBLISHER } },
+            { payload: { path: ['ownerBotId'], equals: 'publisher-bot' } },
+          ]),
+        }),
+      }),
     );
   });
 
@@ -610,7 +672,13 @@ describe('VkParsingService', () => {
     });
 
     expect(prisma.vkParsingSettings.upsert).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1' },
+      where: {
+        chatId_ownerProfile_ownerBotId: {
+          chatId: 'channel-1',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+        },
+      },
       create: expect.objectContaining({
         chatId: 'channel-1',
         autoPublishEnabled: true,
@@ -639,10 +707,12 @@ describe('VkParsingService', () => {
     });
   });
 
-  it('enables the channel signature from a persisted audience link without a live lookup', async () => {
-    const { service, prisma, maxClient } = createFixture();
-    prisma.channelAudienceSnapshot.findFirst.mockResolvedValue({
-      link: 'https://max.ru/our-channel',
+  it('enables the Publisher VK channel link only from the exact Publisher catalog', async () => {
+    const { service, prisma, maxClient, maxBotLinkService } = createFixture({
+      MAX_PUBLISHER_BOT_ID: 'publisher-bot',
+    });
+    prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
+      link: 'https://max.ru/our-publisher-channel',
     });
 
     await service.updateSettings('channel-1', { userId: '183470701' } as never, {
@@ -652,7 +722,13 @@ describe('VkParsingService', () => {
 
     expect(prisma.vkParsingSettings.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { chatId: 'channel-1' },
+        where: {
+          chatId_ownerProfile_ownerBotId: {
+            chatId: 'channel-1',
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: 'publisher-bot',
+          },
+        },
         create: expect.objectContaining({
           appendChannelLinkEnabled: true,
           channelLinkText: 'Наш канал',
@@ -663,7 +739,13 @@ describe('VkParsingService', () => {
         },
       }),
     );
-    expect(prisma.managedBotChatCatalog.findFirst).not.toHaveBeenCalled();
+    expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
+    expect(prisma.managedBotChatCatalog.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ botId: 'publisher-bot' }),
+      }),
+    );
+    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
   });
 
@@ -776,8 +858,10 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingSource.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          chatId_wallOwnerId: {
+          chatId_ownerProfile_ownerBotId_wallOwnerId: {
             chatId: 'channel-1',
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: 'publisher-bot',
             wallOwnerId: -36819802,
           },
         },
@@ -818,8 +902,10 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingSource.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          chatId_wallOwnerId: {
+          chatId_ownerProfile_ownerBotId_wallOwnerId: {
             chatId: 'channel-1',
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: 'publisher-bot',
             wallOwnerId: -36819802,
           },
         },
@@ -5611,6 +5697,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['missing-post-1'] },
+          ownerProfile: VkParsingOwnerProfile.MAJOR,
+          ownerBotId: '',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -5684,6 +5772,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['found-post-1'] },
+          ownerProfile: VkParsingOwnerProfile.MAJOR,
+          ownerBotId: '',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -5697,6 +5787,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['missing-post-1'] },
+          ownerProfile: VkParsingOwnerProfile.MAJOR,
+          ownerBotId: '',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -5749,6 +5841,8 @@ describe('VkParsingService', () => {
       expect.objectContaining({
         where: {
           id: { in: ['missing-post-1'] },
+          ownerProfile: VkParsingOwnerProfile.MAJOR,
+          ownerBotId: '',
           status: { in: ['NEW', 'FAILED', 'CHANGED_AFTER_PUBLISH'] },
         },
         data: expect.objectContaining({
@@ -6579,7 +6673,11 @@ describe('VkParsingService', () => {
         updatedAt: new Date('2026-05-25T10:00:00.000Z'),
         publishCancelledAt: null,
         publishLockedAt: null,
-        source: { publishMode: 'REVIEW' },
+        source: {
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+          publishMode: 'REVIEW',
+        },
       }),
       data: expect.objectContaining({
         status: 'NEW',

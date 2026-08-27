@@ -14,6 +14,7 @@ import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentMiniappProfile, MiniappProfiles } from '../auth/miniapp-profile';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
+import { PublicationDispatchProfile } from '../prisma/prisma-client';
 import { PublisherFeatureV2RequiredException } from '../publisher/publisher-errors';
 import { PublicationLegacyService } from './publication-legacy.service';
 import { PublicationMetricsInterceptor } from './publication-metrics.interceptor';
@@ -30,14 +31,22 @@ export class PublicationController {
 
   @Get()
   @MiniappProfiles('moderation', 'publisher')
-  list(@CurrentUser() user: AuthUser, @Query() query: unknown) {
-    return this.publicationService.list(user, query);
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
+  ) {
+    return this.publicationService.list(user, query, this.toDispatchProfile(profile));
   }
 
   @Post()
-  @MiniappProfiles('moderation', 'publisher')
-  create(@CurrentUser() user: AuthUser, @Body() body: unknown) {
-    return this.publicationService.create(user, body);
+  @MiniappProfiles('publisher')
+  create(
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'publisher',
+  ) {
+    return this.publicationService.create(user, body, this.toDispatchProfile(profile));
   }
 
   @Post('test')
@@ -54,20 +63,33 @@ export class PublicationController {
   }
 
   @Post('calendar-availability')
-  @MiniappProfiles('moderation', 'publisher')
-  calendarAvailability(@CurrentUser() user: AuthUser, @Body() body: unknown) {
-    return this.publicationService.getCalendarAvailability(user, body);
+  @MiniappProfiles('publisher')
+  calendarAvailability(
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'publisher',
+  ) {
+    return this.publicationService.getCalendarAvailability(
+      user,
+      body,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Get('legacy')
+  @MiniappProfiles('moderation')
   listLegacy(@CurrentUser() user: AuthUser, @Query() query: unknown) {
     return this.publicationLegacyService.list(user, query);
   }
 
   @Get(':publicationId')
   @MiniappProfiles('moderation', 'publisher')
-  get(@Param('publicationId') publicationId: string, @CurrentUser() user: AuthUser) {
-    return this.publicationService.get(publicationId, user);
+  get(
+    @Param('publicationId') publicationId: string,
+    @CurrentUser() user: AuthUser,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
+  ) {
+    return this.publicationService.get(publicationId, user, this.toDispatchProfile(profile));
   }
 
   @Put(':publicationId')
@@ -76,8 +98,14 @@ export class PublicationController {
     @Param('publicationId') publicationId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.publicationService.update(publicationId, user, body);
+    return this.publicationService.update(
+      publicationId,
+      user,
+      body,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Post(':publicationId/pause')
@@ -86,8 +114,14 @@ export class PublicationController {
     @Param('publicationId') publicationId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.publicationService.pause(publicationId, user, body);
+    return this.publicationService.pause(
+      publicationId,
+      user,
+      body,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Post(':publicationId/resume')
@@ -96,8 +130,14 @@ export class PublicationController {
     @Param('publicationId') publicationId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.publicationService.resume(publicationId, user, body);
+    return this.publicationService.resume(
+      publicationId,
+      user,
+      body,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Post(':publicationId/cancel')
@@ -106,8 +146,14 @@ export class PublicationController {
     @Param('publicationId') publicationId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.publicationService.cancel(publicationId, user, body);
+    return this.publicationService.cancel(
+      publicationId,
+      user,
+      body,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Delete(':publicationId')
@@ -116,8 +162,14 @@ export class PublicationController {
     @Param('publicationId') publicationId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.publicationService.cancel(publicationId, user, body);
+    return this.publicationService.cancel(
+      publicationId,
+      user,
+      body,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Get(':publicationId/deliveries')
@@ -126,8 +178,14 @@ export class PublicationController {
     @Param('publicationId') publicationId: string,
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.publicationService.listDeliveries(publicationId, user, query);
+    return this.publicationService.listDeliveries(
+      publicationId,
+      user,
+      query,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Post(':publicationId/occurrences/:occurrenceId/retry')
@@ -137,8 +195,15 @@ export class PublicationController {
     @Param('occurrenceId') occurrenceId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.publicationService.retryOccurrence(publicationId, occurrenceId, user, body);
+    return this.publicationService.retryOccurrence(
+      publicationId,
+      occurrenceId,
+      user,
+      body,
+      this.toDispatchProfile(profile),
+    );
   }
 
   @Post(':publicationId/occurrences/:occurrenceId/resolve-ambiguous')
@@ -148,12 +213,20 @@ export class PublicationController {
     @Param('occurrenceId') occurrenceId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
     return this.publicationService.resolveAmbiguousDelivery(
       publicationId,
       occurrenceId,
       user,
       body,
+      this.toDispatchProfile(profile),
     );
+  }
+
+  private toDispatchProfile(profile: MiniappProfile): PublicationDispatchProfile {
+    return profile === 'publisher'
+      ? PublicationDispatchProfile.PUBLIK_V1
+      : PublicationDispatchProfile.LEGACY_ROUTED;
   }
 }

@@ -42,7 +42,7 @@ export function BroadcastPublishBar(props: ComponentProps<typeof LazyBroadcastPu
 
 export function PublisherPolicyCard(props: ComponentProps<typeof LazyPublisherPolicyCard>) {
   return (
-    <Suspense fallback={<SkeletonCard lines={2} />}>
+    <Suspense fallback={null}>
       <LazyPublisherPolicyCard {...props} />
     </Suspense>
   );

@@ -1,31 +1,36 @@
 import { ConfigService } from '@nestjs/config';
 import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
-import { ChatEntityType, PublicationDispatchProfile } from '../prisma/prisma-client';
+import {
+  ChatEntityType,
+  PublicationDispatchProfile,
+  VkParsingOwnerProfile,
+} from '../prisma/prisma-client';
+import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
 import { VkPublishService } from './vk-publish.service';
 
 function createPublisherDialogContext() {
   return {
     version: 1 as const,
-    dialogBotId: 'main-dialog-bot',
+    dialogBotId: 'publisher-bot',
     buttons: [
       [
         {
           type: 'link' as const,
-          text: 'Комментарии',
-          url: 'https://max.ru/main-dialog-bot?startapp=main-signed-context',
+          text: 'Предложить пост',
+          url: 'https://max.ru/publisher-bot?startapp=publisher-signed-context',
         },
       ],
     ],
     reference: {
       entityType: 'channel' as const,
-      threadId: 'thread-main-signed',
-      includeCommentsButton: true,
-      includeSuggestButton: false,
-      suggestButtonText: null,
+      threadId: 'thread-publisher-signed',
+      includeCommentsButton: false,
+      includeSuggestButton: true,
+      suggestButtonText: 'Предложить пост',
       customButtons: [],
-      suggestionEntryMode: 'BOT' as const,
+      suggestionEntryMode: 'MINIAPP' as const,
       botId: null,
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
     },
   };
 }
@@ -35,6 +40,8 @@ function createPost(overrides: Record<string, unknown> = {}) {
   const source = {
     id: 'source-1',
     chatId: 'channel-1',
+    ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+    ownerBotId: 'publisher-bot',
     publishMode: 'QUEUE',
     quietHoursStart: null,
     quietHoursEnd: null,
@@ -52,6 +59,8 @@ function createPost(overrides: Record<string, unknown> = {}) {
     id: 'post-1',
     sourceId: source.id,
     chatId: source.chatId,
+    ownerProfile: source.ownerProfile,
+    ownerBotId: source.ownerBotId,
     vkOwnerId: -1,
     vkPostId: 10,
     text: 'Пост из VK',
@@ -118,6 +127,20 @@ function createPost(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createMajorPost(overrides: Record<string, unknown> = {}) {
+  const post = createPost(overrides);
+  return {
+    ...post,
+    ownerProfile: VkParsingOwnerProfile.MAJOR,
+    ownerBotId: '',
+    source: {
+      ...post.source,
+      ownerProfile: VkParsingOwnerProfile.MAJOR,
+      ownerBotId: '',
+    },
+  };
+}
+
 function createFixture() {
   const prisma = {
     vkParsingPost: {
@@ -150,6 +173,10 @@ function createFixture() {
   const maxClient = {
     deleteMessage: jest.fn().mockResolvedValue(undefined),
     sendMessageImmediateWithResolvedLink: jest.fn(),
+    getChatSnapshot: jest.fn().mockResolvedValue({
+      entityType: 'channel',
+      link: 'https://max.ru/channel/publisher-owned',
+    }),
   };
   const maxBotLinkService = {
     resolveBotIdForSend: jest.fn().mockResolvedValue('main-dialog-bot'),
@@ -205,6 +232,14 @@ function createFixture() {
     }),
   };
   const maxRoutedPublicationService = { publish: jest.fn() };
+  const channelPostSignatureService = {
+    preparePostText: jest.fn().mockResolvedValue({
+      text: 'Major signature',
+      textFormat: 'html',
+      engagementText: 'Major signature',
+      signatureApplied: true,
+    }),
+  };
   const configService = {
     get: jest.fn((key: string) => {
       if (key === 'MAX_PUBLISHER_BOT_ID') return 'publisher-bot';
@@ -214,6 +249,7 @@ function createFixture() {
       return undefined;
     }),
   } as unknown as ConfigService;
+  const ownership = new VkParsingOwnershipService(configService);
   const service = new VkPublishService(
     prisma as never,
     accessService as never,
@@ -224,10 +260,11 @@ function createFixture() {
     feedService as never,
     legacyQueue as never,
     configService,
+    ownership,
     undefined,
     undefined,
     maxRoutedPublicationService as never,
-    undefined,
+    channelPostSignatureService as never,
     publisherQueue as never,
     readiness as never,
     runtimeBoundary as never,
@@ -248,6 +285,7 @@ function createFixture() {
     health,
     publisherDialogContextService,
     maxRoutedPublicationService,
+    channelPostSignatureService,
   };
 }
 
@@ -257,7 +295,7 @@ describe('VK Publik routing', () => {
     try {
       const fixture = createFixture();
       fixture.health.isGloballyPaused.mockResolvedValue(true);
-      const legacyPost = createPost({
+      const legacyPost = createMajorPost({
         id: 'legacy-recovery-post',
         dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
         publishQueuedAt: new Date('2026-08-26T10:00:00.000Z'),
@@ -270,7 +308,7 @@ describe('VK Publik routing', () => {
         id: 'publisher-recovery-post',
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         requiredBotId: 'publisher-bot',
-        dialogBotId: 'main-dialog-bot',
+        dialogBotId: 'publisher-bot',
         publishQueuedAt: new Date('2026-08-26T10:00:00.000Z'),
         publishScheduledAt: new Date('2026-08-26T10:05:00.000Z'),
         publishLockedAt: null,
@@ -286,10 +324,18 @@ describe('VK Publik routing', () => {
       expect(fixture.health.isGloballyPaused).toHaveBeenCalledTimes(1);
       expect(fixture.prisma.vkParsingPost.findMany).toHaveBeenCalledTimes(2);
       for (const [query] of fixture.prisma.vkParsingPost.findMany.mock.calls) {
-        expect(query.where).toEqual(
-          expect.objectContaining({
-            dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
-          }),
+        expect(query.where.AND).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+              ownerProfile: VkParsingOwnerProfile.MAJOR,
+              ownerBotId: '',
+              source: {
+                ownerProfile: VkParsingOwnerProfile.MAJOR,
+                ownerBotId: '',
+              },
+            }),
+          ]),
         );
         expect(query.where).not.toEqual(
           expect.objectContaining({ rollbackQueuedAt: expect.anything() }),
@@ -310,14 +356,14 @@ describe('VK Publik routing', () => {
     }
   });
 
-  it('queues a new manual intent with an immutable Publik and dialog-bot route', async () => {
+  it('queues a new manual intent with one immutable Publisher-owned bot route', async () => {
     const fixture = createFixture();
     const post = createPost();
     fixture.prisma.vkParsingPost.findFirst.mockResolvedValueOnce(post).mockResolvedValueOnce({
       ...post,
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
     });
 
@@ -330,15 +376,30 @@ describe('VK Publik routing', () => {
     });
 
     expect(result).toMatchObject({ queued: 1 });
+    expect(fixture.prisma.vkParsingPost.findFirst).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: {
+          id: 'post-1',
+          chatId: 'channel-1',
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+          source: {
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: 'publisher-bot',
+          },
+        },
+      }),
+    );
     expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
           requiredBotId: 'publisher-bot',
-          dialogBotId: 'main-dialog-bot',
+          dialogBotId: 'publisher-bot',
           publishDialogContext: expect.objectContaining({
             version: 1,
-            dialogBotId: 'main-dialog-bot',
+            dialogBotId: 'publisher-bot',
           }),
           publicationPolicyRevision: 4,
           publishActorUserId: 'admin-1',
@@ -359,15 +420,78 @@ describe('VK Publik routing', () => {
     expect(fixture.publisherDialogContextService.prepare).toHaveBeenCalledWith({
       chatId: 'channel-1',
       entityType: 'channel',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       customButtons: [],
     });
+    expect(fixture.maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+  });
+
+  it('resolves Publisher channel links only from the exact Publisher catalog or token', async () => {
+    const fixture = createFixture();
+    fixture.prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
+      link: 'https://max.ru/channel/publisher-catalog',
+    });
+
+    await expect(
+      (fixture.service as any).resolveChannelLink('channel-1', 'interactive', 'publisher-bot'),
+    ).resolves.toBe('https://max.ru/channel/publisher-catalog');
+
+    expect(fixture.prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedBotChatCatalog.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'channel-1',
+          botId: 'publisher-bot',
+        }),
+      }),
+    );
+    expect(fixture.maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps an already-persisted Publisher intent with its old distinct dialog route executable', async () => {
+    const fixture = createFixture();
+    const oldDialogContext = {
+      ...createPublisherDialogContext(),
+      dialogBotId: 'main-dialog-bot',
+      buttons: [
+        [
+          {
+            type: 'link' as const,
+            text: 'Комментарии',
+            url: 'https://max.ru/main-dialog-bot?startapp=legacy-main-context',
+          },
+        ],
+      ],
+      reference: null,
+    };
+
+    await expect(
+      (fixture.service as any).assertPublisherIntentReady(
+        createPost({
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+          dialogBotId: 'main-dialog-bot',
+          publishDialogContext: oldDialogContext,
+          publicationPolicyRevision: 4,
+        }),
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        requiredBotId: 'publisher-bot',
+      }),
+    );
+
+    expect(fixture.publisherDialogContextService.read).toHaveBeenCalledWith(
+      oldDialogContext,
+      'main-dialog-bot',
+    );
   });
 
   it('keeps an already queued legacy intent on managed-bot routing', async () => {
     const fixture = createFixture();
     const queuedAt = new Date(Date.now() - 1_000);
-    const post = createPost({
+    const post = createMajorPost({
       publishQueuedAt: queuedAt,
       publishScheduledAt: queuedAt,
       publishIdempotencyKey: 'legacy-intent',
@@ -394,11 +518,34 @@ describe('VK Publik routing', () => {
       idempotencyKey: 'legacy-intent',
     });
 
+    expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerProfile: VkParsingOwnerProfile.MAJOR,
+          ownerBotId: '',
+          dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+        }),
+      }),
+    );
+    expect(fixture.prisma.vkParsingPost.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerProfile: VkParsingOwnerProfile.MAJOR,
+          ownerBotId: '',
+          source: {
+            ownerProfile: VkParsingOwnerProfile.MAJOR,
+            ownerBotId: '',
+          },
+        }),
+      }),
+    );
     expect(fixture.maxRoutedPublicationService.publish).toHaveBeenCalledWith(
       expect.not.objectContaining({ publisherExactBotId: expect.anything() }),
     );
     expect(fixture.readiness.assertEntityReady).not.toHaveBeenCalled();
     expect(fixture.runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
+    expect(fixture.channelPostSignatureService.preparePostText).toHaveBeenCalled();
     expect(fixture.prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -409,13 +556,13 @@ describe('VK Publik routing', () => {
     );
   });
 
-  it('sends a publisher job only through the exact required bot and main dialog bot', async () => {
+  it('sends a publisher job and its dialog only through the exact Publisher bot', async () => {
     const fixture = createFixture();
     const queuedAt = new Date('2026-08-26T10:00:00.000Z');
     const post = createPost({
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
       publishActorUserId: 'admin-1',
       publishQueuedAt: queuedAt,
@@ -452,10 +599,11 @@ describe('VK Publik routing', () => {
       expect.objectContaining({ publisherExactBotId: 'publisher-bot' }),
     );
     expect(fixture.adminService.buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
+    expect(fixture.channelPostSignatureService.preparePostText).not.toHaveBeenCalled();
     expect(preparedOptions).toEqual(
       expect.objectContaining({
         buttons: expect.arrayContaining([
-          expect.arrayContaining([expect.objectContaining({ text: 'Комментарии' })]),
+          expect.arrayContaining([expect.objectContaining({ text: 'Предложить пост' })]),
         ]),
       }),
     );
@@ -472,13 +620,48 @@ describe('VK Publik routing', () => {
     );
   });
 
+  it('ignores a publisher queue job addressed to a different bot ownership scope', async () => {
+    const fixture = createFixture();
+
+    await fixture.service.processPublishPostJob({
+      postId: 'foreign-post',
+      chatId: 'channel-1',
+      reason: 'manual-retry',
+      idempotencyKey: 'foreign-intent',
+      dispatchProfile: 'PUBLIK_V1',
+      requiredBotId: 'other-publisher-bot',
+    });
+
+    expect(fixture.prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(fixture.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(fixture.runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
+    expect(fixture.maxRoutedPublicationService.publish).not.toHaveBeenCalled();
+  });
+
+  it('does not widen a blocked-intent update when requiredBotId is missing', async () => {
+    const fixture = createFixture();
+
+    await (fixture.service as any).markPublisherIntentBlocked(
+      {
+        id: 'malformed-post',
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        requiredBotId: null,
+      },
+      'malformed-intent',
+      'manual-retry',
+      'publisher_setup_required',
+    );
+
+    expect(fixture.prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+  });
+
   it('does not clear a publisher auth pause from a VK ledger replay', async () => {
     const fixture = createFixture();
     const queuedAt = new Date('2026-08-26T10:00:00.000Z');
     const post = createPost({
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
       publishQueuedAt: queuedAt,
       publishScheduledAt: queuedAt,
@@ -520,7 +703,7 @@ describe('VK Publik routing', () => {
     const post = createPost({
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
       publishQueuedAt: new Date(),
       publishScheduledAt: new Date(),
@@ -566,7 +749,7 @@ describe('VK Publik routing', () => {
       const post = createPost({
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         requiredBotId: 'publisher-bot',
-        dialogBotId: 'main-dialog-bot',
+        dialogBotId: 'publisher-bot',
         publicationPolicyRevision: 4,
         publishQueuedAt: new Date(),
         publishScheduledAt: new Date(),
@@ -613,7 +796,7 @@ describe('VK Publik routing', () => {
     const post = createPost({
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
       publishQueuedAt: new Date(),
       publishScheduledAt: new Date(),
@@ -649,7 +832,7 @@ describe('VK Publik routing', () => {
     expect(failureData).not.toHaveProperty('requiredBotId');
   });
 
-  it('queues Publik rollback by origin and keeps legacy deletion on its published bot', async () => {
+  it('queues rollback only for Publisher-owned posts from the Publisher feed', async () => {
     const fixture = createFixture();
     const publisherPost = createPost({
       id: 'publisher-post',
@@ -657,19 +840,12 @@ describe('VK Publik routing', () => {
       autoPublishedAt: new Date('2026-08-26T10:00:00.000Z'),
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
       publishedBotId: 'publisher-bot',
       publishedMessageId: 'publisher-message',
     });
-    const legacyPost = createPost({
-      id: 'legacy-post',
-      status: 'PUBLISHED',
-      autoPublishedAt: new Date('2026-08-26T10:05:00.000Z'),
-      publishedBotId: 'main-origin-bot',
-      publishedMessageId: 'legacy-message',
-    });
-    fixture.prisma.vkParsingPost.findMany.mockResolvedValue([publisherPost, legacyPost]);
+    fixture.prisma.vkParsingPost.findMany.mockResolvedValue([publisherPost]);
 
     const result = await fixture.service.rollbackAutoPublished('channel-1', 'admin-1', {
       since: '2026-08-26T09:00:00.000Z',
@@ -677,7 +853,19 @@ describe('VK Publik routing', () => {
       deleteMessages: true,
     });
 
-    expect(result).toMatchObject({ matched: 2, queued: 1, deleted: 1, failed: 0 });
+    expect(result).toMatchObject({ matched: 1, queued: 1, deleted: 0, failed: 0 });
+    expect(fixture.prisma.vkParsingPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+          ownerBotId: 'publisher-bot',
+          source: {
+            ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+            ownerBotId: 'publisher-bot',
+          },
+        }),
+      }),
+    );
     expect(fixture.publisherQueue.add).toHaveBeenCalledWith(
       'rollback-vk-post',
       expect.objectContaining({
@@ -687,11 +875,7 @@ describe('VK Publik routing', () => {
       }),
       expect.any(Object),
     );
-    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
-      'channel-1',
-      'legacy-message',
-      expect.objectContaining({ botId: 'main-origin-bot' }),
-    );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(fixture.maxBotLinkService.resolveBotIdForModerationAction).not.toHaveBeenCalled();
   });
 
@@ -703,7 +887,7 @@ describe('VK Publik routing', () => {
       autoPublishedAt: new Date('2026-08-26T10:00:00.000Z'),
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
       publishedBotId: 'publisher-bot',
       publishedMessageId: 'publisher-message',
@@ -744,7 +928,7 @@ describe('VK Publik routing', () => {
       autoPublishedAt: new Date('2026-08-26T10:00:00.000Z'),
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-dialog-bot',
+      dialogBotId: 'publisher-bot',
       publicationPolicyRevision: 4,
       publishedBotId: 'publisher-bot',
       publishedMessageId: 'publisher-message',
@@ -806,5 +990,21 @@ describe('VK Publik routing', () => {
       }),
     );
     expect(fixture.health.recordSendSuccess).toHaveBeenCalledWith('channel-1', expect.any(Date));
+  });
+
+  it('ignores a rollback job addressed to a different Publisher bot', async () => {
+    const fixture = createFixture();
+
+    await fixture.service.processPublisherRollbackJob({
+      postId: 'foreign-post',
+      chatId: 'channel-1',
+      messageId: 'foreign-message',
+      requiredBotId: 'other-publisher-bot',
+      idempotencyKey: 'foreign-rollback',
+    });
+
+    expect(fixture.prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
   });
 });

@@ -13,7 +13,6 @@ import {
   wasMaxMessageSendAttempted,
 } from '../max/max-client.service';
 import type { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
-import type { MaxBotLinkService } from '../max/max-bot-link.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
 import {
   ChannelSuggestionAdminDeliveryStatus,
@@ -126,7 +125,6 @@ export type AdminChannelSuggestionPublicationRuntimeContext = {
   readonly publisherDispatchHealthService?: PublisherDispatchHealthService;
   readonly publisherSuggestionPublicationQueue?: PublisherSuggestionPublicationQueueService;
   readonly publisherDialogContextService?: PublisherDialogContextService;
-  readonly maxBotLinkService?: Pick<MaxBotLinkService, 'getStoredChatPrimaryBotId'>;
   readonly channelPostSignatureService?: {
     preparePostText(
       chatId: string,
@@ -514,44 +512,13 @@ export class AdminChannelSuggestionPublicationRuntime {
   }
 
   private async resolvePublisherSuggestionRoute(
-    chatId: string,
+    _chatId: string,
     _payload: Record<string, unknown>,
   ): Promise<PublisherSuggestionRoute | null> {
-    const policyModel = (
-      this.context.prisma as PrismaService & {
-        managedEntityPublicationPolicy?: PrismaService['managedEntityPublicationPolicy'];
-      }
-    ).managedEntityPublicationPolicy;
-    if (!policyModel?.findUnique) {
-      return null;
-    }
-    const policy = await policyModel.findUnique({
-      where: { chatId },
-      select: { suggestionsViaPublik: true },
-    });
-    if (policy?.suggestionsViaPublik !== true) {
-      return null;
-    }
-    const route = await this.requirePublisherReadiness().assertEntityReady(
-      chatId,
-      'suggestion_publish',
-    );
-    if (route.entityType !== 'channel') {
-      throw new ServiceUnavailableException('Предложки через Публик доступны только каналам.');
-    }
-    const dialogBotId = await this.context.maxBotLinkService?.getStoredChatPrimaryBotId(chatId, {
-      bypassCache: true,
-    });
-    if (!dialogBotId || dialogBotId === route.requiredBotId) {
-      throw new ServiceUnavailableException('Для кнопок предложки не найден основной бот канала.');
-    }
-    const dialogContext = await this.requirePublisherDialogContexts().prepare({
-      chatId,
-      entityType: 'channel',
-      dialogBotId,
-      customButtons: [],
-    });
-    return { ...route, dialogBotId, dialogContext };
+    // New Major suggestions remain on the Major route. Publisher-owned suggestions use the
+    // dedicated Publisher inbox/publication pipeline; persisted Publisher claims are still read
+    // and completed by processPublisherSuggestionPublicationJob for compatibility.
+    return null;
   }
 
   private readPublisherSuggestionRoute(

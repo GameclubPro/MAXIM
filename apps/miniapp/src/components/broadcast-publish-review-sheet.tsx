@@ -10,6 +10,7 @@ type BroadcastPublishReviewSheetProps = {
   confirmLabel: string;
   confirmBusyLabel: string;
   isBusy: boolean;
+  showExtraAction?: boolean;
   extraActionBusy: boolean;
   extraActionDisabled: boolean;
   onExtraAction: () => void;
@@ -26,6 +27,7 @@ export function BroadcastPublishReviewSheet({
   confirmLabel,
   confirmBusyLabel,
   isBusy,
+  showExtraAction = true,
   extraActionBusy,
   extraActionDisabled,
   onExtraAction,
@@ -71,11 +73,11 @@ export function BroadcastPublishReviewSheet({
       cancelLabel="Назад"
       tone="accent"
       isBusy={isBusy}
-      extraActionLabel="Тест"
-      extraActionBusyLabel="Тест..."
+      extraActionLabel={showExtraAction ? 'Тест' : undefined}
+      extraActionBusyLabel={showExtraAction ? 'Тест...' : undefined}
       extraActionBusy={extraActionBusy}
       extraActionDisabled={extraActionDisabled}
-      onExtraAction={onExtraAction}
+      onExtraAction={showExtraAction ? onExtraAction : undefined}
       onClose={onClose}
       onConfirm={onConfirm}
     />

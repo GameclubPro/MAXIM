@@ -32,7 +32,7 @@ export class PublisherCommentKeyboardRouting {
     if (!params.commentsButton) {
       return true;
     }
-    if (!this.queue || !params.dialogBotId || params.dialogBotId === publisherBotId) {
+    if (!this.queue || !params.dialogBotId) {
       this.logger.warn(
         {
           chatId: params.chatId,

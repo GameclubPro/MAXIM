@@ -1,5 +1,7 @@
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import {
+  ManagedEntityAccessRole,
+  ManagedEntityAccessState,
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   PublicationLifecycle,
@@ -2339,21 +2341,41 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       lockToken: null,
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
-      dialogBotId: 'main-bot',
+      dialogBotId: 'publisher-bot',
     };
     const publish = jest.fn();
     const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const managedBroadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const publicationOccurrenceUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const actorAccessFindMany = jest.fn().mockResolvedValue([
+      {
+        chatId: 'chat-1',
+        userId: 'admin-1',
+        botId: 'publisher-bot',
+        state: ManagedEntityAccessState.GRANTED,
+        userRole: ManagedEntityAccessRole.ADMIN,
+        checkedAt: new Date('2026-08-27T09:59:00.000Z'),
+        expiresAt: new Date('2099-08-27T10:14:00.000Z'),
+      },
+    ]);
+    const tx = {
+      managedBroadcast: { updateMany: managedBroadcastUpdateMany },
+      managedBroadcastDelivery: { updateMany: deliveryUpdateMany },
+      publicationOccurrence: { updateMany: publicationOccurrenceUpdateMany },
+    };
     const runtime = new AdminManagedBroadcastRuntime(
       {
         prisma: {
+          $transaction: (callback: (client: typeof tx) => unknown) => callback(tx),
           managedBroadcast: {
-            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+            updateMany: managedBroadcastUpdateMany,
             findUnique: jest.fn().mockResolvedValue(row),
           },
           managedBroadcastDelivery: {
             findMany: jest.fn().mockResolvedValue([delivery]),
             updateMany: deliveryUpdateMany,
           },
+          managedEntityAccessEdge: { findMany: actorAccessFindMany },
         },
         maxRoutedPublicationService: { publish },
         publisherRuntimeBoundaryService: { assertDispatchEnabled: jest.fn() },
@@ -2435,6 +2457,22 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     );
 
     expect(publish).not.toHaveBeenCalled();
+    expect(actorAccessFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: { in: ['chat-1'] },
+          userId: 'admin-1',
+          botId: 'publisher-bot',
+          state: ManagedEntityAccessState.GRANTED,
+          userRole: {
+            in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN],
+          },
+          OR: expect.arrayContaining([
+            expect.objectContaining({ expiresAt: { gt: expect.any(Date) } }),
+          ]),
+        }),
+      }),
+    );
     expect(send).toHaveBeenCalledWith(
       'chat-1',
       'Publication',
@@ -2452,7 +2490,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         }),
         data: expect.objectContaining({
           botId: 'publisher-bot',
-          dialogBotId: 'main-bot',
+          dialogBotId: 'publisher-bot',
         }),
       }),
     );

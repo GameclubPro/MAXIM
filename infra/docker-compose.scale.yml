@@ -103,8 +103,10 @@ services:
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
       MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
       MAX_PUBLISHER_INIT_DATA_KEYS_FILE: /run/secrets/max_publisher_init_data_keys
+      MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: /run/secrets/max_publisher_dialog_signing_keys
     secrets:
       - max_publisher_init_data_keys
+      - max_publisher_dialog_signing_keys
     depends_on:
       - postgres
       - redis
@@ -529,6 +531,9 @@ services:
       CHANNEL_STATS_STARTUP_SYNC_ENABLED: 'false'
       CHANNEL_STATS_STARTUP_MAX_CHANNELS: 6
       CHANNEL_STATS_STARTUP_STALE_MS: 21600000
+      MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: /run/secrets/max_publisher_dialog_signing_keys
+    secrets:
+      - max_publisher_dialog_signing_keys
     depends_on:
       - postgres
       - redis
@@ -559,6 +564,7 @@ services:
       MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
       MAX_PUBLISHER_BOT_TOKEN_FILE: /run/secrets/max_publisher_bot_token
       MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: /run/secrets/max_publisher_webhook_credentials
+      MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: /run/secrets/max_publisher_dialog_signing_keys
       MAX_PUBLISHER_DISPATCH_ENABLED: ${MAX_PUBLISHER_DISPATCH_ENABLED:-false}
       MAX_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
       MAX_BOT_LABEL: Публик
@@ -582,6 +588,7 @@ services:
     secrets:
       - max_publisher_bot_token
       - max_publisher_webhook_credentials
+      - max_publisher_dialog_signing_keys
     depends_on:
       - postgres
       - redis
@@ -616,6 +623,8 @@ secrets:
     file: /var/lib/maxim-secrets/publik-webhook.json
   max_publisher_init_data_keys:
     file: /var/lib/maxim-secrets/publik-init-data-keys.json
+  max_publisher_dialog_signing_keys:
+    file: /var/lib/maxim-secrets/publik-dialog-signing-keys.json
 
 volumes:
   postgres_data:

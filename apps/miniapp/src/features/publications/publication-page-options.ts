@@ -65,3 +65,22 @@ export const PUBLICATION_WEEKDAYS = [
   { value: 6, label: 'Сб' },
   { value: 7, label: 'Вс' },
 ] as const;
+
+const PUBLISHER_ONLY_PUBLICATION_ROUTE_PARAMS = [
+  'compose',
+  'entityId',
+  'entityType',
+  'sourceId',
+  'sourceType',
+] as const;
+
+export function stripPublisherOnlyPublicationRouteParams(
+  searchParams: URLSearchParams,
+): URLSearchParams | null {
+  if (!PUBLISHER_ONLY_PUBLICATION_ROUTE_PARAMS.some((key) => searchParams.has(key))) {
+    return null;
+  }
+  const next = new URLSearchParams(searchParams);
+  PUBLISHER_ONLY_PUBLICATION_ROUTE_PARAMS.forEach((key) => next.delete(key));
+  return next;
+}

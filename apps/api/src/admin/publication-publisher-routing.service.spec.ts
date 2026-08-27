@@ -3,7 +3,7 @@ import { PublicationPublisherRoutingService } from './publication-publisher-rout
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 
 describe('PublicationPublisherRoutingService', () => {
-  it('keeps PUBLIK_V1 publishable when Major primary lookup fails and persists custom-only context', async () => {
+  it('uses a Publisher-signed context with Publik chat comments for PUBLIK_V1 chats', async () => {
     const assertTargetsReady = jest.fn().mockResolvedValue([
       {
         chatId: 'chat-publisher-only',
@@ -12,9 +12,6 @@ describe('PublicationPublisherRoutingService', () => {
         policyRevision: 7,
       },
     ]);
-    const getStoredChatPrimaryBotId = jest
-      .fn()
-      .mockRejectedValue(new Error('Major route unavailable'));
     const prepare = jest.fn().mockImplementation(async (params) => ({
       version: 1,
       dialogBotId: params.dialogBotId,
@@ -24,7 +21,6 @@ describe('PublicationPublisherRoutingService', () => {
     const service = new PublicationPublisherRoutingService(
       {} as never,
       {} as never,
-      { getStoredChatPrimaryBotId } as never,
       { assertTargetsReady } as never,
       { prepare } as never,
       {} as never,
@@ -38,15 +34,12 @@ describe('PublicationPublisherRoutingService', () => {
       [{ text: 'Открыть', url: 'https://example.com' }],
     );
 
-    expect(getStoredChatPrimaryBotId).toHaveBeenCalledWith('chat-publisher-only', {
-      bypassCache: true,
-    });
     expect(prepare).toHaveBeenCalledWith({
       chatId: 'chat-publisher-only',
       entityType: 'chat',
       dialogBotId: 'publisher-bot',
       customButtons: [{ text: 'Открыть', url: 'https://example.com' }],
-      includeManagedDialogs: false,
+      includeManagedDialogs: true,
     });
     expect(result.deliveryDataByChatId.get('chat-publisher-only')).toMatchObject({
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
@@ -61,7 +54,7 @@ describe('PublicationPublisherRoutingService', () => {
     });
   });
 
-  it('keeps a distinct Major bot only when it can own managed dialog buttons', async () => {
+  it('does not import Major channel dialogs into PUBLIK_V1 channel posts', async () => {
     const prepare = jest.fn().mockImplementation(async (params) => ({
       version: 1,
       dialogBotId: params.dialogBotId,
@@ -71,7 +64,6 @@ describe('PublicationPublisherRoutingService', () => {
     const service = new PublicationPublisherRoutingService(
       {} as never,
       {} as never,
-      { getStoredChatPrimaryBotId: jest.fn().mockResolvedValue('major-bot') } as never,
       {
         assertTargetsReady: jest.fn().mockResolvedValue([
           {
@@ -96,71 +88,12 @@ describe('PublicationPublisherRoutingService', () => {
 
     expect(prepare).toHaveBeenCalledWith(
       expect.objectContaining({
-        dialogBotId: 'major-bot',
-        includeManagedDialogs: true,
-      }),
-    );
-    expect(result.deliveryDataByChatId.get('channel-1')).toMatchObject({
-      dialogBotId: 'major-bot',
-    });
-  });
-
-  it('drops only Major-managed buttons when their context cannot be prepared', async () => {
-    const prepare = jest
-      .fn()
-      .mockRejectedValueOnce(new Error('Major dialog settings unavailable'))
-      .mockImplementationOnce(async (params) => ({
-        version: 1,
-        dialogBotId: params.dialogBotId,
-        buttons: [[{ type: 'link', text: 'Сайт', url: 'https://example.com' }]],
-        reference: null,
-      }));
-    const service = new PublicationPublisherRoutingService(
-      {} as never,
-      {} as never,
-      { getStoredChatPrimaryBotId: jest.fn().mockResolvedValue('major-bot') } as never,
-      {
-        assertTargetsReady: jest.fn().mockResolvedValue([
-          {
-            chatId: 'chat-1',
-            entityType: 'chat',
-            requiredBotId: 'publisher-bot',
-            policyRevision: 4,
-          },
-        ]),
-      } as never,
-      { prepare } as never,
-      {} as never,
-      {} as never,
-    );
-
-    const result = await service.prepareOccurrenceRoute(
-      PublicationDispatchProfile.PUBLIK_V1,
-      'publisher-bot',
-      [{ chatId: 'chat-1', entityType: 'chat' }],
-      [{ text: 'Сайт', url: 'https://example.com' }],
-    );
-
-    expect(prepare).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        dialogBotId: 'major-bot',
-        includeManagedDialogs: true,
-      }),
-    );
-    expect(prepare).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
         dialogBotId: 'publisher-bot',
         includeManagedDialogs: false,
       }),
     );
-    expect(result.deliveryDataByChatId.get('chat-1')).toMatchObject({
+    expect(result.deliveryDataByChatId.get('channel-1')).toMatchObject({
       dialogBotId: 'publisher-bot',
-      publisherDialogContext: expect.objectContaining({
-        dialogBotId: 'publisher-bot',
-        reference: null,
-      }),
     });
   });
 
@@ -179,7 +112,6 @@ describe('PublicationPublisherRoutingService', () => {
     const assertChatAdminAccess = jest.fn();
     const assertChannelAdminAccess = jest.fn();
     const service = new PublicationPublisherRoutingService(
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -236,7 +168,6 @@ describe('PublicationPublisherRoutingService', () => {
     });
     const resolvePublicationTargets = jest.fn();
     const service = new PublicationPublisherRoutingService(
-      {} as never,
       {} as never,
       {} as never,
       {} as never,

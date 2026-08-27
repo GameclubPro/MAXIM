@@ -54,9 +54,13 @@ test('Publik launches into its own entity catalog with Posts as a peer module', 
 
 test('Posts uses one compact recipient status instead of a second catalog card', () => {
   assert.match(headerSource, /className=\{cn\('publication-publisher-status'/u);
-  assert.match(headerSource, /Нет подключений · настройка в Майоре/u);
-  assert.match(headerSource, /openMaxBotLink\(setupHandoffUrl\)/u);
-  assert.doesNotMatch(headerSource, /<Link|Чаты и каналы|PublisherReadinessOverview/u);
+  assert.match(headerSource, /Нет подключённых получателей/u);
+  assert.match(headerSource, /<Link[\s\S]*?to="\/"[\s\S]*?Открыть получателей Публика/u);
+  assert.doesNotMatch(
+    headerSource,
+    /настройк[^']*в Майоре|Настроить в Майоре|setupHandoffUrl|openMaxBotLink/u,
+  );
+  assert.doesNotMatch(headerSource, /Чаты и каналы|PublisherReadinessOverview/u);
   assert.match(
     headerCss,
     /\.publication-publisher-status \{[\s\S]*?grid-template-columns: 28px minmax\(0, 1fr\) 44px;/u,
@@ -109,7 +113,10 @@ test('next-page retry preserves pages and expired cursors reseed the query', () 
   assert.match(targetSourcesSource, /readiness: 'ready'/u);
   assert.match(targetSourcesSource, /const result = await publisher\.fetchNextPage\(\)/u);
   assert.match(targetSourcesSource, /isInvalidPublisherEntitiesCursorError\(result\.error\)/u);
-  assert.match(targetSourcesSource, /resetQueries\(\{ queryKey: publisherQueryKey, exact: true \}\)/u);
+  assert.match(
+    targetSourcesSource,
+    /resetQueries\(\{ queryKey: publisherQueryKey, exact: true \}\)/u,
+  );
   assert.doesNotMatch(
     targetSourcesSource,
     /fetchNextPage:\s*\(\) =>\s*publisher\.isFetchNextPageError/u,

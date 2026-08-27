@@ -70,7 +70,7 @@ test('suggestion dialog state is remounted for every chat and token pair', () =>
   );
   assert.match(
     appSource,
-    /path="\/channel\/:chatId\/dialog\/suggest"[\s\S]*?element=\{<KeyedChannelSuggestDialogPage api=\{apiClient\} \/>\}/u,
+    /path="\/channel\/:chatId\/dialog\/suggest"[\s\S]*?element=\{<KeyedChannelSuggestDialogPage api=\{apiClient\} profile=\{me\.profile\} \/>\}/u,
   );
 });
 

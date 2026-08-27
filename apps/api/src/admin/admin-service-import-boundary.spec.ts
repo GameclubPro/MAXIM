@@ -13,7 +13,6 @@ const ALLOWED_ADMIN_SERVICE_IMPORTS = [
   'admin/managed-giveaway.service.ts',
   'admin/managed-poll.service.ts',
   'admin/manual-moderation.service.ts',
-  'admin/vk-parsing-access.service.ts',
   'admin/vk-publish.service.ts',
   'moderation/private-control.service.legacy.ts',
   'moderation/private-control.service.ts',

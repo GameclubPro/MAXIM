@@ -10,10 +10,6 @@ const chatSettingsSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
-const chatCommentsSectionSource = readFileSync(
-  new URL('../src/pages/settings/settings-comments-section.tsx', import.meta.url),
-  'utf8',
-);
 const channelSettingsSource = readFileSync(
   new URL('../src/pages/channel-settings-page.tsx', import.meta.url),
   'utf8',
@@ -53,16 +49,10 @@ test('channel comments use in-app terminology without a separate button mode', (
   assert.doesNotMatch(shellSource, /Обсуждение|Диалог обсуждения/u);
 });
 
-test('chat admin comments explain reply delivery without replacing the original message', () => {
-  assert.equal(chatCommentsSectionSource.match(/под сообщениями админов/giu)?.length, 2);
-  assert.match(
-    chatCommentsSectionSource,
-    /На сообщение админа бот отвечает отдельным сообщением с кнопкой, не удаляя\s+оригинал\. В публикацию бота кнопка добавляется сразу\./u,
-  );
-  assert.match(chatSettingsSource, /commentsAdminsEnabled \? 'сообщения админов' : null/u);
+test('Major chat settings do not expose the Publisher-owned comments module', () => {
   assert.doesNotMatch(
-    chatCommentsSectionSource,
-    /Под постами админов|Бот добавляет кнопку комментариев к выбранным публикациям/u,
+    chatSettingsSource,
+    /SettingsCommentsSection|commentsCardSummary|commentsCardStatus|commentsAdminsEnabled \? 'сообщения админов'/u,
   );
 });
 
@@ -78,8 +68,9 @@ test('publication previews include saved channel system buttons', () => {
   );
   assert.match(
     channelSettingsSource,
-    /async function handleSendChannelBroadcast\(\)[\s\S]*?await saveChannelSettingsForBroadcast\(\)[\s\S]*?navigate\(`\/publications\?compose=1/u,
+    /async function handleSendChannelBroadcast\(\)[\s\S]*?await saveChannelSettingsForBroadcast\(\)[\s\S]*?navigate\('\/publications'\)/u,
   );
+  assert.doesNotMatch(channelSettingsSource, /navigate\(['`]\/publications\?compose=1/u);
 });
 
 test('home folds sync state into one refresh control without technical status copy', () => {

@@ -378,6 +378,47 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publisher-entity-modules',
+    beforeShot: async (page) => {
+      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page.getByText('Постинг', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-channel-modules',
+    beforeShot: async (page) => {
+      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page.getByText('Предложки', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entity-modules-vk',
+    beforeShot: async (page) => {
+      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page.locator('.publisher-entity-vk-module .vk-parsing-card').waitFor({
+        state: 'visible',
+      });
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'publisher-channel-modules-vk-editor',
+    beforeShot: async (page) => {
+      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      const card = page.locator('.publisher-entity-vk-module .vk-parsing-card');
+      await card.waitFor({ state: 'visible' });
+      await card.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
+      await card.locator('.vk-parsing-editor__composer').waitFor({ state: 'visible' });
+      await card.getByRole('button', { name: 'Форматирование', exact: true }).click();
+      await card.locator('.vk-parsing-editor__format-tools').waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'publisher-entities-empty',
     beforeShot: async (page) => {
       await page.locator('.publisher-entities-page__state').waitFor({ state: 'visible' });
@@ -438,7 +479,7 @@ const scenarioBehaviors = [
     name: 'publications-publisher-empty',
     beforeShot: async (page) => {
       await page
-        .getByText('Нет подключений · настройка в Майоре', { exact: true })
+        .getByText('Нет подключённых получателей', { exact: true })
         .waitFor({ state: 'visible' });
     },
   },
@@ -1007,9 +1048,17 @@ const scenarioBehaviors = [
     },
   },
   {
-    name: 'chat-settings-comments',
+    name: 'publisher-entity-modules-cold',
     beforeShot: async (page) => {
-      await page.waitForTimeout(500);
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page.getByText('Постинг', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-channel-modules-cold',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page.getByText('Предложки', { exact: true }).waitFor({ state: 'visible' });
     },
   },
   {
@@ -1159,42 +1208,6 @@ const scenarioBehaviors = [
     },
   },
   {
-    name: 'channel-settings-vk-parsing',
-    beforeShot: async (page) => {
-      await page
-        .locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card')
-        .waitFor({ state: 'visible' });
-      await page.waitForTimeout(500);
-    },
-  },
-  {
-    name: 'channel-settings-vk-parsing-editor',
-    beforeShot: async (page) => {
-      const signatureToggle = page.getByRole('checkbox', { name: 'Подпись публикаций' });
-      await signatureToggle.check();
-      const signatureText = page.getByRole('textbox', { name: 'Текст ссылки' });
-      await signatureText.fill('Наш канал');
-      await signatureText.blur();
-      const signatureUrl = page.getByRole('textbox', { name: 'Адрес ссылки' });
-      await signatureUrl.fill('https://max.ru/channel-editor');
-      await signatureUrl.blur();
-      await page.getByText('Сохранено', { exact: true }).waitFor({ state: 'visible' });
-      await openSettingsSection(page, 'Посты из VK', '.settings-drilldown__panel--vk-parsing');
-      const card = page.locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card');
-      await card.waitFor({ state: 'visible' });
-      await card.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
-      await card.locator('.vk-parsing-editor__composer').waitFor({ state: 'visible' });
-      await card.getByRole('button', { name: 'Форматирование', exact: true }).click();
-      await card.locator('.vk-parsing-editor__format-tools').waitFor({ state: 'visible' });
-      await page.waitForTimeout(350);
-      const toastCloseButtons = page.getByRole('button', { name: 'Закрыть уведомление' });
-      while ((await toastCloseButtons.count()) > 0) {
-        await toastCloseButtons.first().click();
-      }
-      await page.waitForTimeout(350);
-    },
-  },
-  {
     name: 'channel-settings-polls',
     beforeShot: async (page) => {
       await page.getByRole('button', { name: /Опросы/u }).click();
@@ -1213,15 +1226,6 @@ const scenarioBehaviors = [
     name: 'channel-settings-giveaway',
     beforeShot: async (page) => {
       await openSettingsSection(page, 'Розыгрыши', '.settings-drilldown__panel--channel-giveaway');
-    },
-  },
-  {
-    name: 'chat-settings-vk-parsing',
-    beforeShot: async (page) => {
-      await page
-        .locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card')
-        .waitFor({ state: 'visible' });
-      await page.waitForTimeout(500);
     },
   },
   {

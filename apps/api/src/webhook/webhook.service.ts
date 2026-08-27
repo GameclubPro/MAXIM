@@ -36,6 +36,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { PublisherEntityBindingLifecycleService } from '../publisher/publisher-entity-binding-lifecycle.service';
+import { PublisherChatCommentProducerService } from '../publisher/publisher-chat-comment-producer.service';
 import {
   buildWebhookSemanticEventKey,
   readWebhookEventTimestamp,
@@ -227,6 +228,8 @@ export class WebhookService {
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
     @Optional()
     private readonly publisherBindingLifecycle?: PublisherEntityBindingLifecycleService,
+    @Optional()
+    private readonly publisherChatCommentProducer?: PublisherChatCommentProducerService,
   ) {
     const configuredPublisherBotId = configService.get<unknown>('MAX_PUBLISHER_BOT_ID');
     this.publisherBotId = buildPublisherBotDescriptor({
@@ -269,6 +272,7 @@ export class WebhookService {
   async repairDuplicateReceiptReadModels(update: MaxUpdate): Promise<void> {
     if (this.isPublisherUpdate(update)) {
       await this.requirePublisherBindingLifecycle().observeWebhook(update);
+      await this.publisherChatCommentProducer?.observeWebhook(update);
       return;
     }
     await Promise.all([
@@ -342,6 +346,7 @@ export class WebhookService {
     const update = event.normalizedPayload as MaxUpdate;
     if (this.isPublisherUpdate(update)) {
       await this.requirePublisherBindingLifecycle().observeWebhook(update);
+      await this.publisherChatCommentProducer?.observeWebhook(update);
       await this.prisma.webhookEvent.updateMany({
         where: {
           id: webhookEventId,

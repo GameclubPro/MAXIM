@@ -67,6 +67,7 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/lib/api/preview-transport-system.ts',
     'apps/miniapp/src/pages/publisher-entities-page*.ts*',
     'apps/miniapp/src/pages/publisher-entities-page.css',
+    'apps/miniapp/src/pages/publisher-entity-modules-page*',
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/styles/publications-page.css',
     'packages/contracts/src/publisher.ts',
@@ -125,6 +126,15 @@ const ROUTE_DEFINITIONS = {
     manifestEntry: 'src/pages/publisher-entities-page.tsx',
     readySelector: '.publisher-entities-page',
     coldScenario: 'publik',
+    features: ['publisher'],
+    sourceGlobs: FEATURE_SOURCE_GLOBS.publisher,
+  },
+  'publisher-entity-modules': {
+    pattern: '/publisher/:entityType/:entityId',
+    previewPath: '/publisher/chat/preview-chat',
+    manifestEntry: 'src/pages/publisher-entity-modules-page.tsx',
+    readySelector: '.publisher-entity-modules-page',
+    coldScenario: 'publisher-entity-modules-cold',
     features: ['publisher'],
     sourceGlobs: FEATURE_SOURCE_GLOBS.publisher,
   },
@@ -275,7 +285,6 @@ export const MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES = Object.freeze([
   'chat-settings-links-timer',
   'chat-settings-bot-message-editor',
   'chat-settings-required-subscription',
-  'chat-settings-vk-parsing',
   'chat-settings-polls',
   'chat-settings-poll-editor',
   'chat-settings-poll-draft',
@@ -289,7 +298,7 @@ export const MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES = Object.freeze([
   'channel-settings-comments',
   'channel-settings-post-suggestions',
   'channel-settings-post-suggestions-off',
-  'channel-settings-vk-parsing',
+  'publisher-entity-modules-vk',
   'channel-settings-polls',
   'channel-settings-poll-editor',
   'channel-settings-giveaway',
@@ -323,6 +332,38 @@ const baseScenarios = [
       },
     ],
     [
+      'publisher-entity-modules',
+      {
+        searchParams: { profile: 'publisher' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher', 'vk-parsing'],
+      },
+    ],
+    [
+      'publisher-channel-modules',
+      {
+        searchParams: { profile: 'publisher', view: 'channel' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher', 'vk-parsing'],
+      },
+    ],
+    [
+      'publisher-entity-modules-vk',
+      {
+        searchParams: { profile: 'publisher' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher', 'vk-parsing'],
+      },
+    ],
+    [
+      'publisher-channel-modules-vk-editor',
+      {
+        searchParams: { profile: 'publisher', view: 'channel' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher', 'vk-parsing'],
+      },
+    ],
+    [
       'publisher-entities-empty',
       {
         searchParams: { profile: 'publisher', publisherState: 'empty' },
@@ -344,6 +385,20 @@ const baseScenarios = [
         searchParams: { profile: 'publisher', publisherState: 'large' },
         readySelector: '.publisher-entities-page',
         features: ['publisher'],
+      },
+    ],
+  ]),
+  ...defineRouteScenarios('publisher-entity-modules', [
+    [
+      'publisher-entity-modules-cold',
+      { searchParams: { profile: 'publisher' }, features: ['vk-parsing'] },
+    ],
+    [
+      'publisher-channel-modules-cold',
+      {
+        path: '/publisher/channel/preview-channel',
+        searchParams: { profile: 'publisher' },
+        features: ['vk-parsing'],
       },
     ],
   ]),
@@ -498,7 +553,6 @@ const baseScenarios = [
     ['chat-settings-giveaway-conditions-step', { searchParams: { focus: 'giveaway' } }],
     ['chat-settings-giveaway-channels-modal', { searchParams: { focus: 'giveaway' } }],
     ['chat-settings-giveaway-publish-step', { searchParams: { focus: 'giveaway' } }],
-    ['chat-settings-comments', { searchParams: { focus: 'comments' } }],
     ['chat-settings-required-subscription', { searchParams: { focus: 'requiredSubscription' } }],
     ['chat-settings-apply-target', { searchParams: { focus: 'links' } }],
     ['chat-settings-broadcast', { searchParams: { focus: 'broadcast', workspace: 'autoposts' } }],
@@ -518,7 +572,6 @@ const baseScenarios = [
         },
       },
     ],
-    ['chat-settings-vk-parsing', { searchParams: { focus: 'vkParsing' } }],
   ]),
   ...defineRouteScenarios('chat-comments', [
     ['chat-dialog-comments', { searchParams: { token: 'preview-comments-token-0001' } }],
@@ -563,8 +616,6 @@ const baseScenarios = [
     'channel-settings-comments',
     'channel-settings-post-suggestions',
     'channel-settings-post-suggestions-off',
-    ['channel-settings-vk-parsing', { searchParams: { focus: 'vkParsing' } }],
-    'channel-settings-vk-parsing-editor',
     'channel-settings-polls',
     'channel-settings-poll-editor',
     'channel-settings-giveaway',
