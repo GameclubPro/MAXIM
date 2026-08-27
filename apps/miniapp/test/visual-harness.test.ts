@@ -205,6 +205,10 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     profile: 'publisher',
     view: 'channel',
   });
+  assert.deepEqual(scenarios.get('publisher-entities-channel-only')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'channel-only',
+  });
   assert.deepEqual(scenarios.get('publisher-entities-empty')?.searchParams, {
     profile: 'publisher',
     publisherState: 'empty',
@@ -216,6 +220,25 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   assert.deepEqual(scenarios.get('publisher-entities-large')?.searchParams, {
     profile: 'publisher',
     publisherState: 'large',
+  });
+  assert.deepEqual(scenarios.get('publisher-entity-modules-blocked')?.searchParams, {
+    profile: 'publisher',
+  });
+  assert.equal(
+    scenarios.get('publisher-entity-modules-blocked')?.path,
+    '/publisher/chat/preview-chat-2',
+  );
+  assert.deepEqual(scenarios.get('publisher-channel-suggestions-confirm')?.searchParams, {
+    profile: 'publisher',
+    publisherSuggestions: 'large',
+  });
+  assert.deepEqual(scenarios.get('publisher-channel-suggestions-cancel-confirm')?.searchParams, {
+    profile: 'publisher',
+    publisherSuggestions: 'large',
+  });
+  assert.deepEqual(scenarios.get('publisher-channel-suggestions-history')?.searchParams, {
+    profile: 'publisher',
+    publisherSuggestions: 'large',
   });
   assert.deepEqual(scenarios.get('chat-settings-publisher-policy-setup')?.searchParams, {
     publisherPolicyState: 'setup',
@@ -253,6 +276,7 @@ test('Publik entry route and publisher source files select workspace visual scen
     'apps/miniapp/src/features/publications/publication-hub-header.css',
     'apps/miniapp/src/features/publications/publication-target-picker.css',
     'apps/miniapp/src/pages/publisher-entities-page.tsx',
+    'apps/miniapp/src/pages/publisher-suggestions-inbox.tsx',
     'apps/miniapp/src/lib/publisher-readiness.ts',
     'apps/miniapp/src/lib/publisher-readiness-label.ts',
     'packages/contracts/src/publisher.ts',

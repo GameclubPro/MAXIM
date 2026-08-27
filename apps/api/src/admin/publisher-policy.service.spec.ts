@@ -183,25 +183,27 @@ function createListFixture(
       );
     },
   );
-  const catalogFindFirst = jest.fn().mockImplementation(
-    (request?: { where?: { chatId?: string; entityType?: ChatEntityType } }) => {
-      const entity = entities.find(
-        (candidate) =>
-          candidate.id === request?.where?.chatId &&
-          candidate.entityType === request?.where?.entityType,
-      );
-      return Promise.resolve(
-        entity
-          ? {
-              entityType: entity.entityType,
-              title: entity.title,
-              link: null,
-              avatarUrl: null,
-            }
-          : null,
-      );
-    },
-  );
+  const catalogFindFirst = jest
+    .fn()
+    .mockImplementation(
+      (request?: { where?: { chatId?: string; entityType?: ChatEntityType } }) => {
+        const entity = entities.find(
+          (candidate) =>
+            candidate.id === request?.where?.chatId &&
+            candidate.entityType === request?.where?.entityType,
+        );
+        return Promise.resolve(
+          entity
+            ? {
+                entityType: entity.entityType,
+                title: entity.title,
+                link: null,
+                avatarUrl: null,
+              }
+            : null,
+        );
+      },
+    );
   const readiness = createReadiness(readyEntityIds);
   const service = new PublisherPolicyService(
     {
@@ -554,8 +556,9 @@ describe('PublisherPolicyService', () => {
         refreshRow('wrong-catalog-type'),
       ])
       .mockResolvedValueOnce(readyIds.map((id) => refreshRow(id)));
-    const catalogFindMany = jest.fn().mockImplementation(
-      ({ where }: { where: { chatId: { in: string[] } } }) =>
+    const catalogFindMany = jest
+      .fn()
+      .mockImplementation(({ where }: { where: { chatId: { in: string[] } } }) =>
         Promise.resolve(
           where.chatId.in.flatMap((chatId) =>
             chatId === 'missing-catalog'
@@ -571,7 +574,7 @@ describe('PublisherPolicyService', () => {
                 ],
           ),
         ),
-    );
+      );
     const service = new PublisherPolicyService(
       {
         publisherEntityBinding: { findMany },
@@ -620,16 +623,29 @@ describe('PublisherPolicyService', () => {
                 accessEdges: {
                   some: expect.objectContaining({
                     userId: user.userId,
-                    state: ManagedEntityAccessState.GRANTED,
-                    userRole: {
-                      in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN],
-                    },
                     botId: 'publik-bot',
+                    checkedAt: { gt: expect.any(Date) },
                     OR: expect.arrayContaining([
-                      { expiresAt: { gt: expect.any(Date) } },
                       {
-                        expiresAt: null,
-                        checkedAt: { gt: expect.any(Date) },
+                        state: ManagedEntityAccessState.GRANTED,
+                        userRole: {
+                          in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN],
+                        },
+                        OR: expect.arrayContaining([
+                          { expiresAt: { gt: expect.any(Date) } },
+                          {
+                            expiresAt: null,
+                            checkedAt: { gt: expect.any(Date) },
+                          },
+                        ]),
+                      },
+                      {
+                        state: {
+                          in: [
+                            ManagedEntityAccessState.USER_DENIED,
+                            ManagedEntityAccessState.BOT_DENIED,
+                          ],
+                        },
                       },
                     ]),
                   }),

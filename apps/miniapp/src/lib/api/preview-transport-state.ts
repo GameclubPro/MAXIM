@@ -116,8 +116,9 @@ export type PreviewState = {
   channelPartnerAssistEnabled: boolean;
   accessDiagnostics: ManagedEntityAccessDiagnostics | null;
   settingsScreenError: 'auth-expired' | 'access-denied' | null;
-  publisherEntitiesVariant: 'mixed' | 'large' | 'empty' | 'error';
+  publisherEntitiesVariant: 'mixed' | 'channel-only' | 'large' | 'empty' | 'error';
   publisherPolicyVariant: 'normal' | 'setup' | 'error';
+  publisherSuggestionsVariant: 'empty' | 'mixed' | 'large';
 };
 
 export type PreviewDialogBucket = {
@@ -143,6 +144,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   const publisherProfile = searchParams.get('profile') === 'publisher';
   const publisherState = searchParams.get('publisherState');
   const publisherPolicyState = searchParams.get('publisherPolicyState');
+  const publisherSuggestionsState = searchParams.get('publisherSuggestions');
   const chatSettings = chatSettingsSchema.parse({
     greetingEnabled: false,
     greetingBotMessageEnabled: false,
@@ -921,13 +923,20 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     accessDiagnostics: buildPreviewAccessDiagnostics(search),
     settingsScreenError: resolvePreviewSettingsScreenError(search),
     publisherEntitiesVariant:
-      publisherState === 'large' || publisherState === 'empty' || publisherState === 'error'
+      publisherState === 'channel-only' ||
+      publisherState === 'large' ||
+      publisherState === 'empty' ||
+      publisherState === 'error'
         ? publisherState
         : 'mixed',
     publisherPolicyVariant:
       publisherPolicyState === 'setup' || publisherPolicyState === 'error'
         ? publisherPolicyState
         : 'normal',
+    publisherSuggestionsVariant:
+      publisherSuggestionsState === 'mixed' || publisherSuggestionsState === 'large'
+        ? publisherSuggestionsState
+        : 'empty',
   };
 
   state.autopostRules = [

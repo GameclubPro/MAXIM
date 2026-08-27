@@ -51,6 +51,12 @@ function publicationRow(id: string, updatedAt = new Date('2026-07-10T09:00:00.00
 
 function createPublicationService(prisma: Record<string, unknown>) {
   const presenter = new PublicationPresenterService(prisma as never);
+  const publisherRouting = {
+    requireNewRoute: jest.fn().mockReturnValue({
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      requiredBotId: 'publisher-bot',
+    }),
+  };
   const service = new PublicationService(
     prisma as never,
     {} as never,
@@ -59,9 +65,9 @@ function createPublicationService(prisma: Record<string, unknown>) {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
+    publisherRouting as never,
   );
-  return { presenter, service };
+  return { presenter, publisherRouting, service };
 }
 
 describe('Publication performance and pagination', () => {
@@ -195,6 +201,44 @@ describe('Publication performance and pagination', () => {
     );
   });
 
+  it('searches PUBLIK_V1 targets only through the exact active Publisher catalog', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ chatId: 'publisher-chat', entityType: 'CHAT' }]);
+    const publicationFindMany = jest.fn().mockResolvedValue([]);
+    const { service } = createPublicationService({
+      publication: { findMany: publicationFindMany },
+      managedBroadcastDelivery: { groupBy: jest.fn() },
+      $queryRaw: queryRaw,
+    });
+
+    await service.list(
+      { userId: 'user-1' } as never,
+      { view: 'plan', query: 'Публика', limit: 30 },
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    const catalogSearchSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+    const catalogSearchValues = extractSqlValues(queryRaw.mock.calls[0]?.[0]);
+    expect(catalogSearchSql).toContain('FROM "managed_bot_chat_catalog" AS catalog');
+    expect(catalogSearchSql).toContain('catalog."status" = \'ACTIVE\'');
+    expect(catalogSearchValues).toEqual(['publisher-bot', '%Публика%', 501]);
+    const searchBranches = publicationFindMany.mock.calls[0]?.[0].where.AND[0].OR;
+    expect(searchBranches).toContainEqual({
+      targets: {
+        some: {
+          OR: [
+            {
+              entityType: 'CHAT',
+              targetChatId: { in: ['publisher-chat'] },
+            },
+          ],
+        },
+      },
+    });
+    expect(JSON.stringify(searchBranches)).not.toContain('"chat"');
+  });
+
   it('hides publication details owned by another dispatch profile', async () => {
     const { presenter, service } = createPublicationService({});
     jest.spyOn(presenter, 'loadPublicationDetailsRow').mockResolvedValue({
@@ -210,6 +254,32 @@ describe('Publication performance and pagination', () => {
       ),
     ).rejects.toThrow('Публикация не найдена.');
     expect(mapDetails).not.toHaveBeenCalled();
+  });
+
+  it('hydrates PUBLIK_V1 details with the exact Publisher catalog presentation', async () => {
+    const { presenter, publisherRouting, service } = createPublicationService({});
+    const row = {
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      targets: [{ targetChatId: 'chat-1', entityType: 'CHAT' }],
+    };
+    const presentations = new Map();
+    jest.spyOn(presenter, 'loadPublicationDetailsRow').mockResolvedValue(row as never);
+    const loadPresentations = jest
+      .spyOn(presenter, 'loadPublisherTargetPresentations')
+      .mockResolvedValue(presentations);
+    const mapDetails = jest
+      .spyOn(presenter, 'mapPublicationDetails')
+      .mockResolvedValue({ id: 'publication-publisher' } as never);
+
+    await service.get(
+      'publication-publisher',
+      { userId: 'user-1' } as never,
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    expect(publisherRouting.requireNewRoute).toHaveBeenCalled();
+    expect(loadPresentations).toHaveBeenCalledWith(row.targets, 'publisher-bot');
+    expect(mapDetails).toHaveBeenCalledWith(row, presentations);
   });
 
   it('uses the same current-revision failure selector for immediate publications', async () => {
@@ -241,6 +311,35 @@ describe('Publication performance and pagination', () => {
       PublicationDispatchProfile.PUBLIK_V1,
     );
     expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it('uses the exact active Publisher catalog in failed-publication target search', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const { service } = createPublicationService({
+      publication: { findMany: jest.fn() },
+      managedBroadcastDelivery: { groupBy: jest.fn() },
+      $queryRaw: queryRaw,
+    });
+
+    await service.list(
+      { userId: 'user-1' } as never,
+      {
+        view: 'current',
+        status: 'failed',
+        query: 'Публик',
+        limit: 30,
+      },
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    const selectorSql = extractSqlText(queryRaw.mock.calls[1]?.[0]);
+    const selectorValues = extractSqlValues(queryRaw.mock.calls[1]?.[0]);
+    expect(selectorSql).toContain('INNER JOIN "managed_bot_chat_catalog" AS catalog');
+    expect(selectorSql).toContain('catalog."status" = \'ACTIVE\'');
+    expect(selectorSql).toContain('catalog."entity_type" = target."entity_type"');
+    expect(selectorSql).not.toContain('INNER JOIN "chats" AS chat');
+    expect(selectorValues).toContain('publisher-bot');
+    expect(selectorValues).toContain('%Публик%');
   });
 
   it('paginates schedule errors and active current-revision failures without obsolete-only rows', async () => {

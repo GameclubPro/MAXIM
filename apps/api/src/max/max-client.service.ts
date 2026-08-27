@@ -143,6 +143,8 @@ export type MaxChatMemberProfile = {
 
 export type MaxChatMemberAccess = {
   userId: string | null;
+  /** Optional only for cache compatibility with rows written before bot-type propagation. */
+  isBot?: boolean | null;
   isAdmin: boolean;
   isOwner: boolean;
   permissions: string[];
@@ -3721,6 +3723,7 @@ export class MaxClientService implements OnModuleDestroy {
       (typeof row.userId === 'string' || row.userId === null) &&
       typeof row.isAdmin === 'boolean' &&
       typeof row.isOwner === 'boolean' &&
+      (row.isBot === undefined || row.isBot === null || typeof row.isBot === 'boolean') &&
       Array.isArray(row.permissions) &&
       row.permissions.every((permission) => typeof permission === 'string') &&
       (row.permissionsKnown === undefined || typeof row.permissionsKnown === 'boolean')
@@ -3882,6 +3885,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     return {
       userId: this.readMemberUserId(value),
+      isBot: this.readExplicitChatMemberBotState(value),
       isAdmin: isOwner || (row ? this.isChatAdminMemberRow(row) : false),
       isOwner,
       permissions: row ? this.readChatAdminPermissions(row) : [],
@@ -4042,8 +4046,12 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private readExplicitChatMemberBot(value: unknown): boolean {
+    return this.readExplicitChatMemberBotState(value) === true;
+  }
+
+  private readExplicitChatMemberBotState(value: unknown): boolean | null {
     if (!value || typeof value !== 'object') {
-      return false;
+      return null;
     }
 
     const row = value as Record<string, unknown>;
@@ -4051,15 +4059,30 @@ export class MaxClientService implements OnModuleDestroy {
       row.user && typeof row.user === 'object' && !Array.isArray(row.user)
         ? (row.user as Record<string, unknown>)
         : null;
-    return [row, nestedUser].some(
-      (candidate) =>
-        candidate !== null &&
-        (candidate.is_bot === true ||
+    const candidates = [row, nestedUser].filter(
+      (candidate): candidate is Record<string, unknown> => candidate !== null,
+    );
+    if (
+      candidates.some(
+        (candidate) =>
+          candidate.is_bot === true ||
           candidate.isBot === true ||
           candidate.bot === true ||
           candidate.is_service === true ||
-          candidate.isService === true),
-    );
+          candidate.isService === true,
+      )
+    ) {
+      return true;
+    }
+    if (
+      candidates.some(
+        (candidate) =>
+          candidate.is_bot === false || candidate.isBot === false || candidate.bot === false,
+      )
+    ) {
+      return false;
+    }
+    return null;
   }
 
   private isChatAdminMemberArray(value: unknown): value is MaxChatAdminMember[] {

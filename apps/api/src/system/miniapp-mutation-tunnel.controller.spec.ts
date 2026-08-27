@@ -38,6 +38,7 @@ function createUploadMetadata(
     authHash: 'auth-hash-1',
     authUserKey: 'user-key-1',
     chunkCount: 1,
+    maxBodyBytes: DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS.maxBodyBytes,
     ...overrides,
   };
 }
@@ -286,6 +287,143 @@ describe('MiniappMutationTunnelController', () => {
       }),
     );
     expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
+  it.each([
+    [
+      'PATCH',
+      '/publisher/entities/chat/chat-1/modules',
+      { expectedRevision: 2, chatCommentsEnabled: true },
+    ],
+    [
+      'PATCH',
+      '/publisher/entities/channel/channel-1/modules',
+      { expectedRevision: 3, channelSuggestionsEnabled: true },
+    ],
+    [
+      'POST',
+      '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review',
+      { action: 'publish' },
+    ],
+  ])('forwards exact Publisher control mutation %s %s', async (method, path, payload) => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const serialized = JSON.stringify(payload);
+    const body = Buffer.from(serialized, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      { method, path, body, contentType: 'application/json; charset=utf-8' },
+      'InitData auth_date=1&hash=test',
+      TEST_USER,
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      `http://127.0.0.1:3001/api/v1${path}`,
+      expect.objectContaining({
+        method,
+        body: serialized,
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json; charset=utf-8',
+          'X-Miniapp-Mutation-Tunnel': '1',
+        }),
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
+  it.each([
+    ['PUT', '/publisher/entities/chat/chat-1/modules'],
+    ['POST', '/publisher/entities/chat/chat-1/modules'],
+    ['PATCH', '/publisher/entities/chat/chat-1/modules/'],
+    ['PATCH', '/publisher/entities/unknown/chat-1/modules'],
+    ['PATCH', '/publisher/entities/chat/chat-1/modules/extra'],
+    ['PATCH', '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review'],
+    ['POST', '/publisher/entities/chat/chat-1/suggestions/suggestion-1/review'],
+    ['POST', '/publisher/entities/channel/channel-1/suggestions/review'],
+    ['POST', '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review/'],
+    ['POST', '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review/extra'],
+  ])('rejects non-exact Publisher control target %s %s', async (method, path) => {
+    const controller = new MiniappMutationTunnelController();
+    const body = Buffer.from('{}', 'utf8').toString('base64url');
+    global.fetch = jest.fn() as typeof fetch;
+
+    await expect(
+      controller.tunnel(
+        { method, path, body, contentType: 'application/json' },
+        'InitData auth_date=1&hash=test',
+        TEST_USER,
+        createReply() as never,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'missing body',
+      {
+        method: 'PATCH',
+        path: '/publisher/entities/chat/chat-1/modules',
+        contentType: 'application/json',
+      },
+    ],
+    [
+      'non-JSON content type',
+      {
+        method: 'PATCH',
+        path: '/publisher/entities/chat/chat-1/modules',
+        body: Buffer.from('{}', 'utf8').toString('base64url'),
+        contentType: 'text/plain',
+      },
+    ],
+    [
+      'JSON array',
+      {
+        method: 'POST',
+        path: '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review',
+        body: Buffer.from('[]', 'utf8').toString('base64url'),
+        contentType: 'application/json',
+      },
+    ],
+    [
+      'malformed JSON',
+      {
+        method: 'POST',
+        path: '/publisher/entities/channel/channel-1/suggestions/suggestion-1/review',
+        body: Buffer.from('{', 'utf8').toString('base64url'),
+        contentType: 'application/json',
+      },
+    ],
+    [
+      'oversized JSON object',
+      {
+        method: 'PATCH',
+        path: '/publisher/entities/channel/channel-1/modules',
+        body: Buffer.from(JSON.stringify({ value: 'x'.repeat(16 * 1024) }), 'utf8').toString(
+          'base64url',
+        ),
+        contentType: 'application/json',
+      },
+    ],
+  ])('rejects Publisher control mutation with %s', async (_case, query) => {
+    const controller = new MiniappMutationTunnelController();
+    global.fetch = jest.fn() as typeof fetch;
+
+    await expect(
+      controller.tunnel(query, 'InitData auth_date=1&hash=test', TEST_USER, createReply() as never),
+    ).rejects.toThrow(BadRequestException);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('allows durable favorite-label saves through the mutation tunnel', async () => {
@@ -578,7 +716,7 @@ describe('MiniappMutationTunnelController', () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();
     const payload = JSON.stringify({
-      imageBase64: 'x'.repeat(16_000),
+      imageBase64: 'x'.repeat(20_000),
       imageMimeType: 'image/jpeg',
     });
     const encoded = Buffer.from(payload, 'utf8')
@@ -645,6 +783,55 @@ describe('MiniappMutationTunnelController', () => {
     );
     expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.send).toHaveBeenCalledWith(JSON.stringify({ ok: true }));
+  });
+
+  it('enforces Publisher control body limits while retaining chunk parts', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const chunk = Buffer.alloc(4_200, 1).toString('base64url');
+    global.fetch = jest.fn() as typeof fetch;
+
+    try {
+      for (let chunkIndex = 0; chunkIndex < 3; chunkIndex += 1) {
+        await controller.tunnel(
+          {
+            method: 'PATCH',
+            path: '/publisher/entities/chat/chat-1/modules',
+            contentType: 'application/json',
+            uploadId: 'publisher-control-limit-1',
+            chunkIndex: String(chunkIndex),
+            chunkCount: '4',
+            chunk,
+          },
+          'InitData auth_date=1&hash=test',
+          TEST_USER,
+          createReply() as never,
+        );
+      }
+
+      await expect(
+        controller.tunnel(
+          {
+            method: 'PATCH',
+            path: '/publisher/entities/chat/chat-1/modules',
+            contentType: 'application/json',
+            uploadId: 'publisher-control-limit-1',
+            chunkIndex: '3',
+            chunkCount: '4',
+            chunk,
+          },
+          'InitData auth_date=1&hash=test',
+          TEST_USER,
+          createReply() as never,
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect((controller as any).chunkedUploadStore.getUsage()).toMatchObject({
+        activeUploads: 1,
+        retainedBytes: 12_600,
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+    } finally {
+      controller.onModuleDestroy();
+    }
   });
 
   it('binds chunked uploads to the resolved session principal across credential rotation', async () => {

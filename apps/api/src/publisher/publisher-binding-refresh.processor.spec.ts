@@ -1,8 +1,10 @@
 import { DelayedError, type Job } from 'bullmq';
 import { PublisherBindingRefreshProcessor } from './publisher-binding-refresh.processor';
 import type { PublisherBindingRefreshJob } from './publisher-binding-refresh.queue';
+import { PublisherCandidateRefreshSupersededError } from './publisher-binding-refresh.service';
 import { PUBLISHER_DISPATCH_PAUSE_DEFER_MS } from './publisher-dispatch-job-guard';
 import { PublisherDispatchDisabledError } from './publisher-runtime-boundary.service';
+import { PublisherDispatchPausedError } from './publisher-dispatch-health.service';
 
 describe('PublisherBindingRefreshProcessor', () => {
   const previousRole = process.env.APP_ROLE;
@@ -40,6 +42,7 @@ describe('PublisherBindingRefreshProcessor', () => {
     const processor = new PublisherBindingRefreshProcessor(
       { refresh } as never,
       runtimeBoundary as never,
+      { assertDispatchAllowed: jest.fn() } as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -67,6 +70,7 @@ describe('PublisherBindingRefreshProcessor', () => {
     const processor = new PublisherBindingRefreshProcessor(
       { refresh } as never,
       runtimeBoundary as never,
+      { assertDispatchAllowed: jest.fn().mockResolvedValue(undefined) } as never,
     );
     const job = {
       data: candidateJob,
@@ -78,5 +82,69 @@ describe('PublisherBindingRefreshProcessor', () => {
     expect(runtimeBoundary.assertDispatchEnabled).toHaveBeenCalledTimes(1);
     expect(refresh).toHaveBeenCalledWith(candidateJob);
     expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('completes a superseded candidate refresh as a terminal no-op', async () => {
+    const superseded = new PublisherCandidateRefreshSupersededError();
+    const refresh = jest.fn().mockRejectedValue(superseded);
+    const processor = new PublisherBindingRefreshProcessor(
+      { refresh } as never,
+      { assertDispatchEnabled: jest.fn() } as never,
+      { assertDispatchAllowed: jest.fn().mockResolvedValue(undefined) } as never,
+    );
+    const job = {
+      data: candidateJob,
+      moveToDelayed: jest.fn(),
+    } as unknown as Job<PublisherBindingRefreshJob>;
+
+    await expect(processor.process(job, 'worker-token')).resolves.toBeUndefined();
+
+    expect(refresh).toHaveBeenCalledWith(candidateJob);
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('propagates non-superseded refresh failures to BullMQ retries', async () => {
+    const failure = new Error('publisher refresh transport failed');
+    const refresh = jest.fn().mockRejectedValue(failure);
+    const processor = new PublisherBindingRefreshProcessor(
+      { refresh } as never,
+      { assertDispatchEnabled: jest.fn() } as never,
+      { assertDispatchAllowed: jest.fn().mockResolvedValue(undefined) } as never,
+    );
+    const job = {
+      data: candidateJob,
+      moveToDelayed: jest.fn(),
+    } as unknown as Job<PublisherBindingRefreshJob>;
+
+    await expect(processor.process(job, 'worker-token')).rejects.toBe(failure);
+  });
+
+  it('durably delays a candidate while exact Publisher dispatch health is paused', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
+    const refresh = jest.fn();
+    const processor = new PublisherBindingRefreshProcessor(
+      { refresh } as never,
+      { assertDispatchEnabled: jest.fn() } as never,
+      {
+        assertDispatchAllowed: jest
+          .fn()
+          .mockRejectedValue(new PublisherDispatchPausedError('2026-08-26T11:59:00.000Z')),
+      } as never,
+    );
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    const job = {
+      data: candidateJob,
+      attemptsMade: 5,
+      opts: { attempts: 6 },
+      moveToDelayed,
+    } as unknown as Job<PublisherBindingRefreshJob>;
+
+    await expect(processor.process(job, 'worker-token')).rejects.toBeInstanceOf(DelayedError);
+
+    expect(moveToDelayed).toHaveBeenCalledWith(
+      Date.parse('2026-08-26T12:00:00.000Z') + PUBLISHER_DISPATCH_PAUSE_DEFER_MS,
+      'worker-token',
+    );
+    expect(refresh).not.toHaveBeenCalled();
   });
 });

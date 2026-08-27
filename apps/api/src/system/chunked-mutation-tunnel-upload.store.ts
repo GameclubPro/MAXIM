@@ -7,6 +7,7 @@ export type ChunkedMutationTunnelUploadMetadata = {
   authHash: string;
   authUserKey: string;
   chunkCount: number;
+  maxBodyBytes: number;
 };
 
 export type ChunkedMutationTunnelUpload = ChunkedMutationTunnelUploadMetadata & {
@@ -55,6 +56,7 @@ export class ChunkedMutationTunnelUploadStore {
     chunk: Buffer;
   }): { receivedCount: number; chunkCount: number } {
     this.cleanupExpiredUploads();
+    const maxBodyBytes = this.resolveMaxBodyBytes(params.metadata);
 
     let upload = this.uploads.get(params.uploadId);
     if (upload) {
@@ -69,7 +71,7 @@ export class ChunkedMutationTunnelUploadStore {
     const previousChunk = upload?.chunks[params.chunkIndex];
     const retainedBytesDelta = params.chunk.length - (previousChunk?.length ?? 0);
     const nextUploadBytes = (upload?.receivedBytes ?? 0) + retainedBytesDelta;
-    if (nextUploadBytes > this.limits.maxBodyBytes) {
+    if (nextUploadBytes > maxBodyBytes) {
       throw new BadRequestException('Tunnel body is too large');
     }
     if (this.retainedBytes + retainedBytesDelta > this.limits.maxRetainedBytes) {
@@ -180,10 +182,18 @@ export class ChunkedMutationTunnelUploadStore {
       upload.contentType !== metadata.contentType ||
       upload.authHash !== metadata.authHash ||
       upload.authUserKey !== metadata.authUserKey ||
-      upload.chunkCount !== metadata.chunkCount
+      upload.chunkCount !== metadata.chunkCount ||
+      upload.maxBodyBytes !== metadata.maxBodyBytes
     ) {
       throw new BadRequestException('Tunnel upload metadata mismatch');
     }
+  }
+
+  private resolveMaxBodyBytes(metadata: ChunkedMutationTunnelUploadMetadata): number {
+    if (!Number.isSafeInteger(metadata.maxBodyBytes) || metadata.maxBodyBytes < 1) {
+      throw new BadRequestException('Invalid tunnel body limit');
+    }
+    return Math.min(this.limits.maxBodyBytes, metadata.maxBodyBytes);
   }
 
   private cleanupExpiredUploads(): void {

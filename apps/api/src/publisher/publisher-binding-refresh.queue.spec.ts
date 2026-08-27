@@ -70,4 +70,57 @@ describe('PublisherBindingRefreshQueueService', () => {
       }),
     );
   });
+
+  it('preserves the durable forwarded actor fence and private reply context', async () => {
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+
+    await service.enqueue({
+      chatId: '-70001',
+      publisherBotId: 'publik-bot',
+      candidateUserId: '20002',
+      candidateVersion: 'forwarded:update-1',
+      replyChatId: '10001',
+      requiresReadAccess: true,
+      reason: 'forwarded_private',
+      eventAt: new Date('2026-08-27T12:00:00.000Z'),
+    });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'refresh',
+      expect.objectContaining({
+        chatId: '-70001',
+        publisherBotId: 'publik-bot',
+        candidateUserId: '20002',
+        candidateVersion: 'forwarded:update-1',
+        replyChatId: '10001',
+        requiresReadAccess: true,
+        reason: 'forwarded_private',
+      }),
+      expect.objectContaining({ priority: 5, attempts: 6 }),
+    );
+  });
+
+  it('uses different job identities for old and new candidate versions at the same event time', async () => {
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+    const eventAt = new Date('2026-08-27T12:00:00.000Z');
+
+    for (const candidateVersion of ['direct:old', 'direct:new']) {
+      await service.enqueue({
+        chatId: '-70001',
+        publisherBotId: 'publik-bot',
+        candidateUserId: '20002',
+        candidateVersion,
+        reason: 'webhook_observed',
+        eventAt,
+      });
+    }
+
+    const oldJobId = queue.add.mock.calls[0]?.[2]?.jobId;
+    const newJobId = queue.add.mock.calls[1]?.[2]?.jobId;
+    expect(oldJobId).toEqual(expect.any(String));
+    expect(newJobId).toEqual(expect.any(String));
+    expect(newJobId).not.toBe(oldJobId);
+  });
 });

@@ -200,12 +200,26 @@ export class PublisherPolicyService {
     const boundedLimit = Math.min(MAX_PUBLISHER_BULK_REFRESH_TARGETS, requestedLimit);
     const now = new Date();
     const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
+    const actorEvidenceLookback = new Date(now.getTime() - 30 * 24 * 60 * 60_000);
     const accessWhere = {
       userId: user.userId,
-      state: ManagedEntityAccessState.GRANTED,
-      userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
       botId: publisherBotId,
-      OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
+      checkedAt: { gt: actorEvidenceLookback },
+      OR: [
+        {
+          state: ManagedEntityAccessState.GRANTED,
+          userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+          OR: [
+            { expiresAt: { gt: now } },
+            { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
+          ],
+        },
+        {
+          state: {
+            in: [ManagedEntityAccessState.USER_DENIED, ManagedEntityAccessState.BOT_DENIED],
+          },
+        },
+      ],
     } satisfies Prisma.ManagedEntityAccessEdgeWhereInput;
     const normalizedExclusions = [
       ...new Set(excludedEntityIds.map((entityId) => entityId.trim()).filter(Boolean)),
@@ -233,7 +247,6 @@ export class PublisherPolicyService {
       lastWebhookAt: true,
       chat: {
         select: {
-          entityType: true,
           accessEdges: {
             where: accessWhere,
             select: { botId: true, entityType: true },
@@ -320,7 +333,6 @@ export class PublisherPolicyService {
       lastSeenAt: Date | null;
       lastWebhookAt: Date | null;
       chat: {
-        entityType: ChatEntityType;
         accessEdges: readonly { botId: string; entityType: ChatEntityType }[];
       };
     }[],
@@ -346,10 +358,11 @@ export class PublisherPolicyService {
       if (!hasPublisherRefreshEvidence(row, publisherBotId)) {
         continue;
       }
+      const catalogEntityType = catalogEntityTypeByChatId.get(row.chatId);
       if (
-        catalogEntityTypeByChatId.get(row.chatId) !== row.chat.entityType ||
+        !catalogEntityType ||
         !row.chat.accessEdges.some(
-          (edge) => edge.entityType === row.chat.entityType && edge.botId === publisherBotId,
+          (edge) => edge.entityType === catalogEntityType && edge.botId === publisherBotId,
         )
       ) {
         continue;
@@ -603,8 +616,7 @@ export class PublisherPolicyService {
                 ? {
                     chatCommentsEnabled: request.chatComments.commentsEnabled,
                     chatCommentsAdminsEnabled: request.chatComments.commentsAdminsEnabled,
-                    chatCommentsPostsEnabled:
-                      request.chatComments.commentsChatBroadcastsEnabled,
+                    chatCommentsPostsEnabled: request.chatComments.commentsChatBroadcastsEnabled,
                   }
                 : {}),
               ...(request.channelSuggestionsEnabled !== undefined
@@ -621,8 +633,7 @@ export class PublisherPolicyService {
                 ? {
                     chatCommentsEnabled: request.chatComments.commentsEnabled,
                     chatCommentsAdminsEnabled: request.chatComments.commentsAdminsEnabled,
-                    chatCommentsPostsEnabled:
-                      request.chatComments.commentsChatBroadcastsEnabled,
+                    chatCommentsPostsEnabled: request.chatComments.commentsChatBroadcastsEnabled,
                   }
                 : {}),
               ...(request.channelSuggestionsEnabled !== undefined

@@ -7,9 +7,12 @@ import {
 } from '@maxim/contracts/publisher';
 import {
   buildPublisherComposeRoute,
+  buildPublisherEntityViewRoute,
+  fingerprintPublisherEntities,
   isPublisherEntityRefreshObserved,
   normalizePublisherEntityView,
   pollPublisherEntityRefresh,
+  resolvePublisherHomeView,
   retryPublisherEntitiesNextPage,
   shouldOfferPublisherRecheck,
 } from '../src/pages/publisher-entities-page-model';
@@ -74,6 +77,47 @@ function publisherEntity(
 test('publisher cabinet normalizes its server-side entity view', () => {
   assert.equal(normalizePublisherEntityView('channel'), 'channel');
   assert.equal(normalizePublisherEntityView('unknown'), 'chat');
+});
+
+test('publisher cabinet opens the populated channel view only when no view was requested', () => {
+  assert.deepEqual(resolvePublisherHomeView(null, { chat: 0, channel: 4 }), {
+    view: 'channel',
+    shouldReplace: true,
+  });
+  assert.deepEqual(resolvePublisherHomeView('chat', { chat: 0, channel: 4 }), {
+    view: 'chat',
+    shouldReplace: false,
+  });
+  assert.deepEqual(resolvePublisherHomeView(null, { chat: 2, channel: 4 }), {
+    view: 'chat',
+    shouldReplace: false,
+  });
+});
+
+test('publisher cabinet view links preserve launch context and replace only the view', () => {
+  assert.equal(
+    buildPublisherEntityViewRoute('channel', '?profile=publisher&view=chat&device=iphone'),
+    '/?profile=publisher&view=channel&device=iphone',
+  );
+});
+
+test('publisher entity fingerprints observe access updates without depending on response order', () => {
+  const first = publisherEntity('chat-1', 'chat', {
+    checkedAt: '2026-08-27T10:00:00.000Z',
+  });
+  const second = publisherEntity('channel-1', 'channel', {
+    checkedAt: '2026-08-27T10:00:00.000Z',
+  });
+  assert.equal(
+    fingerprintPublisherEntities([first, second]),
+    fingerprintPublisherEntities([second, first]),
+  );
+  assert.notEqual(
+    fingerprintPublisherEntities([first]),
+    fingerprintPublisherEntities([
+      publisherEntity('chat-1', 'chat', { checkedAt: '2026-08-27T10:00:01.000Z' }),
+    ]),
+  );
 });
 
 test('publisher cabinet builds an encoded compose deep link', () => {

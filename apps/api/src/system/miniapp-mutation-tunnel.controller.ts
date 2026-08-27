@@ -25,6 +25,7 @@ import {
 
 const ALLOWED_TUNNEL_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const MAX_TUNNEL_BODY_LENGTH = 128 * 1024;
+const MAX_CONTROL_TUNNEL_BODY_LENGTH = 16 * 1024;
 const MAX_CHUNKED_TUNNEL_BODY_LENGTH = DEFAULT_CHUNKED_MUTATION_TUNNEL_UPLOAD_LIMITS.maxBodyBytes;
 const MAX_CHUNKED_TUNNEL_CHUNKS = 9_000;
 const MAX_CHUNKED_TUNNEL_CHUNK_ENCODED_LENGTH = 6 * 1024;
@@ -33,6 +34,10 @@ const TUNNEL_TIMEOUT_MS = 25_000;
 type TunnelRouteRule = {
   method: string;
   pattern: RegExp;
+  body?: {
+    format: 'json-object';
+    maxBytes: number;
+  };
 };
 
 const ENTITY_ID_SEGMENT = '[^/?#]+';
@@ -142,6 +147,18 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   {
     method: 'PATCH',
     pattern: new RegExp(`^/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/policy$`),
+  },
+  {
+    method: 'PATCH',
+    pattern: new RegExp(`^/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/modules$`),
+    body: { format: 'json-object', maxBytes: MAX_CONTROL_TUNNEL_BODY_LENGTH },
+  },
+  {
+    method: 'POST',
+    pattern: new RegExp(
+      `^/publisher/entities/channel/${ENTITY_ID_SEGMENT}/suggestions/${ENTITY_ID_SEGMENT}/review$`,
+    ),
+    body: { format: 'json-object', maxBytes: MAX_CONTROL_TUNNEL_BODY_LENGTH },
   },
   {
     method: 'POST',
@@ -379,6 +396,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
 
     const body = this.decodeBody(query.body, query.bodyGzip);
     const contentType = this.normalizeContentType(query.contentType, body);
+    this.assertTunnelBodyConstraints(method, target, body, contentType);
     await this.forwardMutation({
       method,
       target,
@@ -476,6 +494,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     const chunk = this.decodeChunk(query.chunk);
     const contentType = this.normalizeContentType(query.contentType, '');
     const authHash = this.resolveAuthBinding(authorization, request);
+    const maxBodyBytes = this.resolveTunnelBodyMaxBytes(method, target);
     const progress = this.chunkedUploadStore.storeChunk({
       uploadId,
       metadata: {
@@ -485,6 +504,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
         authHash,
         authUserKey: user.userId,
         chunkCount,
+        maxBodyBytes,
       },
       chunkIndex,
       chunk,
@@ -515,6 +535,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     const chunkCount = this.normalizeChunkCount(query.chunkCount);
     const authHash = this.resolveAuthBinding(authorization, request);
     const contentType = this.normalizeContentType(query.contentType, '');
+    const maxBodyBytes = this.resolveTunnelBodyMaxBytes(method, target);
     const upload = this.chunkedUploadStore.beginCompletedUpload(uploadId, {
       method,
       path: target,
@@ -522,6 +543,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
       authHash,
       authUserKey: user.userId,
       chunkCount,
+      maxBodyBytes,
     });
 
     try {
@@ -529,6 +551,7 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
       if (body.length > MAX_CHUNKED_TUNNEL_BODY_LENGTH) {
         throw new BadRequestException('Tunnel body is too large');
       }
+      this.assertTunnelBodyConstraints(method, target, body, upload.contentType);
 
       await this.forwardMutation({
         method,
@@ -711,11 +734,55 @@ export class MiniappMutationTunnelController implements OnModuleDestroy {
     return `http://127.0.0.1:${port}/api/v1${target}`;
   }
 
-  private isAllowedTunnelTarget(target: string, method: string): boolean {
+  private assertTunnelBodyConstraints(
+    method: string,
+    target: string,
+    body: string | Buffer | undefined,
+    contentType: string | undefined,
+  ): void {
+    const rule = this.findAllowedTunnelRule(target, method);
+    if (!rule?.body) {
+      return;
+    }
+    if (body === undefined) {
+      throw new BadRequestException('Tunnel body is required');
+    }
+
+    const bodyBuffer = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
+    if (bodyBuffer.length === 0 || bodyBuffer.length > rule.body.maxBytes) {
+      throw new BadRequestException('Invalid tunnel body size');
+    }
+    const mediaType = (contentType ?? '').split(';', 1)[0]?.trim().toLowerCase();
+    if (mediaType !== 'application/json') {
+      throw new BadRequestException('Tunnel body must be JSON');
+    }
+
+    try {
+      const value: unknown = JSON.parse(bodyBuffer.toString('utf8'));
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Expected JSON object');
+      }
+    } catch {
+      throw new BadRequestException('Tunnel body must be a JSON object');
+    }
+  }
+
+  private findAllowedTunnelRule(target: string, method: string): TunnelRouteRule | undefined {
     const parsed = new URL(target, 'http://miniapp-tunnel.local');
     const pathname = parsed.pathname;
-    return ALLOWED_TUNNEL_ROUTES.some(
+    return ALLOWED_TUNNEL_ROUTES.find(
       (rule) => rule.method === method && rule.pattern.test(pathname),
     );
+  }
+
+  private resolveTunnelBodyMaxBytes(method: string, target: string): number {
+    return Math.min(
+      MAX_CHUNKED_TUNNEL_BODY_LENGTH,
+      this.findAllowedTunnelRule(target, method)?.body?.maxBytes ?? MAX_CHUNKED_TUNNEL_BODY_LENGTH,
+    );
+  }
+
+  private isAllowedTunnelTarget(target: string, method: string): boolean {
+    return this.findAllowedTunnelRule(target, method) !== undefined;
   }
 }

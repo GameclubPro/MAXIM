@@ -68,6 +68,7 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/pages/publisher-entities-page*.ts*',
     'apps/miniapp/src/pages/publisher-entities-page.css',
     'apps/miniapp/src/pages/publisher-entity-modules-page*',
+    'apps/miniapp/src/pages/publisher-suggestions-*',
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/styles/publications-page.css',
     'packages/contracts/src/publisher.ts',
@@ -332,6 +333,14 @@ const baseScenarios = [
       },
     ],
     [
+      'publisher-entities-channel-only',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'channel-only' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher'],
+      },
+    ],
+    [
       'publisher-entity-modules',
       {
         searchParams: { profile: 'publisher' },
@@ -399,6 +408,38 @@ const baseScenarios = [
         path: '/publisher/channel/preview-channel',
         searchParams: { profile: 'publisher' },
         features: ['vk-parsing'],
+      },
+    ],
+    [
+      'publisher-entity-modules-blocked',
+      {
+        path: '/publisher/chat/preview-chat-2',
+        searchParams: { profile: 'publisher' },
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-channel-suggestions-confirm',
+      {
+        path: '/publisher/channel/preview-channel',
+        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-channel-suggestions-cancel-confirm',
+      {
+        path: '/publisher/channel/preview-channel',
+        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-channel-suggestions-history',
+      {
+        path: '/publisher/channel/preview-channel',
+        searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
+        features: ['publisher'],
       },
     ],
   ]),

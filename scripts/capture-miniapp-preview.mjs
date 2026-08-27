@@ -378,9 +378,20 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publisher-entities-channel-only',
+    beforeShot: async (page) => {
+      await page.waitForURL((url) => url.searchParams.get('view') === 'channel');
+      await page.getByRole('list', { name: 'Каналы Публика' }).waitFor({ state: 'visible' });
+      await page.locator('.publisher-entity-row').first().waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'publisher-entity-modules',
     beforeShot: async (page) => {
-      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page
+        .getByRole('link', { name: /модули/iu })
+        .first()
+        .click();
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
       await page.getByText('Постинг', { exact: true }).waitFor({ state: 'visible' });
     },
@@ -388,7 +399,10 @@ const scenarioBehaviors = [
   {
     name: 'publisher-channel-modules',
     beforeShot: async (page) => {
-      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page
+        .getByRole('link', { name: /модули/iu })
+        .first()
+        .click();
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
       await page.getByText('Предложки', { exact: true }).waitFor({ state: 'visible' });
     },
@@ -396,7 +410,10 @@ const scenarioBehaviors = [
   {
     name: 'publisher-entity-modules-vk',
     beforeShot: async (page) => {
-      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page
+        .getByRole('link', { name: /модули/iu })
+        .first()
+        .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
       await page.locator('.publisher-entity-vk-module .vk-parsing-card').waitFor({
         state: 'visible',
@@ -407,7 +424,10 @@ const scenarioBehaviors = [
   {
     name: 'publisher-channel-modules-vk-editor',
     beforeShot: async (page) => {
-      await page.getByRole('link', { name: /модули/ui }).first().click();
+      await page
+        .getByRole('link', { name: /модули/iu })
+        .first()
+        .click();
       await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
       const card = page.locator('.publisher-entity-vk-module .vk-parsing-card');
       await card.waitFor({ state: 'visible' });
@@ -422,14 +442,57 @@ const scenarioBehaviors = [
     name: 'publisher-entities-empty',
     beforeShot: async (page) => {
       await page.locator('.publisher-entities-page__state').waitFor({ state: 'visible' });
+      await page
+        .getByRole('button', { name: 'Открыть диалог Публика', exact: true })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entity-modules-blocked',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page
+        .getByRole('button', { name: 'Проверить', exact: true })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-channel-suggestions-confirm',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: 'Опубликовать', exact: true }).first().click();
+      await page
+        .getByRole('dialog', { name: 'Опубликовать предложку?' })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-channel-suggestions-cancel-confirm',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: 'Отклонить', exact: true }).first().click();
+      await page
+        .getByRole('dialog', { name: 'Отклонить предложку?' })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-channel-suggestions-history',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: /История/u }).click();
+      const loadMore = page.getByRole('button', { name: /Показать ещё/u });
+      await loadMore.waitFor({ state: 'visible' });
+      await loadMore.press('Enter');
+      await page.getByText('Публикация создана', { exact: true }).first().waitFor({
+        state: 'visible',
+      });
     },
   },
   {
     name: 'publisher-entities-error',
     beforeShot: async (page) => {
-      await page
-        .locator('.publisher-entities-page__state.has-error')
-        .waitFor({ state: 'visible' });
+      await page.locator('.publisher-entities-page__state.has-error').waitFor({ state: 'visible' });
     },
   },
   {

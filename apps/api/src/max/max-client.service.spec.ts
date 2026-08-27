@@ -7973,6 +7973,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           status: 200,
           data: {
             user_id: 'bot-1',
+            is_bot: true,
             role: 'admin',
             is_admin: true,
             permissions: ['add_remove_members', 'change_chat_info'],
@@ -7986,6 +7987,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     expect(result).toEqual({
       userId: 'bot-1',
+      isBot: true,
       isAdmin: true,
       isOwner: false,
       permissions: ['add_remove_members', 'change_chat_info'],
@@ -8094,7 +8096,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    await service.getChatMembersAccess('chat-1', ['user-1'], {
+    const result = await service.getChatMembersAccess('chat-1', ['user-1'], {
       trafficClass: 'critical',
       timeoutMs: 1_234,
     });
@@ -8106,6 +8108,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         timeout: 1_234,
       }),
     );
+    expect(result.get('user-1')?.isBot).toBeNull();
 
     await service.onModuleDestroy();
   });
@@ -8119,10 +8122,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
             members: [
               {
                 user_id: 'user-1',
+                is_bot: false,
                 role: 'member',
               },
               {
                 user_id: 'user-2',
+                is_bot: true,
                 role: 'member',
               },
             ],
@@ -8141,6 +8146,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
     );
     expect([...result.keys()]).toEqual(['user-1', 'user-2']);
+    expect(result.get('user-1')?.isBot).toBe(false);
+    expect(result.get('user-2')?.isBot).toBe(true);
 
     await service.onModuleDestroy();
   });

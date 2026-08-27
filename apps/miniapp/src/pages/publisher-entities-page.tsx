@@ -1,30 +1,33 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { PublisherEntitiesSummary, PublisherEntity } from '@maxim/contracts/publisher';
-import {
-  CheckCircle,
-  NavArrowRight,
-  Refresh,
-  Search,
-  WarningCircle,
-  Xmark,
-} from 'iconoir-react';
+import { CheckCircle, NavArrowRight, Refresh, Search, WarningCircle, Xmark } from 'iconoir-react';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
-import { getPublisherEntity, listPublisherEntities, refreshPublisherEntity } from '../lib/api/publisher-client';
+import {
+  getPublisherEntity,
+  listPublisherEntities,
+  refreshPublisherEntities,
+  refreshPublisherEntity,
+} from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
+import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { resolveVirtualListRange } from '../lib/virtual-list';
 import {
+  buildPublisherEntityViewRoute,
+  fingerprintPublisherEntities,
   normalizePublisherEntityView,
   pollPublisherEntityRefresh,
   PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS,
+  resolvePublisherHomeView,
   retryPublisherEntitiesNextPage,
   shouldOfferPublisherRecheck,
+  waitForPublisherRefresh,
   type PublisherEntityReadinessFilter,
 } from './publisher-entities-page-model';
 import { buildPublisherEntityModulesRoute } from './publisher-entity-modules-page-model';
@@ -37,10 +40,16 @@ const PUBLISHER_ENTITY_LIST_INITIAL_HEIGHT = 680;
 const PUBLISHER_ENTITY_VIRTUALIZATION_THRESHOLD = 60;
 const PUBLISHER_ENTITY_LIST_OVERSCAN = 4;
 const PUBLISHER_ENTITY_SEARCH_DEBOUNCE_MS = 250;
+const PUBLISHER_BULK_REFRESH_POLL_DELAYS_MS = [1_200, 2_400, 4_200, 7_200] as const;
 
 type PublisherEntityRefreshState = {
   entityKey: string;
   phase: 'enqueueing' | 'polling';
+};
+
+type PublisherBulkRefreshState = {
+  phase: 'enqueueing' | 'polling';
+  queuedCount: number;
 };
 
 const EMPTY_PUBLISHER_SUMMARY: PublisherEntitiesSummary = {
@@ -60,25 +69,6 @@ const READINESS_FILTERS: Array<{
   { value: 'attention', label: 'Требуют внимания' },
 ];
 
-function waitForPublisherRefresh(delayMs: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.resolve();
-  }
-
-  return new Promise((resolve) => {
-    let timeoutId: number | null = null;
-    const finish = () => {
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
-      signal.removeEventListener('abort', finish);
-      resolve();
-    };
-    signal.addEventListener('abort', finish, { once: true });
-    timeoutId = window.setTimeout(finish, delayMs);
-  });
-}
-
 function formatEntityListStatus(
   visibleCount: number,
   totalCount: number,
@@ -93,15 +83,25 @@ function formatEntityListStatus(
   return `${visibleCount} из ${totalCount}`;
 }
 
+function fingerprintPublisherEntityPage(
+  entities: readonly PublisherEntity[],
+  summary: PublisherEntitiesSummary,
+): string {
+  return `${summary.chat}:${summary.channel}:${summary.ready}:${summary.attention}\n${fingerprintPublisherEntities(
+    entities,
+  )}`;
+}
+
 export function PublisherEntitiesPage({
   api,
+  botDialogUrl = null,
 }: {
   api: ApiTransport;
   botDialogUrl?: string | null;
 }) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [readinessFilter, setReadinessFilter] = useState<PublisherEntityReadinessFilter>('all');
@@ -110,10 +110,14 @@ export function PublisherEntitiesPage({
     PUBLISHER_ENTITY_LIST_INITIAL_HEIGHT,
   );
   const [entityRefresh, setEntityRefresh] = useState<PublisherEntityRefreshState | null>(null);
+  const [bulkRefresh, setBulkRefresh] = useState<PublisherBulkRefreshState | null>(null);
+  const [openingBotDialog, setOpeningBotDialog] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const mountedRef = useRef(true);
   const refreshAbortRef = useRef<AbortController | null>(null);
-  const view = normalizePublisherEntityView(searchParams.get('view'));
+  const bulkRefreshAbortRef = useRef<AbortController | null>(null);
+  const requestedView = searchParams.get('view');
+  const view = normalizePublisherEntityView(requestedView);
   const readiness = readinessFilter === 'all' ? undefined : readinessFilter;
   const searchSettling = query.trim() !== debouncedQuery;
   const entitiesQueryKey = useMemo(
@@ -148,7 +152,12 @@ export function PublisherEntitiesPage({
   );
   const summary = entitiesQuery.data?.pages[0]?.summary ?? EMPTY_PUBLISHER_SUMMARY;
   const filteredTotal = entitiesQuery.data?.pages[0]?.filteredTotal ?? 0;
+  const homeViewResolution = resolvePublisherHomeView(requestedView, summary);
+  const shouldAutoOpenChannels =
+    entitiesQuery.data !== undefined && homeViewResolution.shouldReplace;
   const activeTypeCount = summary[view];
+  const otherView = view === 'channel' ? 'chat' : 'channel';
+  const otherTypeCount = summary[otherView];
   const shouldVirtualize = entities.length > PUBLISHER_ENTITY_VIRTUALIZATION_THRESHOLD;
   const virtualRange = useMemo(
     () =>
@@ -171,6 +180,7 @@ export function PublisherEntitiesPage({
     return () => {
       mountedRef.current = false;
       refreshAbortRef.current?.abort();
+      bulkRefreshAbortRef.current?.abort();
     };
   }, []);
 
@@ -186,6 +196,15 @@ export function PublisherEntitiesPage({
     setListScrollTop(0);
     listRef.current?.scrollTo({ top: 0 });
   }, [debouncedQuery, readinessFilter, view]);
+
+  useEffect(() => {
+    if (!shouldAutoOpenChannels) {
+      return;
+    }
+    const next = new URLSearchParams(searchParams);
+    next.set('view', homeViewResolution.view);
+    setSearchParams(next, { replace: true });
+  }, [homeViewResolution.view, searchParams, setSearchParams, shouldAutoOpenChannels]);
 
   useEffect(() => {
     const now = Date.now();
@@ -207,9 +226,119 @@ export function PublisherEntitiesPage({
     return () => window.clearTimeout(timeoutId);
   }, [entities, entitiesQueryKey, queryClient]);
 
+  async function handleRefreshEntities(): Promise<void> {
+    if (bulkRefresh || bulkRefreshAbortRef.current) {
+      return;
+    }
+    const abortController = new AbortController();
+    bulkRefreshAbortRef.current = abortController;
+    setBulkRefresh({ phase: 'enqueueing', queuedCount: 0 });
+    const initialFingerprint = fingerprintPublisherEntityPage(entities, summary);
+
+    try {
+      const refresh = await refreshPublisherEntities(api);
+      if (abortController.signal.aborted) {
+        return;
+      }
+      if (refresh.queuedCount === 0) {
+        await queryClient.resetQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+        pushToast({
+          tone: 'info',
+          title: 'Список обновлён',
+          description: 'Новых проверок доступа не потребовалось.',
+        });
+        return;
+      }
+
+      setBulkRefresh({ phase: 'polling', queuedCount: refresh.queuedCount });
+      pushToast({
+        tone: 'info',
+        title: 'Проверка запущена',
+        description: `В очереди ${formatRussianCountLabel(
+          refresh.queuedCount,
+          'подключение',
+          'подключения',
+          'подключений',
+        )}.`,
+      });
+
+      let consecutiveReadFailures = 0;
+      for (const delayMs of PUBLISHER_BULK_REFRESH_POLL_DELAYS_MS) {
+        await waitForPublisherRefresh(delayMs, abortController.signal);
+        if (abortController.signal.aborted) {
+          return;
+        }
+        const result = await entitiesQuery.refetch();
+        if (result.isError || !result.data) {
+          consecutiveReadFailures += 1;
+          if (consecutiveReadFailures >= 2) {
+            break;
+          }
+          continue;
+        }
+        consecutiveReadFailures = 0;
+        const nextEntities = result.data.pages.flatMap((page) => page.items);
+        const nextSummary = result.data.pages[0]?.summary ?? EMPTY_PUBLISHER_SUMMARY;
+        if (fingerprintPublisherEntityPage(nextEntities, nextSummary) !== initialFingerprint) {
+          await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+          pushToast({
+            tone: 'success',
+            title: 'Подключения обновлены',
+            description: 'Показаны свежие статусы доступа Публика.',
+          });
+          return;
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: PUBLISHER_ENTITIES_QUERY_ROOT });
+      pushToast({
+        tone: consecutiveReadFailures >= 2 ? 'danger' : 'info',
+        title:
+          consecutiveReadFailures >= 2
+            ? 'Проверка запущена, но список недоступен'
+            : 'MAX ещё проверяет подключения',
+        description:
+          consecutiveReadFailures >= 2
+            ? 'Повторите обновление списка позже.'
+            : 'Запрос принят. Свежий статус появится после завершения проверки.',
+      });
+    } catch (error: unknown) {
+      if (!abortController.signal.aborted) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось запустить проверку',
+          description: describeUserFacingError(error, 'Повторите запрос позже.'),
+        });
+      }
+    } finally {
+      if (bulkRefreshAbortRef.current === abortController) {
+        bulkRefreshAbortRef.current = null;
+      }
+      if (mountedRef.current) {
+        setBulkRefresh(null);
+      }
+    }
+  }
+
+  function handleOpenBotDialog(): void {
+    if (!botDialogUrl) {
+      pushToast({
+        tone: 'danger',
+        title: 'Диалог Публика недоступен',
+        description: 'Закройте мини-приложение и откройте диалог с ботом вручную.',
+      });
+      return;
+    }
+    setOpeningBotDialog(true);
+    if (!openMaxBotLinkAndClose(botDialogUrl)) {
+      setOpeningBotDialog(false);
+      pushToast({ tone: 'danger', title: 'Не удалось открыть диалог Публика' });
+    }
+  }
+
   async function handleRefreshEntity(entity: PublisherEntity): Promise<void> {
     const entityKey = `${entity.entityType}:${entity.id}`;
-    if (entityRefresh || refreshAbortRef.current) {
+    if (entityRefresh || refreshAbortRef.current || bulkRefresh) {
       return;
     }
     const abortController = new AbortController();
@@ -366,7 +495,7 @@ export function PublisherEntitiesPage({
                   : `Обновить доступ для ${entity.title || entity.id}`
               }
               title={refreshing ? 'Проверяю доступ' : 'Обновить доступ'}
-              disabled={Boolean(entityRefresh)}
+              disabled={Boolean(entityRefresh || bulkRefresh)}
               onClick={() => void handleRefreshEntity(entity)}
             >
               <Refresh aria-hidden />
@@ -384,7 +513,8 @@ export function PublisherEntitiesPage({
         searchSettling ||
         entitiesQuery.isLoading ||
         entitiesQuery.isFetching ||
-        Boolean(entityRefresh)
+        Boolean(entityRefresh) ||
+        Boolean(bulkRefresh)
       }
     >
       <header className="publisher-entities-page__header">
@@ -395,36 +525,50 @@ export function PublisherEntitiesPage({
           </span>
           <button
             type="button"
-            className={cn(
-              'publisher-entities-page__refresh',
-              entitiesQuery.isFetching && 'is-refreshing',
-            )}
-            aria-label="Обновить чаты и каналы"
-            title="Обновить"
-            disabled={entitiesQuery.isFetching}
-            onClick={() =>
-              void queryClient.resetQueries({ queryKey: entitiesQueryKey, exact: true })
+            className={cn('publisher-entities-page__refresh', bulkRefresh && 'is-refreshing')}
+            aria-label={
+              bulkRefresh?.phase === 'polling'
+                ? 'Проверяются подключения в MAX'
+                : 'Перепроверить подключения в MAX'
             }
+            title={bulkRefresh ? 'Проверяю подключения' : 'Перепроверить подключения'}
+            disabled={Boolean(bulkRefresh || entityRefresh)}
+            onClick={() => void handleRefreshEntities()}
           >
             <Refresh aria-hidden />
           </button>
         </div>
-        <div className="publisher-entities-page__totals" aria-live="polite">
-          <span className="is-ready">
-            <CheckCircle aria-hidden />
-            {formatRussianCountLabel(summary.ready, 'готов', 'готовы', 'готовы')}
-          </span>
-          <span className={cn(summary.attention > 0 && 'is-attention')}>
-            <WarningCircle aria-hidden />
-            {formatRussianCountLabel(
-              summary.attention,
-              'требует внимания',
-              'требуют внимания',
-              'требуют внимания',
-            )}
+      </header>
+
+      <nav className="publisher-entities-page__views" aria-label="Получатели Публика">
+        <Link
+          to={buildPublisherEntityViewRoute('chat', searchParams.toString())}
+          className={cn(view === 'chat' && 'is-active')}
+          aria-current={view === 'chat' ? 'page' : undefined}
+        >
+          <span>Чаты</span>
+          <strong>{summary.chat}</strong>
+        </Link>
+        <Link
+          to={buildPublisherEntityViewRoute('channel', searchParams.toString())}
+          className={cn(view === 'channel' && 'is-active')}
+          aria-current={view === 'channel' ? 'page' : undefined}
+        >
+          <span>Каналы</span>
+          <strong>{summary.channel}</strong>
+        </Link>
+      </nav>
+
+      {bulkRefresh ? (
+        <div className="publisher-entities-page__refresh-status" role="status" aria-live="polite">
+          <Refresh className="is-refreshing" aria-hidden />
+          <span>
+            {bulkRefresh.phase === 'enqueueing'
+              ? 'Запускаю проверку MAX'
+              : `Проверяю подключений: ${bulkRefresh.queuedCount}`}
           </span>
         </div>
-      </header>
+      ) : null}
 
       <label className="publisher-entities-page__search">
         <Search aria-hidden />
@@ -505,14 +649,44 @@ export function PublisherEntitiesPage({
             <span>Повторить</span>
           </button>
         </div>
-      ) : activeTypeCount === 0 ? (
+      ) : shouldAutoOpenChannels ? (
         <div className="publisher-entities-page__state" role="status">
-          <WarningCircle aria-hidden />
+          <Refresh className="is-refreshing" aria-hidden />
+          <strong>Открываю каналы</strong>
+        </div>
+      ) : activeTypeCount === 0 && otherTypeCount > 0 ? (
+        <div className="publisher-entities-page__state" role="status">
           <strong>{view === 'channel' ? 'Каналов пока нет' : 'Чатов пока нет'}</strong>
           <span>
-            Добавьте Публик {view === 'channel' ? 'в канал' : 'в чат'} администратором и отправьте
-            «Старт».
+            В соседнем разделе:{' '}
+            {formatRussianCountLabel(
+              otherTypeCount,
+              view === 'channel' ? 'чат' : 'канал',
+              view === 'channel' ? 'чата' : 'канала',
+              view === 'channel' ? 'чатов' : 'каналов',
+            )}
+            .
           </span>
+          <Link to={buildPublisherEntityViewRoute(otherView, searchParams.toString())}>
+            {view === 'channel' ? 'Открыть чаты' : 'Открыть каналы'}
+            <NavArrowRight aria-hidden />
+          </Link>
+        </div>
+      ) : activeTypeCount === 0 ? (
+        <div className="publisher-entities-page__state is-onboarding" role="status">
+          <strong>Подключите первый чат или канал</strong>
+          <span>
+            Добавьте Публик администратором, затем перешлите ему сообщение или пост из нужного чата
+            или канала.
+          </span>
+          <button
+            type="button"
+            disabled={openingBotDialog || !botDialogUrl}
+            onClick={handleOpenBotDialog}
+          >
+            <span>{openingBotDialog ? 'Открываю...' : 'Открыть диалог Публика'}</span>
+            <NavArrowRight aria-hidden />
+          </button>
         </div>
       ) : entities.length === 0 ? (
         <div className="publisher-entities-page__state" role="status">

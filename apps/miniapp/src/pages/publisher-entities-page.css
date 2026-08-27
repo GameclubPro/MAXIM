@@ -32,6 +32,82 @@
     border-bottom: 1px solid var(--color-border);
   }
 
+  .publisher-entities-page__views {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    padding: 3px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+  }
+
+  .publisher-entities-page__views a {
+    min-width: 0;
+    min-height: 44px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--color-ink-muted);
+    font-size: 0.75rem;
+    font-weight: 760;
+    text-decoration: none;
+  }
+
+  .publisher-entities-page__views a.is-active {
+    border-color: var(--publisher-accent-border);
+    background: var(--color-surface);
+    color: var(--color-accent);
+    box-shadow: var(--shadow-xs);
+  }
+
+  .publisher-entities-page__views span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .publisher-entities-page__views strong {
+    min-width: 24px;
+    padding: 2px 5px;
+    border-radius: 6px;
+    background: var(--color-surface-tint);
+    color: currentColor;
+    font-size: 0.68rem;
+    line-height: 1.4;
+    text-align: center;
+  }
+
+  .publisher-entities-page__refresh-status {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border: 1px solid var(--publisher-accent-border);
+    border-radius: 8px;
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-size: 0.72rem;
+    font-weight: 740;
+  }
+
+  .publisher-entities-page__refresh-status svg {
+    width: 18px;
+    min-width: 18px;
+    height: 18px;
+  }
+
+  .publisher-entities-page__refresh-status svg.is-refreshing {
+    animation: publisher-entities-spin 0.9s linear infinite;
+  }
+
   .publisher-entities-page__brand {
     min-width: 0;
     display: flex;
@@ -146,11 +222,12 @@
   }
 
   .publisher-entities-page__search:focus-within,
+  .publisher-entities-page__views a:focus-visible,
   .publisher-entities-page__refresh:focus-visible,
   .publisher-entities-page__load-more:focus-visible,
   .publisher-entity-row__refresh:focus-visible,
   .publisher-entities-page__filters button:focus-visible,
-  .publisher-entities-page__state button:focus-visible,
+  .publisher-entities-page__state :is(button, a):focus-visible,
   .publisher-entities-page__inline-error button:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
@@ -249,7 +326,7 @@
 
   .publisher-entities-page__list {
     min-width: 0;
-    height: clamp(300px, calc(var(--app-viewport-height) - 330px), 680px);
+    height: clamp(280px, calc(var(--app-viewport-height) - 390px), 620px);
     overflow-y: auto;
     padding-bottom: calc(
       var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
@@ -421,8 +498,7 @@
     align-content: center;
     justify-items: center;
     gap: 5px;
-    padding: 12px 12px
-      calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 12px);
+    padding: 12px 12px calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 12px);
     border: 1px solid var(--color-border);
     border-radius: 8px;
     background: var(--color-surface);
@@ -464,6 +540,36 @@
     color: var(--color-accent);
     font-size: 0.74rem;
     font-weight: 760;
+  }
+
+  .publisher-entities-page__state a {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 12px;
+    border: 1px solid var(--publisher-accent-border);
+    border-radius: 7px;
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-size: 0.74rem;
+    font-weight: 760;
+    text-decoration: none;
+  }
+
+  .publisher-entities-page__state :is(button, a) svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .publisher-entities-page__state.is-onboarding {
+    min-height: 230px;
+  }
+
+  .publisher-entities-page__state button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
   }
 
   .publisher-entities-page__state button svg {
@@ -510,6 +616,12 @@
   }
 
   @media (max-width: 350px) {
+    .publisher-entities-page__views a {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 5px;
+      padding-inline: 7px;
+    }
+
     .publisher-entity-row {
       padding-inline: 9px;
     }

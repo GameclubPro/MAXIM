@@ -3,7 +3,7 @@ import {
   ChatEntityType,
   Prisma,
   PublicationAudienceSelection,
-  type PublicationDispatchProfile,
+  PublicationDispatchProfile,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 
@@ -15,6 +15,7 @@ export type CurrentRevisionFailedPublicationPageParams = {
   cursor: PublicationListCursorPayload | null;
   limit: number;
   dispatchProfile?: PublicationDispatchProfile;
+  publisherBotId?: string;
 };
 
 export type FailedPublicationPageIdentifier = {
@@ -39,6 +40,39 @@ export async function selectCurrentRevisionFailedPublicationPage(
           'RECURRENCE'::"PublicationScheduleMode"
         )`;
   const searchPattern = `%${params.query}%`;
+  const publisherBotId = params.publisherBotId?.trim() ?? '';
+  if (
+    params.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1 &&
+    params.query &&
+    !publisherBotId
+  ) {
+    throw new Error('Publisher bot id is required for PUBLIK_V1 publication search');
+  }
+  const targetSearchFilter =
+    params.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+      ? Prisma.sql`
+          EXISTS (
+            SELECT 1
+            FROM "publication_targets" AS target
+            INNER JOIN "managed_bot_chat_catalog" AS catalog
+              ON catalog."bot_id" = ${publisherBotId}
+              AND catalog."chat_id" = target."target_chat_id"
+              AND catalog."entity_type" = target."entity_type"
+              AND catalog."status" = 'ACTIVE'
+            WHERE target."publication_id" = publication."id"
+              AND COALESCE(NULLIF(BTRIM(catalog."title"), ''), catalog."chat_id")
+                ILIKE ${searchPattern}
+          )
+        `
+      : Prisma.sql`
+          EXISTS (
+            SELECT 1
+            FROM "publication_targets" AS target
+            INNER JOIN "chats" AS chat ON chat."id" = target."target_chat_id"
+            WHERE target."publication_id" = publication."id"
+              AND chat."title" ILIKE ${searchPattern}
+          )
+        `;
   const searchFilter = params.query
     ? Prisma.sql`
         AND (
@@ -49,13 +83,7 @@ export async function selectCurrentRevisionFailedPublicationPage(
             WHERE content."id" = publication."canonical_content_revision_id"
               AND content."text" ILIKE ${searchPattern}
           )
-          OR EXISTS (
-            SELECT 1
-            FROM "publication_targets" AS target
-            INNER JOIN "chats" AS chat ON chat."id" = target."target_chat_id"
-            WHERE target."publication_id" = publication."id"
-              AND chat."title" ILIKE ${searchPattern}
-          )
+          OR ${targetSearchFilter}
         )
       `
     : Prisma.empty;

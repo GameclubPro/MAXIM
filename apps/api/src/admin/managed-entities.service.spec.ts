@@ -359,6 +359,64 @@ describe('ManagedEntitiesService getMe', () => {
     expect(maxBotLinkService.buildBotUrlSync).not.toHaveBeenCalled();
   });
 
+  it('keeps Publisher getMe isolated from Major handoff and profile enrichment', async () => {
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'admin-1',
+            {
+              userId: 'admin-1',
+              username: 'major-enriched',
+              displayName: 'Major Enriched',
+            },
+          ],
+        ]),
+      ),
+    };
+    const maxBotLinkService = {
+      buildInitDataBotUrlSync: jest.fn().mockReturnValue('https://max.ru/major-route'),
+      buildBotUrlSync: jest.fn().mockReturnValue('https://max.ru/major-entry'),
+    };
+    const { legacyAdminService, service } = createService({
+      maxClient,
+      maxBotLinkService,
+      maxBotRegistry: createMaxBotRegistryMock('publisher-bot'),
+    });
+
+    await expect(
+      service.getMe(
+        {
+          userId: 'admin-1',
+          launchBotId: 'major-launch-bot',
+          username: null,
+          displayName: 'Publisher Admin',
+          avatarUrl: null,
+          chatId: 'chat-1',
+          chatType: 'chat',
+        },
+        {
+          chatId: 'chat-1',
+          entityType: 'chat',
+          enrichFromMax: true,
+          profile: 'publisher',
+        },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        username: null,
+        displayName: 'Publisher Admin',
+        profileHandoffUrl: null,
+        botDialogUrl: 'https://max.ru/publisher-bot',
+        profile: 'publisher',
+      }),
+    );
+    expect(legacyAdminService.resolveManagedEntityHeaderReadBotId).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+    expect(maxBotLinkService.buildInitDataBotUrlSync).not.toHaveBeenCalled();
+    expect(maxBotLinkService.buildBotUrlSync).not.toHaveBeenCalled();
+  });
+
   it('returns init data profile when username is already present', async () => {
     const maxClient = {
       getChatMemberProfiles: jest.fn(),
@@ -1865,8 +1923,7 @@ describe('ManagedEntitiesService bot execution plan', () => {
     await expect(staleUpdate).rejects.toMatchObject({
       response: {
         code: 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT',
-        message:
-          'Названия категорий уже изменились. Обновите данные и повторите сохранение.',
+        message: 'Названия категорий уже изменились. Обновите данные и повторите сохранение.',
       },
     });
     expect(prisma.managedEntityFavoritePreference.update).toHaveBeenCalledWith(

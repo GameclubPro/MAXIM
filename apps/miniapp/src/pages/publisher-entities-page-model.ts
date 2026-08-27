@@ -1,8 +1,16 @@
-import type { PublisherEntity, PublisherReadinessBlockerCode } from '@maxim/contracts/publisher';
+import type {
+  PublisherEntitiesSummary,
+  PublisherEntity,
+  PublisherReadinessBlockerCode,
+} from '@maxim/contracts/publisher';
 import { isInvalidPublisherEntitiesCursorError } from '../lib/api/publisher-client';
 
 export type PublisherEntityView = 'chat' | 'channel';
 export type PublisherEntityReadinessFilter = 'all' | 'ready' | 'attention';
+export type PublisherHomeViewResolution = {
+  view: PublisherEntityView;
+  shouldReplace: boolean;
+};
 
 export const PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS = [
   750, 1_250, 2_500, 4_500, 7_500, 10_500,
@@ -42,6 +50,62 @@ const RECHECK_BY_BLOCKER: Record<PublisherReadinessBlockerCode, boolean> = {
 
 export function normalizePublisherEntityView(value: string | null): PublisherEntityView {
   return value === 'channel' ? 'channel' : 'chat';
+}
+
+export function resolvePublisherHomeView(
+  requestedView: string | null,
+  summary: Pick<PublisherEntitiesSummary, 'chat' | 'channel'>,
+): PublisherHomeViewResolution {
+  if (requestedView === 'chat' || requestedView === 'channel') {
+    return { view: requestedView, shouldReplace: false };
+  }
+
+  return summary.chat === 0 && summary.channel > 0
+    ? { view: 'channel', shouldReplace: true }
+    : { view: 'chat', shouldReplace: false };
+}
+
+export function buildPublisherEntityViewRoute(
+  view: PublisherEntityView,
+  currentSearch = '',
+): string {
+  const search = new URLSearchParams(currentSearch.replace(/^\?/u, ''));
+  search.set('view', view);
+  return `/?${search.toString()}`;
+}
+
+export function fingerprintPublisherEntities(entities: readonly PublisherEntity[]): string {
+  return entities
+    .map((entity) =>
+      [
+        entity.entityType,
+        entity.id,
+        entity.readiness.state,
+        entity.readiness.blockerCode ?? '',
+        entity.readiness.checkedAt ?? '',
+      ].join('\0'),
+    )
+    .sort()
+    .join('\n');
+}
+
+export function waitForPublisherRefresh(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const finish = () => {
+      if (timeoutId !== null) {
+        globalThis.clearTimeout(timeoutId);
+      }
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    signal.addEventListener('abort', finish, { once: true });
+    timeoutId = globalThis.setTimeout(finish, delayMs);
+  });
 }
 
 export function normalizePublisherReadinessFilter(

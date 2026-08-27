@@ -207,15 +207,17 @@ export class ManagedEntitiesService {
     } = {},
   ): Promise<Me> {
     const profileProjection = buildMiniappProfileProjection(options.profile ?? 'moderation');
+    const isPublisherProfile = profileProjection.profile === 'publisher';
     const canAccessSystem =
       this.systemAccessConfig.requireSystemAdmin &&
       canUserAccessSystem(user.userId, this.systemAccessConfig);
     const contextChatId = readTrimmedString(options.chatId) ?? readTrimmedString(user.chatId);
     const contextEntityType: ManagedEntityType =
       options.entityType ?? (user.chatType === 'channel' ? 'channel' : 'chat');
-    const profileHandoffBotId = contextChatId
-      ? await this.resolveCurrentAdminProfileHandoffBotId(contextChatId)
-      : null;
+    const profileHandoffBotId =
+      contextChatId && !isPublisherProfile
+        ? await this.resolveCurrentAdminProfileHandoffBotId(contextChatId)
+        : null;
     const fallbackDisplayName = readTrimmedString(user.displayName) ?? null;
     const fallbackUsername = readTrimmedString(user.username) ?? null;
     const fallback: Me = {
@@ -226,16 +228,17 @@ export class ManagedEntitiesService {
       profileUrl:
         normalizeMaxProfileUrl(readTrimmedString(user.profileUrl) ?? null) ??
         buildUserProfileUrl(fallbackUsername),
-      profileHandoffUrl: contextChatId
-        ? buildProfileMentionHandoffUrl(
-            this.dialogLinkHelper,
-            contextChatId,
-            contextEntityType,
-            user.userId,
-            fallbackDisplayName ?? fallbackUsername,
-            profileHandoffBotId,
-          )
-        : null,
+      profileHandoffUrl:
+        contextChatId && !isPublisherProfile
+          ? buildProfileMentionHandoffUrl(
+              this.dialogLinkHelper,
+              contextChatId,
+              contextEntityType,
+              user.userId,
+              fallbackDisplayName ?? fallbackUsername,
+              profileHandoffBotId,
+            )
+          : null,
       botDialogUrl: this.buildBotDialogUrl(user.launchBotId, profileProjection.profile),
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
       ...profileProjection,
@@ -243,6 +246,7 @@ export class ManagedEntitiesService {
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
 
     if (
+      isPublisherProfile ||
       options.enrichFromMax !== true ||
       !contextChatId ||
       typeof loadProfiles !== 'function' ||

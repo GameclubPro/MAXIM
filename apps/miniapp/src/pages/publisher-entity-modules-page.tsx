@@ -13,22 +13,27 @@ import {
   Refresh,
   WarningCircle,
 } from 'iconoir-react';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
 import {
   getPublisherEntity,
-  listPublisherSuggestions,
-  reviewPublisherSuggestion,
+  refreshPublisherEntity,
   updatePublisherModules,
 } from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
 import { describeUserFacingError } from '../lib/user-facing-error';
-import { buildPublisherComposeRoute } from './publisher-entities-page-model';
+import {
+  buildPublisherComposeRoute,
+  pollPublisherEntityRefresh,
+  PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS,
+  shouldOfferPublisherRecheck,
+  waitForPublisherRefresh,
+} from './publisher-entities-page-model';
 import {
   buildPublisherEntityListRoute,
   updatePublisherChatCommentSetting,
@@ -39,9 +44,16 @@ import './publisher-entity-modules-page.css';
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
 const PUBLISHER_CATALOG_QUERY_ROOT = ['publications', 'sources', 'publisher'] as const;
 
+type PublisherEntityRecheckPhase = 'enqueueing' | 'polling';
+
 const LazyVkParsingCard = lazy(async () => {
   const module = await import('../components/vk-parsing-card');
   return { default: module.VkParsingCard };
+});
+
+const LazyPublisherSuggestionsInbox = lazy(async () => {
+  const module = await import('./publisher-suggestions-inbox');
+  return { default: module.PublisherSuggestionsInbox };
 });
 
 function ModuleSwitch({
@@ -79,6 +91,11 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     params.entityType === 'chat' || params.entityType === 'channel' ? params.entityType : null;
   const entityId = params.entityId?.trim() ?? '';
   const [vkOpen, setVkOpen] = useState(false);
+  const [entityRecheckPhase, setEntityRecheckPhase] = useState<PublisherEntityRecheckPhase | null>(
+    null,
+  );
+  const entityRecheckAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
   const queryKey = [...PUBLISHER_ENTITY_QUERY_ROOT, entityType, entityId] as const;
   const entityQuery = useQuery({
     queryKey,
@@ -92,13 +109,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     queryFn: () => getVkParsingCapability(api, entityType!, entityId),
     enabled: entityType !== null && entityId.length > 0 && Boolean(entityQuery.data),
     staleTime: 30_000,
-    refetchOnWindowFocus: false,
-  });
-  const suggestionsQuery = useQuery({
-    queryKey: ['publisher-suggestions', entityId],
-    queryFn: ({ signal }) => listPublisherSuggestions(api, entityId, { signal }),
-    enabled: entityType === 'channel' && entityId.length > 0,
-    staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
   const mutation = useMutation({
@@ -136,31 +146,98 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       chatComments: updatePublisherChatCommentSetting(current, key, enabled),
     });
   };
-  const suggestionReviewMutation = useMutation({
-    mutationFn: ({
-      suggestionId,
-      action,
-    }: {
-      suggestionId: string;
-      action: 'publish' | 'cancel';
-    }) => reviewPublisherSuggestion(api, entityId, suggestionId, { action }),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['publisher-suggestions', entityId] }),
-        queryClient.invalidateQueries({ queryKey: ['publications'] }),
-      ]);
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: describeUserFacingError(error, 'Не удалось обработать предложку'),
-      });
-    },
-  });
-
   useEffect(() => {
     setVkOpen(false);
   }, [entityId, entityType]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      entityRecheckAbortRef.current?.abort();
+    };
+  }, []);
+
+  async function handleEntityRecheck(): Promise<void> {
+    const initialEntity = entityQuery.data;
+    if (!initialEntity || !entityType || entityRecheckAbortRef.current) {
+      return;
+    }
+    const abortController = new AbortController();
+    entityRecheckAbortRef.current = abortController;
+    setEntityRecheckPhase('enqueueing');
+
+    try {
+      await refreshPublisherEntity(api, entityType, initialEntity.id);
+      if (abortController.signal.aborted) {
+        return;
+      }
+      setEntityRecheckPhase('polling');
+      pushToast({
+        tone: 'info',
+        title: 'Проверка поставлена в очередь',
+        description: 'Жду новый статус доступа от MAX.',
+      });
+
+      const result = await pollPublisherEntityRefresh({
+        initialEntity,
+        delaysMs: PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS,
+        wait: (delayMs) => waitForPublisherRefresh(delayMs, abortController.signal),
+        readEntity: () =>
+          getPublisherEntity(api, entityType, initialEntity.id, {
+            signal: abortController.signal,
+          }),
+        isCancelled: () => abortController.signal.aborted,
+      });
+      if (result.status === 'cancelled') {
+        return;
+      }
+      if (result.status === 'updated') {
+        queryClient.setQueryData(queryKey, result.entity);
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: PUBLISHER_CATALOG_QUERY_ROOT }),
+          vkCapabilityQuery.refetch(),
+        ]);
+        const nextReadiness = getPublisherReadinessPresentation(result.entity.readiness);
+        pushToast({
+          tone: result.entity.readiness.canPublish ? 'success' : 'info',
+          title: result.entity.readiness.canPublish
+            ? 'Доступ Публика подтверждён'
+            : 'Проверка завершена',
+          description: nextReadiness.detail,
+        });
+        return;
+      }
+      if (result.status === 'read_failed') {
+        pushToast({
+          tone: 'danger',
+          title: 'Проверка запущена, но статус недоступен',
+          description: describeUserFacingError(result.error, 'Повторите обновление позже.'),
+        });
+        return;
+      }
+      pushToast({
+        tone: 'info',
+        title: 'MAX ещё проверяет доступ',
+        description: 'Запрос принят. Свежий статус появится после завершения проверки.',
+      });
+    } catch (error: unknown) {
+      if (!abortController.signal.aborted) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось запустить проверку',
+          description: describeUserFacingError(error, 'Повторите запрос позже.'),
+        });
+      }
+    } finally {
+      if (entityRecheckAbortRef.current === abortController) {
+        entityRecheckAbortRef.current = null;
+      }
+      if (mountedRef.current) {
+        setEntityRecheckPhase(null);
+      }
+    }
+  }
 
   if (!entityType || !entityId) {
     return (
@@ -203,6 +280,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
   }
 
   const readiness = getPublisherReadinessPresentation(entity.readiness);
+  const canRecheckEntity = shouldOfferPublisherRecheck(entity);
   const chatComments = entity.moduleSettings.chatComments;
   const vkCapability = vkCapabilityQuery.data;
   const vkAvailable = vkCapability?.canUse === true;
@@ -213,8 +291,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       : vkAvailable
         ? 'Доступен'
         : (vkCapability?.reason ?? 'Недоступен');
-  const busy =
-    mutation.isPending || entityQuery.isFetching || suggestionReviewMutation.isPending;
+  const busy = mutation.isPending || entityQuery.isFetching || entityRecheckPhase !== null;
 
   return (
     <section className="publisher-entity-modules-page" aria-busy={busy || undefined}>
@@ -234,7 +311,9 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           className="publisher-entity-modules-page__avatar"
         />
         <span className="publisher-entity-modules-page__identity">
-          <strong>{entity.title.trim() || (entity.entityType === 'channel' ? 'Канал' : 'Чат')}</strong>
+          <strong>
+            {entity.title.trim() || (entity.entityType === 'channel' ? 'Канал' : 'Чат')}
+          </strong>
           <small>{entity.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
         </span>
         <button
@@ -243,28 +322,44 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             'publisher-entity-modules-page__refresh',
             entityQuery.isFetching && 'is-refreshing',
           )}
-          aria-label="Обновить модули"
-          title="Обновить"
+          aria-label="Перезагрузить данные модулей"
+          title="Перезагрузить данные"
           disabled={busy}
-          onClick={() =>
-            void Promise.all([
-              entityQuery.refetch(),
-              vkCapabilityQuery.refetch(),
-              ...(entity.entityType === 'channel' ? [suggestionsQuery.refetch()] : []),
-            ])
-          }
+          onClick={() => void Promise.all([entityQuery.refetch(), vkCapabilityQuery.refetch()])}
         >
           <Refresh aria-hidden />
         </button>
       </header>
 
-      <div className={cn('publisher-entity-modules-page__readiness', `is-${readiness.tone}`)}>
-        {entity.readiness.canPublish ? (
-          <CheckCircle aria-hidden />
-        ) : (
-          <WarningCircle aria-hidden />
-        )}
-        <span>{readiness.label}</span>
+      <div
+        className={cn('publisher-entity-modules-page__readiness', `is-${readiness.tone}`)}
+        aria-live={entityRecheckPhase ? 'polite' : undefined}
+      >
+        {entity.readiness.canPublish ? <CheckCircle aria-hidden /> : <WarningCircle aria-hidden />}
+        <span className="publisher-entity-modules-page__readiness-copy">
+          <strong>{readiness.label}</strong>
+          {!entity.readiness.canPublish ? <small>{readiness.detail}</small> : null}
+        </span>
+        {canRecheckEntity ? (
+          <button
+            type="button"
+            className={cn(
+              'publisher-entity-modules-page__recheck',
+              entityRecheckPhase && 'is-refreshing',
+            )}
+            disabled={busy}
+            onClick={() => void handleEntityRecheck()}
+          >
+            <Refresh aria-hidden />
+            <span>
+              {entityRecheckPhase === 'enqueueing'
+                ? 'Запускаю'
+                : entityRecheckPhase === 'polling'
+                  ? 'Проверяю'
+                  : 'Проверить'}
+            </span>
+          </button>
+        ) : null}
       </div>
 
       <div className="publisher-entity-modules-page__modules">
@@ -286,7 +381,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               <NavArrowRight aria-hidden />
             </Link>
           ) : (
-            <span className="publisher-entity-module__blocked">{readiness.label}</span>
+            <span className="publisher-entity-module__blocked">Недоступен</span>
           )}
         </article>
 
@@ -344,9 +439,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Предложки</strong>
-                <small>
-                  {entity.moduleSettings.channelSuggestionsEnabled ? 'Вкл' : 'Выкл'}
-                </small>
+                <small>{entity.moduleSettings.channelSuggestionsEnabled ? 'Вкл' : 'Выкл'}</small>
               </span>
               <ModuleSwitch
                 checked={entity.moduleSettings.channelSuggestionsEnabled === true}
@@ -358,79 +451,20 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               />
             </article>
 
-            {suggestionsQuery.data?.items.length ? (
-              <div className="publisher-suggestions-inbox" aria-label="Входящие предложки">
-                {suggestionsQuery.data.items.slice(0, 20).map((suggestion) => (
-                  <article key={suggestion.id} className="publisher-suggestion-row">
-                    <div className="publisher-suggestion-row__meta">
-                      <strong>{suggestion.authorDisplayName || 'Пользователь'}</strong>
-                      <time dateTime={suggestion.createdAt}>
-                        {new Intl.DateTimeFormat('ru-RU', {
-                          day: '2-digit',
-                          month: 'short',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        }).format(new Date(suggestion.createdAt))}
-                      </time>
-                    </div>
-                    <p>{suggestion.text}</p>
-                    {suggestion.reviewStatus === 'pending' ? (
-                      <div className="publisher-suggestion-row__actions">
-                        <button
-                          type="button"
-                          disabled={suggestionReviewMutation.isPending}
-                          onClick={() =>
-                            suggestionReviewMutation.mutate({
-                              suggestionId: suggestion.id,
-                              action: 'publish',
-                            })
-                          }
-                        >
-                          Опубликовать
-                        </button>
-                        <button
-                          type="button"
-                          className="is-secondary"
-                          disabled={suggestionReviewMutation.isPending}
-                          onClick={() =>
-                            suggestionReviewMutation.mutate({
-                              suggestionId: suggestion.id,
-                              action: 'cancel',
-                            })
-                          }
-                        >
-                          Отклонить
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="publisher-suggestion-row__status">
-                        {suggestion.reviewStatus === 'published'
-                          ? 'Передано в посты'
-                          : suggestion.reviewStatus === 'publishing'
-                            ? 'Обрабатывается'
-                            : 'Отклонено'}
-                      </span>
-                    )}
-                  </article>
-                ))}
-              </div>
-            ) : suggestionsQuery.isLoading ? (
-              <div className="publisher-suggestions-state" role="status">
-                <Refresh className="is-refreshing" aria-hidden />
-                <span>Загружаю</span>
-              </div>
-            ) : suggestionsQuery.isError ? (
-              <div className="publisher-suggestions-state has-error" role="alert">
-                <span>Не удалось загрузить</span>
-                <button type="button" onClick={() => void suggestionsQuery.refetch()}>
-                  Повторить
-                </button>
-              </div>
-            ) : entity.moduleSettings.channelSuggestionsEnabled ? (
-              <div className="publisher-suggestions-state">
-                <span>Новых предложек нет</span>
-              </div>
-            ) : null}
+            <Suspense
+              fallback={
+                <div className="publisher-suggestions-state" role="status">
+                  <Refresh className="is-refreshing" aria-hidden />
+                  <span>Загружаю предложки</span>
+                </div>
+              }
+            >
+              <LazyPublisherSuggestionsInbox
+                api={api}
+                entityId={entity.id}
+                enabled={entity.moduleSettings.channelSuggestionsEnabled === true}
+              />
+            </Suspense>
           </section>
         ) : null}
 

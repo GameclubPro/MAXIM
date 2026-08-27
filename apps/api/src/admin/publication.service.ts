@@ -171,24 +171,56 @@ export class PublicationService {
         : parsed.data.view === 'history'
           ? [PublicationLifecycle.COMPLETED, PublicationLifecycle.CANCELED]
           : [PublicationLifecycle.ACTIVE, PublicationLifecycle.PAUSED, PublicationLifecycle.ERROR];
+    const publisherBotId =
+      dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? this.publisherRouting.requireNewRoute().requiredBotId
+        : null;
+    const publisherTargetSearchMatches =
+      parsed.data.query && publisherBotId
+        ? await this.publicationPresenterService.findPublisherTargetSearchMatches(
+            publisherBotId,
+            parsed.data.query,
+          )
+        : [];
     const filters: Prisma.PublicationWhereInput[] = [];
     if (parsed.data.query) {
+      const searchBranches: Prisma.PublicationWhereInput[] = [
+        { title: { contains: parsed.data.query, mode: 'insensitive' } },
+        {
+          canonicalContentRevision: {
+            is: { text: { contains: parsed.data.query, mode: 'insensitive' } },
+          },
+        },
+      ];
+      if (publisherBotId) {
+        const chats = publisherTargetSearchMatches
+          .filter((target) => target.entityType === ChatEntityType.CHAT)
+          .map((target) => target.chatId);
+        const channels = publisherTargetSearchMatches
+          .filter((target) => target.entityType === ChatEntityType.CHANNEL)
+          .map((target) => target.chatId);
+        const targetPredicates: Prisma.PublicationTargetWhereInput[] = [
+          ...(chats.length > 0
+            ? [{ entityType: ChatEntityType.CHAT, targetChatId: { in: chats } }]
+            : []),
+          ...(channels.length > 0
+            ? [{ entityType: ChatEntityType.CHANNEL, targetChatId: { in: channels } }]
+            : []),
+        ];
+        if (targetPredicates.length > 0) {
+          searchBranches.push({ targets: { some: { OR: targetPredicates } } });
+        }
+      } else {
+        searchBranches.push({
+          targets: {
+            some: {
+              chat: { title: { contains: parsed.data.query, mode: 'insensitive' } },
+            },
+          },
+        });
+      }
       filters.push({
-        OR: [
-          { title: { contains: parsed.data.query, mode: 'insensitive' } },
-          {
-            canonicalContentRevision: {
-              is: { text: { contains: parsed.data.query, mode: 'insensitive' } },
-            },
-          },
-          {
-            targets: {
-              some: {
-                chat: { title: { contains: parsed.data.query, mode: 'insensitive' } },
-              },
-            },
-          },
-        ],
+        OR: searchBranches,
       });
     }
     if (parsed.data.view === 'schedules') {
@@ -289,6 +321,7 @@ export class PublicationService {
         cursor,
         limit: parsed.data.limit + 1,
         dispatchProfile,
+        publisherBotId: publisherBotId ?? undefined,
       });
       if (failedPageIdentifiers.length === 0) {
         rows = [];
@@ -320,16 +353,26 @@ export class PublicationService {
     const hasMore = rows.length > parsed.data.limit;
     const page = hasMore ? rows.slice(0, parsed.data.limit) : rows;
     const publicationIds = page.map((row) => row.id);
-    const [deliveryStats, actionableDeliveryStats] = await Promise.all([
-      this.publicationPresenterService.loadDeliveryStatsByPublicationIds(publicationIds),
-      this.publicationPresenterService.loadActionableDeliveryStatsByPublicationIds(publicationIds),
-    ]);
+    const [deliveryStats, actionableDeliveryStats, publisherTargetPresentations] =
+      await Promise.all([
+        this.publicationPresenterService.loadDeliveryStatsByPublicationIds(publicationIds),
+        this.publicationPresenterService.loadActionableDeliveryStatsByPublicationIds(
+          publicationIds,
+        ),
+        publisherBotId
+          ? this.publicationPresenterService.loadPublisherTargetPresentations(
+              page.flatMap((row) => row.targets),
+              publisherBotId,
+            )
+          : Promise.resolve(undefined),
+      ]);
     const items: PublicationSummary[] = await Promise.all(
       page.map((row) =>
         this.publicationPresenterService.mapPublicationSummary(
           row,
           deliveryStats.get(row.id),
           actionableDeliveryStats.get(row.id),
+          publisherTargetPresentations,
         ),
       ),
     );
@@ -505,7 +548,17 @@ export class PublicationService {
     if (!row || (dispatchProfile && row.dispatchProfile !== dispatchProfile)) {
       throw new NotFoundException('Публикация не найдена.');
     }
-    return this.publicationPresenterService.mapPublicationDetails(row);
+    const publisherTargetPresentations =
+      row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? await this.publicationPresenterService.loadPublisherTargetPresentations(
+            row.targets,
+            this.publisherRouting.requireNewRoute().requiredBotId,
+          )
+        : undefined;
+    return this.publicationPresenterService.mapPublicationDetails(
+      row,
+      publisherTargetPresentations,
+    );
   }
 
   async create(
@@ -1121,7 +1174,11 @@ export class PublicationService {
     query: unknown,
     dispatchProfile?: PublicationDispatchProfile,
   ): Promise<ListPublicationDeliveriesResponse> {
-    await this.assertPublicationOwner(publicationId, user.userId, dispatchProfile);
+    const publication = await this.assertPublicationOwner(
+      publicationId,
+      user.userId,
+      dispatchProfile,
+    );
     const parsed = listPublicationDeliveriesQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -1157,23 +1214,37 @@ export class PublicationService {
     });
     const hasMore = rows.length > parsed.data.limit;
     const page = hasMore ? rows.slice(0, parsed.data.limit) : rows;
-    const chats = await this.prisma.chat.findMany({
-      where: { id: { in: [...new Set(page.map((row) => row.targetChatId))] } },
-      select: { id: true, title: true },
-    });
+    const publisherTargetPresentations =
+      publication.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? await this.publicationPresenterService.loadPublisherTargetPresentations(
+            page.map((row) => ({
+              targetChatId: row.targetChatId,
+              entityType: row.broadcast.entityType,
+            })),
+            this.publisherRouting.requireNewRoute().requiredBotId,
+          )
+        : undefined;
+    const chats = publisherTargetPresentations
+      ? []
+      : await this.prisma.chat.findMany({
+          where: { id: { in: [...new Set(page.map((row) => row.targetChatId))] } },
+          select: { id: true, title: true },
+        });
     const chatTitleById = new Map(chats.map((chat) => [chat.id, chat.title]));
 
     return listPublicationDeliveriesResponseSchema.parse({
       items: page.map((row) => ({
         id: row.id,
         occurrenceId: row.publicationOccurrence?.id ?? '',
-        target: {
-          chatId: row.targetChatId,
-          entityType: this.fromPrismaEntityType(row.broadcast.entityType),
-          title: chatTitleById.get(row.targetChatId) ?? row.targetChatId,
-          avatarUrl: null,
-          link: null,
-        },
+        target: this.publicationPresenterService.mapTarget(
+          {
+            targetChatId: row.targetChatId,
+            entityType: row.broadcast.entityType,
+            chat: { title: chatTitleById.get(row.targetChatId) ?? null },
+          },
+          publication.dispatchProfile,
+          publisherTargetPresentations,
+        ),
         status: row.status,
         ...this.publicationPresenterService.mapDeliveryContentRevision(row),
         attemptCount: row.attemptCount,

@@ -47,8 +47,12 @@
 
   .publisher-entity-modules-page__back:focus-visible,
   .publisher-entity-modules-page__refresh:focus-visible,
+  .publisher-entity-modules-page__recheck:focus-visible,
   .publisher-entity-module__action:focus-visible,
   .publisher-module-switch:focus-within,
+  .publisher-suggestions-filters button:focus-visible,
+  .publisher-suggestion-row__actions button:focus-visible,
+  .publisher-suggestions-load-more:focus-visible,
   .publisher-entity-modules-page__state :is(button, a):focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
@@ -99,7 +103,8 @@
 
   .publisher-entity-modules-page__readiness {
     min-height: 34px;
-    display: flex;
+    display: grid;
+    grid-template-columns: 17px minmax(0, 1fr) auto;
     align-items: center;
     gap: 7px;
     padding: 6px 9px;
@@ -108,7 +113,6 @@
     background: var(--color-surface-muted);
     color: var(--color-ink-muted);
     font-size: 0.72rem;
-    font-weight: 760;
   }
 
   .publisher-entity-modules-page__readiness svg {
@@ -127,6 +131,58 @@
     border-color: var(--color-border-strong);
     background: var(--color-surface-muted);
     color: var(--publisher-modules-attention);
+  }
+
+  .publisher-entity-modules-page__readiness-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .publisher-entity-modules-page__readiness-copy strong {
+    color: currentColor;
+    font-size: 0.74rem;
+    font-weight: 780;
+  }
+
+  .publisher-entity-modules-page__readiness-copy small {
+    color: var(--color-ink-muted);
+    font-size: 0.69rem;
+    font-weight: 620;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .publisher-entity-modules-page__recheck {
+    min-width: 0;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 10px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 7px;
+    background: var(--color-surface);
+    color: var(--color-accent);
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 760;
+  }
+
+  .publisher-entity-modules-page__recheck svg {
+    width: 17px;
+    min-width: 17px;
+    height: 17px;
+  }
+
+  .publisher-entity-modules-page__recheck.is-refreshing svg {
+    animation: publisher-entity-modules-spin 0.9s linear infinite;
+  }
+
+  .publisher-entity-modules-page__recheck:disabled {
+    cursor: wait;
+    opacity: 0.58;
   }
 
   .publisher-entity-modules-page__modules {
@@ -401,6 +457,59 @@
     gap: 8px;
   }
 
+  .publisher-suggestions-workspace {
+    min-width: 0;
+    display: grid;
+    gap: 8px;
+  }
+
+  .publisher-suggestions-filters {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+  }
+
+  .publisher-suggestions-filters button {
+    min-width: 0;
+    min-height: 44px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-ink-muted);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 740;
+    text-align: left;
+  }
+
+  .publisher-suggestions-filters button.is-active {
+    border-color: var(--color-border-strong);
+    background: var(--color-surface);
+    color: var(--color-accent);
+    box-shadow: var(--shadow-xs);
+  }
+
+  .publisher-suggestions-filters button strong {
+    min-width: 23px;
+    padding: 2px 5px;
+    border-radius: 6px;
+    background: var(--color-surface-tint);
+    color: currentColor;
+    font-size: 0.66rem;
+    line-height: 1.4;
+    text-align: center;
+  }
+
   .publisher-suggestions-inbox {
     display: grid;
     gap: 1px;
@@ -460,7 +569,11 @@
 
   .publisher-suggestion-row__actions button {
     min-width: 0;
-    min-height: 42px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
     padding: 0 8px;
     border: 1px solid var(--color-accent);
     border-radius: 7px;
@@ -472,6 +585,12 @@
     overflow-wrap: anywhere;
   }
 
+  .publisher-suggestion-row__actions button svg {
+    width: 16px;
+    min-width: 16px;
+    height: 16px;
+  }
+
   .publisher-suggestion-row__actions button.is-secondary {
     border-color: var(--color-border);
     background: var(--color-surface-muted);
@@ -480,6 +599,48 @@
 
   .publisher-suggestion-row__actions button:disabled {
     opacity: 0.55;
+  }
+
+  .publisher-suggestion-row__status.is-published {
+    color: var(--publisher-modules-ready);
+  }
+
+  .publisher-suggestion-row__status.is-publishing {
+    color: var(--color-accent);
+  }
+
+  .publisher-suggestions-load-more {
+    width: min(100%, 240px);
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    justify-self: center;
+    gap: 6px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 7px;
+    background: var(--color-surface);
+    color: var(--color-accent);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 760;
+  }
+
+  .publisher-suggestions-load-more svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .publisher-suggestion-confirm__text {
+    display: block;
+    max-height: 8.1em;
+    overflow-y: auto;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
   }
 
   .publisher-suggestions-state {
@@ -508,7 +669,7 @@
   }
 
   .publisher-suggestions-state button {
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 10px;
     border: 1px solid var(--color-border);
     border-radius: 7px;
@@ -597,6 +758,19 @@
 
     .publisher-entity-module__action > span {
       display: none;
+    }
+
+    .publisher-entity-modules-page__readiness {
+      grid-template-columns: 17px minmax(0, 1fr);
+    }
+
+    .publisher-entity-modules-page__recheck {
+      grid-column: 1 / -1;
+      width: 100%;
+    }
+
+    .publisher-suggestion-row__actions {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 

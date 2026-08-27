@@ -1,4 +1,5 @@
 import {
+  MAX_PUBLICATION_TARGETS,
   publicationDetailsSchema,
   publicationOccurrenceSummarySchema,
   publicationScheduleInputSchema,
@@ -9,12 +10,13 @@ import {
   type PublicationDetails,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import {
   ChatEntityType,
   ManagedBroadcastDeliveryStatus,
   Prisma,
   PublicationContentFormat,
+  PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleStatus,
@@ -24,6 +26,8 @@ import { readStoredPublicationButtons } from './publication-buttons';
 
 const PUBLICATION_LIST_PREVIEW_TARGETS = 6;
 const PUBLICATION_OCCURRENCE_HISTORY_LIMIT = 50;
+const PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE = 200;
+const MAX_PRESENTATION_URL_LENGTH = 2_048;
 const PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES: PublicationOccurrenceStatus[] = [
   PublicationOccurrenceStatus.SCHEDULED,
   PublicationOccurrenceStatus.IN_PROGRESS,
@@ -31,6 +35,25 @@ const PUBLICATION_UNRESOLVED_OCCURRENCE_STATUSES: PublicationOccurrenceStatus[] 
   PublicationOccurrenceStatus.PARTIAL,
   PublicationOccurrenceStatus.AMBIGUOUS,
 ];
+
+type PublicationTargetRow = {
+  targetChatId: string;
+  entityType: ChatEntityType;
+  chat?: { title?: string | null } | null;
+};
+
+export type PublisherTargetPresentation = {
+  title: string;
+  avatarUrl: string | null;
+  link: string | null;
+};
+
+export type PublisherTargetPresentationMap = ReadonlyMap<string, PublisherTargetPresentation>;
+
+export type PublisherTargetSearchMatch = {
+  chatId: string;
+  entityType: ChatEntityType;
+};
 
 @Injectable()
 export class PublicationPresenterService {
@@ -133,11 +156,14 @@ export class PublicationPresenterService {
     row: any,
     preloadedDeliveryStats?: PublicationDeliveryStats,
     preloadedActionableDeliveryStats?: PublicationDeliveryStats,
+    publisherTargetPresentations?: PublisherTargetPresentationMap,
   ): Promise<PublicationSummary> {
     const delivery =
       preloadedDeliveryStats ?? row.deliveryStats ?? (await this.loadDeliveryStats(row.id));
     const content = row.canonicalContentRevision;
-    const targets = row.targets.map((target: any) => this.mapTarget(target));
+    const targets = row.targets.map((target: PublicationTargetRow) =>
+      this.mapTarget(target, row.dispatchProfile, publisherTargetPresentations),
+    );
     const targetPreviews = this.selectTargetPreviews(targets);
     const nextOccurrenceAt =
       row.nextOccurrenceAt !== undefined
@@ -180,8 +206,16 @@ export class PublicationPresenterService {
     });
   }
 
-  async mapPublicationDetails(row: any): Promise<PublicationDetails> {
-    const summary = await this.mapPublicationSummary(row);
+  async mapPublicationDetails(
+    row: any,
+    publisherTargetPresentations?: PublisherTargetPresentationMap,
+  ): Promise<PublicationDetails> {
+    const summary = await this.mapPublicationSummary(
+      row,
+      undefined,
+      undefined,
+      publisherTargetPresentations,
+    );
     const content = row.canonicalContentRevision;
     if (!content) {
       throw new ServiceUnavailableException('Содержимое публикации не найдено.');
@@ -205,7 +239,9 @@ export class PublicationPresenterService {
           sizeBytes: link.asset.sizeBytes,
         })),
       },
-      targets: row.targets.map((target: any) => this.mapTarget(target)),
+      targets: row.targets.map((target: PublicationTargetRow) =>
+        this.mapTarget(target, row.dispatchProfile, publisherTargetPresentations),
+      ),
       occurrences: row.occurrences.map((occurrence: any) => {
         const delivery =
           occurrence.deliveryStats ?? this.buildDeliveryStats(occurrence.deliveries ?? []);
@@ -388,6 +424,101 @@ export class PublicationPresenterService {
     return stats;
   }
 
+  async loadPublisherTargetPresentations(
+    targets: readonly PublicationTargetRow[],
+    publisherBotId: string,
+  ): Promise<Map<string, PublisherTargetPresentation>> {
+    const normalizedBotId = publisherBotId.trim();
+    const chatIds = [
+      ...new Set(targets.map((target) => target.targetChatId.trim()).filter(Boolean)),
+    ];
+    if (!normalizedBotId || chatIds.length === 0) {
+      return new Map();
+    }
+
+    const presentations = new Map<string, PublisherTargetPresentation>();
+    for (let offset = 0; offset < chatIds.length; offset += PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE) {
+      const batch = chatIds.slice(offset, offset + PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE);
+      const rows = await this.prisma.managedBotChatCatalog.findMany({
+        where: {
+          botId: normalizedBotId,
+          chatId: { in: batch },
+          status: 'ACTIVE',
+        },
+        select: {
+          chatId: true,
+          entityType: true,
+          title: true,
+          avatarUrl: true,
+          link: true,
+        },
+      });
+      for (const row of rows) {
+        presentations.set(this.targetKey(row.chatId, row.entityType), {
+          title: row.title?.trim() || row.chatId,
+          avatarUrl: this.normalizeHttpPresentationUrl(row.avatarUrl),
+          link: this.normalizeMaxEntityUrl(row.link),
+        });
+      }
+    }
+    return presentations;
+  }
+
+  async findPublisherTargetSearchMatches(
+    publisherBotId: string,
+    query: string,
+  ): Promise<PublisherTargetSearchMatch[]> {
+    const normalizedBotId = publisherBotId.trim();
+    const normalizedQuery = query.trim();
+    if (!normalizedBotId || !normalizedQuery) {
+      return [];
+    }
+
+    const rows = await this.prisma.$queryRaw<PublisherTargetSearchMatch[]>(Prisma.sql`
+      SELECT
+        catalog."chat_id" AS "chatId",
+        catalog."entity_type" AS "entityType"
+      FROM "managed_bot_chat_catalog" AS catalog
+      WHERE catalog."bot_id" = ${normalizedBotId}
+        AND catalog."status" = 'ACTIVE'
+        AND COALESCE(NULLIF(BTRIM(catalog."title"), ''), catalog."chat_id")
+          ILIKE ${`%${normalizedQuery}%`}
+      ORDER BY catalog."entity_type" ASC, catalog."chat_id" ASC
+      LIMIT ${MAX_PUBLICATION_TARGETS + 1}
+    `);
+    if (rows.length > MAX_PUBLICATION_TARGETS) {
+      throw new BadRequestException('Уточните поиск по чатам и каналам.');
+    }
+    return rows;
+  }
+
+  mapTarget(
+    target: PublicationTargetRow,
+    dispatchProfile?: PublicationDispatchProfile,
+    publisherTargetPresentations?: PublisherTargetPresentationMap,
+  ) {
+    if (dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
+      const presentation = publisherTargetPresentations?.get(
+        this.targetKey(target.targetChatId, target.entityType),
+      );
+      return {
+        chatId: target.targetChatId,
+        entityType: this.fromPrismaEntityType(target.entityType),
+        title: presentation?.title || target.targetChatId,
+        avatarUrl: presentation?.avatarUrl ?? null,
+        link: presentation?.link ?? null,
+      };
+    }
+
+    return {
+      chatId: target.targetChatId,
+      entityType: this.fromPrismaEntityType(target.entityType),
+      title: target.chat?.title ?? target.targetChatId,
+      avatarUrl: null,
+      link: null,
+    };
+  }
+
   private mapSchedule(schedule: any, nextOccurrenceAt: Date | null) {
     const rule = publicationScheduleInputSchema.parse(schedule.rule);
     return publicationScheduleSchema.parse({
@@ -397,16 +528,6 @@ export class PublicationPresenterService {
       nextOccurrenceAt: nextOccurrenceAt?.toISOString() ?? null,
       lastError: schedule.lastError,
     });
-  }
-
-  private mapTarget(target: any) {
-    return {
-      chatId: target.targetChatId,
-      entityType: this.fromPrismaEntityType(target.entityType),
-      title: target.chat?.title ?? target.targetChatId,
-      avatarUrl: null,
-      link: null,
-    };
   }
 
   private selectTargetPreviews<T extends { entityType: 'chat' | 'channel' }>(targets: T[]): T[] {
@@ -470,5 +591,55 @@ export class PublicationPresenterService {
 
   private fromPrismaEntityType(entityType: ChatEntityType): 'chat' | 'channel' {
     return entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
+  }
+
+  private targetKey(chatId: string, entityType: ChatEntityType): string {
+    return JSON.stringify([entityType, chatId]);
+  }
+
+  private normalizeMaxEntityUrl(value: string | null): string | null {
+    const parsed = this.parsePresentationUrl(value);
+    if (
+      !parsed ||
+      parsed.protocol !== 'https:' ||
+      (parsed.hostname !== 'max.ru' && parsed.hostname !== 'www.max.ru') ||
+      parsed.port.length > 0 ||
+      parsed.hash.length > 0 ||
+      parsed.pathname === '/'
+    ) {
+      return null;
+    }
+    parsed.hostname = 'max.ru';
+    return parsed.toString();
+  }
+
+  private normalizeHttpPresentationUrl(value: string | null): string | null {
+    const parsed = this.parsePresentationUrl(value);
+    if (!parsed || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
+      return null;
+    }
+    return parsed.toString();
+  }
+
+  private parsePresentationUrl(value: string | null): URL | null {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (
+      normalized.length === 0 ||
+      normalized.length > MAX_PRESENTATION_URL_LENGTH ||
+      [...normalized].some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return (
+          /\s/u.test(character) || codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+        );
+      })
+    ) {
+      return null;
+    }
+    try {
+      const parsed = new URL(normalized);
+      return parsed.username.length === 0 && parsed.password.length === 0 ? parsed : null;
+    } catch {
+      return null;
+    }
   }
 }

@@ -8,6 +8,8 @@ export const PUBLISHER_BINDING_REFRESH_QUEUE = 'publisher-binding-refresh';
 export type PublisherBindingRefreshReason =
   | 'bot_added'
   | 'webhook_observed'
+  | 'forwarded_private'
+  | 'historical_actor_recovery'
   | 'bootstrap'
   | 'stale_access'
   | 'stale_user_access'
@@ -19,6 +21,9 @@ export type PublisherBindingRefreshJob = {
   chatId: string;
   publisherBotId: string;
   candidateUserId?: string;
+  candidateVersion?: string;
+  replyChatId?: string;
+  requiresReadAccess?: boolean;
   reason: PublisherBindingRefreshReason;
   requestedAt: string;
 };
@@ -32,6 +37,8 @@ function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
       return 1;
     case 'bot_added':
     case 'webhook_observed':
+    case 'forwarded_private':
+    case 'historical_actor_recovery':
     case 'send_access_lost':
     case 'stale_user_access':
       return 5;
@@ -53,6 +60,9 @@ export class PublisherBindingRefreshQueueService {
     publisherBotId: string;
     reason: PublisherBindingRefreshReason;
     candidateUserId?: string | null;
+    candidateVersion?: string | null;
+    replyChatId?: string | null;
+    requiresReadAccess?: boolean;
     requestedAt?: Date;
     eventAt?: Date | null;
   }): Promise<void> {
@@ -64,6 +74,8 @@ export class PublisherBindingRefreshQueueService {
 
     const requestedAt = params.requestedAt ?? new Date();
     const candidateUserId = params.candidateUserId?.trim() || null;
+    const candidateVersion = params.candidateVersion?.trim() || null;
+    const replyChatId = params.replyChatId?.trim() || null;
     const manualRecheck = params.reason === 'manual_recheck';
     const discriminator = manualRecheck
       ? requestedAt.getTime()
@@ -77,7 +89,13 @@ export class PublisherBindingRefreshQueueService {
     const candidateHash = candidateUserId
       ? createHash('sha256').update(candidateUserId).digest('hex').slice(0, 16)
       : null;
-    const jobId = `publisher-binding-refresh-${entityHash}${candidateHash ? `-${candidateHash}` : ''}-${params.reason}-${discriminator}`;
+    const candidateVersionHash = candidateVersion
+      ? createHash('sha256').update(candidateVersion).digest('hex').slice(0, 16)
+      : null;
+    const candidateScope = `${candidateHash ? `-${candidateHash}` : ''}${
+      candidateVersionHash ? `-${candidateVersionHash}` : ''
+    }`;
+    const jobId = `publisher-binding-refresh-${entityHash}${candidateScope}-${params.reason}-${discriminator}`;
 
     await this.queue.add(
       'refresh',
@@ -86,6 +104,9 @@ export class PublisherBindingRefreshQueueService {
         chatId,
         publisherBotId,
         ...(candidateUserId ? { candidateUserId } : {}),
+        ...(candidateVersion ? { candidateVersion } : {}),
+        ...(replyChatId ? { replyChatId } : {}),
+        ...(params.requiresReadAccess ? { requiresReadAccess: true } : {}),
         reason: params.reason,
         requestedAt: requestedAt.toISOString(),
       },
@@ -95,7 +116,7 @@ export class PublisherBindingRefreshQueueService {
         ...(manualRecheck
           ? {
               deduplication: {
-                id: `publisher-binding-refresh-manual-${entityHash}${candidateHash ? `-${candidateHash}` : ''}`,
+                id: `publisher-binding-refresh-manual-${entityHash}${candidateScope}`,
                 ttl: PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS,
               },
             }

@@ -1,4 +1,6 @@
 import {
+  ChatEntityType,
+  PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
@@ -15,7 +17,162 @@ const EMPTY_DELIVERY = {
   canceled: 0,
 };
 
+function extractSqlText(query: unknown): string {
+  const strings = (query as { strings?: readonly string[] } | null)?.strings;
+  return (Array.isArray(strings) ? strings.join('?') : String(query)).replace(/\s+/gu, ' ').trim();
+}
+
+function extractSqlValues(query: unknown): readonly unknown[] {
+  return (query as { values?: readonly unknown[] } | null)?.values ?? [];
+}
+
 describe('PublicationPresenterService', () => {
+  it('uses only the exact active Publisher catalog for PUBLIK_V1 target presentation', async () => {
+    const catalogFindMany = jest.fn().mockResolvedValue([
+      {
+        chatId: 'chat-publisher',
+        entityType: ChatEntityType.CHAT,
+        title: 'Название Публика',
+        avatarUrl: 'https://cdn.max/publisher.png',
+        link: 'https://max.ru/publisher-chat',
+      },
+      {
+        chatId: 'channel-fallback',
+        entityType: ChatEntityType.CHANNEL,
+        title: '   ',
+        avatarUrl: null,
+        link: 'https://example.com/not-max',
+      },
+    ]);
+    const presenter = new PublicationPresenterService({
+      managedBotChatCatalog: { findMany: catalogFindMany },
+    } as never);
+    const targets = [
+      {
+        targetChatId: 'chat-publisher',
+        entityType: ChatEntityType.CHAT,
+        chat: { title: 'Устаревшее название Майора' },
+      },
+      {
+        targetChatId: 'channel-fallback',
+        entityType: ChatEntityType.CHANNEL,
+        chat: { title: 'Название канала из Майора' },
+      },
+    ];
+    const presentations = await presenter.loadPublisherTargetPresentations(
+      targets,
+      'publisher-bot',
+    );
+    const details = await presenter.mapPublicationDetails(
+      {
+        id: 'publication-publisher',
+        title: 'Публикация',
+        lifecycle: PublicationLifecycle.ACTIVE,
+        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+        version: 1,
+        canonicalContentRevisionId: 'content-1',
+        canonicalContentRevision: {
+          id: 'content-1',
+          revision: 1,
+          text: 'Текст',
+          textFormat: 'PLAIN',
+          buttons: [],
+          assets: [],
+        },
+        targets,
+        audienceSelection: 'SELECTED',
+        audienceMode: 'SNAPSHOT',
+        schedule: null,
+        occurrences: [],
+        deliveryStats: EMPTY_DELIVERY,
+        actionableDeliveryStats: EMPTY_DELIVERY,
+        createdAt: new Date('2026-08-27T10:00:00.000Z'),
+        updatedAt: new Date('2026-08-27T10:00:00.000Z'),
+      },
+      presentations,
+    );
+
+    expect(details.targets).toEqual([
+      expect.objectContaining({
+        chatId: 'chat-publisher',
+        title: 'Название Публика',
+        avatarUrl: 'https://cdn.max/publisher.png',
+        link: 'https://max.ru/publisher-chat',
+      }),
+      expect.objectContaining({
+        chatId: 'channel-fallback',
+        title: 'channel-fallback',
+        link: null,
+      }),
+    ]);
+    expect(details.targetPreviews.map((target) => target.title)).toEqual([
+      'Название Публика',
+      'channel-fallback',
+    ]);
+    expect(JSON.stringify(details)).not.toContain('Майора');
+    expect(catalogFindMany).toHaveBeenCalledWith({
+      where: {
+        botId: 'publisher-bot',
+        chatId: { in: ['chat-publisher', 'channel-fallback'] },
+        status: 'ACTIVE',
+      },
+      select: {
+        chatId: true,
+        entityType: true,
+        title: true,
+        avatarUrl: true,
+        link: true,
+      },
+    });
+  });
+
+  it('searches the active exact Publisher catalog by its displayed title or ID fallback', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValue([{ chatId: 'fallback-channel', entityType: ChatEntityType.CHANNEL }]);
+    const presenter = new PublicationPresenterService({
+      $queryRaw: queryRaw,
+    } as never);
+
+    await expect(
+      presenter.findPublisherTargetSearchMatches('publisher-bot', 'fallback'),
+    ).resolves.toEqual([{ chatId: 'fallback-channel', entityType: ChatEntityType.CHANNEL }]);
+    const searchSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+    const searchValues = extractSqlValues(queryRaw.mock.calls[0]?.[0]);
+    expect(searchSql).toContain('FROM "managed_bot_chat_catalog" AS catalog');
+    expect(searchSql).toContain('catalog."status" = \'ACTIVE\'');
+    expect(searchSql).toContain(
+      'COALESCE(NULLIF(BTRIM(catalog."title"), \'\'), catalog."chat_id") ILIKE ?',
+    );
+    expect(searchValues).toEqual(['publisher-bot', '%fallback%', 501]);
+  });
+
+  it('batches Publisher catalog presentation reads and rejects overbroad searches', async () => {
+    const catalogFindMany = jest.fn().mockResolvedValue([]);
+    const queryRaw = jest.fn().mockResolvedValue(
+      Array.from({ length: 501 }, (_, index) => ({
+        chatId: `chat-${index}`,
+        entityType: ChatEntityType.CHAT,
+      })),
+    );
+    const presenter = new PublicationPresenterService({
+      managedBotChatCatalog: { findMany: catalogFindMany },
+      $queryRaw: queryRaw,
+    } as never);
+    const targets = Array.from({ length: 201 }, (_, index) => ({
+      targetChatId: `chat-${index}`,
+      entityType: ChatEntityType.CHAT,
+    }));
+
+    await presenter.loadPublisherTargetPresentations(targets, 'publisher-bot');
+    expect(catalogFindMany).toHaveBeenCalledTimes(2);
+    expect(catalogFindMany.mock.calls[0]?.[0].where.chatId.in).toHaveLength(200);
+    expect(catalogFindMany.mock.calls[1]?.[0].where.chatId.in).toEqual(['chat-200']);
+    await expect(presenter.findPublisherTargetSearchMatches('publisher-bot', 'а')).rejects.toThrow(
+      'Уточните поиск по чатам и каналам.',
+    );
+  });
+
   it('maps current and historical delivery content revisions without guessing legacy rows', () => {
     const presenter = new PublicationPresenterService({} as never);
     const publicationOccurrence = {

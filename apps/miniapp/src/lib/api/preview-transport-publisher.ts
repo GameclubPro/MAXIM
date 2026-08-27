@@ -11,7 +11,10 @@ import {
   publisherEntitySchema,
   publisherEntityModuleSettingsSchema,
   publisherEntityRefreshResponseSchema,
+  publisherSuggestionSchema,
   publisherSuggestionsResponseSchema,
+  reviewPublisherSuggestionRequestSchema,
+  reviewPublisherSuggestionResponseSchema,
   resolvePublisherEntitiesRequestSchema,
   resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
@@ -20,6 +23,7 @@ import {
   type ManagedEntityType,
   type PublisherChatCommentSettings,
   type PublisherEntity,
+  type PublisherSuggestion,
 } from '@maxim/contracts/publisher';
 import { PREVIEW_CHAT_ID } from '../design-preview';
 import { ApiRequestError } from '../api-request-error';
@@ -67,6 +71,49 @@ function getPreviewPublisherChannelSuggestions(state: PreviewState): Record<stri
   };
   extended.publisherChannelSuggestions ??= {};
   return extended.publisherChannelSuggestions;
+}
+
+function getPreviewPublisherSuggestionReviews(
+  state: PreviewState,
+): Record<string, PublisherSuggestion['reviewStatus']> {
+  const extended = state as PreviewState & {
+    publisherSuggestionReviews?: Record<string, PublisherSuggestion['reviewStatus']>;
+  };
+  extended.publisherSuggestionReviews ??= {};
+  return extended.publisherSuggestionReviews;
+}
+
+function listPreviewPublisherSuggestions(
+  state: PreviewState,
+  entityId: string,
+): PublisherSuggestion[] {
+  const count =
+    state.publisherSuggestionsVariant === 'large'
+      ? 100
+      : state.publisherSuggestionsVariant === 'mixed'
+        ? 8
+        : 0;
+  const reviews = getPreviewPublisherSuggestionReviews(state);
+  return Array.from({ length: count }, (_, index) => {
+    const id = `preview-suggestion-${entityId}-${String(index + 1).padStart(3, '0')}`;
+    const initialStatus: PublisherSuggestion['reviewStatus'] =
+      index < Math.ceil(count * 0.35)
+        ? 'pending'
+        : index < Math.ceil(count * 0.4)
+          ? 'publishing'
+          : index % 2 === 0
+            ? 'published'
+            : 'cancelled';
+    const reviewStatus = reviews[id] ?? initialStatus;
+    return publisherSuggestionSchema.parse({
+      id,
+      text: `Идея для публикации №${index + 1}: важная новость сообщества с проверенными деталями.`,
+      authorDisplayName: index % 4 === 0 ? null : `Автор ${index + 1}`,
+      createdAt: new Date(state.clock.now().getTime() - index * 12 * 60_000).toISOString(),
+      reviewStatus,
+      publicationId: reviewStatus === 'published' ? `preview-publication-${index + 1}` : null,
+    });
+  });
 }
 
 function buildPreviewPublisherEntity(
@@ -173,6 +220,9 @@ function listPreviewPublisherEntities(state: PreviewState): PublisherEntity[] {
   ].filter((item): item is PublisherEntity => item !== null);
   if (state.publisherEntitiesVariant === 'empty') {
     return [];
+  }
+  if (state.publisherEntitiesVariant === 'channel-only') {
+    return baseItems.filter((item) => item.entityType === 'channel');
   }
   if (state.publisherEntitiesVariant !== 'large') {
     return baseItems;
@@ -357,7 +407,38 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     segments[4] === 'suggestions' &&
     method === 'GET'
   ) {
-    return publisherSuggestionsResponseSchema.parse({ items: [] });
+    return publisherSuggestionsResponseSchema.parse({
+      items: listPreviewPublisherSuggestions(state, entityId),
+    });
+  }
+  if (
+    entityType === 'channel' &&
+    segments.length === 7 &&
+    segments[4] === 'suggestions' &&
+    segments[5] &&
+    segments[6] === 'review' &&
+    method === 'POST'
+  ) {
+    const request = reviewPublisherSuggestionRequestSchema.parse(parseJsonBody(init));
+    const suggestionId = decodeURIComponent(segments[5]);
+    const suggestion = listPreviewPublisherSuggestions(state, entityId).find(
+      (item) => item.id === suggestionId,
+    );
+    if (!suggestion) {
+      throw new ApiRequestError(404, '', 'Preview publisher suggestion not found');
+    }
+    const reviewStatus = request.action === 'publish' ? 'published' : 'cancelled';
+    getPreviewPublisherSuggestionReviews(state)[suggestionId] = reviewStatus;
+    return reviewPublisherSuggestionResponseSchema.parse({
+      suggestion: {
+        ...suggestion,
+        reviewStatus,
+        publicationId:
+          reviewStatus === 'published'
+            ? `preview-publication-${encodeURIComponent(suggestionId)}`
+            : null,
+      },
+    });
   }
   if (segments[4] === 'policy' && method === 'PATCH') {
     const request = updateManagedEntityPublicationPolicyRequestSchema.parse(parseJsonBody(init));
@@ -376,8 +457,7 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       getPreviewPublisherChatComments(state)[entityId] = request.chatComments;
     }
     if (entityType === 'channel' && request.channelSuggestionsEnabled !== undefined) {
-      getPreviewPublisherChannelSuggestions(state)[entityId] =
-        request.channelSuggestionsEnabled;
+      getPreviewPublisherChannelSuggestions(state)[entityId] = request.channelSuggestionsEnabled;
     }
     const revision = entity.moduleSettings.revision + 1;
     getPreviewPublisherModuleRevisions(state)[`${entityType}:${entityId}`] = revision;
@@ -385,8 +465,7 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       revision,
       chatComments:
         entityType === 'chat'
-          ? (getPreviewPublisherChatComments(state)[entityId] ??
-            entity.moduleSettings.chatComments)
+          ? (getPreviewPublisherChatComments(state)[entityId] ?? entity.moduleSettings.chatComments)
           : null,
       channelSuggestionsEnabled:
         entityType === 'channel'

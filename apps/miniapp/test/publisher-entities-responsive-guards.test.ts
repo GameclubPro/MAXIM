@@ -46,6 +46,7 @@ test('publisher entity actions keep native touch targets at least 44px tall', ()
     pageCss,
     /\.publisher-entity-row__refresh \{\s*width: 44px;\s*min-width: 44px;\s*height: 44px;/u,
   );
+  assert.match(pageCss, /\.publisher-entities-page__views a \{[\s\S]*?min-height: 44px;/u);
 });
 
 test('publisher searches hide stale rows and next-page retries preserve loaded pages', () => {
@@ -71,10 +72,26 @@ test('expanded target picker removes the fixed publish dock from mobile hit test
   );
 });
 
-test('publisher catalog relies on bottom navigation without duplicate type tabs', () => {
-  assert.doesNotMatch(pageSource, /SegmentedControl|publisher-entities-page__tabs/u);
+test('publisher catalog keeps counted type views aligned with bottom navigation', () => {
+  assert.match(pageSource, /publisher-entities-page__views/u);
+  assert.match(pageSource, /buildPublisherEntityViewRoute\('chat'/u);
+  assert.match(pageSource, /buildPublisherEntityViewRoute\('channel'/u);
+  assert.match(pageSource, /<strong>\{summary\.chat\}<\/strong>/u);
+  assert.match(pageSource, /<strong>\{summary\.channel\}<\/strong>/u);
   assert.match(pageSource, /view === 'channel' \? 'Каналы' : 'Чаты'/u);
-  assert.match(pageSource, /Добавьте Публик/u);
+  assert.match(pageSource, /shouldAutoOpenChannels/u);
   assert.match(pageSource, /buildPublisherEntityModulesRoute\(entity\)/u);
   assert.doesNotMatch(pageSource, /suggestionsViaPublik: enabled/u);
+});
+
+test('publisher home runs a real bounded MAX recheck and exposes forwarding onboarding', () => {
+  assert.match(pageSource, /await refreshPublisherEntities\(api\)/u);
+  assert.match(pageSource, /PUBLISHER_BULK_REFRESH_POLL_DELAYS_MS/u);
+  assert.match(pageSource, /await entitiesQuery\.refetch\(\)/u);
+  assert.match(pageSource, /openMaxBotLinkAndClose\(botDialogUrl\)/u);
+  assert.match(pageSource, /перешлите ему сообщение или пост/u);
+  assert.doesNotMatch(
+    pageSource,
+    /aria-label="Обновить чаты и каналы"[\s\S]*?resetQueries\(\{ queryKey: entitiesQueryKey/u,
+  );
 });
