@@ -1,7 +1,14 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
-import { MaxClientService } from '../max/max-client.service';
-import { ChatBotAccessState, ChatBotMembershipStatus, Prisma } from '../prisma/prisma-client';
+import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+  ManagedEntityAccessRole,
+  ManagedEntityAccessState,
+  Prisma,
+} from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
@@ -29,8 +36,12 @@ const PUBLISHER_ACCESS_REFRESH_AHEAD_MS = 2 * 60_000;
 const PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS = 5 * 60_000;
 const PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS = 15 * 60_000;
 const PUBLISHER_LOST_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
+const PUBLISHER_USER_ACCESS_GRANTED_TTL_MS = 3 * 24 * 60 * 60_000;
+const PUBLISHER_USER_ACCESS_DENIED_TTL_MS = 15 * 60_000;
+const PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE = 25;
 
 type PublisherBindingRefreshCandidate = { chatId: string };
+type PublisherUserAccessRefreshCandidate = { chatId: string; userId: string };
 
 @Injectable()
 export class PublisherBindingRefreshService {
@@ -69,16 +80,9 @@ export class PublisherBindingRefreshService {
       where: { id: chatId },
       select: {
         id: true,
+        entityType: true,
         publicationPolicy: {
           select: { publikEnabled: true },
-        },
-        botMemberships: {
-          where: {
-            status: ChatBotMembershipStatus.ACTIVE,
-            botId: { not: this.publisherBotId },
-          },
-          select: { id: true },
-          take: 1,
         },
         publisherBinding: true,
       },
@@ -87,15 +91,17 @@ export class PublisherBindingRefreshService {
     if (
       !candidate ||
       candidate.publicationPolicy?.publikEnabled === false ||
-      candidate.botMemberships.length === 0 ||
       !hasPublisherRefreshEvidence(candidate.publisherBinding, this.publisherBotId)
     ) {
       return;
     }
 
     const probeStartedAt = new Date();
+    let botAccess: MaxChatMemberAccess;
+    let committedBotAccessCheckedAt = probeStartedAt;
+    let committedBotAccessState: ChatBotAccessState = ChatBotAccessState.UNKNOWN;
     try {
-      const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+      botAccess = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         botId: this.publisherBotId,
         trafficClass: job.reason === 'manual_recheck' ? 'interactive' : 'background',
         sourceTag: 'publisher_readiness',
@@ -103,7 +109,7 @@ export class PublisherBindingRefreshService {
         timeoutMs: 5_000,
       });
       const checkedAt = new Date();
-      const snapshot = buildBotAccessSnapshotPersistence(access, {
+      const snapshot = buildBotAccessSnapshotPersistence(botAccess, {
         source: `publisher_refresh_${job.reason}`,
         now: checkedAt,
         ttlMs: PUBLISHER_ACCESS_SNAPSHOT_TTL_MS,
@@ -112,6 +118,7 @@ export class PublisherBindingRefreshService {
         where: {
           chatId,
           publisherBotId: this.publisherBotId,
+          status: ChatBotMembershipStatus.ACTIVE,
           AND: [
             {
               OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: probeStartedAt } }],
@@ -123,7 +130,7 @@ export class PublisherBindingRefreshService {
         },
         data: {
           status: ChatBotMembershipStatus.ACTIVE,
-          capabilities: access.permissions,
+          capabilities: botAccess.permissions,
           ...snapshot,
           lastSeenAt: checkedAt,
         },
@@ -135,6 +142,8 @@ export class PublisherBindingRefreshService {
         );
         return;
       }
+      committedBotAccessCheckedAt = checkedAt;
+      committedBotAccessState = snapshot.botAccessState;
       await this.dispatchHealth.recordAuthenticatedSuccess(probeStartedAt);
     } catch (error: unknown) {
       const classification = classifyPublisherFailure(error);
@@ -148,6 +157,231 @@ export class PublisherBindingRefreshService {
       }
       throw error;
     }
+
+    const refreshedEntityType = await this.refreshPublisherCatalog(
+      chatId,
+      candidate.entityType,
+      probeStartedAt,
+      committedBotAccessCheckedAt,
+      committedBotAccessState,
+    );
+    const candidateUserId = job.candidateUserId?.trim() ?? '';
+    if (candidateUserId) {
+      await this.refreshPublisherUserAccess({
+        chatId,
+        entityType: refreshedEntityType,
+        userId: candidateUserId,
+        botAccess,
+        probeStartedAt,
+        committedBotAccessCheckedAt,
+        committedBotAccessState,
+        interactive: job.reason === 'manual_recheck' || job.reason === 'bot_added',
+      });
+    }
+  }
+
+  private async refreshPublisherCatalog(
+    chatId: string,
+    fallbackEntityType: ChatEntityType,
+    probeStartedAt: Date,
+    committedBotAccessCheckedAt: Date,
+    committedBotAccessState: ChatBotAccessState,
+  ): Promise<ChatEntityType> {
+    try {
+      const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+        botId: this.publisherBotId,
+        trafficClass: 'background',
+        sourceTag: 'publisher_readiness',
+        bypassCache: true,
+        timeoutMs: 5_000,
+      });
+      const entityType =
+        snapshot.entityType === 'channel'
+          ? ChatEntityType.CHANNEL
+          : snapshot.entityType === 'chat'
+            ? ChatEntityType.CHAT
+            : fallbackEntityType;
+      const title = snapshot.title?.trim();
+      await this.prisma.$transaction(async (tx) => {
+        const chats = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT chat."id"
+          FROM "chats" AS chat
+          WHERE chat."id" = ${chatId}
+          FOR UPDATE OF chat
+        `);
+        if (chats.length === 0) return;
+        const binding = await tx.publisherEntityBinding.findUnique({
+          where: { chatId },
+          select: {
+            publisherBotId: true,
+            status: true,
+            lifecycleEventAt: true,
+            botAccessCheckedAt: true,
+            botAccessState: true,
+          },
+        });
+        if (
+          !binding ||
+          binding.publisherBotId !== this.publisherBotId ||
+          binding.status !== ChatBotMembershipStatus.ACTIVE ||
+          (binding.lifecycleEventAt && binding.lifecycleEventAt > probeStartedAt) ||
+          binding.botAccessCheckedAt?.getTime() !== committedBotAccessCheckedAt.getTime() ||
+          binding.botAccessState !== committedBotAccessState
+        ) {
+          return;
+        }
+        await tx.chat.updateMany({
+          where: { id: chatId },
+          data: { ...(title ? { title } : {}), entityType },
+        });
+        await tx.managedBotChatCatalog.upsert({
+          where: { botId_chatId: { botId: this.publisherBotId, chatId } },
+          create: {
+            botId: this.publisherBotId,
+            chatId,
+            entityType,
+            title: title ?? null,
+            link: snapshot.link,
+            avatarUrl: snapshot.avatarUrl,
+            status: 'ACTIVE',
+            source: 'publisher_targeted_snapshot',
+            lastSeenAt: probeStartedAt,
+          },
+          update: {
+            entityType,
+            ...(title ? { title } : {}),
+            link: snapshot.link,
+            avatarUrl: snapshot.avatarUrl,
+            status: 'ACTIVE',
+            source: 'publisher_targeted_snapshot',
+            lastSeenAt: probeStartedAt,
+          },
+        });
+      });
+      return entityType;
+    } catch (error: unknown) {
+      this.logger.warn(
+        { chatId, err: error instanceof Error ? error.message : String(error) },
+        'Publisher access refreshed but entity metadata hydration failed',
+      );
+      return fallbackEntityType;
+    }
+  }
+
+  private async refreshPublisherUserAccess(params: {
+    chatId: string;
+    entityType: ChatEntityType;
+    userId: string;
+    botAccess: MaxChatMemberAccess;
+    probeStartedAt: Date;
+    committedBotAccessCheckedAt: Date;
+    committedBotAccessState: ChatBotAccessState;
+    interactive: boolean;
+  }): Promise<void> {
+    const userAccess = await this.maxClient.getChatMemberAccess(params.chatId, params.userId, {
+      botId: this.publisherBotId,
+      trafficClass: params.interactive ? 'interactive' : 'background',
+      sourceTag: 'publisher_user_access',
+      bypassCache: true,
+      timeoutMs: 5_000,
+      ignoreFailureMetricStatuses: [403, 404],
+    });
+    const checkedAt = new Date();
+    const userHasAdminAccess = userAccess?.isAdmin === true || userAccess?.isOwner === true;
+    const botHasAdminAccess = params.botAccess.isAdmin || params.botAccess.isOwner;
+    const granted = userHasAdminAccess && botHasAdminAccess;
+    const state = granted
+      ? ManagedEntityAccessState.GRANTED
+      : botHasAdminAccess
+        ? ManagedEntityAccessState.USER_DENIED
+        : ManagedEntityAccessState.BOT_DENIED;
+    const deniedReason = granted
+      ? null
+      : botHasAdminAccess
+        ? 'publisher_user_not_admin'
+        : 'publisher_bot_not_admin';
+    const userRole = this.toAccessRole(userAccess);
+    const botRole = this.toAccessRole(params.botAccess);
+    await this.prisma.$transaction(async (tx) => {
+      const chats = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${params.chatId}
+        FOR UPDATE OF chat
+      `);
+      if (chats.length === 0) return;
+      const binding = await tx.publisherEntityBinding.findUnique({
+        where: { chatId: params.chatId },
+        select: {
+          publisherBotId: true,
+          status: true,
+          lifecycleEventAt: true,
+          botAccessCheckedAt: true,
+          botAccessState: true,
+        },
+      });
+      if (
+        !binding ||
+        binding.publisherBotId !== this.publisherBotId ||
+        binding.status !== ChatBotMembershipStatus.ACTIVE ||
+        (binding.lifecycleEventAt && binding.lifecycleEventAt > params.probeStartedAt) ||
+        binding.botAccessCheckedAt?.getTime() !== params.committedBotAccessCheckedAt.getTime() ||
+        binding.botAccessState !== params.committedBotAccessState
+      ) {
+        return;
+      }
+      await tx.managedEntityAccessEdge.upsert({
+        where: {
+          chatId_userId_botId: {
+            chatId: params.chatId,
+            userId: params.userId,
+            botId: this.publisherBotId,
+          },
+        },
+        create: {
+          chatId: params.chatId,
+          userId: params.userId,
+          botId: this.publisherBotId,
+          entityType: params.entityType,
+          state,
+          userRole,
+          botRole,
+          checkedAt,
+          expiresAt: new Date(
+            checkedAt.getTime() +
+              (granted
+                ? PUBLISHER_USER_ACCESS_GRANTED_TTL_MS
+                : PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
+          ),
+          deniedReason,
+          source: 'publisher_targeted_user_access',
+        },
+        update: {
+          entityType: params.entityType,
+          state,
+          userRole,
+          botRole,
+          checkedAt,
+          expiresAt: new Date(
+            checkedAt.getTime() +
+              (granted
+                ? PUBLISHER_USER_ACCESS_GRANTED_TTL_MS
+                : PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
+          ),
+          deniedReason,
+          lastMaxErrorCode: null,
+          lastMaxErrorMessage: null,
+          lastMaxStatusCode: null,
+          source: 'publisher_targeted_user_access',
+        },
+      });
+    });
+  }
+
+  private toAccessRole(access: MaxChatMemberAccess | null): ManagedEntityAccessRole {
+    if (access?.isOwner) return ManagedEntityAccessRole.OWNER;
+    if (access?.isAdmin) return ManagedEntityAccessRole.ADMIN;
+    return access ? ManagedEntityAccessRole.MEMBER : ManagedEntityAccessRole.UNKNOWN;
   }
 
   private async recordAccessLost(
@@ -161,6 +395,7 @@ export class PublisherBindingRefreshService {
       where: {
         chatId,
         publisherBotId: this.publisherBotId,
+        status: ChatBotMembershipStatus.ACTIVE,
         AND: [
           {
             OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: probeStartedAt } }],
@@ -238,12 +473,22 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
         // FLAG: Publisher webhooks own binding creation; this scan only refreshes existing evidence.
         const readyBindings = await this.readReadyRefreshCandidates(now);
         const discoveryBindings = await this.readDiscoveryRefreshCandidates(now);
+        const userAccessBindings = await this.readUserAccessRefreshCandidates(now);
 
         for (const binding of [...readyBindings, ...discoveryBindings]) {
           await this.refreshQueue.enqueue({
             chatId: binding.chatId,
             publisherBotId: this.publisherBotId,
             reason: 'stale_access',
+            requestedAt: now,
+          });
+        }
+        for (const binding of userAccessBindings) {
+          await this.refreshQueue.enqueue({
+            chatId: binding.chatId,
+            publisherBotId: this.publisherBotId,
+            candidateUserId: binding.userId,
+            reason: 'stale_user_access',
             requestedAt: now,
           });
         }
@@ -344,14 +589,32 @@ export class PublisherBindingRefreshSchedulerService implements OnModuleInit, On
     });
   }
 
-  private managedChatFilter() {
-    return {
-      botMemberships: {
-        some: {
-          status: ChatBotMembershipStatus.ACTIVE,
-          botId: { not: this.publisherBotId },
+  private readUserAccessRefreshCandidates(
+    now: Date,
+  ): Promise<PublisherUserAccessRefreshCandidate[]> {
+    const refreshBefore = new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS);
+    return this.prisma.managedEntityAccessEdge.findMany({
+      where: {
+        botId: this.publisherBotId,
+        state: ManagedEntityAccessState.GRANTED,
+        userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+        OR: [{ expiresAt: null }, { expiresAt: { lte: refreshBefore } }],
+        chat: {
+          publisherBinding: { is: publisherRefreshEvidenceWhere(this.publisherBotId) },
+          OR: [
+            { publicationPolicy: { is: null } },
+            { publicationPolicy: { is: { publikEnabled: true } } },
+          ],
         },
       },
+      select: { chatId: true, userId: true },
+      orderBy: [{ expiresAt: { sort: 'asc', nulls: 'first' } }, { chatId: 'asc' }],
+      take: PUBLISHER_USER_ACCESS_REFRESH_BATCH_SIZE,
+    });
+  }
+
+  private managedChatFilter() {
+    return {
       OR: [
         { publicationPolicy: { is: null } },
         { publicationPolicy: { is: { publikEnabled: true } } },

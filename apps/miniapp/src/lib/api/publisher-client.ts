@@ -1,4 +1,5 @@
 import {
+  PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
   managedEntityPublicationPolicySchema,
   publisherEntitiesCursorQuerySchema,
   publisherEntitiesCursorResponseSchema,
@@ -32,6 +33,17 @@ export type ListPublisherEntitiesCursorOptions = Omit<
   query?: string;
   signal?: AbortSignal;
 };
+
+export function isInvalidPublisherEntitiesCursorError(error: unknown): boolean {
+  if (!(error instanceof Error) || error.name !== 'ApiRequestError') {
+    return false;
+  }
+
+  const apiError = error as Error & { status?: unknown; code?: unknown };
+  return (
+    apiError.status === 400 && apiError.code === PUBLISHER_ENTITIES_CURSOR_INVALID_CODE
+  );
+}
 
 export function listPublisherEntities(
   api: ApiTransport,

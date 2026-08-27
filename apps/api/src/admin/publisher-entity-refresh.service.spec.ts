@@ -40,6 +40,7 @@ describe('PublisherEntityRefreshService', () => {
     expect(fixture.refreshQueue.enqueue).toHaveBeenCalledWith({
       chatId: 'channel-1',
       publisherBotId: 'publik-bot',
+      candidateUserId: 'admin-1',
       reason: 'manual_recheck',
     });
   });

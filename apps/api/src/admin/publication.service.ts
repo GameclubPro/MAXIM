@@ -8,7 +8,6 @@ import {
   listPublicationsResponseSchema,
   publicationCalendarAvailabilityRequestSchema,
   publicationCalendarAvailabilityResponseSchema,
-  MAX_PUBLICATION_TARGETS,
   publicationActionRequestSchema,
   publicationScheduleInputSchema,
   resolvePublicationAmbiguousDeliveryRequestSchema,
@@ -56,7 +55,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { isSystemModeRecoveryWindow, SystemModeService } from '../system/system-mode.service';
-import { isPrismaKnownError, mapWithConcurrencyLimit } from './admin-legacy-utils';
+import { isPrismaKnownError } from './admin-legacy-utils';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import {
@@ -68,7 +67,10 @@ import {
   resolvePublicationOccurrenceRollupStatus,
 } from './publication-delivery-verification-state';
 import { PublicationContentService } from './publication-content.service';
-import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
+import {
+  PublicationPublisherRoutingService,
+  type ResolvedPublicationTarget,
+} from './publication-publisher-routing.service';
 import { publicationBackgroundAccess } from './publication-background-access';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
@@ -94,13 +96,6 @@ const PUBLICATION_DISPATCH_BATCH = 50;
 const PUBLICATION_DEADLINE_DISPATCH_BATCH = 25;
 const PUBLICATION_SLOW_BATCH = 10;
 const PUBLICATION_RECONCILE_BATCH = 200;
-const PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY = 4;
-
-type ResolvedPublicationTarget = PublicationTargetInput & {
-  title: string;
-  avatarUrl: string | null;
-  link: string | null;
-};
 
 type PublicationCalendarConflictOccurrence = {
   id: string;
@@ -490,11 +485,13 @@ export class PublicationService {
     }
 
     const request = parsed.data;
-    if (request.excludePublicationId) {
-      await this.assertPublicationOwner(request.excludePublicationId, user.userId);
-    }
-
-    const targets = await this.resolveAudienceTargets(user, request.audience);
+    const excludedPublication = request.excludePublicationId
+      ? await this.assertPublicationOwner(request.excludePublicationId, user.userId)
+      : null;
+    const dispatchProfile =
+      excludedPublication?.dispatchProfile ??
+      this.publisherRouting.requireNewRoute().dispatchProfile;
+    const targets = await this.resolveAudienceTargets(user, request.audience, dispatchProfile);
     const from = new Date(request.from);
     const to = new Date(request.to);
     const targetKeys = new Set(
@@ -630,7 +627,11 @@ export class PublicationService {
     }
     const dispatchRoute = this.publisherRouting.requireNewRoute();
 
-    const targets = await this.resolveAudienceTargets(user, request.audience);
+    const targets = await this.resolveAudienceTargets(
+      user,
+      request.audience,
+      dispatchRoute.dispatchProfile,
+    );
     if (request.intent === 'publish') {
       await this.publisherRouting.assertTargetsReady(targets, dispatchRoute.requiredBotId);
     }
@@ -809,10 +810,18 @@ export class PublicationService {
       !this.isPublicationAudienceEquivalent(request.audience, existing);
     let targets: ResolvedPublicationTarget[];
     if (audienceChanged && request.audience) {
-      await this.resolvePersistedPublicationTargets(user, existing.targets);
-      targets = await this.resolveAudienceTargets(user, request.audience);
+      await this.resolvePersistedPublicationTargets(
+        user,
+        existing.targets,
+        existing.dispatchProfile,
+      );
+      targets = await this.resolveAudienceTargets(user, request.audience, existing.dispatchProfile);
     } else {
-      targets = await this.resolvePersistedPublicationTargets(user, existing.targets);
+      targets = await this.resolvePersistedPublicationTargets(
+        user,
+        existing.targets,
+        existing.dispatchProfile,
+      );
     }
 
     const now = new Date();
@@ -1267,7 +1276,11 @@ export class PublicationService {
       return this.get(publicationId, user);
     }
     const publication = await this.assertPublicationOwner(publicationId, user.userId);
-    await this.resolvePersistedPublicationTargets(user, publication.targets);
+    await this.resolvePersistedPublicationTargets(
+      user,
+      publication.targets,
+      publication.dispatchProfile,
+    );
     if (
       publication.lifecycle !== PublicationLifecycle.ACTIVE &&
       publication.lifecycle !== PublicationLifecycle.ERROR
@@ -1590,7 +1603,11 @@ export class PublicationService {
       return this.get(publicationId, user);
     }
     const publication = await this.assertPublicationOwner(publicationId, user.userId);
-    await this.resolvePersistedPublicationTargets(user, publication.targets);
+    await this.resolvePersistedPublicationTargets(
+      user,
+      publication.targets,
+      publication.dispatchProfile,
+    );
     const delivery = await this.prisma.managedBroadcastDelivery.findFirst({
       where: {
         id: parsed.data.deliveryId,
@@ -2721,7 +2738,11 @@ export class PublicationService {
       });
     }
     if (action === 'resume') {
-      await this.resolvePersistedPublicationTargets(user, publication.targets);
+      await this.resolvePersistedPublicationTargets(
+        user,
+        publication.targets,
+        publication.dispatchProfile,
+      );
     }
     const now = new Date();
     const nextVersion = publication.version + 1;
@@ -2857,77 +2878,26 @@ export class PublicationService {
   private async resolveAudienceTargets(
     user: AuthUser,
     audience: PublicationAudienceInput,
+    dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
   ): Promise<ResolvedPublicationTarget[]> {
-    const [chats, channels] = await Promise.all([
-      this.managedEntitiesService.listChats(user, { fresh: false }),
-      this.managedEntitiesService.listChannels(user, { fresh: false }),
-    ]);
-    const available = [...chats, ...channels].map((item) => ({
-      chatId: item.id,
-      entityType: item.entityType,
-      title: item.title,
-      avatarUrl: item.avatarUrl ?? null,
-      link: item.link ?? null,
-    }));
-    const byKey = new Map(
-      available.map((target) => [`${target.entityType}:${target.chatId}`, target]),
-    );
-    let resolved: ResolvedPublicationTarget[];
-    if (audience.selection === 'SELECTED') {
-      resolved = audience.targets.map((target) => {
-        const availableTarget = byKey.get(`${target.entityType}:${target.chatId}`);
-        if (!availableTarget) {
-          throw new BadRequestException(
-            'Некоторые выбранные чаты или каналы больше недоступны. Обновите список.',
-          );
-        }
-        return availableTarget;
-      });
-    } else {
-      resolved = available.filter((target) =>
-        audience.selection === 'ALL_CHATS'
-          ? target.entityType === 'chat'
-          : audience.selection === 'ALL_CHANNELS'
-            ? target.entityType === 'channel'
-            : true,
-      );
-    }
-    if (resolved.length === 0) {
-      throw new BadRequestException('Нет доступных получателей для публикации.');
-    }
-    if (resolved.length > MAX_PUBLICATION_TARGETS) {
-      throw new BadRequestException(
-        `Можно выбрать не больше ${MAX_PUBLICATION_TARGETS} чатов и каналов.`,
-      );
-    }
-    await mapWithConcurrencyLimit(
-      resolved,
-      PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY,
-      async (target) => this.assertTargetAdminAccess(target, user),
-    );
-    return resolved;
+    return this.publisherRouting.resolveAudienceTargets(user, audience, dispatchProfile);
   }
 
   private async resolveOccurrenceTargets(publication: any): Promise<ResolvedPublicationTarget[]> {
     return publicationBackgroundAccess.resolveOccurrence(
       publication,
-      (user, targets) => this.resolvePersistedPublicationTargets(user, targets),
-      (user, audience) => this.resolveAudienceTargets(user, audience),
+      (user, targets) =>
+        this.resolvePersistedPublicationTargets(user, targets, publication.dispatchProfile),
+      (user, audience) => this.resolveAudienceTargets(user, audience, publication.dispatchProfile),
     );
   }
 
   private resolvePersistedPublicationTargets(
     user: AuthUser,
     targets: Array<{ targetChatId: string; entityType: ChatEntityType }>,
+    dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
   ): Promise<ResolvedPublicationTarget[]> {
-    return this.resolveAudienceTargets(user, {
-      selection: 'SELECTED',
-      mode: 'SNAPSHOT',
-      targets: targets.map((target) => ({
-        chatId: target.targetChatId,
-        entityType: this.fromPrismaEntityType(target.entityType),
-      })),
-    });
+    return this.publisherRouting.resolvePersistedTargets(user, targets, dispatchProfile);
   }
 
   private isPublicationAudienceEquivalent(
@@ -3759,6 +3729,8 @@ export class PublicationService {
         id: true,
         version: true,
         lifecycle: true,
+        dispatchProfile: true,
+        requiredBotId: true,
         canonicalContentRevisionId: true,
         targets: {
           orderBy: { position: 'asc' },

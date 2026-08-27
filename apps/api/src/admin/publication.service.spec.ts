@@ -27,7 +27,10 @@ import {
   PublicationContentService,
 } from './publication-content.service';
 import { PublicationPresenterService } from './publication-presenter.service';
-import { LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE } from './publication-publisher-routing.service';
+import {
+  LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE,
+  PublicationPublisherRoutingService,
+} from './publication-publisher-routing.service';
 import { PublicationService } from './publication.service';
 import {
   PUBLICATION_MAX_VIDEO_BYTES,
@@ -72,7 +75,56 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     assertChatAdminAccess: jest.fn().mockResolvedValue(undefined),
     assertChannelAdminAccess: jest.fn().mockResolvedValue(undefined),
   };
+  const publisherTargets = [
+    {
+      chatId: 'chat-1',
+      entityType: 'chat' as const,
+      title: 'Чат 1',
+      avatarUrl: null,
+      link: null,
+    },
+    {
+      chatId: 'channel-1',
+      entityType: 'channel' as const,
+      title: 'Канал 1',
+      avatarUrl: null,
+      link: null,
+    },
+  ];
+  const publisherPolicyService = {
+    resolvePublicationTargets: jest.fn(
+      async (
+        _user: unknown,
+        requested?: readonly { chatId: string; entityType: 'chat' | 'channel' }[],
+      ) => {
+        if (!requested) {
+          return publisherTargets;
+        }
+        return requested.map((target) => {
+          const resolved = publisherTargets.find(
+            (candidate) =>
+              candidate.chatId === target.chatId && candidate.entityType === target.entityType,
+          );
+          if (!resolved) {
+            throw new BadRequestException('Publisher target unavailable');
+          }
+          return resolved;
+        });
+      },
+    ),
+  };
+  const audienceRouting = new PublicationPublisherRoutingService(
+    prisma as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    managedEntitiesService as never,
+    publisherPolicyService as never,
+  );
   const publisherRouting = {
+    resolveAudienceTargets: jest.fn(audienceRouting.resolveAudienceTargets.bind(audienceRouting)),
+    resolvePersistedTargets: jest.fn(audienceRouting.resolvePersistedTargets.bind(audienceRouting)),
     requireNewRoute: jest.fn().mockReturnValue({
       dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       requiredBotId: 'publisher-bot',
@@ -126,6 +178,7 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     service,
     prisma,
     managedEntitiesService,
+    publisherPolicyService,
     publisherRouting,
   };
 }
@@ -189,7 +242,7 @@ function createOriginalRetryService(
 ) {
   const failedDeliveryCount = jest.fn().mockResolvedValue(1);
   const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
-  const { service } = createService({
+  const { service, managedEntitiesService } = createService({
     publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
     publication: {
       findFirst: jest.fn().mockResolvedValue({
@@ -219,7 +272,7 @@ function createOriginalRetryService(
     $transaction: transaction,
   });
   jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-1' } as never);
-  return { service, transaction, failedDeliveryCount };
+  return { service, transaction, failedDeliveryCount, managedEntitiesService };
 }
 
 describe('PublicationService', () => {
@@ -1179,7 +1232,7 @@ describe('PublicationService', () => {
     const tx = createPublicationUpdateTransaction();
     tx.publicationOccurrence.findMany.mockResolvedValue([]);
     const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
-    const { service } = createService({
+    const { service, managedEntitiesService } = createService({
       publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
       publication: {
         findFirst: jest.fn().mockResolvedValue({
@@ -1219,12 +1272,10 @@ describe('PublicationService', () => {
       .fn()
       .mockRejectedValue(new ForbiddenException('Пользователь не является администратором чата.'));
     const assertChannelAdminAccess = jest.fn().mockResolvedValue(undefined);
-    (service as any).managedEntitiesService = {
-      listChats,
-      listChannels,
-      assertChatAdminAccess,
-      assertChannelAdminAccess,
-    };
+    managedEntitiesService.listChats.mockImplementation(listChats);
+    managedEntitiesService.listChannels.mockImplementation(listChannels);
+    managedEntitiesService.assertChatAdminAccess.mockImplementation(assertChatAdminAccess);
+    managedEntitiesService.assertChannelAdminAccess.mockImplementation(assertChannelAdminAccess);
 
     await expect(
       service.update(
@@ -1257,11 +1308,12 @@ describe('PublicationService', () => {
 
   it('fails closed before content preparation and persistence on a transient live access error', async () => {
     const transaction = jest.fn();
-    const { service, contentService, managedEntitiesService } = createService({
-      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
-      $transaction: transaction,
-    });
-    managedEntitiesService.assertChatAdminAccess.mockRejectedValue(
+    const { service, contentService, managedEntitiesService, publisherPolicyService } =
+      createService({
+        publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+        $transaction: transaction,
+      });
+    publisherPolicyService.resolvePublicationTargets.mockRejectedValue(
       new ServiceUnavailableException('Не удалось проверить права администратора в MAX.'),
     );
     const prepareContent = jest.spyOn(contentService, 'prepareContentRevision');
@@ -1284,7 +1336,8 @@ describe('PublicationService', () => {
       ),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
 
-    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledTimes(1);
+    expect(publisherPolicyService.resolvePublicationTargets).toHaveBeenCalledTimes(1);
+    expect(managedEntitiesService.assertChatAdminAccess).not.toHaveBeenCalled();
     expect(prepareContent).not.toHaveBeenCalled();
     expect(transaction).not.toHaveBeenCalled();
   });
@@ -3650,11 +3703,10 @@ describe('PublicationService', () => {
 
   it('rejects a delivery retry when access to a persisted target was revoked', async () => {
     const tx = { $executeRaw: jest.fn() };
-    const { service, transaction, failedDeliveryCount } = createOriginalRetryService(tx);
-    (service as any).managedEntitiesService = {
-      listChats: jest.fn().mockResolvedValue([]),
-      listChannels: jest.fn().mockResolvedValue([]),
-    };
+    const { service, transaction, failedDeliveryCount, managedEntitiesService } =
+      createOriginalRetryService(tx);
+    managedEntitiesService.listChats.mockResolvedValue([]);
+    managedEntitiesService.listChannels.mockResolvedValue([]);
 
     await expect(
       service.retryOccurrence(
@@ -4878,20 +4930,104 @@ describe('PublicationService', () => {
     ).toBe(true);
   });
 
-  it('rejects an expanded ALL audience above the 500 target limit', async () => {
-    const { service } = createService();
-    (service as any).managedEntitiesService = {
-      listChats: jest.fn().mockResolvedValue(
-        Array.from({ length: 501 }, (_, index) => ({
-          id: `chat-${index}`,
-          entityType: 'chat',
-          title: `Чат ${index}`,
-          avatarUrl: null,
-          link: null,
-        })),
-      ),
-      listChannels: jest.fn().mockResolvedValue([]),
+  it('resolves PUBLIK_V1 audiences from Publisher-owned scope without Major discovery', async () => {
+    const { managedEntitiesService, publisherPolicyService, service } = createService();
+    const user = { userId: 'user-1', username: null, displayName: null };
+
+    const targets = await (service as any).resolveAudienceTargets(
+      user,
+      {
+        selection: 'SELECTED',
+        mode: 'SNAPSHOT',
+        targets: [{ chatId: 'channel-1', entityType: 'channel' }],
+      },
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+
+    expect(targets).toEqual([
+      expect.objectContaining({ chatId: 'channel-1', entityType: 'channel' }),
+    ]);
+    expect(publisherPolicyService.resolvePublicationTargets).toHaveBeenCalledWith(user, [
+      { chatId: 'channel-1', entityType: 'channel' },
+    ]);
+    expect(managedEntitiesService.listChats).not.toHaveBeenCalled();
+    expect(managedEntitiesService.listChannels).not.toHaveBeenCalled();
+    expect(managedEntitiesService.assertChatAdminAccess).not.toHaveBeenCalled();
+    expect(managedEntitiesService.assertChannelAdminAccess).not.toHaveBeenCalled();
+  });
+
+  it('keeps LEGACY_ROUTED occurrence authorization on Major while PUBLIK_V1 uses Publisher', async () => {
+    const { managedEntitiesService, publisherPolicyService, service } = createService();
+    const publication = {
+      actorUserId: 'user-1',
+      audienceMode: PublicationAudienceMode.SNAPSHOT,
+      audienceSelection: PublicationAudienceSelection.SELECTED,
+      targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
     };
+
+    await (service as any).resolveOccurrenceTargets({
+      ...publication,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    });
+    expect(publisherPolicyService.resolvePublicationTargets).toHaveBeenCalledTimes(1);
+    expect(managedEntitiesService.listChats).not.toHaveBeenCalled();
+
+    await (service as any).resolveOccurrenceTargets({
+      ...publication,
+      dispatchProfile: PublicationDispatchProfile.LEGACY_ROUTED,
+    });
+    expect(managedEntitiesService.listChats).toHaveBeenCalledTimes(1);
+    expect(managedEntitiesService.assertChatAdminAccess).toHaveBeenCalledTimes(1);
+    expect(publisherPolicyService.resolvePublicationTargets).toHaveBeenCalledTimes(1);
+  });
+
+  it('authorizes a PUBLIK_V1 retry through its persisted dispatch profile', async () => {
+    const authorizationError = new Error('publisher authorization stopped retry');
+    const { service } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-publik-retry',
+          version: 1,
+          lifecycle: PublicationLifecycle.ERROR,
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+          canonicalContentRevisionId: 'content-1',
+          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+        }),
+      },
+    });
+    const resolvePersisted = jest
+      .spyOn(service as any, 'resolvePersistedPublicationTargets')
+      .mockRejectedValue(authorizationError);
+
+    await expect(
+      service.retryOccurrence(
+        'publication-publik-retry',
+        'occurrence-1',
+        { userId: 'user-1', username: null, displayName: null },
+        { requestId: 'retry-publik-auth-001' },
+      ),
+    ).rejects.toBe(authorizationError);
+    expect(resolvePersisted).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+      PublicationDispatchProfile.PUBLIK_V1,
+    );
+  });
+
+  it('rejects an expanded ALL audience above the 500 target limit', async () => {
+    const { managedEntitiesService, service } = createService();
+    managedEntitiesService.listChats.mockResolvedValue(
+      Array.from({ length: 501 }, (_, index) => ({
+        id: `chat-${index}`,
+        entityType: 'chat',
+        title: `Чат ${index}`,
+        avatarUrl: null,
+        link: null,
+      })),
+    );
+    managedEntitiesService.listChannels.mockResolvedValue([]);
 
     await expect(
       (service as any).resolveAudienceTargets(

@@ -29,12 +29,12 @@ describe('publisher contracts', () => {
       displayName: null,
       profile: 'publisher',
       capabilities: ['publisher_workspace', 'publisher_entities', 'chat_comments'],
-      homeRoute: '/publications',
+      homeRoute: '/',
     });
 
     expect(me).toMatchObject({
       profile: 'publisher',
-      homeRoute: '/publications',
+      homeRoute: '/',
     });
     expect(me).not.toHaveProperty('launchBotId');
   });

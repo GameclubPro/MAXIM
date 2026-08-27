@@ -50,14 +50,14 @@ describe('PublisherController', () => {
     ).toBe(202);
   });
 
-  it('allows both profiles to read publisher state but only moderation to change policy', () => {
+  it('allows both profiles to read state and routes policy fields through profile ownership', () => {
     expect(Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublisherController)).toEqual([
       'moderation',
       'publisher',
     ]);
     expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublisherController.prototype.updatePolicy),
-    ).toEqual(['moderation']);
+    ).toBeUndefined();
     expect(
       Reflect.getMetadata(MINIAPP_PROFILES_METADATA, PublisherController.prototype.getPolicy),
     ).toBeUndefined();
@@ -108,6 +108,10 @@ describe('PublisherController', () => {
       policy,
     );
     await expect(controller.updatePolicy('chat', 'chat-1', user, body)).resolves.toEqual(policy);
+    const publisherBody = { expectedRevision: 1, suggestionsViaPublik: true };
+    await expect(
+      controller.updatePolicy('channel', 'channel-1', user, publisherBody, 'publisher'),
+    ).resolves.toEqual(policy);
     await expect(controller.refreshEntity('chat', 'chat-1', user)).resolves.toEqual({
       accepted: true,
     });
@@ -129,7 +133,22 @@ describe('PublisherController', () => {
       'channel-1',
       user,
     );
-    expect(policyService.updatePolicy).toHaveBeenCalledWith('chat', 'chat-1', user, body);
+    expect(policyService.updatePolicy).toHaveBeenNthCalledWith(
+      1,
+      'chat',
+      'chat-1',
+      user,
+      body,
+      'moderation',
+    );
+    expect(policyService.updatePolicy).toHaveBeenNthCalledWith(
+      2,
+      'channel',
+      'channel-1',
+      user,
+      publisherBody,
+      'publisher',
+    );
     expect(entityRefreshService.requestRefresh).toHaveBeenCalledWith('chat', 'chat-1', user);
   });
 

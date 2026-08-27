@@ -57,6 +57,11 @@ const LazyPublicationsPage = lazy(async () => {
   return { default: module.PublicationsPage };
 });
 
+const LazyPublisherEntitiesPage = lazy(async () => {
+  const module = await import('./pages/publisher-entities-page');
+  return { default: module.PublisherEntitiesPage };
+});
+
 const LazyManagedEntityNavigationProvider = lazy(async () => {
   const module = await import('./lib/managed-entity-navigation');
   return { default: module.ManagedEntityNavigationProvider };
@@ -487,7 +492,10 @@ function AppRoutes({
           {moderationProfile ? (
             <Route path="/" element={<LazyChatsPage api={apiClient} />} />
           ) : (
-            <Route path="/" element={<ProfileHomeRedirect homeRoute={profileHomeRoute} />} />
+            <Route
+              path="/"
+              element={<LazyPublisherEntitiesPage api={apiClient} botDialogUrl={me.botDialogUrl} />}
+            />
           )}
           <Route
             path="/publications"

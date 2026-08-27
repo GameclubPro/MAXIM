@@ -44,6 +44,7 @@ export class PublisherEntityRefreshService {
     await this.refreshQueue.enqueue({
       chatId: entity.id,
       publisherBotId: this.botRegistry.getPublisherBotDescriptor().id,
+      candidateUserId: user.userId,
       reason: 'manual_recheck',
     });
 
@@ -82,6 +83,7 @@ export class PublisherEntityRefreshService {
         await this.refreshQueue.enqueue({
           chatId,
           publisherBotId,
+          candidateUserId: user.userId,
           reason: 'manual_recheck',
           requestedAt,
         });

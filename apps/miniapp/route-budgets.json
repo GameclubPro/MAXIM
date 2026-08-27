@@ -71,7 +71,14 @@
       "label": "Publications",
       "entries": ["src/pages/publications-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 144384, "cssGzipBytes": 28672 }
+      "limits": { "jsGzipBytes": 146432, "cssGzipBytes": 28672 }
+    },
+    {
+      "id": "publisher-entities",
+      "label": "Publisher entities",
+      "entries": ["src/pages/publisher-entities-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 45056, "cssGzipBytes": 12288 }
     },
     {
       "id": "giveaway",

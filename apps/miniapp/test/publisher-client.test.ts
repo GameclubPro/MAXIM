@@ -21,13 +21,13 @@ test('getMe keeps the server-issued publisher profile', async () => {
       displayName: null,
       profile: 'publisher',
       capabilities: ['publisher_workspace', 'publisher_entities', 'chat_comments'],
-      homeRoute: '/publications',
+      homeRoute: '/',
     }),
   };
 
   const me = await getMe(api as never);
   assert.equal(me.profile, 'publisher');
-  assert.equal(me.homeRoute, '/publications');
+  assert.equal(me.homeRoute, '/');
   assert.deepEqual(me.capabilities, ['publisher_workspace', 'publisher_entities', 'chat_comments']);
 });
 
@@ -284,7 +284,7 @@ test('preview can render the isolated publisher profile', () => {
   const state = createInitialState('?profile=publisher', systemPreviewClock);
 
   assert.equal(state.me.profile, 'publisher');
-  assert.equal(state.me.homeRoute, '/publications');
+  assert.equal(state.me.homeRoute, '/');
   assert.equal(state.me.canAccessSystem, false);
   assert.deepEqual(state.me.capabilities, [
     'publisher_workspace',

@@ -1,7 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
-import { ChatBotAccessState, ChatBotMembershipStatus, Prisma } from '../prisma/prisma-client';
+import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+  ManagedEntityAccessRole,
+  ManagedEntityAccessState,
+  Prisma,
+} from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
 import { buildPublisherBotDescriptor } from './publisher-bot-descriptor';
@@ -76,6 +85,10 @@ export class PublisherEntityBindingLifecycleService {
     if (!chatId) {
       return 'missing_chat';
     }
+    const explicitEntityType = update.message?.entityType;
+    if (explicitEntityType !== 'channel' && isPrivateDirectChatId(chatId)) {
+      return 'unmanaged_chat';
+    }
 
     const normalizedType = update.type.trim().toLowerCase();
     const kind: PublisherObservationKind =
@@ -84,6 +97,7 @@ export class PublisherEntityBindingLifecycleService {
         : normalizedType === 'bot_removed'
           ? 'bot_removed'
           : 'observed';
+    const accessHandshake = kind === 'bot_added' || isManagedEntityHandshakeStartCommand(update);
     const eventAt = readWebhookEventTimestamp(update);
     if ((kind === 'bot_added' || kind === 'bot_removed') && !eventAt) {
       this.logger.warn(
@@ -98,16 +112,73 @@ export class PublisherEntityBindingLifecycleService {
     }
 
     const receivedAt = new Date();
+    const entityType =
+      explicitEntityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
+    const title =
+      update.message?.chatTitle?.trim() ||
+      (entityType === ChatEntityType.CHANNEL ? `Channel ${chatId}` : `Chat ${chatId}`);
     const result = await this.prisma.$transaction(async (tx) => {
+      const existingChat = await tx.chat.findUnique({
+        where: { id: chatId },
+        select: { id: true, entityType: true },
+      });
+      if (!existingChat && !accessHandshake) {
+        return 'unmanaged_chat' as const;
+      }
+      await tx.chat.upsert({
+        where: { id: chatId },
+        create: { id: chatId, title, entityType },
+        update: {},
+      });
       const chats = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT chat."id"
         FROM "chats" AS chat
         WHERE chat."id" = ${chatId}
         FOR UPDATE OF chat
       `);
-      if (chats.length === 0) {
-        return 'unmanaged_chat' as const;
-      }
+      if (chats.length === 0) return 'unmanaged_chat' as const;
+
+      const persistCatalog = async (status: 'ACTIVE' | 'MISSING') => {
+        await tx.chat.update({
+          where: { id: chatId },
+          data: {
+            ...(update.message?.chatTitle?.trim() ? { title } : {}),
+            ...(explicitEntityType ? { entityType } : {}),
+          },
+        });
+        await tx.managedBotChatCatalog.upsert({
+          where: { botId_chatId: { botId: this.publisherBotId, chatId } },
+          create: {
+            botId: this.publisherBotId,
+            chatId,
+            entityType: explicitEntityType ? entityType : (existingChat?.entityType ?? entityType),
+            title,
+            status,
+            source: `publisher_webhook_${normalizedType}`,
+            lastSeenAt: eventAt ?? receivedAt,
+          },
+          update: {
+            ...(update.message?.chatTitle?.trim() ? { title } : {}),
+            ...(explicitEntityType ? { entityType } : {}),
+            status,
+            source: `publisher_webhook_${normalizedType}`,
+            lastSeenAt: eventAt ?? receivedAt,
+          },
+        });
+      };
+      const invalidatePublisherUserAccess = async (reason: string) => {
+        await tx.managedEntityAccessEdge.updateMany({
+          where: { chatId, botId: this.publisherBotId },
+          data: {
+            state: ManagedEntityAccessState.BOT_DENIED,
+            userRole: ManagedEntityAccessRole.UNKNOWN,
+            botRole: ManagedEntityAccessRole.UNKNOWN,
+            expiresAt: null,
+            deniedReason: reason,
+            source: `publisher_webhook_${normalizedType}`,
+          },
+        });
+      };
 
       const current = await tx.publisherEntityBinding.findUnique({
         where: { chatId },
@@ -135,13 +206,16 @@ export class PublisherEntityBindingLifecycleService {
         return 'stale' as const;
       }
 
-      const lifecycle = eventAt
-        ? {
-            lifecycleEventAt: eventAt,
-            lifecycleEventType: normalizedType,
-            lifecycleSource: 'webhook',
-          }
-        : {};
+      const preservesRemovedLifecycleFence =
+        kind === 'observed' && current?.status === ChatBotMembershipStatus.REMOVED;
+      const lifecycle =
+        eventAt && !preservesRemovedLifecycleFence
+          ? {
+              lifecycleEventAt: eventAt,
+              lifecycleEventType: normalizedType,
+              lifecycleSource: 'webhook',
+            }
+          : {};
       const observation = {
         lastSeenAt: eventAt ?? receivedAt,
         lastWebhookAt: receivedAt,
@@ -165,6 +239,10 @@ export class PublisherEntityBindingLifecycleService {
             ...observation,
           },
         });
+        await persistCatalog(kind === 'bot_removed' ? 'MISSING' : 'ACTIVE');
+        if (kind === 'bot_added' || kind === 'bot_removed') {
+          await invalidatePublisherUserAccess(kind);
+        }
         return 'applied' as const;
       }
 
@@ -185,6 +263,8 @@ export class PublisherEntityBindingLifecycleService {
             ...observation,
           },
         });
+        await persistCatalog('MISSING');
+        await invalidatePublisherUserAccess('bot_removed');
         return 'applied' as const;
       }
 
@@ -209,6 +289,8 @@ export class PublisherEntityBindingLifecycleService {
             ...observation,
           },
         });
+        await persistCatalog('ACTIVE');
+        await invalidatePublisherUserAccess('bot_added');
         return 'applied' as const;
       }
 
@@ -221,6 +303,9 @@ export class PublisherEntityBindingLifecycleService {
             : { status: ChatBotMembershipStatus.ACTIVE }),
         },
       });
+      await persistCatalog(
+        current.status === ChatBotMembershipStatus.REMOVED ? 'MISSING' : 'ACTIVE',
+      );
       return 'applied' as const;
     });
 
@@ -229,6 +314,9 @@ export class PublisherEntityBindingLifecycleService {
         chatId,
         publisherBotId: this.publisherBotId,
         reason: kind === 'bot_added' ? 'bot_added' : 'webhook_observed',
+        ...(accessHandshake && update.message?.senderId
+          ? { candidateUserId: update.message.senderId }
+          : {}),
         requestedAt: receivedAt,
         eventAt,
       });

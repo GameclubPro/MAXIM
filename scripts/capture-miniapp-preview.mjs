@@ -364,6 +364,51 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publisher-entities',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entities-page__list').waitFor({ state: 'visible' });
+      await page.locator('.publisher-entity-row').first().waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-channels',
+    beforeShot: async (page) => {
+      await page.getByRole('list', { name: 'Каналы Публика' }).waitFor({ state: 'visible' });
+      await page.locator('.publisher-entity-row').first().waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-empty',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-entities-page__state').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-error',
+    beforeShot: async (page) => {
+      await page
+        .locator('.publisher-entities-page__state.has-error')
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publisher-entities-large',
+    beforeShot: async (page) => {
+      const loadMore = page.locator('.publisher-entities-page__load-more');
+      await loadMore.waitFor({ state: 'visible' });
+      await loadMore.press('Enter');
+      await loadMore.getByText('Показать ещё', { exact: true }).waitFor({ state: 'visible' });
+      await loadMore.press('Enter');
+      const list = page.locator('.publisher-entities-page__list.is-virtual');
+      await list.waitFor({ state: 'visible' });
+      await list.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+      });
+      await page.waitForTimeout(120);
+    },
+  },
+  {
     name: 'publications',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });
@@ -484,20 +529,34 @@ const scenarioBehaviors = [
       const card = page.locator('.publisher-policy-card');
       await card.waitFor({ state: 'visible' });
       await card.scrollIntoViewIfNeeded();
-      await page
-        .getByText('Публик не администратор', { exact: true })
-        .waitFor({ state: 'visible' });
+      if ((await card.getByRole('checkbox').count()) !== 1) {
+        throw new Error('Major must expose exactly one compact Publik toggle.');
+      }
+      if ((await card.getByRole('button').count()) !== 0) {
+        throw new Error('Publik readiness actions leaked into the Major overview.');
+      }
     },
   },
   {
     name: 'chat-settings-publisher-policy-error',
     beforeShot: async (page) => {
-      const card = page.locator('.publisher-policy-card.has-error');
+      const card = page.locator('.publisher-policy-card');
       await card.waitFor({ state: 'visible' });
       await card.scrollIntoViewIfNeeded();
-      await page
-        .getByRole('button', { name: 'Повторить загрузку настройки Публика' })
+      await card
+        .getByRole('checkbox', { name: 'Настройка Публика недоступна' })
         .waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'channel-settings-publisher-policy',
+    beforeShot: async (page) => {
+      const card = page.locator('.publisher-policy-card');
+      await card.waitFor({ state: 'visible' });
+      await card.scrollIntoViewIfNeeded();
+      if ((await card.getByRole('checkbox').count()) !== 1) {
+        throw new Error('Channel settings must expose one Publik toggle.');
+      }
     },
   },
   {

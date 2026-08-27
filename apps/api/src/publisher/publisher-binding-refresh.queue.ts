@@ -10,6 +10,7 @@ export type PublisherBindingRefreshReason =
   | 'webhook_observed'
   | 'bootstrap'
   | 'stale_access'
+  | 'stale_user_access'
   | 'manual_recheck'
   | 'send_access_lost';
 
@@ -17,6 +18,7 @@ export type PublisherBindingRefreshJob = {
   version: 1;
   chatId: string;
   publisherBotId: string;
+  candidateUserId?: string;
   reason: PublisherBindingRefreshReason;
   requestedAt: string;
 };
@@ -31,6 +33,7 @@ function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
     case 'bot_added':
     case 'webhook_observed':
     case 'send_access_lost':
+    case 'stale_user_access':
       return 5;
     case 'bootstrap':
     case 'stale_access':
@@ -49,6 +52,7 @@ export class PublisherBindingRefreshQueueService {
     chatId: string;
     publisherBotId: string;
     reason: PublisherBindingRefreshReason;
+    candidateUserId?: string | null;
     requestedAt?: Date;
     eventAt?: Date | null;
   }): Promise<void> {
@@ -59,6 +63,7 @@ export class PublisherBindingRefreshQueueService {
     }
 
     const requestedAt = params.requestedAt ?? new Date();
+    const candidateUserId = params.candidateUserId?.trim() || null;
     const manualRecheck = params.reason === 'manual_recheck';
     const discriminator = manualRecheck
       ? requestedAt.getTime()
@@ -69,7 +74,10 @@ export class PublisherBindingRefreshQueueService {
       .update(`${publisherBotId}\0${chatId}`)
       .digest('hex')
       .slice(0, 24);
-    const jobId = `publisher-binding-refresh-${entityHash}-${params.reason}-${discriminator}`;
+    const candidateHash = candidateUserId
+      ? createHash('sha256').update(candidateUserId).digest('hex').slice(0, 16)
+      : null;
+    const jobId = `publisher-binding-refresh-${entityHash}${candidateHash ? `-${candidateHash}` : ''}-${params.reason}-${discriminator}`;
 
     await this.queue.add(
       'refresh',
@@ -77,6 +85,7 @@ export class PublisherBindingRefreshQueueService {
         version: 1,
         chatId,
         publisherBotId,
+        ...(candidateUserId ? { candidateUserId } : {}),
         reason: params.reason,
         requestedAt: requestedAt.toISOString(),
       },
@@ -86,7 +95,7 @@ export class PublisherBindingRefreshQueueService {
         ...(manualRecheck
           ? {
               deduplication: {
-                id: `publisher-binding-refresh-manual-${entityHash}`,
+                id: `publisher-binding-refresh-manual-${entityHash}${candidateHash ? `-${candidateHash}` : ''}`,
                 ttl: PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS,
               },
             }

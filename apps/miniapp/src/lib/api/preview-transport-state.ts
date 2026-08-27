@@ -797,7 +797,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       capabilities: publisherProfile
         ? ['publisher_workspace', 'publisher_entities', 'chat_comments']
         : ['moderation_workspace', 'publisher_policy_write'],
-      homeRoute: publisherProfile ? '/publications' : '/',
+      homeRoute: '/',
     },
     systemModeSelection: 'auto',
     favoriteLabelsInitialized: true,

@@ -48,6 +48,17 @@ export function PublisherPolicyCard(props: ComponentProps<typeof LazyPublisherPo
   );
 }
 
+export function PublisherPolicyCardEntry(props: ComponentProps<typeof LazyPublisherPolicyCard>) {
+  return (
+    <div
+      className="publisher-policy-card-entry settings-home-entry stagger-in"
+      style={{ animationDelay: '64ms', order: 23 }}
+    >
+      <PublisherPolicyCard {...props} />
+    </div>
+  );
+}
+
 export function SettingsLoadErrorState(props: ComponentProps<typeof LazySettingsLoadErrorState>) {
   return (
     <Suspense fallback={<SkeletonCard lines={3} />}>

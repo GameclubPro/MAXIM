@@ -1,41 +1,39 @@
 @layer components {
   .publisher-policy-card {
-    --publisher-policy-ready-border: var(--color-success);
-    --publisher-policy-error-border: color-mix(
-      in srgb,
-      var(--color-danger) 48%,
-      var(--color-border)
-    );
     display: grid;
-    gap: 10px;
-    border-color: var(--color-border-strong);
+    min-height: 68px;
+    border: 1px solid var(--border-subtle, var(--color-border));
+    border-inline-start: 3px solid var(--color-accent);
+    border-radius: 8px;
+    background: var(--surface-card, var(--color-surface));
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
-  .publisher-policy-card.is-ready {
-    border-color: var(--publisher-policy-ready-border);
+  .publisher-policy-card-entry > .publisher-policy-card {
+    width: 100%;
+  }
+
+  .publisher-policy-card.is-enabled {
+    border-inline-start-color: var(--color-success);
   }
 
   .publisher-policy-card.has-error {
-    border-color: var(--publisher-policy-error-border);
+    border-inline-start-color: var(--color-danger);
   }
 
   .publisher-policy-card__row {
-    min-height: 48px;
+    min-height: 44px;
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) auto;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
-  }
-
-  .publisher-policy-card__row--secondary {
-    grid-template-columns: minmax(0, 1fr) auto;
-    padding-top: 10px;
-    border-top: 1px solid var(--color-border);
+    gap: 8px;
   }
 
   .publisher-policy-card__icon {
-    width: 40px;
-    height: 40px;
+    width: 34px;
+    height: 34px;
     display: grid;
     border-radius: 8px;
     background: var(--color-accent-soft);
@@ -44,100 +42,43 @@
   }
 
   .publisher-policy-card__icon svg {
-    width: 21px;
-    height: 21px;
-  }
-
-  .publisher-policy-card__copy {
-    min-width: 0;
-    display: grid;
-    gap: 2px;
-  }
-
-  .publisher-policy-card__copy strong,
-  .publisher-policy-card__copy small {
-    overflow-wrap: anywhere;
-  }
-
-  .publisher-policy-card__copy strong {
-    font-size: 0.88rem;
-  }
-
-  .publisher-policy-card__copy small {
-    color: var(--color-ink-muted);
-    font-size: 0.72rem;
-  }
-
-  .publisher-policy-card__switch {
-    flex: 0 0 auto;
-  }
-
-  .publisher-policy-card__retry,
-  .publisher-policy-card__readiness button {
-    min-height: 44px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    background: var(--color-surface);
-    color: var(--color-accent);
-    font: inherit;
-    font-size: 0.76rem;
-    font-weight: 760;
-    cursor: pointer;
-  }
-
-  .publisher-policy-card__retry {
-    width: 44px;
-    padding: 0;
-  }
-
-  .publisher-policy-card__retry svg,
-  .publisher-policy-card__readiness button svg {
     width: 18px;
     height: 18px;
   }
 
-  .publisher-policy-card__retry:focus-visible,
-  .publisher-policy-card__readiness button:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+  .publisher-policy-card__title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 0.82rem;
+    line-height: 1.15;
   }
 
-  .publisher-policy-card__retry:disabled,
-  .publisher-policy-card__readiness button:disabled {
-    cursor: wait;
-    opacity: 0.55;
+  .publisher-policy-card__switch,
+  .publisher-policy-card__switch-placeholder {
+    flex: 0 0 auto;
   }
 
-  .publisher-policy-card__readiness {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--color-border);
+  .publisher-policy-card__switch-placeholder {
+    width: 48px;
+    height: 28px;
+    border-radius: 999px;
+    background: var(--color-surface-muted);
+    animation: publisher-policy-pulse 1.1s ease-in-out infinite alternate;
   }
 
-  .publisher-policy-card__readiness > span {
-    color: var(--color-ink-muted);
-    font-size: 0.72rem;
-    line-height: 1.42;
-  }
-
-  .publisher-policy-card__readiness button {
-    padding: 0 10px;
-  }
-
-  @media (max-width: 360px) {
-    .publisher-policy-card__readiness {
-      grid-template-columns: minmax(0, 1fr);
+  @keyframes publisher-policy-pulse {
+    from {
+      opacity: 0.52;
     }
 
-    .publisher-policy-card__readiness button {
-      width: 100%;
+    to {
+      opacity: 0.88;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .publisher-policy-card__switch-placeholder {
+      animation: none;
     }
   }
 }

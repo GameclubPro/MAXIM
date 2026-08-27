@@ -12,6 +12,7 @@ import {
   updateManagedEntityPublicationPolicyRequestSchema,
   type ManagedEntityPublicationPolicy,
   type ManagedEntityType,
+  type MiniappProfile,
   type PublisherEntitiesCursorQuery,
   type PublisherEntitiesResponse,
   type PublisherEntity,
@@ -93,7 +94,6 @@ export class PublisherPolicyService {
     entityIds?: readonly string[],
   ): Promise<PublisherEntity[]> {
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
-    const actionableBotIds = new Set(this.botRegistry.getActionableBots().map((bot) => bot.id));
     const now = new Date();
     const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
     const [runtimeAvailable, edges] = await Promise.all([
@@ -108,8 +108,12 @@ export class PublisherPolicyService {
             { expiresAt: { gt: now } },
             { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
           ],
-          botId: { not: publisherBotId },
+          botId: publisherBotId,
           chat: {
+            OR: [
+              { publicationPolicy: { is: null } },
+              { publicationPolicy: { is: { publikEnabled: true } } },
+            ],
             publisherBinding: {
               is: publisherConnectedBindingWhere(publisherBotId),
             },
@@ -131,10 +135,6 @@ export class PublisherPolicyService {
               },
               publicationPolicy: true,
               publisherBinding: true,
-              botMemberships: {
-                where: { status: ChatBotMembershipStatus.ACTIVE },
-                select: { botId: true },
-              },
             },
           },
         },
@@ -147,9 +147,9 @@ export class PublisherPolicyService {
       if (
         seenEntityIds.has(edge.chatId) ||
         edge.entityType !== edge.chat.entityType ||
+        edge.chat.publicationPolicy?.publikEnabled === false ||
         !isPublisherBindingConnected(edge.chat.publisherBinding, publisherBotId) ||
-        !actionableBotIds.has(edge.botId) ||
-        !edge.chat.botMemberships.some((membership) => membership.botId === edge.botId)
+        edge.botId !== publisherBotId
       ) {
         continue;
       }
@@ -191,17 +191,6 @@ export class PublisherPolicyService {
     excludedEntityIds: readonly string[] = [],
   ): Promise<string[]> {
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
-    const actionableBotIds = [
-      ...new Set(
-        this.botRegistry
-          .getActionableBots()
-          .map((bot) => bot.id)
-          .filter((botId) => botId !== publisherBotId),
-      ),
-    ];
-    if (actionableBotIds.length === 0) {
-      return [];
-    }
     const requestedLimit = Number.isFinite(limit)
       ? Math.max(1, Math.trunc(limit))
       : MAX_PUBLISHER_BULK_REFRESH_TARGETS;
@@ -212,22 +201,9 @@ export class PublisherPolicyService {
       userId: user.userId,
       state: ManagedEntityAccessState.GRANTED,
       userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+      botId: publisherBotId,
       OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
     } satisfies Prisma.ManagedEntityAccessEdgeWhereInput;
-    const routeFilters = actionableBotIds.flatMap((botId) =>
-      [ChatEntityType.CHAT, ChatEntityType.CHANNEL].map(
-        (entityType) =>
-          ({
-            entityType,
-            botMemberships: {
-              some: { botId, status: ChatBotMembershipStatus.ACTIVE },
-            },
-            accessEdges: {
-              some: { ...accessWhere, botId, entityType },
-            },
-          }) satisfies Prisma.ChatWhereInput,
-      ),
-    );
     const normalizedExclusions = [
       ...new Set(excludedEntityIds.map((entityId) => entityId.trim()).filter(Boolean)),
     ].slice(0, 1_000);
@@ -235,7 +211,7 @@ export class PublisherPolicyService {
       ...publisherRefreshEvidenceWhere(publisherBotId),
       chat: {
         AND: [
-          { OR: routeFilters },
+          { accessEdges: { some: accessWhere } },
           {
             OR: [
               { publicationPolicy: { is: null } },
@@ -255,15 +231,8 @@ export class PublisherPolicyService {
       chat: {
         select: {
           entityType: true,
-          botMemberships: {
-            where: {
-              status: ChatBotMembershipStatus.ACTIVE,
-              botId: { in: actionableBotIds },
-            },
-            select: { botId: true },
-          },
           accessEdges: {
-            where: { ...accessWhere, botId: { in: actionableBotIds } },
+            where: accessWhere,
             select: { botId: true, entityType: true },
           },
         },
@@ -349,7 +318,6 @@ export class PublisherPolicyService {
       lastWebhookAt: Date | null;
       chat: {
         entityType: ChatEntityType;
-        botMemberships: readonly { botId: string }[];
         accessEdges: readonly { botId: string; entityType: ChatEntityType }[];
       };
     }[],
@@ -361,10 +329,9 @@ export class PublisherPolicyService {
       if (!hasPublisherRefreshEvidence(row, publisherBotId)) {
         continue;
       }
-      const activeBotIds = new Set(row.chat.botMemberships.map((membership) => membership.botId));
       if (
         !row.chat.accessEdges.some(
-          (edge) => edge.entityType === row.chat.entityType && activeBotIds.has(edge.botId),
+          (edge) => edge.entityType === row.chat.entityType && edge.botId === publisherBotId,
         )
       ) {
         continue;
@@ -395,10 +362,14 @@ export class PublisherPolicyService {
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
         OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
-        botId: { not: publisherBotId },
+        botId: requirePublisherConnection ? publisherBotId : { not: publisherBotId },
         ...(requirePublisherConnection
           ? {
               chat: {
+                OR: [
+                  { publicationPolicy: { is: null } },
+                  { publicationPolicy: { is: { publikEnabled: true } } },
+                ],
                 publisherBinding: {
                   is: publisherConnectedBindingWhere(publisherBotId),
                 },
@@ -435,9 +406,15 @@ export class PublisherPolicyService {
         candidate.chat.entityType ===
           (entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT) &&
         (!requirePublisherConnection ||
+          candidate.chat.publicationPolicy?.publikEnabled !== false) &&
+        (!requirePublisherConnection ||
           isPublisherBindingConnected(candidate.chat.publisherBinding, publisherBotId)) &&
-        actionableBotIds.has(candidate.botId) &&
-        candidate.chat.botMemberships.some((membership) => membership.botId === candidate.botId),
+        (requirePublisherConnection
+          ? candidate.botId === publisherBotId
+          : actionableBotIds.has(candidate.botId) &&
+            candidate.chat.botMemberships.some(
+              (membership) => membership.botId === candidate.botId,
+            )),
     );
     if (!edge) {
       throw new BadRequestException('Managed entity is unavailable');
@@ -475,21 +452,69 @@ export class PublisherPolicyService {
     });
   }
 
+  async resolvePublicationTargets(
+    user: AuthUser,
+    targets?: readonly { chatId: string; entityType: ManagedEntityType }[],
+  ): Promise<
+    Array<{
+      chatId: string;
+      entityType: ManagedEntityType;
+      title: string;
+      avatarUrl: string | null;
+      link: string | null;
+    }>
+  > {
+    const entities = await this.loadScopedEntities(
+      user,
+      targets ? [...new Set(targets.map((target) => target.chatId))] : undefined,
+    );
+    const byKey = new Map(entities.map((entity) => [`${entity.entityType}:${entity.id}`, entity]));
+    const selected = targets
+      ? targets.map((target) => {
+          const entity = byKey.get(`${target.entityType}:${target.chatId}`);
+          if (!entity) {
+            throw new BadRequestException(
+              'Некоторые выбранные чаты или каналы больше недоступны. Обновите список.',
+            );
+          }
+          return entity;
+        })
+      : entities;
+    return selected.map((entity) => ({
+      chatId: entity.id,
+      entityType: entity.entityType,
+      title: entity.title,
+      avatarUrl: entity.avatarUrl,
+      link: entity.entityUrl,
+    }));
+  }
+
   async updatePolicy(
     entityType: ManagedEntityType,
     entityId: string,
     user: AuthUser,
     body: unknown,
+    profile: MiniappProfile = 'moderation',
   ): Promise<ManagedEntityPublicationPolicy> {
     const parsed = updateManagedEntityPublicationPolicyRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
     const request = parsed.data;
-    if (entityType === 'chat' && request.suggestionsViaPublik === true) {
+    if (profile === 'moderation' && request.suggestionsViaPublik !== undefined) {
+      throw new BadRequestException('Настройки вторичных модулей изменяются только в Публике');
+    }
+    if (profile === 'publisher' && request.publikEnabled !== undefined) {
+      throw new BadRequestException('Включение Публика изменяется только через Майора');
+    }
+    if (entityType === 'chat' && request.suggestionsViaPublik !== undefined) {
       throw new BadRequestException('Suggestions via Publik are available only for channels');
     }
-    await this.managedEntitiesService.assertManagedEntityAdminAccess(entityId, user, entityType);
+    if (profile === 'publisher') {
+      await this.getEntity(entityType, entityId, user);
+    } else {
+      await this.managedEntitiesService.assertManagedEntityAdminAccess(entityId, user, entityType);
+    }
     const expectedEntityType =
       entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
     const existingChat = await this.prisma.chat.findUnique({

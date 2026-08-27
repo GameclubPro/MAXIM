@@ -44,4 +44,30 @@ describe('PublisherBindingRefreshQueueService', () => {
     );
     expect(queue.add.mock.calls[0]?.[2]).not.toHaveProperty('deduplication');
   });
+
+  it('scopes actor refresh deduplication to the normalized Publisher user', async () => {
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+
+    await service.enqueue({
+      chatId: 'chat-1',
+      publisherBotId: 'publik-bot',
+      candidateUserId: '  admin-1  ',
+      reason: 'manual_recheck',
+      requestedAt: new Date('2026-08-26T12:00:00.000Z'),
+    });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'refresh',
+      expect.objectContaining({ candidateUserId: 'admin-1' }),
+      expect.objectContaining({
+        deduplication: {
+          id: expect.stringMatching(
+            /^publisher-binding-refresh-manual-[a-f0-9]{24}-[a-f0-9]{16}$/u,
+          ),
+          ttl: 5_000,
+        },
+      }),
+    );
+  });
 });

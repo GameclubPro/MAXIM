@@ -5,7 +5,7 @@ describe('mini app profile projection', () => {
     expect(buildMiniappProfileProjection('publisher')).toEqual({
       profile: 'publisher',
       capabilities: ['publisher_workspace', 'publisher_entities', 'chat_comments'],
-      homeRoute: '/publications',
+      homeRoute: '/',
     });
   });
 

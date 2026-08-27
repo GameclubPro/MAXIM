@@ -72,14 +72,20 @@ export class PublisherController {
   }
 
   @Patch('entities/:entityType/:entityId/policy')
-  @MiniappProfiles('moderation')
   updatePolicy(
     @Param('entityType') entityType: string,
     @Param('entityId') entityId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'moderation',
   ) {
-    return this.policyService.updatePolicy(this.parseEntityType(entityType), entityId, user, body);
+    return this.policyService.updatePolicy(
+      this.parseEntityType(entityType),
+      entityId,
+      user,
+      body,
+      profile,
+    );
   }
 
   @Post('entities/:entityType/:entityId/refresh')

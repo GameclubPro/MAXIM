@@ -41,18 +41,15 @@ const editorAutofocusSource = readFileSync(
   'utf8',
 );
 
-test('Publik launches directly into Posts without a managed-entity catalog route', () => {
-  assert.doesNotMatch(appSource, /LazyPublisherEntitiesPage|publisher-entities-page/u);
+test('Publik launches into its own entity catalog with Posts as a peer module', () => {
+  assert.match(appSource, /LazyPublisherEntitiesPage|publisher-entities-page/u);
   assert.match(appSource, /const profileHomeRoute = me\.homeRoute;/u);
   assert.match(
     appSource,
-    /<Route path="\/" element=\{<ProfileHomeRedirect homeRoute=\{profileHomeRoute\} \/>\}/u,
+    /<LazyPublisherEntitiesPage api=\{apiClient\} botDialogUrl=\{me\.botDialogUrl\}/u,
   );
-  assert.match(shellSource, /profile === 'publisher' \? '\/publications'/u);
-  assert.match(
-    shellSource,
-    /profile === 'moderation' && \(isChatsRoute \|\| isPublicationsRoute\)/u,
-  );
+  assert.match(shellSource, /profile === 'publisher' \? '\/'/u);
+  assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute;/u);
 });
 
 test('Posts uses one compact recipient status instead of a second catalog card', () => {

@@ -198,18 +198,53 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     entityId: 'preview-chat-2',
   });
   assert.ok(scenarios.get('publications-publisher-compose')?.features.includes('publisher'));
+  assert.deepEqual(scenarios.get('publisher-entities')?.searchParams, {
+    profile: 'publisher',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-channels')?.searchParams, {
+    profile: 'publisher',
+    view: 'channel',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-empty')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'empty',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-error')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'error',
+  });
+  assert.deepEqual(scenarios.get('publisher-entities-large')?.searchParams, {
+    profile: 'publisher',
+    publisherState: 'large',
+  });
   assert.deepEqual(scenarios.get('chat-settings-publisher-policy-setup')?.searchParams, {
     publisherPolicyState: 'setup',
   });
   assert.deepEqual(scenarios.get('chat-settings-publisher-policy-error')?.searchParams, {
     publisherPolicyState: 'error',
   });
+  assert.equal(scenarios.get('channel-settings-publisher-policy')?.routeId, 'channel-settings');
+  assert.ok(scenarios.get('channel-settings-publisher-policy')?.features.includes('publisher'));
+});
+
+test('large publisher catalog scenario activates pagination without pointer interception', () => {
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const scenarioStart = captureSource.indexOf("name: 'publisher-entities-large'");
+  const scenarioEnd = captureSource.indexOf("name: 'publications'", scenarioStart);
+  const scenarioSource = captureSource.slice(scenarioStart, scenarioEnd);
+
+  assert.ok(scenarioStart >= 0 && scenarioEnd > scenarioStart);
+  assert.equal(scenarioSource.match(/loadMore\.press\('Enter'\)/gu)?.length, 2);
+  assert.doesNotMatch(scenarioSource, /loadMore\.click\(/u);
 });
 
 test('Publik entry route and publisher source files select workspace visual scenarios', () => {
   const publik = MINIAPP_VISUAL_SCENARIOS.find((scenario) => scenario.name === 'publik');
   assert.equal(publik?.path, '/publik');
-  assert.equal(publik?.readySelector, '.publications-page');
+  assert.equal(publik?.readySelector, '.publisher-entities-page');
   assert.deepEqual(publik?.searchParams, { profile: 'publisher' });
   assert.ok(publik?.features.includes('publisher'));
 
@@ -217,6 +252,7 @@ test('Publik entry route and publisher source files select workspace visual scen
     'apps/miniapp/src/components/publisher-policy-card.tsx',
     'apps/miniapp/src/features/publications/publication-hub-header.css',
     'apps/miniapp/src/features/publications/publication-target-picker.css',
+    'apps/miniapp/src/pages/publisher-entities-page.tsx',
     'apps/miniapp/src/lib/publisher-readiness.ts',
     'apps/miniapp/src/lib/publisher-readiness-label.ts',
     'packages/contracts/src/publisher.ts',
@@ -226,6 +262,7 @@ test('Publik entry route and publisher source files select workspace visual scen
     }).scenarios.map((scenario) => scenario.name);
     assert.ok(selectedNames.includes('publications-publisher'), changedFile);
     assert.ok(selectedNames.includes('publications-publisher-compose'), changedFile);
+    assert.ok(selectedNames.includes('publisher-entities'), changedFile);
   }
 });
 

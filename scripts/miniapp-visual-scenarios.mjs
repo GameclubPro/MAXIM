@@ -65,6 +65,8 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/lib/api/preview-transport-state.ts',
     'apps/miniapp/src/lib/api/preview-transport-publisher.ts',
     'apps/miniapp/src/lib/api/preview-transport-system.ts',
+    'apps/miniapp/src/pages/publisher-entities-page*.ts*',
+    'apps/miniapp/src/pages/publisher-entities-page.css',
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/styles/publications-page.css',
     'packages/contracts/src/publisher.ts',
@@ -120,8 +122,8 @@ const ROUTE_DEFINITIONS = {
   publik: {
     pattern: '/publik',
     previewPath: '/publik',
-    manifestEntry: 'src/pages/publications-page.tsx',
-    readySelector: '.publications-page',
+    manifestEntry: 'src/pages/publisher-entities-page.tsx',
+    readySelector: '.publisher-entities-page',
     coldScenario: 'publik',
     features: ['publisher'],
     sourceGlobs: FEATURE_SOURCE_GLOBS.publisher,
@@ -304,6 +306,46 @@ const baseScenarios = [
     ['home-category-edit', { searchParams: { view: 'chat' } }],
     ['home-favorite-picker', { searchParams: { view: 'chat' } }],
     ['home-favorite-categories', { searchParams: { view: 'chat' } }],
+    [
+      'publisher-entities',
+      {
+        searchParams: { profile: 'publisher' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-entities-channels',
+      {
+        searchParams: { profile: 'publisher', view: 'channel' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-entities-empty',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'empty' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-entities-error',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'error' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher'],
+      },
+    ],
+    [
+      'publisher-entities-large',
+      {
+        searchParams: { profile: 'publisher', publisherState: 'large' },
+        readySelector: '.publisher-entities-page',
+        features: ['publisher'],
+      },
+    ],
   ]),
   ...defineRouteScenarios('publications', [
     'publications',
@@ -507,6 +549,7 @@ const baseScenarios = [
   }),
   ...defineRouteScenarios('channel-settings', [
     'channel-settings',
+    ['channel-settings-publisher-policy', { features: ['publisher'] }],
     [
       'channel-settings-auth-expired',
       { searchParams: { settingsError: 'auth-expired' }, readySelector: '.status-state' },

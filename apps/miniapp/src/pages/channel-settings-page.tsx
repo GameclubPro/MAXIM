@@ -3293,8 +3293,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     >
       {workspaceHeader}
 
-      {chatId ? <PublisherPolicyCard api={api} entityType="channel" entityId={chatId} /> : null}
-
       {channelHeader?.accessDiagnostics?.state === 'bot_access_lost' ? (
         <Suspense fallback={null}>
           <LazyManagedEntityAccessDiagnosticsBanner
@@ -3310,9 +3308,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <LazySettingsOverviewSearch
           key={chatId}
           containerId="channel-settings-overview"
-          entrySelector=".channel-settings-card"
+          entrySelector=".channel-settings-card, .publisher-policy-card"
         />
       </Suspense>
+
+      {chatId ? <PublisherPolicyCard api={api} entityType="channel" entityId={chatId} /> : null}
 
       <GlassCard
         className={cn(

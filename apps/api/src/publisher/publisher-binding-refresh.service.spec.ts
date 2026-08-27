@@ -1,4 +1,8 @@
-import { ChatBotAccessState, ChatBotMembershipStatus } from '../prisma/prisma-client';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+} from '../prisma/prisma-client';
 import {
   PublisherBindingRefreshSchedulerService,
   PublisherBindingRefreshService,
@@ -15,12 +19,16 @@ describe('PublisherBindingRefreshService', () => {
       | Error,
     dispatchEnabled = true,
   ) {
+    const bindingState = {
+      botAccessCheckedAt: null as Date | null,
+      botAccessState: ChatBotAccessState.UNKNOWN as ChatBotAccessState,
+    };
     const prisma = {
       chat: {
         findUnique: jest.fn(async () => ({
           id: 'chat-1',
+          entityType: ChatEntityType.CHAT,
           publicationPolicy: null,
-          botMemberships: [{ id: 'main-membership' }],
           publisherBinding: {
             publisherBotId: 'publik_bot',
             status: ChatBotMembershipStatus.ACTIVE,
@@ -31,15 +39,60 @@ describe('PublisherBindingRefreshService', () => {
         })),
       },
       publisherEntityBinding: {
-        updateMany: jest.fn(async () => ({ count: 1 })),
+        updateMany: jest.fn(
+          async ({
+            data,
+          }: {
+            data: { botAccessCheckedAt?: Date | null; botAccessState?: ChatBotAccessState };
+          }) => {
+            if (data.botAccessCheckedAt instanceof Date) {
+              bindingState.botAccessCheckedAt = data.botAccessCheckedAt;
+            }
+            if (data.botAccessState) {
+              bindingState.botAccessState = data.botAccessState;
+            }
+            return { count: 1 };
+          },
+        ),
       },
     };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'chat-1' }]),
+      chat: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      managedBotChatCatalog: { upsert: jest.fn().mockResolvedValue({ id: 'catalog-1' }) },
+      publisherEntityBinding: {
+        findUnique: jest.fn(async () => ({
+          publisherBotId: 'publik_bot',
+          status: ChatBotMembershipStatus.ACTIVE,
+          lifecycleEventAt: null,
+          botAccessCheckedAt: bindingState.botAccessCheckedAt,
+          botAccessState: bindingState.botAccessState,
+        })),
+      },
+      managedEntityAccessEdge: { upsert: jest.fn().mockResolvedValue({ chatId: 'chat-1' }) },
+    };
+    Object.assign(prisma, {
+      $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    });
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn(async () => {
         if (accessResult instanceof Error) {
           throw accessResult;
         }
         return accessResult;
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Publisher chat',
+        entityType: 'chat',
+        link: 'https://max.ru/publisher-chat',
+        avatarUrl: 'https://cdn.example.com/publisher.png',
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
       }),
     };
     const credentials = {
@@ -62,7 +115,15 @@ describe('PublisherBindingRefreshService', () => {
       identityAttestation as never,
       { dispatchEnabled } as never,
     );
-    return { service, prisma, maxClient, dispatchHealth, identityAttestation };
+    return {
+      service,
+      prisma,
+      tx,
+      maxClient,
+      dispatchHealth,
+      identityAttestation,
+      bindingState,
+    };
   }
 
   const job = {
@@ -154,8 +215,8 @@ describe('PublisherBindingRefreshService', () => {
     });
     prisma.chat.findUnique.mockResolvedValueOnce({
       id: 'chat-1',
+      entityType: ChatEntityType.CHAT,
       publicationPolicy: null,
-      botMemberships: [{ id: 'main-membership' }],
       publisherBinding: {
         publisherBotId: 'publik_bot',
         status: ChatBotMembershipStatus.ACTIVE,
@@ -180,8 +241,8 @@ describe('PublisherBindingRefreshService', () => {
     });
     prisma.chat.findUnique.mockResolvedValueOnce({
       id: 'chat-1',
+      entityType: ChatEntityType.CHAT,
       publicationPolicy: null,
-      botMemberships: [{ id: 'main-membership' }],
       publisherBinding: {
         publisherBotId: 'publik_bot',
         status: ChatBotMembershipStatus.ACTIVE,
@@ -195,6 +256,131 @@ describe('PublisherBindingRefreshService', () => {
 
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(prisma.publisherEntityBinding.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('hydrates exact Publisher metadata and grants a live-verified actor without Major membership', async () => {
+    const { service, tx, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+
+    await service.refresh({
+      ...job,
+      reason: 'bot_added',
+      candidateUserId: 'admin-1',
+    });
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ botId: 'publik_bot', bypassCache: true }),
+    );
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'admin-1',
+      expect.objectContaining({
+        botId: 'publik_bot',
+        bypassCache: true,
+        trafficClass: 'interactive',
+      }),
+    );
+    expect(tx.managedBotChatCatalog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { botId_chatId: { botId: 'publik_bot', chatId: 'chat-1' } },
+      }),
+    );
+    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId_botId: {
+            chatId: 'chat-1',
+            userId: 'admin-1',
+            botId: 'publik_bot',
+          },
+        },
+        create: expect.objectContaining({ state: 'GRANTED', userRole: 'ADMIN' }),
+      }),
+    );
+  });
+
+  it('does not grant a Publisher access edge when the handshake actor is not an admin', async () => {
+    const { service, tx, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    maxClient.getChatMemberAccess.mockResolvedValueOnce({
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+      permissionsKnown: true,
+    });
+
+    await service.refresh({ ...job, reason: 'webhook_observed', candidateUserId: 'member-1' });
+
+    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ state: 'USER_DENIED', userRole: 'MEMBER' }),
+        update: expect.objectContaining({ state: 'USER_DENIED', userRole: 'MEMBER' }),
+      }),
+    );
+  });
+
+  it('does not grant a Publisher access edge when the Publisher bot is not an admin', async () => {
+    const { service, tx } = createHarness({
+      isAdmin: false,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+
+    await service.refresh({ ...job, reason: 'bot_added', candidateUserId: 'admin-1' });
+
+    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          state: 'BOT_DENIED',
+          userRole: 'ADMIN',
+          botRole: 'MEMBER',
+          deniedReason: 'publisher_bot_not_admin',
+        }),
+        update: expect.objectContaining({
+          state: 'BOT_DENIED',
+          userRole: 'ADMIN',
+          botRole: 'MEMBER',
+          deniedReason: 'publisher_bot_not_admin',
+        }),
+      }),
+    );
+  });
+
+  it('does not commit a stale actor grant after a newer bot access check records LOST', async () => {
+    const { service, tx, bindingState } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    let bindingReadCount = 0;
+    tx.publisherEntityBinding.findUnique.mockImplementation(async () => {
+      bindingReadCount += 1;
+      const committedAt = bindingState.botAccessCheckedAt;
+      return {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.ACTIVE,
+        lifecycleEventAt: null,
+        botAccessCheckedAt: committedAt,
+        botAccessState:
+          bindingReadCount === 1 ? bindingState.botAccessState : ChatBotAccessState.LOST,
+      };
+    });
+
+    await service.refresh({ ...job, reason: 'bot_added', candidateUserId: 'admin-1' });
+
+    expect(tx.managedBotChatCatalog.upsert).toHaveBeenCalledTimes(1);
+    expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
   });
 
   it('globally pauses and rethrows an exact-token 401', async () => {
@@ -258,6 +444,7 @@ describe('PublisherBindingRefreshService', () => {
       const prisma = {
         $queryRaw: jest.fn(),
         publisherEntityBinding: { findMany: jest.fn() },
+        managedEntityAccessEdge: { findMany: jest.fn() },
       };
       const identityAttestation = { assertAttested: jest.fn() };
       const dispatchHealth = { isGloballyPaused: jest.fn() };
@@ -293,6 +480,9 @@ describe('PublisherBindingRefreshService', () => {
           .fn()
           .mockResolvedValueOnce([{ chatId: 'chat-ready' }])
           .mockResolvedValueOnce([{ chatId: 'chat-discovery' }]),
+      },
+      managedEntityAccessEdge: {
+        findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-user', userId: 'admin-1' }]),
       },
     };
     const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
@@ -339,11 +529,19 @@ describe('PublisherBindingRefreshService', () => {
         }),
       }),
     );
-    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(2);
+    expect(refreshQueue.enqueue).toHaveBeenCalledTimes(3);
     expect(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).toEqual([
       'chat-ready',
       'chat-discovery',
+      'chat-user',
     ]);
+    expect(refreshQueue.enqueue).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-user',
+        candidateUserId: 'admin-1',
+        reason: 'stale_user_access',
+      }),
+    );
     scheduler.onModuleDestroy();
   });
 
@@ -351,6 +549,7 @@ describe('PublisherBindingRefreshService', () => {
     const prisma = {
       $queryRaw: jest.fn(),
       publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
+      managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const scheduler = new PublisherBindingRefreshSchedulerService(
       prisma as never,
@@ -366,6 +565,7 @@ describe('PublisherBindingRefreshService', () => {
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(2);
+    expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('prioritizes an expiring ready binding and cools down 2500 fresh LOST rows', async () => {
@@ -428,6 +628,7 @@ describe('PublisherBindingRefreshService', () => {
       );
       const prisma = {
         publisherEntityBinding: { findMany },
+        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
       };
       const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
       const scheduler = new PublisherBindingRefreshSchedulerService(
@@ -505,6 +706,7 @@ describe('PublisherBindingRefreshService', () => {
     );
     const prisma = {
       publisherEntityBinding: { findMany },
+      managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
     const scheduler = new PublisherBindingRefreshSchedulerService(
@@ -532,6 +734,7 @@ describe('PublisherBindingRefreshService', () => {
     try {
       const prisma = {
         publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
+        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
       };
       const refreshQueue = { enqueue: jest.fn() };
       let globallyPaused = true;
@@ -562,6 +765,7 @@ describe('PublisherBindingRefreshService', () => {
       expect(dispatchHealth.isGloballyPaused).toHaveBeenCalledTimes(3);
       expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
       expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(2);
+      expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
       scheduler.onModuleDestroy();
     } finally {
       jest.useRealTimers();

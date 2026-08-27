@@ -79,6 +79,7 @@ export class PublisherDialogContextService {
     entityType: ManagedEntityType;
     dialogBotId: string;
     customButtons: readonly BroadcastLinkButton[];
+    includeManagedDialogs?: boolean;
   }): Promise<PublisherPreparedDialogContext> {
     const customButtons = normalizeManagedBroadcastButtons(params.customButtons);
     const buttons = buildManagedBroadcastLinkButtonRows(
@@ -87,6 +88,10 @@ export class PublisherDialogContextService {
     );
     const threadId = randomUUID();
     let reference: ManagedBroadcastCommentDialogReference | null = null;
+
+    if (params.includeManagedDialogs === false) {
+      return { version: 1, dialogBotId: params.dialogBotId, buttons, reference };
+    }
 
     if (params.entityType === 'chat') {
       const settings = await this.prisma.chatSettings.upsert({

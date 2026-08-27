@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isInvalidPublisherEntitiesCursorError } from '../src/features/publications/use-publication-target-sources';
+import { isInvalidPublisherEntitiesCursorError } from '../src/lib/api/publisher-client';
 import { createApiRequestError } from '../src/lib/api-request-error';
 
 test('publisher pagination reseeds only a stable invalid-cursor response', () => {

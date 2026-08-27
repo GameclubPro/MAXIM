@@ -21,7 +21,7 @@ export function buildMiniappProfileProjection(profile: MiniappProfile): MiniappP
     ? {
         profile,
         capabilities: ['publisher_workspace', 'publisher_entities', 'chat_comments'],
-        homeRoute: '/publications',
+        homeRoute: '/',
       }
     : {
         profile,

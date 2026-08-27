@@ -1,8 +1,15 @@
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import {
+  MAX_PUBLICATION_TARGETS,
+  type PublicationAudienceInput,
+  type PublicationTargetInput,
+} from '@maxim/contracts/publication';
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { BroadcastLinkButton, ManagedEntityType } from '@maxim/contracts';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import {
+  ChatEntityType,
   Prisma,
   PublicationDispatchProfile,
   PublicationOccurrenceStatus,
@@ -19,16 +26,24 @@ import {
   type PublisherDispatchRoute,
 } from '../publisher/publisher-route';
 import { mapWithConcurrencyLimit } from './admin-legacy-utils';
+import { ManagedEntitiesService } from './managed-entities.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
+import { PublisherPolicyService } from './publisher-policy.service';
 
 const PUBLISHER_BLOCKED_RETRY_MS = 60_000;
 const ROUTE_LOOKUP_CONCURRENCY = 4;
-export const LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE =
-  'LEGACY_PUBLICATION_EXECUTION_IMMUTABLE';
+const PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY = 4;
+export const LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE = 'LEGACY_PUBLICATION_EXECUTION_IMMUTABLE';
 
 export type PublisherPublicationTarget = {
   chatId: string;
   entityType: ManagedEntityType;
+};
+
+export type ResolvedPublicationTarget = PublicationTargetInput & {
+  title: string;
+  avatarUrl: string | null;
+  link: string | null;
 };
 
 type PublisherOccurrence = {
@@ -62,6 +77,8 @@ export class PublicationPublisherRoutingService {
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly readiness: PublisherReadinessService,
     private readonly dialogContexts: PublisherDialogContextService,
+    private readonly managedEntitiesService: ManagedEntitiesService,
+    private readonly publisherPolicyService: PublisherPolicyService,
   ) {}
 
   requireNewRoute(): PublisherDispatchRoute {
@@ -73,6 +90,96 @@ export class PublicationPublisherRoutingService {
       code: PUBLISHER_SETUP_REQUIRED_CODE,
       message: 'Бот Публик ещё не настроен для новых публикаций.',
     });
+  }
+
+  async resolveAudienceTargets(
+    user: AuthUser,
+    audience: PublicationAudienceInput,
+    dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
+  ): Promise<ResolvedPublicationTarget[]> {
+    if (dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
+      const requestedTargets =
+        audience.selection === 'SELECTED'
+          ? audience.targets.map((target) => ({
+              chatId: target.chatId,
+              entityType: target.entityType,
+            }))
+          : undefined;
+      const publisherTargets = await this.publisherPolicyService.resolvePublicationTargets(
+        user,
+        requestedTargets,
+      );
+      const resolved = publisherTargets.filter((target) =>
+        audience.selection === 'ALL_CHATS'
+          ? target.entityType === 'chat'
+          : audience.selection === 'ALL_CHANNELS'
+            ? target.entityType === 'channel'
+            : true,
+      );
+      this.assertResolvedTargetCount(resolved);
+      return resolved;
+    }
+
+    const [chats, channels] = await Promise.all([
+      this.managedEntitiesService.listChats(user, { fresh: false }),
+      this.managedEntitiesService.listChannels(user, { fresh: false }),
+    ]);
+    const available = [...chats, ...channels].map((item) => ({
+      chatId: item.id,
+      entityType: item.entityType,
+      title: item.title,
+      avatarUrl: item.avatarUrl ?? null,
+      link: item.link ?? null,
+    }));
+    const byKey = new Map(
+      available.map((target) => [`${target.entityType}:${target.chatId}`, target]),
+    );
+    let resolved: ResolvedPublicationTarget[];
+    if (audience.selection === 'SELECTED') {
+      resolved = audience.targets.map((target) => {
+        const availableTarget = byKey.get(`${target.entityType}:${target.chatId}`);
+        if (!availableTarget) {
+          throw new BadRequestException(
+            'Некоторые выбранные чаты или каналы больше недоступны. Обновите список.',
+          );
+        }
+        return availableTarget;
+      });
+    } else {
+      resolved = available.filter((target) =>
+        audience.selection === 'ALL_CHATS'
+          ? target.entityType === 'chat'
+          : audience.selection === 'ALL_CHANNELS'
+            ? target.entityType === 'channel'
+            : true,
+      );
+    }
+    this.assertResolvedTargetCount(resolved);
+    await mapWithConcurrencyLimit(
+      resolved,
+      PUBLICATION_ADMIN_ACCESS_CHECK_CONCURRENCY,
+      async (target) => this.assertTargetAdminAccess(target, user),
+    );
+    return resolved;
+  }
+
+  resolvePersistedTargets(
+    user: AuthUser,
+    targets: readonly { targetChatId: string; entityType: ChatEntityType }[],
+    dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
+  ): Promise<ResolvedPublicationTarget[]> {
+    return this.resolveAudienceTargets(
+      user,
+      {
+        selection: 'SELECTED',
+        mode: 'SNAPSHOT',
+        targets: targets.map((target) => ({
+          chatId: target.targetChatId,
+          entityType: target.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+        })),
+      },
+      dispatchProfile,
+    );
   }
 
   async assertTargetsReady(
@@ -118,36 +225,72 @@ export class PublicationPublisherRoutingService {
     const resolvedDialogBots = await mapWithConcurrencyLimit(
       [...targets],
       ROUTE_LOOKUP_CONCURRENCY,
-      async (target) => ({
-        chatId: target.chatId,
-        botId: await this.maxBotLinkService.getStoredChatPrimaryBotId(target.chatId, {
-          bypassCache: true,
-        }),
-      }),
+      async (target) => {
+        try {
+          return {
+            chatId: target.chatId,
+            botId: await this.maxBotLinkService.getStoredChatPrimaryBotId(target.chatId, {
+              bypassCache: true,
+            }),
+          };
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: target.chatId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Skipped Major dialog buttons after primary-bot lookup failure',
+          );
+          return { chatId: target.chatId, botId: null };
+        }
+      },
     );
-    const missing = resolvedDialogBots.find((item) => !item.botId);
-    if (missing) {
-      throw new ConflictException({
-        code: PUBLISHER_SETUP_REQUIRED_CODE,
-        message: 'Для публикации не найден основной бот, который откроет комментарии.',
-        chatId: missing.chatId,
-      });
-    }
     const preparedContexts = await mapWithConcurrencyLimit(
       [...targets],
       ROUTE_LOOKUP_CONCURRENCY,
-      async (target) => ({
-        chatId: target.chatId,
-        context: await this.dialogContexts.prepare({
+      async (target) => {
+        const mainDialogBotId = resolvedDialogBots.find(
+          (item) => item.chatId === target.chatId,
+        )?.botId;
+        if (mainDialogBotId && mainDialogBotId !== requiredBotId) {
+          try {
+            return {
+              chatId: target.chatId,
+              dialogBotId: mainDialogBotId,
+              context: await this.dialogContexts.prepare({
+                chatId: target.chatId,
+                entityType: target.entityType,
+                dialogBotId: mainDialogBotId,
+                customButtons,
+                includeManagedDialogs: true,
+              }),
+            };
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId: target.chatId,
+                dialogBotId: mainDialogBotId,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Dropped Major dialog buttons after context preparation failure',
+            );
+          }
+        }
+        return {
           chatId: target.chatId,
-          entityType: target.entityType,
-          dialogBotId: resolvedDialogBots.find((item) => item.chatId === target.chatId)!.botId!,
-          customButtons,
-        }),
-      }),
+          dialogBotId: requiredBotId!,
+          context: await this.dialogContexts.prepare({
+            chatId: target.chatId,
+            entityType: target.entityType,
+            dialogBotId: requiredBotId!,
+            customButtons,
+            includeManagedDialogs: false,
+          }),
+        };
+      },
     );
     const routeByChatId = new Map(routes.map((route) => [route.chatId, route]));
-    const dialogBotIds = new Map(resolvedDialogBots.map((item) => [item.chatId, item.botId!]));
+    const dialogBotIds = new Map(preparedContexts.map((item) => [item.chatId, item.dialogBotId]));
     const dialogContextByChatId = new Map(
       preparedContexts.map((item) => [item.chatId, item.context]),
     );
@@ -204,5 +347,22 @@ export class PublicationPublisherRoutingService {
       'Deferred Publik publication until its target route is ready',
     );
     return true;
+  }
+
+  private assertResolvedTargetCount(targets: readonly ResolvedPublicationTarget[]): void {
+    if (targets.length === 0) {
+      throw new BadRequestException('Нет доступных получателей для публикации.');
+    }
+    if (targets.length > MAX_PUBLICATION_TARGETS) {
+      throw new BadRequestException(
+        `Можно выбрать не больше ${MAX_PUBLICATION_TARGETS} чатов и каналов.`,
+      );
+    }
+  }
+
+  private async assertTargetAdminAccess(target: PublicationTargetInput, user: AuthUser) {
+    return target.entityType === 'channel'
+      ? this.managedEntitiesService.assertChannelAdminAccess(target.chatId, user)
+      : this.managedEntitiesService.assertChatAdminAccess(target.chatId, user);
   }
 }

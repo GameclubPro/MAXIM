@@ -1,14 +1,16 @@
 import {
-  PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
   type PublisherEntitiesSummary,
   type PublisherEntity,
 } from '@maxim/contracts/publisher';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { getChats, getChannels } from '../../lib/api/root-client';
-import { listPublisherEntities, refreshPublisherEntities } from '../../lib/api/publisher-client';
+import {
+  isInvalidPublisherEntitiesCursorError,
+  listPublisherEntities,
+  refreshPublisherEntities,
+} from '../../lib/api/publisher-client';
 import type { ApiTransport } from '../../lib/api/transport';
-import { ApiRequestError } from '../../lib/api-request-error';
 import {
   toPublicationTarget,
   type PublicationEntityFilter,
@@ -18,13 +20,7 @@ import {
 const PUBLISHER_TARGET_PAGE_SIZE = 30;
 const PUBLISHER_RECHECK_SETTLE_MS = 15_500;
 
-export function isInvalidPublisherEntitiesCursorError(error: unknown): boolean {
-  return (
-    error instanceof ApiRequestError &&
-    error.status === 400 &&
-    error.code === PUBLISHER_ENTITIES_CURSOR_INVALID_CODE
-  );
-}
+export { isInvalidPublisherEntitiesCursorError };
 
 export function publisherEntityToPublicationTarget(source: PublisherEntity): PublicationTarget {
   return {

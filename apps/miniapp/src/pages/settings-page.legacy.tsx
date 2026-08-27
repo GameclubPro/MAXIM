@@ -363,7 +363,7 @@ import {
 import {
   AdminContactToggle,
   BroadcastPublishBar,
-  PublisherPolicyCard,
+  PublisherPolicyCardEntry,
   SettingsLoadErrorState,
   SettingsStorefrontSection,
 } from './settings/settings-lazy-surfaces';
@@ -5331,8 +5331,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           aria-label="Настройки чата"
           onClickCapture={handleDesktopToggleRowClick}
         >
-          {chatId ? <PublisherPolicyCard api={api} entityType="chat" entityId={chatId} /> : null}
-
           {settingsScreenQuery.data?.header.accessDiagnostics?.state === 'bot_access_lost' ? (
             <Suspense fallback={null}>
               <LazyManagedEntityAccessDiagnosticsBanner
@@ -5389,6 +5387,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <div className="settings-home-group-head stagger-in" style={{ order: 30 }}>
               <h2 className="settings-home-group-head__title">Бот</h2>
             </div>
+            {chatId ? (
+              <PublisherPolicyCardEntry api={api} entityType="chat" entityId={chatId} />
+            ) : null}
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
               style={{ order: 1 }}

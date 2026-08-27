@@ -74,6 +74,10 @@
 ## Publishing And Outbound Actions
 
 - With `MAX_PUBLISHER_DISPATCH_ENABLED=false`, `api-publisher` may run identity attestation, heartbeat, webhook reconciliation, and passive lifecycle handling only; do not start publication, binding, suggestion, or chat-comment recovery scans and do not probe MAX entity access.
+- Publik entity discovery and user authorization are Publisher-owned. Use the exact `PublisherEntityBinding`, the Publisher bot catalog row, and a fresh `ManagedEntityAccessEdge` whose `botId` is the Publisher bot; never require a Major `ChatBotMembership` or copy a Major access edge into this scope.
+- An authenticated Publisher `bot_added` or explicit `Старт` handshake may create the shared `Chat` shell and exact Publisher catalog/binding, but must not set `Chat.botId`, `primaryBotId`, or any `ChatBotMembership`. Grant user access only after the Publisher token confirms both bot and user admin/owner access.
+- `publikEnabled` is the only Major-owned cross-bot policy switch and remains effectively enabled when no policy row exists; a persisted `false` excludes the entity from Publisher list/get/resolve/refresh. Publisher-profile policy writes may change only Publisher-owned secondary module settings.
+- `PUBLIK_V1` target authorization and execution use Publisher-owned access. `LEGACY_ROUTED` keeps the Major routing path for existing scheduled work, and a missing Major primary bot must not block a Publik send.
 - Managed broadcast/autopost MAX calls use `MAX_API_SOURCE_TAGS.MANAGED_BROADCAST`. User sends/tests are `interactive`; scheduled/startup delivery is `background` and honors governor pause/slow decisions. Uploads stay on the send lane.
 - Publication `NOW` is user-triggered even when recovered by the action poller: materialize it ahead of background work and dispatch through the immediate lane.
 - Keep DB-only publication rollups outside governor pauses; ambiguous sends require manual review.

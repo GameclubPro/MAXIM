@@ -1,14 +1,11 @@
 import type { ManagedEntityType } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Post, Refresh } from 'iconoir-react';
-import { useId } from 'react';
+import { Post } from 'iconoir-react';
 import type { ApiTransport } from '../lib/api/transport';
 import { getPublisherEntity, updatePublisherPolicy } from '../lib/api/publisher-client';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { cn } from '../lib/cn';
-import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
 import { GlassCard } from './ui/glass-card';
-import { SkeletonCard } from './ui/skeleton';
 import { useToast } from './ui/toast';
 import './publisher-policy-card.css';
 
@@ -23,7 +20,6 @@ export function PublisherPolicyCard({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const statusId = useId();
   const queryKey = ['publisher-entity', entityType, entityId] as const;
   const entityQuery = useQuery({
     queryKey,
@@ -31,10 +27,10 @@ export function PublisherPolicyCard({
     enabled: Boolean(entityId),
   });
   const mutation = useMutation({
-    mutationFn: (change: { publikEnabled?: boolean; suggestionsViaPublik?: boolean }) =>
+    mutationFn: (publikEnabled: boolean) =>
       updatePublisherPolicy(api, entityType, entityId, {
         expectedRevision: entityQuery.data?.policy.revision ?? 0,
-        ...change,
+        publikEnabled,
       }),
     onSuccess: async () => {
       await Promise.all([
@@ -53,114 +49,77 @@ export function PublisherPolicyCard({
 
   if (entityQuery.isLoading) {
     return (
-      <GlassCard className="publisher-policy-card">
-        <SkeletonCard lines={2} />
-      </GlassCard>
-    );
-  }
-  if (!entityQuery.data) {
-    return (
-      <GlassCard className="publisher-policy-card has-error" role="alert">
+      <GlassCard className="publisher-policy-card" padding="sm" aria-busy="true">
         <div className="publisher-policy-card__row">
           <span className="publisher-policy-card__icon" aria-hidden>
             <Post />
           </span>
-          <span className="publisher-policy-card__copy">
-            <strong>Публик</strong>
-            <small>
-              {describeUserFacingError(entityQuery.error, 'Не удалось загрузить настройку')}
-            </small>
-          </span>
-          <button
-            type="button"
-            className="publisher-policy-card__retry"
-            aria-label="Повторить загрузку настройки Публика"
-            title="Повторить"
-            disabled={entityQuery.isFetching}
-            onClick={() => void entityQuery.refetch()}
-          >
-            <Refresh aria-hidden />
-          </button>
+          <strong className="publisher-policy-card__title">Публик</strong>
+          <span className="publisher-policy-card__switch-placeholder" aria-hidden />
         </div>
       </GlassCard>
     );
   }
 
-  const entity = entityQuery.data;
-  const presentation = getPublisherReadinessPresentation(entity.readiness);
-  const disabled = mutation.isPending;
-  return (
-    <GlassCard
-      className={cn(
-        'publisher-policy-card',
-        entity.policy.publikEnabled && 'is-enabled',
-        entity.readiness.state === 'ready' && 'is-ready',
-      )}
-      elevated
-      aria-busy={mutation.isPending || entityQuery.isFetching}
-    >
-      <div className="publisher-policy-card__row">
-        <span className="publisher-policy-card__icon" aria-hidden>
-          <Post />
-        </span>
-        <span className="publisher-policy-card__copy">
-          <strong>Публик</strong>
-          <small id={statusId} role="status" aria-live="polite">
-            {mutation.isPending ? 'Сохраняю...' : presentation.label}
-          </small>
-        </span>
-        <label className="settings-native-switch publisher-policy-card__switch">
-          <input
-            type="checkbox"
-            checked={entity.policy.publikEnabled}
-            disabled={disabled}
-            aria-label={`${entity.policy.publikEnabled ? 'Выключить' : 'Включить'} Публик для ${
-              entityType === 'channel' ? 'канала' : 'чата'
-            }`}
-            aria-describedby={statusId}
-            onChange={(event) => mutation.mutate({ publikEnabled: event.target.checked })}
-          />
-          <span className="toggle-switch" aria-hidden>
-            <span className="toggle-switch__thumb" />
+  if (!entityQuery.data) {
+    return (
+      <GlassCard
+        className="publisher-policy-card has-error"
+        padding="sm"
+        role="alert"
+        aria-label={describeUserFacingError(
+          entityQuery.error,
+          'Не удалось загрузить настройку Публика',
+        )}
+      >
+        <div className="publisher-policy-card__row">
+          <span className="publisher-policy-card__icon" aria-hidden>
+            <Post />
           </span>
-        </label>
-      </div>
-
-      {entityType === 'channel' && entity.policy.publikEnabled ? (
-        <div className="publisher-policy-card__row publisher-policy-card__row--secondary">
-          <span className="publisher-policy-card__copy">
-            <strong>Одобренные предложения</strong>
-            <small>{entity.policy.suggestionsViaPublik ? 'Через Публик' : 'Основной бот'}</small>
-          </span>
+          <strong className="publisher-policy-card__title">Публик</strong>
           <label className="settings-native-switch publisher-policy-card__switch">
             <input
               type="checkbox"
-              checked={entity.policy.suggestionsViaPublik}
-              disabled={disabled}
-              aria-label="Публиковать одобренные предложения через Публик"
-              aria-describedby={statusId}
-              onChange={(event) => mutation.mutate({ suggestionsViaPublik: event.target.checked })}
+              checked={false}
+              disabled
+              aria-label="Настройка Публика недоступна"
             />
             <span className="toggle-switch" aria-hidden>
               <span className="toggle-switch__thumb" />
             </span>
           </label>
         </div>
-      ) : null}
+      </GlassCard>
+    );
+  }
 
-      {entity.policy.publikEnabled && entity.readiness.state !== 'ready' ? (
-        <div className="publisher-policy-card__readiness" role="status">
-          <span>{presentation.detail}</span>
-          <button
-            type="button"
-            onClick={() => void entityQuery.refetch()}
-            disabled={entityQuery.isFetching || mutation.isPending}
-          >
-            <Refresh aria-hidden />
-            <span>{entityQuery.isFetching ? 'Обновляю' : 'Обновить'}</span>
-          </button>
-        </div>
-      ) : null}
+  const entity = entityQuery.data;
+  return (
+    <GlassCard
+      className={cn('publisher-policy-card', entity.policy.publikEnabled && 'is-enabled')}
+      padding="sm"
+      aria-busy={mutation.isPending || entityQuery.isFetching}
+    >
+      <div className="publisher-policy-card__row">
+        <span className="publisher-policy-card__icon" aria-hidden>
+          <Post />
+        </span>
+        <strong className="publisher-policy-card__title">Публик</strong>
+        <label className="settings-native-switch publisher-policy-card__switch">
+          <input
+            type="checkbox"
+            checked={entity.policy.publikEnabled}
+            disabled={mutation.isPending}
+            aria-label={`${entity.policy.publikEnabled ? 'Выключить' : 'Включить'} Публик для ${
+              entityType === 'channel' ? 'канала' : 'чата'
+            }`}
+            onChange={(event) => mutation.mutate(event.target.checked)}
+          />
+          <span className="toggle-switch" aria-hidden>
+            <span className="toggle-switch__thumb" />
+          </span>
+        </label>
+      </div>
     </GlassCard>
   );
 }

@@ -209,7 +209,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   const isChatsRoute = location.pathname === '/';
   const isPublicationsRoute =
     location.pathname === '/publications' || location.pathname === '/autoposts';
-  const isProfileHomeRoute = profile === 'publisher' ? isPublicationsRoute : isChatsRoute;
+  const isProfileHomeRoute = isChatsRoute;
   const selectedRootEntityType = useMemo(
     () =>
       normalizeEntityType(
@@ -278,8 +278,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
       ? routeEntityType
       : lastEntityType;
   const resolvedChatId = chatId;
-  const homeRoute =
-    profile === 'publisher' ? '/publications' : buildManagedEntitiesRoute(resolvedEntityType);
+  const homeRoute = profile === 'publisher' ? '/' : buildManagedEntitiesRoute(resolvedEntityType);
 
   const resolvedChatTitle = useMemo(() => {
     if (!resolvedChatId) {
@@ -305,8 +304,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   const isEventsRoute = location.pathname.includes('/events');
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
-  const shouldShowBottomNav =
-    profile === 'moderation' && (isChatsRoute || isPublicationsRoute);
+  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute;
   const hasTopbar =
     !isChatsRoute &&
     !isPublicationsRoute &&
@@ -392,7 +390,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             <Link to={homeRoute} className="shell-brand">
               {profile === 'publisher' ? 'Публик' : 'Панель'}
             </Link>
-            <span className="shell-chip">{profile === 'publisher' ? 'Посты' : 'Панель'}</span>
+            <span className="shell-chip">{profile === 'publisher' ? 'Кабинет' : 'Панель'}</span>
           </div>
           <div className="shell-topbar__content">
             <h2>{screen.title}</h2>
