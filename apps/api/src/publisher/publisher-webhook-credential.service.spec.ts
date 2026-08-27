@@ -40,7 +40,12 @@ describe('PublisherWebhookCredentialService', () => {
         secretPath: 'path_1234567890123456',
         providedHeaderSecret: 'header_12345678901234',
       }),
-    ).toEqual({ id: 'se14088825_bot', label: 'Публик', kind: 'publisher' });
+    ).toEqual({
+      id: 'se14088825_bot',
+      contactId: '387541327',
+      label: 'Публик',
+      kind: 'publisher',
+    });
     expect(
       service.resolveWebhookBot({
         botId: 'se14088825_bot',

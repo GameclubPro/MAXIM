@@ -93,7 +93,10 @@ export class MaxBotRegistryService {
         botIdByUserIdVariant.set(variant, bot.id);
       }
     }
-    for (const variant of buildBotIdVariants(this.publisherBot.id)) {
+    for (const variant of [
+      ...buildBotIdVariants(this.publisherBot.id),
+      ...buildBotIdVariants(this.publisherBot.contactId),
+    ]) {
       const existingBotId = botIdByUserIdVariant.get(variant);
       if (existingBotId && existingBotId !== this.publisherBot.id) {
         ambiguousBotUserIdVariants.add(variant);

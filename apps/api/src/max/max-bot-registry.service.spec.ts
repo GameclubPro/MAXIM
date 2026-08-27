@@ -109,11 +109,14 @@ describe('MaxBotRegistryService webhook base URL', () => {
 
     expect(service.getPublisherBotDescriptor()).toEqual({
       id: 'se14088825_bot',
+      contactId: '387541327',
       label: 'Публик',
       kind: 'publisher',
     });
     expect(service.isKnownBotUserId('se14088825')).toBe(true);
+    expect(service.isKnownBotUserId('387541327')).toBe(true);
     expect(service.resolveBotIdFromUserId('se14088825_bot')).toBe('se14088825_bot');
+    expect(service.resolveBotIdFromUserId('387541327')).toBe('se14088825_bot');
     expect(service.getBotById('se14088825_bot')).toBeNull();
     expect(service.getValidationTokensForBot('se14088825_bot')).toEqual([]);
     expect(service.getConfiguredWebhookSubscriptionTarget('se14088825_bot')).toEqual({
