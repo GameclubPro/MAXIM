@@ -1,4 +1,6 @@
 import {
+  MAX_PUBLISHER_BULK_REFRESH_TARGETS,
+  PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
   decodePublisherEntitiesCursor,
   encodePublisherEntitiesCursor,
   publisherEntitiesCursorQuerySchema,
@@ -23,6 +25,7 @@ import {
 } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
+  ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
   ManagedEntityAccessRole,
@@ -33,6 +36,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import {
+  hasPublisherRefreshEvidence,
+  isPublisherBindingConnected,
+  publisherConnectedBindingWhere,
+  publisherRefreshEvidenceWhere,
+} from '../publisher/publisher-entity-connection.util';
 import { buildChannelOverview } from './admin-legacy-utils';
 import { ManagedEntitiesService } from './managed-entities.service';
 import {
@@ -42,6 +51,7 @@ import {
 } from './publisher-entities-cursor.store';
 
 const PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE = 200;
+const PUBLISHER_BULK_REFRESH_QUERY_TAKE = 200;
 const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
 const MAX_PRESENTATION_URL_LENGTH = 2_048;
 
@@ -67,6 +77,7 @@ export class PublisherPolicyService {
     if (pagination === undefined) {
       return publisherEntitiesResponseSchema.parse({
         items: await this.loadScopedEntities(user),
+        setupHandoffUrl: this.buildSetupHandoffUrl(),
       });
     }
 
@@ -98,6 +109,11 @@ export class PublisherPolicyService {
             { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
           ],
           botId: { not: publisherBotId },
+          chat: {
+            publisherBinding: {
+              is: publisherConnectedBindingWhere(publisherBotId),
+            },
+          },
         },
         orderBy: [{ checkedAt: 'desc' }, { chatId: 'asc' }],
         include: {
@@ -131,6 +147,7 @@ export class PublisherPolicyService {
       if (
         seenEntityIds.has(edge.chatId) ||
         edge.entityType !== edge.chat.entityType ||
+        !isPublisherBindingConnected(edge.chat.publisherBinding, publisherBotId) ||
         !actionableBotIds.has(edge.botId) ||
         !edge.chat.botMemberships.some((membership) => membership.botId === edge.botId)
       ) {
@@ -140,13 +157,13 @@ export class PublisherPolicyService {
       eligibleEdges.push(edge);
     }
 
-    const catalogPresentations = await this.loadCatalogPresentations(eligibleEdges);
+    const catalogPresentations = await this.loadCatalogPresentations(eligibleEdges, publisherBotId);
     return eligibleEdges
       .map((edge) =>
         this.presentEntity(
           edge.chat,
           { now, runtimeAvailable },
-          catalogPresentations.get(this.catalogKey(edge.botId, edge.chatId)),
+          catalogPresentations.get(this.catalogKey(publisherBotId, edge.chatId)),
         ),
       )
       .sort((left, right) => this.compareEntities(left, right));
@@ -156,6 +173,215 @@ export class PublisherPolicyService {
     entityType: ManagedEntityType,
     entityId: string,
     user: AuthUser,
+  ): Promise<PublisherEntity> {
+    return this.loadScopedEntity(entityType, entityId, user, true);
+  }
+
+  async getEntityForPolicy(
+    entityType: ManagedEntityType,
+    entityId: string,
+    user: AuthUser,
+  ): Promise<PublisherEntity> {
+    return this.loadScopedEntity(entityType, entityId, user, false);
+  }
+
+  async listRefreshableEntityIds(
+    user: AuthUser,
+    limit = MAX_PUBLISHER_BULK_REFRESH_TARGETS,
+    excludedEntityIds: readonly string[] = [],
+  ): Promise<string[]> {
+    const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
+    const actionableBotIds = [
+      ...new Set(
+        this.botRegistry
+          .getActionableBots()
+          .map((bot) => bot.id)
+          .filter((botId) => botId !== publisherBotId),
+      ),
+    ];
+    if (actionableBotIds.length === 0) {
+      return [];
+    }
+    const requestedLimit = Number.isFinite(limit)
+      ? Math.max(1, Math.trunc(limit))
+      : MAX_PUBLISHER_BULK_REFRESH_TARGETS;
+    const boundedLimit = Math.min(MAX_PUBLISHER_BULK_REFRESH_TARGETS, requestedLimit);
+    const now = new Date();
+    const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
+    const accessWhere = {
+      userId: user.userId,
+      state: ManagedEntityAccessState.GRANTED,
+      userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
+      OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
+    } satisfies Prisma.ManagedEntityAccessEdgeWhereInput;
+    const routeFilters = actionableBotIds.flatMap((botId) =>
+      [ChatEntityType.CHAT, ChatEntityType.CHANNEL].map(
+        (entityType) =>
+          ({
+            entityType,
+            botMemberships: {
+              some: { botId, status: ChatBotMembershipStatus.ACTIVE },
+            },
+            accessEdges: {
+              some: { ...accessWhere, botId, entityType },
+            },
+          }) satisfies Prisma.ChatWhereInput,
+      ),
+    );
+    const normalizedExclusions = [
+      ...new Set(excludedEntityIds.map((entityId) => entityId.trim()).filter(Boolean)),
+    ].slice(0, 1_000);
+    const commonWhere = {
+      ...publisherRefreshEvidenceWhere(publisherBotId),
+      chat: {
+        AND: [
+          { OR: routeFilters },
+          {
+            OR: [
+              { publicationPolicy: { is: null } },
+              { publicationPolicy: { is: { publikEnabled: true } } },
+            ],
+          },
+        ],
+      },
+    } satisfies Prisma.PublisherEntityBindingWhereInput;
+    const selection = {
+      chatId: true,
+      publisherBotId: true,
+      status: true,
+      botAccessState: true,
+      lastSeenAt: true,
+      lastWebhookAt: true,
+      chat: {
+        select: {
+          entityType: true,
+          botMemberships: {
+            where: {
+              status: ChatBotMembershipStatus.ACTIVE,
+              botId: { in: actionableBotIds },
+            },
+            select: { botId: true },
+          },
+          accessEdges: {
+            where: { ...accessWhere, botId: { in: actionableBotIds } },
+            select: { botId: true, entityType: true },
+          },
+        },
+      },
+    } satisfies Prisma.PublisherEntityBindingSelect;
+    const orderBy = [
+      { botAccessCheckedAt: { sort: 'asc' as const, nulls: 'first' as const } },
+      { updatedAt: 'asc' as const },
+      { chatId: 'asc' as const },
+    ];
+
+    const problemRows = await this.prisma.publisherEntityBinding.findMany({
+      where: {
+        ...commonWhere,
+        ...(normalizedExclusions.length > 0 ? { chatId: { notIn: normalizedExclusions } } : {}),
+        AND: [
+          {
+            OR: [
+              {
+                botAccessState: {
+                  in: [
+                    ChatBotAccessState.UNKNOWN,
+                    ChatBotAccessState.CONFIRMED_MEMBER,
+                    ChatBotAccessState.DENIED,
+                    ChatBotAccessState.LOST,
+                    ChatBotAccessState.STALE,
+                  ],
+                },
+              },
+              { sendRouteQuarantinedUntil: { gt: now } },
+              { botAccessExpiresAt: null },
+              { botAccessExpiresAt: { lte: now } },
+            ],
+          },
+        ],
+      },
+      select: selection,
+      orderBy,
+      take: PUBLISHER_BULK_REFRESH_QUERY_TAKE,
+    });
+    const selectedProblemIds = this.filterRefreshCandidateRows(
+      problemRows,
+      publisherBotId,
+      boundedLimit,
+    );
+    const remaining = boundedLimit - selectedProblemIds.length;
+    if (remaining === 0) {
+      return selectedProblemIds;
+    }
+
+    const readyExclusions = [...new Set([...normalizedExclusions, ...selectedProblemIds])];
+    const readyRows = await this.prisma.publisherEntityBinding.findMany({
+      where: {
+        ...commonWhere,
+        ...(readyExclusions.length > 0 ? { chatId: { notIn: readyExclusions } } : {}),
+        botAccessState: {
+          in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
+        },
+        botAccessExpiresAt: { gt: now },
+        AND: [
+          {
+            OR: [{ sendRouteQuarantinedUntil: null }, { sendRouteQuarantinedUntil: { lte: now } }],
+          },
+        ],
+      },
+      select: selection,
+      orderBy,
+      take: PUBLISHER_BULK_REFRESH_QUERY_TAKE,
+    });
+    return [
+      ...selectedProblemIds,
+      ...this.filterRefreshCandidateRows(readyRows, publisherBotId, remaining),
+    ];
+  }
+
+  private filterRefreshCandidateRows(
+    rows: readonly {
+      chatId: string;
+      publisherBotId: string;
+      status: ChatBotMembershipStatus;
+      botAccessState: ChatBotAccessState;
+      lastSeenAt: Date | null;
+      lastWebhookAt: Date | null;
+      chat: {
+        entityType: ChatEntityType;
+        botMemberships: readonly { botId: string }[];
+        accessEdges: readonly { botId: string; entityType: ChatEntityType }[];
+      };
+    }[],
+    publisherBotId: string,
+    limit: number,
+  ): string[] {
+    const selected: string[] = [];
+    for (const row of rows) {
+      if (!hasPublisherRefreshEvidence(row, publisherBotId)) {
+        continue;
+      }
+      const activeBotIds = new Set(row.chat.botMemberships.map((membership) => membership.botId));
+      if (
+        !row.chat.accessEdges.some(
+          (edge) => edge.entityType === row.chat.entityType && activeBotIds.has(edge.botId),
+        )
+      ) {
+        continue;
+      }
+      selected.push(row.chatId);
+      if (selected.length >= limit) {
+        break;
+      }
+    }
+    return selected;
+  }
+
+  private async loadScopedEntity(
+    entityType: ManagedEntityType,
+    entityId: string,
+    user: AuthUser,
+    requirePublisherConnection: boolean,
   ): Promise<PublisherEntity> {
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
     const actionableBotIds = new Set(this.botRegistry.getActionableBots().map((bot) => bot.id));
@@ -170,6 +396,15 @@ export class PublisherPolicyService {
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
         OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
         botId: { not: publisherBotId },
+        ...(requirePublisherConnection
+          ? {
+              chat: {
+                publisherBinding: {
+                  is: publisherConnectedBindingWhere(publisherBotId),
+                },
+              },
+            }
+          : {}),
       },
       orderBy: [{ checkedAt: 'desc' }, { chatId: 'asc' }],
       include: {
@@ -199,13 +434,15 @@ export class PublisherPolicyService {
       (candidate) =>
         candidate.chat.entityType ===
           (entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT) &&
+        (!requirePublisherConnection ||
+          isPublisherBindingConnected(candidate.chat.publisherBinding, publisherBotId)) &&
         actionableBotIds.has(candidate.botId) &&
         candidate.chat.botMemberships.some((membership) => membership.botId === candidate.botId),
     );
     if (!edge) {
       throw new BadRequestException('Managed entity is unavailable');
     }
-    const catalogPresentation = await this.loadTargetedCatalogPresentation(edge);
+    const catalogPresentation = await this.loadTargetedCatalogPresentation(edge, publisherBotId);
     return this.presentEntity(
       edge.chat,
       {
@@ -366,10 +603,10 @@ export class PublisherPolicyService {
 
   private async loadCatalogPresentations(
     edges: readonly {
-      botId: string;
       chatId: string;
       chat: { entityType: ChatEntityType };
     }[],
+    publisherBotId: string,
   ): Promise<Map<string, PublisherCatalogPresentation>> {
     const presentations = new Map<string, PublisherCatalogPresentation>();
     for (let offset = 0; offset < edges.length; offset += PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE) {
@@ -378,7 +615,7 @@ export class PublisherPolicyService {
         where: {
           status: 'ACTIVE',
           OR: batch.map((edge) => ({
-            botId: edge.botId,
+            botId: publisherBotId,
             chatId: edge.chatId,
             entityType: edge.chat.entityType,
           })),
@@ -400,14 +637,16 @@ export class PublisherPolicyService {
     return presentations;
   }
 
-  private async loadTargetedCatalogPresentation(edge: {
-    botId: string;
-    chatId: string;
-    chat: { entityType: ChatEntityType };
-  }): Promise<PublisherCatalogPresentation | undefined> {
+  private async loadTargetedCatalogPresentation(
+    edge: {
+      chatId: string;
+      chat: { entityType: ChatEntityType };
+    },
+    publisherBotId: string,
+  ): Promise<PublisherCatalogPresentation | undefined> {
     const row = await this.prisma.managedBotChatCatalog.findFirst({
       where: {
-        botId: edge.botId,
+        botId: publisherBotId,
         chatId: edge.chatId,
         entityType: edge.chat.entityType,
         status: 'ACTIVE',
@@ -427,6 +666,14 @@ export class PublisherPolicyService {
 
   private buildSettingsHandoffUrl(entityType: ManagedEntityType, entityId: string): string | null {
     const route = `/${entityType}/${encodeURIComponent(entityId)}/settings`;
+    return this.buildRouteHandoffUrl(route);
+  }
+
+  private buildSetupHandoffUrl(): string | null {
+    return this.buildRouteHandoffUrl('/');
+  }
+
+  private buildRouteHandoffUrl(route: string): string | null {
     const payload = Buffer.from(JSON.stringify({ v: 1, k: 'route', r: route }), 'utf8').toString(
       'base64url',
     );
@@ -550,6 +797,7 @@ export class PublisherPolicyService {
     if (filtered.length <= query.limit) {
       return publisherEntitiesCursorResponseSchema.parse({
         items: filtered,
+        setupHandoffUrl: this.buildSetupHandoffUrl(),
         nextCursor: null,
         filteredTotal: filtered.length,
         summary,
@@ -612,6 +860,7 @@ export class PublisherPolicyService {
         : null;
     const response = publisherEntitiesCursorResponseSchema.parse({
       items,
+      setupHandoffUrl: this.buildSetupHandoffUrl(),
       nextCursor,
       filteredTotal: snapshot.filteredTotal,
       summary: snapshot.summary,
@@ -683,7 +932,10 @@ export class PublisherPolicyService {
   }
 
   private invalidEntitiesCursor(): BadRequestException {
-    return new BadRequestException('Курсор списка получателей недействителен.');
+    return new BadRequestException({
+      message: 'Курсор списка получателей недействителен.',
+      code: PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
+    });
   }
 
   private policyConflict(): ConflictException {

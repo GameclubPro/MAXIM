@@ -12,7 +12,7 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
       releaseFirst = resolve;
     });
 
-    const first = coordinator.runExclusive('binding_bootstrap', async () => {
+    const first = coordinator.runExclusive('binding_refresh', async () => {
       events.push('first:start');
       await firstGate;
       events.push('first:end');
@@ -42,7 +42,7 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    const first = coordinator.runExclusive('binding_bootstrap', async () => {
+    const first = coordinator.runExclusive('binding_refresh', async () => {
       await firstGate;
       throw failure;
     });
@@ -86,7 +86,7 @@ describe('PublisherBackgroundWorkCoordinatorService', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const active = coordinator.runExclusive('binding_bootstrap', async () => {
+    const active = coordinator.runExclusive('binding_refresh', async () => {
       await gate;
     });
     const queuedOperation = jest.fn();

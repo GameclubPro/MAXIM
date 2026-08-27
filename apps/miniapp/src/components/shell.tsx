@@ -207,6 +207,9 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   const isKeyboardOpen = useKeyboardOpen();
   const hasNativeBackHandlers = useNativeBackHandlersAvailable();
   const isChatsRoute = location.pathname === '/';
+  const isPublicationsRoute =
+    location.pathname === '/publications' || location.pathname === '/autoposts';
+  const isProfileHomeRoute = profile === 'publisher' ? isPublicationsRoute : isChatsRoute;
   const selectedRootEntityType = useMemo(
     () =>
       normalizeEntityType(
@@ -275,7 +278,8 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
       ? routeEntityType
       : lastEntityType;
   const resolvedChatId = chatId;
-  const homeRoute = profile === 'publisher' ? '/' : buildManagedEntitiesRoute(resolvedEntityType);
+  const homeRoute =
+    profile === 'publisher' ? '/publications' : buildManagedEntitiesRoute(resolvedEntityType);
 
   const resolvedChatTitle = useMemo(() => {
     if (!resolvedChatId) {
@@ -299,11 +303,10 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   const shouldCloseMiniAppOnBack = shouldCloseDialogOnBack || isGiveawayRoute;
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
-  const isPublicationsRoute =
-    location.pathname === '/publications' || location.pathname === '/autoposts';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
-  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute;
+  const shouldShowBottomNav =
+    profile === 'moderation' && (isChatsRoute || isPublicationsRoute);
   const hasTopbar =
     !isChatsRoute &&
     !isPublicationsRoute &&
@@ -320,7 +323,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   );
 
   useEffect(() => {
-    const shouldShowNativeBack = !isChatsRoute || hasNativeBackHandlers;
+    const shouldShowNativeBack = !isProfileHomeRoute || hasNativeBackHandlers;
     setMaxBackButtonVisible(shouldShowNativeBack);
 
     if (!shouldShowNativeBack) {
@@ -361,7 +364,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   }, [
     hasNativeBackHandlers,
     homeRoute,
-    isChatsRoute,
+    isProfileHomeRoute,
     isManagedEntityRoute,
     managedEntityNavigation,
     navigate,

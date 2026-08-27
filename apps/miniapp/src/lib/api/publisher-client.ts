@@ -2,6 +2,7 @@ import {
   managedEntityPublicationPolicySchema,
   publisherEntitiesCursorQuerySchema,
   publisherEntitiesCursorResponseSchema,
+  publisherEntitiesRefreshResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntitySchema,
   publisherEntityRefreshResponseSchema,
@@ -12,6 +13,7 @@ import {
   type ManagedEntityType,
   type PublisherEntitiesCursorQuery,
   type PublisherEntitiesCursorResponse,
+  type PublisherEntitiesRefreshResponse,
   type PublisherEntitiesResponse,
   type PublisherEntity,
   type PublisherEntityRefreshResponse,
@@ -94,6 +96,13 @@ export async function refreshPublisherEntity(
     { method: 'POST' },
   );
   return publisherEntityRefreshResponseSchema.parse(response);
+}
+
+export async function refreshPublisherEntities(
+  api: ApiTransport,
+): Promise<PublisherEntitiesRefreshResponse> {
+  const response = await api.request('/publisher/entities/refresh', { method: 'POST' });
+  return publisherEntitiesRefreshResponseSchema.parse(response);
 }
 
 export async function resolvePublisherEntities(

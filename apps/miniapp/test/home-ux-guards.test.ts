@@ -73,7 +73,7 @@ test('entity cards expose settings, favorite, statistics and category edit targe
   assert.doesNotMatch(sheetsSource, /home-actions__panel|<strong>Статистика<\/strong>/u);
 });
 
-test('root navigation exposes chats, channels and posts as primary destinations', () => {
+test('moderation navigation keeps chats, channels and posts while Publik stays Posts-only', () => {
   const labels = shellSource.match(/className="bottom-nav__label"/gu) ?? [];
 
   assert.equal(labels.length, 3);
@@ -87,8 +87,15 @@ test('root navigation exposes chats, channels and posts as primary destinations'
   assert.doesNotMatch(chatsPageSource, /chats-command__tabs/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">Настройки/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">\{activityNavLabel\}/u);
-  assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute/u);
-  assert.match(shellSource, /profile === 'publisher' \? '\/' : buildManagedEntitiesRoute/u);
+  assert.match(
+    shellSource,
+    /const shouldShowBottomNav =\s*profile === 'moderation' && \(isChatsRoute \|\| isPublicationsRoute\);/u,
+  );
+  assert.match(shellSource, /profile === 'publisher' \? '\/publications'/u);
+  assert.match(
+    shellSource,
+    /const isProfileHomeRoute = profile === 'publisher' \? isPublicationsRoute : isChatsRoute;/u,
+  );
   assert.match(shellSource, /if \(!isChatsRoute \|\| profile !== 'moderation'\)/u);
   assert.match(shellSource, /\{shouldShowBottomNav \? \(/u);
 });

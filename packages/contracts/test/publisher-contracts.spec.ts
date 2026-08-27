@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { meSchema } from '../src/core.js';
 import { MAX_PUBLICATION_TARGETS } from '../src/publication.js';
 import {
+  MAX_PUBLISHER_BULK_REFRESH_TARGETS,
   MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS,
   decodePublisherEntitiesCursor,
   encodePublisherEntitiesCursor,
   publisherEntitiesCursorQuerySchema,
   publisherEntitiesCursorResponseSchema,
+  publisherEntitiesRefreshResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntityRefreshResponseSchema,
   resolvePublisherEntitiesRequestSchema,
@@ -107,10 +109,14 @@ describe('publisher contracts', () => {
   });
 
   it('keeps the legacy entity-list response compatible while retaining cursor metadata', () => {
-    expect(publisherEntitiesResponseSchema.parse({ items: [] })).toEqual({ items: [] });
+    expect(publisherEntitiesResponseSchema.parse({ items: [] })).toEqual({
+      items: [],
+      setupHandoffUrl: null,
+    });
 
     const cursorResponse = publisherEntitiesCursorResponseSchema.parse({
       items: [],
+      setupHandoffUrl: 'https://max.ru/entry-bot?startapp=mr-home',
       nextCursor: null,
       filteredTotal: 2,
       summary: {
@@ -199,6 +205,25 @@ describe('publisher contracts', () => {
     expect(
       publisherEntityRefreshResponseSchema.safeParse({
         accepted: true,
+        publisherBotId: 'publik-bot',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('bounds bulk publisher refresh without exposing entity or bot routing details', () => {
+    expect(
+      publisherEntitiesRefreshResponseSchema.parse({ accepted: true, queuedCount: 12 }),
+    ).toEqual({ accepted: true, queuedCount: 12 });
+    expect(
+      publisherEntitiesRefreshResponseSchema.safeParse({
+        accepted: true,
+        queuedCount: MAX_PUBLISHER_BULK_REFRESH_TARGETS + 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      publisherEntitiesRefreshResponseSchema.safeParse({
+        accepted: true,
+        queuedCount: 1,
         publisherBotId: 'publik-bot',
       }).success,
     ).toBe(false);

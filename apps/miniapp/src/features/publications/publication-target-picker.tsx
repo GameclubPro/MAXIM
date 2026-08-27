@@ -11,7 +11,10 @@ import {
 } from 'react';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
 import { cn } from '../../lib/cn';
+import { useDialogFocusTrap } from '../../lib/dialog-focus';
+import { useNativeBackHandler } from '../../lib/native-back';
 import { getPublisherReadinessLabel } from '../../lib/publisher-readiness-label';
+import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
 import { resolveVirtualListRange } from '../../lib/virtual-list';
 import {
   getPublicationTargetKey,
@@ -41,6 +44,7 @@ type PublicationTargetPickerProps = {
   };
   disabled?: boolean;
   error?: string | null;
+  notice?: string | null;
   maxTargets?: number;
   onChange: (targets: PublicationTarget[]) => void;
   onLimitReached?: () => void;
@@ -52,7 +56,7 @@ const FILTERS: Array<{ value: PublicationEntityFilter; label: string }> = [
   { value: 'channel', label: 'Каналы' },
 ];
 const TARGET_ROW_HEIGHT = 58;
-const TARGET_LIST_VIEWPORT_HEIGHT = 266;
+const TARGET_LIST_INITIAL_VIEWPORT_HEIGHT = 266;
 const TARGET_LIST_VIRTUALIZATION_THRESHOLD = 60;
 const TARGET_LIST_OVERSCAN = 3;
 
@@ -62,6 +66,7 @@ export function PublicationTargetPicker({
   remoteSource,
   disabled = false,
   error = null,
+  notice = null,
   maxTargets = MAX_PUBLICATION_TARGETS,
   onChange,
   onLimitReached,
@@ -71,10 +76,18 @@ export function PublicationTargetPicker({
   const [expanded, setExpanded] = useState(false);
   const [shouldRevealEditor, setShouldRevealEditor] = useState(false);
   const [listScrollTop, setListScrollTop] = useState(0);
+  const [listViewportHeight, setListViewportHeight] = useState(
+    TARGET_LIST_INITIAL_VIEWPORT_HEIGHT,
+  );
   const pickerRef = useRef<HTMLDivElement | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const editorId = useId();
+  const editorTitleId = useId();
   const errorId = useId();
+  const sheetOpen = expanded && Boolean(remoteSource);
+  const sheetStyle = useVisualViewportOverlayStyle(sheetOpen);
   const query = remoteSource?.query ?? localQuery;
   const filter = remoteSource?.entityFilter ?? localFilter;
   const deferredQuery = useDeferredValue(query.trim());
@@ -101,11 +114,11 @@ export function PublicationTargetPicker({
       resolveVirtualListRange({
         itemCount: filteredChoices.length,
         scrollTop: listScrollTop,
-        viewportHeight: TARGET_LIST_VIEWPORT_HEIGHT,
+        viewportHeight: listViewportHeight,
         rowHeight: TARGET_ROW_HEIGHT,
         overscan: TARGET_LIST_OVERSCAN,
       }),
-    [filteredChoices.length, listScrollTop],
+    [filteredChoices.length, listScrollTop, listViewportHeight],
   );
   const renderedChoices = shouldVirtualize
     ? filteredChoices.slice(virtualRange.startIndex, virtualRange.endIndex)
@@ -120,8 +133,9 @@ export function PublicationTargetPicker({
           : '1 получатель'
         : `Выбрано: ${value.length}`;
   const summaryTitle = collapsedSelectedSummary;
-  const summaryMeta =
-    value.length === 0
+  const summaryMeta = notice
+    ? notice
+    : value.length === 0
       ? expanded
         ? 'Выберите чаты и каналы'
         : 'Чаты и каналы'
@@ -152,6 +166,11 @@ export function PublicationTargetPicker({
       return;
     }
 
+    if (remoteSource) {
+      setShouldRevealEditor(false);
+      return;
+    }
+
     const frameId = window.requestAnimationFrame(() => {
       pickerRef.current?.scrollIntoView({
         behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
@@ -161,7 +180,62 @@ export function PublicationTargetPicker({
     });
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [expanded, shouldRevealEditor]);
+  }, [expanded, remoteSource, shouldRevealEditor]);
+
+  useEffect(() => {
+    if (!expanded || !listRef.current) {
+      return undefined;
+    }
+    const list = listRef.current;
+    const updateHeight = () => {
+      setListViewportHeight(Math.max(1, list.clientHeight));
+    };
+    updateHeight();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateHeight);
+    observer?.observe(list);
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, [expanded]);
+
+  useEffect(() => {
+    if (!sheetOpen) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [sheetOpen]);
+
+  useDialogFocusTrap(sheetOpen, editorRef, searchInputRef);
+  useNativeBackHandler(
+    () => {
+      setExpanded(false);
+      setShouldRevealEditor(false);
+      return true;
+    },
+    { enabled: sheetOpen, priority: 705 },
+  );
+
+  useEffect(() => {
+    if (!sheetOpen) {
+      return undefined;
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      setExpanded(false);
+      setShouldRevealEditor(false);
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [sheetOpen]);
 
   useEffect(() => {
     setListScrollTop(0);
@@ -234,7 +308,7 @@ export function PublicationTargetPicker({
               }`
         }
         onClick={() => toggleTarget(choice)}
-        disabled={disabled}
+        disabled={disabled || (unavailable && !selected)}
       >
         <EntityAvatar
           title={choice.title}
@@ -261,6 +335,7 @@ export function PublicationTargetPicker({
           'publication-target-picker__summary',
           value.length === 0 && 'is-empty',
           expanded && 'is-expanded',
+          notice && 'has-notice',
         )}
         onClick={toggleEditor}
         disabled={disabled}
@@ -281,11 +356,37 @@ export function PublicationTargetPicker({
 
       {expanded ? (
         <div
+          ref={editorRef}
           id={editorId}
-          className="publication-target-picker__editor"
-          role="region"
-          aria-label="Выбор получателей"
+          className={cn('publication-target-picker__editor', remoteSource && 'is-sheet')}
+          style={remoteSource ? sheetStyle : undefined}
+          role={remoteSource ? 'dialog' : 'region'}
+          aria-modal={remoteSource ? 'true' : undefined}
+          aria-labelledby={remoteSource ? editorTitleId : undefined}
+          aria-label={remoteSource ? undefined : 'Выбор получателей'}
         >
+          {remoteSource ? (
+            <header className="publication-target-picker__sheet-header">
+              <span>
+                <strong id={editorTitleId}>Получатели</strong>
+                <small>
+                  {notice ??
+                    (value.length > 0 ? `Выбрано: ${value.length}` : 'Выберите для публикации')}
+                </small>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setExpanded(false);
+                  setShouldRevealEditor(false);
+                }}
+                aria-label="Завершить выбор получателей"
+                title="Готово"
+              >
+                <Check aria-hidden />
+              </button>
+            </header>
+          ) : null}
           {shouldShowSelectedChips ? (
             <div
               className="publication-target-picker__selected"
@@ -315,6 +416,7 @@ export function PublicationTargetPicker({
           <label className="publication-search">
             <Search aria-hidden />
             <input
+              ref={searchInputRef}
               type="search"
               value={query}
               maxLength={120}

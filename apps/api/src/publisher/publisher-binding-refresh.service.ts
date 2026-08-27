@@ -6,6 +6,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
+import {
+  hasPublisherRefreshEvidence,
+  publisherRefreshEvidenceWhere,
+} from './publisher-entity-connection.util';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import {
   type PublisherBindingRefreshJob,
@@ -18,8 +22,7 @@ import {
 } from './publisher-dispatch-health.service';
 
 const PUBLISHER_ACCESS_SNAPSHOT_TTL_MS = 15 * 60_000;
-const PUBLISHER_BOOTSTRAP_SCAN_INTERVAL_MS = 60_000;
-const PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE = 100;
+const PUBLISHER_REFRESH_SCAN_INTERVAL_MS = 60_000;
 const PUBLISHER_READY_REFRESH_BATCH_SIZE = 200;
 const PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE = 25;
 const PUBLISHER_ACCESS_REFRESH_AHEAD_MS = 2 * 60_000;
@@ -27,7 +30,6 @@ const PUBLISHER_UNKNOWN_REPROBE_COOLDOWN_MS = 5 * 60_000;
 const PUBLISHER_NON_ADMIN_REPROBE_COOLDOWN_MS = 15 * 60_000;
 const PUBLISHER_LOST_REPROBE_COOLDOWN_MS = 6 * 60 * 60_000;
 
-type PublisherBootstrapCandidate = { id: string };
 type PublisherBindingRefreshCandidate = { chatId: string };
 
 @Injectable()
@@ -78,17 +80,19 @@ export class PublisherBindingRefreshService {
           select: { id: true },
           take: 1,
         },
+        publisherBinding: true,
       },
     });
+    // FLAG: Queued refresh jobs may verify an evidenced binding, never establish one.
     if (
       !candidate ||
       candidate.publicationPolicy?.publikEnabled === false ||
-      candidate.botMemberships.length === 0
+      candidate.botMemberships.length === 0 ||
+      !hasPublisherRefreshEvidence(candidate.publisherBinding, this.publisherBotId)
     ) {
       return;
     }
 
-    await this.ensureBinding(chatId);
     const probeStartedAt = new Date();
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
@@ -146,21 +150,6 @@ export class PublisherBindingRefreshService {
     }
   }
 
-  async ensureBinding(chatId: string): Promise<void> {
-    await this.prisma.publisherEntityBinding.createMany({
-      data: [
-        {
-          chatId,
-          publisherBotId: this.publisherBotId,
-          status: ChatBotMembershipStatus.ACTIVE,
-          botAccessState: ChatBotAccessState.UNKNOWN,
-          botAccessSource: 'publisher_bootstrap_candidate',
-        },
-      ],
-      skipDuplicates: true,
-    });
-  }
-
   private async recordAccessLost(
     chatId: string,
     probeStartedAt: Date,
@@ -195,17 +184,15 @@ export class PublisherBindingRefreshService {
 }
 
 @Injectable()
-export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(PublisherBindingBootstrapSchedulerService.name);
+export class PublisherBindingRefreshSchedulerService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(PublisherBindingRefreshSchedulerService.name);
   private readonly publisherBotId: string;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
-  private cursor: string | null = null;
   private discoveryCursor: string | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly refreshService: PublisherBindingRefreshService,
     private readonly refreshQueue: PublisherBindingRefreshQueueService,
     credentials: PublisherActionCredentialService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
@@ -224,7 +211,7 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     }
     this.timer = setInterval(() => {
       void this.scan('scheduled');
-    }, PUBLISHER_BOOTSTRAP_SCAN_INTERVAL_MS);
+    }, PUBLISHER_REFRESH_SCAN_INTERVAL_MS);
     this.timer.unref();
     void this.scan('startup');
   }
@@ -242,25 +229,16 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     }
     this.inFlight = true;
     try {
-      await this.backgroundWork.runExclusive('binding_bootstrap', async () => {
+      await this.backgroundWork.runExclusive('binding_refresh', async () => {
         if (await this.dispatchHealth.isGloballyPaused()) {
           return;
         }
         await this.identityAttestation.assertAttested();
         const now = new Date();
-        const bootstrapCandidates = await this.readBootstrapCandidates();
+        // FLAG: Publisher webhooks own binding creation; this scan only refreshes existing evidence.
         const readyBindings = await this.readReadyRefreshCandidates(now);
         const discoveryBindings = await this.readDiscoveryRefreshCandidates(now);
 
-        for (const candidate of bootstrapCandidates) {
-          await this.refreshService.ensureBinding(candidate.id);
-          await this.refreshQueue.enqueue({
-            chatId: candidate.id,
-            publisherBotId: this.publisherBotId,
-            reason: 'bootstrap',
-            requestedAt: now,
-          });
-        }
         for (const binding of [...readyBindings, ...discoveryBindings]) {
           await this.refreshQueue.enqueue({
             chatId: binding.chatId,
@@ -270,10 +248,6 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
           });
         }
 
-        this.cursor =
-          bootstrapCandidates.length < PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE
-            ? null
-            : (bootstrapCandidates.at(-1)?.id ?? null);
         this.discoveryCursor =
           discoveryBindings.length < PUBLISHER_DISCOVERY_REFRESH_BATCH_SIZE
             ? null
@@ -285,45 +259,11 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
           reason,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Publisher binding bootstrap scan failed',
+        'Publisher binding refresh scan failed',
       );
     } finally {
       this.inFlight = false;
     }
-  }
-
-  private readBootstrapCandidates(): Promise<PublisherBootstrapCandidate[]> {
-    const removedRefreshBefore = new Date(Date.now() - 30 * 60_000);
-    return this.prisma.$queryRaw<PublisherBootstrapCandidate[]>(Prisma.sql`
-      SELECT chat."id"
-      FROM "chats" AS chat
-      LEFT JOIN "managed_entity_publication_policies" AS policy
-        ON policy."chat_id" = chat."id"
-      LEFT JOIN "publisher_entity_bindings" AS binding
-        ON binding."chat_id" = chat."id"
-       AND binding."publisher_bot_id" = ${this.publisherBotId}
-      WHERE (${this.cursor}::text IS NULL OR chat."id" > ${this.cursor})
-        AND COALESCE(policy."publik_enabled", TRUE) = TRUE
-        AND (
-          binding."chat_id" IS NULL
-          OR (
-            binding."status" = 'REMOVED'
-            AND (
-              binding."bot_access_checked_at" IS NULL
-              OR binding."bot_access_checked_at" <= ${removedRefreshBefore}
-            )
-          )
-        )
-        AND EXISTS (
-          SELECT 1
-          FROM "chat_bot_memberships" AS membership
-          WHERE membership."chat_id" = chat."id"
-            AND membership."status" = 'ACTIVE'
-            AND membership."bot_id" <> ${this.publisherBotId}
-        )
-      ORDER BY chat."id" ASC
-      LIMIT ${PUBLISHER_BOOTSTRAP_SCAN_BATCH_SIZE}
-    `);
   }
 
   private readReadyRefreshCandidates(now: Date): Promise<PublisherBindingRefreshCandidate[]> {
@@ -351,45 +291,48 @@ export class PublisherBindingBootstrapSchedulerService implements OnModuleInit, 
     const refreshBefore = new Date(now.getTime() + PUBLISHER_ACCESS_REFRESH_AHEAD_MS);
     return this.prisma.publisherEntityBinding.findMany({
       where: {
-        publisherBotId: this.publisherBotId,
-        status: ChatBotMembershipStatus.ACTIVE,
+        ...publisherRefreshEvidenceWhere(this.publisherBotId),
         ...(this.discoveryCursor ? { chatId: { gt: this.discoveryCursor } } : {}),
         chat: this.managedChatFilter(),
-        OR: [
+        AND: [
           {
-            botAccessState: ChatBotAccessState.UNKNOWN,
             OR: [
-              { botAccessCheckedAt: { lte: unknownRetryBefore } },
               {
-                botAccessCheckedAt: null,
-                updatedAt: { lte: unknownRetryBefore },
-              },
-            ],
-          },
-          {
-            botAccessState: {
-              in: [ChatBotAccessState.CONFIRMED_MEMBER, ChatBotAccessState.STALE],
-            },
-            OR: [
-              { botAccessExpiresAt: { lte: refreshBefore } },
-              {
-                botAccessExpiresAt: null,
-                botAccessCheckedAt: { lte: nonAdminRetryBefore },
+                botAccessState: ChatBotAccessState.UNKNOWN,
+                OR: [
+                  { botAccessCheckedAt: { lte: unknownRetryBefore } },
+                  {
+                    botAccessCheckedAt: null,
+                    updatedAt: { lte: unknownRetryBefore },
+                  },
+                ],
               },
               {
-                botAccessExpiresAt: null,
-                botAccessCheckedAt: null,
-                updatedAt: { lte: nonAdminRetryBefore },
+                botAccessState: {
+                  in: [ChatBotAccessState.CONFIRMED_MEMBER, ChatBotAccessState.STALE],
+                },
+                OR: [
+                  { botAccessExpiresAt: { lte: refreshBefore } },
+                  {
+                    botAccessExpiresAt: null,
+                    botAccessCheckedAt: { lte: nonAdminRetryBefore },
+                  },
+                  {
+                    botAccessExpiresAt: null,
+                    botAccessCheckedAt: null,
+                    updatedAt: { lte: nonAdminRetryBefore },
+                  },
+                ],
               },
-            ],
-          },
-          {
-            botAccessState: { in: [ChatBotAccessState.DENIED, ChatBotAccessState.LOST] },
-            OR: [
-              { botAccessCheckedAt: { lte: lostRetryBefore } },
               {
-                botAccessCheckedAt: null,
-                updatedAt: { lte: unknownRetryBefore },
+                botAccessState: { in: [ChatBotAccessState.DENIED, ChatBotAccessState.LOST] },
+                OR: [
+                  { botAccessCheckedAt: { lte: lostRetryBefore } },
+                  {
+                    botAccessCheckedAt: null,
+                    updatedAt: { lte: unknownRetryBefore },
+                  },
+                ],
               },
             ],
           },

@@ -31,7 +31,7 @@
     --publication-row-border: var(--publication-ui-row-border);
     --publication-selected-bg: var(--publication-ui-selected);
     min-height: 100%;
-    padding: calc(var(--app-safe-top, 0px) + 12px) 12px
+    padding: 12px 12px
       calc(var(--bottom-nav-height, 68px) + var(--app-safe-bottom, 0px) + 34px);
     background: var(--surface-page);
     color: var(--color-ink);

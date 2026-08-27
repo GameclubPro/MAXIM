@@ -65,8 +65,6 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/lib/api/preview-transport-state.ts',
     'apps/miniapp/src/lib/api/preview-transport-publisher.ts',
     'apps/miniapp/src/lib/api/preview-transport-system.ts',
-    'apps/miniapp/src/pages/publisher-entities-page*.ts*',
-    'apps/miniapp/src/pages/publisher-entities-page.css',
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/styles/publications-page.css',
     'packages/contracts/src/publisher.ts',
@@ -122,8 +120,8 @@ const ROUTE_DEFINITIONS = {
   publik: {
     pattern: '/publik',
     previewPath: '/publik',
-    manifestEntry: 'src/pages/publisher-entities-page.tsx',
-    readySelector: '.publisher-entities-page',
+    manifestEntry: 'src/pages/publications-page.tsx',
+    readySelector: '.publications-page',
     coldScenario: 'publik',
     features: ['publisher'],
     sourceGlobs: FEATURE_SOURCE_GLOBS.publisher,
@@ -306,53 +304,17 @@ const baseScenarios = [
     ['home-category-edit', { searchParams: { view: 'chat' } }],
     ['home-favorite-picker', { searchParams: { view: 'chat' } }],
     ['home-favorite-categories', { searchParams: { view: 'chat' } }],
-    [
-      'publisher-entities',
-      {
-        searchParams: { profile: 'publisher' },
-        readySelector: '.publisher-entities-page',
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-entities-channels',
-      {
-        searchParams: { profile: 'publisher', view: 'channel' },
-        readySelector: '.publisher-entities-page',
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-entities-empty',
-      {
-        searchParams: { profile: 'publisher', publisherState: 'empty' },
-        readySelector: '.publisher-entities-page',
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-entities-error',
-      {
-        searchParams: { profile: 'publisher', publisherState: 'error' },
-        readySelector: '.publisher-entities-page',
-        features: ['publisher'],
-      },
-    ],
-    [
-      'publisher-entities-large',
-      {
-        searchParams: { profile: 'publisher', publisherState: 'large' },
-        readySelector: '.publisher-entities-page',
-        features: ['publisher'],
-      },
-    ],
   ]),
   ...defineRouteScenarios('publications', [
     'publications',
     ['publications-publisher', { searchParams: { profile: 'publisher' }, features: ['publisher'] }],
     [
-      'publications-publisher-readiness',
-      { searchParams: { profile: 'publisher' }, features: ['publisher'] },
+      'publications-publisher-schedules',
+      { searchParams: { profile: 'publisher', view: 'schedules' }, features: ['publisher'] },
+    ],
+    [
+      'publications-publisher-history',
+      { searchParams: { profile: 'publisher', view: 'history' }, features: ['publisher'] },
     ],
     [
       'publications-publisher-empty',
@@ -386,6 +348,25 @@ const baseScenarios = [
       'publications-publisher-compose-large',
       {
         searchParams: { profile: 'publisher', publisherState: 'large', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-compose-selected',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-compose-unready-target',
+      {
+        searchParams: {
+          profile: 'publisher',
+          compose: '1',
+          entityType: 'chat',
+          entityId: 'preview-chat-2',
+        },
         features: ['publisher', 'broadcast'],
       },
     ],
@@ -642,7 +623,7 @@ export const MINIAPP_VISUAL_PRESETS = Object.freeze({
       'publications',
       'publications-publisher',
       'publik',
-      'publisher-entities-channels',
+      'publications-publisher-compose',
       'chat-settings',
       'channel-settings',
       'channel-stats',

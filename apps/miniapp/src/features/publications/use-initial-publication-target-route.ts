@@ -1,7 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { getPublisherEntity } from '../../lib/api/publisher-client';
 import type { ApiTransport } from '../../lib/api/transport';
+import { isTerminalApiClientError } from '../../lib/api-retry';
 import {
   getPublicationTargetKey,
   hasSamePublicationTargetMetadata,
@@ -13,6 +21,52 @@ import { publisherEntityToPublicationTarget } from './use-publication-target-sou
 
 function normalizeRouteEntityType(value: string | null): 'chat' | 'channel' | null {
   return value === 'chat' || value === 'channel' ? value : null;
+}
+
+export type InitialPublicationTargetRouteFailure = {
+  kind: 'unavailable' | 'retryable';
+  reason: 'not_ready' | 'request_failed';
+  error: unknown;
+};
+
+export type RouteBoundInitialPublicationTargetFailure = {
+  routeKey: string;
+  failure: InitialPublicationTargetRouteFailure;
+};
+
+export type InitialPublicationTargetRouteResult = {
+  error: unknown | null;
+  failure: InitialPublicationTargetRouteFailure | null;
+  pending: boolean;
+  retry: (() => void) | null;
+};
+
+export function classifyInitialPublicationTargetRequestError(
+  error: unknown,
+): InitialPublicationTargetRouteFailure['kind'] {
+  return isTerminalApiClientError(error) ? 'unavailable' : 'retryable';
+}
+
+export function canSelectInitialPublicationRouteTarget(
+  publisherProfile: boolean,
+  target: Pick<PublicationTarget, 'readiness'>,
+): boolean {
+  return !publisherProfile || target.readiness?.canPublish === true;
+}
+
+export function getRouteBoundInitialPublicationTargetFailure(
+  routeFailure: RouteBoundInitialPublicationTargetFailure | null,
+  routeKey: string,
+): InitialPublicationTargetRouteFailure | null {
+  return routeFailure?.routeKey === routeKey ? routeFailure.failure : null;
+}
+
+function createNotReadyTargetFailure(): InitialPublicationTargetRouteFailure {
+  return {
+    kind: 'unavailable',
+    reason: 'not_ready',
+    error: new Error('Publisher target is not ready for publication'),
+  };
 }
 
 export function shouldFetchInitialPublisherTarget(options: {
@@ -40,21 +94,29 @@ export function useInitialPublicationTargetRoute(options: {
   targets: PublicationTarget[];
   sourcesReady: boolean;
   setDraft: Dispatch<SetStateAction<PublicationDraft>>;
-}): { error: unknown | null; pending: boolean } {
+}): InitialPublicationTargetRouteResult {
   const { api, hydrated, publisherProfile, searchParams, setDraft, sourcesReady, targets } =
     options;
-  const appliedRef = useRef(false);
+  const appliedRouteRef = useRef<string | null>(null);
+  const [routeFailure, setRouteFailure] =
+    useState<RouteBoundInitialPublicationTargetFailure | null>(null);
   const entityType =
     normalizeRouteEntityType(searchParams.get('entityType')) ??
     normalizeRouteEntityType(searchParams.get('sourceType'));
   const entityId = searchParams.get('entityId') ?? searchParams.get('sourceId') ?? '';
+  const routeKey = `${entityType ?? 'unknown'}:${entityId}`;
+  const activeRouteKeyRef = useRef(routeKey);
+  if (activeRouteKeyRef.current !== routeKey) {
+    activeRouteKeyRef.current = routeKey;
+    appliedRouteRef.current = null;
+  }
   const targetInPages = targets.find(
     (target) => target.id === entityId && (!entityType || target.entityType === entityType),
   );
   const directEntityQueryEnabled = shouldFetchInitialPublisherTarget({
     publisherProfile,
     hydrated,
-    routeApplied: appliedRef.current,
+    routeApplied: appliedRouteRef.current === routeKey,
     entityType,
     entityId,
     targetInPages: Boolean(targetInPages),
@@ -74,11 +136,11 @@ export function useInitialPublicationTargetRoute(options: {
   });
 
   useEffect(() => {
-    if (!hydrated || appliedRef.current) {
+    if (!hydrated || appliedRouteRef.current === routeKey) {
       return;
     }
     if (!entityId) {
-      appliedRef.current = true;
+      appliedRouteRef.current = routeKey;
       return;
     }
 
@@ -88,7 +150,12 @@ export function useInitialPublicationTargetRoute(options: {
         ? publisherEntityToPublicationTarget(directEntityQuery.data)
         : undefined);
     if (routeTarget) {
-      appliedRef.current = true;
+      appliedRouteRef.current = routeKey;
+      if (!canSelectInitialPublicationRouteTarget(publisherProfile, routeTarget)) {
+        setRouteFailure({ routeKey, failure: createNotReadyTargetFailure() });
+        return;
+      }
+      setRouteFailure(null);
       setDraft((current) => {
         const existingIndex = current.targets.findIndex(
           (target) => getPublicationTargetKey(target) === getPublicationTargetKey(routeTarget),
@@ -119,15 +186,27 @@ export function useInitialPublicationTargetRoute(options: {
         return;
       }
       if (directEntityQuery.isError) {
-        appliedRef.current = true;
+        const kind = classifyInitialPublicationTargetRequestError(directEntityQuery.error);
+        if (kind === 'unavailable') {
+          appliedRouteRef.current = routeKey;
+        }
+        setRouteFailure({
+          routeKey,
+          failure: {
+            kind,
+            reason: 'request_failed',
+            error: directEntityQuery.error,
+          },
+        });
       }
       return;
     }
     if (sourcesReady) {
-      appliedRef.current = true;
+      appliedRouteRef.current = routeKey;
     }
   }, [
     directEntityQuery.data,
+    directEntityQuery.error,
     directEntityQuery.isError,
     directEntityQuery.isFetching,
     directEntityQueryEnabled,
@@ -135,14 +214,25 @@ export function useInitialPublicationTargetRoute(options: {
     entityType,
     hydrated,
     publisherProfile,
+    routeKey,
     setDraft,
     sourcesReady,
     targetInPages,
   ]);
 
+  const currentFailure = getRouteBoundInitialPublicationTargetFailure(routeFailure, routeKey);
+  const retry = useCallback(() => {
+    if (currentFailure?.kind !== 'retryable') {
+      return;
+    }
+    setRouteFailure((current) => (current?.routeKey === routeKey ? null : current));
+    void directEntityQuery.refetch();
+  }, [currentFailure?.kind, directEntityQuery.refetch, routeKey]);
+
   return {
-    error:
-      directEntityQueryEnabled && directEntityQuery.isError ? directEntityQuery.error : null,
+    error: currentFailure?.error ?? null,
+    failure: currentFailure,
     pending: directEntityQueryEnabled && directEntityQuery.isFetching,
+    retry: currentFailure?.kind === 'retryable' ? retry : null,
   };
 }

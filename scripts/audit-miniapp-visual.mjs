@@ -15,20 +15,19 @@ const DEFAULT_SCENARIOS = [
   'home-favorite-categories',
   'publications',
   'publications-publisher',
-  'publications-publisher-readiness',
+  'publications-publisher-schedules',
+  'publications-publisher-history',
   'publications-publisher-empty',
   'publications-publisher-large',
   'publications-publisher-error',
   'publications-publisher-compose',
   'publications-publisher-compose-large',
+  'publications-publisher-compose-selected',
+  'publications-publisher-compose-unready-target',
   'publications-publisher-compose-missing-target',
   'publications-legacy',
   'publications-compose',
   'publik',
-  'publisher-entities-channels',
-  'publisher-entities-empty',
-  'publisher-entities-error',
-  'publisher-entities-large',
   'chat-settings',
   'chat-settings-publisher-policy-setup',
   'chat-settings-publisher-policy-error',
@@ -135,10 +134,11 @@ async function main() {
   );
   const keyboardDevices = splitList(
     process.env.MINIAPP_VISUAL_AUDIT_KEYBOARD_DEVICES,
-    quick ? [] : ['android', 'iphone'],
+    quick ? [] : ['android', 'iphone', 'iphone-se'],
   );
   const keyboardScenario =
-    process.env.MINIAPP_VISUAL_AUDIT_KEYBOARD_SCENARIOS?.trim() || 'home,chat-settings';
+    process.env.MINIAPP_VISUAL_AUDIT_KEYBOARD_SCENARIOS?.trim() ||
+    'home,chat-settings,publications-publisher-compose';
   let activeDevServerProcess = null;
 
   const cleanup = async () => {

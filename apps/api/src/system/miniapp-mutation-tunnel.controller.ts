@@ -149,6 +149,10 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   },
   {
     method: 'POST',
+    pattern: /^\/publisher\/entities\/refresh$/u,
+  },
+  {
+    method: 'POST',
     pattern: /^\/publisher\/entities\/resolve$/u,
   },
   {

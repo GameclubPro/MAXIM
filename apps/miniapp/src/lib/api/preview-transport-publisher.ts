@@ -1,9 +1,12 @@
 import {
   decodePublisherEntitiesCursor,
   encodePublisherEntitiesCursor,
+  MAX_PUBLISHER_BULK_REFRESH_TARGETS,
   managedEntityPublicationPolicySchema,
+  PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
   publisherEntitiesCursorQuerySchema,
   publisherEntitiesCursorResponseSchema,
+  publisherEntitiesRefreshResponseSchema,
   publisherEntitiesResponseSchema,
   publisherEntitySchema,
   publisherEntityRefreshResponseSchema,
@@ -19,6 +22,9 @@ import { ApiRequestError } from '../api-request-error';
 import { PREVIEW_NOT_HANDLED, type PreviewRequestHandler } from './preview-transport-runtime';
 import { parseJsonBody } from './preview-transport-shared';
 import type { PreviewState } from './preview-transport-state';
+
+const PREVIEW_PUBLISHER_SETUP_HANDOFF_URL =
+  'https://max.ru/preview-entry?startapp=mr-preview-home';
 
 function getPreviewPublisherPolicies(
   state: PreviewState,
@@ -64,7 +70,7 @@ function buildPreviewPublisherEntity(
     !refreshedAt && state.publisherPolicyVariant === 'setup' && entityId === PREVIEW_CHAT_ID
       ? 'bot_not_admin'
       : !refreshedAt && entityId === 'preview-chat-2'
-        ? 'bot_not_connected'
+        ? 'write_permission_missing'
         : null;
   const runtimeUnavailable = entityId === 'preview-channel-2';
   const readiness = !policy.publikEnabled
@@ -176,11 +182,19 @@ function listPreviewPublisherEntitiesPage(state: PreviewState, url: URL) {
       cursor.entityType !== (query.entityType ?? null) ||
       cursor.readiness !== (query.readiness ?? null))
   ) {
-    throw new ApiRequestError(400, '', 'Invalid publisher entities cursor');
+    throw new ApiRequestError(
+      400,
+      JSON.stringify({ code: PUBLISHER_ENTITIES_CURSOR_INVALID_CODE }),
+      'Invalid publisher entities cursor',
+    );
   }
   const startIndex = cursor?.offset ?? 0;
   if (cursor && startIndex >= filtered.length) {
-    throw new ApiRequestError(400, '', 'Invalid publisher entities cursor');
+    throw new ApiRequestError(
+      400,
+      JSON.stringify({ code: PUBLISHER_ENTITIES_CURSOR_INVALID_CODE }),
+      'Invalid publisher entities cursor',
+    );
   }
   const items = filtered.slice(startIndex, startIndex + query.limit);
   const hasMore = startIndex + items.length < filtered.length;
@@ -188,6 +202,7 @@ function listPreviewPublisherEntitiesPage(state: PreviewState, url: URL) {
 
   return publisherEntitiesCursorResponseSchema.parse({
     items,
+    setupHandoffUrl: PREVIEW_PUBLISHER_SETUP_HANDOFF_URL,
     nextCursor:
       hasMore && last
         ? encodePublisherEntitiesCursor({
@@ -217,7 +232,25 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     }
     return url.searchParams.get('pagination') === 'cursor'
       ? listPreviewPublisherEntitiesPage(state, url)
-      : publisherEntitiesResponseSchema.parse({ items: listPreviewPublisherEntities(state) });
+      : publisherEntitiesResponseSchema.parse({
+          items: listPreviewPublisherEntities(state),
+          setupHandoffUrl: PREVIEW_PUBLISHER_SETUP_HANDOFF_URL,
+        });
+  }
+  if (url.pathname === '/publisher/entities/refresh' && method === 'POST') {
+    const entities = listPreviewPublisherEntities(state).slice(
+      0,
+      MAX_PUBLISHER_BULK_REFRESH_TARGETS,
+    );
+    const refreshedAt = new Date(state.clock.now().getTime() + 1).toISOString();
+    const refreshes = getPreviewPublisherRefreshes(state);
+    for (const entity of entities) {
+      refreshes[`${entity.entityType}:${entity.id}`] = refreshedAt;
+    }
+    return publisherEntitiesRefreshResponseSchema.parse({
+      accepted: true,
+      queuedCount: entities.length,
+    });
   }
   if (url.pathname === '/publisher/entities/resolve' && method === 'POST') {
     const request = resolvePublisherEntitiesRequestSchema.parse(parseJsonBody(init));

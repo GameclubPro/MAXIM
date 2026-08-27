@@ -71,6 +71,8 @@ export type PublisherEntity = z.infer<typeof publisherEntitySchema>;
 
 export const MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH = 1_024;
 export const MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS = 500;
+export const MAX_PUBLISHER_BULK_REFRESH_TARGETS = 50;
+export const PUBLISHER_ENTITIES_CURSOR_INVALID_CODE = 'PUBLISHER_ENTITIES_CURSOR_INVALID';
 
 export const publisherEntityReadinessFilterSchema = z.enum(['ready', 'attention']);
 export type PublisherEntityReadinessFilter = z.infer<typeof publisherEntityReadinessFilterSchema>;
@@ -152,6 +154,7 @@ export type PublisherEntitiesSummary = z.infer<typeof publisherEntitiesSummarySc
 
 export const publisherEntitiesResponseSchema = z.object({
   items: z.array(publisherEntitySchema),
+  setupHandoffUrl: z.string().trim().url().nullable().default(null),
   nextCursor: z
     .string()
     .trim()
@@ -177,6 +180,16 @@ export const publisherEntityRefreshResponseSchema = z
   })
   .strict();
 export type PublisherEntityRefreshResponse = z.infer<typeof publisherEntityRefreshResponseSchema>;
+
+export const publisherEntitiesRefreshResponseSchema = z
+  .object({
+    accepted: z.literal(true),
+    queuedCount: z.number().int().min(0).max(MAX_PUBLISHER_BULK_REFRESH_TARGETS),
+  })
+  .strict();
+export type PublisherEntitiesRefreshResponse = z.infer<
+  typeof publisherEntitiesRefreshResponseSchema
+>;
 
 export const resolvePublisherEntitiesRequestSchema = z
   .object({

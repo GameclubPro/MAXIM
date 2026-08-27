@@ -6,8 +6,14 @@ import type {
 } from '@maxim/contracts/publisher';
 import { togglePublicationTargetSelection } from '../src/features/publications/publication-target-selection';
 import type { PublicationTarget } from '../src/features/publications/publication-model';
+import { createApiRequestError } from '../src/lib/api-request-error';
 import { getPublisherReadinessPresentation } from '../src/lib/publisher-readiness';
-import { shouldFetchInitialPublisherTarget } from '../src/features/publications/use-initial-publication-target-route';
+import {
+  canSelectInitialPublicationRouteTarget,
+  classifyInitialPublicationTargetRequestError,
+  getRouteBoundInitialPublicationTargetFailure,
+  shouldFetchInitialPublisherTarget,
+} from '../src/features/publications/use-initial-publication-target-route';
 import {
   getPublisherDraftTargetsNeedingHydration,
   hasUnavailablePublisherDraftTargets,
@@ -169,4 +175,71 @@ test('a direct publisher target already present on the first page skips the disa
     }),
     false,
   );
+});
+
+test('direct publisher routes select only ready targets', () => {
+  assert.equal(canSelectInitialPublicationRouteTarget(true, target('ready', readiness(null))), true);
+  assert.equal(
+    canSelectInitialPublicationRouteTarget(
+      true,
+      target('not-ready', readiness('write_permission_missing')),
+    ),
+    false,
+  );
+  assert.equal(
+    canSelectInitialPublicationRouteTarget(false, {
+      ...target('moderation-target', readiness('bot_not_admin')),
+      readiness: null,
+    }),
+    true,
+  );
+});
+
+test('direct publisher route failures distinguish persistent and retryable requests', () => {
+  assert.equal(
+    classifyInitialPublicationTargetRequestError(
+      createApiRequestError(404, '{"statusCode":404}', 'Not found'),
+    ),
+    'unavailable',
+  );
+  assert.equal(
+    classifyInitialPublicationTargetRequestError(
+      createApiRequestError(400, '{"statusCode":400}', 'Unavailable'),
+    ),
+    'unavailable',
+  );
+  assert.equal(
+    classifyInitialPublicationTargetRequestError(
+      createApiRequestError(503, '{"statusCode":503}', 'Unavailable'),
+    ),
+    'retryable',
+  );
+  assert.equal(
+    classifyInitialPublicationTargetRequestError(
+      createApiRequestError(429, '{"statusCode":429}', 'Retry later'),
+    ),
+    'retryable',
+  );
+  assert.equal(
+    classifyInitialPublicationTargetRequestError(new TypeError('Network request failed')),
+    'retryable',
+  );
+});
+
+test('direct publisher failures are visible only for the route that produced them', () => {
+  const failure = {
+    routeKey: 'chat:chat-a',
+    failure: {
+      kind: 'retryable' as const,
+      reason: 'request_failed' as const,
+      error: new TypeError('Network request failed'),
+    },
+  };
+
+  assert.equal(
+    getRouteBoundInitialPublicationTargetFailure(failure, 'chat:chat-a'),
+    failure.failure,
+  );
+  assert.equal(getRouteBoundInitialPublicationTargetFailure(failure, 'chat:chat-b'), null);
+  assert.equal(getRouteBoundInitialPublicationTargetFailure(null, 'chat:chat-a'), null);
 });

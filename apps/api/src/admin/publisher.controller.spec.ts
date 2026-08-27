@@ -15,6 +15,7 @@ describe('PublisherController', () => {
     const routes = [
       [PublisherController.prototype.listEntities, 'entities', RequestMethod.GET],
       [PublisherController.prototype.resolveEntities, 'entities/resolve', RequestMethod.POST],
+      [PublisherController.prototype.refreshEntities, 'entities/refresh', RequestMethod.POST],
       [
         PublisherController.prototype.getEntity,
         'entities/:entityType/:entityId',
@@ -44,6 +45,9 @@ describe('PublisherController', () => {
     expect(
       Reflect.getMetadata(HTTP_CODE_METADATA, PublisherController.prototype.refreshEntity),
     ).toBe(202);
+    expect(
+      Reflect.getMetadata(HTTP_CODE_METADATA, PublisherController.prototype.refreshEntities),
+    ).toBe(202);
   });
 
   it('allows both profiles to read publisher state but only moderation to change policy', () => {
@@ -72,11 +76,13 @@ describe('PublisherController', () => {
     const policyService = {
       listEntities: jest.fn().mockResolvedValue({ items: [] }),
       getEntity: jest.fn().mockResolvedValue({ id: 'channel-1', policy }),
+      getEntityForPolicy: jest.fn().mockResolvedValue({ id: 'channel-1', policy }),
       updatePolicy: jest.fn().mockResolvedValue(policy),
       resolveEntities: jest.fn().mockResolvedValue({ items: [] }),
     };
     const entityRefreshService = {
       requestRefresh: jest.fn().mockResolvedValue({ accepted: true }),
+      requestBulkRefresh: jest.fn().mockResolvedValue({ accepted: true, queuedCount: 2 }),
     };
     const controller = new PublisherController(
       policyService as never,
@@ -88,10 +94,19 @@ describe('PublisherController', () => {
 
     await expect(controller.listEntities(user, listQuery)).resolves.toEqual({ items: [] });
     await expect(controller.resolveEntities(user, resolveBody)).resolves.toEqual({ items: [] });
+    await expect(controller.refreshEntities(user)).resolves.toEqual({
+      accepted: true,
+      queuedCount: 2,
+    });
     await expect(controller.getEntity('channel', 'channel-1', user)).resolves.toMatchObject({
       id: 'channel-1',
     });
-    await expect(controller.getPolicy('channel', 'channel-1', user)).resolves.toEqual(policy);
+    await expect(
+      controller.getEntity('channel', 'channel-1', user, 'moderation'),
+    ).resolves.toMatchObject({ id: 'channel-1' });
+    await expect(controller.getPolicy('channel', 'channel-1', user, 'moderation')).resolves.toEqual(
+      policy,
+    );
     await expect(controller.updatePolicy('chat', 'chat-1', user, body)).resolves.toEqual(policy);
     await expect(controller.refreshEntity('chat', 'chat-1', user)).resolves.toEqual({
       accepted: true,
@@ -99,8 +114,21 @@ describe('PublisherController', () => {
 
     expect(policyService.listEntities).toHaveBeenCalledWith(user, listQuery);
     expect(policyService.resolveEntities).toHaveBeenCalledWith(user, resolveBody);
-    expect(policyService.getEntity).toHaveBeenNthCalledWith(1, 'channel', 'channel-1', user);
-    expect(policyService.getEntity).toHaveBeenNthCalledWith(2, 'channel', 'channel-1', user);
+    expect(entityRefreshService.requestBulkRefresh).toHaveBeenCalledWith(user);
+    expect(policyService.getEntity).toHaveBeenCalledTimes(1);
+    expect(policyService.getEntity).toHaveBeenCalledWith('channel', 'channel-1', user);
+    expect(policyService.getEntityForPolicy).toHaveBeenNthCalledWith(
+      1,
+      'channel',
+      'channel-1',
+      user,
+    );
+    expect(policyService.getEntityForPolicy).toHaveBeenNthCalledWith(
+      2,
+      'channel',
+      'channel-1',
+      user,
+    );
     expect(policyService.updatePolicy).toHaveBeenCalledWith('chat', 'chat-1', user, body);
     expect(entityRefreshService.requestRefresh).toHaveBeenCalledWith('chat', 'chat-1', user);
   });

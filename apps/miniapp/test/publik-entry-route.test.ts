@@ -13,7 +13,7 @@ function sourceBetween(start: string, end: string): string {
   return appSource.slice(startIndex, endIndex);
 }
 
-test('authenticated /publik entry redirects to the launch profile home and preserves search', () => {
+test('authenticated /publik entry redirects to the Posts home and preserves search', () => {
   const authenticatedRoutes = sourceBetween('function AppRoutes(', 'function ProfiledAppRoutes(');
 
   assert.match(
@@ -27,8 +27,9 @@ test('authenticated /publik entry redirects to the launch profile home and prese
   assert.doesNotMatch(authenticatedRoutes, /path="\/publik" element=\{<LazyPublikPage \/>\}/u);
   assert.match(
     authenticatedRoutes,
-    /moderationProfile[\s\S]*?<Route path="\/" element=\{<LazyChatsPage[\s\S]*?<LazyPublisherEntitiesPage/u,
+    /const profileHomeRoute = me\.homeRoute;[\s\S]*?moderationProfile[\s\S]*?<Route path="\/" element=\{<LazyChatsPage[\s\S]*?<Route path="\/" element=\{<ProfileHomeRedirect homeRoute=\{profileHomeRoute\} \/>\}/u,
   );
+  assert.doesNotMatch(authenticatedRoutes, /LazyPublisherEntitiesPage/u);
 });
 
 test('unauthenticated /publik entry cannot bypass the startup auth gate', () => {

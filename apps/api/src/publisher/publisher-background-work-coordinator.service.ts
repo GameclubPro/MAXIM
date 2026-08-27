@@ -1,7 +1,7 @@
 import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 
 export type PublisherBackgroundWorkLane =
-  | 'binding_bootstrap'
+  | 'binding_refresh'
   | 'chat_comment_recovery'
   | 'publication_deadline'
   | 'suggestion_recovery';

@@ -63,6 +63,9 @@ const keyboardOverlapPx = Number.parseInt(
 const normalizedKeyboardOverlapPx = Number.isFinite(keyboardOverlapPx)
   ? Math.max(160, Math.min(keyboardOverlapPx, 420))
   : 320;
+const KEYBOARD_MIN_VISIBLE_HEIGHT_PX = 280;
+const KEYBOARD_MIN_REDUCTION_PX = 80;
+const PUBLISHER_COMPOSER_KEYBOARD_SCENARIO = 'publications-publisher-compose';
 
 function parseEnvFlag(name) {
   const value = process.env[name]?.trim().toLowerCase();
@@ -361,51 +364,6 @@ const scenarioBehaviors = [
     },
   },
   {
-    name: 'publisher-entities',
-    beforeShot: async (page) => {
-      await page.locator('.publisher-entities-page__list').waitFor({ state: 'visible' });
-      await page.getByText('Готов к публикации', { exact: true }).waitFor({ state: 'visible' });
-    },
-  },
-  {
-    name: 'publisher-entities-channels',
-    beforeShot: async (page) => {
-      await page.getByRole('list', { name: 'Каналы Публика' }).waitFor({ state: 'visible' });
-    },
-  },
-  {
-    name: 'publisher-entities-empty',
-    beforeShot: async (page) => {
-      await page.getByText('Чатов пока нет', { exact: true }).waitFor({ state: 'visible' });
-    },
-  },
-  {
-    name: 'publisher-entities-error',
-    beforeShot: async (page) => {
-      await page
-        .getByText('Не удалось загрузить получателей', { exact: true })
-        .waitFor({ state: 'visible' });
-    },
-  },
-  {
-    name: 'publisher-entities-large',
-    beforeShot: async (page) => {
-      const loadMore = page.locator('.publisher-entities-page__load-more');
-      await loadMore.waitFor({ state: 'visible' });
-      await loadMore.click();
-      await page.getByText('60 из 200', { exact: true }).waitFor({ state: 'visible' });
-      await loadMore.click();
-      await page.getByText('90 из 200', { exact: true }).waitFor({ state: 'visible' });
-      const list = page.locator('.publisher-entities-page__list.is-virtual');
-      await list.waitFor({ state: 'visible' });
-      await list.evaluate((element) => {
-        element.scrollTop = element.scrollHeight;
-        element.dispatchEvent(new Event('scroll'));
-      });
-      await page.waitForTimeout(120);
-    },
-  },
-  {
     name: 'publications',
     beforeShot: async (page) => {
       await page.locator('.publications-page').waitFor({ state: 'visible' });
@@ -415,41 +373,58 @@ const scenarioBehaviors = [
   {
     name: 'publications-publisher',
     beforeShot: async (page) => {
-      await page.locator('.publisher-readiness-overview').waitFor({ state: 'visible' });
+      await page.locator('.publication-publisher-status').waitFor({ state: 'visible' });
       await page.getByText(/2 готовы/u).waitFor({ state: 'visible' });
     },
   },
   {
-    name: 'publications-publisher-readiness',
+    name: 'publications-publisher-schedules',
     beforeShot: async (page) => {
-      await page.getByRole('link', { name: 'Чаты и каналы' }).waitFor({ state: 'visible' });
+      await page.locator('.publications-tabs button.is-active').getByText('Расписания').waitFor();
+    },
+  },
+  {
+    name: 'publications-publisher-history',
+    beforeShot: async (page) => {
+      await page.locator('.publications-tabs button.is-active').getByText('История').waitFor();
     },
   },
   {
     name: 'publications-publisher-empty',
     beforeShot: async (page) => {
       await page
-        .getByText('Нет подключённых получателей', { exact: true })
+        .getByText('Нет подключений · настройка в Майоре', { exact: true })
         .waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publications-publisher-large',
     beforeShot: async (page) => {
-      await page.locator('.publisher-readiness-overview').waitFor({ state: 'visible' });
+      await page.locator('.publication-publisher-status').waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publications-publisher-error',
     beforeShot: async (page) => {
-      await page.getByText('Не удалось проверить', { exact: true }).waitFor({ state: 'visible' });
+      await page
+        .getByText('Получатели временно недоступны', { exact: true })
+        .waitFor({ state: 'visible' });
     },
   },
   {
     name: 'publications-publisher-compose',
     beforeShot: async (page) => {
       await page.locator('.publications-editor').waitFor({ state: 'visible' });
-      await page.locator('.publication-target-picker__summary').click();
+      const summary = page.locator('.publication-target-picker__summary');
+      const sheet = page.locator('.publication-target-picker__editor.is-sheet');
+      await summary.click();
+      await sheet.waitFor({ state: 'visible' });
+      await page.keyboard.press('Escape');
+      await sheet.waitFor({ state: 'detached' });
+      if (!(await summary.evaluate((element) => element === document.activeElement))) {
+        throw new Error('Publisher recipient summary did not regain focus after Escape.');
+      }
+      await summary.click();
       await page.locator('.publication-target-picker__list').waitFor({ state: 'visible' });
     },
   },
@@ -461,9 +436,9 @@ const scenarioBehaviors = [
       const loadMore = page.locator('.publication-target-picker__load-more');
       await loadMore.waitFor({ state: 'visible' });
       await loadMore.click();
-      await page.getByText('60 из 400', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('60 из 200', { exact: true }).waitFor({ state: 'visible' });
       await loadMore.click();
-      await page.getByText('90 из 400', { exact: true }).waitFor({ state: 'visible' });
+      await page.getByText('90 из 200', { exact: true }).waitFor({ state: 'visible' });
       const list = page.locator('.publication-target-picker__list.is-virtual');
       await list.waitFor({ state: 'visible' });
       await list.evaluate((element) => {
@@ -474,11 +449,32 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-compose-selected',
+    beforeShot: async (page) => {
+      const summary = page.locator('.publication-target-picker__summary');
+      await summary.click();
+      await page.locator('.publication-target-row').first().click();
+      await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
+      await summary.getByText('Садоводы Южного', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-compose-unready-target',
+    beforeShot: async (page) => {
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page
+        .getByText('Получатель из ссылки пока не готов к публикации через Публик', {
+          exact: true,
+        })
+        .waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'publications-publisher-compose-missing-target',
     beforeShot: async (page) => {
       await page.locator('.publications-editor').waitFor({ state: 'visible' });
       await page
-        .getByText('Не удалось выбрать получателя из ссылки', { exact: true })
+        .getByText('Получатель из ссылки недоступен.', { exact: true })
         .waitFor({ state: 'visible' });
     },
   },
@@ -1623,9 +1619,84 @@ async function assertMaxBridgeAbsent(page, scenario) {
   }
 }
 
-async function simulateKeyboardViewport(page) {
+async function assertFocusedLocator(locator, label) {
+  const focused = await locator.evaluate((element) => element === document.activeElement);
+  if (!focused) {
+    throw new Error(`${label} did not receive keyboard focus.`);
+  }
+}
+
+async function assertLocatorWithinViewport(locator, label) {
+  const metrics = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      top: rect.top,
+      bottom: rect.bottom,
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  if (
+    metrics.left < -2 ||
+    metrics.right > metrics.viewportWidth + 2 ||
+    metrics.top < -2 ||
+    metrics.bottom > metrics.viewportHeight + 2
+  ) {
+    throw new Error(
+      `${label} is outside the simulated keyboard viewport: ` +
+        `left=${metrics.left.toFixed(1)} right=${metrics.right.toFixed(1)} ` +
+        `top=${metrics.top.toFixed(1)} bottom=${metrics.bottom.toFixed(1)} ` +
+        `viewport=${metrics.viewportWidth}x${metrics.viewportHeight}.`,
+    );
+  }
+}
+
+async function exercisePublisherComposerKeyboardFlow(page) {
+  const picker = page.locator('.publication-target-picker');
+  const summary = picker.locator('.publication-target-picker__summary');
+  const sheet = page.locator('.publication-target-picker__editor.is-sheet');
+  const search = sheet.locator('input[type="search"]');
+  const done = sheet.getByRole('button', { name: 'Завершить выбор получателей' });
+
+  await sheet.waitFor({ state: 'visible' });
+  await search.focus();
+  await assertFocusedLocator(search, 'Publisher recipient search');
+  await assertLocatorWithinViewport(search, 'Publisher recipient search');
+  await assertLocatorWithinViewport(done, 'Publisher recipient Done button');
+
+  await done.click();
+  await sheet.waitFor({ state: 'detached' });
+  await page.waitForTimeout(50);
+  await assertFocusedLocator(summary, 'Publisher recipient summary after closing');
+
+  await summary.click();
+  await sheet.waitFor({ state: 'visible' });
+  await search.focus();
+  await assertFocusedLocator(search, 'Publisher recipient search after reopening');
+  await assertLocatorWithinViewport(search, 'Publisher recipient search after reopening');
+
+  await done.click();
+  await sheet.waitFor({ state: 'detached' });
+  await page.waitForTimeout(50);
+  await assertFocusedLocator(summary, 'Publisher recipient summary after second close');
+
+  const editor = page
+    .locator('.publication-content-composer .max-rich-text-editor__surface')
+    .first();
+  await editor.waitFor({ state: 'visible' });
+  await editor.evaluate((element) =>
+    element.scrollIntoView({ block: 'center', behavior: 'instant' }),
+  );
+  await editor.focus();
+  await assertFocusedLocator(editor, 'Publisher rich-text editor');
+  await assertLocatorWithinViewport(editor, 'Publisher rich-text editor');
+}
+
+async function simulateKeyboardViewport(page, scenario) {
   if (!simulateKeyboard) {
-    return;
+    return null;
   }
 
   await page.addStyleTag({
@@ -1638,14 +1709,50 @@ async function simulateKeyboardViewport(page) {
     `,
   });
 
-  await page.evaluate((overlapPx) => {
-    const root = document.documentElement;
-    root.style.setProperty('--app-keyboard-overlap', `${overlapPx}px`);
-    window.dispatchEvent(new Event('resize'));
-    window.dispatchEvent(new Event('focusin'));
-    root.setAttribute('data-max-keyboard-open', 'true');
-  }, normalizedKeyboardOverlapPx);
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error(`Scenario ${scenario.name} has no viewport geometry for keyboard simulation.`);
+  }
+  const reducedHeight = Math.min(
+    viewport.height - KEYBOARD_MIN_REDUCTION_PX,
+    Math.max(KEYBOARD_MIN_VISIBLE_HEIGHT_PX, viewport.height - normalizedKeyboardOverlapPx),
+  );
+  if (reducedHeight <= 0 || reducedHeight >= viewport.height) {
+    throw new Error(
+      `Scenario ${scenario.name} cannot reduce viewport ${viewport.width}x${viewport.height} ` +
+        `for keyboard overlap ${normalizedKeyboardOverlapPx}px.`,
+    );
+  }
+
+  await page.setViewportSize({ width: viewport.width, height: reducedHeight });
+  await page.waitForFunction(
+    (expectedHeight) => Math.abs(window.innerHeight - expectedHeight) <= 1,
+    reducedHeight,
+  );
+  await page.waitForTimeout(120);
+
+  if (scenario.name === PUBLISHER_COMPOSER_KEYBOARD_SCENARIO) {
+    await exercisePublisherComposerKeyboardFlow(page);
+  }
+
+  await page.evaluate(
+    ({ originalHeight, viewportHeight }) => {
+      const root = document.documentElement;
+      root.setAttribute('data-max-keyboard-open', 'true');
+      root.dataset.visualKeyboardOriginalHeight = String(originalHeight);
+      root.dataset.visualKeyboardViewportHeight = String(viewportHeight);
+    },
+    { originalHeight: viewport.height, viewportHeight: reducedHeight },
+  );
   await page.waitForTimeout(180);
+
+  return {
+    originalHeight: viewport.height,
+    viewportHeight: reducedHeight,
+    coveredHeight: viewport.height - reducedHeight,
+    focus:
+      scenario.name === PUBLISHER_COMPOSER_KEYBOARD_SCENARIO ? 'publisher-rich-text-editor' : null,
+  };
 }
 
 async function assertConfiguredChecks(page, scenario) {
@@ -2564,32 +2671,128 @@ async function assertKeyboardState(page, scenario) {
     return;
   }
 
-  const state = await page.evaluate(() => {
+  const state = await page.evaluate((publisherComposerScenario) => {
     const root = document.documentElement;
     const nav = document.querySelector('.bottom-nav');
-    if (!(nav instanceof HTMLElement)) {
-      return null;
-    }
-    const rect = nav.getBoundingClientRect();
-    const style = getComputedStyle(nav);
+    const navStyle = nav instanceof HTMLElement ? getComputedStyle(nav) : null;
+    const active = document.activeElement;
+    const activeRect = active instanceof HTMLElement ? active.getBoundingClientRect() : null;
+    const publishBar = document.querySelector('.publications-publish-bar');
+    const publishBarStyle = publishBar instanceof HTMLElement ? getComputedStyle(publishBar) : null;
+    const publishBarVisible = Boolean(
+      publishBar instanceof HTMLElement &&
+      publishBarStyle &&
+      publishBarStyle.display !== 'none' &&
+      publishBarStyle.visibility !== 'hidden' &&
+      Number.parseFloat(publishBarStyle.opacity || '1') > 0.01,
+    );
+    const publishBarRect =
+      publishBarVisible && publishBar instanceof HTMLElement
+        ? publishBar.getBoundingClientRect()
+        : null;
+    const primary = publishBar?.querySelector('.broadcast-publish-bar__primary');
+
     return {
       keyboardOpen: root.dataset.maxKeyboardOpen === 'true',
-      opacity: Number.parseFloat(style.opacity || '1'),
-      pointerEvents: style.pointerEvents,
-      top: rect.top,
+      originalHeight: Number.parseInt(root.dataset.visualKeyboardOriginalHeight ?? '', 10),
+      expectedViewportHeight: Number.parseInt(root.dataset.visualKeyboardViewportHeight ?? '', 10),
+      viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
+      nav:
+        nav instanceof HTMLElement && navStyle
+          ? {
+              opacity: Number.parseFloat(navStyle.opacity || '1'),
+              pointerEvents: navStyle.pointerEvents,
+            }
+          : null,
+      activeMatchesPublisherEditor:
+        active instanceof HTMLElement &&
+        active.matches('.publication-content-composer .max-rich-text-editor__surface'),
+      activeRect: activeRect
+        ? {
+            top: activeRect.top,
+            bottom: activeRect.bottom,
+            left: activeRect.left,
+            right: activeRect.right,
+          }
+        : null,
+      publishBarRect: publishBarRect
+        ? {
+            top: publishBarRect.top,
+            bottom: publishBarRect.bottom,
+          }
+        : null,
+      primaryFits:
+        primary instanceof HTMLElement
+          ? primary.scrollWidth <= primary.clientWidth + 2
+          : !publisherComposerScenario,
+      pickerSheetOpen: Boolean(
+        document.querySelector('.publication-target-picker__editor.is-sheet'),
+      ),
     };
-  });
+  }, scenario.name === PUBLISHER_COMPOSER_KEYBOARD_SCENARIO);
 
-  if (!state) {
+  if (
+    !state.keyboardOpen ||
+    !Number.isFinite(state.originalHeight) ||
+    !Number.isFinite(state.expectedViewportHeight) ||
+    state.expectedViewportHeight >= state.originalHeight ||
+    Math.abs(state.viewportHeight - state.expectedViewportHeight) > 1
+  ) {
+    throw new Error(
+      `Scenario ${scenario.name} did not apply reduced keyboard geometry ` +
+        `(keyboardOpen=${state.keyboardOpen}, original=${state.originalHeight}, ` +
+        `expected=${state.expectedViewportHeight}, actual=${state.viewportHeight}).`,
+    );
+  }
+
+  if (state.nav && (state.nav.opacity > 0.05 || state.nav.pointerEvents !== 'none')) {
+    throw new Error(
+      `Scenario ${scenario.name} keyboard simulation did not hide bottom nav ` +
+        `(opacity=${state.nav.opacity}, pointerEvents=${state.nav.pointerEvents}).`,
+    );
+  }
+
+  if (scenario.name !== PUBLISHER_COMPOSER_KEYBOARD_SCENARIO) {
     return;
   }
 
-  if (!state.keyboardOpen || state.opacity > 0.05 || state.pointerEvents !== 'none') {
+  if (!state.activeMatchesPublisherEditor || !state.activeRect) {
     throw new Error(
-      `Scenario ${scenario.name} keyboard simulation did not hide bottom nav ` +
-        `(keyboardOpen=${state.keyboardOpen}, opacity=${state.opacity}, pointerEvents=${state.pointerEvents}).`,
+      'Publisher keyboard scenario did not finish with focus in the rich-text editor.',
     );
+  }
+  if (
+    state.activeRect.left < -2 ||
+    state.activeRect.right > state.viewportWidth + 2 ||
+    state.activeRect.top < -2 ||
+    state.activeRect.bottom > state.viewportHeight + 2
+  ) {
+    throw new Error(
+      `Publisher rich-text editor is unreachable with keyboard open ` +
+        `(top=${state.activeRect.top.toFixed(1)}, bottom=${state.activeRect.bottom.toFixed(1)}, ` +
+        `viewport=${state.viewportHeight}).`,
+    );
+  }
+  if (
+    state.publishBarRect &&
+    (state.publishBarRect.bottom > state.viewportHeight + 2 ||
+      state.activeRect.bottom > state.publishBarRect.top + 1)
+  ) {
+    throw new Error(
+      `Publisher publish bar overlaps the focused editor or leaves the keyboard viewport ` +
+        `(editorBottom=${state.activeRect.bottom.toFixed(1)}, ` +
+        `barTop=${state.publishBarRect.top.toFixed(1)}, ` +
+        `barBottom=${state.publishBarRect.bottom.toFixed(1)}, viewport=${state.viewportHeight}).`,
+    );
+  }
+  if (!state.primaryFits) {
+    throw new Error(
+      'Publisher primary publish action does not contain its label at keyboard size.',
+    );
+  }
+  if (state.pickerSheetOpen) {
+    throw new Error('Publisher recipient picker remained open after keyboard focus-flow checks.');
   }
 }
 
@@ -2746,10 +2949,14 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
         profile,
         runtime,
       );
-      await simulateKeyboardViewport(page);
 
       if (scenario.beforeShot) {
         await scenario.beforeShot(page);
+      }
+
+      const keyboardGeometry = await simulateKeyboardViewport(page, scenario);
+      if (keyboardGeometry) {
+        reportEntry.keyboard = keyboardGeometry;
       }
 
       if (scenario.name.includes('dialog-comments')) {

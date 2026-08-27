@@ -13,7 +13,7 @@ import {
   PublisherBindingRefreshQueueService,
 } from './publisher-binding-refresh.queue';
 import {
-  PublisherBindingBootstrapSchedulerService,
+  PublisherBindingRefreshSchedulerService,
   PublisherBindingRefreshService,
 } from './publisher-binding-refresh.service';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
@@ -35,7 +35,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherRuntimeHeartbeatWriterService,
       PublisherBindingRefreshService,
       PublisherBindingRefreshProcessor,
-      PublisherBindingBootstrapSchedulerService,
+      PublisherBindingRefreshSchedulerService,
       PublisherWebhookSubscriptionReconcilerService,
     ]
   : [];

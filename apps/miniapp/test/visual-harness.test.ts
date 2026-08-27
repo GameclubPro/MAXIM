@@ -150,6 +150,14 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   assert.deepEqual(scenarios.get('publications-publisher')?.searchParams, {
     profile: 'publisher',
   });
+  assert.deepEqual(scenarios.get('publications-publisher-schedules')?.searchParams, {
+    profile: 'publisher',
+    view: 'schedules',
+  });
+  assert.deepEqual(scenarios.get('publications-publisher-history')?.searchParams, {
+    profile: 'publisher',
+    view: 'history',
+  });
   assert.deepEqual(scenarios.get('chat-dialog-comments-publisher')?.searchParams, {
     token: 'preview-comments-token-0001',
     profile: 'publisher',
@@ -177,36 +185,19 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     publisherState: 'large',
     compose: '1',
   });
-  assert.deepEqual(
-    scenarios.get('publications-publisher-compose-missing-target')?.searchParams,
-    {
-      profile: 'publisher',
-      compose: '1',
-      entityType: 'chat',
-      entityId: 'preview-missing-chat',
-    },
-  );
+  assert.deepEqual(scenarios.get('publications-publisher-compose-missing-target')?.searchParams, {
+    profile: 'publisher',
+    compose: '1',
+    entityType: 'chat',
+    entityId: 'preview-missing-chat',
+  });
+  assert.deepEqual(scenarios.get('publications-publisher-compose-unready-target')?.searchParams, {
+    profile: 'publisher',
+    compose: '1',
+    entityType: 'chat',
+    entityId: 'preview-chat-2',
+  });
   assert.ok(scenarios.get('publications-publisher-compose')?.features.includes('publisher'));
-  assert.ok(scenarios.get('publications-publisher-readiness')?.features.includes('publisher'));
-  assert.deepEqual(scenarios.get('publisher-entities')?.searchParams, {
-    profile: 'publisher',
-  });
-  assert.deepEqual(scenarios.get('publisher-entities-channels')?.searchParams, {
-    profile: 'publisher',
-    view: 'channel',
-  });
-  assert.deepEqual(scenarios.get('publisher-entities-empty')?.searchParams, {
-    profile: 'publisher',
-    publisherState: 'empty',
-  });
-  assert.deepEqual(scenarios.get('publisher-entities-error')?.searchParams, {
-    profile: 'publisher',
-    publisherState: 'error',
-  });
-  assert.deepEqual(scenarios.get('publisher-entities-large')?.searchParams, {
-    profile: 'publisher',
-    publisherState: 'large',
-  });
   assert.deepEqual(scenarios.get('chat-settings-publisher-policy-setup')?.searchParams, {
     publisherPolicyState: 'setup',
   });
@@ -218,7 +209,7 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
 test('Publik entry route and publisher source files select workspace visual scenarios', () => {
   const publik = MINIAPP_VISUAL_SCENARIOS.find((scenario) => scenario.name === 'publik');
   assert.equal(publik?.path, '/publik');
-  assert.equal(publik?.readySelector, '.publisher-entities-page');
+  assert.equal(publik?.readySelector, '.publications-page');
   assert.deepEqual(publik?.searchParams, { profile: 'publisher' });
   assert.ok(publik?.features.includes('publisher'));
 
@@ -226,8 +217,6 @@ test('Publik entry route and publisher source files select workspace visual scen
     'apps/miniapp/src/components/publisher-policy-card.tsx',
     'apps/miniapp/src/features/publications/publication-hub-header.css',
     'apps/miniapp/src/features/publications/publication-target-picker.css',
-    'apps/miniapp/src/features/publications/publisher-readiness-overview.tsx',
-    'apps/miniapp/src/pages/publisher-entities-page.tsx',
     'apps/miniapp/src/lib/publisher-readiness.ts',
     'apps/miniapp/src/lib/publisher-readiness-label.ts',
     'packages/contracts/src/publisher.ts',
@@ -237,8 +226,40 @@ test('Publik entry route and publisher source files select workspace visual scen
     }).scenarios.map((scenario) => scenario.name);
     assert.ok(selectedNames.includes('publications-publisher'), changedFile);
     assert.ok(selectedNames.includes('publications-publisher-compose'), changedFile);
-    assert.ok(selectedNames.includes('publisher-entities'), changedFile);
   }
+});
+
+test('default keyboard audit covers the Publik composer', () => {
+  const auditSource = readFileSync(
+    new URL('../../../scripts/audit-miniapp-visual.mjs', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(auditSource, /home,chat-settings,publications-publisher-compose/u);
+  assert.match(auditSource, /\['android', 'iphone', 'iphone-se'\]/u);
+});
+
+test('keyboard capture reduces geometry and exercises the Publik focus flow', () => {
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(captureSource, /await page\.setViewportSize/u);
+  assert.match(captureSource, /visualKeyboardOriginalHeight/u);
+  assert.match(captureSource, /Publisher recipient search after reopening/u);
+  assert.match(captureSource, /Publisher rich-text editor/u);
+  assert.match(captureSource, /activeMatchesPublisherEditor/u);
+  assert.match(captureSource, /Publisher primary publish action does not contain its label/u);
+  assert.equal(captureSource.match(/await done\.click\(\)/gu)?.length, 2);
+  assert.doesNotMatch(captureSource, /root\.style\.setProperty\('--app-keyboard-overlap'/u);
+  assert.doesNotMatch(captureSource, /if \(!\(nav instanceof HTMLElement\)\) \{\s*return null;/u);
+  assert.ok(
+    captureSource.indexOf('if (scenario.beforeShot)') <
+      captureSource.indexOf(
+        'const keyboardGeometry = await simulateKeyboardViewport(page, scenario)',
+      ),
+  );
 });
 
 test('smoke preset is short, local-device focused, and includes navigation order', () => {

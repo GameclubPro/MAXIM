@@ -4,6 +4,7 @@ import { getMe } from '../src/lib/api/me-client';
 import {
   getPublisherEntity,
   listPublisherEntities,
+  refreshPublisherEntities,
   refreshPublisherEntity,
   resolvePublisherEntities,
   updatePublisherPolicy,
@@ -180,6 +181,23 @@ test('publisher entity refresh is target-specific and encodes the entity id', as
   assert.equal(calls[0]?.init?.method, 'POST');
 });
 
+test('publisher bulk refresh uses the bounded workspace endpoint', async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const api = {
+    request: async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return { accepted: true, queuedCount: 3 };
+    },
+  };
+
+  assert.deepEqual(await refreshPublisherEntities(api as never), {
+    accepted: true,
+    queuedCount: 3,
+  });
+  assert.equal(calls[0]?.path, '/publisher/entities/refresh');
+  assert.equal(calls[0]?.init?.method, 'POST');
+});
+
 test('publisher entity hydration sends one bounded exact-target request', async () => {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const api = {
@@ -205,7 +223,7 @@ test('preview publisher list includes ready, setup, temporary, empty, and error 
   );
   assert.equal(mixed.items.length, 4);
   assert.ok(mixed.items.some((item) => item.readiness.state === 'ready'));
-  assert.ok(mixed.items.some((item) => item.readiness.blockerCode === 'bot_not_connected'));
+  assert.ok(mixed.items.some((item) => item.readiness.blockerCode === 'write_permission_missing'));
   assert.ok(mixed.items.every((item) => item.entityUrl?.startsWith('https://max.ru/join/')));
   assert.ok(mixed.items.every((item) => item.settingsHandoffUrl?.includes('startapp=mr-')));
   assert.ok(
@@ -284,7 +302,7 @@ test('preview target-specific refresh can transition a blocked publisher entity 
   const response = await refreshPublisherEntity(api, 'chat', 'preview-chat-2');
   const after = await getPublisherEntity(api, 'chat', 'preview-chat-2');
 
-  assert.equal(before.readiness.blockerCode, 'bot_not_connected');
+  assert.equal(before.readiness.blockerCode, 'write_permission_missing');
   assert.deepEqual(response, { accepted: true });
   assert.equal(after.readiness.state, 'ready');
   assert.equal(after.readiness.canPublish, true);

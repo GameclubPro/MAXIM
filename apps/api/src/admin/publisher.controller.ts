@@ -11,9 +11,9 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import type { ManagedEntityType } from '@maxim/contracts/publisher';
+import type { ManagedEntityType, MiniappProfile } from '@maxim/contracts/publisher';
 import { InitDataGuard } from '../auth/init-data.guard';
-import { MiniappProfiles } from '../auth/miniapp-profile';
+import { CurrentMiniappProfile, MiniappProfiles } from '../auth/miniapp-profile';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { PublisherEntityRefreshService } from './publisher-entity-refresh.service';
 import { PublisherPolicyService } from './publisher-policy.service';
@@ -37,8 +37,12 @@ export class PublisherController {
     @Param('entityType') entityType: string,
     @Param('entityId') entityId: string,
     @CurrentUser() user: AuthUser,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'publisher',
   ) {
-    return this.policyService.getEntity(this.parseEntityType(entityType), entityId, user);
+    const parsedEntityType = this.parseEntityType(entityType);
+    return profile === 'moderation'
+      ? this.policyService.getEntityForPolicy(parsedEntityType, entityId, user)
+      : this.policyService.getEntity(parsedEntityType, entityId, user);
   }
 
   @Post('entities/resolve')
@@ -46,15 +50,25 @@ export class PublisherController {
     return this.policyService.resolveEntities(user, body);
   }
 
+  @Post('entities/refresh')
+  @HttpCode(HttpStatus.ACCEPTED)
+  refreshEntities(@CurrentUser() user: AuthUser) {
+    return this.entityRefreshService.requestBulkRefresh(user);
+  }
+
   @Get('entities/:entityType/:entityId/policy')
   getPolicy(
     @Param('entityType') entityType: string,
     @Param('entityId') entityId: string,
     @CurrentUser() user: AuthUser,
+    @CurrentMiniappProfile() profile: MiniappProfile = 'publisher',
   ) {
-    return this.policyService
-      .getEntity(this.parseEntityType(entityType), entityId, user)
-      .then((entity) => entity.policy);
+    const parsedEntityType = this.parseEntityType(entityType);
+    const entity =
+      profile === 'moderation'
+        ? this.policyService.getEntityForPolicy(parsedEntityType, entityId, user)
+        : this.policyService.getEntity(parsedEntityType, entityId, user);
+    return entity.then((resolved) => resolved.policy);
   }
 
   @Patch('entities/:entityType/:entityId/policy')

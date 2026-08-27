@@ -100,7 +100,9 @@ import {
   isPublicationTestResultPendingError,
 } from '../features/publications/publication-request-identity';
 import { PublicationRetrySheet } from '../features/publications/publication-retry-sheet';
+import { PublicationTargetNotices } from '../features/publications/publication-target-notices';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
+import { usePublicationEditorAutofocus } from '../features/publications/use-publication-editor-autofocus';
 import { useInitialPublicationTargetRoute } from '../features/publications/use-initial-publication-target-route';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
 import { usePublicationRequestIds } from '../features/publications/use-publication-request-ids';
@@ -440,6 +442,7 @@ export function PublicationsPage({
   const [buttonsOpen, setButtonsOpen] = useState(false);
   const [buttonErrors, setButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
   const [fieldError, setFieldError] = useState('');
+  const [validationStarted, setValidationStarted] = useState(false);
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [pendingReview, setPendingReview] = useState(false);
   const [pendingConflict, setPendingConflict] = useState(false);
@@ -483,7 +486,6 @@ export function PublicationsPage({
     setDraft,
   });
   usePublisherTargetErrorFeedback({
-    directTargetError: initialTargetRoute.error,
     draftHydrationError: publisherDraftHydration.error,
     draftHydrationFailed: publisherDraftHydration.isError,
   });
@@ -820,6 +822,7 @@ export function PublicationsPage({
       setDetailsTarget(null);
       setPendingEditorClose(false);
       setFieldError('');
+      setValidationStarted(false);
       setComposeRoute(true);
     },
     onError: (error) => {
@@ -852,6 +855,7 @@ export function PublicationsPage({
       );
       setRevisionConflictPublicationId(null);
       setFieldError('');
+      setValidationStarted(false);
       pushToast({ tone: 'info', title: 'Правки перенесены в актуальную версию' });
     },
     onError: (error) =>
@@ -1139,13 +1143,7 @@ export function PublicationsPage({
     });
   }, [draft.targets, setDraft, targets]);
 
-  useEffect(() => {
-    if (!isEditor) {
-      return undefined;
-    }
-    const focusFrame = window.requestAnimationFrame(() => editorTitleRef.current?.focus());
-    return () => window.cancelAnimationFrame(focusFrame);
-  }, [isEditor]);
+  usePublicationEditorAutofocus(isEditor, editorTitleRef);
 
   useEffect(() => {
     if (!isEditor) {
@@ -1380,6 +1378,7 @@ export function PublicationsPage({
     setEditorContext({ kind: 'create' });
     setButtonErrors(validateBroadcastLinkButtons(draft.buttons));
     setFieldError('');
+    setValidationStarted(false);
     setComposeRoute(true);
     maxImpact('soft');
   }
@@ -1413,6 +1412,7 @@ export function PublicationsPage({
     setPendingDraftClear(false);
     setRevisionConflictPublicationId(null);
     setFieldError('');
+    setValidationStarted(false);
     setComposeRoute(false);
     if (!preserveDraft) {
       savedCreateDraftRef.current = null;
@@ -1435,11 +1435,13 @@ export function PublicationsPage({
     setPendingDraftClear(false);
     setRevisionConflictPublicationId(null);
     setFieldError('');
+    setValidationStarted(false);
     setComposeRoute(false);
     restoreEditorReturnFocus();
   }
 
   function validateDraft(options: { ignoreSchedule?: boolean } = {}): boolean {
+    setValidationStarted(true);
     const nextButtonErrors = validateBroadcastLinkButtons(draft.buttons);
     setButtonErrors(nextButtonErrors);
     if (videoNeedsReselection) {
@@ -1877,11 +1879,19 @@ export function PublicationsPage({
           canCreate={publisherCanCreate}
           targets={targets}
           publisherSummary={targetSources.publisherSummary}
+          setupHandoffUrl={targetSources.setupHandoffUrl}
           sourcesLoading={sourcesLoading}
           sourcesFetching={sourcesFetching}
           sourcesHaveError={sourcesHaveError}
           onCreate={openCreateEditor}
-          onRefresh={() => void targetSources.refetch()}
+          onRefresh={() => {
+            void targetSources.recheck().catch((error) =>
+              pushToast({
+                tone: 'danger',
+                title: describeUserFacingError(error, 'Не удалось перепроверить подключения'),
+              }),
+            );
+          }}
         />
 
         <div className="publications-tabs" role="group" aria-label="Раздел постов">
@@ -2434,6 +2444,7 @@ export function PublicationsPage({
     setPendingDraftClear(false);
     setButtonErrors([]);
     setFieldError('');
+    setValidationStarted(false);
     if (editorContext?.kind === 'duplicate') {
       setDraft(createEmptyPublicationDraft());
       return;
@@ -2456,13 +2467,15 @@ export function PublicationsPage({
           : 'Новый пост';
     const retainedVideo = draft.retainedAssets.some((asset) => asset.type === 'video');
     const retainedImages = draft.retainedAssets.filter((asset) => asset.type === 'image').length;
-    const primaryLabel = editing
-      ? 'Сохранить'
-      : draft.timingMode === 'now'
-        ? 'Опубликовать'
-        : draft.timingMode === 'once'
-          ? 'Запланировать'
-          : 'Сохранить расписание';
+    const primaryLabel = validationIssues.length > 0
+      ? 'Проверить'
+      : editing
+        ? 'Сохранить'
+        : draft.timingMode === 'now'
+          ? 'Опубликовать'
+          : draft.timingMode === 'once'
+            ? 'Запланировать'
+            : 'Сохранить расписание';
     return (
       <>
         <header className="publications-editor-header">
@@ -2495,53 +2508,26 @@ export function PublicationsPage({
             <div className="publication-editor-section__head">
               <strong>Получатели</strong>
             </div>
-            {sourcesHaveError ? (
-              <div
-                className={cn(
-                  'publications-inline-notice',
-                  sourcesUnavailable ? 'is-danger' : 'is-warning',
-                )}
-                role={sourcesUnavailable ? 'alert' : 'status'}
-              >
-                <span>
-                  {sourcesUnavailable
-                    ? 'Чаты и каналы недоступны'
-                    : isPublisherProfile
-                      ? 'Получатели Публика временно недоступны'
-                      : targetSources.chatsFailed
-                        ? 'Чаты временно недоступны'
-                        : 'Каналы временно недоступны'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void targetSources.refetch();
-                  }}
-                  disabled={sourcesFetching}
-                >
-                  <Refresh aria-hidden />
-                  <span>{sourcesFetching ? 'Обновляю' : 'Повторить'}</span>
-                </button>
-              </div>
-            ) : null}
-            {publisherDraftHydration.isError ? (
-              <div className="publications-inline-notice is-danger" role="alert">
-                <span>Не удалось проверить получателей черновика</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void publisherDraftHydration.refetch();
-                  }}
-                  disabled={publisherDraftHydration.isPending}
-                >
-                  <Refresh aria-hidden />
-                  <span>{publisherDraftHydration.isPending ? 'Проверяю' : 'Повторить'}</span>
-                </button>
-              </div>
-            ) : null}
+            <PublicationTargetNotices
+              publisherProfile={isPublisherProfile}
+              sourcesHaveError={sourcesHaveError}
+              sourcesUnavailable={sourcesUnavailable}
+              sourcesFetching={sourcesFetching}
+              chatsFailed={targetSources.chatsFailed}
+              onSourcesRefresh={() => void targetSources.refetch()}
+              draftHydrationFailed={publisherDraftHydration.isError}
+              draftHydrationPending={publisherDraftHydration.isPending}
+              onDraftHydrationRefresh={() => void publisherDraftHydration.refetch()}
+              initialRoute={initialTargetRoute}
+            />
             <PublicationTargetPicker
               choices={targets}
               value={draft.targets}
+              notice={
+                selectedPublisherTargetUnavailable
+                  ? 'Выбранный получатель недоступен. Удалите его.'
+                  : null
+              }
               remoteSource={
                 isPublisherProfile
                   ? {
@@ -2751,7 +2737,7 @@ export function PublicationsPage({
                     : 'Публикация'
             }
             meta={formatTargetSummary(draft.targets)}
-            issues={validationIssues}
+            issues={validationStarted ? validationIssues : []}
             busy={isBusy}
             showTest={!isPublisherProfile}
             testLabel="Отправить себе"

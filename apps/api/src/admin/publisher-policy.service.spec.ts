@@ -1,9 +1,12 @@
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import {
+  PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
   decodePublisherEntitiesCursor,
   encodePublisherEntitiesCursor,
 } from '@maxim/contracts/publisher';
 import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
   ChatEntityType,
   ManagedEntityAccessRole,
   ManagedEntityAccessState,
@@ -73,14 +76,38 @@ const user = {
   displayName: null,
 };
 
-function createListEntity(id: string, title: string, entityType: ChatEntityType) {
+function createConnectedPublisherBinding(
+  overrides: Partial<{
+    publisherBotId: string;
+    status: ChatBotMembershipStatus;
+    botAccessState: ChatBotAccessState;
+    lastWebhookAt: Date | null;
+  }> = {},
+) {
+  return {
+    publisherBotId: 'publik-bot',
+    status: ChatBotMembershipStatus.ACTIVE,
+    botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+    lastWebhookAt: null,
+    ...overrides,
+  };
+}
+
+function createListEntity(
+  id: string,
+  title: string,
+  entityType: ChatEntityType,
+  publisherBinding: ReturnType<
+    typeof createConnectedPublisherBinding
+  > | null = createConnectedPublisherBinding(),
+) {
   return {
     id,
     title,
     entityType,
     channelSettings: null,
     publicationPolicy: null,
-    publisherBinding: null,
+    publisherBinding,
     botMemberships: [{ botId: 'main-bot' }],
   };
 }
@@ -91,8 +118,10 @@ function createListFixture(
 ) {
   const findMany = jest
     .fn()
-    .mockImplementation((request?: { where?: { chatId?: { in?: string[] } } }) => {
-      const requestedIds = request?.where?.chatId?.in;
+    .mockImplementation((request?: { where?: { chatId?: string | { in?: string[] } } }) => {
+      const requestedChatId = request?.where?.chatId;
+      const requestedIds =
+        typeof requestedChatId === 'string' ? [requestedChatId] : requestedChatId?.in;
       return Promise.resolve(
         entities
           .filter((chat) => !requestedIds || requestedIds.includes(chat.id))
@@ -105,19 +134,27 @@ function createListFixture(
       );
     });
   const catalogFindMany = jest.fn().mockResolvedValue([]);
+  const catalogFindFirst = jest.fn().mockResolvedValue(null);
   const readiness = createReadiness(readyEntityIds);
   const maxBotLinkService = createMaxBotLinkService();
   const service = new PublisherPolicyService(
     {
       managedEntityAccessEdge: { findMany },
-      managedBotChatCatalog: { findMany: catalogFindMany },
+      managedBotChatCatalog: { findMany: catalogFindMany, findFirst: catalogFindFirst },
     } as never,
     createBotRegistry() as never,
     readiness as never,
     {} as never,
     maxBotLinkService as never,
   );
-  return { catalogFindMany, findMany, maxBotLinkService, readiness, service };
+  return {
+    catalogFindFirst,
+    catalogFindMany,
+    findMany,
+    maxBotLinkService,
+    readiness,
+    service,
+  };
 }
 
 function createPolicyMutationFixture(
@@ -181,7 +218,7 @@ describe('PublisherPolicyService', () => {
       entityType: ChatEntityType.CHAT,
       channelSettings: null,
       publicationPolicy: null,
-      publisherBinding: null,
+      publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
     };
     const prisma = {
@@ -217,7 +254,8 @@ describe('PublisherPolicyService', () => {
 
     expect(response.items).toHaveLength(1);
     expect(response.items[0]?.id).toBe('chat-1');
-    expect(Object.keys(response)).toEqual(['items']);
+    expect(Object.keys(response)).toEqual(['items', 'setupHandoffUrl']);
+    expect(response.setupHandoffUrl).toMatch(/^https:\/\/max\.ru\/entry-bot\?startapp=mr-/u);
     expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -225,6 +263,29 @@ describe('PublisherPolicyService', () => {
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
           botId: { not: 'publik-bot' },
+          chat: {
+            publisherBinding: {
+              is: {
+                publisherBotId: 'publik-bot',
+                status: ChatBotMembershipStatus.ACTIVE,
+                OR: [
+                  {
+                    botAccessState: {
+                      in: [
+                        ChatBotAccessState.CONFIRMED_MEMBER,
+                        ChatBotAccessState.CONFIRMED_ADMIN,
+                        ChatBotAccessState.CONFIRMED_OWNER,
+                      ],
+                    },
+                  },
+                  {
+                    botAccessState: ChatBotAccessState.UNKNOWN,
+                    lastWebhookAt: { not: null },
+                  },
+                ],
+              },
+            },
+          },
         }),
       }),
     );
@@ -235,8 +296,238 @@ describe('PublisherPolicyService', () => {
     expect(readiness.isRuntimeAvailable).toHaveBeenCalledTimes(1);
   });
 
+  it('exposes only entities with independently observed Publik membership', async () => {
+    const confirmedAdmin = createListEntity(
+      'chat-confirmed-admin',
+      'Подтвержденный администратор',
+      ChatEntityType.CHAT,
+    );
+    const confirmedMember = createListEntity(
+      'chat-confirmed-member',
+      'Подтвержденный участник',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({ botAccessState: ChatBotAccessState.CONFIRMED_MEMBER }),
+    );
+    const webhookObserved = createListEntity(
+      'chat-webhook-observed',
+      'Webhook наблюдение',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({
+        botAccessState: ChatBotAccessState.UNKNOWN,
+        lastWebhookAt: new Date('2026-08-26T10:00:00.000Z'),
+      }),
+    );
+    const bootstrapOnly = createListEntity(
+      'chat-bootstrap-only',
+      'Только bootstrap Майора',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({ botAccessState: ChatBotAccessState.UNKNOWN }),
+    );
+    const denied = createListEntity(
+      'chat-denied',
+      'Нет подключения',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({ botAccessState: ChatBotAccessState.DENIED }),
+    );
+    const removed = createListEntity(
+      'chat-removed',
+      'Удаленный Публик',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({ status: ChatBotMembershipStatus.REMOVED }),
+    );
+    const wrongBot = createListEntity(
+      'chat-wrong-bot',
+      'Чужой binding',
+      ChatEntityType.CHAT,
+      createConnectedPublisherBinding({ publisherBotId: 'other-bot' }),
+    );
+    const missingBinding = createListEntity(
+      'chat-missing-binding',
+      'Только Майор',
+      ChatEntityType.CHAT,
+      null,
+    );
+    const fixture = createListFixture([
+      confirmedAdmin,
+      confirmedMember,
+      webhookObserved,
+      bootstrapOnly,
+      denied,
+      removed,
+      wrongBot,
+      missingBinding,
+    ]);
+
+    const listed = await fixture.service.listEntities(user);
+    expect(listed.items.map((entity) => entity.id).sort()).toEqual(
+      [confirmedAdmin.id, confirmedMember.id, webhookObserved.id].sort(),
+    );
+
+    await expect(
+      fixture.service.resolveEntities(user, {
+        targets: [
+          { id: confirmedAdmin.id, entityType: 'chat' },
+          { id: bootstrapOnly.id, entityType: 'chat' },
+          { id: missingBinding.id, entityType: 'chat' },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: confirmedAdmin.id })],
+    });
+    await expect(fixture.service.getEntity('chat', bootstrapOnly.id, user)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(
+      fixture.service.getEntityForPolicy('chat', bootstrapOnly.id, user),
+    ).resolves.toMatchObject({ id: bootstrapOnly.id, readiness: { state: 'setup_required' } });
+  });
+
+  it('selects only bounded user-authorized refresh candidates with Publik evidence', async () => {
+    const refreshRow = (
+      id: string,
+      overrides: Partial<{
+        publisherBotId: string;
+        status: ChatBotMembershipStatus;
+        botAccessState: ChatBotAccessState;
+        lastSeenAt: Date | null;
+        lastWebhookAt: Date | null;
+        membershipBotId: string;
+        accessBotId: string;
+        accessEntityType: ChatEntityType;
+      }> = {},
+    ) => ({
+      chatId: id,
+      publisherBotId: overrides.publisherBotId ?? 'publik-bot',
+      status: overrides.status ?? ChatBotMembershipStatus.ACTIVE,
+      botAccessState: overrides.botAccessState ?? ChatBotAccessState.CONFIRMED_ADMIN,
+      lastSeenAt: overrides.lastSeenAt ?? null,
+      lastWebhookAt: overrides.lastWebhookAt ?? null,
+      chat: {
+        entityType: ChatEntityType.CHAT,
+        botMemberships: [{ botId: overrides.membershipBotId ?? 'main-bot' }],
+        accessEdges: [
+          {
+            botId: overrides.accessBotId ?? 'main-bot',
+            entityType: overrides.accessEntityType ?? ChatEntityType.CHAT,
+          },
+        ],
+      },
+    });
+    const readyIds = Array.from({ length: 50 }, (_, index) => `confirmed-${index}`);
+    const findMany = jest
+      .fn()
+      .mockResolvedValueOnce([
+        refreshRow('lost-evidenced', {
+          botAccessState: ChatBotAccessState.LOST,
+          lastSeenAt: new Date('2026-08-26T10:00:00.000Z'),
+        }),
+        refreshRow('stale-evidenced', {
+          botAccessState: ChatBotAccessState.STALE,
+          lastWebhookAt: new Date('2026-08-26T10:00:00.000Z'),
+        }),
+        refreshRow('unknown-no-evidence', { botAccessState: ChatBotAccessState.UNKNOWN }),
+        refreshRow('lost-no-evidence', { botAccessState: ChatBotAccessState.LOST }),
+        refreshRow('wrong-publisher', { publisherBotId: 'other-bot' }),
+        refreshRow('removed', { status: ChatBotMembershipStatus.REMOVED }),
+        refreshRow('membership-mismatch', { membershipBotId: 'inactive-main-bot' }),
+        refreshRow('edge-type-mismatch', { accessEntityType: ChatEntityType.CHANNEL }),
+      ])
+      .mockResolvedValueOnce(readyIds.map((id) => refreshRow(id)));
+    const service = new PublisherPolicyService(
+      { publisherEntityBinding: { findMany } } as never,
+      createBotRegistry() as never,
+      createReadiness() as never,
+      {} as never,
+      createMaxBotLinkService() as never,
+    );
+
+    await expect(service.listRefreshableEntityIds(user, 500, ['already-queued'])).resolves.toEqual([
+      'lost-evidenced',
+      'stale-evidenced',
+      ...readyIds.slice(0, 48),
+    ]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        take: 200,
+        orderBy: [
+          { botAccessCheckedAt: { sort: 'asc', nulls: 'first' } },
+          { updatedAt: 'asc' },
+          { chatId: 'asc' },
+        ],
+        where: expect.objectContaining({
+          publisherBotId: 'publik-bot',
+          status: ChatBotMembershipStatus.ACTIVE,
+          chatId: { notIn: ['already-queued'] },
+          OR: expect.arrayContaining([
+            { lastWebhookAt: { not: null } },
+            { lastSeenAt: { not: null } },
+          ]),
+          AND: [
+            {
+              OR: expect.arrayContaining([
+                { botAccessExpiresAt: null },
+                { botAccessExpiresAt: { lte: expect.any(Date) } },
+              ]),
+            },
+          ],
+          chat: expect.objectContaining({
+            AND: expect.arrayContaining([
+              {
+                OR: expect.arrayContaining([
+                  expect.objectContaining({
+                    entityType: ChatEntityType.CHAT,
+                    botMemberships: {
+                      some: {
+                        botId: 'main-bot',
+                        status: ChatBotMembershipStatus.ACTIVE,
+                      },
+                    },
+                    accessEdges: {
+                      some: expect.objectContaining({
+                        userId: user.userId,
+                        state: ManagedEntityAccessState.GRANTED,
+                        userRole: {
+                          in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN],
+                        },
+                        botId: 'main-bot',
+                        entityType: ChatEntityType.CHAT,
+                        OR: expect.arrayContaining([
+                          { expiresAt: { gt: expect.any(Date) } },
+                          {
+                            expiresAt: null,
+                            checkedAt: { gt: expect.any(Date) },
+                          },
+                        ]),
+                      }),
+                    },
+                  }),
+                ]),
+              },
+            ]),
+          }),
+        }),
+      }),
+    );
+    expect(findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        take: 200,
+        where: expect.objectContaining({
+          chatId: { notIn: ['already-queued', 'lost-evidenced', 'stale-evidenced'] },
+          botAccessState: {
+            in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
+          },
+          botAccessExpiresAt: { gt: expect.any(Date) },
+        }),
+      }),
+    );
+  });
+
   it('uses only exact scoped catalog rows and builds settings handoffs through the entry bot', async () => {
     const safeEntityId = 'chat/id ?';
+    const mainOnlyEntityId = 'main-only';
     const invalidLinkCases = [
       ['credentials', 'https://user:secret@max.ru/team'],
       ['foreign-host', 'https://example.com/team'],
@@ -247,6 +538,7 @@ describe('PublisherPolicyService', () => {
     ] as const;
     const entities = [
       createListEntity(safeEntityId, 'Безопасный чат', ChatEntityType.CHAT),
+      createListEntity(mainOnlyEntityId, 'Без metadata Публика', ChatEntityType.CHAT),
       ...invalidLinkCases.map(([id]) => createListEntity(id, id, ChatEntityType.CHAT)),
     ];
     const findMany = jest.fn().mockResolvedValue(
@@ -259,21 +551,21 @@ describe('PublisherPolicyService', () => {
     );
     const catalogFindMany = jest.fn().mockResolvedValue([
       {
-        botId: 'main-bot',
+        botId: 'publik-bot',
         chatId: safeEntityId,
         link: 'https://www.max.ru/team?from=catalog',
         avatarUrl: 'https://cdn.example.com/avatar.png?size=small',
       },
       ...invalidLinkCases.map(([chatId, link]) => ({
-        botId: 'main-bot',
+        botId: 'publik-bot',
         chatId,
         link,
         avatarUrl:
           chatId === 'credentials' ? 'https://user:secret@cdn.example.com/avatar.png' : null,
       })),
       {
-        botId: 'inactive-main-bot',
-        chatId: safeEntityId,
+        botId: 'main-bot',
+        chatId: mainOnlyEntityId,
         link: 'https://max.ru/unrelated-route',
         avatarUrl: 'https://cdn.example.com/unrelated.png',
       },
@@ -299,15 +591,24 @@ describe('PublisherPolicyService', () => {
       entityUrl: 'https://max.ru/team?from=catalog',
       settingsHandoffUrl: expect.stringMatching(/^https:\/\/max\.ru\/entry-bot\?startapp=mr-/u),
     });
+    const setupHandoffUrl = new URL(response.setupHandoffUrl ?? '');
+    const setupStartParam = setupHandoffUrl.searchParams.get('startapp') ?? '';
+    expect(
+      JSON.parse(Buffer.from(setupStartParam.slice('mr-'.length), 'base64url').toString('utf8')),
+    ).toEqual({ v: 1, k: 'route', r: '/' });
     for (const [id] of invalidLinkCases) {
       expect(entitiesById.get(id)?.entityUrl).toBeNull();
     }
+    expect(entitiesById.get(mainOnlyEntityId)).toMatchObject({
+      avatarUrl: null,
+      entityUrl: null,
+    });
     expect(entitiesById.get('credentials')?.avatarUrl).toBeNull();
     expect(catalogFindMany).toHaveBeenCalledWith({
       where: {
         status: 'ACTIVE',
         OR: entities.map((entity) => ({
-          botId: 'main-bot',
+          botId: 'publik-bot',
           chatId: entity.id,
           entityType: ChatEntityType.CHAT,
         })),
@@ -358,7 +659,7 @@ describe('PublisherPolicyService', () => {
         commentsModerationEnabled: true,
       },
       publicationPolicy: null,
-      publisherBinding: null,
+      publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
     };
     const chat = {
@@ -367,7 +668,7 @@ describe('PublisherPolicyService', () => {
       entityType: ChatEntityType.CHAT,
       channelSettings: null,
       publicationPolicy: null,
-      publisherBinding: null,
+      publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
     };
     const prisma = {
@@ -432,6 +733,7 @@ describe('PublisherPolicyService', () => {
 
     expect(firstPage.items.map((entity) => entity.id)).toEqual(['channel-alpha', 'channel-beta']);
     expect(firstPage.filteredTotal).toBe(4);
+    expect(firstPage.setupHandoffUrl).toMatch(/^https:\/\/max\.ru\/entry-bot\?startapp=mr-/u);
     expect(firstPage.summary).toEqual({
       total: 4,
       chat: 2,
@@ -477,7 +779,12 @@ describe('PublisherPolicyService', () => {
         limit: 2,
         cursor: firstPage.nextCursor,
       }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({
+      response: {
+        message: 'Курсор списка получателей недействителен.',
+        code: PUBLISHER_ENTITIES_CURSOR_INVALID_CODE,
+      },
+    });
     expect(fixture.findMany).toHaveBeenCalledTimes(2);
   });
 
@@ -761,7 +1068,7 @@ describe('PublisherPolicyService', () => {
       entityType: ChatEntityType.CHAT,
       channelSettings: null,
       publicationPolicy: null,
-      publisherBinding: null,
+      publisherBinding: createConnectedPublisherBinding(),
       botMemberships: [{ botId: 'main-bot' }],
     };
     const findMany = jest.fn().mockImplementation(({ where }: { where: { userId: string } }) =>
@@ -830,7 +1137,7 @@ describe('PublisherPolicyService', () => {
     expect(catalogFindFirst).toHaveBeenCalledTimes(1);
     expect(catalogFindFirst).toHaveBeenCalledWith({
       where: {
-        botId: 'main-bot',
+        botId: 'publik-bot',
         chatId: foreignChat.id,
         entityType: ChatEntityType.CHAT,
         status: 'ACTIVE',

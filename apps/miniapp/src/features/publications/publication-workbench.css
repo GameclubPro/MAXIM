@@ -13,6 +13,12 @@
     max-width: 100%;
   }
 
+  html[data-max-keyboard-open='true'] .publications-page.is-editor .publications-publish-bar {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+
   .publications-editor,
   .publication-editor-section {
     min-width: 0;
@@ -285,7 +291,8 @@
 
   .publications-page:not(.is-editor)
     .publication-feed-card:has(.publication-delivery-note.is-danger) {
-    background: var(--publication-danger-bg-muted);
+    background: var(--color-surface);
+    box-shadow: 3px 0 0 var(--color-danger) inset;
   }
 
   .publications-page:not(.is-editor) .publication-delivery-note {
