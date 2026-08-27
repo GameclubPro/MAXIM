@@ -963,17 +963,20 @@ describe('WebhookOutboxService', () => {
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
     const selectionSql = extractSql(prisma.$queryRaw.mock.calls[0]![0] as SqlQuery);
-    const headIdCteStart = selectionSql.indexOf('WITH ordered_message_head_ids AS MATERIALIZED');
-    const fullHeadCteStart = selectionSql.indexOf('ordered_message_heads AS MATERIALIZED');
-    expect(headIdCteStart).toBeGreaterThanOrEqual(0);
-    expect(fullHeadCteStart).toBeGreaterThan(headIdCteStart);
-    expect(selectionSql.slice(headIdCteStart, fullHeadCteStart)).toContain(
-      `"id" AS "webhook_event_id"`,
+    const orderedHeadProbeStart = selectionSql.indexOf('LEFT JOIN LATERAL');
+    const orderedHeadProbeEnd = selectionSql.indexOf(
+      ') ordered_chat_head ON TRUE',
+      orderedHeadProbeStart,
     );
-    expect(selectionSql.slice(headIdCteStart, fullHeadCteStart)).not.toContain(`"processed_at"`);
-    expect(selectionSql).toContain(
-      `ON "webhook_events"."id" = ordered_message_head_ids."webhook_event_id"`,
+    expect(orderedHeadProbeStart).toBeGreaterThanOrEqual(0);
+    expect(orderedHeadProbeEnd).toBeGreaterThan(orderedHeadProbeStart);
+    expect(selectionSql.slice(orderedHeadProbeStart, orderedHeadProbeEnd)).toContain(
+      `ordered_chat_head_event."id" AS "webhook_event_id"`,
     );
+    expect(selectionSql.slice(orderedHeadProbeStart, orderedHeadProbeEnd)).not.toContain(
+      `ordered_chat_head_event."processed_at"`,
+    );
+    expect(selectionSql).toContain(`ordered_chat_head."webhook_event_id" = "webhook_events"."id"`);
     expect(selectionSql).toContain(`"status" = 'FAILED'::"WebhookStatus"`);
     expect(selectionSql).toContain(`"next_enqueue_at" <= ?`);
     expect(selectionSql).toContain(`FROM "webhook_execution_claims"`);
@@ -2232,7 +2235,11 @@ describe('WebhookOutboxService', () => {
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
     const selectionQuery = prisma.$queryRaw.mock.calls[0]![0] as SqlQuery;
-    expect(extractSql(selectionQuery)).toContain('fair_enqueue_candidates');
+    const selectionSql = extractSql(selectionQuery);
+    expect(selectionSql).toContain('fair_enqueue_candidates');
+    expect(selectionSql).toContain('LEFT JOIN LATERAL');
+    expect(selectionSql).toContain('ordered_chat_head_event');
+    expect(selectionSql).not.toContain('ordered_message_head_ids AS MATERIALIZED');
     expect(selectionQuery.values).toContain(6);
   });
 

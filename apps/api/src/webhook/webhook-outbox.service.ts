@@ -193,6 +193,48 @@ const INDEPENDENT_WEBHOOK_EVENT_SQL = Prisma.sql`
     AND ${ORDERED_WEBHOOK_CHAT_ID_SQL} IS NOT NULL
   )
 `;
+const FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL = Prisma.sql`
+  FROM "webhook_events"
+  LEFT JOIN LATERAL (
+    SELECT ordered_chat_head_event."id" AS "webhook_event_id"
+    FROM "webhook_events" ordered_chat_head_event
+    WHERE ${ORDERED_WEBHOOK_MESSAGE_SQL}
+      AND (
+        ordered_chat_head_event."status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
+        OR (
+          ordered_chat_head_event."status" = 'FAILED'::"WebhookStatus"
+          AND (
+            ordered_chat_head_event."next_enqueue_at" IS NOT NULL
+            OR LEFT(
+              COALESCE(ordered_chat_head_event."error_message", ''),
+              ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}
+            ) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
+          )
+        )
+      )
+      AND LOWER(
+        COALESCE(
+          NULLIF(BTRIM(ordered_chat_head_event."normalized_payload"->>'type'), ''),
+          NULLIF(BTRIM(ordered_chat_head_event."normalized_payload"->>'update_type'), '')
+        )
+      ) = ANY(ARRAY['message_created', 'message_edited'])
+      AND COALESCE(
+        NULLIF(
+          BTRIM(ordered_chat_head_event."normalized_payload"->'message'->>'chatId'),
+          ''
+        ),
+        NULLIF(BTRIM(ordered_chat_head_event."normalized_payload"->>'chatId'), '')
+      ) = ${ORDERED_WEBHOOK_CHAT_ID_SQL}
+    ORDER BY ordered_chat_head_event."created_at" ASC, ordered_chat_head_event."id" ASC
+    LIMIT 1
+  ) ordered_chat_head ON TRUE
+`;
+const FAIR_WEBHOOK_WORK_UNIT_SQL = Prisma.sql`
+  (
+    ${INDEPENDENT_WEBHOOK_EVENT_SQL}
+    OR ordered_chat_head."webhook_event_id" = "webhook_events"."id"
+  )
+`;
 
 type RetentionCleanupPhase = {
   name: string;
@@ -531,96 +573,47 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const backlogReceiptTake = selectionWindowSize - recentReceiptTake;
     const eligibility = buildEnqueueEligibilitySql(now);
 
-    // Ordered chats get one global head before lane limits; lifecycle/no-chat events keep event identity.
+    // Probe each ordered candidate's exact chat head before lane limits; independent events keep identity.
     const candidates = await this.prisma.$queryRaw<WebhookEnqueueCandidate[]>(Prisma.sql`
       /* fair_enqueue_candidates */
-      WITH ordered_message_head_ids AS MATERIALIZED (
-        SELECT DISTINCT ON (${ORDERED_WEBHOOK_CHAT_ID_SQL})
-          "id" AS "webhook_event_id"
-        FROM "webhook_events"
-        WHERE ${ORDERED_WEBHOOK_HEAD_STATUS_SQL}
-          AND ${ORDERED_WEBHOOK_MESSAGE_SQL}
-        ORDER BY ${ORDERED_WEBHOOK_CHAT_ID_SQL} ASC, "created_at" ASC, "id" ASC
-      ),
-      ordered_message_heads AS MATERIALIZED (
+      WITH backlog_receipt_candidates AS (
         SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-        FROM ordered_message_head_ids
-        JOIN "webhook_events"
-          ON "webhook_events"."id" = ordered_message_head_ids."webhook_event_id"
-      ),
-      backlog_receipt_candidates AS (
-        SELECT eligible.*
-        FROM (
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM ordered_message_heads
-          WHERE ${eligibility.received}
-          UNION ALL
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM "webhook_events"
-          WHERE ${eligibility.received}
-            AND ${INDEPENDENT_WEBHOOK_EVENT_SQL}
-        ) eligible
-        ORDER BY "created_at" ASC, "id" ASC
+        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
+        WHERE ${eligibility.received}
+          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
+        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
         LIMIT ${backlogReceiptTake}
       ),
       recent_receipt_candidates AS (
-        SELECT eligible.*
-        FROM (
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM ordered_message_heads
-          WHERE ${eligibility.received}
-          UNION ALL
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM "webhook_events"
-          WHERE ${eligibility.received}
-            AND ${INDEPENDENT_WEBHOOK_EVENT_SQL}
-        ) eligible
-        ORDER BY "created_at" DESC, "id" DESC
+        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
+        WHERE ${eligibility.received}
+          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
+        ORDER BY "webhook_events"."created_at" DESC, "webhook_events"."id" DESC
         LIMIT ${recentReceiptTake}
       ),
       failed_candidates AS (
-        SELECT eligible.*
-        FROM (
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM ordered_message_heads AS "webhook_events"
-          WHERE ${eligibility.failed}
-          UNION ALL
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM "webhook_events"
-          WHERE ${eligibility.failed}
-            AND ${INDEPENDENT_WEBHOOK_EVENT_SQL}
-        ) eligible
-        ORDER BY "created_at" ASC, "id" ASC
+        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
+        WHERE ${eligibility.failed}
+          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
+        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
         LIMIT ${selectionWindowSize}
       ),
       stale_user_facing_queued_candidates AS (
-        SELECT eligible.*
-        FROM (
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM ordered_message_heads
-          WHERE ${eligibility.staleUserFacingQueued}
-          UNION ALL
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM "webhook_events"
-          WHERE ${eligibility.staleUserFacingQueued}
-            AND ${INDEPENDENT_WEBHOOK_EVENT_SQL}
-        ) eligible
-        ORDER BY "created_at" ASC, "id" ASC
+        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
+        WHERE ${eligibility.staleUserFacingQueued}
+          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
+        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
         LIMIT ${selectionWindowSize}
       ),
       stale_background_queued_candidates AS (
-        SELECT eligible.*
-        FROM (
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM ordered_message_heads
-          WHERE ${eligibility.staleBackgroundQueued}
-          UNION ALL
-          SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-          FROM "webhook_events"
-          WHERE ${eligibility.staleBackgroundQueued}
-            AND ${INDEPENDENT_WEBHOOK_EVENT_SQL}
-        ) eligible
-        ORDER BY "created_at" ASC, "id" ASC
+        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
+        WHERE ${eligibility.staleBackgroundQueued}
+          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
+        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
         LIMIT ${selectionWindowSize}
       )
       SELECT

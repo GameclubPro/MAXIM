@@ -166,7 +166,7 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     );
   });
 
-  it('selects fair work-unit heads before the bounded window and uses the ordered-chat index', async () => {
+  it('selects fair work-unit heads with bounded lane scans and ordered-chat index probes', async () => {
     const suffix = randomUUID();
     const poisonChat = `outbox-poison-${suffix}`;
     const fencedChat = `outbox-fenced-${suffix}`;
@@ -301,17 +301,22 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       );
     });
     const planNodes = collectExplainNodes(plan);
-    const headCteRoot = planNodes.find(
-      (node) => node['Subplan Name'] === 'CTE ordered_message_head_ids',
+    expect(planNodes.some((node) => node['Subplan Name'] === 'CTE ordered_message_head_ids')).toBe(
+      false,
     );
-    expect(headCteRoot).toBeDefined();
-    const headCteNodes = collectExplainNodes(headCteRoot);
+    const orderedHeadIndexNodes = planNodes.filter(
+      (node) => node['Index Name'] === 'webhook_events_ordered_chat_head_idx',
+    );
+    expect(orderedHeadIndexNodes.length).toBeGreaterThan(0);
     expect(
-      headCteNodes.some((node) => node['Index Name'] === 'webhook_events_ordered_chat_head_idx'),
+      orderedHeadIndexNodes.every(
+        (node) => node['Node Type'] === 'Index Scan' || node['Node Type'] === 'Index Only Scan',
+      ),
     ).toBe(true);
     expect(
-      headCteNodes.some(
-        (node) => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'webhook_events',
+      planNodes.some(
+        (node) =>
+          node['Node Type'] === 'Bitmap Heap Scan' && node['Alias'] === 'ordered_chat_head_event',
       ),
     ).toBe(false);
   });
