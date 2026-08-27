@@ -38,6 +38,7 @@ const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
 const BACKGROUND_STALE_QUEUED_REPAIR_MS = 120_000;
 const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
+const WEBHOOK_WORK_UNIT_OVERSCAN_SIZE = 5_000;
 const RECEIVED_BATCH_SHARE = 0.75;
 const RECENT_RECEIPT_BATCH_SHARE = 0.25;
 const MEMBERSHIP_LEAVE_WEBHOOK_TYPES = new Set([
@@ -184,56 +185,12 @@ const ORDERED_WEBHOOK_MESSAGE_SQL = Prisma.sql`
   ${ORDERED_WEBHOOK_UPDATE_TYPE_SQL} = ANY(ARRAY['message_created', 'message_edited'])
   AND ${ORDERED_WEBHOOK_CHAT_ID_SQL} IS NOT NULL
 `;
-const INDEPENDENT_WEBHOOK_EVENT_SQL = Prisma.sql`
-  NOT (
-    COALESCE(
-      ${ORDERED_WEBHOOK_UPDATE_TYPE_SQL} = ANY(ARRAY['message_created', 'message_edited']),
-      FALSE
-    )
-    AND ${ORDERED_WEBHOOK_CHAT_ID_SQL} IS NOT NULL
-  )
-`;
-const FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL = Prisma.sql`
-  FROM "webhook_events"
-  LEFT JOIN LATERAL (
-    SELECT ordered_chat_head_event."id" AS "webhook_event_id"
-    FROM "webhook_events" ordered_chat_head_event
-    WHERE ${ORDERED_WEBHOOK_MESSAGE_SQL}
-      AND (
-        ordered_chat_head_event."status" = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
-        OR (
-          ordered_chat_head_event."status" = 'FAILED'::"WebhookStatus"
-          AND (
-            ordered_chat_head_event."next_enqueue_at" IS NOT NULL
-            OR LEFT(
-              COALESCE(ordered_chat_head_event."error_message", ''),
-              ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL}
-            ) = ${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_SQL}
-          )
-        )
-      )
-      AND LOWER(
-        COALESCE(
-          NULLIF(BTRIM(ordered_chat_head_event."normalized_payload"->>'type'), ''),
-          NULLIF(BTRIM(ordered_chat_head_event."normalized_payload"->>'update_type'), '')
-        )
-      ) = ANY(ARRAY['message_created', 'message_edited'])
-      AND COALESCE(
-        NULLIF(
-          BTRIM(ordered_chat_head_event."normalized_payload"->'message'->>'chatId'),
-          ''
-        ),
-        NULLIF(BTRIM(ordered_chat_head_event."normalized_payload"->>'chatId'), '')
-      ) = ${ORDERED_WEBHOOK_CHAT_ID_SQL}
-    ORDER BY ordered_chat_head_event."created_at" ASC, ordered_chat_head_event."id" ASC
-    LIMIT 1
-  ) ordered_chat_head ON TRUE
-`;
-const FAIR_WEBHOOK_WORK_UNIT_SQL = Prisma.sql`
-  (
-    ${INDEPENDENT_WEBHOOK_EVENT_SQL}
-    OR ordered_chat_head."webhook_event_id" = "webhook_events"."id"
-  )
+const FAIR_WEBHOOK_WORK_UNIT_KEY_SQL = Prisma.sql`
+  CASE
+    WHEN ${ORDERED_WEBHOOK_MESSAGE_SQL}
+      THEN CONCAT('chat:', ${ORDERED_WEBHOOK_CHAT_ID_SQL})
+    ELSE CONCAT('event:', "webhook_events"."id")
+  END
 `;
 
 type RetentionCleanupPhase = {
@@ -387,6 +344,36 @@ function buildEnqueueEligibilitySql(now: Date) {
       AND ("next_enqueue_at" IS NULL OR "next_enqueue_at" <= ${now})
     `,
   };
+}
+
+function buildBoundedEnqueueWorkUnitsSql(params: {
+  eligibility: Prisma.Sql;
+  scanDirection: 'ASC' | 'DESC';
+  resultDirection: 'ASC' | 'DESC';
+  overscanTake: number;
+  candidateTake: number;
+}): Prisma.Sql {
+  const scanDirection = Prisma.raw(params.scanDirection);
+  const resultDirection = Prisma.raw(params.resultDirection);
+
+  return Prisma.sql`
+    SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
+    FROM (
+      SELECT DISTINCT ON ("work_unit_key") bounded_pool.*
+      FROM (
+        SELECT
+          ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL},
+          ${FAIR_WEBHOOK_WORK_UNIT_KEY_SQL} AS "work_unit_key"
+        FROM "webhook_events"
+        WHERE ${params.eligibility}
+        ORDER BY "created_at" ${scanDirection}, "id" ${scanDirection}
+        LIMIT ${params.overscanTake}
+      ) bounded_pool
+      ORDER BY "work_unit_key" ASC, "created_at" ASC, "id" ASC
+    ) collapsed_work_units
+    ORDER BY "created_at" ${resultDirection}, "id" ${resultDirection}
+    LIMIT ${params.candidateTake}
+  `;
 }
 
 @Injectable()
@@ -572,49 +559,60 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const recentReceiptTake = this.resolveRecentReceiptTake(selectionWindowSize);
     const backlogReceiptTake = selectionWindowSize - recentReceiptTake;
     const eligibility = buildEnqueueEligibilitySql(now);
+    const overscanTake = Math.max(selectionWindowSize, WEBHOOK_WORK_UNIT_OVERSCAN_SIZE);
+    const backlogReceiptCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      eligibility: eligibility.received,
+      scanDirection: 'ASC',
+      resultDirection: 'ASC',
+      overscanTake,
+      candidateTake: backlogReceiptTake,
+    });
+    const recentReceiptCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      eligibility: eligibility.received,
+      scanDirection: 'DESC',
+      resultDirection: 'DESC',
+      overscanTake,
+      candidateTake: recentReceiptTake,
+    });
+    const failedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      eligibility: eligibility.failed,
+      scanDirection: 'ASC',
+      resultDirection: 'ASC',
+      overscanTake,
+      candidateTake: selectionWindowSize,
+    });
+    const staleUserFacingQueuedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      eligibility: eligibility.staleUserFacingQueued,
+      scanDirection: 'ASC',
+      resultDirection: 'ASC',
+      overscanTake,
+      candidateTake: selectionWindowSize,
+    });
+    const staleBackgroundQueuedCandidatesSql = buildBoundedEnqueueWorkUnitsSql({
+      eligibility: eligibility.staleBackgroundQueued,
+      scanDirection: 'ASC',
+      resultDirection: 'ASC',
+      overscanTake,
+      candidateTake: selectionWindowSize,
+    });
 
-    // Probe each ordered candidate's exact chat head before lane limits; independent events keep identity.
+    // Collapse a bounded raw pool into chat/event work units; exact ordered heads are fenced before CAS.
     const candidates = await this.prisma.$queryRaw<WebhookEnqueueCandidate[]>(Prisma.sql`
       /* fair_enqueue_candidates */
       WITH backlog_receipt_candidates AS (
-        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
-        WHERE ${eligibility.received}
-          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
-        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
-        LIMIT ${backlogReceiptTake}
+        ${backlogReceiptCandidatesSql}
       ),
       recent_receipt_candidates AS (
-        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
-        WHERE ${eligibility.received}
-          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
-        ORDER BY "webhook_events"."created_at" DESC, "webhook_events"."id" DESC
-        LIMIT ${recentReceiptTake}
+        ${recentReceiptCandidatesSql}
       ),
       failed_candidates AS (
-        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
-        WHERE ${eligibility.failed}
-          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
-        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
-        LIMIT ${selectionWindowSize}
+        ${failedCandidatesSql}
       ),
       stale_user_facing_queued_candidates AS (
-        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
-        WHERE ${eligibility.staleUserFacingQueued}
-          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
-        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
-        LIMIT ${selectionWindowSize}
+        ${staleUserFacingQueuedCandidatesSql}
       ),
       stale_background_queued_candidates AS (
-        SELECT ${WEBHOOK_ENQUEUE_CANDIDATE_DB_COLUMNS_SQL}
-        ${FAIR_WEBHOOK_CANDIDATE_SOURCE_SQL}
-        WHERE ${eligibility.staleBackgroundQueued}
-          AND ${FAIR_WEBHOOK_WORK_UNIT_SQL}
-        ORDER BY "webhook_events"."created_at" ASC, "webhook_events"."id" ASC
-        LIMIT ${selectionWindowSize}
+        ${staleBackgroundQueuedCandidatesSql}
       )
       SELECT
         "id",
@@ -674,7 +672,17 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    return this.selectCandidatesWithReceiptReserve(Array.from(uniqueById.values()), take)
+    const uniqueWorkUnits = new Map<string, WebhookEnqueueCandidate>();
+    for (const candidate of uniqueById.values()) {
+      const chatId = this.extractPriorityChatId(candidate.normalizedPayload);
+      const workUnitKey = chatId ? `chat:${chatId}` : `event:${candidate.id}`;
+      const existing = uniqueWorkUnits.get(workUnitKey);
+      if (!existing || this.compareCandidateSequence(candidate, existing) < 0) {
+        uniqueWorkUnits.set(workUnitKey, candidate);
+      }
+    }
+
+    return this.selectCandidatesWithReceiptReserve(Array.from(uniqueWorkUnits.values()), take)
       .sort((left, right) => this.compareCandidateSequence(left, right))
       .slice(0, take);
   }

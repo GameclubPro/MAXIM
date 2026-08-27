@@ -166,17 +166,17 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     );
   });
 
-  it('selects fair work-unit heads with bounded lane scans and ordered-chat index probes', async () => {
+  it('collapses a 4k hot chat inside bounded lane scans without probing every global head', async () => {
     const suffix = randomUUID();
     const poisonChat = `outbox-poison-${suffix}`;
     const fencedChat = `outbox-fenced-${suffix}`;
     const lifecycleEventId = `outbox-lifecycle-${suffix}`;
     const [fencedHeadId, fencedNewerId] = [randomUUID(), randomUUID()].sort();
     const baseCreatedAt = new Date('2026-08-15T09:00:00.000Z');
-    const tiedCreatedAt = new Date(baseCreatedAt.getTime() + 100_000);
-    const now = new Date('2026-08-15T10:00:00.000Z');
-    const poisonRows = Array.from({ length: 400 }, (_, index) => ({
-      id: `outbox-poison-${String(index).padStart(3, '0')}-${suffix}`,
+    const tiedCreatedAt = new Date(baseCreatedAt.getTime() + 4_100_000);
+    const now = new Date('2026-08-15T12:00:00.000Z');
+    const poisonRows = Array.from({ length: 4_000 }, (_, index) => ({
+      id: `outbox-poison-${String(index).padStart(4, '0')}-${suffix}`,
       dedupKey: `outbox-poison-dedup-${index}-${suffix}`,
       status: WebhookStatus.RECEIVED,
       rawPayload: {},
@@ -251,7 +251,10 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       poisonRows[0]!.id,
     ]);
     expect(selectedTestIds).not.toContain(fencedHeadId);
-    expect(selectedTestIds).not.toContain(fencedNewerId);
+    expect(selectedTestIds).toContain(fencedNewerId);
+    await expect(reader.findOrderedWebhookHeadsForChats([fencedChat])).resolves.toEqual(
+      new Map([[fencedChat, { id: fencedHeadId, createdAt: tiedCreatedAt }]]),
+    );
 
     await prisma.webhookEvent.update({
       where: { id: fencedHeadId },
@@ -293,6 +296,8 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     });
     await (captureService as OrderedWebhookHeadReader).selectEnqueueCandidates(now);
     expect(capturedSelectionQuery).not.toBeNull();
+    expect(capturedSelectionQuery!.sql).not.toContain('LATERAL');
+    expect(capturedSelectionQuery!.values.filter((value) => value === 5_000)).toHaveLength(5);
 
     const plan = await prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL enable_seqscan = off`;
@@ -304,23 +309,10 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect(planNodes.some((node) => node['Subplan Name'] === 'CTE ordered_message_head_ids')).toBe(
       false,
     );
-    const orderedHeadProbeIndexNodes = planNodes.filter(
-      (node) =>
-        node['Alias'] === 'ordered_chat_head_event' &&
-        node['Index Name'] === 'webhook_events_ordered_chat_head_idx',
+    expect(planNodes.some((node) => node['Alias'] === 'ordered_chat_head_event')).toBe(false);
+    expect(planNodes.filter((node) => node['Node Type'] === 'Limit').length).toBeGreaterThanOrEqual(
+      5,
     );
-    expect(orderedHeadProbeIndexNodes.length).toBeGreaterThan(0);
-    expect(
-      orderedHeadProbeIndexNodes.every(
-        (node) => node['Node Type'] === 'Index Scan' || node['Node Type'] === 'Index Only Scan',
-      ),
-    ).toBe(true);
-    expect(
-      planNodes.some(
-        (node) =>
-          node['Node Type'] === 'Bitmap Heap Scan' && node['Alias'] === 'ordered_chat_head_event',
-      ),
-    ).toBe(false);
   });
 
   it('selects a retained snake-case mirror only from a clean completed semantic owner', async () => {
