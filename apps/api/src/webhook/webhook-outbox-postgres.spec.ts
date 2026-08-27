@@ -304,12 +304,14 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     expect(planNodes.some((node) => node['Subplan Name'] === 'CTE ordered_message_head_ids')).toBe(
       false,
     );
-    const orderedHeadIndexNodes = planNodes.filter(
-      (node) => node['Index Name'] === 'webhook_events_ordered_chat_head_idx',
+    const orderedHeadProbeIndexNodes = planNodes.filter(
+      (node) =>
+        node['Alias'] === 'ordered_chat_head_event' &&
+        node['Index Name'] === 'webhook_events_ordered_chat_head_idx',
     );
-    expect(orderedHeadIndexNodes.length).toBeGreaterThan(0);
+    expect(orderedHeadProbeIndexNodes.length).toBeGreaterThan(0);
     expect(
-      orderedHeadIndexNodes.every(
+      orderedHeadProbeIndexNodes.every(
         (node) => node['Node Type'] === 'Index Scan' || node['Node Type'] === 'Index Only Scan',
       ),
     ).toBe(true);
