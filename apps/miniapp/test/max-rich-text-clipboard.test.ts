@@ -57,16 +57,43 @@ test('preserves modern clipboard blocks with safe fallbacks', () => {
     clipboardHtmlToSupportedMarkdown(
       '<h2>Анонс</h2><pre><code>const value = "&lt;MAX&gt;";</code></pre><ul><li>Первое</li><li><b>Второе</b></li></ul><blockquote>Важно<br>сейчас</blockquote><mark>Фокус</mark>',
     ),
-    '# Анонс\n\n```\nconst value = "<MAX>";\n```\n\n• Первое\n• **Второе**\n\n> Важно\n> сейчас\n\n**Фокус**',
+    '## Анонс\n\n```\nconst value = "<MAX>";\n```\n\n• Первое\n• **Второе**\n\n> Важно\n> сейчас\n\n^^Фокус^^',
   );
 });
 
 test('escapes pasted markdown punctuation as literal text', () => {
-  const markdown = clipboardHtmlToSupportedMarkdown('<b>A*B_[C]</b>');
+  const markdown = clipboardHtmlToSupportedMarkdown('<b>A*B_[C] # &gt; ^^</b>');
 
-  assert.equal(markdown, '**A\\*B\\_\\[C\\]**');
+  assert.equal(markdown, '**A\\*B\\_\\[C\\] \\# \\> \\^\\^**');
   assert.equal(
     renderSupportedMarkdownAsHtml(markdown, { blockMode: 'inline' }),
-    '<strong>A*B_[C]</strong>',
+    '<strong>A*B_[C] # &gt; ^^</strong>',
+  );
+});
+
+test('closes and reopens pasted inline formatting at every block boundary', () => {
+  const markdown = clipboardHtmlToSupportedMarkdown(
+    '<strong><div>Первая</div><div>Вторая</div></strong>',
+  );
+
+  assert.equal(markdown, '**Первая**\n\n**Вторая**');
+  assert.equal(
+    renderSupportedMarkdownAsHtml(markdown, { blockMode: 'inline' }),
+    '<strong>Первая</strong><br><br><strong>Вторая</strong>',
+  );
+});
+
+test('closes and reopens pasted links around multiline labels', () => {
+  const markdown = clipboardHtmlToSupportedMarkdown(
+    '<a href="https://max.ru/example">Первая<br>Вторая</a>',
+  );
+
+  assert.equal(
+    markdown,
+    '[Первая](https://max.ru/example)\n[Вторая](https://max.ru/example)',
+  );
+  assert.equal(
+    renderSupportedMarkdownAsHtml(markdown, { blockMode: 'inline' }),
+    '<a href="https://max.ru/example">Первая</a><br><a href="https://max.ru/example">Вторая</a>',
   );
 });

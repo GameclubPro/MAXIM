@@ -2306,6 +2306,16 @@
   }
 
   @media (max-width: 380px) {
+    .vk-parsing-editor__format-tools {
+      min-height: 97px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(40px, 1fr));
+      grid-auto-rows: 40px;
+      align-items: center;
+      justify-items: center;
+      overflow-x: visible;
+    }
+
     .vk-source-card__summary-row {
       grid-template-columns: 1fr;
     }

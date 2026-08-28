@@ -7,7 +7,8 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import type { Queue } from 'bullmq';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import {
@@ -17,7 +18,18 @@ import {
 import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { readChannelSuggestionPublicationClaimV1 } from './admin-channel-suggestion-publication-protocol';
-import { CHANNEL_DIALOG_ACTION_SUGGEST } from './admin.service.support';
+import {
+  CHANNEL_DIALOG_ACTION_SUGGEST,
+  PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
+} from './admin.service.support';
+import {
+  isPublisherSuggestionReviewProtocol,
+  PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
+  PUBLISHER_SUGGESTION_LEGACY_INLINE_STALE_MS,
+  PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
+  readLegacyPublisherSuggestionInlineClaim,
+  readPublisherSuggestionReviewClaim,
+} from './publisher-suggestion-review-protocol';
 import {
   PUBLISHER_SUGGESTION_PUBLICATION_JOB,
   PUBLISHER_SUGGESTION_PUBLICATION_QUEUE,
@@ -27,6 +39,7 @@ import {
 
 const PUBLISHER_SUGGESTION_RECOVERY_PAGE_SIZE = 100;
 const PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES = 2;
+const PUBLISHER_SUGGESTION_LEGACY_MIGRATION_BATCH_SIZE = 25;
 
 type PublisherSuggestionRecoveryCursor = {
   createdAt: Date;
@@ -40,6 +53,7 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
   private recoveryTimer: NodeJS.Timeout | null = null;
   private recoveryInFlight: Promise<void> | null = null;
   private recoveryCursor: PublisherSuggestionRecoveryCursor | null = null;
+  private legacyMigrationCursor: PublisherSuggestionRecoveryCursor | null = null;
 
   constructor(
     @InjectQueue(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE)
@@ -66,7 +80,11 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
     }
   }
 
-  async enqueue(suggestionId: string, claimToken: string): Promise<void> {
+  async enqueue(
+    suggestionId: string,
+    claimToken: string,
+    options: { recycleCompleted?: boolean } = {},
+  ): Promise<void> {
     const normalizedSuggestionId = suggestionId.trim();
     const normalizedClaimToken = claimToken.trim();
     if (!normalizedSuggestionId || !normalizedClaimToken) {
@@ -77,10 +95,18 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
       .digest('hex')}`;
     const existing = await this.queue.getJob(jobId);
     if (existing) {
-      if ((await existing.getState()) === 'failed') {
+      const state = await existing.getState();
+      if (state === 'failed') {
         await existing.retry();
+        return;
       }
-      return;
+      if (state === 'completed' && options.recycleCompleted === true) {
+        // An older rolling-deploy worker can consume an unknown Publisher claim as a no-op.
+        // A still-publishing audit row is the authority to recreate that exact durable job.
+        await existing.remove();
+      } else {
+        return;
+      }
     }
     await this.queue.add(
       PUBLISHER_SUGGESTION_PUBLICATION_JOB,
@@ -122,15 +148,23 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
       if (await this.dispatchHealth.isGloballyPaused()) {
         return;
       }
+      await this.migrateLegacyInlineClaims();
       let cursor = this.recoveryCursor;
       let failedClaims = 0;
       let firstFailure: unknown = null;
       for (let page = 0; page < PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES; page += 1) {
         const rows = await this.prisma.auditLog.findMany({
           where: {
-            action: CHANNEL_DIALOG_ACTION_SUGGEST,
+            action: {
+              in: [CHANNEL_DIALOG_ACTION_SUGGEST, PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST],
+            },
             AND: [
-              { payload: { path: ['reviewStatus'], equals: 'publishing' } },
+              {
+                OR: [
+                  { payload: { path: ['reviewStatus'], equals: 'publishing' } },
+                  { payload: { path: ['reviewStatus'], equals: 'pending' } },
+                ],
+              },
               { payload: { path: ['reviewDispatchProfile'], equals: 'PUBLIK_V1' } },
               ...(cursor
                 ? [
@@ -157,12 +191,16 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
             row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
               ? (row.payload as Record<string, unknown>)
               : {};
-          const claim = readChannelSuggestionPublicationClaimV1(payload, row.id);
+          const claim =
+            readChannelSuggestionPublicationClaimV1(payload, row.id) ??
+            readPublisherSuggestionReviewClaim(payload, row.id, { allowPending: true });
           if (!claim) {
             continue;
           }
           try {
-            await this.enqueue(row.id, claim.claimToken);
+            await this.enqueue(row.id, claim.claimToken, {
+              recycleCompleted: isPublisherSuggestionReviewProtocol(payload),
+            });
           } catch (error: unknown) {
             failedClaims += 1;
             firstFailure ??= error;
@@ -191,6 +229,98 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
         { err: error instanceof Error ? error.message : String(error) },
         'Failed to recover queued Publik suggestion publications',
       );
+    }
+  }
+
+  private async migrateLegacyInlineClaims(): Promise<void> {
+    const nowMs = Date.now();
+    const staleBefore = new Date(nowMs - PUBLISHER_SUGGESTION_LEGACY_INLINE_STALE_MS);
+    let cursor = this.legacyMigrationCursor;
+    for (let page = 0; page < PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES; page += 1) {
+      const candidates = await this.prisma.$queryRaw<
+        Array<{ id: string; payload: Prisma.JsonValue; createdAt: Date }>
+      >(Prisma.sql`
+        SELECT id, payload, created_at AS "createdAt"
+        FROM audit_logs
+        WHERE action = ${PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST}::text
+          AND payload->>'type' = 'suggest'
+          AND payload->>'reviewStatus' = 'publishing'
+          AND payload->>'reviewPublicationProtocol' IS NULL
+          AND NULLIF(payload->>'reviewedByUserId', '') IS NOT NULL
+          AND NULLIF(payload->>'reviewedAt', '') IS NOT NULL
+          AND payload->>'reviewedAt' <= ${staleBefore.toISOString()}::text
+          ${
+            cursor
+              ? Prisma.sql`AND (
+                created_at > ${cursor.createdAt}
+                OR (created_at = ${cursor.createdAt} AND id > ${cursor.id}::text)
+              )`
+              : Prisma.empty
+          }
+        ORDER BY created_at ASC, id ASC
+        LIMIT ${PUBLISHER_SUGGESTION_LEGACY_MIGRATION_BATCH_SIZE}
+      `);
+      if (candidates.length === 0) {
+        this.legacyMigrationCursor = null;
+        break;
+      }
+
+      for (const candidate of candidates) {
+        const payload =
+          candidate.payload &&
+          typeof candidate.payload === 'object' &&
+          !Array.isArray(candidate.payload)
+            ? (candidate.payload as Record<string, unknown>)
+            : {};
+        const legacyClaim = readLegacyPublisherSuggestionInlineClaim(payload, candidate.id, nowMs);
+        if (!legacyClaim) continue;
+        const claimToken = randomUUID();
+        const patch = {
+          reviewAction: 'publish',
+          reviewDispatchProfile: PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
+          reviewPublicationProtocol: PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
+          reviewPublicationRequestId: legacyClaim.requestId,
+          reviewClaimToken: claimToken,
+          reviewClaimedAt: legacyClaim.claimedAt,
+          reviewClaimedByUserId: legacyClaim.claimedByUserId,
+          reviewClaimedByUsername: null,
+          reviewClaimedByDisplayName: null,
+          reviewClaimedByAvatarUrl: null,
+          reviewClaimedByProfileUrl: null,
+          reviewClaimMigratedFrom: 'inline_v0',
+        } satisfies Prisma.InputJsonObject;
+        const migrated = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          UPDATE audit_logs
+          SET payload = payload::jsonb || ${JSON.stringify(patch)}::jsonb
+          WHERE id = ${candidate.id}::text
+            AND action = ${PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST}::text
+            AND payload->>'type' = 'suggest'
+            AND payload->>'reviewStatus' = 'publishing'
+            AND payload->>'reviewPublicationProtocol' IS NULL
+            AND payload->>'reviewedByUserId' = ${legacyClaim.claimedByUserId}::text
+            AND payload->>'reviewedAt' = ${legacyClaim.claimedAt}::text
+            AND payload->>'reviewedAt' <= ${staleBefore.toISOString()}::text
+          RETURNING id
+        `);
+        if (migrated.length === 0) continue;
+        try {
+          await this.enqueue(candidate.id, claimToken, { recycleCompleted: true });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              suggestionId: candidate.id,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Migrated legacy Publik suggestion claim; queue recovery will retry enqueue',
+          );
+        }
+      }
+
+      const last = candidates.at(-1)!;
+      cursor = { createdAt: last.createdAt, id: last.id };
+      this.legacyMigrationCursor =
+        candidates.length === PUBLISHER_SUGGESTION_LEGACY_MIGRATION_BATCH_SIZE ? cursor : null;
+      if (!this.legacyMigrationCursor) break;
     }
   }
 

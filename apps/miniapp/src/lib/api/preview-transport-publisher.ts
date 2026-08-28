@@ -12,6 +12,7 @@ import {
   publisherEntityModuleSettingsSchema,
   publisherEntityRefreshResponseSchema,
   publisherSuggestionSchema,
+  publisherSuggestionsQuerySchema,
   publisherSuggestionsResponseSchema,
   reviewPublisherSuggestionRequestSchema,
   reviewPublisherSuggestionResponseSchema,
@@ -105,14 +106,72 @@ function listPreviewPublisherSuggestions(
             ? 'published'
             : 'cancelled';
     const reviewStatus = reviews[id] ?? initialStatus;
+    const textFormat: PublisherSuggestion['textFormat'] = index === 0 ? 'markdown' : 'plain';
     return publisherSuggestionSchema.parse({
       id,
-      text: `Идея для публикации №${index + 1}: важная новость сообщества с проверенными деталями.`,
+      text:
+        textFormat === 'markdown'
+          ? `**Идея для публикации №${index + 1}\n\nВажная новость сообщества с проверенными деталями.**`
+          : `Идея для публикации №${index + 1}: важная новость сообщества с проверенными деталями.`,
+      textFormat,
       authorDisplayName: index % 4 === 0 ? null : `Автор ${index + 1}`,
       createdAt: new Date(state.clock.now().getTime() - index * 12 * 60_000).toISOString(),
       reviewStatus,
       publicationId: reviewStatus === 'published' ? `preview-publication-${index + 1}` : null,
     });
+  });
+}
+
+const PREVIEW_PUBLISHER_SUGGESTIONS_CURSOR_PATTERN = /^preview_(pending|history)_([1-9]\d*)$/u;
+
+function encodePreviewPublisherSuggestionsCursor(
+  view: 'pending' | 'history',
+  offset: number,
+): string {
+  return `preview_${view}_${offset}`;
+}
+
+function decodePreviewPublisherSuggestionsCursor(
+  value: string,
+): { view: 'pending' | 'history'; offset: number } | null {
+  const match = PREVIEW_PUBLISHER_SUGGESTIONS_CURSOR_PATTERN.exec(value);
+  if (!match) {
+    return null;
+  }
+  const offset = Number.parseInt(match[2] ?? '', 10);
+  if (!Number.isSafeInteger(offset) || offset < 1) {
+    return null;
+  }
+  return { view: match[1] as 'pending' | 'history', offset };
+}
+
+function listPreviewPublisherSuggestionsPage(state: PreviewState, entityId: string, url: URL) {
+  const query = publisherSuggestionsQuerySchema.parse(
+    Object.fromEntries(url.searchParams.entries()),
+  );
+  const suggestions = listPreviewPublisherSuggestions(state, entityId).filter((suggestion) => {
+    const pending =
+      suggestion.reviewStatus === 'pending' || suggestion.reviewStatus === 'publishing';
+    return query.view === 'pending' ? pending : !pending;
+  });
+  const cursor = query.cursor ? decodePreviewPublisherSuggestionsCursor(query.cursor) : null;
+  if (
+    query.cursor &&
+    (!cursor || cursor.view !== query.view || cursor.offset >= suggestions.length)
+  ) {
+    throw new ApiRequestError(400, '', 'Invalid preview publisher suggestions cursor');
+  }
+  const startIndex = cursor?.offset ?? 0;
+  const items = suggestions.slice(startIndex, startIndex + query.limit);
+  const nextOffset = startIndex + items.length;
+
+  return publisherSuggestionsResponseSchema.parse({
+    items,
+    total: suggestions.length,
+    nextCursor:
+      nextOffset < suggestions.length
+        ? encodePreviewPublisherSuggestionsCursor(query.view, nextOffset)
+        : null,
   });
 }
 
@@ -407,9 +466,7 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     segments[4] === 'suggestions' &&
     method === 'GET'
   ) {
-    return publisherSuggestionsResponseSchema.parse({
-      items: listPreviewPublisherSuggestions(state, entityId),
-    });
+    return listPreviewPublisherSuggestionsPage(state, entityId, url);
   }
   if (
     entityType === 'channel' &&
@@ -427,16 +484,13 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     if (!suggestion) {
       throw new ApiRequestError(404, '', 'Preview publisher suggestion not found');
     }
-    const reviewStatus = request.action === 'publish' ? 'published' : 'cancelled';
+    const reviewStatus = request.action === 'publish' ? 'publishing' : 'cancelled';
     getPreviewPublisherSuggestionReviews(state)[suggestionId] = reviewStatus;
     return reviewPublisherSuggestionResponseSchema.parse({
       suggestion: {
         ...suggestion,
         reviewStatus,
-        publicationId:
-          reviewStatus === 'published'
-            ? `preview-publication-${encodeURIComponent(suggestionId)}`
-            : null,
+        publicationId: null,
       },
     });
   }

@@ -59,6 +59,7 @@ export function PostEditor({
 }: PostEditorProps) {
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const [formatToolsOpen, setFormatToolsOpen] = useState(false);
+  const [normalizationReady, setNormalizationReady] = useState(true);
   const measuredTextLength = measureVkParsingPublishTextLength({
     text: draftText,
     textFormat: draftTextFormat,
@@ -72,6 +73,7 @@ export function PostEditor({
   });
   const remainingLength = VK_PARSING_MAX_PUBLISH_TEXT_LENGTH - measuredTextLength;
   const isOverLimit = remainingLength < 0;
+  const isEditorBusy = isPublishing || !normalizationReady;
 
   function applyTextModifier(tool: MaxMarkdownTool) {
     editorRef.current?.applyTool(tool);
@@ -87,6 +89,7 @@ export function PostEditor({
             sourceFormat={draftTextFormat}
             onChange={onDraftTextChange}
             disabled={isPublishing}
+            onNormalizationReadyChange={setNormalizationReady}
             maxLength={VK_PARSING_MAX_PUBLISH_TEXT_LENGTH}
             placeholder="Текст поста"
             ariaLabel="Текст VK-поста"
@@ -105,7 +108,7 @@ export function PostEditor({
           <button
             type="button"
             className={cn('vk-parsing-editor__format-toggle', formatToolsOpen && 'is-active')}
-            disabled={isPublishing}
+            disabled={isEditorBusy}
             aria-expanded={formatToolsOpen}
             aria-label="Форматирование"
             title="Форматирование"
@@ -139,7 +142,7 @@ export function PostEditor({
                   tool.id === 'italic' && 'is-italic',
                   tool.id === 'code' && 'is-code',
                 )}
-                disabled={isPublishing}
+                disabled={isEditorBusy}
                 title={tool.title}
                 aria-label={tool.title}
                 onMouseDown={(event) => event.preventDefault()}
@@ -179,7 +182,7 @@ export function PostEditor({
         <button
           type="button"
           className="button button--accent"
-          disabled={isPublishing || isOverLimit}
+          disabled={isEditorBusy || isOverLimit}
           onClick={onPublish}
         >
           <SendDiagonal aria-hidden />

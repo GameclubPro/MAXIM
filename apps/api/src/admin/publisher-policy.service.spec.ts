@@ -538,7 +538,7 @@ describe('PublisherPolicyService', () => {
     const findMany = jest
       .fn()
       .mockResolvedValueOnce([
-        refreshRow('lost-evidenced', {
+        refreshRow('lost-last-seen-only', {
           botAccessState: ChatBotAccessState.LOST,
           lastSeenAt: new Date('2026-08-26T10:00:00.000Z'),
         }),
@@ -586,9 +586,8 @@ describe('PublisherPolicyService', () => {
     );
 
     await expect(service.listRefreshableEntityIds(user, 500, ['already-queued'])).resolves.toEqual([
-      'lost-evidenced',
       'stale-evidenced',
-      ...readyIds.slice(0, 48),
+      ...readyIds.slice(0, 49),
     ]);
     expect(findMany).toHaveBeenCalledTimes(2);
     expect(catalogFindMany).toHaveBeenCalledTimes(2);
@@ -606,8 +605,16 @@ describe('PublisherPolicyService', () => {
           status: ChatBotMembershipStatus.ACTIVE,
           chatId: { notIn: ['already-queued'] },
           OR: expect.arrayContaining([
+            {
+              botAccessState: {
+                in: [
+                  ChatBotAccessState.CONFIRMED_MEMBER,
+                  ChatBotAccessState.CONFIRMED_ADMIN,
+                  ChatBotAccessState.CONFIRMED_OWNER,
+                ],
+              },
+            },
             { lastWebhookAt: { not: null } },
-            { lastSeenAt: { not: null } },
           ]),
           AND: [
             {
@@ -656,12 +663,15 @@ describe('PublisherPolicyService', () => {
         }),
       }),
     );
+    expect(findMany.mock.calls[0]?.[0].where.OR).not.toContainEqual({
+      lastSeenAt: { not: null },
+    });
     expect(findMany).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         take: 200,
         where: expect.objectContaining({
-          chatId: { notIn: ['already-queued', 'lost-evidenced', 'stale-evidenced'] },
+          chatId: { notIn: ['already-queued', 'stale-evidenced'] },
           botAccessState: {
             in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
           },

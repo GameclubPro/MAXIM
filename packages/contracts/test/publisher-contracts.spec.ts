@@ -4,6 +4,7 @@ import { MAX_PUBLICATION_TARGETS } from '../src/publication.js';
 import {
   MAX_PUBLISHER_BULK_REFRESH_TARGETS,
   MAX_PUBLISHER_ENTITY_RESOLVE_TARGETS,
+  MAX_PUBLISHER_SUGGESTIONS_CURSOR_LENGTH,
   decodePublisherEntitiesCursor,
   encodePublisherEntitiesCursor,
   publisherEntitiesCursorQuerySchema,
@@ -12,6 +13,10 @@ import {
   publisherEntitiesResponseSchema,
   publisherEntityRefreshResponseSchema,
   publisherEntitySchema,
+  publisherSuggestionSchema,
+  publisherSuggestionsQuerySchema,
+  publisherSuggestionsResponseSchema,
+  reviewPublisherSuggestionRequestSchema,
   resolvePublisherEntitiesRequestSchema,
   resolvePublisherEntitiesResponseSchema,
   updateManagedEntityPublicationPolicyRequestSchema,
@@ -76,6 +81,80 @@ describe('publisher contracts', () => {
         channelSuggestionsEnabled: null,
       },
     });
+  });
+
+  it('preserves the source text format for publisher suggestion previews', () => {
+    const suggestion = publisherSuggestionSchema.parse({
+      id: 'suggestion-1',
+      text: '**Первая строка\n\nВторая строка**',
+      textFormat: 'markdown',
+      authorDisplayName: 'Читатель',
+      createdAt: '2026-08-27T10:00:00.000Z',
+      reviewStatus: 'pending',
+      publicationId: null,
+      reviewError: 'Маршрут Публика временно недоступен.',
+    });
+
+    expect(suggestion.textFormat).toBe('markdown');
+    expect(suggestion.reviewError).toBe('Маршрут Публика временно недоступен.');
+    expect(publisherSuggestionSchema.safeParse({ ...suggestion, textFormat: 'html' }).success).toBe(
+      false,
+    );
+  });
+
+  it('negotiates the versioned Publisher suggestion review response', () => {
+    expect(reviewPublisherSuggestionRequestSchema.parse({ action: 'publish' })).toEqual({
+      action: 'publish',
+    });
+    expect(
+      reviewPublisherSuggestionRequestSchema.parse({ action: 'publish', responseVersion: 2 }),
+    ).toEqual({ action: 'publish', responseVersion: 2 });
+  });
+
+  it('defaults publisher suggestions to a bounded pending page', () => {
+    expect(publisherSuggestionsQuerySchema.parse({})).toEqual({
+      view: 'pending',
+      limit: 25,
+    });
+    expect(
+      publisherSuggestionsQuerySchema.parse({
+        view: 'history',
+        limit: '100',
+        cursor: ' next_cursor ',
+      }),
+    ).toEqual({
+      view: 'history',
+      limit: 100,
+      cursor: 'next_cursor',
+    });
+    expect(publisherSuggestionsQuerySchema.safeParse({ limit: 101 }).success).toBe(false);
+    expect(
+      publisherSuggestionsQuerySchema.safeParse({
+        cursor: 'x'.repeat(MAX_PUBLISHER_SUGGESTIONS_CURSOR_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+    expect(publisherSuggestionsQuerySchema.safeParse({ view: 'all' }).success).toBe(false);
+  });
+
+  it('requires exact server totals and a bounded next cursor for suggestion pages', () => {
+    expect(
+      publisherSuggestionsResponseSchema.parse({
+        items: [],
+        total: 121,
+        nextCursor: 'next_cursor',
+      }),
+    ).toEqual({ items: [], total: 121, nextCursor: 'next_cursor' });
+    expect(
+      publisherSuggestionsResponseSchema.safeParse({ items: [], nextCursor: null }).success,
+    ).toBe(false);
+    expect(
+      publisherSuggestionsResponseSchema.safeParse({
+        items: [],
+        total: 0,
+        nextCursor: null,
+        pendingTotal: 0,
+      }).success,
+    ).toBe(false);
   });
 
   it('keeps Publik-owned chat comment module settings separate from Major presentation data', () => {

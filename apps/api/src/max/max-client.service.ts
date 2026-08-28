@@ -14,6 +14,13 @@ import {
   type InternalChannelDialogButtonIdentity,
 } from '../common/channel-dialog-button-identity.util';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
+import {
+  isMaxTextMarkupType,
+  normalizeMaxUserMentionLink,
+  renderMaxTextMarkupAsHtml,
+  renderMaxTextMarkupAsMarkdown,
+  type MaxTextMarkup,
+} from '../common/max-text-markup.util';
 import { resolveMaxUserDisplayName } from '../common/max-user-display-name.util';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 import {
@@ -201,21 +208,7 @@ type MaxQueuedSendResponse = Record<string, unknown> & {
   };
 };
 
-type MaxMessageMarkup = {
-  from: number;
-  length: number;
-  type:
-    | 'emphasized'
-    | 'heading'
-    | 'link'
-    | 'monospaced'
-    | 'strikethrough'
-    | 'strong'
-    | 'underline'
-    | 'user_mention';
-  url: string | null;
-  userLink: string | null;
-};
+type MaxMessageMarkup = MaxTextMarkup;
 
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
 const DEFAULT_SUCCESS_FALSE_STATUS = 200;
@@ -891,10 +884,7 @@ export class MaxClientService implements OnModuleDestroy {
       true,
     );
     this.globalRpsLimit = Math.min(
-      this.readConfigInt(
-        configService.get('MAX_API_GLOBAL_RPS'),
-        DEFAULT_MAX_API_GLOBAL_RPS,
-      ),
+      this.readConfigInt(configService.get('MAX_API_GLOBAL_RPS'), DEFAULT_MAX_API_GLOBAL_RPS),
       DEFAULT_MAX_API_GLOBAL_RPS,
     );
     this.criticalGlobalRpsLimit = this.readConfigInt(
@@ -1353,10 +1343,7 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const markdown = this.renderMessageMarkupAsMarkdown(
-      sourceText,
-      this.extractMessageMarkup(message),
-    );
+    const markdown = renderMaxTextMarkupAsMarkdown(sourceText, this.extractMessageMarkup(message));
     return markdown || sourceText;
   }
 
@@ -5806,11 +5793,11 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (typeof sourceText === 'string' && typeof text === 'string' && text === sourceText) {
-      const markdown = this.renderMessageMarkupAsMarkdown(sourceText, source.markup);
-      if (markdown && markdown !== sourceText) {
+      const html = renderMaxTextMarkupAsHtml(sourceText, source.markup);
+      if (html && html !== sourceText) {
         return {
-          text: markdown,
-          textFormat: 'markdown',
+          text: html,
+          textFormat: 'html',
         };
       }
 
@@ -5947,16 +5934,7 @@ export class MaxClientService implements OnModuleDestroy {
       length === null ||
       from < 0 ||
       length <= 0 ||
-      ![
-        'emphasized',
-        'heading',
-        'link',
-        'monospaced',
-        'strikethrough',
-        'strong',
-        'underline',
-        'user_mention',
-      ].includes(type)
+      !isMaxTextMarkupType(type)
     ) {
       return null;
     }
@@ -5964,366 +5942,13 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       from,
       length,
-      type: type as MaxMessageMarkup['type'],
+      type,
       url: this.readTrimmedString(row.url),
-      userLink: this.readTrimmedString(row.user_link ?? row.userLink),
+      userLink: normalizeMaxUserMentionLink(
+        row.user_link ?? row.userLink,
+        row.user_id ?? row.userId,
+      ),
     };
-  }
-
-  private renderMessageMarkupAsHtml(text: string, markup: MaxMessageMarkup[]): string | null {
-    if (markup.length === 0) {
-      return null;
-    }
-
-    const openTags = new Map<
-      number,
-      Array<{ open: string; close: string; end: number; priority: number }>
-    >();
-    const closeTags = new Map<
-      number,
-      Array<{ close: string; start: number; end: number; priority: number }>
-    >();
-    const boundaries = new Set<number>([0, text.length]);
-
-    for (const item of markup) {
-      const start = item.from;
-      const end = item.from + item.length;
-
-      if (start < 0 || end <= start || end > text.length) {
-        continue;
-      }
-
-      const tag = this.resolveMarkupHtmlTags(item, text.slice(start, end));
-      if (!tag) {
-        continue;
-      }
-
-      const openBucket = openTags.get(start) ?? [];
-      openBucket.push({
-        open: tag.open,
-        close: tag.close,
-        end,
-        priority: tag.priority,
-      });
-      openTags.set(start, openBucket);
-
-      const closeBucket = closeTags.get(end) ?? [];
-      closeBucket.push({
-        close: tag.close,
-        start,
-        end,
-        priority: tag.priority,
-      });
-      closeTags.set(end, closeBucket);
-      boundaries.add(start);
-      boundaries.add(end);
-    }
-
-    if (openTags.size === 0 && closeTags.size === 0) {
-      return null;
-    }
-
-    let html = '';
-    let previousBoundary = 0;
-    const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
-
-    for (const boundary of sortedBoundaries) {
-      if (boundary > previousBoundary) {
-        html += this.escapeHtml(text.slice(previousBoundary, boundary));
-      }
-
-      const closing = closeTags.get(boundary);
-      if (closing) {
-        closing
-          .slice()
-          .sort(
-            (left, right) =>
-              right.start - left.start || left.end - right.end || right.priority - left.priority,
-          )
-          .forEach((tag) => {
-            html += tag.close;
-          });
-      }
-
-      const opening = openTags.get(boundary);
-      if (opening) {
-        opening
-          .slice()
-          .sort((left, right) => right.end - left.end || left.priority - right.priority)
-          .forEach((tag) => {
-            html += tag.open;
-          });
-      }
-      previousBoundary = boundary;
-    }
-
-    return html;
-  }
-
-  private renderMessageMarkupAsMarkdown(text: string, markup: MaxMessageMarkup[]): string | null {
-    if (markup.length === 0) {
-      return null;
-    }
-
-    const openTags = new Map<
-      number,
-      Array<{ open: string; close: string; end: number; priority: number }>
-    >();
-    const closeTags = new Map<
-      number,
-      Array<{ close: string; start: number; end: number; priority: number }>
-    >();
-    const boundaries = new Set<number>([0, text.length]);
-
-    for (const item of markup) {
-      const start = item.from;
-      const end = item.from + item.length;
-      if (start < 0 || end <= start || end > text.length) {
-        continue;
-      }
-
-      for (const segment of this.splitMarkupRangeByLines(text, start, end)) {
-        const delimiters = this.resolveMarkupMarkdownDelimiters(
-          item,
-          text.slice(segment.start, segment.end),
-        );
-        if (!delimiters) {
-          continue;
-        }
-
-        const openBucket = openTags.get(segment.start) ?? [];
-        openBucket.push({
-          open: delimiters.open,
-          close: delimiters.close,
-          end: segment.end,
-          priority: delimiters.priority,
-        });
-        openTags.set(segment.start, openBucket);
-
-        const closeBucket = closeTags.get(segment.end) ?? [];
-        closeBucket.push({
-          close: delimiters.close,
-          start: segment.start,
-          end: segment.end,
-          priority: delimiters.priority,
-        });
-        closeTags.set(segment.end, closeBucket);
-        boundaries.add(segment.start);
-        boundaries.add(segment.end);
-      }
-    }
-
-    if (openTags.size === 0 && closeTags.size === 0) {
-      return null;
-    }
-
-    let markdown = '';
-    let previousBoundary = 0;
-    const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
-
-    for (const boundary of sortedBoundaries) {
-      if (boundary > previousBoundary) {
-        markdown += this.escapeMarkdownText(text.slice(previousBoundary, boundary));
-      }
-
-      const closing = closeTags.get(boundary);
-      if (closing) {
-        closing
-          .slice()
-          .sort(
-            (left, right) =>
-              right.start - left.start || left.end - right.end || right.priority - left.priority,
-          )
-          .forEach((tag) => {
-            markdown += tag.close;
-          });
-      }
-
-      const opening = openTags.get(boundary);
-      if (opening) {
-        opening
-          .slice()
-          .sort((left, right) => right.end - left.end || left.priority - right.priority)
-          .forEach((tag) => {
-            markdown += tag.open;
-          });
-      }
-
-      previousBoundary = boundary;
-    }
-
-    return markdown;
-  }
-
-  private splitMarkupRangeByLines(
-    text: string,
-    start: number,
-    end: number,
-  ): Array<{ start: number; end: number }> {
-    const segments: Array<{ start: number; end: number }> = [];
-    let segmentStart = start;
-
-    for (let index = start; index < end; index += 1) {
-      const char = text[index];
-      if (char !== '\n' && char !== '\r') {
-        continue;
-      }
-
-      if (segmentStart < index && text.slice(segmentStart, index).trim().length > 0) {
-        segments.push({ start: segmentStart, end: index });
-      }
-
-      if (char === '\r' && text[index + 1] === '\n' && index + 1 < end) {
-        index += 1;
-      }
-      segmentStart = index + 1;
-    }
-
-    if (segmentStart < end && text.slice(segmentStart, end).trim().length > 0) {
-      segments.push({ start: segmentStart, end });
-    }
-
-    return segments;
-  }
-
-  private resolveMarkupMarkdownDelimiters(
-    markup: MaxMessageMarkup,
-    visibleText: string,
-  ): { open: string; close: string; priority: number } | null {
-    switch (markup.type) {
-      case 'strong':
-        return { open: '**', close: '**', priority: 20 };
-      case 'heading':
-        return { open: '# ', close: '', priority: 5 };
-      case 'emphasized':
-        return { open: '_', close: '_', priority: 30 };
-      case 'underline':
-        return { open: '++', close: '++', priority: 40 };
-      case 'strikethrough':
-        return { open: '~~', close: '~~', priority: 50 };
-      case 'monospaced':
-        return visibleText.includes('\n') ? null : { open: '`', close: '`', priority: 60 };
-      case 'link':
-        return markup.url && !this.isRedundantMarkupAutoLink(visibleText, markup.url)
-          ? {
-              open: '[',
-              close: `](${markup.url})`,
-              priority: 10,
-            }
-          : null;
-      case 'user_mention': {
-        const mentionTarget = this.resolveMentionMarkupHref(markup.userLink);
-        return mentionTarget
-          ? {
-              open: '[',
-              close: `](${mentionTarget})`,
-              priority: 10,
-            }
-          : null;
-      }
-      default:
-        return null;
-    }
-  }
-
-  private isRedundantMarkupAutoLink(visibleText: string, targetUrl: string): boolean {
-    const normalizedVisibleText = visibleText.trim();
-    const normalizedTargetUrl = targetUrl.trim();
-    if (!normalizedVisibleText || !normalizedTargetUrl) {
-      return false;
-    }
-
-    if (!/^(https?:\/\/|max:\/\/)\S+$/iu.test(normalizedVisibleText)) {
-      return false;
-    }
-
-    return (
-      this.normalizeComparableMarkupUrl(normalizedVisibleText) ===
-      this.normalizeComparableMarkupUrl(normalizedTargetUrl)
-    );
-  }
-
-  private normalizeComparableMarkupUrl(value: string): string {
-    return value.trim().replace(/\/+$/u, '').toLowerCase();
-  }
-
-  private escapeMarkdownText(value: string): string {
-    return value.replace(/([\\#_*[\]()`~+])/g, '\\$1');
-  }
-
-  private resolveMarkupHtmlTags(
-    markup: MaxMessageMarkup,
-    visibleText: string,
-  ): { open: string; close: string; priority: number } | null {
-    switch (markup.type) {
-      case 'strong':
-      case 'heading':
-        return {
-          open: '<strong>',
-          close: '</strong>',
-          priority: markup.type === 'heading' ? 5 : 20,
-        };
-      case 'emphasized':
-        return { open: '<em>', close: '</em>', priority: 30 };
-      case 'underline':
-        return { open: '<u>', close: '</u>', priority: 40 };
-      case 'strikethrough':
-        return { open: '<del>', close: '</del>', priority: 50 };
-      case 'monospaced':
-        return visibleText.includes('\n')
-          ? { open: '<pre>', close: '</pre>', priority: 60 }
-          : { open: '<code>', close: '</code>', priority: 60 };
-      case 'link':
-        return markup.url
-          ? {
-              open: `<a href="${this.escapeHtmlAttribute(markup.url)}">`,
-              close: '</a>',
-              priority: 10,
-            }
-          : null;
-      case 'user_mention': {
-        const mentionTarget = this.resolveMentionMarkupHref(markup.userLink);
-        return mentionTarget
-          ? {
-              open: `<a href="${this.escapeHtmlAttribute(mentionTarget)}">`,
-              close: '</a>',
-              priority: 10,
-            }
-          : null;
-      }
-      default:
-        return null;
-    }
-  }
-
-  private escapeHtml(value: string): string {
-    return value
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;');
-  }
-
-  private escapeHtmlAttribute(value: string): string {
-    return this.escapeHtml(value).replaceAll("'", '&#39;');
-  }
-
-  private resolveMentionMarkupHref(value: string | null): string | null {
-    if (!value) {
-      return null;
-    }
-
-    const normalized = value.trim();
-    if (!normalized) {
-      return null;
-    }
-
-    if (/^(?:max:\/\/|https?:\/\/)/iu.test(normalized)) {
-      return normalized;
-    }
-
-    const trimmed = normalized.replace(/^\/+/u, '');
-    return trimmed.startsWith('user/') ? `max://${trimmed}` : `https://max.ru/${trimmed}`;
   }
 
   private extractEditableAttachments(

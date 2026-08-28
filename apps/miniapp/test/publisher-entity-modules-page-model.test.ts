@@ -97,6 +97,7 @@ test('publisher suggestions put actionable rows first and split history explicit
     {
       id: 'published-new',
       text: 'Published',
+      textFormat: 'plain' as const,
       authorDisplayName: null,
       createdAt: '2026-08-27T12:00:00.000Z',
       reviewStatus: 'published' as const,
@@ -105,6 +106,7 @@ test('publisher suggestions put actionable rows first and split history explicit
     {
       id: 'pending-old',
       text: 'Pending',
+      textFormat: 'plain' as const,
       authorDisplayName: 'Admin',
       createdAt: '2026-08-27T10:00:00.000Z',
       reviewStatus: 'pending' as const,
@@ -113,6 +115,7 @@ test('publisher suggestions put actionable rows first and split history explicit
     {
       id: 'publishing',
       text: 'Publishing',
+      textFormat: 'plain' as const,
       authorDisplayName: null,
       createdAt: '2026-08-27T11:00:00.000Z',
       reviewStatus: 'publishing' as const,
@@ -121,6 +124,7 @@ test('publisher suggestions put actionable rows first and split history explicit
     {
       id: 'cancelled',
       text: 'Cancelled',
+      textFormat: 'plain' as const,
       authorDisplayName: null,
       createdAt: '2026-08-27T09:00:00.000Z',
       reviewStatus: 'cancelled' as const,

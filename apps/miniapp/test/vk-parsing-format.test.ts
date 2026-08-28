@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { formatVkSourceProblem, normalizeApiError } from '../src/components/vk-parsing/format';
+
+const vkParsingCss = readFileSync(new URL('../src/styles/vk-parsing.css', import.meta.url), 'utf8');
 
 test('VK errors preserve safe validation without exposing server internals', () => {
   assert.equal(
@@ -47,5 +50,12 @@ test('VK source problems stay actionable without backend diagnostics', () => {
   assert.equal(
     formatVkSourceProblem({ ...base, lastError: 'VK_SERVICE_TOKEN is missing' }),
     'Не удалось обновить источник.',
+  );
+});
+
+test('VK formatting tools wrap into stable rows on 320px viewports', () => {
+  assert.match(
+    vkParsingCss,
+    /@media \(max-width: 380px\) \{[\s\S]*?\.vk-parsing-editor__format-tools \{[\s\S]*?min-height: 97px;[\s\S]*?grid-template-columns: repeat\(4, minmax\(40px, 1fr\)\);[\s\S]*?overflow-x: visible;/u,
   );
 });

@@ -6,6 +6,7 @@ import type {
 import { formatBroadcastButtonsStatus } from './broadcast-link-buttons';
 import { getBroadcastScheduleDayKey, sortAndUniqueBroadcastSlots } from './broadcast-schedule';
 import { formatSupportedMarkdownPreview } from './max-markdown';
+import { normalizeLegacyMultilineMarkdown } from './max-markdown-multiline';
 import { buildSlotsByDay, formatCountLabel } from './broadcast-planner-time';
 
 export type BroadcastScheduleAgendaTone = 'active' | 'warning' | 'danger' | 'muted';
@@ -115,7 +116,10 @@ export function buildAgendaEntries(
         sourceChatId: null,
         dayKey,
         title:
-          formatSupportedMarkdownPreview(broadcast.textPreview, 120) ||
+          formatSupportedMarkdownPreview(
+            normalizeLegacyMultilineMarkdown(broadcast.textPreview),
+            120,
+          ) ||
           (broadcast.hasImage ? 'Фото без текста' : broadcast.textPreview),
         previewSource: broadcast.textPreview,
         statusLabel: resolveAgendaStatusLabel(broadcast.status),
@@ -183,7 +187,10 @@ export function buildAgendaEntriesFromCalendarSlots(
         sourceChatId: firstSlot?.sourceChatId ?? null,
         dayKey,
         title:
-          formatSupportedMarkdownPreview(firstSlot?.textPreview ?? '', 120) ||
+          formatSupportedMarkdownPreview(
+            normalizeLegacyMultilineMarkdown(firstSlot?.textPreview ?? ''),
+            120,
+          ) ||
           firstSlot?.textPreview ||
           'Автопостинг',
         previewSource: firstSlot?.textPreview ?? '',

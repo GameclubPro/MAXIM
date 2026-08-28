@@ -1,21 +1,50 @@
 type InlineToken =
   | { type: 'text'; content: string }
   | { type: 'placeholder'; key: string; raw: string }
-  | { type: 'bold' | 'italic' | 'underline' | 'strike'; children: InlineToken[] }
+  | { type: 'bold' | 'italic' | 'underline' | 'strike' | 'highlight'; children: InlineToken[] }
   | { type: 'code'; content: string }
   | { type: 'link'; href: string; children: InlineToken[] };
 
 type RenderMarkdownOptions = {
   linkMode?: 'anchor' | 'underline';
-  blockMode?: 'paragraphs' | 'raw' | 'inline';
+  blockMode?: 'paragraphs' | 'raw' | 'inline' | 'editor';
   preserveCurlyBracePlaceholders?: boolean;
   curlyBracePlaceholderLabels?: Readonly<Record<string, string>>;
 };
 
+type MultilineInlineMarker = '***' | '___' | '**' | '__' | '++' | '~~' | '^^' | '*' | '_';
+
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const HEADING_LINE_PATTERN = /^(#{1,6})[ \t]+(.+)$/u;
-const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
+const QUOTE_LINE_PATTERN = /^>[ \t]+(.+)$/u;
+const ESCAPABLE_MARKDOWN_CHARACTERS = new Set([
+  '\\',
+  '`',
+  '*',
+  '_',
+  '[',
+  ']',
+  '(',
+  ')',
+  '~',
+  '+',
+  '#',
+  '^',
+  '>',
+]);
 const CURLY_BRACE_PLACEHOLDER_PATTERN = /^\{[A-Za-z0-9_]+\}/u;
+
+export function needsLegacyMultilineMarkdownNormalization(source: string): boolean {
+  return source.includes('\n') && /[*_+~^[\]]/u.test(source);
+}
+
+function isEscapedMarkdownPosition(source: string, index: number): boolean {
+  let precedingBackslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
+    precedingBackslashes += 1;
+  }
+  return precedingBackslashes % 2 === 1;
+}
 
 export function stripSupportedMarkdownToPlainText(source: string): string {
   const normalized = source.replace(/\r/g, '').trim();
@@ -61,6 +90,13 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
     if (headingMatch) {
       flushParagraph();
       blocks.push(renderInlineTokensAsPlainText(parseInlineTokens(headingMatch[2] ?? '')));
+      continue;
+    }
+
+    const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
+    if (quoteMatch) {
+      flushParagraph();
+      blocks.push(renderInlineTokensAsPlainText(parseInlineTokens(quoteMatch[1] ?? '')));
       continue;
     }
 
@@ -157,7 +193,17 @@ export function renderSupportedMarkdownAsHtml(
           parseInlineTokens(headingMatch[2] ?? '', options),
           options,
         );
-        renderedLines.push(renderRawHeadingHtml(content));
+        renderedLines.push(renderHeadingHtml(content, headingMatch[1] ?? '#'));
+        continue;
+      }
+
+      const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
+      if (quoteMatch) {
+        const content = renderInlineTokens(
+          parseInlineTokens(quoteMatch[1] ?? '', options),
+          options,
+        );
+        renderedLines.push(renderQuoteHtml(content));
         continue;
       }
 
@@ -167,19 +213,26 @@ export function renderSupportedMarkdownAsHtml(
     return renderedLines.join('\n');
   }
 
-  if (options.blockMode === 'inline') {
+  if (options.blockMode === 'inline' || options.blockMode === 'editor') {
+    const inlineSafe = options.blockMode === 'inline';
     const lines: string[] = [];
     const rawLines = normalized.split('\n');
     let previousWasGap = false;
+    let previousWasBlock = false;
 
     for (let index = 0; index < rawLines.length; index += 1) {
       const fencedCodeBlock = readFencedCodeBlock(rawLines, index);
       if (fencedCodeBlock) {
-        if (lines.length > 0 && !previousWasGap) {
+        if (lines.length > 0 && !previousWasGap && (inlineSafe || !previousWasBlock)) {
           lines.push('<br>');
         }
-        lines.push(renderCodeBlockHtml(fencedCodeBlock.content));
+        lines.push(
+          inlineSafe
+            ? renderInlineCodeBlockHtml(fencedCodeBlock.content)
+            : renderCodeBlockHtml(fencedCodeBlock.content),
+        );
         previousWasGap = false;
+        previousWasBlock = !inlineSafe;
         index = fencedCodeBlock.nextIndex - 1;
         continue;
       }
@@ -192,22 +245,31 @@ export function renderSupportedMarkdownAsHtml(
         if (lines.length > 0 && !previousWasGap) {
           lines.push('<br><br>');
           previousWasGap = true;
+          previousWasBlock = false;
         }
         continue;
       }
 
       const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
+      const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
+      const currentIsBlock = !inlineSafe && Boolean(headingMatch || quoteMatch);
       const content = headingMatch
-        ? renderHeadingHtml(
+        ? (inlineSafe ? renderInlineHeadingHtml : renderHeadingHtml)(
             renderInlineTokens(parseInlineTokens(headingMatch[2] ?? '', options), options),
+            headingMatch[1] ?? '#',
           )
-        : renderInlineTokens(parseInlineTokens(line, options), options);
+        : quoteMatch
+          ? (inlineSafe ? renderInlineQuoteHtml : renderQuoteHtml)(
+              renderInlineTokens(parseInlineTokens(quoteMatch[1] ?? '', options), options),
+            )
+          : renderInlineTokens(parseInlineTokens(line, options), options);
 
-      if (lines.length > 0 && !previousWasGap) {
+      if (lines.length > 0 && !previousWasGap && (inlineSafe || !previousWasBlock)) {
         lines.push('<br>');
       }
       lines.push(content);
       previousWasGap = false;
+      previousWasBlock = currentIsBlock;
     }
 
     return lines.join('');
@@ -253,7 +315,18 @@ export function renderSupportedMarkdownAsHtml(
         parseInlineTokens(headingMatch[2] ?? '', options),
         options,
       );
-      blocks.push(`<p>${renderHeadingHtml(content)}</p>`);
+      blocks.push(renderHeadingHtml(content, headingMatch[1] ?? '#'));
+      continue;
+    }
+
+    const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
+    if (quoteMatch) {
+      flushParagraph();
+      const content = renderInlineTokens(
+        parseInlineTokens(quoteMatch[1] ?? '', options),
+        options,
+      );
+      blocks.push(renderQuoteHtml(content));
       continue;
     }
 
@@ -273,12 +346,26 @@ export function renderPlainTextAsEditorHtml(source: string): string {
     .replace(/\r?\n/gu, '<br>');
 }
 
-function renderHeadingHtml(content: string): string {
-  return `<h3>${content}</h3>`;
+function renderHeadingHtml(content: string, marker: string): string {
+  const level = Math.min(6, Math.max(1, marker.length));
+  return `<h${level}>${content}</h${level}>`;
 }
 
-function renderRawHeadingHtml(content: string): string {
-  return `<strong>${content}</strong>`;
+function renderQuoteHtml(content: string): string {
+  return `<blockquote>${content}</blockquote>`;
+}
+
+function renderInlineHeadingHtml(content: string, marker: string): string {
+  const level = Math.min(6, Math.max(1, marker.length));
+  return `<strong data-max-block="heading" data-max-heading-level="${level}">${content}</strong>`;
+}
+
+function renderInlineQuoteHtml(content: string): string {
+  return `<span data-max-block="quote">${content}</span>`;
+}
+
+function renderInlineCodeBlockHtml(content: string): string {
+  return `<code data-max-block="code">${escapeHtmlPreservingWhitespace(content)}</code>`;
 }
 
 function renderCodeBlockHtml(content: string): string {
@@ -372,20 +459,18 @@ function parseInlineTokens(source: string, options: RenderMarkdownOptions = {}):
 function matchToken(
   value: string,
   options: RenderMarkdownOptions,
-): { rawLength: number; node: InlineToken } | null {
-  const linkMatch = /^\[([^\]\n]+)\]\(([^)\s]+)\)/u.exec(value);
+): {
+  rawLength: number;
+  node: InlineToken;
+} | null {
+  const linkMatch = matchLinkToken(value);
   if (linkMatch) {
-    const href = linkMatch[2] ?? '';
-    if (!SAFE_LINK_PATTERN.test(href)) {
-      return null;
-    }
-
     return {
-      rawLength: linkMatch[0].length,
+      rawLength: linkMatch.rawLength,
       node: {
         type: 'link',
-        href,
-        children: parseInlineTokens(linkMatch[1] ?? '', options),
+        href: linkMatch.href,
+        children: parseInlineTokens(linkMatch.label, options),
       },
     };
   }
@@ -401,66 +486,152 @@ function matchToken(
     };
   }
 
-  const boldItalicMatch = /^(?:\*\*\*([^\n]+?)\*\*\*|___([^\n]+?)___)/u.exec(value);
+  const boldItalicMatch =
+    matchDelimitedInlineContent(value, '***') ?? matchDelimitedInlineContent(value, '___');
   if (boldItalicMatch) {
     return {
-      rawLength: boldItalicMatch[0].length,
+      rawLength: boldItalicMatch.rawLength,
       node: {
         type: 'bold',
         children: [
           {
             type: 'italic',
-            children: parseInlineTokens(boldItalicMatch[1] ?? boldItalicMatch[2] ?? '', options),
+            children: parseInlineTokens(boldItalicMatch.content, options),
           },
         ],
       },
     };
   }
 
-  const boldMatch = /^(?:\*\*([^\n]+?)\*\*|__([^\n]+?)__)/u.exec(value);
+  const boldMatch =
+    matchDelimitedInlineContent(value, '**') ?? matchDelimitedInlineContent(value, '__');
   if (boldMatch) {
     return {
-      rawLength: boldMatch[0].length,
+      rawLength: boldMatch.rawLength,
       node: {
         type: 'bold',
-        children: parseInlineTokens(boldMatch[1] ?? boldMatch[2] ?? '', options),
+        children: parseInlineTokens(boldMatch.content, options),
       },
     };
   }
 
-  const underlineMatch = /^\+\+([^\n]+?)\+\+/u.exec(value);
+  const underlineMatch = matchDelimitedInlineContent(value, '++');
   if (underlineMatch) {
     return {
-      rawLength: underlineMatch[0].length,
+      rawLength: underlineMatch.rawLength,
       node: {
         type: 'underline',
-        children: parseInlineTokens(underlineMatch[1] ?? '', options),
+        children: parseInlineTokens(underlineMatch.content, options),
       },
     };
   }
 
-  const strikeMatch = /^~~([^\n]+?)~~/u.exec(value);
+  const strikeMatch = matchDelimitedInlineContent(value, '~~');
   if (strikeMatch) {
     return {
-      rawLength: strikeMatch[0].length,
+      rawLength: strikeMatch.rawLength,
       node: {
         type: 'strike',
-        children: parseInlineTokens(strikeMatch[1] ?? '', options),
+        children: parseInlineTokens(strikeMatch.content, options),
       },
     };
   }
 
-  const italicMatch = /^(?:\*([^\n]+?)\*|_([^\n]+?)_)/u.exec(value);
-  if (italicMatch) {
+  const highlightMatch = matchDelimitedInlineContent(value, '^^');
+  if (highlightMatch) {
     return {
-      rawLength: italicMatch[0].length,
+      rawLength: highlightMatch.rawLength,
+      node: {
+        type: 'highlight',
+        children: parseInlineTokens(highlightMatch.content, options),
+      },
+    };
+  }
+
+  const italicMatch =
+    matchDelimitedInlineContent(value, '*') ?? matchDelimitedInlineContent(value, '_');
+  if (italicMatch) {
+    const content = italicMatch.content;
+    if (/^[*_]+$/u.test(content)) {
+      return null;
+    }
+    return {
+      rawLength: italicMatch.rawLength,
       node: {
         type: 'italic',
-        children: parseInlineTokens(italicMatch[1] ?? italicMatch[2] ?? '', options),
+        children: parseInlineTokens(content, options),
       },
     };
   }
 
+  return null;
+}
+
+function matchLinkToken(value: string): { label: string; href: string; rawLength: number } | null {
+  if (value[0] !== '[') {
+    return null;
+  }
+
+  let backslashRun = 0;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index] ?? '';
+    if (character === '\n') {
+      return null;
+    }
+    if (character === '\\') {
+      backslashRun += 1;
+      continue;
+    }
+    const escaped = backslashRun % 2 === 1;
+    backslashRun = 0;
+    if (character !== ']' || escaped || value[index + 1] !== '(' || index === 1) {
+      continue;
+    }
+
+    const destinationStart = index + 2;
+    let destinationEnd = destinationStart;
+    while (destinationEnd < value.length && value[destinationEnd] !== ')') {
+      if (/\s/u.test(value[destinationEnd] ?? '')) {
+        return null;
+      }
+      destinationEnd += 1;
+    }
+    if (destinationEnd >= value.length) {
+      return null;
+    }
+    const href = value.slice(destinationStart, destinationEnd);
+    if (!href || !SAFE_LINK_PATTERN.test(href)) {
+      return null;
+    }
+    return {
+      label: value.slice(1, index),
+      href,
+      rawLength: destinationEnd + 1,
+    };
+  }
+  return null;
+}
+
+function matchDelimitedInlineContent(
+  value: string,
+  marker: MultilineInlineMarker,
+): { content: string; rawLength: number } | null {
+  if (!value.startsWith(marker)) {
+    return null;
+  }
+  for (let index = marker.length; index <= value.length - marker.length; index += 1) {
+    if (value[index] === '\n') {
+      return null;
+    }
+    if (!value.startsWith(marker, index) || isEscapedMarkdownPosition(value, index)) {
+      continue;
+    }
+    const content = value.slice(marker.length, index);
+    if (!content) {
+      continue;
+    }
+    return { content, rawLength: index + marker.length };
+  }
   return null;
 }
 
@@ -478,6 +649,7 @@ function renderInlineTokensAsPlainText(tokens: InlineToken[]): string {
         case 'italic':
         case 'underline':
         case 'strike':
+        case 'highlight':
         case 'link':
           return renderInlineTokensAsPlainText(token.children);
       }
@@ -507,6 +679,8 @@ function renderInlineTokens(tokens: InlineToken[], options: RenderMarkdownOption
           return `<u>${renderInlineTokens(token.children, options)}</u>`;
         case 'strike':
           return `<s>${renderInlineTokens(token.children, options)}</s>`;
+        case 'highlight':
+          return `<mark>${renderInlineTokens(token.children, options)}</mark>`;
         case 'link':
           return renderLinkHtml(token, options);
       }

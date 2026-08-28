@@ -52,8 +52,9 @@ export class PublisherController {
   listSuggestions(
     @Param('entityId') entityId: string,
     @CurrentUser() user: AuthUser,
+    @Query() query?: unknown,
   ) {
-    return this.suggestionService.list(entityId, user);
+    return this.suggestionService.list(entityId, user, query);
   }
 
   @Post('entities/channel/:entityId/suggestions/:suggestionId/review')
@@ -94,12 +95,7 @@ export class PublisherController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.policyService.updatePolicy(
-      this.parseEntityType(entityType),
-      entityId,
-      user,
-      body,
-    );
+    return this.policyService.updatePolicy(this.parseEntityType(entityType), entityId, user, body);
   }
 
   @Patch('entities/:entityType/:entityId/modules')

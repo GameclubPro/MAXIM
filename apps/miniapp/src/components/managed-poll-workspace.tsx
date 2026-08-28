@@ -685,6 +685,7 @@ function PollEditor({
           <BroadcastContentComposer
             className="managed-poll-editor__composer"
             text={draft.question}
+            sourceFormat={draft.questionFormat}
             maxLength={MANAGED_POLL_QUESTION_MAX_LENGTH}
             images={draft.images}
             messageAriaLabel="Вопрос опроса"

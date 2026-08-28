@@ -20,6 +20,14 @@ const detailsSource = readFileSync(
   new URL('../src/features/publications/publication-details-sheet.tsx', import.meta.url),
   'utf8',
 );
+const feedCardSource = readFileSync(
+  new URL('../src/features/publications/publication-feed-card.tsx', import.meta.url),
+  'utf8',
+);
+const reviewSheetSource = readFileSync(
+  new URL('../src/components/broadcast-publish-review-sheet.tsx', import.meta.url),
+  'utf8',
+);
 const majorHandoffSource = readFileSync(
   new URL('../src/components/publication-workspace-handoff.tsx', import.meta.url),
   'utf8',
@@ -83,6 +91,27 @@ test('Major never hydrates drafts or publication targets', () => {
   assert.match(composerSource, /if \(!enabled\) \{[\s\S]*?setHydrated\(true\)/u);
   assert.match(targetSourcesSource, /enabled,[\s\S]*?staleTime: 15_000/u);
   assert.doesNotMatch(targetSourcesSource, /root-client|getChats|getChannels/u);
+});
+
+test('publication editor and details preserve the server text format', () => {
+  assert.match(publicationsSource, /sourceFormat=\{draft\.textFormat\}/u);
+  assert.match(
+    publicationsSource,
+    /setDraft\(\(current\) => \(\{ \.\.\.current, text, textFormat: 'markdown' \}\)\)/u,
+  );
+  assert.match(detailsSource, /sourceFormat=\{details\.content\.textFormat\}/u);
+  assert.match(publicationsSource, /previewFormat=\{publication\.contentPreviewFormat\}/u);
+  assert.match(feedCardSource, /sourceFormat=\{previewFormat\}/u);
+  assert.match(
+    publicationsSource,
+    /<BroadcastPublishReviewSheet[\s\S]*?text=\{draft\.text\}[\s\S]*?sourceFormat=\{draft\.textFormat\}/u,
+  );
+  assert.match(reviewSheetSource, /sourceFormat=\{sourceFormat\}/u);
+  assert.doesNotMatch(publicationsSource, /<small>\{draft\.text\.trim\(\)/u);
+  assert.match(
+    publicationsSource,
+    /sourceFormat=\{actionTarget\.publication\.contentPreviewFormat\}/u,
+  );
 });
 
 test('Major settings open legacy schedules without a dead compose handoff', () => {

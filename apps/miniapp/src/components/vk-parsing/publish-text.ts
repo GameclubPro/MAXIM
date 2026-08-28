@@ -7,6 +7,7 @@ import {
   containsSupportedMarkdownUrl,
   renderSupportedMarkdownAsHtml,
 } from '../../lib/max-markdown';
+import { normalizeLegacyMultilineMarkdown } from '../../lib/max-markdown-multiline';
 
 export function measureVkParsingPublishTextLength(params: {
   text: string;
@@ -30,10 +31,13 @@ export function measureVkParsingPublishTextLength(params: {
   const text = usesRichText
     ? strippedText.trim()
     : composeVkParsingPublishText(strippedText, linkUrls);
+  const normalizedText = usesRichText ? normalizeLegacyMultilineMarkdown(text) : text;
   const formattedText =
-    usesRichText && text.trim() ? renderSupportedMarkdownAsHtml(text, { blockMode: 'raw' }) : text;
+    usesRichText && normalizedText.trim()
+      ? renderSupportedMarkdownAsHtml(normalizedText, { blockMode: 'raw' })
+      : normalizedText;
   const missingLinkUrls = usesRichText
-    ? linkUrls.filter((url) => !containsSupportedMarkdownUrl(text, url))
+    ? linkUrls.filter((url) => !containsSupportedMarkdownUrl(normalizedText, url))
     : [];
   const renderedLinkHtml = missingLinkUrls.map(
     (url) => `<a href="${escapeHtmlAttribute(url)}">${escapeHtmlText(url)}</a>`,

@@ -1,6 +1,6 @@
 type InlineToken =
   | { type: 'text'; content: string }
-  | { type: 'bold' | 'italic' | 'underline' | 'strike'; children: InlineToken[] }
+  | { type: 'bold' | 'italic' | 'underline' | 'strike' | 'highlight'; children: InlineToken[] }
   | { type: 'code'; content: string }
   | { type: 'link'; href: string; children: InlineToken[] };
 
@@ -11,14 +11,52 @@ type RenderMarkdownOptions = {
 
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const HEADING_LINE_PATTERN = /^(#{1,6})[ \t]+(.+)$/u;
+const QUOTE_LINE_PATTERN = /^>[ \t]+(.+)$/u;
 const SUPPORTED_MARKDOWN_PATTERN =
-  /(?:^#{1,6}\s+\S.*$|```[\s\S]+?```|\*\*\*[^*\n]+?\*\*\*|___[^_\n]+?___|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
-const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
-const MULTILINE_STRONG_MARKERS = ['**', '__'] as const;
+  /(?:^#{1,6}\s+\S.*$|^>\s+\S.*$|```[\s\S]+?```|\*\*\*[^*\n]+?\*\*\*|___[^_\n]+?___|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|\^\^[^^\n]+?\^\^|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
+const ESCAPABLE_MARKDOWN_CHARACTERS = new Set([
+  '\\',
+  '`',
+  '*',
+  '_',
+  '[',
+  ']',
+  '(',
+  ')',
+  '~',
+  '+',
+  '#',
+  '^',
+  '>',
+]);
+const MULTILINE_INLINE_MARKERS = [
+  '***',
+  '___',
+  '**',
+  '__',
+  '++',
+  '~~',
+  '^^',
+  '*',
+  '_',
+] as const;
+
+type MultilineInlineMarker = (typeof MULTILINE_INLINE_MARKERS)[number];
+
+type MultilineInlineSpan = {
+  openStart: number;
+  openEnd: number;
+  closeStart: number;
+  closeEnd: number;
+  open: string;
+  close: string;
+};
 
 export function containsSupportedMarkdownSyntax(source: string): boolean {
-  return SUPPORTED_MARKDOWN_PATTERN.test(
-    normalizeMultilineStrongMarkdown(source.replace(/\r/g, '').trim()),
+  const normalized = normalizeMultilineStrongMarkdown(source.replace(/\r/g, '').trim());
+  return (
+    SUPPORTED_MARKDOWN_PATTERN.test(normalized) ||
+    extractSupportedMarkdownLinks(normalized).length > 0
   );
 }
 
@@ -53,7 +91,14 @@ export function renderSupportedMarkdownAsHtml(
       const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
       if (headingMatch) {
         const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
-        renderedLines.push(renderHeadingHtml(content));
+        renderedLines.push(renderHeadingHtml(content, headingMatch[1] ?? '#'));
+        continue;
+      }
+
+      const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
+      if (quoteMatch) {
+        const content = renderInlineTokens(parseInlineTokens(quoteMatch[1] ?? ''), options);
+        renderedLines.push(renderQuoteHtml(content));
         continue;
       }
 
@@ -100,7 +145,15 @@ export function renderSupportedMarkdownAsHtml(
     if (headingMatch) {
       flushParagraph();
       const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
-      blocks.push(`<p>${renderHeadingHtml(content)}</p>`);
+      blocks.push(renderHeadingHtml(content, headingMatch[1] ?? '#'));
+      continue;
+    }
+
+    const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
+    if (quoteMatch) {
+      flushParagraph();
+      const content = renderInlineTokens(parseInlineTokens(quoteMatch[1] ?? ''), options);
+      blocks.push(renderQuoteHtml(content));
       continue;
     }
 
@@ -159,6 +212,13 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
       continue;
     }
 
+    const quoteMatch = QUOTE_LINE_PATTERN.exec(trimmedLine);
+    if (quoteMatch) {
+      flushParagraph();
+      blocks.push(renderInlineTokensAsPlainText(parseInlineTokens(quoteMatch[1] ?? '')));
+      continue;
+    }
+
     paragraphLines.push(line);
   }
 
@@ -208,208 +268,423 @@ function collectInlineTokenLinks(tokens: InlineToken[], links: Set<string>): voi
 }
 
 /**
- * The editor can wrap a selection that crosses paragraph boundaries in one pair
- * of strong markers. MAX accepts strong markup per line, so expand that legacy
- * shape into independent line spans before the regular inline parser runs.
+ * The rich editor can serialize one inline entity across several paragraphs.
+ * Pair delimiters in one bounded scan, then close and reopen active entities at
+ * line boundaries so MAX never receives raw generated markers.
  */
 function normalizeMultilineStrongMarkdown(source: string): string {
-  let normalized = source;
-  let searchStart = 0;
-
-  while (searchStart < normalized.length) {
-    const span = findMultilineStrongSpan(normalized, searchStart);
-    if (!span) {
-      break;
-    }
-
-    let replacement = wrapMultilineStrongContent(
-      span.marker,
-      normalized.slice(span.openEnd, span.closeStart),
-    );
-    const closeLineEnd = normalized.indexOf('\n', span.closeEnd);
-    const closeLineRemainder = normalized.slice(
-      span.closeEnd,
-      closeLineEnd === -1 ? normalized.length : closeLineEnd,
-    );
-    if (closeLineRemainder.trim().length === 0 && normalized[span.closeEnd] === '\n') {
-      replacement = replacement.replace(/\n$/u, '');
-    }
-    normalized =
-      normalized.slice(0, span.openStart) + replacement + normalized.slice(span.closeEnd);
-    searchStart = span.openStart + replacement.length;
+  if (!source.includes('\n')) {
+    return source;
   }
-
-  return normalized;
+  const context = buildMultilineScanContext(source);
+  const spans = collectMultilineInlineSpans(source, context);
+  return spans.length > 0 ? renderLineBoundedMarkdown(source, spans, context) : source;
 }
 
-function findMultilineStrongSpan(
-  source: string,
-  searchStart: number,
-): {
-  marker: (typeof MULTILINE_STRONG_MARKERS)[number];
+type MultilineScanContext = {
+  escaped: Uint8Array;
+  protected: Uint8Array;
+  fenced: Uint8Array;
+  url: Uint8Array;
+  lineStart: Int32Array;
+  lineEnd: Int32Array;
+  newlinePrefix: Int32Array;
+};
+
+type PendingInlineFrame = {
   openStart: number;
   openEnd: number;
-  closeStart: number;
-  closeEnd: number;
-} | null {
-  for (let index = searchStart; index < source.length; index += 1) {
-    const marker = MULTILINE_STRONG_MARKERS.find((candidate) =>
-      isMarkdownMarkerAt(source, index, candidate),
-    );
+  open: string;
+  marker: MultilineInlineMarker | null;
+  invalid: boolean;
+};
+
+function buildMultilineScanContext(source: string): MultilineScanContext {
+  const escaped = new Uint8Array(source.length);
+  const protectedMask = new Uint8Array(source.length);
+  const fencedMask = new Uint8Array(source.length);
+  const url = new Uint8Array(source.length);
+  const lineStart = new Int32Array(source.length);
+  const lineEnd = new Int32Array(source.length);
+  const newlinePrefix = new Int32Array(source.length + 1);
+
+  let backslashRun = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === '\\') {
+      backslashRun += 1;
+    } else {
+      if (backslashRun % 2 === 1) {
+        escaped[index] = 1;
+      }
+      backslashRun = 0;
+    }
+    newlinePrefix[index + 1] = newlinePrefix[index] + (source[index] === '\n' ? 1 : 0);
+  }
+
+  let cursor = 0;
+  let fenced = false;
+  while (cursor <= source.length) {
+    const newline = source.indexOf('\n', cursor);
+    const end = newline === -1 ? source.length : newline;
+    const line = source.slice(cursor, end);
+    const fenceLine = line.trim().startsWith('```');
+    const protectLine = fenced || fenceLine;
+    for (let index = cursor; index < end; index += 1) {
+      lineStart[index] = cursor;
+      lineEnd[index] = end;
+      if (protectLine) {
+        protectedMask[index] = 1;
+        fencedMask[index] = 1;
+      }
+    }
+    if (newline !== -1) {
+      lineStart[newline] = cursor;
+      lineEnd[newline] = end;
+      if (protectLine) {
+        protectedMask[newline] = 1;
+        fencedMask[newline] = 1;
+      }
+    }
+    if (fenceLine) fenced = !fenced;
+    if (newline === -1) break;
+    cursor = newline + 1;
+  }
+
+  const urlPattern = /(?:https?:\/\/|max:\/\/)[^\s<>()\]["'`{}]+/giu;
+  for (const match of source.matchAll(urlPattern)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    url.fill(1, start, end);
+  }
+
+  for (let index = 0; index < source.length; index += 1) {
+    if (protectedMask[index] || source[index] !== '`' || escaped[index]) continue;
+    const end = source.indexOf('`', index + 1);
+    const boundedEnd = end === -1 || end > lineEnd[index] ? lineEnd[index] : end;
+    protectedMask.fill(1, index, Math.min(source.length, boundedEnd + 1));
+    index = boundedEnd;
+  }
+
+  return {
+    escaped,
+    protected: protectedMask,
+    fenced: fencedMask,
+    url,
+    lineStart,
+    lineEnd,
+    newlinePrefix,
+  };
+}
+
+function collectMultilineInlineSpans(
+  source: string,
+  context: MultilineScanContext,
+): MultilineInlineSpan[] {
+  const frames = new Map<string, PendingInlineFrame>();
+  const spans: MultilineInlineSpan[] = [];
+
+  for (let index = 0; index < source.length; index += 1) {
+    if (context.fenced[index]) {
+      frames.clear();
+      continue;
+    }
+    if (context.protected[index]) continue;
+
+    const linkClose = readLinkCloseAt(source, index, context);
+    if (linkClose) {
+      const frame = frames.get('link');
+      if (frame) {
+        frames.delete('link');
+        if (!frame.invalid && context.newlinePrefix[index] > context.newlinePrefix[frame.openEnd]) {
+          spans.push({
+            openStart: frame.openStart,
+            openEnd: frame.openEnd,
+            closeStart: index,
+            closeEnd: linkClose.closeEnd,
+            open: '[',
+            close: source.slice(index, linkClose.closeEnd),
+          });
+        }
+        index = linkClose.closeEnd - 1;
+        continue;
+      }
+    }
+
     if (
-      !marker ||
-      !isLikelyStrongOpening(source, index) ||
-      hasEarlierMarkerOnLine(source, index, marker) ||
-      isInsideFencedCodeBlock(source, index)
+      source[index] === '[' &&
+      !context.escaped[index] &&
+      !context.url[index] &&
+      !/\s/u.test(source[index + 1] ?? '')
     ) {
+      const current = frames.get('link');
+      if (current) current.invalid = true;
+      else
+        frames.set('link', {
+          openStart: index,
+          openEnd: index + 1,
+          open: '[',
+          marker: null,
+          invalid: false,
+        });
       continue;
     }
 
-    const lineEnd = source.indexOf('\n', index + marker.length);
-    const sameLineEnd = lineEnd === -1 ? source.length : lineEnd;
-    if (findNextMarkdownMarker(source, index + marker.length, sameLineEnd, marker) !== null) {
-      continue;
-    }
-
-    const closeStart = findMultilineStrongClose(source, index + marker.length, marker);
-    if (closeStart === null || !source.slice(index + marker.length, closeStart).includes('\n')) {
-      continue;
-    }
-
-    return {
-      marker,
-      openStart: index,
-      openEnd: index + marker.length,
-      closeStart,
-      closeEnd: closeStart + marker.length,
-    };
-  }
-
-  return null;
-}
-
-function hasEarlierMarkerOnLine(
-  source: string,
-  index: number,
-  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
-): boolean {
-  const lineStart = source.lastIndexOf('\n', index - 1) + 1;
-  return findPreviousMarkdownMarker(source, lineStart, index, marker) !== null;
-}
-
-function isLikelyStrongOpening(source: string, index: number): boolean {
-  if (index === 0) {
-    return true;
-  }
-
-  const previous = source[index - 1] ?? '';
-  return previous !== '\\' && !/[\p{L}\p{N}]/u.test(previous);
-}
-
-function findMultilineStrongClose(
-  source: string,
-  searchStart: number,
-  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
-): number | null {
-  for (let index = searchStart; index < source.length; index += 1) {
-    if (!isMarkdownMarkerAt(source, index, marker) || isInsideFencedCodeBlock(source, index)) {
-      continue;
-    }
-
-    const lineEnd = source.indexOf('\n', index + marker.length);
-    const remainder = source.slice(index + marker.length, lineEnd === -1 ? source.length : lineEnd);
-    const trimmedRemainder = remainder.trim();
-    const nextMarkerOnLine = findNextMarkdownMarker(
-      source,
-      index + marker.length,
-      lineEnd === -1 ? source.length : lineEnd,
-      marker,
+    const marker = MULTILINE_INLINE_MARKERS.find((candidate) =>
+      isMarkerAt(source, index, candidate, context),
     );
-    if (
-      !trimmedRemainder ||
-      /^[\p{P}\p{S}]+$/u.test(trimmedRemainder) ||
-      !isLikelyStrongOpening(source, index) ||
-      nextMarkerOnLine === null
-    ) {
-      return index;
+    if (!marker) continue;
+    const canClose =
+      isLikelyMarkerClose(source, index, marker, context) ||
+      isStandaloneMarkerLine(source, index, marker, context);
+    const frame = frames.get(marker);
+    if (canClose && frame) {
+      frames.delete(marker);
+      if (!frame.invalid && context.newlinePrefix[index] > context.newlinePrefix[frame.openEnd]) {
+        spans.push({
+          openStart: frame.openStart,
+          openEnd: frame.openEnd,
+          closeStart: index,
+          closeEnd: index + marker.length,
+          open: marker,
+          close: marker,
+        });
+      }
+      index += marker.length - 1;
+      continue;
+    }
+    if (isLikelyMarkerOpen(source, index, marker, context)) {
+      if (frame) frame.invalid = true;
+      else
+        frames.set(marker, {
+          openStart: index,
+          openEnd: index + marker.length,
+          open: marker,
+          marker,
+          invalid: false,
+        });
+      index += marker.length - 1;
     }
   }
 
-  return null;
+  return discardCrossingSpans(spans);
 }
 
-function findNextMarkdownMarker(
+function discardCrossingSpans(spans: MultilineInlineSpan[]): MultilineInlineSpan[] {
+  const sorted = spans
+    .slice()
+    .sort((left, right) => left.openStart - right.openStart || right.closeEnd - left.closeEnd);
+  const accepted: MultilineInlineSpan[] = [];
+  const stack: MultilineInlineSpan[] = [];
+  for (const span of sorted) {
+    while (stack.length > 0 && (stack.at(-1)?.closeEnd ?? 0) <= span.openStart) stack.pop();
+    const parent = stack.at(-1);
+    if (parent && span.closeEnd > parent.closeStart) continue;
+    accepted.push(span);
+    stack.push(span);
+  }
+  return accepted;
+}
+
+function renderLineBoundedMarkdown(
   source: string,
-  searchStart: number,
-  end: number,
-  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
-): number | null {
-  for (let index = searchStart; index < end; index += 1) {
-    if (isMarkdownMarkerAt(source, index, marker)) {
-      return index;
+  spans: MultilineInlineSpan[],
+  context: MultilineScanContext,
+): string {
+  const opening = new Map(spans.map((span) => [span.openStart, span]));
+  const closing = new Map(spans.map((span) => [span.closeStart, span]));
+  const active: MultilineInlineSpan[] = [];
+  let pending: MultilineInlineSpan[] | null = null;
+  let output = '';
+  let suppressLineBreak = false;
+
+  for (let index = 0; index < source.length; ) {
+    const lineEnd = context.lineEnd[index] ?? source.length;
+    if (pending?.length && index === (context.lineStart[index] ?? index)) {
+      suppressLineBreak = lineContainsOnlyPendingClosers(source, index, lineEnd, pending, closing);
+      if (!suppressLineBreak) {
+        if (source.slice(index, lineEnd).trim()) {
+          output += pending.map((span) => span.open).join('');
+          pending = null;
+        }
+      }
     }
+
+    const openSpan = opening.get(index);
+    if (openSpan) {
+      output += source.slice(openSpan.openStart, openSpan.openEnd);
+      active.push(openSpan);
+      index = openSpan.openEnd;
+      continue;
+    }
+    const closeSpan = closing.get(index);
+    if (closeSpan) {
+      const physicallyClosed = Boolean(pending?.includes(closeSpan));
+      if (!physicallyClosed) output += source.slice(closeSpan.closeStart, closeSpan.closeEnd);
+      const activeIndex = active.lastIndexOf(closeSpan);
+      if (activeIndex >= 0) active.splice(activeIndex, 1);
+      if (pending) {
+        pending = pending.filter((span) => span !== closeSpan);
+        if (pending.length === 0) pending = null;
+      }
+      index = closeSpan.closeEnd;
+      continue;
+    }
+    if (source[index] === '\n') {
+      if (!pending && active.length > 0) {
+        output += active
+          .slice()
+          .reverse()
+          .map((span) => span.close)
+          .join('');
+        pending = active.slice();
+      }
+      if (!suppressLineBreak) output += '\n';
+      suppressLineBreak = false;
+      index += 1;
+      continue;
+    }
+
+    const ambiguous = active
+      .slice()
+      .reverse()
+      .find(
+        (span) =>
+          span.open === span.close &&
+          source.startsWith(span.open, index) &&
+          isAmbiguousMarkerPosition(source, index, span.open as MultilineInlineMarker, context),
+      );
+    if (ambiguous) {
+      output += [...ambiguous.open].map((character) => `\\${character}`).join('');
+      index += ambiguous.open.length;
+      continue;
+    }
+    output += source[index] ?? '';
+    index += 1;
   }
-  return null;
+  return output;
 }
 
-function findPreviousMarkdownMarker(
+function lineContainsOnlyPendingClosers(
   source: string,
   start: number,
   end: number,
-  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
-): number | null {
-  for (let index = end - marker.length; index >= start; index -= 1) {
-    if (isMarkdownMarkerAt(source, index, marker)) {
-      return index;
+  pending: MultilineInlineSpan[],
+  closing: Map<number, MultilineInlineSpan>,
+): boolean {
+  let cursor = start;
+  let found = false;
+  while (cursor < end) {
+    if (/\s/u.test(source[cursor] ?? '')) {
+      cursor += 1;
+      continue;
     }
+    const span = closing.get(cursor);
+    if (!span || !pending.includes(span)) return false;
+    found = true;
+    cursor = span.closeEnd;
   }
-  return null;
+  return found;
 }
 
-function isMarkdownMarkerAt(
+function isMarkerAt(
   source: string,
   index: number,
-  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
+  marker: MultilineInlineMarker,
+  context: MultilineScanContext,
 ): boolean {
-  if (!source.startsWith(marker, index)) {
+  if (!source.startsWith(marker, index) || context.escaped[index] || context.protected[index]) {
     return false;
   }
+  const character = marker[0];
+  return source[index - 1] !== character && source[index + marker.length] !== character;
+}
 
-  const markerCharacter = marker[0];
-  if (source[index - 1] === markerCharacter || source[index + marker.length] === markerCharacter) {
-    return false;
+function isLikelyMarkerOpen(
+  source: string,
+  index: number,
+  marker: MultilineInlineMarker,
+  context: MultilineScanContext,
+): boolean {
+  const previous = source[index - 1] ?? '';
+  const next = source[index + marker.length] ?? '';
+  return (
+    next.length > 0 && !/\s/u.test(next) && !/[\p{L}\p{N}]/u.test(previous) && !context.url[index]
+  );
+}
+
+function isLikelyMarkerClose(
+  source: string,
+  index: number,
+  marker: MultilineInlineMarker,
+  context: MultilineScanContext,
+): boolean {
+  const previous = source[index - 1] ?? '';
+  const next = source[index + marker.length] ?? '';
+  return (
+    previous.length > 0 &&
+    !/\s/u.test(previous) &&
+    !(/[\p{L}\p{N}]/u.test(previous) && /[\p{L}\p{N}]/u.test(next)) &&
+    (!context.url[index] || !context.url[index + marker.length])
+  );
+}
+
+function isStandaloneMarkerLine(
+  source: string,
+  index: number,
+  marker: MultilineInlineMarker,
+  context: MultilineScanContext,
+): boolean {
+  return source.slice(context.lineStart[index], context.lineEnd[index]).trim() === marker;
+}
+
+function isAmbiguousMarkerPosition(
+  source: string,
+  index: number,
+  marker: MultilineInlineMarker,
+  context: MultilineScanContext,
+): boolean {
+  if (!isMarkerAt(source, index, marker, context)) return false;
+  const previous = source[index - 1] ?? '';
+  const next = source[index + marker.length] ?? '';
+  return context.url[index] === 1 || (/[\p{L}\p{N}]/u.test(previous) && /[\p{L}\p{N}]/u.test(next));
+}
+
+function readLinkCloseAt(
+  source: string,
+  index: number,
+  context: MultilineScanContext,
+): { closeEnd: number } | null {
+  if (
+    source[index] !== ']' ||
+    source[index + 1] !== '(' ||
+    context.escaped[index] ||
+    context.protected[index]
+  ) {
+    return null;
   }
+  const destinationEnd = source.indexOf(')', index + 2);
+  if (destinationEnd === -1) return null;
+  const destination = source.slice(index + 2, destinationEnd);
+  return destination && !/\s/u.test(destination) && SAFE_LINK_PATTERN.test(destination)
+    ? { closeEnd: destinationEnd + 1 }
+    : null;
+}
 
+function isEscapedMarkdownPosition(source: string, index: number): boolean {
   let precedingBackslashes = 0;
   for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
     precedingBackslashes += 1;
   }
-  return precedingBackslashes % 2 === 0;
+  return precedingBackslashes % 2 === 1;
 }
 
-function isInsideFencedCodeBlock(source: string, index: number): boolean {
-  const lines = source.slice(0, index + 1).split('\n');
-  let inside = false;
-  for (const line of lines) {
-    if (line.trim().startsWith('```')) {
-      inside = !inside;
-    }
-  }
-  return inside;
+function renderHeadingHtml(content: string, marker: string): string {
+  const level = Math.min(6, Math.max(1, marker.length));
+  return `<h${level}>${content}</h${level}>`;
 }
 
-function wrapMultilineStrongContent(
-  marker: (typeof MULTILINE_STRONG_MARKERS)[number],
-  content: string,
-): string {
-  return content
-    .split('\n')
-    .map((line) => (line.trim().length > 0 ? `${marker}${line}${marker}` : line))
-    .join('\n');
-}
-
-function renderHeadingHtml(content: string): string {
-  return `<strong>${content}</strong>`;
+function renderQuoteHtml(content: string): string {
+  return `<blockquote>${content}</blockquote>`;
 }
 
 function renderCodeBlockHtml(content: string): string {
@@ -489,19 +764,14 @@ function matchToken(value: string): {
   rawLength: number;
   node: InlineToken;
 } | null {
-  const linkMatch = /^\[([^\]\n]+)\]\(([^)\s]+)\)/u.exec(value);
+  const linkMatch = matchLinkToken(value);
   if (linkMatch) {
-    const href = linkMatch[2] ?? '';
-    if (!SAFE_LINK_PATTERN.test(href)) {
-      return null;
-    }
-
     return {
-      rawLength: linkMatch[0].length,
+      rawLength: linkMatch.rawLength,
       node: {
         type: 'link',
-        href,
-        children: parseInlineTokens(linkMatch[1] ?? ''),
+        href: linkMatch.href,
+        children: parseInlineTokens(linkMatch.label),
       },
     };
   }
@@ -517,66 +787,152 @@ function matchToken(value: string): {
     };
   }
 
-  const boldItalicMatch = /^(?:\*\*\*([^\n]+?)\*\*\*|___([^\n]+?)___)/u.exec(value);
+  const boldItalicMatch =
+    matchDelimitedInlineContent(value, '***') ?? matchDelimitedInlineContent(value, '___');
   if (boldItalicMatch) {
     return {
-      rawLength: boldItalicMatch[0].length,
+      rawLength: boldItalicMatch.rawLength,
       node: {
         type: 'bold',
         children: [
           {
             type: 'italic',
-            children: parseInlineTokens(boldItalicMatch[1] ?? boldItalicMatch[2] ?? ''),
+            children: parseInlineTokens(boldItalicMatch.content),
           },
         ],
       },
     };
   }
 
-  const boldMatch = /^(?:\*\*([^\n]+?)\*\*|__([^\n]+?)__)/u.exec(value);
+  const boldMatch =
+    matchDelimitedInlineContent(value, '**') ?? matchDelimitedInlineContent(value, '__');
   if (boldMatch) {
     return {
-      rawLength: boldMatch[0].length,
+      rawLength: boldMatch.rawLength,
       node: {
         type: 'bold',
-        children: parseInlineTokens(boldMatch[1] ?? boldMatch[2] ?? ''),
+        children: parseInlineTokens(boldMatch.content),
       },
     };
   }
 
-  const underlineMatch = /^\+\+([^\n]+?)\+\+/u.exec(value);
+  const underlineMatch = matchDelimitedInlineContent(value, '++');
   if (underlineMatch) {
     return {
-      rawLength: underlineMatch[0].length,
+      rawLength: underlineMatch.rawLength,
       node: {
         type: 'underline',
-        children: parseInlineTokens(underlineMatch[1] ?? ''),
+        children: parseInlineTokens(underlineMatch.content),
       },
     };
   }
 
-  const strikeMatch = /^~~([^\n]+?)~~/u.exec(value);
+  const strikeMatch = matchDelimitedInlineContent(value, '~~');
   if (strikeMatch) {
     return {
-      rawLength: strikeMatch[0].length,
+      rawLength: strikeMatch.rawLength,
       node: {
         type: 'strike',
-        children: parseInlineTokens(strikeMatch[1] ?? ''),
+        children: parseInlineTokens(strikeMatch.content),
       },
     };
   }
 
-  const italicMatch = /^(?:\*([^\n]+?)\*|_([^\n]+?)_)/u.exec(value);
-  if (italicMatch) {
+  const highlightMatch = matchDelimitedInlineContent(value, '^^');
+  if (highlightMatch) {
     return {
-      rawLength: italicMatch[0].length,
+      rawLength: highlightMatch.rawLength,
+      node: {
+        type: 'highlight',
+        children: parseInlineTokens(highlightMatch.content),
+      },
+    };
+  }
+
+  const italicMatch =
+    matchDelimitedInlineContent(value, '*') ?? matchDelimitedInlineContent(value, '_');
+  if (italicMatch) {
+    const content = italicMatch.content;
+    if (/^[*_]+$/u.test(content)) {
+      return null;
+    }
+    return {
+      rawLength: italicMatch.rawLength,
       node: {
         type: 'italic',
-        children: parseInlineTokens(italicMatch[1] ?? italicMatch[2] ?? ''),
+        children: parseInlineTokens(content),
       },
     };
   }
 
+  return null;
+}
+
+function matchLinkToken(value: string): { label: string; href: string; rawLength: number } | null {
+  if (value[0] !== '[') {
+    return null;
+  }
+
+  let backslashRun = 0;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index] ?? '';
+    if (character === '\n') {
+      return null;
+    }
+    if (character === '\\') {
+      backslashRun += 1;
+      continue;
+    }
+    const escaped = backslashRun % 2 === 1;
+    backslashRun = 0;
+    if (character !== ']' || escaped || value[index + 1] !== '(' || index === 1) {
+      continue;
+    }
+
+    const destinationStart = index + 2;
+    let destinationEnd = destinationStart;
+    while (destinationEnd < value.length && value[destinationEnd] !== ')') {
+      if (/\s/u.test(value[destinationEnd] ?? '')) {
+        return null;
+      }
+      destinationEnd += 1;
+    }
+    if (destinationEnd >= value.length) {
+      return null;
+    }
+    const href = value.slice(destinationStart, destinationEnd);
+    if (!href || !SAFE_LINK_PATTERN.test(href)) {
+      return null;
+    }
+    return {
+      label: value.slice(1, index),
+      href,
+      rawLength: destinationEnd + 1,
+    };
+  }
+  return null;
+}
+
+function matchDelimitedInlineContent(
+  value: string,
+  marker: MultilineInlineMarker,
+): { content: string; rawLength: number } | null {
+  if (!value.startsWith(marker)) {
+    return null;
+  }
+  for (let index = marker.length; index <= value.length - marker.length; index += 1) {
+    if (value[index] === '\n') {
+      return null;
+    }
+    if (!value.startsWith(marker, index) || isEscapedMarkdownPosition(value, index)) {
+      continue;
+    }
+    const content = value.slice(marker.length, index);
+    if (!content) {
+      continue;
+    }
+    return { content, rawLength: index + marker.length };
+  }
   return null;
 }
 
@@ -596,6 +952,8 @@ function renderInlineTokens(tokens: InlineToken[], options: RenderMarkdownOption
           return `<u>${renderInlineTokens(token.children, options)}</u>`;
         case 'strike':
           return `<s>${renderInlineTokens(token.children, options)}</s>`;
+        case 'highlight':
+          return `<mark>${renderInlineTokens(token.children, options)}</mark>`;
         case 'link':
           return renderLinkHtml(token, options);
       }
@@ -659,6 +1017,7 @@ function renderInlineTokensAsPlainText(tokens: InlineToken[]): string {
         case 'italic':
         case 'underline':
         case 'strike':
+        case 'highlight':
         case 'link':
           return renderInlineTokensAsPlainText(token.children);
       }

@@ -5,6 +5,7 @@ type BroadcastPublishReviewSheetProps = {
   id: string;
   open: boolean;
   text: string;
+  sourceFormat?: 'plain' | 'markdown';
   hasMedia: boolean;
   facts: string[];
   confirmLabel: string;
@@ -22,6 +23,7 @@ export function BroadcastPublishReviewSheet({
   id,
   open,
   text,
+  sourceFormat = 'markdown',
   hasMedia,
   facts,
   confirmLabel,
@@ -59,6 +61,7 @@ export function BroadcastPublishReviewSheet({
             <span className="broadcast-review-card__bubble">
               <MaxMarkdownPreview
                 value={text}
+                sourceFormat={sourceFormat}
                 className="broadcast-review-card__markdown max-markdown-preview--clamp-2"
                 normalizeWhitespace
                 fallback={hasMedia ? 'Медиа' : null}

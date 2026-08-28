@@ -10,6 +10,7 @@ import { PublisherIdentityAttestationService } from '../publisher/publisher-iden
 import { assertPublisherIdentityOrDelay } from '../publisher/publisher-identity-attestation-job-guard';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { ChannelDialogService } from './channel-dialog.service';
+import { PublisherSuggestionService } from './publisher-suggestion.service';
 import {
   PUBLISHER_SUGGESTION_PUBLICATION_QUEUE,
   type PublisherSuggestionPublicationJob,
@@ -22,6 +23,7 @@ export class PublisherSuggestionPublicationProcessor extends WorkerHost {
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
     private readonly runtimeBoundary: PublisherRuntimeBoundaryService,
+    private readonly publisherSuggestions: PublisherSuggestionService,
   ) {
     super();
   }
@@ -33,9 +35,15 @@ export class PublisherSuggestionPublicationProcessor extends WorkerHost {
     await assertPublisherRuntimeEnabledOrDelay(this.runtimeBoundary, job, token);
     await assertPublisherIdentityOrDelay(this.identityAttestation, job, token);
     await assertPublisherDispatchAllowedOrDelay(this.dispatchHealth, job, token);
-    await this.channelDialogService.processPublisherSuggestionPublicationJob(
+    const handled = await this.publisherSuggestions.processPublicationJob(
       job.data.suggestionId,
       job.data.claimToken,
     );
+    if (!handled) {
+      await this.channelDialogService.processPublisherSuggestionPublicationJob(
+        job.data.suggestionId,
+        job.data.claimToken,
+      );
+    }
   }
 }

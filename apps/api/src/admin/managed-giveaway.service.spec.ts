@@ -1790,7 +1790,7 @@ describe('ManagedGiveawayService', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',
-      '<p><strong>Жирный заголовок</strong></p><p>Текст с <strong>акцентом</strong>, <em>курсивом</em> и <a href="https://max.ru/">ссылкой</a>.</p>',
+      '<h1>Жирный заголовок</h1><p>Текст с <strong>акцентом</strong>, <em>курсивом</em> и <a href="https://max.ru/">ссылкой</a>.</p>',
       expect.objectContaining({
         textFormat: 'html',
         buttons: [[expect.objectContaining({ text: 'Участвовать · 0' })]],

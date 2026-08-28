@@ -3440,8 +3440,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
-          text: '**Исходный** пост админа',
-          format: 'markdown',
+          text: '<strong>Исходный</strong> пост админа',
+          format: 'html',
           link: {
             type: 'reply',
             mid: 'mid-parent-1',
@@ -3779,8 +3779,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: expect.objectContaining({
-          text: '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац',
-          format: 'markdown',
+          text: '🔥<a href="https://dev.max.ru/docs-api"><strong>MAX Docs</strong></a>\n\nВторой абзац',
+          format: 'html',
         }),
       }),
     );
@@ -3851,12 +3851,158 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api2.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: expect.objectContaining({
-          text: '**Заголовок**\n\n**Второй абзац**',
-          format: 'markdown',
+          text: '<strong>Заголовок</strong>\n\n<strong>Второй абзац</strong>',
+          format: 'html',
         }),
       }),
     );
 
+    await service.onModuleDestroy();
+  });
+
+  it('reconstructs nested emoji-rich MAX markup as escaped HTML without generated Markdown', async () => {
+    const first = 'Первая **буквально**';
+    const second = 'Вторая <tag> [скобки]';
+    const sourceText = `🔥${first}\n\n${second}`;
+    const secondStart = sourceText.indexOf(second);
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-source-nested-html-1',
+                    text: sourceText,
+                    markup: [
+                      { from: 2, type: 'strong', length: sourceText.length - 2 },
+                      { from: 2, type: 'emphasized', length: first.length },
+                      { from: secondStart, type: 'underline', length: second.length },
+                    ],
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { mid: 'mid-copy-nested-html-1' } })),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageCopyWithInlineKeyboard(
+      'chat-1',
+      'mid-source-nested-html-1',
+      sourceText,
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: `🔥<strong><em>${first}</em></strong>\n\n<strong><u>Вторая &lt;tag&gt; [скобки]</u></strong>`,
+          format: 'html',
+        }),
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('preserves current official heading, highlight, quote, and user_id markup when reposting', async () => {
+    const sourceText = 'Title\nFocus\nQuote\nUser';
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-source-current-markup-1',
+                    text: sourceText,
+                    markup: [
+                      { type: 'heading', from: 0, length: 5 },
+                      { type: 'highlighted', from: 6, length: 5 },
+                      { type: 'quote', from: 12, length: 5 },
+                      { type: 'user_mention', from: 18, length: 4, user_id: 67123224 },
+                    ],
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { mid: 'mid-copy-current-markup-1' } })),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageCopyWithInlineKeyboard(
+      'chat-1',
+      'mid-source-current-markup-1',
+      sourceText,
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: '<h3>Title</h3>\n<mark>Focus</mark>\n<blockquote>Quote</blockquote>\n<a href="max://user/67123224">User</a>',
+          format: 'html',
+        }),
+      }),
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('canonicalizes partially overlapping MAX ranges into balanced HTML segments', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-source-crossing-html-1',
+                    text: 'ABCDEFGH',
+                    markup: [
+                      { from: 0, type: 'strong', length: 5 },
+                      { from: 3, type: 'emphasized', length: 5 },
+                    ],
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(of({ status: 200, data: { mid: 'mid-copy-crossing-html-1' } })),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageCopyWithInlineKeyboard(
+      'chat-1',
+      'mid-source-crossing-html-1',
+      'ABCDEFGH',
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          text: '<strong>ABC<em>DE</em></strong><em>FGH</em>',
+          format: 'html',
+        }),
+      }),
+    );
     await service.onModuleDestroy();
   });
 
@@ -3914,8 +4060,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
           message_id: 'mid-edit-markup-1',
         },
         data: expect.objectContaining({
-          text: '🔥**Привет** мир',
-          format: 'markdown',
+          text: '🔥<strong>Привет</strong> мир',
+          format: 'html',
         }),
       }),
     );
@@ -4005,7 +4151,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('normalizes MAX user mention markup to max user links', async () => {
+  it('normalizes MAX user_link and user_id mention markup to max user links', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
         of({
@@ -4015,13 +4161,19 @@ describe('MaxClientService inline keyboard guardrails', () => {
               {
                 body: {
                   mid: 'mid-rules-mention-1',
-                  text: 'Стас',
+                  text: 'Стас Анна',
                   markup: [
                     {
                       from: 0,
                       type: 'user_mention',
                       length: 4,
                       user_link: 'user/67123224',
+                    },
+                    {
+                      from: 5,
+                      type: 'user_mention',
+                      length: 4,
+                      user_id: 67123225,
                     },
                   ],
                 },
@@ -4035,7 +4187,95 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     const result = await service.getMessageTextAsMarkdown('mid-rules-mention-1');
 
-    expect(result).toBe('[Стас](max://user/67123224)');
+    expect(result).toBe('[Стас](max://user/67123224) [Анна](max://user/67123225)');
+    await service.onModuleDestroy();
+  });
+
+  it('extracts current official heading, highlight, and quote markup as markdown', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-rules-current-markup-1',
+                  text: 'Title\nFocus\nQuote',
+                  markup: [
+                    { type: 'heading', from: 0, length: 5 },
+                    { type: 'highlighted', from: 6, length: 5 },
+                    { type: 'quote', from: 12, length: 5 },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getMessageTextAsMarkdown('mid-rules-current-markup-1');
+
+    expect(result).toBe('# Title\n^^Focus^^\n> Quote');
+    await service.onModuleDestroy();
+  });
+
+  it('extracts crossing MAX markup as balanced markdown', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-rules-crossing-markup-1',
+                  text: 'ABCDEFGH',
+                  markup: [
+                    { type: 'strong', from: 0, length: 5 },
+                    { type: 'emphasized', from: 3, length: 5 },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getMessageTextAsMarkdown('mid-rules-crossing-markup-1')).resolves.toBe(
+      '**ABC_DE_**_FGH_',
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('does not expose markdown escapes inside extracted monospaced text', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-rules-code-markup-1',
+                  text: 'a_b*c',
+                  markup: [{ type: 'monospaced', from: 0, length: 5 }],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getMessageTextAsMarkdown('mid-rules-code-markup-1')).resolves.toBe(
+      '`a_b*c`',
+    );
     await service.onModuleDestroy();
   });
 

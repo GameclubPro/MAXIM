@@ -362,6 +362,7 @@ export function PublicationDetailsSheet({
                 ) : null}
                 <MaxMarkdownPreview
                   value={details.content.text}
+                  sourceFormat={details.content.textFormat}
                   normalizeWhitespace
                   fallback={details.hasVideo ? 'Видео без текста' : null}
                 />

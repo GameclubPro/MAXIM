@@ -45,6 +45,11 @@ test('suggestion child chunks recover without crashing the route', () => {
     dedicatedPageSource,
     /lazySuggestionComponent\(\s*loadChannelSuggestionComposeImageGrid,\s*'ChannelSuggestionComposeImageGrid',\s*false/u,
   );
+  assert.match(
+    dedicatedPageSource,
+    /lazySuggestionComponent\(\s*loadMaxRichTextEditor,\s*'MaxRichTextEditor',\s*true/u,
+  );
+  assert.doesNotMatch(dedicatedPageSource, /const LazyMaxRichTextEditor = lazy\(/u);
   assert.match(dedicatedPageSource, /return \{ default: LazySuggestionChunkLoadFailure/u);
 });
 

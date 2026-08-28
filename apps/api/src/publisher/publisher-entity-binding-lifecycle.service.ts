@@ -634,7 +634,6 @@ export class PublisherEntityBindingLifecycleService {
     const receivedAt = new Date();
     const evidenceAt = readWebhookEventTimestamp(update) ?? receivedAt;
     const candidateVersion = `forwarded:${update.updateId}`;
-    const forwardedBindingSource = buildPublisherForwardedBindingSource(candidateVersion);
     const staged = await this.prisma.$transaction(async (tx) => {
       const existingPublisherCatalog = await tx.managedBotChatCatalog.findUnique({
         where: {
@@ -688,57 +687,9 @@ export class PublisherEntityBindingLifecycleService {
         return 'rate_limited' as const;
       }
 
-      const resetBinding =
-        !binding ||
-        binding.publisherBotId !== this.publisherBotId ||
-        binding.status !== ChatBotMembershipStatus.ACTIVE;
-      await tx.publisherEntityBinding.upsert({
-        where: { chatId: candidate.sourceChatId },
-        create: {
-          chatId: candidate.sourceChatId,
-          publisherBotId: this.publisherBotId,
-          status: ChatBotMembershipStatus.ACTIVE,
-          botAccessState: ChatBotAccessState.UNKNOWN,
-          botAccessSource: forwardedBindingSource,
-          lastSeenAt: evidenceAt,
-        },
-        update: {
-          publisherBotId: this.publisherBotId,
-          status: ChatBotMembershipStatus.ACTIVE,
-          lastSeenAt: evidenceAt,
-          ...(resetBinding
-            ? {
-                capabilities: [],
-                permissionsSnapshot: Prisma.JsonNull,
-                botAccessState: ChatBotAccessState.UNKNOWN,
-                botAccessCheckedAt: null,
-                botAccessExpiresAt: null,
-                botAccessSource: forwardedBindingSource,
-                botAccessLastErrorCode: null,
-                permissionsHash: null,
-              }
-            : {}),
-        },
-      });
-      await tx.managedBotChatCatalog.upsert({
-        where: {
-          botId_chatId: { botId: this.publisherBotId, chatId: candidate.sourceChatId },
-        },
-        create: {
-          botId: this.publisherBotId,
-          chatId: candidate.sourceChatId,
-          entityType,
-          title,
-          status: 'ACTIVE',
-          source: 'publisher_forwarded_candidate',
-          lastSeenAt: evidenceAt,
-        },
-        update: {
-          status: 'ACTIVE',
-          source: 'publisher_forwarded_candidate',
-          lastSeenAt: evidenceAt,
-        },
-      });
+      // FLAG: A forward proves only which entity to probe. It must never create
+      // or reactivate Publisher routing state before the exact token confirms
+      // both the bot and forwarding administrator in that entity.
       await this.upsertPendingActorCandidate(tx, {
         chatId: candidate.sourceChatId,
         userId: candidate.forwarderUserId,

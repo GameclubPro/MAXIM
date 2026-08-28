@@ -1,6 +1,11 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Job, Queue } from 'bullmq';
+import {
+  PUBLISHER_CHAT_COMMENT_LOCK_PREFIX,
+  readPublisherChatCommentLockEpoch,
+  type PublisherChatCommentLockEpoch,
+} from '../moderation/replacement-attach-marker.store';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
@@ -17,6 +22,7 @@ import { PublisherIdentityAttestationService } from './publisher-identity-attest
 
 export const PUBLISHER_CHAT_COMMENT_RECOVERY_BATCH_SIZE = 50;
 export const PUBLISHER_CHAT_COMMENT_RECOVERY_MIN_AGE_MS = 60_000;
+export const PUBLISHER_CHAT_COMMENT_RECOVERY_MAX_AGE_MS = 24 * 60 * 60_000;
 export const PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS = 60_000;
 export const PUBLISHER_CHAT_COMMENT_RECOVERY_STARTUP_DELAY_MS = 15_000;
 
@@ -25,6 +31,7 @@ type RecoveryMarker = {
   chatId: string;
   messageId: string;
   lockToken: string | null;
+  createdAt: Date;
   replacementMessageId: string | null;
   replyMessageId: string | null;
   replacementSendStartedAt: Date | null;
@@ -127,12 +134,41 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
     const markers = (await this.prisma.chatAutoCommentAttachMarker.findMany({
       where: {
         id: this.scanCursorId ? { gt: this.scanCursorId } : undefined,
+        botId: this.publisherBotId,
         status: 'IN_PROGRESS',
         lockToken: { not: null },
         replacementMessageId: null,
         updatedAt: {
           lte: new Date(now.getTime() - PUBLISHER_CHAT_COMMENT_RECOVERY_MIN_AGE_MS),
         },
+        OR: [
+          { replyMessageId: { not: null } },
+          { replacementSendStartedAt: { not: null } },
+          {
+            replyMessageId: null,
+            replacementSendStartedAt: null,
+            OR: [
+              { lockToken: { startsWith: PUBLISHER_CHAT_COMMENT_LOCK_PREFIX } },
+              {
+                createdAt: {
+                  gte: new Date(now.getTime() - PUBLISHER_CHAT_COMMENT_RECOVERY_MAX_AGE_MS),
+                },
+                chat: {
+                  OR: [
+                    { publicationPolicy: { is: null } },
+                    { publicationPolicy: { is: { publikEnabled: true } } },
+                  ],
+                  publisherSettings: {
+                    is: {
+                      chatCommentsEnabled: true,
+                      chatCommentsAdminsEnabled: true,
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        ],
       },
       orderBy: { id: 'asc' },
       take: PUBLISHER_CHAT_COMMENT_RECOVERY_BATCH_SIZE,
@@ -141,6 +177,7 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
         chatId: true,
         messageId: true,
         lockToken: true,
+        createdAt: true,
         replacementMessageId: true,
         replyMessageId: true,
         replacementSendStartedAt: true,
@@ -159,7 +196,7 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
     for (const marker of markers) {
       result.scanned += 1;
       try {
-        const outcome = await this.recoverMarker(marker);
+        const outcome = await this.recoverMarker(marker, now);
         result[outcome] += 1;
       } catch (error: unknown) {
         result.errors += 1;
@@ -192,20 +229,59 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
 
   private async recoverMarker(
     marker: RecoveryMarker,
+    now: Date,
   ): Promise<'retried' | 'deferred' | 'missingJobs' | 'skipped' | 'races'> {
     const lockToken = marker.lockToken?.trim() ?? '';
     if (!lockToken) {
       return 'skipped';
     }
+    const needsRemoteSend = !marker.replyMessageId && !marker.replacementSendStartedAt;
+    const lockEpoch = readPublisherChatCommentLockEpoch(lockToken);
+    if (
+      needsRemoteSend &&
+      lockEpoch &&
+      marker.createdAt.getTime() < now.getTime() - PUBLISHER_CHAT_COMMENT_RECOVERY_MAX_AGE_MS
+    ) {
+      if (
+        await this.terminalizePreSendMarker(
+          marker,
+          lockToken,
+          'Publisher chat-comment recovery window expired before dispatch',
+        )
+      ) {
+        await this.removeExactFailedJob(marker, lockToken);
+        return 'skipped';
+      }
+      return 'races';
+    }
+    if (
+      needsRemoteSend &&
+      lockEpoch &&
+      (await this.readSettingsEpochState(marker.chatId, lockEpoch)) === 'changed'
+    ) {
+      if (
+        await this.terminalizePreSendMarker(
+          marker,
+          lockToken,
+          'Publisher chat-comment settings changed before recovery dispatch',
+        )
+      ) {
+        await this.removeExactFailedJob(marker, lockToken);
+        return 'skipped';
+      }
+      return 'races';
+    }
     const job = await this.queue.getJob(buildPublisherChatCommentAttachJobId(marker.id, lockToken));
-    if (!job || !this.matchesMarker(job, marker, lockToken)) {
+    if (!job) {
+      return 'missingJobs';
+    }
+    if (!this.matchesMarker(job, marker, lockToken)) {
       return 'missingJobs';
     }
     if ((await job.getState()) !== 'failed') {
       return 'skipped';
     }
 
-    const needsRemoteSend = !marker.replyMessageId && !marker.replacementSendStartedAt;
     if (needsRemoteSend && !(await this.isReadyForRemoteSend(marker.chatId, job.data))) {
       return 'deferred';
     }
@@ -247,6 +323,26 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
     job: PublisherChatCommentAttachJob,
   ): Promise<boolean> {
     try {
+      const revision = job.publisherSettingsRevision;
+      const policyRevision = job.publicationPolicyRevision;
+      if (
+        revision === undefined ||
+        !Number.isSafeInteger(revision) ||
+        revision < 0 ||
+        policyRevision === undefined ||
+        !Number.isSafeInteger(policyRevision) ||
+        policyRevision < 0
+      ) {
+        return false;
+      }
+      if (
+        (await this.readSettingsEpochState(chatId, {
+          publisherSettingsRevision: revision,
+          publicationPolicyRevision: policyRevision,
+        })) !== 'current'
+      ) {
+        return false;
+      }
       this.runtimeBoundary.assertDispatchEnabled();
       await this.dispatchHealth.assertDispatchAllowed();
       const route = await this.readiness.assertEntityReady(chatId, 'chat_comments');
@@ -257,6 +353,94 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
       );
     } catch {
       return false;
+    }
+  }
+
+  private async readSettingsEpochState(
+    chatId: string,
+    epoch: PublisherChatCommentLockEpoch,
+  ): Promise<'current' | 'changed'> {
+    const [settings, policy] = await Promise.all([
+      this.prisma.publisherEntitySettings.findUnique({
+        where: { chatId },
+        select: {
+          revision: true,
+          chatCommentsEnabled: true,
+          chatCommentsAdminsEnabled: true,
+        },
+      }),
+      this.prisma.managedEntityPublicationPolicy.findUnique({
+        where: { chatId },
+        select: { revision: true, publikEnabled: true },
+      }),
+    ]);
+    const settingsCurrent =
+      settings?.chatCommentsEnabled === true &&
+      settings.chatCommentsAdminsEnabled === true &&
+      settings.revision === epoch.publisherSettingsRevision;
+    const policyCurrent = policy
+      ? policy.publikEnabled === true && policy.revision === epoch.publicationPolicyRevision
+      : epoch.publicationPolicyRevision === 0;
+    return settingsCurrent && policyCurrent ? 'current' : 'changed';
+  }
+
+  private async terminalizePreSendMarker(
+    marker: RecoveryMarker,
+    lockToken: string,
+    reason: string,
+  ): Promise<boolean> {
+    const updated = await this.prisma.chatAutoCommentAttachMarker.updateMany({
+      where: {
+        id: marker.id,
+        chatId: marker.chatId,
+        messageId: marker.messageId,
+        lockToken,
+        status: 'IN_PROGRESS',
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+      },
+      data: {
+        status: 'SKIPPED',
+        lockToken: null,
+        lockedAt: null,
+        source: 'webhook',
+        botId: this.publisherBotId,
+        deliveryMode: 'reply_message',
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+        cleanupIntentId: null,
+        lastError: reason,
+        lastStatusCode: null,
+      },
+    });
+    return updated.count === 1;
+  }
+
+  private async removeExactFailedJob(marker: RecoveryMarker, lockToken: string): Promise<void> {
+    try {
+      const job = await this.queue.getJob(
+        buildPublisherChatCommentAttachJobId(marker.id, lockToken),
+      );
+      if (
+        job &&
+        this.matchesMarker(job, marker, lockToken) &&
+        (await job.getState()) === 'failed'
+      ) {
+        await job.remove();
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          markerId: marker.id,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to remove a terminal Publisher chat-comment job; bounded retention remains active',
+      );
     }
   }
 

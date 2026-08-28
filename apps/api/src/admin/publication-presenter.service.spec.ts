@@ -109,6 +109,7 @@ describe('PublicationPresenterService', () => {
       'Название Публика',
       'channel-fallback',
     ]);
+    expect(details.contentPreviewFormat).toBe('plain');
     expect(JSON.stringify(details)).not.toContain('Майора');
     expect(catalogFindMany).toHaveBeenCalledWith({
       where: {
@@ -124,6 +125,36 @@ describe('PublicationPresenterService', () => {
         link: true,
       },
     });
+  });
+
+  it('builds bounded plain summary previews without cutting markdown delimiters', async () => {
+    const presenter = new PublicationPresenterService({} as never);
+
+    const summary = await presenter.mapPublicationSummary({
+      id: 'publication-markdown-preview',
+      title: 'Публикация',
+      lifecycle: PublicationLifecycle.ACTIVE,
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      version: 1,
+      canonicalContentRevision: {
+        text: `**${'Текст'.repeat(50)}** [Ссылка](https://example.com/path)`,
+        textFormat: 'MARKDOWN',
+        assets: [],
+      },
+      targets: [],
+      audienceSelection: 'SELECTED',
+      audienceMode: 'SNAPSHOT',
+      schedule: null,
+      occurrences: [],
+      deliveryStats: EMPTY_DELIVERY,
+      actionableDeliveryStats: EMPTY_DELIVERY,
+      createdAt: new Date('2026-08-27T10:00:00.000Z'),
+      updatedAt: new Date('2026-08-27T10:00:00.000Z'),
+    });
+
+    expect(summary.contentPreview).toBe('Текст'.repeat(32));
+    expect(summary.contentPreviewFormat).toBe('plain');
+    expect(summary.contentPreview).not.toMatch(/\*\*|\[[^\]]*$/u);
   });
 
   it('searches the active exact Publisher catalog by its displayed title or ID fallback', async () => {

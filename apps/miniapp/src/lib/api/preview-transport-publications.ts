@@ -42,6 +42,17 @@ import {
   type PreviewRequestHandler,
 } from './preview-transport-runtime';
 import { addDays, addHours, cloneJson, parseJsonBody } from './preview-transport-shared';
+import { stripSupportedMarkdownToPlainText } from '../max-markdown';
+import { normalizeLegacyMultilineMarkdown } from '../max-markdown-multiline';
+
+function resolvePublicationContentPreview(content: PublicationContentInput): string {
+  const source = content.text.trim();
+  return (
+    content.textFormat === 'markdown'
+      ? stripSupportedMarkdownToPlainText(normalizeLegacyMultilineMarkdown(source))
+      : source
+  ).slice(0, 160);
+}
 
 function resolvePreviewSource(
   state: PreviewState,
@@ -276,7 +287,8 @@ export function buildPreviewPublicationDetails(
     title: request.title,
     lifecycle,
     version: options.version ?? 1,
-    contentPreview: request.content.text.trim().slice(0, 160),
+    contentPreview: resolvePublicationContentPreview(request.content),
+    contentPreviewFormat: 'plain',
     targetCount: targets.length,
     targetPreviews: targets.slice(0, 6),
     targetOverflowCount: Math.max(0, targets.length - 6),

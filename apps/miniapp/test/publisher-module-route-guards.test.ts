@@ -43,7 +43,7 @@ test('blocked Publik modules explain readiness and run one bounded targeted rech
   assert.match(modulesCss, /\.publisher-entity-modules-page__recheck \{[\s\S]*?min-height: 44px;/u);
 });
 
-test('channel suggestions confirm terminal actions and progressively render the full response', () => {
+test('channel suggestions confirm terminal actions and page both server views independently', () => {
   assert.match(modulesSource, /<LazyPublisherSuggestionsInbox/u);
   assert.match(modulesSource, /await import\('\.\/publisher-suggestions-inbox'\)/u);
   assert.match(suggestionsSource, /<LazyActionConfirmSheet/u);
@@ -70,8 +70,20 @@ test('channel suggestions confirm terminal actions and progressively render the 
     suggestionsSource,
     /onClick=\{\(\) =>\s*reviewMutation\.mutate\(\{ suggestionId: suggestion\.id/u,
   );
-  assert.match(suggestionsSource, /filterPublisherSuggestions\(suggestions, view\)/u);
-  assert.match(suggestionsSource, /growPublisherSuggestionLimit/u);
+  assert.match(suggestionsSource, /useInfiniteQuery/u);
+  assert.match(suggestionsSource, /view: 'pending'/u);
+  assert.match(suggestionsSource, /view: 'history'/u);
+  assert.match(suggestionsSource, /pendingQuery\.data\?\.pages\[0\]\?\.total/u);
+  assert.match(suggestionsSource, /historyQuery\.data\?\.pages\[0\]\?\.total/u);
+  assert.match(suggestionsSource, /activeQuery\.fetchNextPage\(\)/u);
+  assert.match(suggestionsSource, /queryClient\.invalidateQueries\(\{ queryKey: queryRoot \}\)/u);
+  assert.match(suggestionsSource, /containsPublishingSuggestion/u);
+  assert.match(suggestionsSource, /view === 'pending'/u);
+  assert.match(suggestionsSource, /Предложка принята в публикацию/u);
+  assert.match(suggestionsSource, /<MaxMarkdownPreview/u);
+  assert.match(suggestionsSource, /sourceFormat=\{suggestion\.textFormat\}/u);
+  assert.match(suggestionsSource, /sourceFormat=\{confirmationSuggestion\.textFormat\}/u);
+  assert.doesNotMatch(suggestionsSource, /<p>\{suggestion\.text\}<\/p>/u);
   assert.doesNotMatch(suggestionsSource, /items\.slice\(0, 20\)/u);
   assert.doesNotMatch(suggestionsSource, /Передано в посты/u);
   assert.match(

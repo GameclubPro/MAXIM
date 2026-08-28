@@ -447,6 +447,7 @@ export const publicationSummarySchema = z.object({
   lifecycle: publicationLifecycleSchema,
   version: z.number().int().min(1),
   contentPreview: z.string(),
+  contentPreviewFormat: publicationTextFormatSchema.default('plain'),
   targetCount: z.number().int().min(0),
   targetPreviews: z.array(publicationTargetSchema).max(6),
   targetOverflowCount: z.number().int().min(0),

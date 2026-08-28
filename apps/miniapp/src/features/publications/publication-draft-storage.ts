@@ -184,6 +184,7 @@ export function parsePublicationDraftEnvelope(value: unknown): PublicationDraft 
   return {
     title: readString(draft.title),
     text: readString(draft.text),
+    textFormat: draft.textFormat === 'plain' ? 'plain' : 'markdown',
     images: readImages(draft.images),
     buttons: readButtons(draft.buttons),
     buttonEnabled: draft.buttonEnabled === true,

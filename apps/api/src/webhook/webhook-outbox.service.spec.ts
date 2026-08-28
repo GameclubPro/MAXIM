@@ -1,5 +1,6 @@
 import { WebhookStatus } from '../prisma/prisma-client';
 import { getQueueToken } from '@nestjs/bullmq';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { WebhookOutboxService } from './webhook-outbox.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import {
@@ -962,6 +963,53 @@ function createCompletedSemanticOwnerFixture(options?: {
 }
 
 describe('WebhookOutboxService', () => {
+  it('keeps preparation deferrals durable beyond the ordinary attempt ceiling', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
+    try {
+      const fixture = createService({
+        findManyResult: [
+          {
+            id: 'evt-non-exhausting-publisher-defer',
+            enqueueAttempts: 120,
+            normalizedPayload: {
+              updateId: 'publisher-update-1',
+              botId: 'publik-bot',
+              type: 'message_created',
+              message: {
+                chatId: 'chat-publisher-defer',
+                messageId: 'message-publisher-defer',
+                senderId: 'admin-1',
+              },
+            },
+          },
+        ],
+      });
+      fixture.prisma.webhookEvent.updateMany.mockImplementation(
+        createWebhookEventUpdateManyMock(fixture.webhookRows),
+      );
+      fixture.webhookService.preparePersistedWebhookEvent.mockRejectedValue(
+        new WebhookPreparationDeferredError('publisher durable enqueue pending', 1_000),
+      );
+      const row = fixture.webhookRows[0]!;
+
+      for (let attempt = 0; attempt < 121; attempt += 1) {
+        await (fixture.service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+        expect(row.status).toBe(WebhookStatus.RECEIVED);
+        expect(row.enqueueAttempts).toBe(120);
+        expect(row.nextEnqueueAt).toBeInstanceOf(Date);
+        jest.setSystemTime(new Date(row.nextEnqueueAt!.getTime() + 1));
+      }
+
+      expect(row.errorMessage).toContain('Webhook preparation deferred');
+      expect(row.processedAt).toBeNull();
+      for (const queue of Object.values(fixture.queues)) {
+        expect(queue.add).not.toHaveBeenCalled();
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('requests FAILED candidates when due or when a completed timeout claim needs repair', async () => {
     const { service, prisma } = createService();
 

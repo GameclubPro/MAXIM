@@ -4,14 +4,17 @@ import {
   type ManagedPollQuestionFormat,
 } from '@maxim/contracts/poll';
 import { renderSupportedMarkdownAsHtml, stripSupportedMarkdownToPlainText } from './max-markdown';
+import { normalizeLegacyMultilineMarkdown } from './max-markdown-multiline';
 
 export function validateManagedPollQuestion(
   value: string,
   format: ManagedPollQuestionFormat,
 ): string {
   const source = value.trim();
+  const normalizedSource =
+    format === 'markdown' ? normalizeLegacyMultilineMarkdown(source) : source;
   const plainText =
-    format === 'markdown' ? stripSupportedMarkdownToPlainText(source).trim() : source;
+    format === 'markdown' ? stripSupportedMarkdownToPlainText(normalizedSource).trim() : source;
 
   if (!plainText) {
     return 'Введите вопрос.';
@@ -21,7 +24,7 @@ export function validateManagedPollQuestion(
   }
   if (
     format === 'markdown' &&
-    renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' }).length >
+    renderSupportedMarkdownAsHtml(normalizedSource, { blockMode: 'raw' }).length >
       MANAGED_POLL_MESSAGE_MAX_LENGTH
   ) {
     return `После форматирования максимум ${MANAGED_POLL_MESSAGE_MAX_LENGTH} символов.`;

@@ -1,3 +1,5 @@
+import { serializeEditorMarkdownLines } from './max-rich-text-serialization';
+
 const EXPLICIT_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/iu;
 
 export function parseEditorLinkHref(value: string): string | null {
@@ -63,5 +65,5 @@ function hasAsciiControl(value: string): boolean {
 
 export function serializeEditorLinkMarkdown(content: string, value: string): string {
   const href = parseEditorLinkHref(value);
-  return href && content ? `[${content}](${href})` : content;
+  return href ? serializeEditorMarkdownLines(content, (line) => `[${line}](${href})`) : content;
 }

@@ -5,7 +5,12 @@ import {
   type InternalChannelDialogButtonIdentity,
 } from '../common/channel-dialog-button-identity.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import { renderMaxTextMarkupAsHtml, type MaxTextMarkup } from '../common/max-text-markup.util';
+import {
+  isMaxTextMarkupType,
+  normalizeMaxUserMentionLink,
+  renderMaxTextMarkupAsHtml,
+  type MaxTextMarkup,
+} from '../common/max-text-markup.util';
 import type { MaxMessageButton, MaxSendMessageOptions } from '../max/max-client.service';
 import type { ChannelSettings as PersistedChannelSettings } from '../prisma/prisma-client';
 import { extractRawMessageNode } from './moderation-update-extractors';
@@ -117,16 +122,7 @@ function normalizeMessageMarkup(value: unknown): MaxTextMarkup | null {
     length === null ||
     from < 0 ||
     length <= 0 ||
-    ![
-      'emphasized',
-      'heading',
-      'link',
-      'monospaced',
-      'strikethrough',
-      'strong',
-      'underline',
-      'user_mention',
-    ].includes(type)
+    !isMaxTextMarkupType(type)
   ) {
     return null;
   }
@@ -134,9 +130,12 @@ function normalizeMessageMarkup(value: unknown): MaxTextMarkup | null {
   return {
     from,
     length,
-    type: type as MaxTextMarkup['type'],
+    type,
     url: readString(row.url),
-    userLink: readString(row.user_link ?? row.userLink),
+    userLink: normalizeMaxUserMentionLink(
+      row.user_link ?? row.userLink,
+      row.user_id ?? row.userId,
+    ),
   };
 }
 

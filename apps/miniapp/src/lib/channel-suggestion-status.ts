@@ -11,6 +11,14 @@ export function resolveSuggestionStatus(
   message: ChannelDialogMessage,
 ): SuggestionStatusPresentation {
   if (message.reviewStatus === 'published') {
+    if (!message.publishedUrl) {
+      return {
+        badge: 'Принято',
+        headline: 'Редактор создал публикацию',
+        note: 'Отправка поста выполняется отдельно; итог зависит от статуса публикации.',
+        tone: 'published',
+      };
+    }
     return {
       badge: 'Опубликовано',
       headline: 'Пост вышел в канале',

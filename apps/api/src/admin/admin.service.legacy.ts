@@ -147,7 +147,12 @@ import { ManagedEntityAccessLossService } from '../max/managed-entity-access-los
 import { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import { escapeHtml, escapeHtmlAttribute } from '../common/max-text-markup.util';
+import {
+  escapeHtml,
+  escapeHtmlAttribute,
+  isMaxTextMarkupType,
+  normalizeMaxUserMentionLink,
+} from '../common/max-text-markup.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
@@ -15393,16 +15398,7 @@ export class AdminService implements OnModuleDestroy {
       !type ||
       from < 0 ||
       length <= 0 ||
-      ![
-        'emphasized',
-        'heading',
-        'link',
-        'monospaced',
-        'strikethrough',
-        'strong',
-        'underline',
-        'user_mention',
-      ].includes(type)
+      !isMaxTextMarkupType(type)
     ) {
       return null;
     }
@@ -15410,9 +15406,12 @@ export class AdminService implements OnModuleDestroy {
     return {
       from,
       length,
-      type: type as ChannelSuggestionTextMarkup['type'],
+      type,
       url: this.readTrimmedString(row.url),
-      userLink: this.readTrimmedString(row.userLink ?? row.user_link),
+      userLink: normalizeMaxUserMentionLink(
+        row.userLink ?? row.user_link,
+        row.userId ?? row.user_id,
+      ),
     };
   }
 

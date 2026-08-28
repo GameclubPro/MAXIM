@@ -1,6 +1,7 @@
 import type {
   BroadcastImage,
   BroadcastLinkButton,
+  BroadcastTextFormat,
   ChannelOverview,
   ChatSummary,
   ManagedEntityType,
@@ -131,6 +132,7 @@ export function getPublicationTargetTitle(
 export type PublicationDraft = {
   title: string;
   text: string;
+  textFormat: BroadcastTextFormat;
   images: BroadcastImage[];
   buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;
@@ -599,6 +601,7 @@ export function createEmptyPublicationDraft(targets: PublicationTarget[] = []): 
   return {
     title: '',
     text: '',
+    textFormat: 'markdown',
     images: [],
     buttons: [],
     buttonEnabled: false,
@@ -670,6 +673,7 @@ export function hasPublicationDraftChanges(
   return !(
     initialDraft.title === currentDraft.title &&
     initialDraft.text === currentDraft.text &&
+    initialDraft.textFormat === currentDraft.textFormat &&
     initialDraft.buttonEnabled === currentDraft.buttonEnabled &&
     initialDraft.timingMode === currentDraft.timingMode &&
     initialDraft.scheduleKind === currentDraft.scheduleKind &&
@@ -755,6 +759,7 @@ export function rebasePublicationDraft(
       return true;
     });
   const buttonsChanged = changed(['buttonEnabled', 'buttons']);
+  const textChanged = changed(['text', 'textFormat']);
   const targetsChanged = changed(['targets']);
   const scheduleChanged = changed([
     'timingMode',
@@ -778,7 +783,8 @@ export function rebasePublicationDraft(
   return {
     ...latest,
     title: baseline.title !== local.title ? local.title : latest.title,
-    text: baseline.text !== local.text ? local.text : latest.text,
+    text: textChanged ? local.text : latest.text,
+    textFormat: textChanged ? local.textFormat : latest.textFormat,
     ...(buttonsChanged
       ? { buttonEnabled: local.buttonEnabled, buttons: local.buttons }
       : { buttonEnabled: latest.buttonEnabled, buttons: latest.buttons }),
@@ -853,7 +859,7 @@ export function buildPublicationContent(draft: PublicationDraft): PublicationCon
 
   return {
     text: draft.text.trim(),
-    textFormat: 'markdown',
+    textFormat: draft.textFormat,
     buttons,
     media: newMedia.length > 0 ? newMedia : retainedMedia,
   };
@@ -993,6 +999,7 @@ export function createPublicationDraftFromDetails(
     ...fallback,
     title: details.title,
     text: details.content.text,
+    textFormat: details.content.textFormat,
     buttons: details.content.buttons.map(({ text, url }) => ({ text, url })),
     buttonEnabled: details.content.buttons.length > 0,
     targets: details.targets.map((target) => ({

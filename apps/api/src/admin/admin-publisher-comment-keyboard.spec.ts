@@ -215,31 +215,29 @@ describe('AdminService publisher-origin comment keyboard routing', () => {
     expect(harness.maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
   });
 
-  it.each(['heartbeat_missing', 'dispatch_disabled'] as const)(
-    'treats publisher keyboard admission %s as a clean handled skip',
-    async (reason) => {
-      const queue = {
-        enqueueKeyboardEdit: jest
-          .fn()
-          .mockRejectedValue(new PublisherChatCommentAdmissionError(reason)),
-      };
-      const logger = { debug: jest.fn(), warn: jest.fn() };
-      const routing = new PublisherCommentKeyboardRouting(
-        { getPublisherBotDescriptor: () => ({ id: 'publik-bot' }) } as never,
-        queue as never,
-        logger as never,
-      );
+  it('treats explicitly disabled publisher keyboard admission as a clean handled skip', async () => {
+    const reason = 'dispatch_disabled' as const;
+    const queue = {
+      enqueueKeyboardEdit: jest
+        .fn()
+        .mockRejectedValue(new PublisherChatCommentAdmissionError(reason)),
+    };
+    const logger = { debug: jest.fn(), warn: jest.fn() };
+    const routing = new PublisherCommentKeyboardRouting(
+      { getPublisherBotDescriptor: () => ({ id: 'publik-bot' }) } as never,
+      queue as never,
+      logger as never,
+    );
 
-      await expect(routing.tryEnqueue(keyboardRoute)).resolves.toBe(true);
+    await expect(routing.tryEnqueue(keyboardRoute)).resolves.toBe(true);
 
-      expect(queue.enqueueKeyboardEdit).toHaveBeenCalledTimes(1);
-      expect(logger.warn).not.toHaveBeenCalled();
-      expect(logger.debug).toHaveBeenCalledWith(
-        expect.objectContaining({ reason }),
-        'Skipped publisher-origin comments counter while admission is closed',
-      );
-    },
-  );
+    expect(queue.enqueueKeyboardEdit).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ reason }),
+      'Skipped publisher-origin comments counter while admission is closed',
+    );
+  });
 
   it('keeps generic publisher keyboard enqueue failures on the existing error path', async () => {
     const failure = new Error('queue unavailable');

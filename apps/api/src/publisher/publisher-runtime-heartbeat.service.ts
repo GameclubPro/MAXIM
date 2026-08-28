@@ -10,10 +10,17 @@ export const PUBLISHER_RUNTIME_HEARTBEAT_TTL_SEC = 45;
 export const PUBLISHER_RUNTIME_HEARTBEAT_INTERVAL_MS = 15_000;
 export const PUBLISHER_RUNTIME_HEARTBEAT_KEY_PREFIX = 'publisher:runtime:v1:';
 
+export type PublisherRuntimeHeartbeatBlocker =
+  | 'runtime_disabled'
+  | 'global_paused'
+  | 'identity_unattested'
+  | 'unknown';
+
 export type PublisherRuntimeHeartbeatSnapshot = Readonly<{
   version: 1;
   botId: string;
   dispatchEnabled: boolean;
+  blocker: PublisherRuntimeHeartbeatBlocker | null;
   observedAt: string;
   instanceId: string;
 }>;
@@ -27,7 +34,30 @@ export function resolvePublisherHeartbeatDispatchEnabled(
   globallyPaused: boolean,
   identityAttested: boolean,
 ): boolean {
-  return dispatchConfigured && identityAttested && !globallyPaused;
+  return (
+    resolvePublisherRuntimeHeartbeatBlocker(
+      dispatchConfigured,
+      globallyPaused,
+      identityAttested,
+    ) === null
+  );
+}
+
+export function resolvePublisherRuntimeHeartbeatBlocker(
+  dispatchConfigured: boolean,
+  globallyPaused: boolean,
+  identityAttested: boolean,
+): Exclude<PublisherRuntimeHeartbeatBlocker, 'unknown'> | null {
+  if (!dispatchConfigured) {
+    return 'runtime_disabled';
+  }
+  if (globallyPaused) {
+    return 'global_paused';
+  }
+  if (!identityAttested) {
+    return 'identity_unattested';
+  }
+  return null;
 }
 
 export function parsePublisherRuntimeHeartbeat(
@@ -51,10 +81,12 @@ export function parsePublisherRuntimeHeartbeat(
     ) {
       return null;
     }
+    const blocker = normalizePublisherRuntimeHeartbeatBlocker(value.blocker, value.dispatchEnabled);
     return {
       version: 1,
       botId: expectedBotId,
       dispatchEnabled: value.dispatchEnabled,
+      blocker,
       observedAt,
       instanceId: value.instanceId,
     };
@@ -133,14 +165,16 @@ return redis.call('DEL', KEYS[1])
       // A disabled heartbeat keeps readiness fail-closed while runtime attestation retries.
     }
     const globallyPaused = await this.dispatchHealth.isGloballyPaused();
+    const blocker = resolvePublisherRuntimeHeartbeatBlocker(
+      this.runtimeBoundary.dispatchEnabled,
+      globallyPaused,
+      identityAttested,
+    );
     const heartbeat: PublisherRuntimeHeartbeatSnapshot = {
       version: 1,
       botId: this.botId,
-      dispatchEnabled: resolvePublisherHeartbeatDispatchEnabled(
-        this.runtimeBoundary.dispatchEnabled,
-        globallyPaused,
-        identityAttested,
-      ),
+      dispatchEnabled: blocker === null,
+      blocker,
       observedAt: new Date().toISOString(),
       instanceId: this.instanceId,
     };
@@ -151,6 +185,21 @@ return redis.call('DEL', KEYS[1])
       PUBLISHER_RUNTIME_HEARTBEAT_TTL_SEC,
     );
   }
+}
+
+function normalizePublisherRuntimeHeartbeatBlocker(
+  value: unknown,
+  dispatchEnabled: boolean,
+): PublisherRuntimeHeartbeatBlocker | null {
+  if (dispatchEnabled) {
+    return null;
+  }
+  return value === 'runtime_disabled' ||
+    value === 'global_paused' ||
+    value === 'identity_unattested' ||
+    value === 'unknown'
+    ? value
+    : 'unknown';
 }
 
 @Injectable()

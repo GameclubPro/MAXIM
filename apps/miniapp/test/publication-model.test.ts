@@ -439,6 +439,7 @@ test('starts a new publication without a recipient or a publishable schedule', (
   const draft = createEmptyPublicationDraft();
 
   assert.deepEqual(draft.targets, []);
+  assert.equal(draft.textFormat, 'markdown');
   assert.deepEqual(draft.scheduledSlots, []);
   assert.equal(draft.onceDate, '');
   assert.equal(draft.onceTime, '');
@@ -608,6 +609,7 @@ test('duplicates content and recipients but requires a new schedule choice', () 
 
   assert.equal(duplicate.title, source.title);
   assert.equal(duplicate.text, source.text);
+  assert.equal(duplicate.textFormat, source.textFormat);
   assert.deepEqual(duplicate.targets, source.targets);
   assert.equal(duplicate.timingMode, 'schedule');
   assert.equal(duplicate.scheduleKind, 'slots');
@@ -640,6 +642,10 @@ test('detects unsaved edit changes without treating refreshed target metadata as
     true,
   );
   assert.equal(
+    hasPublicationDraftChanges(initial, { ...refreshedMetadata, textFormat: 'plain' }),
+    true,
+  );
+  assert.equal(
     hasPublicationDraftChanges(initial, {
       ...refreshedMetadata,
       targets: [refreshedMetadata.targets[0]!, channelTarget],
@@ -657,6 +663,7 @@ test('rebases local edit groups onto a newer publication without dropping user c
 
   const local = structuredClone(baseline);
   local.text = 'Мой новый текст';
+  local.textFormat = 'plain';
   local.buttons = [{ text: 'Подробнее', url: 'https://max.ru/local' }];
 
   const latest = structuredClone(baseline);
@@ -669,6 +676,7 @@ test('rebases local edit groups onto a newer publication without dropping user c
 
   assert.equal(rebased.title, 'Название с сервера');
   assert.equal(rebased.text, 'Мой новый текст');
+  assert.equal(rebased.textFormat, 'plain');
   assert.deepEqual(rebased.buttons, local.buttons);
   assert.equal(rebased.timingMode, 'once');
   assert.deepEqual(rebased.scheduledSlots, latest.scheduledSlots);
@@ -728,6 +736,25 @@ test('keeps intentional schedules when migrating a legacy publication draft', ()
   assert.deepEqual(nowDraft?.scheduledSlots, []);
   assert.deepEqual(nowDraft?.recurrence.weekdays, []);
   assert.deepEqual(nowDraft?.recurrence.times, []);
+  assert.equal(nowDraft?.textFormat, 'markdown');
+});
+
+test('restores and persists publication source text format', () => {
+  const plain = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-08-27T10:00:00.000Z',
+    draft: { text: '**literal**', textFormat: 'plain' },
+  });
+  const markdown = parsePublicationDraftEnvelope({
+    version: 1,
+    savedAt: '2026-08-27T10:00:00.000Z',
+    draft: { text: '**rich**', textFormat: 'markdown' },
+  });
+
+  assert.equal(plain?.textFormat, 'plain');
+  assert.equal(markdown?.textFormat, 'markdown');
+  assert.equal(buildPublicationContent(plain!).textFormat, 'plain');
+  assert.equal(buildPublicationContent(markdown!).textFormat, 'markdown');
 });
 
 test('omits session video bytes while preserving the rest of an autosaved publication draft', () => {

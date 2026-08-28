@@ -12,7 +12,7 @@ import { PublisherRuntimeHeartbeatReaderService } from './publisher-runtime-hear
 
 export const PUBLISHER_CHAT_COMMENT_QUEUE = 'publisher-chat-comments';
 
-export type PublisherChatCommentAdmissionFailureReason = 'heartbeat_missing' | 'dispatch_disabled';
+export type PublisherChatCommentAdmissionFailureReason = 'dispatch_disabled';
 
 export class PublisherChatCommentAdmissionError extends Error {
   constructor(readonly reason: PublisherChatCommentAdmissionFailureReason) {
@@ -39,6 +39,8 @@ export type PublisherChatCommentAttachJob = QueueJobEnvelope<
     senderId: string;
     requiredBotId: string;
     dialogBotId: string;
+    publisherSettingsRevision?: number;
+    publicationPolicyRevision?: number;
     button?: MaxMessageButton;
   },
   PublisherCommentJobMetadata
@@ -73,6 +75,16 @@ export type PublisherChatCommentJob =
 const ATTACH_JOB_ATTEMPTS = 12;
 const KEYBOARD_EDIT_JOB_ATTEMPTS = 8;
 const RETRY_DELAY_MS = 30_000;
+const HEARTBEAT_RECHECK_DELAY_MS = 50;
+const DURABLE_ATTACH_JOB_STATES = new Set([
+  'active',
+  'delayed',
+  'failed',
+  'paused',
+  'prioritized',
+  'waiting',
+  'waiting-children',
+]);
 
 export function buildPublisherChatCommentAttachJobId(markerId: string, lockToken: string): string {
   const claimHash = createHash('sha256')
@@ -104,6 +116,8 @@ export class PublisherChatCommentQueueService {
     messageId: string;
     senderId: string;
     dialogBotId: string;
+    publisherSettingsRevision: number;
+    publicationPolicyRevision: number;
     button?: MaxMessageButton;
     createdAt?: Date;
   }): Promise<void> {
@@ -113,6 +127,14 @@ export class PublisherChatCommentQueueService {
     const messageId = this.requireString(params.messageId, 'messageId');
     const senderId = this.requireString(params.senderId, 'senderId');
     const dialogBotId = this.requireString(params.dialogBotId, 'dialogBotId');
+    const publisherSettingsRevision = this.requireRevision(
+      params.publisherSettingsRevision,
+      'publisherSettingsRevision',
+    );
+    const publicationPolicyRevision = this.requireRevision(
+      params.publicationPolicyRevision,
+      'publicationPolicyRevision',
+    );
     const createdAt = params.createdAt ?? new Date();
 
     await this.assertPublisherAdmissionEnabled();
@@ -128,6 +150,8 @@ export class PublisherChatCommentQueueService {
         senderId,
         requiredBotId: this.publisherBotId,
         dialogBotId,
+        publisherSettingsRevision,
+        publicationPolicyRevision,
         ...(params.button ? { button: params.button } : {}),
         idempotencyKey: markerId,
         sourceTag: 'chat_auto_comment',
@@ -140,6 +164,53 @@ export class PublisherChatCommentQueueService {
         true,
       ),
     );
+  }
+
+  async hasMatchingAttachJob(params: {
+    markerId: string;
+    lockToken: string;
+    chatId: string;
+    messageId: string;
+    senderId: string;
+    dialogBotId: string;
+    publisherSettingsRevision?: number;
+    publicationPolicyRevision?: number;
+  }): Promise<boolean> {
+    const markerId = this.requireString(params.markerId, 'markerId');
+    const lockToken = this.requireString(params.lockToken, 'lockToken');
+    const chatId = this.requireString(params.chatId, 'chatId');
+    const messageId = this.requireString(params.messageId, 'messageId');
+    const senderId = this.requireString(params.senderId, 'senderId');
+    const dialogBotId = this.requireString(params.dialogBotId, 'dialogBotId');
+    const publisherSettingsRevision = this.optionalRevision(params.publisherSettingsRevision);
+    const publicationPolicyRevision = this.optionalRevision(params.publicationPolicyRevision);
+    const job = await this.queue.getJob(buildPublisherChatCommentAttachJobId(markerId, lockToken));
+    const data = job?.data;
+    if (
+      !job ||
+      !data ||
+      data.version !== 1 ||
+      data.kind !== 'attach_chat_reply' ||
+      data.retryPolicyName !== 'publisher-chat-comment' ||
+      data.markerId !== markerId ||
+      data.lockToken !== lockToken ||
+      data.chatId !== chatId ||
+      data.messageId !== messageId ||
+      data.senderId !== senderId ||
+      data.requiredBotId !== this.publisherBotId ||
+      data.dialogBotId !== dialogBotId ||
+      publisherSettingsRevision === undefined ||
+      publicationPolicyRevision === undefined ||
+      data.publisherSettingsRevision !== publisherSettingsRevision ||
+      data.publicationPolicyRevision !== publicationPolicyRevision ||
+      !Number.isSafeInteger(data.publisherSettingsRevision) ||
+      data.publisherSettingsRevision < 0 ||
+      !Number.isSafeInteger(data.publicationPolicyRevision) ||
+      data.publicationPolicyRevision < 0
+    ) {
+      return false;
+    }
+    return DURABLE_ATTACH_JOB_STATES.has(await job.getState());
   }
 
   async enqueueKeyboardEdit(params: {
@@ -208,7 +279,10 @@ export class PublisherChatCommentQueueService {
         count: 20_000,
       },
       removeOnFail: retainFailed
-        ? false
+        ? {
+            age: 2 * 24 * 60 * 60,
+            count: 20_000,
+          }
         : {
             age: 14 * 24 * 60 * 60,
             count: 20_000,
@@ -217,13 +291,32 @@ export class PublisherChatCommentQueueService {
   }
 
   private async assertPublisherAdmissionEnabled(): Promise<void> {
-    const heartbeat = await this.runtimeHeartbeat.read(this.publisherBotId);
+    let heartbeat = await this.runtimeHeartbeat.read(this.publisherBotId);
     if (!heartbeat) {
-      throw new PublisherChatCommentAdmissionError('heartbeat_missing');
+      await new Promise<void>((resolve) => setTimeout(resolve, HEARTBEAT_RECHECK_DELAY_MS));
+      heartbeat = await this.runtimeHeartbeat.read(this.publisherBotId);
     }
-    if (!heartbeat.dispatchEnabled) {
+    if (heartbeat && !heartbeat.dispatchEnabled && heartbeat.blocker === 'runtime_disabled') {
       throw new PublisherChatCommentAdmissionError('dispatch_disabled');
     }
+  }
+
+  private optionalRevision(value: number | undefined): number | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error('Publisher chat-comment publisherSettingsRevision is invalid');
+    }
+    return value;
+  }
+
+  private requireRevision(value: number | undefined, label: string): number {
+    const revision = this.optionalRevision(value);
+    if (revision === undefined) {
+      throw new Error(`Publisher chat-comment ${label} is required`);
+    }
+    return revision;
   }
 
   private requireString(value: string, label: string): string {

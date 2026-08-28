@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { broadcastTextFormatSchema } from './broadcast-common.js';
 import { managedEntityTypeSchema } from './managed-entities.js';
 export type { ManagedEntityType } from './managed-entities.js';
 
@@ -54,9 +55,7 @@ export const publisherChatCommentSettingsSchema = z
     commentsChatBroadcastsEnabled: z.boolean(),
   })
   .strict();
-export type PublisherChatCommentSettings = z.infer<
-  typeof publisherChatCommentSettingsSchema
->;
+export type PublisherChatCommentSettings = z.infer<typeof publisherChatCommentSettingsSchema>;
 
 export const publisherEntityModuleSettingsSchema = z
   .object({
@@ -65,9 +64,7 @@ export const publisherEntityModuleSettingsSchema = z
     channelSuggestionsEnabled: z.boolean().nullable(),
   })
   .strict();
-export type PublisherEntityModuleSettings = z.infer<
-  typeof publisherEntityModuleSettingsSchema
->;
+export type PublisherEntityModuleSettings = z.infer<typeof publisherEntityModuleSettingsSchema>;
 
 export const publisherEntityReadinessSchema = z.object({
   state: publisherReadinessStateSchema,
@@ -80,20 +77,22 @@ export const publisherEntityReadinessSchema = z.object({
 });
 export type PublisherEntityReadiness = z.infer<typeof publisherEntityReadinessSchema>;
 
-export const publisherEntitySchema = z.object({
-  id: z.string().trim().min(1),
-  title: z.string(),
-  entityType: managedEntityTypeSchema,
-  avatarUrl: z.string().trim().url().nullable().default(null),
-  entityUrl: z.string().trim().url().nullable().default(null),
-  policy: managedEntityPublicationPolicySchema,
-  moduleSettings: publisherEntityModuleSettingsSchema.default({
-    revision: 0,
-    chatComments: null,
-    channelSuggestionsEnabled: null,
-  }),
-  readiness: publisherEntityReadinessSchema,
-}).strict();
+export const publisherEntitySchema = z
+  .object({
+    id: z.string().trim().min(1),
+    title: z.string(),
+    entityType: managedEntityTypeSchema,
+    avatarUrl: z.string().trim().url().nullable().default(null),
+    entityUrl: z.string().trim().url().nullable().default(null),
+    policy: managedEntityPublicationPolicySchema,
+    moduleSettings: publisherEntityModuleSettingsSchema.default({
+      revision: 0,
+      chatComments: null,
+      channelSuggestionsEnabled: null,
+    }),
+    readiness: publisherEntityReadinessSchema,
+  })
+  .strict();
 export type PublisherEntity = z.infer<typeof publisherEntitySchema>;
 
 export const MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH = 1_024;
@@ -179,18 +178,20 @@ export const publisherEntitiesSummarySchema = z
   .strict();
 export type PublisherEntitiesSummary = z.infer<typeof publisherEntitiesSummarySchema>;
 
-export const publisherEntitiesResponseSchema = z.object({
-  items: z.array(publisherEntitySchema),
-  nextCursor: z
-    .string()
-    .trim()
-    .min(1)
-    .max(MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH)
-    .nullable()
-    .optional(),
-  filteredTotal: z.number().int().min(0).optional(),
-  summary: publisherEntitiesSummarySchema.optional(),
-}).strict();
+export const publisherEntitiesResponseSchema = z
+  .object({
+    items: z.array(publisherEntitySchema),
+    nextCursor: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_PUBLISHER_ENTITIES_CURSOR_LENGTH)
+      .nullable()
+      .optional(),
+    filteredTotal: z.number().int().min(0).optional(),
+    summary: publisherEntitiesSummarySchema.optional(),
+  })
+  .strict();
 export type PublisherEntitiesResponse = z.infer<typeof publisherEntitiesResponseSchema>;
 
 export const publisherEntitiesCursorResponseSchema = publisherEntitiesResponseSchema.extend({
@@ -257,31 +258,50 @@ export const publisherSuggestionReviewStatusSchema = z.enum([
   'published',
   'cancelled',
 ]);
-export type PublisherSuggestionReviewStatus = z.infer<
-  typeof publisherSuggestionReviewStatusSchema
->;
+export type PublisherSuggestionReviewStatus = z.infer<typeof publisherSuggestionReviewStatusSchema>;
 
 export const publisherSuggestionSchema = z
   .object({
     id: z.string().trim().min(1),
     text: z.string(),
+    textFormat: broadcastTextFormatSchema,
     authorDisplayName: z.string().nullable(),
     createdAt: z.string().datetime(),
     reviewStatus: publisherSuggestionReviewStatusSchema,
     publicationId: z.string().trim().min(1).nullable(),
+    reviewError: z.string().trim().min(1).max(300).nullable().optional(),
   })
   .strict();
 export type PublisherSuggestion = z.infer<typeof publisherSuggestionSchema>;
 
-export const publisherSuggestionsResponseSchema = z
-  .object({ items: z.array(publisherSuggestionSchema).max(100) })
+export const MAX_PUBLISHER_SUGGESTIONS_CURSOR_LENGTH = 1_024;
+
+export const publisherSuggestionsViewSchema = z.enum(['pending', 'history']);
+export type PublisherSuggestionsView = z.infer<typeof publisherSuggestionsViewSchema>;
+
+export const publisherSuggestionsQuerySchema = z
+  .object({
+    view: publisherSuggestionsViewSchema.default('pending'),
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+    cursor: z.string().trim().min(1).max(MAX_PUBLISHER_SUGGESTIONS_CURSOR_LENGTH).optional(),
+  })
   .strict();
-export type PublisherSuggestionsResponse = z.infer<
-  typeof publisherSuggestionsResponseSchema
->;
+export type PublisherSuggestionsQuery = z.infer<typeof publisherSuggestionsQuerySchema>;
+
+export const publisherSuggestionsResponseSchema = z
+  .object({
+    items: z.array(publisherSuggestionSchema).max(100),
+    total: z.number().int().min(0),
+    nextCursor: z.string().trim().min(1).max(MAX_PUBLISHER_SUGGESTIONS_CURSOR_LENGTH).nullable(),
+  })
+  .strict();
+export type PublisherSuggestionsResponse = z.infer<typeof publisherSuggestionsResponseSchema>;
 
 export const reviewPublisherSuggestionRequestSchema = z
-  .object({ action: z.enum(['publish', 'cancel']) })
+  .object({
+    action: z.enum(['publish', 'cancel']),
+    responseVersion: z.literal(2).optional(),
+  })
   .strict();
 export type ReviewPublisherSuggestionRequest = z.infer<
   typeof reviewPublisherSuggestionRequestSchema
@@ -302,8 +322,7 @@ export const updatePublisherEntityModuleSettingsRequestSchema = z
   })
   .strict()
   .refine(
-    (value) =>
-      value.channelSuggestionsEnabled !== undefined || value.chatComments !== undefined,
+    (value) => value.channelSuggestionsEnabled !== undefined || value.chatComments !== undefined,
     'Specify at least one Publisher module setting',
   );
 export type UpdatePublisherEntityModuleSettingsRequest = z.infer<

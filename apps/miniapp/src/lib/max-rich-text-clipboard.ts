@@ -1,4 +1,5 @@
-import { parseEditorLinkHref } from './max-rich-text-link';
+import { parseEditorLinkHref, serializeEditorLinkMarkdown } from './max-rich-text-link';
+import { serializeEditorInlineMarkdown } from './max-rich-text-serialization';
 
 type ClipboardHtmlNode =
   | {
@@ -16,9 +17,15 @@ type ClipboardHtmlNode =
       text: string;
     };
 
-type ClipboardInlineMark = 'bold' | 'italic' | 'underline' | 'strike';
+type ClipboardInlineMark = 'bold' | 'italic' | 'underline' | 'strike' | 'highlight';
 
-const CLIPBOARD_MARK_ORDER: ClipboardInlineMark[] = ['strike', 'underline', 'italic', 'bold'];
+const CLIPBOARD_MARK_ORDER: ClipboardInlineMark[] = [
+  'strike',
+  'underline',
+  'italic',
+  'bold',
+  'highlight',
+];
 const VOID_HTML_TAGS = new Set([
   'area',
   'base',
@@ -329,12 +336,15 @@ function serializeClipboardHtmlNode(
 
   if (tagName === 'a') {
     const href = parseEditorLinkHref(node.attributes.href ?? '');
-    content = href ? `[${content}](${href})` : content;
+    content = href ? serializeEditorLinkMarkdown(content, href) : content;
   }
 
   if (HEADING_HTML_TAGS.has(tagName)) {
     const headingContent = content.replace(/\n+/gu, ' ').trim();
-    return headingContent ? appendClipboardBlockBreak(`# ${headingContent}`) : '';
+    const level = Number.parseInt(tagName.slice(1), 10);
+    return headingContent
+      ? appendClipboardBlockBreak(`${'#'.repeat(level)} ${headingContent}`)
+      : '';
   }
 
   if (tagName === 'blockquote') {
@@ -361,8 +371,11 @@ function serializeClipboardHtmlNode(
 function resolveClipboardNodeMarks(tagName: string, style: string): ClipboardInlineMark[] {
   const marks = new Set<ClipboardInlineMark>();
 
-  if (tagName === 'strong' || tagName === 'b' || tagName === 'mark') {
+  if (tagName === 'strong' || tagName === 'b') {
     marks.add('bold');
+  }
+  if (tagName === 'mark') {
+    marks.add('highlight');
   }
   if (tagName === 'em' || tagName === 'i') {
     marks.add('italic');
@@ -388,7 +401,7 @@ function resolveClipboardNodeMarks(tagName: string, style: string): ClipboardInl
     marks.add('bold');
   }
   if (/background(?:-color)?\s*:\s*(?!\s*(?:transparent|none)\b)/iu.test(normalizedStyle)) {
-    marks.add('bold');
+    marks.add('highlight');
   }
 
   return CLIPBOARD_MARK_ORDER.filter((mark) => marks.has(mark));
@@ -453,16 +466,7 @@ function applyClipboardMarks(
       return result;
     }
 
-    switch (mark) {
-      case 'bold':
-        return `**${result}**`;
-      case 'italic':
-        return `_${result}_`;
-      case 'underline':
-        return `++${result}++`;
-      case 'strike':
-        return `~~${result}~~`;
-    }
+    return serializeEditorInlineMarkdown(result, mark);
   }, content);
 }
 
@@ -487,7 +491,7 @@ function normalizeClipboardMarkdown(value: string): string {
 }
 
 function escapeClipboardMarkdownText(value: string): string {
-  return value.replace(/[\\`*_()[\]~+]/gu, '\\$&');
+  return value.replace(/[\\`*_()[\]~+#^>]/gu, '\\$&');
 }
 
 function serializeClipboardCodeText(value: string): string {

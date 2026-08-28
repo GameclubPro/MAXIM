@@ -121,9 +121,7 @@ const channelClaim = {
   hasEngagementButtons: true,
 };
 
-function publisherAdmissionMarker(
-  overrides: Partial<TestMarkerRow> = {},
-): TestMarkerRow {
+function publisherAdmissionMarker(overrides: Partial<TestMarkerRow> = {}): TestMarkerRow {
   return {
     id: 'ccr1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     chatId: 'chat-1',
@@ -155,7 +153,7 @@ describe('ReplacementAttachMarkerStore publisher admission terminalization', () 
       messageId: 'message-1',
       lockToken: 'claim-lock-1',
       botId: 'main-bot',
-      reason: 'heartbeat_missing',
+      reason: 'dispatch_disabled',
     });
 
   it('terminalizes only the exact unfenced claim with stable admission evidence', async () => {
@@ -194,7 +192,7 @@ describe('ReplacementAttachMarkerStore publisher admission terminalization', () 
         publishedUrl: null,
         originalDeleted: false,
         cleanupIntentId: null,
-        lastError: 'Publisher chat-comment admission failed: heartbeat_missing',
+        lastError: 'Publisher chat-comment admission failed: dispatch_disabled',
         lastStatusCode: null,
       },
     });
@@ -203,8 +201,133 @@ describe('ReplacementAttachMarkerStore publisher admission terminalization', () 
         status: 'SKIPPED',
         lockToken: null,
         lockedAt: null,
-        lastError: 'Publisher chat-comment admission failed: heartbeat_missing',
+        lastError: 'Publisher chat-comment admission failed: dispatch_disabled',
         lastStatusCode: null,
+      }),
+    );
+  });
+
+  it('keeps a fresh crash claim pending and reclaims it only after its lease is stale', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-26T09:00:00.000Z'));
+    try {
+      const marker = createMarkerDelegate(
+        publisherAdmissionMarker({
+          lockedAt: new Date('2026-08-26T09:00:00.000Z'),
+          lockToken: 'publisher-chat-comment:v1:7:3:claim-lock-1',
+        }),
+      );
+      const store = new ReplacementAttachMarkerStore({
+        auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+        chatAutoCommentAttachMarker: marker.delegate,
+      } as never);
+      const claim = () =>
+        store.claimChatAutoComment({
+          chatId: 'chat-1',
+          messageId: 'message-1',
+          source: 'webhook',
+          botId: 'main-bot',
+          publisherSettingsRevision: 7,
+          publicationPolicyRevision: 3,
+        });
+
+      await expect(claim()).resolves.toEqual({ status: 'in_progress' });
+      await expect(
+        store.readChatAutoCommentPendingJobIdentity({
+          chatId: 'chat-1',
+          messageId: 'message-1',
+        }),
+      ).resolves.toEqual({
+        markerId: 'ccr1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        lockToken: 'publisher-chat-comment:v1:7:3:claim-lock-1',
+        publisherSettingsRevision: 7,
+        publicationPolicyRevision: 3,
+      });
+
+      jest.setSystemTime(new Date('2026-08-26T09:02:01.000Z'));
+      const reclaimed = await claim();
+
+      expect(reclaimed).toEqual({
+        status: 'claimed',
+        markerId: 'ccr1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        lockToken: expect.any(String),
+      });
+      expect(reclaimed.status === 'claimed' && reclaimed.lockToken).toMatch(
+        /^publisher-chat-comment:v1:7:3:/u,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not reclaim a crashed predispatch claim after settings revision changes', async () => {
+    const marker = createMarkerDelegate(
+      publisherAdmissionMarker({
+        lockedAt: new Date(Date.now() - 3 * 60_000),
+        lockToken: 'publisher-chat-comment:v1:7:3:claim-lock-1',
+      }),
+    );
+    const store = new ReplacementAttachMarkerStore({
+      auditLog: { findFirst: jest.fn().mockResolvedValue(null) },
+      chatAutoCommentAttachMarker: marker.delegate,
+    } as never);
+
+    await expect(
+      store.claimChatAutoComment({
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        source: 'webhook',
+        botId: 'main-bot',
+        publisherSettingsRevision: 8,
+        publicationPolicyRevision: 3,
+      }),
+    ).resolves.toEqual({ status: 'settings_changed' });
+    expect(marker.row).toEqual(
+      expect.objectContaining({
+        status: 'SKIPPED',
+        lockToken: null,
+        lastError: 'Publisher chat-comment settings changed before stale claim recovery',
+      }),
+    );
+  });
+
+  it('atomically fences a reply against exact enabled Publisher settings revision', async () => {
+    const lockToken = 'publisher-chat-comment:v1:7:3:claim-lock-1';
+    const marker = createMarkerDelegate(publisherAdmissionMarker({ lockToken }));
+    const store = new ReplacementAttachMarkerStore({
+      chatAutoCommentAttachMarker: marker.delegate,
+      publisherEntitySettings: { findUnique: jest.fn() },
+    } as never);
+
+    await expect(
+      store.recordChatReplySendStarted({
+        markerId: 'ccr1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        chatId: 'chat-1',
+        messageId: 'message-1',
+        lockToken,
+        senderBotId: 'main-bot',
+        publisherSettingsRevision: 7,
+        publicationPolicyRevision: 3,
+      }),
+    ).resolves.toEqual({ status: 'started', sendStartedAt: expect.any(Date) });
+    expect(marker.delegate.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chat: {
+            publisherSettings: {
+              is: {
+                chatCommentsEnabled: true,
+                chatCommentsAdminsEnabled: true,
+                revision: 7,
+              },
+            },
+            publicationPolicy: {
+              is: {
+                publikEnabled: true,
+                revision: 3,
+              },
+            },
+          },
+        }),
       }),
     );
   });

@@ -12,19 +12,22 @@ import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markd
 import { cn } from '../lib/cn';
 import { renderPlainTextAsEditorHtml, renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
 import { parseEditorLinkHref, serializeEditorLinkMarkdown } from '../lib/max-rich-text-link';
+import { serializeEditorInlineMarkdown } from '../lib/max-rich-text-serialization';
+import { useNormalizedMarkdownSource } from '../lib/use-normalized-markdown-source';
 import {
   isElementInTopmostNativeBackModal,
   NATIVE_BACK_RICH_TEXT_LINK_PRIORITY,
   useNativeBackHandler,
 } from '../lib/native-back';
 import './max-rich-text-editor.css';
+import './max-rich-text-editor-content.css';
 
 export type MaxRichTextEditorHandle = {
   focus: () => void;
   applyTool: (tool: MaxMarkdownTool) => void;
 };
 
-type MaxRichTextEditorProps = {
+export type MaxRichTextEditorProps = {
   value: string;
   sourceFormat?: 'plain' | 'markdown';
   onChange: (value: string) => void;
@@ -36,6 +39,7 @@ type MaxRichTextEditorProps = {
   ariaLabel: string;
   className?: string;
   onPasteFiles?: (files: File[]) => void;
+  onNormalizationReadyChange?: (ready: boolean) => void;
 };
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
@@ -64,6 +68,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       ariaLabel,
       className,
       onPasteFiles,
+      onNormalizationReadyChange,
     },
     ref,
   ) {
@@ -72,29 +77,42 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
     const editingLinkRef = useRef<HTMLAnchorElement | null>(null);
     const lastEmittedMarkdownRef = useRef(value);
     const lastRenderedSourceFormatRef = useRef(sourceFormat);
+    const lastRenderedNormalizationStatusRef = useRef<'ready' | 'loading' | 'error'>('ready');
     const [linkEditorOpen, setLinkEditorOpen] = useState(false);
     const [linkDraft, setLinkDraft] = useState(LINK_PLACEHOLDER_URL);
     const [linkError, setLinkError] = useState('');
     const [activeTools, setActiveTools] = useState<ReadonlySet<MaxMarkdownTool>>(() => new Set());
+    const normalizedValue = useNormalizedMarkdownSource(value, sourceFormat === 'markdown', true);
+    const normalizationReady = normalizedValue.status === 'ready';
+    const interactive = !disabled && normalizationReady;
+    const interactiveRef = useRef(interactive);
+    interactiveRef.current = interactive;
 
     const remainingLength = maxLength - value.length;
     const isOverLimit = remainingLength < 0;
     const editorHtml = useMemo(
       () =>
-        sourceFormat === 'plain'
+        sourceFormat === 'plain' || !normalizationReady
           ? renderPlainTextAsEditorHtml(value)
-          : renderSupportedMarkdownAsHtml(value, {
-              blockMode: 'inline',
+          : renderSupportedMarkdownAsHtml(normalizedValue.value, {
+              blockMode: 'editor',
               linkMode: 'anchor',
               preserveCurlyBracePlaceholders,
               curlyBracePlaceholderLabels,
             }),
-      [curlyBracePlaceholderLabels, preserveCurlyBracePlaceholders, sourceFormat, value],
+      [
+        curlyBracePlaceholderLabels,
+        normalizationReady,
+        normalizedValue.value,
+        preserveCurlyBracePlaceholders,
+        sourceFormat,
+        value,
+      ],
     );
 
     const emitCurrentMarkdown = useCallback(() => {
       const editor = editorRef.current;
-      if (!editor) {
+      if (!editor || !interactiveRef.current) {
         return;
       }
 
@@ -108,7 +126,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
 
     const syncActiveTools = useCallback(() => {
       const editor = editorRef.current;
-      if (!editor || typeof document === 'undefined') {
+      if (!editor || !interactiveRef.current || typeof document === 'undefined') {
         setActiveTools(new Set());
         return;
       }
@@ -132,6 +150,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       if (
         lastEmittedMarkdownRef.current === value &&
         lastRenderedSourceFormatRef.current === sourceFormat &&
+        lastRenderedNormalizationStatusRef.current === normalizedValue.status &&
         editor.innerHTML
       ) {
         return;
@@ -140,16 +159,21 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       editor.innerHTML = editorHtml;
       lastEmittedMarkdownRef.current = value;
       lastRenderedSourceFormatRef.current = sourceFormat;
+      lastRenderedNormalizationStatusRef.current = normalizedValue.status;
       syncActiveTools();
-    }, [editorHtml, sourceFormat, syncActiveTools, value]);
+    }, [editorHtml, normalizedValue.status, sourceFormat, syncActiveTools, value]);
 
     useEffect(() => {
-      if (disabled) {
+      onNormalizationReadyChange?.(normalizationReady);
+    }, [normalizationReady, onNormalizationReadyChange]);
+
+    useEffect(() => {
+      if (!interactive) {
         editingLinkRef.current = null;
         setLinkEditorOpen(false);
         setActiveTools(new Set());
       }
-    }, [disabled]);
+    }, [interactive]);
 
     useEffect(() => {
       if (typeof document === 'undefined') {
@@ -163,7 +187,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
     }, [syncActiveTools]);
 
     const focusEditor = useCallback(() => {
-      editorRef.current?.focus();
+      if (interactiveRef.current) editorRef.current?.focus();
     }, []);
 
     useNativeBackHandler(
@@ -184,7 +208,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
 
     const restoreOrCreateEditorRange = useCallback(() => {
       const editor = editorRef.current;
-      if (!editor || typeof document === 'undefined') {
+      if (!editor || !interactiveRef.current || typeof document === 'undefined') {
         return null;
       }
 
@@ -210,7 +234,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
 
     const applyInlineTool = useCallback(
       (tool: MaxMarkdownTool) => {
-        if (disabled) {
+        if (!interactiveRef.current) {
           return;
         }
 
@@ -251,11 +275,11 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
         emitCurrentMarkdown();
         syncActiveTools();
       },
-      [disabled, emitCurrentMarkdown, restoreOrCreateEditorRange, syncActiveTools],
+      [emitCurrentMarkdown, restoreOrCreateEditorRange, syncActiveTools],
     );
 
     const confirmLink = useCallback(() => {
-      if (disabled) {
+      if (!interactiveRef.current) {
         return;
       }
 
@@ -296,7 +320,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       setLinkError('');
       emitCurrentMarkdown();
       syncActiveTools();
-    }, [disabled, emitCurrentMarkdown, linkDraft, syncActiveTools]);
+    }, [emitCurrentMarkdown, linkDraft, syncActiveTools]);
 
     const closeLinkEditor = useCallback(() => {
       editingLinkRef.current = null;
@@ -318,13 +342,19 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       <div className={cn('max-rich-text-editor', className)}>
         <div
           ref={editorRef}
-          className={cn('max-rich-text-editor__surface', isOverLimit && 'is-limit')}
-          contentEditable={!disabled}
+          className={cn(
+            'max-rich-text-editor__surface',
+            isOverLimit && 'is-limit',
+            normalizedValue.status === 'loading' && 'is-loading',
+            normalizedValue.status === 'error' && 'is-normalization-error',
+          )}
+          contentEditable={interactive}
           data-placeholder={placeholder}
           role="textbox"
           aria-label={ariaLabel}
           aria-multiline="true"
-          aria-disabled={disabled || undefined}
+          aria-disabled={!interactive || undefined}
+          aria-busy={normalizedValue.status === 'loading' || undefined}
           spellCheck
           suppressContentEditableWarning
           onPointerDownCapture={(event) => {
@@ -348,7 +378,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           onPointerUp={syncActiveTools}
           onFocus={syncActiveTools}
           onPaste={(event) => {
-            if (disabled) {
+            if (!interactiveRef.current) {
               return;
             }
 
@@ -378,6 +408,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
             const pasteRange = restoreOrCreateEditorRange()?.cloneRange() ?? null;
             void import('../lib/max-rich-text-clipboard')
               .then(({ clipboardHtmlToSupportedMarkdown }) => {
+                if (!interactiveRef.current) return;
                 restorePasteRange(editorRef.current, pasteRange);
                 const pastedMarkdown = clipboardHtmlToSupportedMarkdown(pastedHtml);
                 if (
@@ -397,6 +428,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
                 syncActiveTools();
               })
               .catch(() => {
+                if (!interactiveRef.current) return;
                 restorePasteRange(editorRef.current, pasteRange);
                 insertPlainTextAtCurrentRange(pastedText);
                 emitCurrentMarkdown();
@@ -404,6 +436,15 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
               });
           }}
         />
+
+        {normalizedValue.status === 'error' ? (
+          <div className="max-rich-text-editor__normalization-error" role="alert">
+            <span>Форматирование не загрузилось. Исходный текст сохранен.</span>
+            <button type="button" onClick={normalizedValue.retry} disabled={disabled}>
+              Повторить
+            </button>
+          </div>
+        ) : null}
 
         {linkEditorOpen ? (
           <div className="max-rich-text-editor__link-panel">
@@ -421,15 +462,20 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
               autoCorrect="off"
               placeholder="https://"
               aria-label="Адрес ссылки"
-              disabled={disabled}
+              disabled={!interactive}
             />
-            <button type="button" onClick={confirmLink} disabled={disabled} aria-label="Применить">
+            <button
+              type="button"
+              onClick={confirmLink}
+              disabled={!interactive}
+              aria-label="Применить"
+            >
               OK
             </button>
             <button
               type="button"
               onClick={closeLinkEditor}
-              disabled={disabled}
+              disabled={!interactive}
               aria-label="Закрыть"
             >
               <IconoirXmark aria-hidden focusable="false" />
@@ -636,7 +682,7 @@ function insertSupportedMarkdownAtCurrentRange(
   }
 
   const html = renderSupportedMarkdownAsHtml(markdown, {
-    blockMode: 'inline',
+    blockMode: 'editor',
     linkMode: 'anchor',
     preserveCurlyBracePlaceholders: options.preserveCurlyBracePlaceholders,
     curlyBracePlaceholderLabels: options.curlyBracePlaceholderLabels,
@@ -772,22 +818,37 @@ function serializeNode(node: Node, options: RichTextSerializationOptions = {}): 
 
   if (isHeadingElement(element, tagName)) {
     const headingContent = content.replace(/\n+/gu, ' ').trim();
-    return headingContent ? appendBlockBreak(`# ${headingContent}`) : '';
+    const level = /^h([1-6])$/u.exec(tagName)?.[1] ?? element.dataset.maxHeadingLevel ?? '1';
+    const normalizedLevel = /^[1-6]$/u.test(level) ? level : '1';
+    return headingContent
+      ? appendBlockBreak(`${'#'.repeat(Number.parseInt(normalizedLevel, 10))} ${headingContent}`)
+      : '';
+  }
+
+  if (tagName === 'blockquote' || element.dataset.maxBlock === 'quote') {
+    return appendBlockBreak(
+      content
+        .split('\n')
+        .map((line) => (line.trim() ? `> ${line}` : line))
+        .join('\n'),
+    );
   }
 
   switch (tagName) {
     case 'strong':
     case 'b':
-      return content ? `**${content}**` : '';
+      return serializeEditorInlineMarkdown(content, 'bold');
     case 'em':
     case 'i':
-      return content ? `_${content}_` : '';
+      return serializeEditorInlineMarkdown(content, 'italic');
     case 'u':
-      return content ? `++${content}++` : '';
+      return serializeEditorInlineMarkdown(content, 'underline');
     case 's':
     case 'strike':
     case 'del':
-      return content ? `~~${content}~~` : '';
+      return serializeEditorInlineMarkdown(content, 'strike');
+    case 'mark':
+      return serializeEditorInlineMarkdown(content, 'highlight');
     case 'a':
       return serializeEditorLinkMarkdown(content, element.getAttribute('href') || '');
     default:
@@ -823,7 +884,7 @@ function escapeMarkdownText(value: string, options: RichTextSerializationOptions
 }
 
 function escapePlainMarkdownText(value: string): string {
-  return value.replace(/[\\`*_()[\]~+]/gu, '\\$&');
+  return value.replace(/[\\`*_()[\]~+#^>]/gu, '\\$&');
 }
 
 function serializeCodeText(value: string): string {

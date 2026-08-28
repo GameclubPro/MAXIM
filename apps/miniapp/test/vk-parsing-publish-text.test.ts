@@ -58,7 +58,24 @@ test('VK publish length uses server-parity raw HTML for formatted headings', () 
       appendChannelLinkEnabled: false,
       channelLinkText: '',
     }),
-    '<strong>Анонс</strong>'.length,
+    '<h1>Анонс</h1>'.length,
+  );
+});
+
+test('VK publish length matches server formatting for legacy multiline markdown', () => {
+  const text = '**Первая\nВторая**';
+  const rendered = '<strong>Первая</strong>\n<strong>Вторая</strong>';
+
+  assert.equal(
+    measureVkParsingPublishTextLength({
+      text,
+      textFormat: 'markdown',
+      linkUrls: [],
+      stripLinksEnabled: false,
+      appendChannelLinkEnabled: false,
+      channelLinkText: '',
+    }),
+    rendered.length,
   );
 });
 

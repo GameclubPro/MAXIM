@@ -3,6 +3,7 @@ import {
   parsePublisherRuntimeHeartbeat,
   PUBLISHER_RUNTIME_HEARTBEAT_TTL_SEC,
   resolvePublisherHeartbeatDispatchEnabled,
+  resolvePublisherRuntimeHeartbeatBlocker,
 } from './publisher-runtime-heartbeat.service';
 
 describe('publisher runtime heartbeat contract', () => {
@@ -24,7 +25,30 @@ describe('publisher runtime heartbeat contract', () => {
         'se14088825_bot',
         nowMs,
       ),
-    ).toMatchObject({ dispatchEnabled: false });
+    ).toMatchObject({ dispatchEnabled: false, blocker: 'unknown' });
+  });
+
+  it('keeps version 1 readers compatible while preserving explicit blocker metadata', () => {
+    const build = (dispatchEnabled: boolean, blocker?: unknown) =>
+      JSON.stringify({
+        version: 1,
+        botId: 'se14088825_bot',
+        dispatchEnabled,
+        ...(blocker === undefined ? {} : { blocker }),
+        observedAt: new Date(nowMs).toISOString(),
+        instanceId: 'instance-1',
+      });
+
+    expect(parsePublisherRuntimeHeartbeat(build(true), 'se14088825_bot', nowMs)).toMatchObject({
+      dispatchEnabled: true,
+      blocker: null,
+    });
+    expect(
+      parsePublisherRuntimeHeartbeat(build(false, 'runtime_disabled'), 'se14088825_bot', nowMs),
+    ).toMatchObject({ dispatchEnabled: false, blocker: 'runtime_disabled' });
+    expect(
+      parsePublisherRuntimeHeartbeat(build(false, 'future_blocker'), 'se14088825_bot', nowMs),
+    ).toMatchObject({ dispatchEnabled: false, blocker: 'unknown' });
   });
 
   it('fails closed for stale, mismatched, and malformed heartbeats', () => {
@@ -55,5 +79,10 @@ describe('publisher runtime heartbeat contract', () => {
     expect(resolvePublisherHeartbeatDispatchEnabled(true, false, true)).toBe(true);
     expect(resolvePublisherHeartbeatDispatchEnabled(false, false, true)).toBe(false);
     expect(resolvePublisherHeartbeatDispatchEnabled(true, false, false)).toBe(false);
+
+    expect(resolvePublisherRuntimeHeartbeatBlocker(false, true, false)).toBe('runtime_disabled');
+    expect(resolvePublisherRuntimeHeartbeatBlocker(true, true, false)).toBe('global_paused');
+    expect(resolvePublisherRuntimeHeartbeatBlocker(true, false, false)).toBe('identity_unattested');
+    expect(resolvePublisherRuntimeHeartbeatBlocker(true, false, true)).toBeNull();
   });
 });

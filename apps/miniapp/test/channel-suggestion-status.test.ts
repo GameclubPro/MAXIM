@@ -3,9 +3,7 @@ import test from 'node:test';
 import type { ChannelDialogMessage } from '@maxim/contracts/channel-dialog';
 import { resolveSuggestionStatus } from '../src/lib/channel-suggestion-status';
 
-function createSuggestion(
-  overrides: Partial<ChannelDialogMessage> = {},
-): ChannelDialogMessage {
+function createSuggestion(overrides: Partial<ChannelDialogMessage> = {}): ChannelDialogMessage {
   return {
     id: 'suggestion-1',
     type: 'suggest',
@@ -36,6 +34,16 @@ test('published and cancelled review outcomes stay authoritative over delivery',
   assert.equal(
     resolveSuggestionStatus(
       createSuggestion({ reviewStatus: 'published', suggestionDelivery: unreachableDelivery }),
+    ).headline,
+    'Редактор создал публикацию',
+  );
+  assert.equal(
+    resolveSuggestionStatus(
+      createSuggestion({
+        reviewStatus: 'published',
+        publishedUrl: 'https://max.ru/channel/message/1',
+        suggestionDelivery: unreachableDelivery,
+      }),
     ).headline,
     'Пост вышел в канале',
   );

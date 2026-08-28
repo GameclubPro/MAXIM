@@ -56,7 +56,6 @@ export function publisherRefreshEvidenceWhere(
     OR: [
       { botAccessState: { in: [...PUBLISHER_CONFIRMED_CONNECTION_STATES] } },
       { lastWebhookAt: { not: null } },
-      { lastSeenAt: { not: null } },
     ],
   };
 }
@@ -68,8 +67,7 @@ export function hasPublisherRefreshEvidence(
   return (
     isExactActiveBinding(binding, publisherBotId) &&
     (PUBLISHER_CONFIRMED_CONNECTION_STATE_SET.has(binding.botAccessState) ||
-      binding.lastWebhookAt !== null ||
-      binding.lastSeenAt != null)
+      binding.lastWebhookAt !== null)
   );
 }
 

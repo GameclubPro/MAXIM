@@ -5,6 +5,8 @@ import type {
   PublisherCommentKeyboardEditJob,
 } from './publisher-chat-comment.queue';
 
+const ATTACH_LOCK_TOKEN = 'publisher-chat-comment:v1:7:3:lock-1';
+
 type MarkerRow = {
   id: string;
   chatId: string;
@@ -22,7 +24,22 @@ type MarkerRow = {
   originalDeleted: boolean;
 };
 
-function createMarkerDelegate(row: MarkerRow) {
+type PublisherSettingsRow = {
+  revision: number;
+  chatCommentsEnabled: boolean;
+  chatCommentsAdminsEnabled: boolean;
+};
+
+type PublicationPolicyRow = {
+  revision: number;
+  publikEnabled: boolean;
+};
+
+function createMarkerDelegate(
+  row: MarkerRow,
+  readPublisherSettings: () => PublisherSettingsRow,
+  readPublicationPolicy: () => PublicationPolicyRow | null,
+) {
   return {
     findUnique: jest.fn(async () => ({ ...row })),
     updateMany: jest.fn(async (args: unknown) => {
@@ -54,6 +71,35 @@ function createMarkerDelegate(row: MarkerRow) {
       ] as const) {
         if (field in where && where[field] !== row[field]) return { count: 0 };
       }
+      const chatFilter = where.chat as
+        | {
+            publisherSettings?: { is?: Partial<PublisherSettingsRow> };
+            publicationPolicy?: { is?: Partial<PublicationPolicyRow> | null };
+          }
+        | undefined;
+      const settingsFilter = chatFilter?.publisherSettings?.is;
+      const settings = readPublisherSettings();
+      if (
+        settingsFilter &&
+        Object.entries(settingsFilter).some(
+          ([key, value]) => settings[key as keyof PublisherSettingsRow] !== value,
+        )
+      ) {
+        return { count: 0 };
+      }
+      const policyFilter = chatFilter?.publicationPolicy?.is;
+      const policy = readPublicationPolicy();
+      if (
+        policyFilter === null
+          ? policy !== null
+          : policyFilter &&
+            (!policy ||
+              Object.entries(policyFilter).some(
+                ([key, value]) => policy[key as keyof PublicationPolicyRow] !== value,
+              ))
+      ) {
+        return { count: 0 };
+      }
       Object.assign(row, input.data ?? {});
       return { count: 1 };
     }),
@@ -65,12 +111,14 @@ function buildAttachJob(): PublisherChatCommentAttachJob {
     version: 1,
     kind: 'attach_chat_reply',
     markerId: `ccr1_${'a'.repeat(32)}`,
-    lockToken: 'lock-1',
+    lockToken: ATTACH_LOCK_TOKEN,
     chatId: 'chat-1',
     messageId: 'message-1',
     senderId: 'admin-1',
     requiredBotId: 'publik-bot',
     dialogBotId: 'main-bot',
+    publisherSettingsRevision: 7,
+    publicationPolicyRevision: 3,
     button: {
       type: 'link',
       text: 'Comments 0',
@@ -110,7 +158,7 @@ function createHarness() {
     chatId: 'chat-1',
     messageId: 'message-1',
     status: 'IN_PROGRESS',
-    lockToken: 'lock-1',
+    lockToken: ATTACH_LOCK_TOKEN,
     lockedAt: new Date('2026-08-26T09:00:00.000Z'),
     botId: 'main-bot',
     deliveryMode: null,
@@ -121,11 +169,36 @@ function createHarness() {
     lastStatusCode: null,
     originalDeleted: false,
   };
-  const marker = createMarkerDelegate(row);
+  const publisherSettings: PublisherSettingsRow = {
+    revision: 7,
+    chatCommentsEnabled: true,
+    chatCommentsAdminsEnabled: true,
+  };
+  let publicationPolicy: PublicationPolicyRow | null = {
+    revision: 3,
+    publikEnabled: true,
+  };
+  const marker = createMarkerDelegate(
+    row,
+    () => publisherSettings,
+    () => publicationPolicy,
+  );
   const prisma = {
     chatAutoCommentAttachMarker: marker,
+    chat: {
+      findUnique: jest.fn(async () => ({
+        publisherSettings: { ...publisherSettings },
+        publicationPolicy: publicationPolicy ? { ...publicationPolicy } : null,
+      })),
+    },
     managedEntityAccessEdge: {
       findFirst: jest.fn().mockResolvedValue({ state: 'GRANTED', userRole: 'ADMIN' }),
+    },
+    publisherEntitySettings: {
+      findUnique: jest.fn(async () => ({ ...publisherSettings })),
+    },
+    managedEntityPublicationPolicy: {
+      findUnique: jest.fn(async () => (publicationPolicy ? { ...publicationPolicy } : null)),
     },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
@@ -170,6 +243,13 @@ function createHarness() {
   );
   return {
     row,
+    publisherSettings,
+    get publicationPolicy() {
+      return publicationPolicy;
+    },
+    set publicationPolicy(value: PublicationPolicyRow | null) {
+      publicationPolicy = value;
+    },
     marker,
     prisma,
     maxClient,
@@ -239,6 +319,73 @@ describe('PublisherChatCommentDeliveryService', () => {
       botId: 'publik-bot',
       replacementSendStartedAt: expect.any(Date),
       lastError: expect.stringContaining('[max.send_ambiguous]'),
+    });
+  });
+
+  it('does not send when admin comments are toggled off after enqueue', async () => {
+    const harness = createHarness();
+    harness.maxClient.sendMessageImmediateWithResolvedLink.mockImplementation(async (...args) => {
+      harness.publisherSettings.chatCommentsAdminsEnabled = false;
+      harness.publisherSettings.revision += 1;
+      await args[2]?.beforeSend?.();
+      throw new Error('beforeSend must reject changed settings');
+    });
+
+    await harness.service.process(buildAttachJob(), firstAttempt);
+
+    expect(harness.row).toMatchObject({
+      status: 'SKIPPED',
+      replacementSendStartedAt: null,
+      lastError: 'Publisher chat-comment settings changed before dispatch',
+    });
+    expect(harness.prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(harness.health.recordSendFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not resurrect a queued message after settings are disabled and re-enabled', async () => {
+    const harness = createHarness();
+    harness.publisherSettings.revision = 9;
+
+    await harness.service.process(buildAttachJob(), firstAttempt);
+
+    expect(harness.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(harness.row).toMatchObject({
+      status: 'SKIPPED',
+      replacementSendStartedAt: null,
+      lastError: 'Publisher chat-comment settings changed before dispatch',
+    });
+  });
+
+  it('does not resurrect a queued message after the main Publik toggle is disabled and re-enabled', async () => {
+    const harness = createHarness();
+    harness.publicationPolicy = { revision: 5, publikEnabled: true };
+
+    await harness.service.process(buildAttachJob(), firstAttempt);
+
+    expect(harness.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(harness.row).toMatchObject({
+      status: 'SKIPPED',
+      replacementSendStartedAt: null,
+      lastError: 'Publisher chat-comment settings changed before dispatch',
+    });
+  });
+
+  it('fails closed for a legacy pre-send job without both settings revisions', async () => {
+    const harness = createHarness();
+    const legacyJob = buildAttachJob() as unknown as {
+      publisherSettingsRevision?: number;
+      publicationPolicyRevision?: number;
+    };
+    delete legacyJob.publisherSettingsRevision;
+    delete legacyJob.publicationPolicyRevision;
+
+    await harness.service.process(legacyJob as PublisherChatCommentAttachJob, firstAttempt);
+
+    expect(harness.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(harness.row).toMatchObject({
+      status: 'SKIPPED',
+      replacementSendStartedAt: null,
+      lastError: 'Publisher chat-comment settings changed before dispatch',
     });
   });
 
@@ -374,15 +521,15 @@ describe('PublisherChatCommentDeliveryService', () => {
       const data = (args as { data?: Partial<MarkerRow> }).data;
       if (data?.replacementSendStartedAt instanceof Date) {
         harness.row.replacementSendStartedAt = competingFence;
+        harness.publisherSettings.chatCommentsAdminsEnabled = false;
+        harness.publisherSettings.revision += 1;
         return { count: 0 };
       }
       return updateMarker?.(args) ?? { count: 0 };
     });
     const job = buildAttachJob();
 
-    await expect(harness.service.process(job, firstAttempt)).rejects.toThrow(
-      'Failed to persist the chat auto-comment reply send fence',
-    );
+    await expect(harness.service.process(job, firstAttempt)).resolves.toBeUndefined();
     expect(harness.row.replacementSendStartedAt).toEqual(competingFence);
 
     await harness.service.process(job, firstAttempt);
@@ -410,7 +557,7 @@ describe('PublisherChatCommentDeliveryService', () => {
 
     expect(harness.row).toMatchObject({
       status: 'IN_PROGRESS',
-      lockToken: 'lock-1',
+      lockToken: ATTACH_LOCK_TOKEN,
       replacementSendStartedAt: null,
       lastStatusCode: 409,
     });

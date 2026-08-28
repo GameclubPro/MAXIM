@@ -435,8 +435,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
     expect(refreshQueue.enqueue).not.toHaveBeenCalled();
   });
 
-  it('stages forwarded private recovery only in exact Publisher models and keeps it invisible', async () => {
-    let bindingCreate: Record<string, unknown> | null = null;
+  it('stages a forwarded candidate without creating Publisher routing state', async () => {
     let edgeCreate: Record<string, unknown> | null = null;
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: '-70001' }]),
@@ -446,10 +445,7 @@ describe('PublisherEntityBindingLifecycleService', () => {
       },
       publisherEntityBinding: {
         findUnique: jest.fn().mockResolvedValue(null),
-        upsert: jest.fn(async ({ create }: { create: Record<string, unknown> }) => {
-          bindingCreate = create;
-          return create;
-        }),
+        upsert: jest.fn(),
       },
       managedBotChatCatalog: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -485,15 +481,8 @@ describe('PublisherEntityBindingLifecycleService', () => {
     );
     expect(chatCreate).not.toHaveProperty('botId');
     expect(chatCreate).not.toHaveProperty('primaryBotId');
-    expect(bindingCreate).toEqual(
-      expect.objectContaining({
-        chatId: '-70001',
-        publisherBotId: 'publik_bot',
-        status: ChatBotMembershipStatus.ACTIVE,
-        botAccessState: ChatBotAccessState.UNKNOWN,
-      }),
-    );
-    expect(bindingCreate).not.toHaveProperty('lastWebhookAt');
+    expect(tx.publisherEntityBinding.upsert).not.toHaveBeenCalled();
+    expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
     expect(edgeCreate).toEqual(
       expect.objectContaining({
         chatId: '-70001',
@@ -503,17 +492,6 @@ describe('PublisherEntityBindingLifecycleService', () => {
         deniedReason: PUBLISHER_ACCESS_CANDIDATE_PENDING_REASON,
       }),
     );
-    expect(
-      isPublisherBindingConnected(
-        {
-          publisherBotId: 'publik_bot',
-          status: ChatBotMembershipStatus.ACTIVE,
-          botAccessState: ChatBotAccessState.UNKNOWN,
-          lastWebhookAt: null,
-        },
-        'publik_bot',
-      ),
-    ).toBe(false);
     expect(refreshQueue.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: '-70001',

@@ -1,5 +1,10 @@
 import type { BroadcastTextFormat, MaxUpdate } from '@maxim/contracts';
-import type { MaxTextMarkup } from '../common/max-text-markup.util';
+import {
+  isMaxTextMarkupType,
+  normalizeMaxUserMentionLink,
+  renderMaxTextMarkupAsMarkdown,
+  type MaxTextMarkup,
+} from '../common/max-text-markup.util';
 
 export type IncomingMessageMarkup = MaxTextMarkup;
 
@@ -19,7 +24,8 @@ export function extractIncomingSuggestionTextPayload(
   fallbackText: string,
 ): IncomingSuggestionTextPayload {
   const messageNode = extractIncomingMessageNode(update);
-  const sourceText = (messageNode ? extractMessageTextFromNode(messageNode) : null) || fallbackText;
+  const contentNode = resolveIncomingContentNode(messageNode);
+  const sourceText = (contentNode ? extractMessageTextFromNode(contentNode) : null) || fallbackText;
   if (!sourceText) {
     return {
       text: fallbackText,
@@ -31,7 +37,7 @@ export function extractIncomingSuggestionTextPayload(
   return {
     text: sourceText,
     textFormat: 'plain',
-    textMarkup: extractIncomingMessageMarkup(messageNode),
+    textMarkup: extractIncomingMessageMarkup(contentNode),
   };
 }
 
@@ -40,7 +46,8 @@ export function extractIncomingFormattedTextPayload(
   fallbackText: string,
 ): IncomingFormattedTextPayload {
   const messageNode = extractIncomingMessageNode(update);
-  const sourceText = (messageNode ? extractMessageTextFromNode(messageNode) : null) || fallbackText;
+  const contentNode = resolveIncomingContentNode(messageNode);
+  const sourceText = (contentNode ? extractMessageTextFromNode(contentNode) : null) || fallbackText;
   if (!sourceText) {
     return {
       text: fallbackText,
@@ -48,7 +55,7 @@ export function extractIncomingFormattedTextPayload(
     };
   }
 
-  const markup = extractIncomingMessageMarkup(messageNode);
+  const markup = extractIncomingMessageMarkup(contentNode);
   const rendered = renderIncomingMarkupAsMarkdown(sourceText, markup);
   if (rendered) {
     return {
@@ -90,26 +97,47 @@ export function extractIncomingMessageMarkup(
   const content = asRecord(messageNode?.content);
   const payload = asRecord(messageNode?.payload);
   const nestedMessage = asRecord(messageNode?.message);
-  const rawMarkup =
-    [
-      body?.markup,
-      body?.text_markup,
-      body?.caption_markup,
-      content?.markup,
-      content?.text_markup,
-      content?.caption_markup,
-      payload?.markup,
-      payload?.text_markup,
-      payload?.caption_markup,
-      nestedMessage?.markup,
-      nestedMessage?.text_markup,
-      nestedMessage?.caption_markup,
-      messageNode?.markup,
-    ].find((value) => Array.isArray(value)) ?? [];
+  const candidates = [
+    body?.markup,
+    body?.text_markup,
+    body?.textMarkup,
+    body?.caption_markup,
+    body?.captionMarkup,
+    content?.markup,
+    content?.text_markup,
+    content?.textMarkup,
+    content?.caption_markup,
+    content?.captionMarkup,
+    payload?.markup,
+    payload?.text_markup,
+    payload?.textMarkup,
+    payload?.caption_markup,
+    payload?.captionMarkup,
+    nestedMessage?.markup,
+    nestedMessage?.text_markup,
+    nestedMessage?.textMarkup,
+    nestedMessage?.caption_markup,
+    nestedMessage?.captionMarkup,
+    messageNode?.markup,
+    messageNode?.text_markup,
+    messageNode?.textMarkup,
+    messageNode?.caption_markup,
+    messageNode?.captionMarkup,
+  ];
 
-  return rawMarkup
-    .map((item) => normalizeIncomingMessageMarkup(item))
-    .filter((item): item is IncomingMessageMarkup => item !== null);
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate) || candidate.length === 0) {
+      continue;
+    }
+    const markup = candidate
+      .map((item) => normalizeIncomingMessageMarkup(item))
+      .filter((item): item is IncomingMessageMarkup => item !== null);
+    if (markup.length > 0) {
+      return markup;
+    }
+  }
+
+  return [];
 }
 
 export function normalizeIncomingMessageMarkup(value: unknown): IncomingMessageMarkup | null {
@@ -127,16 +155,7 @@ export function normalizeIncomingMessageMarkup(value: unknown): IncomingMessageM
     length === null ||
     from < 0 ||
     length <= 0 ||
-    ![
-      'emphasized',
-      'heading',
-      'link',
-      'monospaced',
-      'strikethrough',
-      'strong',
-      'underline',
-      'user_mention',
-    ].includes(type)
+    !isMaxTextMarkupType(type)
   ) {
     return null;
   }
@@ -144,9 +163,12 @@ export function normalizeIncomingMessageMarkup(value: unknown): IncomingMessageM
   return {
     from,
     length,
-    type: type as IncomingMessageMarkup['type'],
+    type,
     url: readString(row.url) || null,
-    userLink: readString(row.user_link ?? row.userLink) || null,
+    userLink: normalizeMaxUserMentionLink(
+      row.user_link ?? row.userLink,
+      row.user_id ?? row.userId,
+    ),
   };
 }
 
@@ -154,97 +176,7 @@ export function renderIncomingMarkupAsMarkdown(
   text: string,
   markup: IncomingMessageMarkup[],
 ): string | null {
-  if (markup.length === 0) {
-    return null;
-  }
-
-  const openTags = new Map<
-    number,
-    Array<{ open: string; close: string; end: number; priority: number }>
-  >();
-  const closeTags = new Map<
-    number,
-    Array<{ close: string; start: number; end: number; priority: number }>
-  >();
-  const boundaries = new Set<number>([0, text.length]);
-
-  for (const item of markup) {
-    const start = item.from;
-    const end = item.from + item.length;
-    if (start < 0 || end <= start || end > text.length) {
-      continue;
-    }
-
-    for (const segment of splitIncomingMarkupRangeByLines(text, start, end)) {
-      const delimiters = resolveIncomingMarkupMarkdownDelimiters(
-        item,
-        text.slice(segment.start, segment.end),
-      );
-      if (!delimiters) {
-        continue;
-      }
-
-      const openBucket = openTags.get(segment.start) ?? [];
-      openBucket.push({
-        open: delimiters.open,
-        close: delimiters.close,
-        end: segment.end,
-        priority: delimiters.priority,
-      });
-      openTags.set(segment.start, openBucket);
-
-      const closeBucket = closeTags.get(segment.end) ?? [];
-      closeBucket.push({
-        close: delimiters.close,
-        start: segment.start,
-        end: segment.end,
-        priority: delimiters.priority,
-      });
-      closeTags.set(segment.end, closeBucket);
-      boundaries.add(segment.start);
-      boundaries.add(segment.end);
-    }
-  }
-
-  if (openTags.size === 0 && closeTags.size === 0) {
-    return null;
-  }
-
-  let markdown = '';
-  let previousBoundary = 0;
-  const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
-
-  for (const boundary of sortedBoundaries) {
-    if (boundary > previousBoundary) {
-      markdown += escapeMarkdownText(text.slice(previousBoundary, boundary));
-    }
-
-    const closing = closeTags.get(boundary);
-    if (closing) {
-      closing
-        .slice()
-        .sort(
-          (left, right) =>
-            right.start - left.start || left.end - right.end || right.priority - left.priority,
-        )
-        .forEach((tag) => {
-          markdown += tag.close;
-        });
-    }
-
-    const opening = openTags.get(boundary);
-    if (opening) {
-      opening
-        .slice()
-        .sort((left, right) => right.end - left.end || left.priority - right.priority)
-        .forEach((tag) => {
-          markdown += tag.open;
-        });
-    }
-    previousBoundary = boundary;
-  }
-
-  return markdown;
+  return renderMaxTextMarkupAsMarkdown(text, markup);
 }
 
 function extractMessageTextFromNode(node: Record<string, unknown>): string | null {
@@ -269,113 +201,42 @@ function extractMessageTextFromNode(node: Record<string, unknown>): string | nul
   ];
 
   for (const candidate of candidates) {
-    const normalized = readString(candidate);
-    if (normalized) {
-      return normalized;
+    const sourceText = readNonBlankString(candidate);
+    if (sourceText) {
+      return sourceText;
     }
   }
 
   return null;
 }
 
-function splitIncomingMarkupRangeByLines(
-  text: string,
-  start: number,
-  end: number,
-): Array<{ start: number; end: number }> {
-  const segments: Array<{ start: number; end: number }> = [];
-  let segmentStart = start;
+function resolveIncomingContentNode(
+  messageNode: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!messageNode || extractMessageTextFromNode(messageNode)) {
+    return messageNode;
+  }
 
-  for (let index = start; index < end; index += 1) {
-    const char = text[index];
-    if (char !== '\n' && char !== '\r') {
-      continue;
+  const link = asRecord(messageNode.link);
+  if (readLowerString(link?.type) === 'forward') {
+    for (const candidate of [asRecord(link?.message), asRecord(link?.body)]) {
+      if (candidate && extractMessageTextFromNode(candidate)) {
+        return candidate;
+      }
     }
+  }
 
-    if (segmentStart < index && text.slice(segmentStart, index).trim().length > 0) {
-      segments.push({ start: segmentStart, end: index });
+  const body = asRecord(messageNode.body);
+  for (const candidate of [
+    asRecord(body?.forwarded_message),
+    asRecord(body?.forwardedMessage),
+  ]) {
+    if (candidate && extractMessageTextFromNode(candidate)) {
+      return candidate;
     }
-
-    if (char === '\r' && text[index + 1] === '\n' && index + 1 < end) {
-      index += 1;
-    }
-    segmentStart = index + 1;
   }
 
-  if (segmentStart < end && text.slice(segmentStart, end).trim().length > 0) {
-    segments.push({ start: segmentStart, end });
-  }
-
-  return segments;
-}
-
-function resolveIncomingMarkupMarkdownDelimiters(
-  markup: IncomingMessageMarkup,
-  visibleText: string,
-): { open: string; close: string; priority: number } | null {
-  switch (markup.type) {
-    case 'strong':
-      return { open: '**', close: '**', priority: 20 };
-    case 'heading':
-      return { open: '# ', close: '', priority: 5 };
-    case 'emphasized':
-      return { open: '_', close: '_', priority: 30 };
-    case 'underline':
-      return { open: '++', close: '++', priority: 40 };
-    case 'strikethrough':
-      return { open: '~~', close: '~~', priority: 50 };
-    case 'monospaced':
-      return visibleText.includes('\n') ? null : { open: '`', close: '`', priority: 60 };
-    case 'link':
-      return markup.url && !isRedundantIncomingAutoLink(visibleText, markup.url)
-        ? {
-            open: '[',
-            close: `](${markup.url})`,
-            priority: 10,
-          }
-        : null;
-    case 'user_mention': {
-      const mentionTarget = markup.userLink
-        ? markup.userLink.startsWith('max://')
-          ? markup.userLink
-          : `https://max.ru/${markup.userLink}`
-        : null;
-      return mentionTarget
-        ? {
-            open: '[',
-            close: `](${mentionTarget})`,
-            priority: 10,
-          }
-        : null;
-    }
-    default:
-      return null;
-  }
-}
-
-function isRedundantIncomingAutoLink(visibleText: string, targetUrl: string): boolean {
-  const normalizedVisibleText = visibleText.trim();
-  const normalizedTargetUrl = targetUrl.trim();
-  if (!normalizedVisibleText || !normalizedTargetUrl) {
-    return false;
-  }
-
-  if (!/^(https?:\/\/|max:\/\/)\S+$/iu.test(normalizedVisibleText)) {
-    return false;
-  }
-
-  return (
-    normalizeIncomingComparableUrl(normalizedVisibleText) ===
-    normalizeIncomingComparableUrl(normalizedTargetUrl)
-  );
-}
-
-function normalizeIncomingComparableUrl(value: string): string {
-  return value.trim().replace(/\/+$/u, '').toLowerCase();
-}
-
-function escapeMarkdownText(value: string): string {
-  return value.replace(/([\\`*_[\]()~+])/g, '\\$1');
+  return messageNode;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -402,6 +263,14 @@ function readString(value: unknown): string | null {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function readNonBlankString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  return value.trim().length > 0 ? value : null;
 }
 
 function readOptionalInteger(value: unknown): number | null {

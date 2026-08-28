@@ -156,13 +156,10 @@ describe('PublisherController', () => {
       user,
       publisherBody,
     );
-    expect(suggestionService.list).toHaveBeenCalledWith('channel-1', user);
-    expect(suggestionService.review).toHaveBeenCalledWith(
-      'channel-1',
-      'suggestion-1',
-      user,
-      { action: 'publish' },
-    );
+    expect(suggestionService.list).toHaveBeenCalledWith('channel-1', user, undefined);
+    expect(suggestionService.review).toHaveBeenCalledWith('channel-1', 'suggestion-1', user, {
+      action: 'publish',
+    });
     expect(entityRefreshService.requestRefresh).toHaveBeenCalledWith('chat', 'chat-1', user);
   });
 

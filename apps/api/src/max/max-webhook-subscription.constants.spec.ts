@@ -15,6 +15,12 @@ describe('MAX webhook subscription constants', () => {
       expect.arrayContaining(['bot_stopped', 'dialog_removed', 'message_removed']),
     );
     expect(MAX_REQUIRED_WEBHOOK_UPDATE_TYPES).not.toContain('dialog_cleared');
+    expect(MAX_KNOWN_OFFICIAL_WEBHOOK_UPDATE_TYPES).toEqual(
+      expect.arrayContaining(['comment_created', 'comment_edited', 'comment_removed']),
+    );
+    for (const type of ['comment_created', 'comment_edited', 'comment_removed'] as const) {
+      expect(MAX_REQUIRED_WEBHOOK_UPDATE_TYPES).not.toContain(type);
+    }
     expect(MAX_BASE_REQUIRED_WEBHOOK_UPDATE_TYPES).not.toEqual(
       expect.arrayContaining([...MAX_EXTENDED_LIFECYCLE_WEBHOOK_UPDATE_TYPES]),
     );

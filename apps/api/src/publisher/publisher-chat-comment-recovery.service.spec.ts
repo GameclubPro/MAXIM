@@ -2,6 +2,7 @@ import type { Job } from 'bullmq';
 import {
   PUBLISHER_CHAT_COMMENT_RECOVERY_BATCH_SIZE,
   PUBLISHER_CHAT_COMMENT_RECOVERY_INTERVAL_MS,
+  PUBLISHER_CHAT_COMMENT_RECOVERY_MAX_AGE_MS,
   PUBLISHER_CHAT_COMMENT_RECOVERY_MIN_AGE_MS,
   PUBLISHER_CHAT_COMMENT_RECOVERY_STARTUP_DELAY_MS,
   PublisherChatCommentRecoveryService,
@@ -15,7 +16,7 @@ import { PublisherDispatchPausedError } from './publisher-dispatch-health.servic
 import { PublisherSetupRequiredException } from './publisher-errors';
 
 const MARKER_ID = `ccr1_${'d'.repeat(32)}`;
-const LOCK_TOKEN = 'exhausted-lock-1';
+const LOCK_TOKEN = 'publisher-chat-comment:v1:7:3:exhausted-lock-1';
 
 function buildMarker(overrides: Record<string, unknown> = {}) {
   return {
@@ -23,6 +24,8 @@ function buildMarker(overrides: Record<string, unknown> = {}) {
     chatId: 'chat-1',
     messageId: 'message-1',
     lockToken: LOCK_TOKEN,
+    lockedAt: new Date('2026-08-26T09:00:00.000Z'),
+    createdAt: new Date(),
     replacementMessageId: null,
     replyMessageId: null,
     replacementSendStartedAt: null,
@@ -41,6 +44,8 @@ function buildJobData(): PublisherChatCommentAttachJob {
     senderId: 'admin-1',
     requiredBotId: 'publik-bot',
     dialogBotId: 'main-bot',
+    publisherSettingsRevision: 7,
+    publicationPolicyRevision: 3,
     button: { type: 'link', text: 'Comments', url: 'https://example.test/dialog' },
     idempotencyKey: MARKER_ID,
     sourceTag: 'chat_auto_comment',
@@ -63,10 +68,25 @@ function createHarness(
     data: buildJobData(),
     getState: jest.fn().mockResolvedValue(options.state ?? 'failed'),
     retry: jest.fn().mockResolvedValue(undefined),
+    remove: jest.fn().mockResolvedValue(undefined),
   } as unknown as Job<PublisherChatCommentJob>;
   const prisma = {
     chatAutoCommentAttachMarker: {
       findMany: jest.fn().mockResolvedValue([marker]),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    publisherEntitySettings: {
+      findUnique: jest.fn().mockResolvedValue({
+        revision: 7,
+        chatCommentsEnabled: true,
+        chatCommentsAdminsEnabled: true,
+      }),
+    },
+    managedEntityPublicationPolicy: {
+      findUnique: jest.fn().mockResolvedValue({
+        revision: 3,
+        publikEnabled: true,
+      }),
     },
   };
   const queue = {
@@ -127,12 +147,45 @@ describe('PublisherChatCommentRecoveryService', () => {
     expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
+          botId: 'publik-bot',
           status: 'IN_PROGRESS',
           lockToken: { not: null },
           replacementMessageId: null,
           updatedAt: {
             lte: new Date(now.getTime() - PUBLISHER_CHAT_COMMENT_RECOVERY_MIN_AGE_MS),
           },
+          OR: [
+            { replyMessageId: { not: null } },
+            { replacementSendStartedAt: { not: null } },
+            {
+              replyMessageId: null,
+              replacementSendStartedAt: null,
+              OR: [
+                {
+                  lockToken: {
+                    startsWith: 'publisher-chat-comment:v1:',
+                  },
+                },
+                {
+                  createdAt: {
+                    gte: new Date(now.getTime() - PUBLISHER_CHAT_COMMENT_RECOVERY_MAX_AGE_MS),
+                  },
+                  chat: {
+                    OR: [
+                      { publicationPolicy: { is: null } },
+                      { publicationPolicy: { is: { publikEnabled: true } } },
+                    ],
+                    publisherSettings: {
+                      is: {
+                        chatCommentsEnabled: true,
+                        chatCommentsAdminsEnabled: true,
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
         }),
         take: PUBLISHER_CHAT_COMMENT_RECOVERY_BATCH_SIZE,
       }),
@@ -145,6 +198,165 @@ describe('PublisherChatCommentRecoveryService', () => {
       resetAttemptsStarted: true,
     });
     expect(result).toMatchObject({ scanned: 1, retried: 1, deferred: 0, errors: 0 });
+  });
+
+  it('never retries a remote send for a legacy envelope without settings revision', async () => {
+    const legacyLockToken = 'legacy-exhausted-lock-1';
+    const harness = createHarness({ marker: buildMarker({ lockToken: legacyLockToken }) });
+    (harness.job.data as { lockToken: string }).lockToken = legacyLockToken;
+    (harness.job.data as { publisherSettingsRevision?: number }).publisherSettingsRevision =
+      undefined;
+
+    const result = await harness.service.recoverOnce();
+
+    expect(result).toMatchObject({ scanned: 1, deferred: 1, retried: 0 });
+    expect(harness.prisma.publisherEntitySettings.findUnique).not.toHaveBeenCalled();
+    expect(harness.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(harness.job.retry).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes remote-send recovery after settings revision changes', async () => {
+    const harness = createHarness();
+    harness.prisma.publisherEntitySettings.findUnique.mockResolvedValueOnce({
+      revision: 8,
+      chatCommentsEnabled: true,
+      chatCommentsAdminsEnabled: true,
+    });
+
+    const result = await harness.service.recoverOnce();
+
+    expect(result).toMatchObject({ scanned: 1, skipped: 1, deferred: 0, retried: 0 });
+    expect(harness.prisma.chatAutoCommentAttachMarker.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ lockToken: LOCK_TOKEN, status: 'IN_PROGRESS' }),
+        data: expect.objectContaining({
+          status: 'SKIPPED',
+          lastError: 'Publisher chat-comment settings changed before recovery dispatch',
+        }),
+      }),
+    );
+    expect(harness.job.remove).toHaveBeenCalledTimes(1);
+    expect(harness.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(harness.job.retry).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes remote-send recovery after the main Publik toggle epoch changes', async () => {
+    const harness = createHarness();
+    harness.prisma.managedEntityPublicationPolicy.findUnique.mockResolvedValueOnce({
+      revision: 5,
+      publikEnabled: true,
+    });
+
+    const result = await harness.service.recoverOnce();
+
+    expect(result).toMatchObject({ scanned: 1, skipped: 1, deferred: 0, retried: 0 });
+    expect(harness.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(harness.job.retry).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes a new-epoch marker with no queue job after the module is disabled', async () => {
+    const harness = createHarness();
+    harness.prisma.publisherEntitySettings.findUnique.mockResolvedValueOnce({
+      revision: 8,
+      chatCommentsEnabled: false,
+      chatCommentsAdminsEnabled: false,
+    });
+    harness.queue.getJob.mockResolvedValueOnce(null);
+
+    const result = await harness.service.recoverOnce();
+
+    expect(result).toMatchObject({ scanned: 1, skipped: 1, missingJobs: 0 });
+    expect(harness.prisma.chatAutoCommentAttachMarker.updateMany).toHaveBeenCalledTimes(1);
+    expect(harness.queue.getJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a current-epoch no-job marker for its deferred webhook owner within 24 hours', async () => {
+    const harness = createHarness();
+    harness.queue.getJob.mockResolvedValueOnce(null);
+
+    const result = await harness.service.recoverOnce();
+
+    expect(result).toMatchObject({ scanned: 1, skipped: 0, missingJobs: 1 });
+    expect(harness.prisma.chatAutoCommentAttachMarker.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('still retries local confirmed-reply recovery for a legacy envelope', async () => {
+    const harness = createHarness({
+      marker: buildMarker({ replyMessageId: 'publisher-reply-legacy' }),
+      globallyPaused: true,
+      dispatchAllowedError: new PublisherDispatchPausedError('2026-08-26T09:30:00.000Z'),
+    });
+    (harness.job.data as { publisherSettingsRevision?: number }).publisherSettingsRevision =
+      undefined;
+
+    const result = await harness.service.recoverOnce();
+
+    expect(result).toMatchObject({ scanned: 1, deferred: 0, retried: 1 });
+    expect(harness.prisma.publisherEntitySettings.findUnique).not.toHaveBeenCalled();
+    expect(harness.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(harness.job.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not scan an old marker after settings are re-enabled beyond the recovery horizon', async () => {
+    const harness = createHarness();
+    const now = new Date('2026-08-26T10:00:00.000Z');
+    const oldCreatedAt = new Date(now.getTime() - PUBLISHER_CHAT_COMMENT_RECOVERY_MAX_AGE_MS - 1);
+    harness.prisma.chatAutoCommentAttachMarker.findMany.mockImplementationOnce(async (args) => {
+      const preSendBranch = args.where.OR[2];
+      const gte = preSendBranch.OR[1].createdAt.gte as Date;
+      return oldCreatedAt >= gte ? [harness.marker] : [];
+    });
+
+    const result = await harness.service.recoverOnce(now);
+
+    expect(result).toMatchObject({ scanned: 0, retried: 0, deferred: 0 });
+    expect(harness.queue.getJob).not.toHaveBeenCalled();
+    expect(harness.job.retry).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes an old dual-epoch pre-send marker instead of retrying it', async () => {
+    const now = new Date('2026-08-28T10:00:00.000Z');
+    const harness = createHarness({
+      marker: buildMarker({
+        createdAt: new Date(now.getTime() - PUBLISHER_CHAT_COMMENT_RECOVERY_MAX_AGE_MS - 1),
+      }),
+    });
+
+    const result = await harness.service.recoverOnce(now);
+
+    expect(result).toMatchObject({ scanned: 1, skipped: 1, retried: 0 });
+    expect(harness.prisma.chatAutoCommentAttachMarker.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          lastError: 'Publisher chat-comment recovery window expired before dispatch',
+        }),
+      }),
+    );
+    expect(harness.job.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps old post-send recovery independent from toggles and the age horizon', async () => {
+    const marker = buildMarker({ replyMessageId: 'publisher-reply-old' });
+    const harness = createHarness({ marker, globallyPaused: true });
+    (harness.job.data as { publisherSettingsRevision?: number }).publisherSettingsRevision =
+      undefined;
+    harness.prisma.publisherEntitySettings.findUnique.mockResolvedValue(null);
+    harness.prisma.chatAutoCommentAttachMarker.findMany.mockImplementationOnce(async (args) => {
+      expect(args.where.OR).toEqual(
+        expect.arrayContaining([
+          { replyMessageId: { not: null } },
+          { replacementSendStartedAt: { not: null } },
+        ]),
+      );
+      return [marker];
+    });
+
+    const result = await harness.service.recoverOnce(new Date('2026-08-28T10:00:00.000Z'));
+
+    expect(result).toMatchObject({ scanned: 1, retried: 1, deferred: 0 });
+    expect(harness.prisma.publisherEntitySettings.findUnique).not.toHaveBeenCalled();
+    expect(harness.readiness.assertEntityReady).not.toHaveBeenCalled();
+    expect(harness.job.retry).toHaveBeenCalledTimes(1);
   });
 
   it('defers through a long disabled window and retries the retained job after enablement', async () => {

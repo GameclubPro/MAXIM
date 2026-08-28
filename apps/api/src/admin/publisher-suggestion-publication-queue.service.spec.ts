@@ -4,6 +4,15 @@ import {
   CHANNEL_SUGGESTION_PUBLICATION_PROTOCOL_V1,
 } from './admin-channel-suggestion-publication-protocol';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
+import {
+  buildPublisherSuggestionPublicationRequestId,
+  PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
+  PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
+} from './publisher-suggestion-review-protocol';
+
+function sqlText(query: { strings?: readonly string[] }): string {
+  return query.strings?.join('?').replace(/\s+/gu, ' ').trim() ?? '';
+}
 
 describe('PublisherSuggestionPublicationQueueService', () => {
   const originalRole = process.env.APP_ROLE;
@@ -30,6 +39,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
       auditLog: {
         findMany: jest.fn().mockResolvedValue([]),
       },
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
     const dispatchHealth = {
       isGloballyPaused: jest.fn().mockResolvedValue(globallyPaused),
@@ -83,7 +93,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     const { prisma, service } = createHarness(true);
 
     service.onModuleInit();
-    await Promise.resolve();
+    await (service as any).recover();
 
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 100 }));
     service.onModuleDestroy();
@@ -202,6 +212,120 @@ describe('PublisherSuggestionPublicationQueueService', () => {
         jobId: expect.stringMatching(/^publik-suggestion-/),
       }),
     );
+  });
+
+  it('recovers durable claims created by the Publisher inbox pipeline', async () => {
+    const { prisma, queue, service } = createHarness(true);
+    const suggestionId = 'publisher-suggestion-1';
+    prisma.auditLog.findMany.mockResolvedValueOnce([
+      {
+        id: suggestionId,
+        createdAt: new Date('2026-08-27T10:00:00.000Z'),
+        payload: {
+          reviewStatus: 'publishing',
+          reviewAction: 'publish',
+          reviewDispatchProfile: PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
+          reviewPublicationProtocol: PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
+          reviewPublicationRequestId: buildPublisherSuggestionPublicationRequestId(
+            suggestionId,
+            'publisher-claim-1',
+          ),
+          reviewClaimToken: 'publisher-claim-1',
+          reviewClaimedAt: '2026-08-27T09:59:00.000Z',
+          reviewClaimedByUserId: 'admin-1',
+        },
+      },
+    ]);
+    queue.getJob.mockResolvedValue(null);
+
+    await (service as any).recover();
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'publish-approved-suggestion',
+      expect.objectContaining({
+        suggestionId,
+        claimToken: 'publisher-claim-1',
+      }),
+      expect.objectContaining({ jobId: expect.stringMatching(/^publik-suggestion-/u) }),
+    );
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          action: {
+            in: ['CHANNEL_DIALOG_SUGGESTION', 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'],
+          },
+        }),
+      }),
+    );
+  });
+
+  it('recreates a completed new-protocol job consumed by an older rolling worker', async () => {
+    const { queue, service } = createHarness(true);
+    const remove = jest.fn().mockResolvedValue(undefined);
+    queue.getJob.mockResolvedValue({
+      getState: jest.fn().mockResolvedValue('completed'),
+      remove,
+    });
+
+    await service.enqueue('publisher-suggestion-1', 'claim-1', {
+      recycleCompleted: true,
+    });
+
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(queue.add).toHaveBeenCalledWith(
+      'publish-approved-suggestion',
+      expect.objectContaining({
+        suggestionId: 'publisher-suggestion-1',
+        claimToken: 'claim-1',
+      }),
+      expect.objectContaining({ jobId: expect.stringMatching(/^publik-suggestion-/u) }),
+    );
+  });
+
+  it('migrates stale inline-v0 claims before the normal durable recovery scan', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-27T12:00:00.000Z'));
+    const { prisma, queue, service } = createHarness(true);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          id: 'legacy-inline-suggestion-1',
+          createdAt: new Date('2026-08-27T10:00:00.000Z'),
+          payload: {
+            type: 'suggest',
+            reviewStatus: 'publishing',
+            reviewedAt: '2026-08-27T10:05:00.000Z',
+            reviewedByUserId: 'admin-1',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([{ id: 'legacy-inline-suggestion-1' }]);
+    queue.getJob.mockResolvedValue(null);
+
+    await (service as any).recover();
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'publish-approved-suggestion',
+      expect.objectContaining({ suggestionId: 'legacy-inline-suggestion-1' }),
+      expect.objectContaining({ jobId: expect.stringMatching(/^publik-suggestion-/u) }),
+    );
+    const migrationSql = sqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
+    expect(migrationSql).toContain("payload->>'reviewStatus' = 'publishing'");
+    expect(migrationSql).toContain("payload->>'reviewPublicationProtocol' IS NULL");
+    expect(migrationSql).toContain("payload->>'reviewedAt' <= ?::text");
+  });
+
+  it('does not recycle completed legacy publication jobs', async () => {
+    const { queue, service } = createHarness(true);
+    const remove = jest.fn();
+    queue.getJob.mockResolvedValue({
+      getState: jest.fn().mockResolvedValue('completed'),
+      remove,
+    });
+
+    await service.enqueue('legacy-suggestion-1', 'legacy-claim-1');
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('absorbs coordinator shutdown from its detached timer path', async () => {

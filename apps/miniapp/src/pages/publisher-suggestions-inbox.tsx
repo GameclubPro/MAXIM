@@ -1,20 +1,18 @@
-import type { PublisherSuggestionsResponse } from '@maxim/contracts/publisher';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type {
+  PublisherSuggestion,
+  PublisherSuggestionsResponse,
+  PublisherSuggestionsView,
+} from '@maxim/contracts/publisher';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle, NavArrowDown, Refresh, Xmark } from 'iconoir-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { useToast } from '../components/ui/toast';
 import { listPublisherSuggestions, reviewPublisherSuggestion } from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { describeUserFacingError } from '../lib/user-facing-error';
-import {
-  countPublisherSuggestions,
-  filterPublisherSuggestions,
-  getPublisherSuggestionStatusLabel,
-  growPublisherSuggestionLimit,
-  PUBLISHER_SUGGESTIONS_PAGE_SIZE,
-  type PublisherSuggestionView,
-} from './publisher-entity-modules-page-model';
+import { getPublisherSuggestionStatusLabel } from './publisher-entity-modules-page-model';
 
 const LazyActionConfirmSheet = lazy(async () => {
   const module = await import('../components/ui/action-confirm-sheet');
@@ -25,6 +23,31 @@ type PublisherSuggestionConfirmation = {
   suggestionId: string;
   action: 'publish' | 'cancel';
 };
+
+const PUBLISHER_SUGGESTIONS_PAGE_SIZE = 25;
+const PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS = 4_000;
+
+function mergePublisherSuggestionPages(
+  pages: readonly PublisherSuggestionsResponse[] | undefined,
+): PublisherSuggestion[] {
+  const suggestions = new Map<string, PublisherSuggestion>();
+  for (const page of pages ?? []) {
+    for (const suggestion of page.items) {
+      suggestions.set(suggestion.id, suggestion);
+    }
+  }
+  return [...suggestions.values()];
+}
+
+function containsPublishingSuggestion(
+  pages: readonly PublisherSuggestionsResponse[] | undefined,
+): boolean {
+  return (
+    pages?.some((page) =>
+      page.items.some((suggestion) => suggestion.reviewStatus === 'publishing'),
+    ) ?? false
+  );
+}
 
 export function PublisherSuggestionsInbox({
   api,
@@ -37,25 +60,60 @@ export function PublisherSuggestionsInbox({
 }) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const [view, setView] = useState<PublisherSuggestionView>('pending');
-  const [visibleLimit, setVisibleLimit] = useState(PUBLISHER_SUGGESTIONS_PAGE_SIZE);
+  const [view, setView] = useState<PublisherSuggestionsView>('pending');
   const [confirmation, setConfirmation] = useState<PublisherSuggestionConfirmation | null>(null);
-  const queryKey = ['publisher-suggestions', entityId] as const;
-  const query = useQuery({
-    queryKey,
-    queryFn: ({ signal }) => listPublisherSuggestions(api, entityId, { signal }),
+  const queryRoot = useMemo(() => ['publisher-suggestions', entityId] as const, [entityId]);
+  const pendingQueryKey = useMemo(() => [...queryRoot, 'pending'] as const, [queryRoot]);
+  const historyQueryKey = useMemo(() => [...queryRoot, 'history'] as const, [queryRoot]);
+  const pendingQuery = useInfiniteQuery({
+    queryKey: pendingQueryKey,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) =>
+      listPublisherSuggestions(api, entityId, {
+        view: 'pending',
+        limit: PUBLISHER_SUGGESTIONS_PAGE_SIZE,
+        cursor: pageParam,
+        signal,
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: entityId.length > 0,
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) =>
+      view === 'pending' && containsPublishingSuggestion(query.state.data?.pages)
+        ? PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS
+        : false,
+  });
+  const historyQuery = useInfiniteQuery({
+    queryKey: historyQueryKey,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) =>
+      listPublisherSuggestions(api, entityId, {
+        view: 'history',
+        limit: PUBLISHER_SUGGESTIONS_PAGE_SIZE,
+        cursor: pageParam,
+        signal,
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: entityId.length > 0,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
-  const suggestions = useMemo(() => query.data?.items ?? [], [query.data?.items]);
-  const counts = useMemo(() => countPublisherSuggestions(suggestions), [suggestions]);
-  const filtered = useMemo(
-    () => filterPublisherSuggestions(suggestions, view),
-    [suggestions, view],
+  const pendingSuggestions = useMemo(
+    () => mergePublisherSuggestionPages(pendingQuery.data?.pages),
+    [pendingQuery.data?.pages],
   );
-  const visible = filtered.slice(0, visibleLimit);
-  const confirmationSuggestion = suggestions.find(
+  const historySuggestions = useMemo(
+    () => mergePublisherSuggestionPages(historyQuery.data?.pages),
+    [historyQuery.data?.pages],
+  );
+  const activeQuery = view === 'pending' ? pendingQuery : historyQuery;
+  const suggestions = view === 'pending' ? pendingSuggestions : historySuggestions;
+  const pendingTotal = pendingQuery.data?.pages[0]?.total;
+  const historyTotal = historyQuery.data?.pages[0]?.total;
+  const activeTotal = view === 'pending' ? (pendingTotal ?? 0) : (historyTotal ?? 0);
+  const remainingCount = Math.max(0, activeTotal - suggestions.length);
+  const confirmationSuggestion = pendingSuggestions.find(
     (suggestion) =>
       suggestion.id === confirmation?.suggestionId && suggestion.reviewStatus === 'pending',
   );
@@ -68,23 +126,19 @@ export function PublisherSuggestionsInbox({
       action: 'publish' | 'cancel';
     }) => reviewPublisherSuggestion(api, entityId, suggestionId, { action }),
     onSuccess: async (response, variables) => {
-      queryClient.setQueryData<PublisherSuggestionsResponse>(queryKey, (current) =>
-        current
-          ? {
-              items: current.items.map((suggestion) =>
-                suggestion.id === response.suggestion.id ? response.suggestion : suggestion,
-              ),
-            }
-          : current,
-      );
       setConfirmation(null);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({ queryKey: queryRoot }),
         queryClient.invalidateQueries({ queryKey: ['publications'] }),
       ]);
       pushToast({
         tone: 'success',
-        title: variables.action === 'publish' ? 'Публикация создана' : 'Предложка отклонена',
+        title:
+          variables.action === 'publish'
+            ? response.suggestion.reviewStatus === 'published'
+              ? 'Публикация создана'
+              : 'Предложка принята в публикацию'
+            : 'Предложка отклонена',
       });
     },
     onError: (error) => {
@@ -97,33 +151,10 @@ export function PublisherSuggestionsInbox({
 
   useEffect(() => {
     setView('pending');
-    setVisibleLimit(PUBLISHER_SUGGESTIONS_PAGE_SIZE);
     setConfirmation(null);
   }, [entityId]);
 
-  useEffect(() => {
-    setVisibleLimit(PUBLISHER_SUGGESTIONS_PAGE_SIZE);
-  }, [view]);
-
-  if (query.isLoading) {
-    return (
-      <div className="publisher-suggestions-state" role="status">
-        <Refresh className="is-refreshing" aria-hidden />
-        <span>Загружаю предложки</span>
-      </div>
-    );
-  }
-  if (query.isError) {
-    return (
-      <div className="publisher-suggestions-state has-error" role="alert">
-        <span>Не удалось загрузить предложки</span>
-        <button type="button" onClick={() => void query.refetch()}>
-          Повторить
-        </button>
-      </div>
-    );
-  }
-  if (suggestions.length === 0 && !enabled) {
+  if (pendingTotal === 0 && historyTotal === 0 && !enabled) {
     return null;
   }
 
@@ -138,7 +169,9 @@ export function PublisherSuggestionsInbox({
             onClick={() => setView('pending')}
           >
             <span>Ожидают</span>
-            <strong>{counts.pending}</strong>
+            <strong aria-label={pendingTotal === undefined ? 'Считаю' : undefined}>
+              {pendingTotal ?? '...'}
+            </strong>
           </button>
           <button
             type="button"
@@ -147,16 +180,30 @@ export function PublisherSuggestionsInbox({
             onClick={() => setView('history')}
           >
             <span>История</span>
-            <strong>{counts.history}</strong>
+            <strong aria-label={historyTotal === undefined ? 'Считаю' : undefined}>
+              {historyTotal ?? '...'}
+            </strong>
           </button>
         </div>
 
-        {visible.length > 0 ? (
+        {activeQuery.isLoading ? (
+          <div className="publisher-suggestions-state" role="status">
+            <Refresh className="is-refreshing" aria-hidden />
+            <span>Загружаю предложки</span>
+          </div>
+        ) : activeQuery.isError ? (
+          <div className="publisher-suggestions-state has-error" role="alert">
+            <span>Не удалось загрузить предложки</span>
+            <button type="button" onClick={() => void activeQuery.refetch()}>
+              Повторить
+            </button>
+          </div>
+        ) : suggestions.length > 0 ? (
           <div
             className="publisher-suggestions-inbox"
             aria-label={view === 'pending' ? 'Предложки, ожидающие решения' : 'История предложек'}
           >
-            {visible.map((suggestion) => (
+            {suggestions.map((suggestion) => (
               <article key={suggestion.id} className="publisher-suggestion-row">
                 <div className="publisher-suggestion-row__meta">
                   <strong>{suggestion.authorDisplayName || 'Пользователь'}</strong>
@@ -169,7 +216,17 @@ export function PublisherSuggestionsInbox({
                     }).format(new Date(suggestion.createdAt))}
                   </time>
                 </div>
-                <p>{suggestion.text}</p>
+                <MaxMarkdownPreview
+                  value={suggestion.text}
+                  sourceFormat={suggestion.textFormat}
+                  className="publisher-suggestion-row__text"
+                  fallback="Предложка без текста"
+                />
+                {suggestion.reviewError ? (
+                  <p className="publisher-suggestion-row__error" role="status">
+                    Не удалось создать публикацию: {suggestion.reviewError}
+                  </p>
+                ) : null}
                 {suggestion.reviewStatus === 'pending' ? (
                   <div className="publisher-suggestion-row__actions">
                     <button
@@ -213,16 +270,27 @@ export function PublisherSuggestionsInbox({
           </div>
         )}
 
-        {visible.length < filtered.length ? (
+        {activeQuery.hasNextPage ? (
           <button
             type="button"
             className="publisher-suggestions-load-more"
-            onClick={() =>
-              setVisibleLimit((current) => growPublisherSuggestionLimit(current, filtered.length))
-            }
+            disabled={activeQuery.isFetchingNextPage}
+            onClick={() => void activeQuery.fetchNextPage()}
           >
-            <NavArrowDown aria-hidden />
-            <span>Показать ещё · {filtered.length - visible.length}</span>
+            {activeQuery.isFetchingNextPage ? (
+              <Refresh className="is-refreshing" aria-hidden />
+            ) : (
+              <NavArrowDown aria-hidden />
+            )}
+            <span>
+              {activeQuery.isFetchingNextPage
+                ? 'Загружаю...'
+                : activeQuery.isFetchNextPageError
+                  ? 'Повторить'
+                  : remainingCount > 0
+                    ? `Показать ещё · ${remainingCount}`
+                    : 'Показать ещё'}
+            </span>
           </button>
         ) : null}
       </div>
@@ -242,9 +310,12 @@ export function PublisherSuggestionsInbox({
             }
             previewTitle={confirmationSuggestion.authorDisplayName || 'Пользователь'}
             previewMeta={
-              <span className="publisher-suggestion-confirm__text">
-                {confirmationSuggestion.text || 'Предложка без текста'}
-              </span>
+              <MaxMarkdownPreview
+                value={confirmationSuggestion.text}
+                sourceFormat={confirmationSuggestion.textFormat}
+                className="publisher-suggestion-confirm__text"
+                fallback="Предложка без текста"
+              />
             }
             confirmLabel={
               confirmation.action === 'publish' ? 'Опубликовать сейчас' : 'Отклонить предложку'

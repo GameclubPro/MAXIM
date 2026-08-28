@@ -8,6 +8,7 @@ import {
 } from '../moderation/webhook-canonical-execution.service';
 import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Job, Queue } from 'bullmq';
+import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
 import {
@@ -1347,6 +1348,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       event.normalizedPayload = prepared.normalizedPayload;
       return 'ready';
     } catch (error: unknown) {
+      if (error instanceof WebhookPreparationDeferredError) {
+        const deferOutcome = await this.deferPreparationWithoutExhaustion(event, error);
+        return deferOutcome === 'terminal' ? 'advance' : 'block';
+      }
       const failureOutcome = await this.markFailedWithBackoff(
         event,
         `Webhook preparation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1583,6 +1588,25 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         ? 'terminal'
         : 'block'
       : this.resolveCurrentCandidateOutcome(event.id);
+  }
+
+  private async deferPreparationWithoutExhaustion(
+    event: WebhookEnqueueStateSnapshot,
+    error: WebhookPreparationDeferredError,
+  ): Promise<CandidateEnqueueOutcome> {
+    // FLAG: RECEIVED keeps the persisted envelope outside terminal-failure retention and attempt caps.
+    const result = await this.prisma.webhookEvent.updateMany({
+      where: this.buildEnqueueStateWhere(event),
+      data: {
+        status: WebhookStatus.RECEIVED,
+        errorMessage: `Webhook preparation deferred: ${error.message}`.slice(0, 500),
+        queueName: null,
+        queuedAt: null,
+        nextEnqueueAt: new Date(Date.now() + error.retryAfterMs),
+        timeoutQuarantineExpiresAt: null,
+      },
+    });
+    return result.count === 1 ? 'block' : this.resolveCurrentCandidateOutcome(event.id);
   }
 
   private async markClaimedQueueActivationFailed(

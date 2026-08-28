@@ -13,10 +13,16 @@ import {
   MAX_PUBLICATION_TEXT_LENGTH,
   publicationContentInputSchema,
   publicationDeliverySchema,
+  publicationSummarySchema,
   retryPublicationOccurrenceRequestSchema,
 } from '@maxim/contracts/publication';
 
 describe('publication contracts', () => {
+  it('defaults legacy summary previews to plain and preserves explicit markdown', () => {
+    expect(publicationSummarySchema.shape.contentPreviewFormat.parse(undefined)).toBe('plain');
+    expect(publicationSummarySchema.shape.contentPreviewFormat.parse('markdown')).toBe('markdown');
+  });
+
   it('accepts mixed chat/channel targets and a byte-backed video', () => {
     const parsed = createPublicationRequestSchema.parse({
       requestId: 'publication_request_1',

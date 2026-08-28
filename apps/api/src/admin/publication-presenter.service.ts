@@ -11,6 +11,7 @@ import {
   type PublicationSummary,
 } from '@maxim/contracts/publication';
 import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { stripSupportedMarkdownToPlainText } from '../common/max-markdown.util';
 import {
   ChatEntityType,
   ManagedBroadcastDeliveryStatus,
@@ -161,6 +162,11 @@ export class PublicationPresenterService {
     const delivery =
       preloadedDeliveryStats ?? row.deliveryStats ?? (await this.loadDeliveryStats(row.id));
     const content = row.canonicalContentRevision;
+    const contentPreviewSource = content?.text?.trim() ?? '';
+    const contentPreview =
+      content?.textFormat === PublicationContentFormat.MARKDOWN
+        ? stripSupportedMarkdownToPlainText(contentPreviewSource)
+        : contentPreviewSource;
     const targets = row.targets.map((target: PublicationTargetRow) =>
       this.mapTarget(target, row.dispatchProfile, publisherTargetPresentations),
     );
@@ -181,7 +187,8 @@ export class PublicationPresenterService {
       title: row.title,
       lifecycle: row.lifecycle,
       version: row.version,
-      contentPreview: content?.text.trim().slice(0, 160) ?? '',
+      contentPreview: contentPreview.slice(0, 160),
+      contentPreviewFormat: 'plain',
       targetCount: targets.length,
       targetPreviews,
       targetOverflowCount: Math.max(0, targets.length - targetPreviews.length),

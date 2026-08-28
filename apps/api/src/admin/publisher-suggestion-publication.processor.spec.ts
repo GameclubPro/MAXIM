@@ -30,6 +30,9 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       if (!dispatchEnabled) throw new PublisherDispatchDisabledError();
     }),
   });
+  const createPublisherSuggestions = () => ({
+    processPublicationJob: jest.fn().mockResolvedValue(false),
+  });
 
   it('delays approved suggestion delivery while identity is unattested', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
@@ -47,6 +50,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       identityAttestation as never,
       createDispatchHealth() as never,
       createRuntimeBoundary() as never,
+      createPublisherSuggestions() as never,
     );
 
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
@@ -80,6 +84,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { assertAttested: jest.fn().mockRejectedValue(failure) } as never,
       createDispatchHealth() as never,
       createRuntimeBoundary() as never,
+      createPublisherSuggestions() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -110,6 +115,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       dispatchHealth as never,
       createRuntimeBoundary() as never,
+      createPublisherSuggestions() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -149,6 +155,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       dispatchHealth as never,
       createRuntimeBoundary() as never,
+      createPublisherSuggestions() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -183,6 +190,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
       { assertDispatchAllowed: jest.fn().mockRejectedValue(failure) } as never,
       createRuntimeBoundary() as never,
+      createPublisherSuggestions() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -214,6 +222,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
       identityAttestation as never,
       dispatchHealth as never,
       createRuntimeBoundary(false) as never,
+      createPublisherSuggestions() as never,
     );
     const moveToDelayed = jest.fn().mockResolvedValue(undefined);
     const job = {
@@ -257,6 +266,7 @@ describe('PublisherSuggestionPublicationProcessor', () => {
           throw failure;
         }),
       } as never,
+      createPublisherSuggestions() as never,
     );
     const moveToDelayed = jest.fn();
     const job = {
@@ -276,5 +286,58 @@ describe('PublisherSuggestionPublicationProcessor', () => {
     expect(identityAttestation.assertAttested).not.toHaveBeenCalled();
     expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
     expect(processPublisherSuggestionPublicationJob).not.toHaveBeenCalled();
+  });
+
+  it('routes Publisher inbox claims through the publication service worker', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const processPublisherSuggestionPublicationJob = jest.fn();
+    const processPublicationJob = jest.fn().mockResolvedValue(true);
+    const processor = new PublisherSuggestionPublicationProcessor(
+      { processPublisherSuggestionPublicationJob } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
+      { processPublicationJob } as never,
+    );
+
+    await processor.process({
+      data: {
+        suggestionId: 'publisher-suggestion-1',
+        claimToken: 'claim-1',
+        createdAt: '2026-08-26T12:00:00.000Z',
+      },
+    } as never);
+
+    expect(processPublicationJob).toHaveBeenCalledWith('publisher-suggestion-1', 'claim-1');
+    expect(processPublisherSuggestionPublicationJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps legacy Publisher claims on the existing channel-dialog worker', async () => {
+    process.env.APP_ROLE = 'publisher';
+    process.env.APP_SERVICE_NAME = 'api-publisher';
+    const processPublisherSuggestionPublicationJob = jest.fn().mockResolvedValue(undefined);
+    const processPublicationJob = jest.fn().mockResolvedValue(false);
+    const processor = new PublisherSuggestionPublicationProcessor(
+      { processPublisherSuggestionPublicationJob } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      createDispatchHealth() as never,
+      createRuntimeBoundary() as never,
+      { processPublicationJob } as never,
+    );
+
+    await processor.process({
+      data: {
+        suggestionId: 'legacy-suggestion-1',
+        claimToken: 'legacy-claim-1',
+        createdAt: '2026-08-26T12:00:00.000Z',
+      },
+    } as never);
+
+    expect(processPublicationJob).toHaveBeenCalledWith('legacy-suggestion-1', 'legacy-claim-1');
+    expect(processPublisherSuggestionPublicationJob).toHaveBeenCalledWith(
+      'legacy-suggestion-1',
+      'legacy-claim-1',
+    );
   });
 });

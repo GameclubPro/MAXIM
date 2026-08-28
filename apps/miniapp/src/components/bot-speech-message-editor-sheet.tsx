@@ -114,6 +114,7 @@ export function BotSpeechMessageEditorSheet({
   );
   const [imageError, setImageError] = useState('');
   const [isPreparingImage, setIsPreparingImage] = useState(false);
+  const [normalizationReady, setNormalizationReady] = useState(true);
   const portalTarget = resolveBotMessageEditorPortalTarget();
   const overlayStyle = useVisualViewportOverlayStyle(true);
   const hasImage = Boolean(image?.base64 && image.mimeType);
@@ -263,6 +264,8 @@ export function BotSpeechMessageEditorSheet({
             ref={editorRef}
             value={editorValue}
             onChange={handleTextChange}
+            disabled={isPreparingImage}
+            onNormalizationReadyChange={setNormalizationReady}
             maxLength={BOT_MESSAGE_EDITOR_MAX_LENGTH}
             placeholder="Свой текст"
             preserveCurlyBracePlaceholders
@@ -376,6 +379,7 @@ export function BotSpeechMessageEditorSheet({
                 event.preventDefault();
               }}
               onClick={() => applyTextModifier(tool.id)}
+              disabled={isPreparingImage || !normalizationReady}
             >
               {tool.id === 'link' ? <BotMessageEditorLinkIcon /> : tool.label}
             </button>

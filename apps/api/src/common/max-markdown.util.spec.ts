@@ -23,13 +23,13 @@ describe('renderSupportedMarkdownAsHtml', () => {
     );
   });
 
-  it('falls back to bold block for markdown headings and inserts wraps into raw url labels', () => {
+  it('renders semantic markdown headings and inserts wraps into raw url labels', () => {
     expect(
       renderSupportedMarkdownAsHtml(
         '# Заголовок\n\n[https://dev.max.ru/docs-api/very/long/path](https://dev.max.ru/docs-api/very/long/path)',
       ),
     ).toBe(
-      '<p><strong>Заголовок</strong></p><p><a href="https://dev.max.ru/docs-api/very/long/path">https:\u200B/\u200B/\u200Bdev.\u200Bmax.\u200Bru/\u200Bdocs-\u200Bapi/\u200Bvery/\u200Blong/\u200Bpath</a></p>',
+      '<h1>Заголовок</h1><p><a href="https://dev.max.ru/docs-api/very/long/path">https:\u200B/\u200B/\u200Bdev.\u200Bmax.\u200Bru/\u200Bdocs-\u200Bapi/\u200Bvery/\u200Blong/\u200Bpath</a></p>',
     );
   });
 
@@ -64,7 +64,7 @@ describe('renderSupportedMarkdownAsHtml', () => {
 
   it('renders every nested rich text modifier combination without leaking markers', () => {
     for (const source of buildNestedModifierSamples()) {
-      expect(renderSupportedMarkdownAsHtml(source)).not.toMatch(/(?:\*\*|__|\+\+|~~)/u);
+      expect(renderSupportedMarkdownAsHtml(source)).not.toMatch(/(?:\*\*|__|\+\+|~~|\^\^)/u);
       expect(stripSupportedMarkdownToPlainText(source)).toBe('MAX Docs');
     }
   });
@@ -97,6 +97,56 @@ describe('renderSupportedMarkdownAsHtml', () => {
     expect(stripSupportedMarkdownToPlainText(source)).toBe('Первая строка\n\nВторая строка');
   });
 
+  it.each([
+    ['***', '<strong><em>', '</em></strong>'],
+    ['___', '<strong><em>', '</em></strong>'],
+    ['**', '<strong>', '</strong>'],
+    ['__', '<strong>', '</strong>'],
+    ['*', '<em>', '</em>'],
+    ['_', '<em>', '</em>'],
+    ['++', '<u>', '</u>'],
+    ['~~', '<s>', '</s>'],
+  ] as const)(
+    'renders multiline %s spans as independent MAX HTML entities',
+    (marker, openTag, closeTag) => {
+      const source = `${marker}Первая строка\n\nВторая строка${marker}`;
+      expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
+        `${openTag}Первая строка${closeTag}\n\n${openTag}Вторая строка${closeTag}`,
+      );
+      expect(stripSupportedMarkdownToPlainText(source)).toBe('Первая строка\n\nВторая строка');
+      expect(
+        renderSupportedMarkdownAsHtml(`${marker}Одна строка\n\n${marker}`, {
+          blockMode: 'raw',
+        }),
+      ).toBe(`${openTag}Одна строка${closeTag}\n\n`);
+    },
+  );
+
+  it('renders multiline links and nested modifier permutations without generated markers', () => {
+    expect(
+      renderSupportedMarkdownAsHtml('[Первая\n\nВторая](https://example.com/path)', {
+        blockMode: 'raw',
+      }),
+    ).toBe(
+      '<a href="https://example.com/path">Первая</a>\n\n<a href="https://example.com/path">Вторая</a>',
+    );
+    expect(
+      renderSupportedMarkdownAsHtml('[Первая\n\n](https://example.com/path)', {
+        blockMode: 'raw',
+      }),
+    ).toBe('<a href="https://example.com/path">Первая</a>\n\n');
+    for (const source of [
+      '**_Первая\n\nВторая_**',
+      '_**Первая\n\nВторая**_',
+      '[**_Первая\n\nВторая_**](https://example.com/path)',
+      '**[Первая\n\nВторая](https://example.com/path)**',
+    ]) {
+      const rendered = renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' });
+      expect(rendered).not.toMatch(/(?:\*\*|__|\+\+|~~|\[[^\]]*\]\()/u);
+      expect(stripSupportedMarkdownToPlainText(source)).toBe('Первая\n\nВторая');
+    }
+  });
+
   it('recognizes multiline strong spans after punctuation or emoji prefixes', () => {
     expect(renderSupportedMarkdownAsHtml('🔥**Первая\n\nВторая**', { blockMode: 'raw' })).toBe(
       '🔥<strong>Первая</strong>\n\n<strong>Вторая</strong>',
@@ -126,7 +176,6 @@ describe('renderSupportedMarkdownAsHtml', () => {
     expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
       '<strong>Одна строка</strong>\n\n',
     );
-    expect(containsSupportedMarkdownSyntax(source)).toBe(true);
     expect(
       renderSupportedMarkdownAsHtml('**Одна строка\n\n**\nСледующая', { blockMode: 'raw' }),
     ).toBe('<strong>Одна строка</strong>\n\nСледующая');
@@ -139,6 +188,86 @@ describe('renderSupportedMarkdownAsHtml', () => {
     expect(renderSupportedMarkdownAsHtml('```\n**literal\n\n**\n```', { blockMode: 'raw' })).toBe(
       '<pre>**literal\n\n**</pre>',
     );
+    expect(renderSupportedMarkdownAsHtml('_A\n```\ncode\n```\nB_', { blockMode: 'raw' })).toBe(
+      '_A\n<pre>code</pre>\nB_',
+    );
+    expect(stripSupportedMarkdownToPlainText('_A\n```\ncode\n```\nB_')).toBe('_A\n\ncode\n\nB_');
+  });
+
+  it('does not reinterpret bullets, dividers, URL punctuation, or overlapping malformed runs', () => {
+    for (const source of [
+      '* пункт 1\n* пункт 2',
+      '_ пункт 1\n_ пункт 2',
+      '***\nраздел\n***',
+      '___\nраздел\n___',
+      'https://example.com/a_b\nnext_',
+    ]) {
+      expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(source);
+    }
+    expect(renderSupportedMarkdownAsHtml('__A_\nA__', { blockMode: 'raw' }).length).toBeLessThan(
+      64,
+    );
+  });
+
+  it.each([
+    ['_A\nsnake_case\nB_', '<em>A</em>\n<em>snake_case</em>\n<em>B</em>', 'A\nsnake_case\nB'],
+    ['++A\nC++17\nB++', '<u>A</u>\n<u>C++17</u>\n<u>B</u>', 'A\nC++17\nB'],
+    [
+      '_A\nhttps://example.com/a_b\nB_',
+      '<em>A</em>\n<em>https://example.com/a_b</em>\n<em>B</em>',
+      'A\nhttps://example.com/a_b\nB',
+    ],
+  ])('preserves same-marker punctuation inside a multiline span', (source, html, plain) => {
+    expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(html);
+    expect(stripSupportedMarkdownToPlainText(source)).toBe(plain);
+  });
+
+  it.each([
+    ['***', '<strong><em>', '</em></strong>'],
+    ['___', '<strong><em>', '</em></strong>'],
+    ['**', '<strong>', '</strong>'],
+    ['__', '<strong>', '</strong>'],
+    ['*', '<em>', '</em>'],
+    ['_', '<em>', '</em>'],
+    ['++', '<u>', '</u>'],
+    ['~~', '<s>', '</s>'],
+  ] as const)(
+    'closes multiline %s formatting after a URL on the final line',
+    (marker, openTag, closeTag) => {
+      const source = `${marker}A\nhttps://e.test/B${marker}`;
+      expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
+        `${openTag}A${closeTag}\n${openTag}https://e.test/B${closeTag}`,
+      );
+      expect(stripSupportedMarkdownToPlainText(source)).toBe('A\nhttps://e.test/B');
+    },
+  );
+
+  it('keeps MAX profile URL underscores literal across line breaks', () => {
+    const source = 'max://user/_first\nsecond_';
+    expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(source);
+    expect(stripSupportedMarkdownToPlainText(source)).toBe(source);
+  });
+
+  it('bounds overlapping multiline marker normalization for malformed legacy input', () => {
+    const runs = ['*', '**', '***', '_', '__', '___', '++', '~~'];
+    for (const left of runs) {
+      for (const middle of runs) {
+        for (const right of runs) {
+          const source = `${left}A${middle}\nB${right}`;
+          const rendered = renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' });
+          expect(rendered.length).toBeLessThanOrEqual(source.length * 16);
+        }
+      }
+    }
+  });
+
+  it('keeps maximum-length adversarial multiline input bounded', () => {
+    const source = `${'_a\n'.repeat(1_300)}z_`;
+    const startedAt = performance.now();
+    const rendered = renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' });
+
+    expect(performance.now() - startedAt).toBeLessThan(250);
+    expect(rendered).toBe(source);
   });
 
   it('renders heading and fenced code blocks for MAX publication', () => {
@@ -146,10 +275,32 @@ describe('renderSupportedMarkdownAsHtml', () => {
       renderSupportedMarkdownAsHtml('# Анонс\n\n```\nconst value = "<MAX>";\n```\n\nТекст', {
         blockMode: 'raw',
       }),
-    ).toBe('<strong>Анонс</strong>\n\n<pre>const value = &quot;&lt;MAX&gt;&quot;;</pre>\n\nТекст');
+    ).toBe('<h1>Анонс</h1>\n\n<pre>const value = &quot;&lt;MAX&gt;&quot;;</pre>\n\nТекст');
     expect(stripSupportedMarkdownToPlainText('# Анонс\n\n```\nconst value = "<MAX>";\n```')).toBe(
       'Анонс\n\nconst value = "<MAX>";',
     );
+  });
+
+  it('renders official MAX highlight and quote syntax without leaking delimiters', () => {
+    const source = '## Раздел\n> **Важная** цитата\n^^Фокус _сейчас_^^';
+
+    expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
+      '<h2>Раздел</h2>\n<blockquote><strong>Важная</strong> цитата</blockquote>\n<mark>Фокус <em>сейчас</em></mark>',
+    );
+    expect(renderSupportedMarkdownAsHtml(source)).toBe(
+      '<h2>Раздел</h2><blockquote><strong>Важная</strong> цитата</blockquote><p><mark>Фокус <em>сейчас</em></mark></p>',
+    );
+    expect(stripSupportedMarkdownToPlainText(source)).toBe('Раздел\n\nВажная цитата\n\nФокус сейчас');
+    expect(containsSupportedMarkdownSyntax(source)).toBe(true);
+  });
+
+  it('keeps escaped heading, quote, and highlight punctuation literal', () => {
+    const source = '\\# заголовок\n\\> цитата\n\\^\\^не выделять\\^\\^';
+
+    expect(renderSupportedMarkdownAsHtml(source, { blockMode: 'raw' })).toBe(
+      '# заголовок\n&gt; цитата\n^^не выделять^^',
+    );
+    expect(stripSupportedMarkdownToPlainText(source)).toBe('# заголовок\n> цитата\n^^не выделять^^');
   });
 
   it('renders escaped markdown punctuation as literal text', () => {
@@ -177,6 +328,16 @@ describe('renderSupportedMarkdownAsHtml', () => {
     ).toEqual(['https://shop.example/path', 'max://user/42']);
   });
 
+  it('renders and extracts links with escaped closing brackets in their labels', () => {
+    const source = '[A \\] B](https://e.test/)';
+    expect(renderSupportedMarkdownAsHtml(source)).toBe(
+      '<p><a href="https://e.test/">A ] B</a></p>',
+    );
+    expect(stripSupportedMarkdownToPlainText(source)).toBe('A ] B');
+    expect(extractSupportedMarkdownLinks(source)).toEqual(['https://e.test/']);
+    expect(containsSupportedMarkdownSyntax(source)).toBe(true);
+  });
+
   it('finds URLs in link hrefs and Markdown-escaped visible text', () => {
     expect(
       containsSupportedMarkdownUrl('[Сайт](https://site.example/a_b)', 'https://site.example/a_b'),
@@ -198,6 +359,7 @@ function buildNestedModifierSamples(): string[] {
     ['_', '_'],
     ['++', '++'],
     ['~~', '~~'],
+    ['^^', '^^'],
   ];
 
   return permute(wrappers).map((permutation) =>

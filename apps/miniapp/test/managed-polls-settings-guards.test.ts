@@ -31,6 +31,13 @@ test('shared poll workspace uses entity-neutral publication copy', () => {
   assert.match(pollWorkspaceSource, /entityType === 'channel' \? 'в канале' : 'в чате'/u);
 });
 
+test('poll editor preserves the stored plain or markdown source format', () => {
+  assert.match(
+    pollWorkspaceSource,
+    /<BroadcastContentComposer[\s\S]*?text=\{draft\.question\}[\s\S]*?sourceFormat=\{draft\.questionFormat\}/u,
+  );
+});
+
 test('new polls stay available alongside current polls and both tabs can load more', () => {
   assert.doesNotMatch(pollWorkspaceSource, /currentPolls\.length\s*(?:>|===)\s*0/u);
   assert.doesNotMatch(pollWorkspaceSource, /showCreateButton/u);

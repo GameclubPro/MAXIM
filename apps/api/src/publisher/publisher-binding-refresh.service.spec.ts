@@ -9,10 +9,7 @@ import {
   PublisherBindingRefreshSchedulerService,
   PublisherBindingRefreshService,
 } from './publisher-binding-refresh.service';
-import {
-  PUBLISHER_FORWARDED_BINDING_SOURCE_PREFIX,
-  buildPublisherForwardedBindingSource,
-} from './publisher-entity-binding-lifecycle.service';
+import { buildPublisherForwardedBindingSource } from './publisher-entity-binding-lifecycle.service';
 
 const createBackgroundWork = () => ({
   runExclusive: jest.fn((_lane: string, operation: () => Promise<unknown>) => operation()),
@@ -22,6 +19,17 @@ const createHistoricalRecovery = () => ({
 });
 
 describe('PublisherBindingRefreshService', () => {
+  type HarnessBinding = {
+    publisherBotId: string;
+    status: ChatBotMembershipStatus;
+    botAccessState: ChatBotAccessState;
+    botAccessSource: string | null;
+    botAccessCheckedAt: Date | null;
+    lifecycleEventAt: Date | null;
+    lastSeenAt?: Date | null;
+    lastWebhookAt: Date | null;
+  };
+
   function createHarness(
     accessResult:
       | { isAdmin: boolean; isOwner: boolean; permissions: string[]; permissionsKnown: boolean }
@@ -30,27 +38,42 @@ describe('PublisherBindingRefreshService', () => {
   ) {
     const bindingState = {
       botAccessCheckedAt: null as Date | null,
-      botAccessState: ChatBotAccessState.UNKNOWN as ChatBotAccessState,
+      botAccessState: ChatBotAccessState.CONFIRMED_ADMIN as ChatBotAccessState,
     };
-    const edgeState = { sourceVersion: null as string | null };
+    const edgeState = {
+      deniedReason: 'publisher_actor_verification_pending' as string | null,
+      source: 'publisher_actor_candidate_webhook',
+      sourceVersion: null as string | null,
+    };
     const prisma = {
       chat: {
-        findUnique: jest.fn(async () => ({
-          id: 'chat-1',
-          entityType: ChatEntityType.CHAT,
-          publicationPolicy: null,
-          publisherBinding: {
-            publisherBotId: 'publik_bot',
-            status: ChatBotMembershipStatus.ACTIVE,
-            botAccessState: ChatBotAccessState.CONFIRMED_ADMIN as ChatBotAccessState,
-            botAccessSource: null as string | null,
-            lastSeenAt: new Date('2026-08-26T11:55:00.000Z') as Date | null,
-            lastWebhookAt: null as Date | null,
-          },
-        })),
+        findUnique: jest.fn(
+          async (): Promise<{
+            id: string;
+            entityType?: ChatEntityType;
+            publicationPolicy: { publikEnabled: boolean } | null;
+            publisherBinding: HarnessBinding | null;
+          }> => ({
+            id: 'chat-1',
+            entityType: ChatEntityType.CHAT,
+            publicationPolicy: null,
+            publisherBinding: {
+              publisherBotId: 'publik_bot',
+              status: ChatBotMembershipStatus.ACTIVE,
+              botAccessState: ChatBotAccessState.CONFIRMED_ADMIN as ChatBotAccessState,
+              botAccessSource: null as string | null,
+              botAccessCheckedAt: null,
+              lifecycleEventAt: null,
+              lastSeenAt: new Date('2026-08-26T11:55:00.000Z') as Date | null,
+              lastWebhookAt: null as Date | null,
+            },
+          }),
+        ),
       },
       managedBotChatCatalog: {
-        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHAT }),
+        findUnique: jest
+          .fn<Promise<{ entityType: ChatEntityType } | null>, []>()
+          .mockResolvedValue({ entityType: ChatEntityType.CHAT }),
       },
       publisherEntityBinding: {
         updateMany: jest.fn(
@@ -77,33 +100,64 @@ describe('PublisherBindingRefreshService', () => {
           return { count: 1 };
         }),
         findUnique: jest.fn().mockImplementation(async () => ({
-          deniedReason: 'publisher_actor_verification_pending',
+          deniedReason: edgeState.deniedReason,
+          source:
+            edgeState.source === 'publisher_actor_candidate_webhook' &&
+            edgeState.sourceVersion?.startsWith('forwarded:')
+              ? 'publisher_actor_candidate_forwarded'
+              : edgeState.source,
           sourceVersion: edgeState.sourceVersion,
         })),
       },
     };
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'chat-1' }]),
-      chat: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      chat: {
+        findUnique: jest
+          .fn<
+            Promise<{
+              title: string;
+              publicationPolicy: { publikEnabled: boolean } | null;
+            } | null>,
+            []
+          >()
+          .mockResolvedValue({
+            title: 'Publisher chat',
+            publicationPolicy: null,
+          }),
+        update: jest.fn().mockResolvedValue({ id: 'chat-1' }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
       managedBotChatCatalog: {
         upsert: jest.fn().mockResolvedValue({ id: 'catalog-1' }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       publisherEntityBinding: {
-        findUnique: jest.fn(async () => ({
-          publisherBotId: 'publik_bot',
-          status: ChatBotMembershipStatus.ACTIVE,
-          lifecycleEventAt: null,
-          botAccessCheckedAt: bindingState.botAccessCheckedAt,
-          botAccessState: bindingState.botAccessState,
-          botAccessSource: null as string | null,
-        })),
+        findUnique: jest.fn(
+          async (): Promise<HarnessBinding | null> => ({
+            publisherBotId: 'publik_bot',
+            status: ChatBotMembershipStatus.ACTIVE,
+            lifecycleEventAt: null,
+            botAccessCheckedAt: bindingState.botAccessCheckedAt,
+            botAccessState: bindingState.botAccessState,
+            botAccessSource: null as string | null,
+            lastWebhookAt: null,
+          }),
+        ),
         update: jest.fn().mockResolvedValue({ chatId: 'chat-1' }),
+        upsert: jest.fn().mockResolvedValue({ chatId: 'chat-1' }),
       },
       managedEntityAccessEdge: {
-        findUnique: jest
-          .fn()
-          .mockImplementation(async () => ({ sourceVersion: edgeState.sourceVersion })),
+        findUnique: jest.fn().mockImplementation(async () => ({
+          deniedReason: edgeState.deniedReason,
+          source:
+            edgeState.source === 'publisher_actor_candidate_webhook' &&
+            edgeState.sourceVersion?.startsWith('forwarded:')
+              ? 'publisher_actor_candidate_forwarded'
+              : edgeState.source,
+          sourceVersion: edgeState.sourceVersion,
+        })),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         upsert: jest.fn().mockResolvedValue({ chatId: 'chat-1' }),
       },
     };
@@ -274,6 +328,8 @@ describe('PublisherBindingRefreshService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
         botAccessState: ChatBotAccessState.UNKNOWN,
         botAccessSource: null,
+        botAccessCheckedAt: null,
+        lifecycleEventAt: null,
         lastSeenAt: null,
         lastWebhookAt: null,
       },
@@ -301,6 +357,8 @@ describe('PublisherBindingRefreshService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
         botAccessState: ChatBotAccessState.UNKNOWN,
         botAccessSource: null,
+        botAccessCheckedAt: null,
+        lifecycleEventAt: null,
         lastSeenAt: new Date('2026-08-26T11:59:00.000Z'),
         lastWebhookAt: new Date('2026-08-26T11:59:00.000Z'),
       },
@@ -359,38 +417,23 @@ describe('PublisherBindingRefreshService', () => {
     expect(tx.chat.updateMany).not.toHaveBeenCalled();
   });
 
-  it('verifies forwarded channel recovery with the exact Publisher bot and replies with root miniapp route', async () => {
-    const { service, prisma, tx, edgeState, bindingState, maxClient, maxBotLinkService } =
-      createHarness({
-        isAdmin: true,
-        isOwner: false,
-        permissions: ['write', 'read_all_messages'],
-        permissionsKnown: true,
-      });
+  it('materializes a provisional forwarded channel atomically and replies with root miniapp route', async () => {
+    const { service, prisma, tx, edgeState, maxClient, maxBotLinkService } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'read_all_messages'],
+      permissionsKnown: true,
+    });
     const candidateVersion = 'forwarded:publisher-forward-1';
-    const forwardedSource = buildPublisherForwardedBindingSource(candidateVersion);
     edgeState.sourceVersion = candidateVersion;
     prisma.chat.findUnique.mockResolvedValueOnce({
       id: 'chat-1',
       entityType: ChatEntityType.CHAT,
       publicationPolicy: null,
-      publisherBinding: {
-        publisherBotId: 'publik_bot',
-        status: ChatBotMembershipStatus.ACTIVE,
-        botAccessState: ChatBotAccessState.UNKNOWN,
-        botAccessSource: forwardedSource,
-        lastSeenAt: new Date('2026-08-26T11:55:00.000Z'),
-        lastWebhookAt: null,
-      },
+      publisherBinding: null,
     });
-    tx.publisherEntityBinding.findUnique.mockImplementation(async () => ({
-      publisherBotId: 'publik_bot',
-      status: ChatBotMembershipStatus.ACTIVE,
-      lifecycleEventAt: null,
-      botAccessCheckedAt: bindingState.botAccessCheckedAt,
-      botAccessState: bindingState.botAccessState,
-      botAccessSource: forwardedSource,
-    }));
+    prisma.managedBotChatCatalog.findUnique.mockResolvedValueOnce(null);
+    tx.publisherEntityBinding.findUnique.mockResolvedValue(null);
     maxClient.getChatSnapshot.mockResolvedValueOnce({
       chatId: 'chat-1',
       title: 'Publisher channel',
@@ -417,19 +460,48 @@ describe('PublisherBindingRefreshService', () => {
       'admin-2',
       expect.objectContaining({ botId: 'publik_bot', trafficClass: 'interactive' }),
     );
-    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+    expect(prisma.publisherEntityBinding.updateMany).not.toHaveBeenCalled();
+    expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'admin-2',
           botId: 'publik_bot',
+          source: 'publisher_actor_candidate_forwarded',
+          sourceVersion: candidateVersion,
+        }),
+        data: expect.objectContaining({
           entityType: ChatEntityType.CHANNEL,
           state: 'GRANTED',
+          source: 'publisher_targeted_user_access',
         }),
       }),
     );
-    expect(prisma.publisherEntityBinding.updateMany).toHaveBeenCalledWith(
+    expect(tx.chat.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ botAccessSource: forwardedSource }),
-        data: { botAccessSource: 'publisher_refresh_forwarded_private' },
+        where: { id: 'chat-1' },
+        data: expect.objectContaining({
+          entityType: ChatEntityType.CHANNEL,
+          title: 'Publisher channel',
+        }),
+      }),
+    );
+    expect(tx.publisherEntityBinding.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          publisherBotId: 'publik_bot',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        }),
+      }),
+    );
+    expect(tx.managedBotChatCatalog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          entityType: ChatEntityType.CHANNEL,
+          status: 'ACTIVE',
+          title: 'Publisher channel',
+        }),
       }),
     );
     expect(maxBotLinkService.buildMiniappStartUrlSync).toHaveBeenCalledWith(
@@ -445,6 +517,110 @@ describe('PublisherBindingRefreshService', () => {
       expect.objectContaining({ botId: 'publik_bot', sourceTag: 'managed_handshake' }),
     );
   });
+
+  it('aborts provisional materialization when the Publisher policy is disabled under the lock', async () => {
+    const { service, prisma, tx, edgeState } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'read_all_messages'],
+      permissionsKnown: true,
+    });
+    const candidateVersion = 'forwarded:policy-disabled-race';
+    edgeState.sourceVersion = candidateVersion;
+    prisma.chat.findUnique.mockResolvedValueOnce({
+      id: 'chat-1',
+      publicationPolicy: null,
+      publisherBinding: null,
+    });
+    prisma.managedBotChatCatalog.findUnique.mockResolvedValueOnce(null);
+    tx.chat.findUnique.mockResolvedValueOnce({
+      title: 'Publisher chat',
+      publicationPolicy: { publikEnabled: false },
+    });
+    tx.publisherEntityBinding.findUnique.mockResolvedValueOnce(null);
+
+    await expect(
+      service.refresh({
+        ...job,
+        candidateUserId: 'admin-policy-race',
+        candidateVersion,
+        reason: 'forwarded_private',
+      }),
+    ).rejects.toBeInstanceOf(PublisherCandidateRefreshSupersededError);
+
+    expect(tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+    expect(tx.publisherEntityBinding.upsert).not.toHaveBeenCalled();
+    expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'a concurrent binding creation',
+      null,
+      {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessSource: 'publisher_bot_added',
+        botAccessCheckedAt: new Date('2026-08-26T12:00:00.000Z'),
+        lastWebhookAt: new Date('2026-08-26T12:00:00.000Z'),
+        lifecycleEventAt: new Date('2026-08-26T12:00:00.000Z'),
+      },
+    ],
+    [
+      'a concurrent bot removal',
+      {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.UNKNOWN,
+        botAccessSource: null,
+        botAccessCheckedAt: null,
+        lastWebhookAt: null,
+        lifecycleEventAt: null,
+      },
+      {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.REMOVED,
+        botAccessState: ChatBotAccessState.LOST,
+        botAccessSource: 'publisher_bot_removed',
+        botAccessCheckedAt: null,
+        lastWebhookAt: null,
+        lifecycleEventAt: null,
+      },
+    ],
+  ] as const)(
+    'aborts provisional materialization after %s',
+    async (_label, initialBinding, committedBinding) => {
+      const { service, prisma, tx, edgeState } = createHarness({
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write', 'read_all_messages'],
+        permissionsKnown: true,
+      });
+      const candidateVersion = 'forwarded:binding-race';
+      edgeState.sourceVersion = candidateVersion;
+      prisma.chat.findUnique.mockResolvedValueOnce({
+        id: 'chat-1',
+        publicationPolicy: null,
+        publisherBinding: initialBinding,
+      });
+      prisma.managedBotChatCatalog.findUnique.mockResolvedValueOnce(null);
+      tx.publisherEntityBinding.findUnique.mockResolvedValueOnce(committedBinding);
+
+      await expect(
+        service.refresh({
+          ...job,
+          candidateUserId: 'admin-binding-race',
+          candidateVersion,
+          reason: 'forwarded_private',
+        }),
+      ).rejects.toBeInstanceOf(PublisherCandidateRefreshSupersededError);
+
+      expect(tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+      expect(tx.publisherEntityBinding.upsert).not.toHaveBeenCalled();
+      expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    },
+  );
 
   it('records a forwarded non-admin as terminal USER_DENIED and never grants access', async () => {
     const { service, tx, edgeState, maxClient } = createHarness({
@@ -485,7 +661,7 @@ describe('PublisherBindingRefreshService', () => {
   });
 
   it('denies forwarded recovery when the Publisher bot lacks read-all permission', async () => {
-    const { service, prisma, tx, edgeState, bindingState, maxClient } = createHarness({
+    const { service, prisma, tx, edgeState, maxClient } = createHarness({
       isAdmin: true,
       isOwner: false,
       permissions: ['write'],
@@ -503,6 +679,8 @@ describe('PublisherBindingRefreshService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
         botAccessState: ChatBotAccessState.UNKNOWN,
         botAccessSource: forwardedSource,
+        botAccessCheckedAt: null,
+        lifecycleEventAt: null,
         lastSeenAt: new Date(),
         lastWebhookAt: null,
       },
@@ -512,8 +690,9 @@ describe('PublisherBindingRefreshService', () => {
       status: ChatBotMembershipStatus.ACTIVE,
       botAccessSource: forwardedSource,
       lifecycleEventAt: null,
-      botAccessCheckedAt: bindingState.botAccessCheckedAt,
-      botAccessState: bindingState.botAccessState,
+      botAccessCheckedAt: null,
+      botAccessState: ChatBotAccessState.UNKNOWN,
+      lastWebhookAt: null,
     });
 
     await service.refresh({
@@ -574,6 +753,8 @@ describe('PublisherBindingRefreshService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
         botAccessState: ChatBotAccessState.UNKNOWN,
         botAccessSource: forwardedSource,
+        botAccessCheckedAt: null,
+        lifecycleEventAt: null,
         lastSeenAt: new Date(),
         lastWebhookAt: null,
       },
@@ -585,6 +766,7 @@ describe('PublisherBindingRefreshService', () => {
       lifecycleEventAt: null,
       botAccessCheckedAt: null,
       botAccessState: ChatBotAccessState.UNKNOWN,
+      lastWebhookAt: null,
     });
 
     await service.refresh({
@@ -620,6 +802,52 @@ describe('PublisherBindingRefreshService', () => {
     );
   });
 
+  it.each([400, 422])(
+    'treats forwarded provisional HTTP %s as terminal without creating routing state',
+    async (statusCode) => {
+      const failure = Object.assign(new Error(`HTTP ${statusCode}`), {
+        response: { status: statusCode },
+      });
+      const { service, prisma, tx, edgeState } = createHarness(failure);
+      const candidateVersion = `forwarded:terminal-${statusCode}`;
+      edgeState.sourceVersion = candidateVersion;
+      prisma.chat.findUnique.mockResolvedValueOnce({
+        id: 'chat-1',
+        publicationPolicy: null,
+        publisherBinding: null,
+      });
+      prisma.managedBotChatCatalog.findUnique.mockResolvedValueOnce(null);
+      tx.publisherEntityBinding.findUnique.mockResolvedValueOnce(null);
+
+      await service.refresh({
+        ...job,
+        candidateUserId: `admin-${statusCode}`,
+        candidateVersion,
+        reason: 'forwarded_private',
+      });
+
+      expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            deniedReason: 'publisher_bot_access_lost',
+            lastMaxStatusCode: statusCode,
+          }),
+        }),
+      );
+      expect(tx.publisherEntityBinding.upsert).not.toHaveBeenCalled();
+      expect(tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not classify a routine HTTP 400 binding probe as terminal access loss', async () => {
+    const failure = Object.assign(new Error('bad request'), { response: { status: 400 } });
+    const { service, prisma } = createHarness(failure);
+
+    await expect(service.refresh(job)).rejects.toBe(failure);
+
+    expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+  });
+
   it('preserves forwarded cleanup and read-all fencing when pending recovery becomes stale_user_access', async () => {
     const { service, prisma, tx, edgeState, maxClient } = createHarness({
       isAdmin: true,
@@ -639,6 +867,8 @@ describe('PublisherBindingRefreshService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
         botAccessState: ChatBotAccessState.UNKNOWN,
         botAccessSource: forwardedSource,
+        botAccessCheckedAt: null,
+        lifecycleEventAt: null,
         lastSeenAt: new Date(),
         lastWebhookAt: null,
       },
@@ -650,6 +880,7 @@ describe('PublisherBindingRefreshService', () => {
       lifecycleEventAt: null,
       botAccessCheckedAt: null,
       botAccessState: ChatBotAccessState.UNKNOWN,
+      lastWebhookAt: null,
     });
 
     await service.refresh({
@@ -659,11 +890,7 @@ describe('PublisherBindingRefreshService', () => {
       reason: 'stale_user_access',
     });
 
-    expect(prisma.publisherEntityBinding.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ botAccessSource: forwardedSource }),
-      }),
-    );
+    expect(prisma.publisherEntityBinding.updateMany).not.toHaveBeenCalled();
     expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
     expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -679,6 +906,80 @@ describe('PublisherBindingRefreshService', () => {
     );
     expect(tx.managedBotChatCatalog.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'MISSING' }) }),
+    );
+  });
+
+  it('refreshes an established forwarded-version edge without permanently requiring read-all', async () => {
+    const { service, prisma, tx, edgeState, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const candidateVersion = 'forwarded:already-established';
+    edgeState.sourceVersion = candidateVersion;
+    edgeState.source = 'publisher_targeted_user_access';
+    edgeState.deniedReason = null;
+
+    await service.refresh({
+      ...job,
+      candidateUserId: 'admin-established',
+      candidateVersion,
+      reason: 'stale_user_access',
+    });
+
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'admin-established',
+      expect.objectContaining({ botId: 'publik_bot', trafficClass: 'background' }),
+    );
+    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          state: ManagedEntityAccessState.GRANTED,
+          source: 'publisher_targeted_user_access',
+          sourceVersion: candidateVersion,
+        }),
+      }),
+    );
+    expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          deniedReason: 'publisher_bot_missing_read_all_messages',
+        }),
+      }),
+    );
+  });
+
+  it('replays the original forwarded job as an ordinary refresh after the staged edge was granted', async () => {
+    const { service, tx, edgeState, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const candidateVersion = 'forwarded:completed-replay';
+    edgeState.sourceVersion = candidateVersion;
+    edgeState.source = 'publisher_targeted_user_access';
+    edgeState.deniedReason = null;
+
+    await service.refresh({
+      ...job,
+      candidateUserId: 'admin-replay',
+      candidateVersion,
+      requiresReadAccess: true,
+      reason: 'forwarded_private',
+    });
+
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'admin-replay',
+      expect.objectContaining({ botId: 'publik_bot', trafficClass: 'interactive' }),
+    );
+    expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ state: ManagedEntityAccessState.GRANTED }),
+      }),
     );
   });
 
@@ -701,6 +1002,72 @@ describe('PublisherBindingRefreshService', () => {
     ).rejects.toBeInstanceOf(PublisherCandidateRefreshSupersededError);
 
     expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+  });
+
+  it('records proven bot denial against an exact restaged granted candidate', async () => {
+    const { service, prisma, edgeState } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const candidateVersion = 'forwarded:restaged-granted';
+    edgeState.sourceVersion = candidateVersion;
+    edgeState.deniedReason = null;
+
+    await service.refresh({
+      ...job,
+      candidateUserId: 'admin-restaged',
+      candidateVersion,
+      reason: 'forwarded_private',
+    });
+
+    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          sourceVersion: candidateVersion,
+          source: { startsWith: 'publisher_actor_candidate_' },
+        }),
+        data: expect.objectContaining({
+          state: ManagedEntityAccessState.BOT_DENIED,
+          deniedReason: 'publisher_bot_missing_read_all_messages',
+        }),
+      }),
+    );
+  });
+
+  it('does not overwrite or reply after a concurrent candidate grant wins a terminal race', async () => {
+    const failure = Object.assign(new Error('missing'), { response: { status: 404 } });
+    const { service, prisma, edgeState, maxClient } = createHarness(failure);
+    const candidateVersion = 'forwarded:terminal-lost-race';
+    edgeState.sourceVersion = candidateVersion;
+    const stagedEdge = {
+      deniedReason: 'publisher_actor_verification_pending',
+      source: 'publisher_actor_candidate_forwarded',
+      sourceVersion: candidateVersion,
+    };
+    prisma.managedEntityAccessEdge.findUnique
+      .mockReset()
+      .mockResolvedValueOnce(stagedEdge)
+      .mockResolvedValueOnce(stagedEdge)
+      .mockResolvedValueOnce({
+        deniedReason: null,
+        source: 'publisher_targeted_user_access',
+        sourceVersion: candidateVersion,
+      });
+    prisma.managedEntityAccessEdge.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      service.refresh({
+        ...job,
+        candidateUserId: 'admin-terminal-race',
+        candidateVersion,
+        replyChatId: 'private-terminal-race',
+        reason: 'forwarded_private',
+      }),
+    ).rejects.toBeInstanceOf(PublisherCandidateRefreshSupersededError);
+
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
   });
 
   it('does not grant a Publisher access edge when the handshake actor is not an admin', async () => {
@@ -853,6 +1220,7 @@ describe('PublisherBindingRefreshService', () => {
         botAccessState:
           bindingReadCount === 1 ? bindingState.botAccessState : ChatBotAccessState.LOST,
         botAccessSource: null,
+        lastWebhookAt: null,
       };
     });
 
@@ -957,6 +1325,9 @@ describe('PublisherBindingRefreshService', () => {
   it('refreshes only existing evidenced bindings at startup', async () => {
     const prisma = {
       $queryRaw: jest.fn(),
+      managedBotChatCatalog: {
+        findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-discovery' }]),
+      },
       publisherEntityBinding: {
         findMany: jest
           .fn()
@@ -1005,11 +1376,27 @@ describe('PublisherBindingRefreshService', () => {
         where: expect.objectContaining({
           publisherBotId: 'publik_bot',
           status: ChatBotMembershipStatus.ACTIVE,
+          chatId: { in: ['chat-discovery'] },
           OR: expect.arrayContaining([
+            {
+              botAccessState: {
+                in: [
+                  ChatBotAccessState.CONFIRMED_MEMBER,
+                  ChatBotAccessState.CONFIRMED_ADMIN,
+                  ChatBotAccessState.CONFIRMED_OWNER,
+                ],
+              },
+            },
             { lastWebhookAt: { not: null } },
-            { lastSeenAt: { not: null } },
           ]),
         }),
+      }),
+    );
+    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { botId: 'publik_bot', status: 'ACTIVE' },
+        select: { chatId: true },
+        take: 25,
       }),
     );
     expect(refreshQueue.enqueue).toHaveBeenCalledTimes(3);
@@ -1028,85 +1415,87 @@ describe('PublisherBindingRefreshService', () => {
     scheduler.onModuleDestroy();
   });
 
-  it('keeps generic discovery off a forwarded-only binding while its candidate is in backoff', async () => {
-    const now = new Date('2026-08-27T12:10:00.000Z');
-    jest.useFakeTimers().setSystemTime(now);
-    try {
-      const forwardedBinding = {
-        chatId: 'forwarded-backoff',
-        botAccessState: ChatBotAccessState.UNKNOWN,
-        botAccessSource: buildPublisherForwardedBindingSource('forwarded:candidate-backoff'),
-        updatedAt: new Date('2026-08-27T12:00:00.000Z'),
-      };
-      const findMany = jest.fn(
-        async (query: {
-          where: {
-            botAccessState?: { in?: ChatBotAccessState[] };
-            AND?: Array<{
-              OR?: Array<{
-                botAccessState?: ChatBotAccessState;
-                botAccessSource?: null;
-                NOT?: { botAccessSource?: { startsWith?: string } };
-                OR?: Array<{ updatedAt?: { lte?: Date } }>;
-              }>;
-            }>;
-          };
-        }) => {
-          if (query.where.botAccessState) {
-            return [];
-          }
-          const retryBefore = query.where.AND?.[1]?.OR?.find(
-            (branch) => branch.botAccessState === ChatBotAccessState.UNKNOWN,
-          )?.OR?.find((branch) => branch.updatedAt)?.updatedAt?.lte;
-          const excludedPrefix = query.where.AND?.[0]?.OR?.find((branch) => branch.NOT)?.NOT
-            ?.botAccessSource?.startsWith;
-          const excluded = Boolean(
-            excludedPrefix && forwardedBinding.botAccessSource.startsWith(excludedPrefix),
-          );
-          return retryBefore && forwardedBinding.updatedAt <= retryBefore && !excluded
-            ? [{ chatId: forwardedBinding.chatId }]
-            : [];
-        },
-      );
-      const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
-      const scheduler = new PublisherBindingRefreshSchedulerService(
-        {
-          publisherEntityBinding: { findMany },
-          managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
-        } as never,
-        refreshQueue as never,
-        { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
-        { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
-        { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
-        { dispatchEnabled: true } as never,
-        createBackgroundWork() as never,
-        createHistoricalRecovery() as never,
-      );
+  it('never discovers catalog-less UNKNOWN or LOST ghost bindings', async () => {
+    const bindingFindMany = jest.fn().mockResolvedValue([]);
+    const catalogFindMany = jest.fn().mockResolvedValue([]);
+    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new PublisherBindingRefreshSchedulerService(
+      {
+        publisherEntityBinding: { findMany: bindingFindMany },
+        managedBotChatCatalog: { findMany: catalogFindMany },
+        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
+      } as never,
+      refreshQueue as never,
+      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      { dispatchEnabled: true } as never,
+      createBackgroundWork() as never,
+      createHistoricalRecovery() as never,
+    );
 
-      await scheduler.scan('scheduled');
+    await scheduler.scan('scheduled');
 
-      expect(findMany).toHaveBeenCalledTimes(2);
-      expect(findMany.mock.calls[1]?.[0].where.AND?.[0]).toEqual({
-        OR: [
-          { botAccessSource: null },
-          {
-            NOT: {
-              botAccessSource: { startsWith: PUBLISHER_FORWARDED_BINDING_SOURCE_PREFIX },
-            },
-          },
-        ],
-      });
-      expect(refreshQueue.enqueue).not.toHaveBeenCalled();
-      expect(forwardedBinding.updatedAt.getTime()).toBeLessThan(now.getTime() - 5 * 60_000);
-    } finally {
-      jest.useRealTimers();
-    }
+    expect(catalogFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { botId: 'publik_bot', status: 'ACTIVE' } }),
+    );
+    expect(bindingFindMany).toHaveBeenCalledTimes(1);
+    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
   });
 
-  it('never scans the Major chat catalog or creates candidate bindings', async () => {
+  it('discovers confirmed and authenticated-webhook bindings only through exact active catalog rows', async () => {
+    const catalogRows = [{ chatId: 'confirmed-chat' }, { chatId: 'webhook-chat' }];
+    const bindingFindMany = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce(catalogRows);
+    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new PublisherBindingRefreshSchedulerService(
+      {
+        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue(catalogRows) },
+        publisherEntityBinding: { findMany: bindingFindMany },
+        managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
+      } as never,
+      refreshQueue as never,
+      { getBotId: () => 'publik_bot', getRequiredActionToken: jest.fn() } as never,
+      { isGloballyPaused: jest.fn().mockResolvedValue(false) } as never,
+      { assertAttested: jest.fn().mockResolvedValue(undefined) } as never,
+      { dispatchEnabled: true } as never,
+      createBackgroundWork() as never,
+      createHistoricalRecovery() as never,
+    );
+
+    await scheduler.scan('scheduled');
+
+    expect(bindingFindMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: { in: ['confirmed-chat', 'webhook-chat'] },
+          OR: [
+            {
+              botAccessState: {
+                in: [
+                  ChatBotAccessState.CONFIRMED_MEMBER,
+                  ChatBotAccessState.CONFIRMED_ADMIN,
+                  ChatBotAccessState.CONFIRMED_OWNER,
+                ],
+              },
+            },
+            { lastWebhookAt: { not: null } },
+          ],
+        }),
+      }),
+    );
+    expect(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId)).toEqual([
+      'confirmed-chat',
+      'webhook-chat',
+    ]);
+  });
+
+  it('scans only the exact Publisher catalog and never creates candidate bindings', async () => {
     const userEdgeFindMany = jest.fn().mockResolvedValue([]);
+    const catalogFindMany = jest.fn().mockResolvedValue([]);
     const prisma = {
       $queryRaw: jest.fn(),
+      managedBotChatCatalog: { findMany: catalogFindMany },
       publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
       managedEntityAccessEdge: { findMany: userEdgeFindMany },
     };
@@ -1124,7 +1513,13 @@ describe('PublisherBindingRefreshService', () => {
     await scheduler.scan('scheduled');
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
-    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(2);
+    expect(catalogFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { botId: 'publik_bot', status: 'ACTIVE' },
+        select: { chatId: true },
+      }),
+    );
+    expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
     expect(userEdgeFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1141,11 +1536,23 @@ describe('PublisherBindingRefreshService', () => {
               expiresAt: { gt: expect.any(Date) },
             }),
           ]),
-          chat: expect.objectContaining({
-            publisherBinding: {
-              is: expect.objectContaining({ publisherBotId: 'publik_bot' }),
-            },
-          }),
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  chat: expect.objectContaining({
+                    publisherBinding: {
+                      is: expect.objectContaining({ publisherBotId: 'publik_bot' }),
+                    },
+                  }),
+                }),
+                expect.objectContaining({
+                  source: 'publisher_actor_candidate_forwarded',
+                  sourceVersion: { startsWith: 'forwarded:' },
+                }),
+              ]),
+            }),
+          ]),
         }),
         select: { chatId: true, userId: true, sourceVersion: true },
         take: 25,
@@ -1157,10 +1564,8 @@ describe('PublisherBindingRefreshService', () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-08-26T12:00:00.000Z'));
     try {
-      const checkedAt = new Date('2026-08-26T11:59:30.000Z');
       const freshLost = Array.from({ length: 2_500 }, (_, index) => ({
         chatId: `lost-${String(index).padStart(4, '0')}`,
-        botAccessCheckedAt: checkedAt,
       }));
       const ready = {
         chatId: 'ready-expiring',
@@ -1169,7 +1574,7 @@ describe('PublisherBindingRefreshService', () => {
       const findMany = jest.fn(
         async (query: {
           where: {
-            chatId?: { gt?: string };
+            chatId?: { in?: string[] };
             botAccessState?: { in?: ChatBotAccessState[] };
             OR?: Array<{
               botAccessExpiresAt?: { lte?: Date } | null;
@@ -1197,21 +1602,19 @@ describe('PublisherBindingRefreshService', () => {
           const lostBranch = query.where.AND?.flatMap((group) => group.OR ?? []).find((branch) =>
             branch.botAccessState?.in?.includes(ChatBotAccessState.LOST),
           );
-          const retryBefore = lostBranch?.OR?.find(
-            (branch) => branch.botAccessCheckedAt && 'lte' in branch.botAccessCheckedAt,
-          )?.botAccessCheckedAt?.lte;
-          return freshLost
-            .filter(
-              (row) =>
-                retryBefore !== undefined &&
-                row.botAccessCheckedAt <= retryBefore &&
-                (!query.where.chatId?.gt || row.chatId > query.where.chatId.gt),
-            )
-            .slice(0, query.take)
-            .map(({ chatId }) => ({ chatId }));
+          expect(lostBranch?.OR).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ botAccessCheckedAt: { lte: expect.any(Date) } }),
+            ]),
+          );
+          return [];
         },
       );
+      const catalogFindMany = jest
+        .fn()
+        .mockResolvedValue(freshLost.slice(0, 25).map(({ chatId }) => ({ chatId })));
       const prisma = {
+        managedBotChatCatalog: { findMany: catalogFindMany },
         publisherEntityBinding: { findMany },
         managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
       };
@@ -1241,9 +1644,9 @@ describe('PublisherBindingRefreshService', () => {
         .filter((query) => query.where.botAccessState === undefined);
       expect(discoveryQueries).toHaveLength(2);
       const lostRetryCutoffs = discoveryQueries.map((query) => {
-        expect(query.where.OR).toEqual(
-          expect.arrayContaining([{ lastWebhookAt: { not: null } }, { lastSeenAt: { not: null } }]),
-        );
+        expect(query.where.OR).toEqual(expect.arrayContaining([{ lastWebhookAt: { not: null } }]));
+        expect(query.where.OR).not.toContainEqual({ lastSeenAt: { not: null } });
+        expect(query.where.chatId?.in).toEqual(freshLost.slice(0, 25).map((row) => row.chatId));
         const lostBranch = query.where.AND?.flatMap((group) => group.OR ?? []).find((branch) =>
           branch.botAccessState?.in?.includes(ChatBotAccessState.LOST),
         );
@@ -1264,6 +1667,7 @@ describe('PublisherBindingRefreshService', () => {
         new Date('2026-08-26T06:00:00.000Z'),
         new Date('2026-08-26T06:01:00.000Z'),
       ]);
+      expect(catalogFindMany).toHaveBeenCalledTimes(2);
     } finally {
       jest.useRealTimers();
     }
@@ -1274,24 +1678,25 @@ describe('PublisherBindingRefreshService', () => {
       chatId: `lost-${String(index).padStart(3, '0')}`,
     }));
     const discoveryCursors: Array<string | null> = [];
-    const findMany = jest.fn(
+    const catalogFindMany = jest.fn(
       async (query: {
         where: {
           chatId?: { gt?: string };
-          botAccessState?: { in?: ChatBotAccessState[] };
         };
         take: number;
       }) => {
-        if (query.where.botAccessState) {
-          return [];
-        }
         const cursor = query.where.chatId?.gt ?? null;
         discoveryCursors.push(cursor);
         return eligible.filter((row) => !cursor || row.chatId > cursor).slice(0, query.take);
       },
     );
+    const bindingFindMany = jest.fn(
+      async (query: { where: { chatId?: { in?: string[] } } }) =>
+        query.where.chatId?.in?.map((chatId) => ({ chatId })) ?? [],
+    );
     const prisma = {
-      publisherEntityBinding: { findMany },
+      managedBotChatCatalog: { findMany: catalogFindMany },
+      publisherEntityBinding: { findMany: bindingFindMany },
       managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
@@ -1314,12 +1719,14 @@ describe('PublisherBindingRefreshService', () => {
     expect(new Set(refreshQueue.enqueue.mock.calls.map(([request]) => request.chatId))).toEqual(
       new Set(eligible.map((row) => row.chatId)),
     );
+    expect(bindingFindMany).toHaveBeenCalledTimes(6);
   });
 
   it('keeps enabled refresh timers idle before identity, DB, or queue work while paused', async () => {
     jest.useFakeTimers();
     try {
       const prisma = {
+        managedBotChatCatalog: { findMany: jest.fn().mockResolvedValue([]) },
         publisherEntityBinding: { findMany: jest.fn().mockResolvedValue([]) },
         managedEntityAccessEdge: { findMany: jest.fn().mockResolvedValue([]) },
       };
@@ -1352,7 +1759,8 @@ describe('PublisherBindingRefreshService', () => {
 
       expect(dispatchHealth.isGloballyPaused).toHaveBeenCalledTimes(3);
       expect(identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
-      expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(2);
+      expect(prisma.publisherEntityBinding.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledTimes(1);
       expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledTimes(1);
       scheduler.onModuleDestroy();
     } finally {

@@ -1,5 +1,8 @@
 @layer components {
   .max-rich-text-editor {
+    --max-rich-text-code-bg: rgba(7, 48, 72, 0.1);
+    --max-rich-text-code-ink: #17394f;
+    --max-rich-text-link-ink: #096a9c;
     position: relative;
     min-width: 0;
   }
@@ -25,53 +28,35 @@
     outline: none;
   }
 
-  .max-rich-text-editor__surface strong {
-    font-weight: 860;
+  .max-rich-text-editor__surface.is-loading {
+    opacity: 0.22;
   }
 
-  .max-rich-text-editor__surface h3 {
-    display: block;
-    margin: 0 0 4px;
-    font-size: 1.03em;
-    font-weight: 860;
+  .max-rich-text-editor__surface.is-normalization-error {
+    user-select: text;
   }
 
-  .max-rich-text-editor__surface em {
-    font-style: italic;
+  .max-rich-text-editor__normalization-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+    color: var(--color-danger);
+    font-size: 0.72rem;
+    line-height: 1.35;
   }
 
-  .max-rich-text-editor__surface code,
-  .max-rich-text-editor__surface pre {
+  .max-rich-text-editor__normalization-error button {
+    flex: none;
+    min-height: 36px;
+    border: 1px solid var(--color-border-strong);
     border-radius: 7px;
-    background: rgba(7, 48, 72, 0.1);
-    color: #17394f;
-    font-family: ui-monospace, SFMono-Regular, 'SFMono-Regular', Consolas, monospace;
-    font-size: 0.82em;
-  }
-
-  .max-rich-text-editor__surface code {
-    padding: 0 4px;
-  }
-
-  .max-rich-text-editor__surface pre {
-    margin: 6px 0;
-    overflow-x: auto;
-    padding: 7px 9px;
-    white-space: pre-wrap;
-  }
-
-  .max-rich-text-editor__surface pre code {
-    border-radius: 0;
     background: transparent;
-    padding: 0;
-  }
-
-  .max-rich-text-editor__surface a {
-    color: #096a9c;
+    color: inherit;
+    padding: 0 10px;
+    font: inherit;
     font-weight: 760;
-    text-decoration: underline;
-    text-decoration-thickness: 1.5px;
-    text-underline-offset: 2px;
   }
 
   .max-rich-text-editor__placeholder-token {
@@ -171,13 +156,6 @@
     color: var(--text-muted);
   }
 
-  html[data-max-theme='dark']
-    :is(.max-rich-text-editor__surface code, .max-rich-text-editor__surface pre) {
-    background: var(--color-surface-tint);
-    color: var(--text-primary);
-  }
-
-  html[data-max-theme='dark'] .max-rich-text-editor__surface a,
   html[data-max-theme='dark'] .max-rich-text-editor__link-panel > svg {
     color: var(--text-primary);
   }

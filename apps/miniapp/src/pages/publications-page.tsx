@@ -18,7 +18,7 @@ import {
   VideoCamera,
   Xmark,
 } from 'iconoir-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { BroadcastButtonsSheet } from '../components/broadcast-buttons-sheet';
 import { BroadcastContentComposer } from '../components/broadcast-content-composer';
@@ -27,13 +27,22 @@ import {
   type BroadcastPublishIssueAction,
 } from '../components/broadcast-publish-bar';
 import { BroadcastPublishReviewSheet } from '../components/broadcast-publish-review-sheet';
-import { BroadcastSchedulePlanner } from '../components/broadcast-schedule-planner';
+import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { StatusState } from '../components/ui/status-state';
 import { TimeField } from '../components/ui/time-field';
 import { useToast } from '../components/ui/toast';
-import { PublicationDetailsSheet } from '../features/publications/publication-details-sheet';
 import { PublicationHubHeader } from '../features/publications/publication-hub-header';
+import {
+  formatDateInput,
+  formatDraftTiming,
+  formatLoadedCount,
+  formatPublicationSchedule,
+  formatPublicationTargets,
+  formatTargetSummary,
+  getLifecycleTone,
+  getRecurrenceError,
+} from '../features/publications/publication-page-formatters';
 import {
   LEGACY_PUBLICATION_KIND_FILTERS as LEGACY_KIND_FILTERS,
   LEGACY_PUBLICATION_VIEW_OPTIONS as LEGACY_VIEW_OPTIONS,
@@ -43,10 +52,7 @@ import {
   PUBLICATION_WEEKDAYS as WEEKDAYS,
   stripPublisherOnlyPublicationRouteParams,
 } from '../features/publications/publication-page-options';
-import {
-  PublicationFeedCard,
-  type PublicationFeedTone,
-} from '../features/publications/publication-feed-card';
+import { PublicationFeedCard } from '../features/publications/publication-feed-card';
 import { PublicationRecurrenceIntervalField } from '../features/publications/publication-recurrence-interval-field';
 import {
   buildCreatePublicationRequest,
@@ -64,7 +70,6 @@ import {
   getPublicationListPollingInterval,
   getPublicationPrimaryActionLabel,
   getPublicationTargetKey,
-  getPublicationTargetTitle,
   hasSamePublicationTargetMetadata,
   hasPublicationDraftChanges,
   hasFuturePublicationSlot,
@@ -85,7 +90,6 @@ import {
   type PublicationEditScope,
   type PublicationEntityFilter,
   type PublicationStatusFilter,
-  type PublicationTarget,
   type PublicationTimingMode,
   type PublicationView,
 } from '../features/publications/publication-model';
@@ -136,11 +140,7 @@ import {
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
 import { readBlobAsBase64 } from '../lib/broadcast-image';
-import {
-  formatLocalDateTimeInputValue,
-  parseLocalDateTimeInputValue,
-  sortAndUniqueBroadcastSlots,
-} from '../lib/broadcast-schedule';
+import { parseLocalDateTimeInputValue } from '../lib/broadcast-schedule';
 import { addDays, getBroadcastPlannerWindow, startOfDay } from '../lib/broadcast-planner-time';
 import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
@@ -148,7 +148,19 @@ import { maxImpact, maxNotify } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/publications-page.css';
+import '../features/publications/publication-draft-resume.css';
 import '../features/publications/publication-workbench.css';
+
+const LazyPublicationDetailsSheet = lazy(() =>
+  import('../features/publications/publication-details-sheet').then((module) => ({
+    default: module.PublicationDetailsSheet,
+  })),
+);
+const LazyBroadcastSchedulePlanner = lazy(() =>
+  import('../components/broadcast-schedule-planner').then((module) => ({
+    default: module.BroadcastSchedulePlanner,
+  })),
+);
 
 type PublicationEditorContext =
   | { kind: 'create' }
@@ -233,150 +245,6 @@ function normalizeLegacyEntityFilter(value: string | null): PublicationEntityFil
 
 function normalizeLegacyQuery(value: string | null): string {
   return value?.trim().slice(0, 120) ?? '';
-}
-
-function formatDateTime(value: string | null, timezone = 'Europe/Moscow'): string {
-  if (!value) {
-    return '';
-  }
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) {
-    return '';
-  }
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: timezone,
-  }).format(date);
-}
-
-function formatDateInput(value: string | null): string {
-  return value ? formatLocalDateTimeInputValue(value).slice(0, 10) : '';
-}
-
-function formatTargetSummary(targets: readonly PublicationTarget[]): string {
-  if (targets.length === 0) {
-    return 'Выберите получателей';
-  }
-  if (targets.length === 1) {
-    return targets[0] ? getPublicationTargetTitle(targets[0]) : '1 получатель';
-  }
-  const channels = targets.filter((target) => target.entityType === 'channel').length;
-  const chats = targets.length - channels;
-  return [
-    chats ? formatRussianCountLabel(chats, 'чат', 'чата', 'чатов') : '',
-    channels ? formatRussianCountLabel(channels, 'канал', 'канала', 'каналов') : '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
-}
-
-function formatLoadedCount(count: number, hasMore: boolean): string {
-  return `${count}${hasMore ? '+' : ''}`;
-}
-
-function formatPublicationTargets(publication: PublicationSummary): string {
-  if (publication.targetCount === 0) {
-    return 'Нет получателей';
-  }
-  if (publication.targetCount === 1) {
-    return publication.targetPreviews[0]?.title ?? '1 получатель';
-  }
-  return formatRussianCountLabel(
-    publication.targetCount,
-    'получатель',
-    'получателя',
-    'получателей',
-  );
-}
-
-function formatRecurrence(draft: PublicationDraft): string {
-  if (
-    !draft.recurrence.startsAt ||
-    draft.recurrence.times.length === 0 ||
-    (draft.recurrence.frequency === 'weekly' && draft.recurrence.weekdays.length === 0)
-  ) {
-    return 'Настройте повтор';
-  }
-  const interval = draft.recurrence.interval;
-  const frequency =
-    draft.recurrence.frequency === 'daily'
-      ? interval === 1
-        ? 'Каждый день'
-        : `Каждые ${interval} дн.`
-      : interval === 1
-        ? 'Каждую неделю'
-        : `Каждые ${interval} нед.`;
-  return `${frequency} · ${draft.recurrence.times.join(', ')}`;
-}
-
-function formatDraftTiming(draft: PublicationDraft): string {
-  if (draft.timingMode === 'now') {
-    return 'Сейчас';
-  }
-  if (draft.timingMode === 'once') {
-    return (
-      formatDateTime(draft.scheduledSlots[0] ?? null, draft.scheduleTimezone) || 'Время не выбрано'
-    );
-  }
-  if (draft.scheduleKind === 'recurrence') {
-    return formatRecurrence(draft);
-  }
-  const slots = sortAndUniqueBroadcastSlots(draft.scheduledSlots);
-  if (slots.length === 0) {
-    return 'Время не выбрано';
-  }
-  return slots.length === 1
-    ? formatDateTime(slots[0] ?? null, draft.scheduleTimezone)
-    : formatRussianCountLabel(slots.length, 'отправка', 'отправки', 'отправок');
-}
-
-function formatPublicationSchedule(publication: PublicationSummary): string {
-  const schedule = publication.schedule;
-  if (!schedule) {
-    return 'Черновик';
-  }
-  if (schedule.mode === 'now') {
-    return 'Сейчас';
-  }
-  if (schedule.mode === 'once') {
-    return `Следующая · ${formatDateTime(schedule.at, schedule.timezone)}`;
-  }
-  if (schedule.mode === 'slots') {
-    if (schedule.nextOccurrenceAt) {
-      return `Следующая · ${formatDateTime(schedule.nextOccurrenceAt, schedule.timezone)}`;
-    }
-    return formatRussianCountLabel(schedule.slots.length, 'отправка', 'отправки', 'отправок');
-  }
-  const interval = schedule.interval;
-  const frequency =
-    schedule.frequency === 'daily'
-      ? interval === 1
-        ? 'Каждый день'
-        : `Каждые ${interval} дн.`
-      : interval === 1
-        ? 'Каждую неделю'
-        : `Каждые ${interval} нед.`;
-  const next = schedule.nextOccurrenceAt
-    ? `Следующая · ${formatDateTime(schedule.nextOccurrenceAt, schedule.timezone)}`
-    : '';
-  return next || `${frequency} · ${schedule.times.join(', ')}`;
-}
-
-function getLifecycleTone(publication: PublicationSummary): PublicationFeedTone {
-  const delivery = getPublicationActionableDelivery(publication);
-  if (publication.lifecycle === 'ERROR' || delivery.ambiguous > 0) {
-    return 'danger';
-  }
-  if (publication.lifecycle === 'PAUSED' || delivery.failed > 0) {
-    return 'warning';
-  }
-  if (publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED') {
-    return 'muted';
-  }
-  return 'active';
 }
 
 const MAX_PUBLICATION_VIDEO_FILE_BYTES = 24_000_000;
@@ -1783,6 +1651,7 @@ export function PublicationsPage({
         id={publication.id}
         title={publication.title || formatPublicationTargets(publication)}
         preview={publication.contentPreview}
+        previewFormat={publication.contentPreviewFormat}
         fallback={
           publication.hasVideo
             ? 'Видео без текста'
@@ -1946,7 +1815,15 @@ export function PublicationsPage({
           <button type="button" className="publication-draft-resume" onClick={openCreateEditor}>
             <span>
               <strong>Черновик</strong>
-              <small>{draft.text.trim() || formatTargetSummary(draft.targets)}</small>
+              <small>
+                <MaxMarkdownPreview
+                  value={draft.text}
+                  sourceFormat={draft.textFormat}
+                  className="publication-draft-resume__preview"
+                  normalizeWhitespace
+                  fallback={formatTargetSummary(draft.targets)}
+                />
+              </small>
             </span>
             <span>Продолжить</span>
           </button>
@@ -2380,25 +2257,27 @@ export function PublicationsPage({
             {draft.scheduleKind === 'recurrence' ? (
               renderRecurrence()
             ) : (
-              <BroadcastSchedulePlanner
-                value={draft.scheduledSlots}
-                occupiedSlots={
-                  calendarAvailabilityQuery.data?.slots.map((slot) => slot.scheduledAt) ?? []
-                }
-                onChange={(scheduledSlots) => {
-                  setDraft((current) => ({ ...current, scheduledSlots }));
-                  setFieldError('');
-                }}
-                managedBroadcastsLoading={calendarAvailabilityQuery.isLoading}
-                calendarRefreshing={calendarAvailabilityQuery.isFetching}
-                currentTargetLabel={formatTargetSummary(draft.targets)}
-                targetContextLabel={formatTargetSummary(draft.targets)}
-                timingMode="scheduled"
-                availableTimingModes={['scheduled']}
-                viewMode="compose"
-                allowRecipe={false}
-                disabled={isBusy}
-              />
+              <Suspense fallback={null}>
+                <LazyBroadcastSchedulePlanner
+                  value={draft.scheduledSlots}
+                  occupiedSlots={
+                    calendarAvailabilityQuery.data?.slots.map((slot) => slot.scheduledAt) ?? []
+                  }
+                  onChange={(scheduledSlots) => {
+                    setDraft((current) => ({ ...current, scheduledSlots }));
+                    setFieldError('');
+                  }}
+                  managedBroadcastsLoading={calendarAvailabilityQuery.isLoading}
+                  calendarRefreshing={calendarAvailabilityQuery.isFetching}
+                  currentTargetLabel={formatTargetSummary(draft.targets)}
+                  targetContextLabel={formatTargetSummary(draft.targets)}
+                  timingMode="scheduled"
+                  availableTimingModes={['scheduled']}
+                  viewMode="compose"
+                  allowRecipe={false}
+                  disabled={isBusy}
+                />
+              </Suspense>
             )}
           </>
         ) : null}
@@ -2643,6 +2522,7 @@ export function PublicationsPage({
             <BroadcastContentComposer
               className="publication-content-composer"
               text={draft.text}
+              sourceFormat={draft.textFormat}
               maxLength={PUBLICATION_TEXT_MAX_LENGTH}
               images={draft.images}
               buttons={visibleCustomButtons}
@@ -2669,7 +2549,7 @@ export function PublicationsPage({
               textPlaceholder="Текст публикации"
               messageAriaLabel="Текст публикации"
               onTextChange={(text) => {
-                setDraft((current) => ({ ...current, text }));
+                setDraft((current) => ({ ...current, text, textFormat: 'markdown' }));
                 setFieldError('');
               }}
               onImagesChange={(images) =>
@@ -2773,6 +2653,7 @@ export function PublicationsPage({
           id="publication-review"
           open={pendingReview}
           text={draft.text}
+          sourceFormat={draft.textFormat}
           hasMedia={hasMedia}
           facts={[
             `Кому · ${formatTargetSummary(draft.targets)}`,
@@ -2902,7 +2783,17 @@ export function PublicationsPage({
             ? 'Будущие отправки отменятся, а ошибки нельзя будет повторить.'
             : undefined
         }
-        previewTitle={actionTarget?.publication.title || actionTarget?.publication.contentPreview}
+        previewTitle={
+          actionTarget?.publication.title ? (
+            actionTarget.publication.title
+          ) : actionTarget?.publication.contentPreview ? (
+            <MaxMarkdownPreview
+              value={actionTarget.publication.contentPreview}
+              sourceFormat={actionTarget.publication.contentPreviewFormat}
+              normalizeWhitespace
+            />
+          ) : undefined
+        }
         confirmLabel={
           actionTarget?.action === 'cancel'
             ? 'Отменить'
@@ -2917,31 +2808,35 @@ export function PublicationsPage({
         onConfirm={() => actionTarget && actionMutation.mutate(actionTarget)}
       />
 
-      <PublicationDetailsSheet
-        api={api}
-        publication={detailsTarget}
-        allowEdit={isPublisherProfile}
-        busy={anyBusy}
-        covered={retryChoiceTarget !== null || ambiguousTarget !== null}
-        onClose={() => setDetailsTarget(null)}
-        onCancel={(publication) => {
-          setDetailsTarget(null);
-          setActionTarget({ publication, action: 'cancel' });
-        }}
-        onEdit={(publicationId) => {
-          const publication =
-            [...currentItems, ...scheduleItems, ...historyItems].find(
-              (item) => item.id === publicationId,
-            ) ?? (detailsTarget?.id === publicationId ? detailsTarget : null);
-          if (publication) {
-            openPublicationEditor(publication, 'edit');
-          }
-        }}
-        onRetry={requestPublicationRetry}
-        onResolveAmbiguous={(publicationId, occurrenceId, deliveryId, resolution) =>
-          setAmbiguousTarget({ publicationId, occurrenceId, deliveryId, resolution })
-        }
-      />
+      {detailsTarget ? (
+        <Suspense fallback={null}>
+          <LazyPublicationDetailsSheet
+            api={api}
+            publication={detailsTarget}
+            allowEdit={isPublisherProfile}
+            busy={anyBusy}
+            covered={retryChoiceTarget !== null || ambiguousTarget !== null}
+            onClose={() => setDetailsTarget(null)}
+            onCancel={(publication) => {
+              setDetailsTarget(null);
+              setActionTarget({ publication, action: 'cancel' });
+            }}
+            onEdit={(publicationId) => {
+              const publication =
+                [...currentItems, ...scheduleItems, ...historyItems].find(
+                  (item) => item.id === publicationId,
+                ) ?? (detailsTarget.id === publicationId ? detailsTarget : null);
+              if (publication) {
+                openPublicationEditor(publication, 'edit');
+              }
+            }}
+            onRetry={requestPublicationRetry}
+            onResolveAmbiguous={(publicationId, occurrenceId, deliveryId, resolution) =>
+              setAmbiguousTarget({ publicationId, occurrenceId, deliveryId, resolution })
+            }
+          />
+        </Suspense>
+      ) : null}
 
       <PublicationRetrySheet
         open={retryChoiceTarget !== null}
@@ -2989,32 +2884,6 @@ export function PublicationsPage({
       />
     </div>
   );
-}
-
-function getRecurrenceError(draft: PublicationDraft): string {
-  if (!draft.recurrence.startsAt) {
-    return 'Выберите дату начала.';
-  }
-  if (!Number.isFinite(Date.parse(draft.recurrence.startsAt))) {
-    return 'Выберите корректную дату начала.';
-  }
-  if (draft.recurrence.times.length === 0) {
-    return 'Добавьте хотя бы одно время.';
-  }
-  if (draft.recurrence.frequency === 'weekly' && draft.recurrence.weekdays.length === 0) {
-    return 'Выберите хотя бы один день недели.';
-  }
-  if (new Set(draft.recurrence.times).size !== draft.recurrence.times.length) {
-    return 'Время не должно повторяться.';
-  }
-  if (
-    draft.recurrence.startsAt &&
-    draft.recurrence.endsAt &&
-    Date.parse(draft.recurrence.endsAt) <= Date.parse(draft.recurrence.startsAt)
-  ) {
-    return 'Дата завершения должна быть позже даты начала.';
-  }
-  return '';
 }
 
 export default PublicationsPage;

@@ -71,3 +71,10 @@ test('editor link Markdown uses the canonical parsed href and drops unsafe hrefs
   );
   assert.equal(injected.includes(')[bad]('), false);
 });
+
+test('editor links serialize each non-empty line independently', () => {
+  assert.equal(
+    serializeEditorLinkMarkdown('🔥 Первая\n\nВторая', 'https://example.com/path'),
+    '[🔥 Первая](https://example.com/path)\n\n[Вторая](https://example.com/path)',
+  );
+});

@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import {
+  buildPublicationContent,
+  createPublicationDraftFromDetails,
+} from '../src/features/publications/publication-model';
+import {
   cancelPublication,
   createPublication,
   getPublication,
@@ -86,6 +90,18 @@ test('preview publications support list, CRUD, actions, and delivery review', as
   assert.notEqual(secondPlanPage.items[0]?.id, firstPlanPage.items[0]?.id);
 
   const review = await getPublication(api, 'publication-delivery-review');
+  const plainDraft = createPublicationDraftFromDetails({
+    ...review,
+    content: { ...review.content, text: '**literal**', textFormat: 'plain' },
+  });
+  const markdownDraft = createPublicationDraftFromDetails({
+    ...review,
+    content: { ...review.content, text: '**rich**', textFormat: 'markdown' },
+  });
+  assert.equal(plainDraft.textFormat, 'plain');
+  assert.equal(markdownDraft.textFormat, 'markdown');
+  assert.equal(buildPublicationContent(plainDraft).textFormat, 'plain');
+  assert.equal(buildPublicationContent(markdownDraft).textFormat, 'markdown');
   const ambiguousDeliveries = await listPublicationDeliveries(api, review.id, {
     status: 'AMBIGUOUS',
     limit: 1,
@@ -171,6 +187,7 @@ test('preview publications support list, CRUD, actions, and delivery review', as
     intent: 'publish',
   });
   assert.equal(created.targetCount, 2);
+  assert.equal(created.contentPreviewFormat, 'plain');
   const schedulesWithCreated = await listPublications(api, { view: 'schedules', limit: 100 });
   assert.equal(
     schedulesWithCreated.items.some((publication) => publication.id === created.id),

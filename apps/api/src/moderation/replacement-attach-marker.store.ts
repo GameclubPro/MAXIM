@@ -31,7 +31,23 @@ export type ReplacementAttachMarkerClaim =
       replyMessageId: string;
       botId: string | null;
     }
-  | { status: 'done' | 'in_progress' | 'recovered_audit' };
+  | { status: 'done' | 'in_progress' | 'recovered_audit' | 'settings_changed' };
+
+export type ChatAutoCommentPendingJobIdentity = {
+  markerId: string;
+  lockToken: string;
+  publisherSettingsRevision?: number;
+  publicationPolicyRevision?: number;
+};
+
+export type ChatAutoCommentSendFenceResult =
+  | { status: 'started'; sendStartedAt: Date }
+  | { status: 'settings_changed' | 'claim_lost' };
+
+export type PublisherChatCommentLockEpoch = {
+  publisherSettingsRevision: number;
+  publicationPolicyRevision: number;
+};
 
 export type LegacyChannelEditRecoveryCandidate = {
   chatId: string;
@@ -90,8 +106,36 @@ const ATTACH_LOCK_TTL_MS = 2 * 60_000;
 const CHAT_AUTO_COMMENT_MARKER_ID_PREFIX = 'ccr1_';
 const CHAT_AUTO_COMMENT_AUDIT_ID_PREFIX = 'aca1_';
 const CHAT_AUTO_COMMENT_MARKER_ID_PATTERN = /^ccr1_[a-f0-9]{32}$/u;
+export const PUBLISHER_CHAT_COMMENT_LOCK_PREFIX = 'publisher-chat-comment:v1:';
 const CHANNEL_EDIT_RECOVERY_VERSION = 'channel-engagement-edit-recovery:v1';
 const CHANNEL_EDIT_RECOVERY_ERROR_PREFIX = `[${CHANNEL_EDIT_RECOVERY_VERSION}]`;
+
+export function readPublisherChatCommentLockEpoch(
+  lockToken: string,
+): PublisherChatCommentLockEpoch | null {
+  if (!lockToken.startsWith(PUBLISHER_CHAT_COMMENT_LOCK_PREFIX)) {
+    return null;
+  }
+  const [settingsText, policyText, nonce, ...extra] = lockToken
+    .slice(PUBLISHER_CHAT_COMMENT_LOCK_PREFIX.length)
+    .split(':');
+  if (
+    !settingsText ||
+    !policyText ||
+    !nonce ||
+    extra.length > 0 ||
+    !/^\d+$/u.test(settingsText) ||
+    !/^\d+$/u.test(policyText)
+  ) {
+    return null;
+  }
+  const publisherSettingsRevision = Number(settingsText);
+  const publicationPolicyRevision = Number(policyText);
+  return Number.isSafeInteger(publisherSettingsRevision) &&
+    Number.isSafeInteger(publicationPolicyRevision)
+    ? { publisherSettingsRevision, publicationPolicyRevision }
+    : null;
+}
 const CHANNEL_EDIT_RECOVERY_LOCK_PREFIX = `${CHANNEL_EDIT_RECOVERY_VERSION}:`;
 const CHANNEL_DIALOG_PUBLISH_ACTION = 'PUBLISH_CHANNEL_ENGAGEMENT';
 const CHANNEL_EDIT_RECOVERY_DEFAULT_LIMIT = 25;
@@ -182,6 +226,8 @@ export class ReplacementAttachMarkerStore {
     messageId: string;
     source: 'webhook';
     botId: string | null;
+    publisherSettingsRevision?: number;
+    publicationPolicyRevision?: number;
   }): Promise<ReplacementAttachMarkerClaim> {
     return this.claim('chat_auto_comment', params);
   }
@@ -529,6 +575,45 @@ export class ReplacementAttachMarkerStore {
     }
   }
 
+  async skipChatAutoCommentAfterSettingsChange(params: {
+    markerId: string;
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    botId: string | null;
+  }): Promise<boolean> {
+    const updated = await this.prisma.chatAutoCommentAttachMarker.updateMany({
+      where: {
+        id: params.markerId,
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: 'IN_PROGRESS',
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+      },
+      data: {
+        status: 'SKIPPED',
+        lockToken: null,
+        lockedAt: null,
+        source: 'webhook',
+        botId: params.botId,
+        deliveryMode: 'reply_message',
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        publishedUrl: null,
+        originalDeleted: false,
+        cleanupIntentId: null,
+        lastError: 'Publisher chat-comment settings changed before dispatch',
+        lastStatusCode: null,
+      },
+    });
+    return updated.count === 1;
+  }
+
   async completeChatAutoCommentAuditRecovery(params: {
     chatId: string;
     messageId: string;
@@ -614,15 +699,43 @@ export class ReplacementAttachMarkerStore {
   }
 
   recordChatReplySendStarted(params: {
+    markerId: string;
     chatId: string;
     messageId: string;
     lockToken: string;
     senderBotId?: string | null;
-  }): Promise<Date> {
+    publisherSettingsRevision?: number;
+    publicationPolicyRevision?: number;
+  }): Promise<ChatAutoCommentSendFenceResult> {
     // FLAG: Keep replies on this durable fence so stale recovery and Safety Desk see every send.
-    return this.recordSendStarted('chat_auto_comment', params, 'reply_message', {
-      botId: params.senderBotId,
+    return this.recordChatReplySendFence(params);
+  }
+
+  async readChatAutoCommentPendingJobIdentity(params: {
+    chatId: string;
+    messageId: string;
+  }): Promise<ChatAutoCommentPendingJobIdentity | null> {
+    const marker = await this.getDelegate('chat_auto_comment')?.findUnique?.({
+      where: { chatId_messageId: { chatId: params.chatId, messageId: params.messageId } },
+      select: {
+        id: true,
+        status: true,
+        lockToken: true,
+      },
     });
+    const markerId = this.readNonEmptyString(marker?.id);
+    const lockToken = this.readNonEmptyString(marker?.lockToken);
+    const epoch = lockToken ? readPublisherChatCommentLockEpoch(lockToken) : null;
+    return marker?.status === 'IN_PROGRESS' &&
+      markerId &&
+      lockToken &&
+      buildChatAutoCommentAuditId(markerId)
+      ? {
+          markerId,
+          lockToken,
+          ...(epoch ?? {}),
+        }
+      : null;
   }
 
   async refreshChatAutoCommentDispatchClaim(params: {
@@ -773,9 +886,18 @@ export class ReplacementAttachMarkerStore {
       botId: string | null;
       linkType?: string | null;
       hasEngagementButtons?: boolean;
+      publisherSettingsRevision?: number;
+      publicationPolicyRevision?: number;
     },
   ): Promise<ReplacementAttachMarkerClaim> {
     const delegate = this.getDelegate(kind);
+    const publisherEpoch =
+      kind === 'chat_auto_comment'
+        ? this.resolvePublisherChatCommentInputEpoch(
+            params.publisherSettingsRevision,
+            params.publicationPolicyRevision,
+          )
+        : null;
     if (kind === 'chat_auto_comment') {
       const auditRecovery = await this.resolveChatAutoCommentAuditRecovery(
         delegate,
@@ -813,7 +935,9 @@ export class ReplacementAttachMarkerStore {
     ) {
       return {
         status: 'claimed',
-        lockToken: this.createLockToken(false),
+        lockToken: publisherEpoch
+          ? this.createPublisherChatCommentLockToken(publisherEpoch)
+          : this.createLockToken(false),
         ...(kind === 'chat_auto_comment' ? { markerId: this.createChatAutoCommentMarkerId() } : {}),
       };
     }
@@ -823,6 +947,7 @@ export class ReplacementAttachMarkerStore {
       select: {
         id: true,
         status: true,
+        lockToken: true,
         lockedAt: true,
         botId: true,
         deliveryMode: true,
@@ -891,7 +1016,50 @@ export class ReplacementAttachMarkerStore {
     const recoveryClaim =
       completionState === 'recover_legacy_channel_edit' ||
       this.hasChannelEditRecoveryEvidence(existing?.lastError);
-    const lockToken = this.createLockToken(recoveryClaim);
+    const existingClaimCanBeReclaimed =
+      kind === 'chat_auto_comment' &&
+      existing?.status === 'IN_PROGRESS' &&
+      !existing.replacementMessageId &&
+      !existing.replyMessageId &&
+      !existing.replacementSendStartedAt &&
+      (!existing.lockedAt || existing.lockedAt < new Date(Date.now() - ATTACH_LOCK_TTL_MS));
+    if (
+      existingClaimCanBeReclaimed &&
+      publisherEpoch &&
+      !this.publisherChatCommentEpochsEqual(
+        readPublisherChatCommentLockEpoch(existing.lockToken ?? ''),
+        publisherEpoch,
+      )
+    ) {
+      const skipped = await delegate.updateMany({
+        where: {
+          ...(existing.id ? { id: existing.id } : {}),
+          chatId: params.chatId,
+          messageId: params.messageId,
+          status: 'IN_PROGRESS',
+          lockToken: existing.lockToken,
+          lockedAt: existing.lockedAt,
+          deliveryMode: null,
+          replacementMessageId: null,
+          replyMessageId: null,
+          replacementSendStartedAt: null,
+        },
+        data: {
+          status: 'SKIPPED',
+          lockToken: null,
+          lockedAt: null,
+          source: params.source,
+          botId: params.botId,
+          deliveryMode: 'reply_message',
+          lastError: 'Publisher chat-comment settings changed before stale claim recovery',
+          lastStatusCode: null,
+        },
+      });
+      return skipped.count > 0 ? { status: 'settings_changed' } : { status: 'in_progress' };
+    }
+    const lockToken = publisherEpoch
+      ? this.createPublisherChatCommentLockToken(publisherEpoch)
+      : this.createLockToken(recoveryClaim);
     const existingMarkerId = this.readNonEmptyString(existing?.id);
     const markerId =
       kind === 'chat_auto_comment'
@@ -1279,6 +1447,106 @@ export class ReplacementAttachMarkerStore {
     await this.recordSendStarted(kind, params, 'replace_with_bot_message');
   }
 
+  private async recordChatReplySendFence(params: {
+    markerId: string;
+    chatId: string;
+    messageId: string;
+    lockToken: string;
+    senderBotId?: string | null;
+    publisherSettingsRevision?: number;
+    publicationPolicyRevision?: number;
+  }): Promise<ChatAutoCommentSendFenceResult> {
+    const epoch = this.resolvePublisherChatCommentInputEpoch(
+      params.publisherSettingsRevision,
+      params.publicationPolicyRevision,
+    );
+    if (!epoch) {
+      throw new Error('Publisher chat-comment settings epoch is required');
+    }
+    if (
+      !this.publisherChatCommentEpochsEqual(
+        readPublisherChatCommentLockEpoch(params.lockToken),
+        epoch,
+      )
+    ) {
+      return { status: 'settings_changed' };
+    }
+    const sendStartedAt = new Date();
+    // FLAG: The settings snapshot and send fence share this CAS linearization point.
+    const updated = await this.prisma.chatAutoCommentAttachMarker.updateMany({
+      where: {
+        id: params.markerId,
+        chatId: params.chatId,
+        messageId: params.messageId,
+        lockToken: params.lockToken,
+        status: 'IN_PROGRESS',
+        deliveryMode: null,
+        replacementMessageId: null,
+        replyMessageId: null,
+        replacementSendStartedAt: null,
+        chat: {
+          publisherSettings: {
+            is: {
+              chatCommentsEnabled: true,
+              chatCommentsAdminsEnabled: true,
+              revision: epoch.publisherSettingsRevision,
+            },
+          },
+          publicationPolicy:
+            epoch.publicationPolicyRevision === 0
+              ? { is: null }
+              : {
+                  is: {
+                    publikEnabled: true,
+                    revision: epoch.publicationPolicyRevision,
+                  },
+                },
+        },
+      },
+      data: {
+        deliveryMode: 'reply_message',
+        replacementSendStartedAt: sendStartedAt,
+        ...(params.senderBotId ? { botId: params.senderBotId } : {}),
+      },
+    });
+    if (updated.count === 1) {
+      return { status: 'started', sendStartedAt };
+    }
+
+    const claimState = await this.inspectChatAutoCommentDispatchClaim({
+      markerId: params.markerId,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      lockToken: params.lockToken,
+    });
+    if (claimState !== 'ready') {
+      return { status: 'claim_lost' };
+    }
+
+    const [settings, policy] = await Promise.all([
+      this.prisma.publisherEntitySettings.findUnique({
+        where: { chatId: params.chatId },
+        select: {
+          revision: true,
+          chatCommentsEnabled: true,
+          chatCommentsAdminsEnabled: true,
+        },
+      }),
+      this.prisma.managedEntityPublicationPolicy.findUnique({
+        where: { chatId: params.chatId },
+        select: { revision: true, publikEnabled: true },
+      }),
+    ]);
+    const settingsMatch =
+      settings?.chatCommentsEnabled === true &&
+      settings.chatCommentsAdminsEnabled === true &&
+      settings.revision === epoch.publisherSettingsRevision;
+    const policyMatch = policy
+      ? policy.publikEnabled === true && policy.revision === epoch.publicationPolicyRevision
+      : epoch.publicationPolicyRevision === 0;
+    return { status: settingsMatch && policyMatch ? 'claim_lost' : 'settings_changed' };
+  }
+
   private async recordSendStarted(
     kind: MarkerKind,
     params: { chatId: string; messageId: string; lockToken: string },
@@ -1554,6 +1822,41 @@ export class ReplacementAttachMarkerStore {
   private createLockToken(channelEditRecovery: boolean): string {
     const token = randomUUID();
     return channelEditRecovery ? `${CHANNEL_EDIT_RECOVERY_LOCK_PREFIX}${token}` : token;
+  }
+
+  private createPublisherChatCommentLockToken(epoch: PublisherChatCommentLockEpoch): string {
+    return `${PUBLISHER_CHAT_COMMENT_LOCK_PREFIX}${epoch.publisherSettingsRevision}:${epoch.publicationPolicyRevision}:${randomUUID()}`;
+  }
+
+  private resolvePublisherChatCommentInputEpoch(
+    publisherSettingsRevision: number | undefined,
+    publicationPolicyRevision: number | undefined,
+  ): PublisherChatCommentLockEpoch | null {
+    if (publisherSettingsRevision === undefined && publicationPolicyRevision === undefined) {
+      return null;
+    }
+    if (
+      !Number.isSafeInteger(publisherSettingsRevision) ||
+      (publisherSettingsRevision ?? -1) < 0 ||
+      !Number.isSafeInteger(publicationPolicyRevision) ||
+      (publicationPolicyRevision ?? -1) < 0
+    ) {
+      throw new Error('Publisher chat-comment settings epoch is invalid');
+    }
+    return {
+      publisherSettingsRevision: publisherSettingsRevision!,
+      publicationPolicyRevision: publicationPolicyRevision!,
+    };
+  }
+
+  private publisherChatCommentEpochsEqual(
+    left: PublisherChatCommentLockEpoch | null,
+    right: PublisherChatCommentLockEpoch,
+  ): boolean {
+    return (
+      left?.publisherSettingsRevision === right.publisherSettingsRevision &&
+      left.publicationPolicyRevision === right.publicationPolicyRevision
+    );
   }
 
   private isChannelEditRecoveryLock(lockToken: string): boolean {

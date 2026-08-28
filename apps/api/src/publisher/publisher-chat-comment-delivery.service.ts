@@ -57,6 +57,20 @@ class PublisherCommentSenderNotAdminError extends Error {
   }
 }
 
+class PublisherCommentSettingsChangedError extends Error {
+  constructor() {
+    super('Publisher chat-comment settings changed before dispatch');
+    this.name = 'PublisherCommentSettingsChangedError';
+  }
+}
+
+class PublisherCommentClaimLostBeforeSendError extends Error {
+  constructor() {
+    super('Publisher chat-comment claim was lost before dispatch');
+    this.name = 'PublisherCommentClaimLostBeforeSendError';
+  }
+}
+
 @Injectable()
 export class PublisherChatCommentDeliveryService {
   private readonly logger = new Logger(PublisherChatCommentDeliveryService.name);
@@ -131,11 +145,19 @@ export class PublisherChatCommentDeliveryService {
       );
       return;
     }
+    if (!this.hasValidSettingsEpoch(job)) {
+      await this.skipSettingsChangedAttach(job);
+      return;
+    }
 
     let route: PublisherReadyRoute;
     try {
       route = await this.assertReady(job.chatId, 'chat_comments');
       this.assertAttachIdentity(job, route);
+      if (!(await this.isAdminMessageSettingsCurrent(job))) {
+        await this.skipSettingsChangedAttach(job);
+        return;
+      }
       if (!(await this.isSenderAdmin(job, true))) {
         await this.skipNonAdminAttach(job);
         return;
@@ -198,12 +220,22 @@ export class PublisherChatCommentDeliveryService {
               throw new PublisherCommentSenderNotAdminError();
             }
             route = immediateRoute;
-            sendFenceStartedAt = await this.markerStore.recordChatReplySendStarted({
+            const sendFence = await this.markerStore.recordChatReplySendStarted({
+              markerId: job.markerId,
               chatId: job.chatId,
               messageId: job.messageId,
               lockToken: job.lockToken,
               senderBotId: route.requiredBotId,
+              publisherSettingsRevision: job.publisherSettingsRevision,
+              publicationPolicyRevision: job.publicationPolicyRevision,
             });
+            if (sendFence.status !== 'started') {
+              if (sendFence.status === 'settings_changed') {
+                throw new PublisherCommentSettingsChangedError();
+              }
+              throw new PublisherCommentClaimLostBeforeSendError();
+            }
+            sendFenceStartedAt = sendFence.sendStartedAt;
           },
           debugContext: {
             screen: 'chat-auto-comments',
@@ -222,6 +254,13 @@ export class PublisherChatCommentDeliveryService {
       const attempted = sendFenceStartedAt !== null || wasMaxMessageSendAttempted(error);
       if (!attempted && error instanceof PublisherCommentSenderNotAdminError) {
         await this.skipNonAdminAttach(job);
+        return;
+      }
+      if (!attempted && error instanceof PublisherCommentSettingsChangedError) {
+        await this.skipSettingsChangedAttach(job);
+        return;
+      }
+      if (!attempted && error instanceof PublisherCommentClaimLostBeforeSendError) {
         return;
       }
       if (attempted && isAmbiguousMaxSendError(error)) {
@@ -436,6 +475,65 @@ export class PublisherChatCommentDeliveryService {
       lastError: 'Publisher chat-comment source sender is not an administrator',
       lastStatusCode: null,
     });
+  }
+
+  private async isAdminMessageSettingsCurrent(
+    job: PublisherChatCommentAttachJob,
+  ): Promise<boolean> {
+    if (!this.hasValidSettingsEpoch(job)) {
+      return false;
+    }
+    const entity = await this.prisma.chat.findUnique({
+      where: { id: job.chatId },
+      select: {
+        publisherSettings: {
+          select: {
+            revision: true,
+            chatCommentsEnabled: true,
+            chatCommentsAdminsEnabled: true,
+          },
+        },
+        publicationPolicy: {
+          select: {
+            revision: true,
+            publikEnabled: true,
+          },
+        },
+      },
+    });
+    const settings = entity?.publisherSettings;
+    const policy = entity?.publicationPolicy;
+    return (
+      settings?.chatCommentsEnabled === true &&
+      settings.chatCommentsAdminsEnabled === true &&
+      settings.revision === job.publisherSettingsRevision &&
+      (policy
+        ? policy.publikEnabled === true && policy.revision === job.publicationPolicyRevision
+        : job.publicationPolicyRevision === 0)
+    );
+  }
+
+  private hasValidSettingsEpoch(job: PublisherChatCommentAttachJob): boolean {
+    return (
+      job.publisherSettingsRevision !== undefined &&
+      Number.isSafeInteger(job.publisherSettingsRevision) &&
+      job.publisherSettingsRevision >= 0 &&
+      job.publicationPolicyRevision !== undefined &&
+      Number.isSafeInteger(job.publicationPolicyRevision) &&
+      job.publicationPolicyRevision >= 0
+    );
+  }
+
+  private skipSettingsChangedAttach(job: PublisherChatCommentAttachJob): Promise<void> {
+    return this.markerStore
+      .skipChatAutoCommentAfterSettingsChange({
+        markerId: job.markerId,
+        chatId: job.chatId,
+        messageId: job.messageId,
+        lockToken: job.lockToken,
+        botId: this.publisherBotId,
+      })
+      .then(() => undefined);
   }
 
   private async assertReady(
@@ -668,6 +766,17 @@ export class PublisherChatCommentDeliveryService {
     // for already persisted compatibility envelopes.
     if (job.requiredBotId !== this.publisherBotId) {
       throw new UnrecoverableError('Publisher comment job targets another publisher bot');
+    }
+    if (
+      job.kind === 'attach_chat_reply' &&
+      ((job.publisherSettingsRevision !== undefined &&
+        (!Number.isSafeInteger(job.publisherSettingsRevision) ||
+          job.publisherSettingsRevision < 0)) ||
+        (job.publicationPolicyRevision !== undefined &&
+          (!Number.isSafeInteger(job.publicationPolicyRevision) ||
+            job.publicationPolicyRevision < 0)))
+    ) {
+      throw new UnrecoverableError('Publisher chat-comment settings epoch is invalid');
     }
   }
 

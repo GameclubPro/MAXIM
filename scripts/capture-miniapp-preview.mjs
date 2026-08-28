@@ -461,9 +461,13 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
       await page.getByRole('button', { name: 'Опубликовать', exact: true }).first().click();
-      await page
-        .getByRole('dialog', { name: 'Опубликовать предложку?' })
-        .waitFor({ state: 'visible' });
+      const dialog = page.getByRole('dialog', { name: 'Опубликовать предложку?' });
+      await dialog.waitFor({ state: 'visible' });
+      const preview = dialog.locator('.publisher-suggestion-confirm__text');
+      if (/\*\*|\+\+|~~/u.test((await preview.textContent()) ?? '')) {
+        throw new Error('Publisher suggestion confirmation leaked Markdown markers.');
+      }
+      await preview.locator('strong').first().waitFor({ state: 'visible' });
     },
   },
   {
@@ -725,7 +729,14 @@ const scenarioBehaviors = [
   {
     name: 'publications-compose',
     beforeShot: async (page) => {
-      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      await page.locator('.publications-page').waitFor({ state: 'visible' });
+      await page.waitForFunction(() => {
+        const params = new URLSearchParams(window.location.search);
+        return !params.has('compose') && !params.has('entityType') && !params.has('entityId');
+      });
+      if ((await page.locator('.publications-editor').count()) !== 0) {
+        throw new Error('Major entered the Publisher-only publication editor.');
+      }
       await page.waitForTimeout(600);
     },
   },
@@ -1428,7 +1439,11 @@ for (const sourceName of MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES) {
       if (source.beforeShot) {
         await source.beforeShot(page);
       }
-      await scrollSettingsDrilldownToBottom(page);
+      if (sourceName === 'publisher-entity-modules-vk') {
+        await setScrollPosition(page.locator('html'), 'bottom', 'Publisher module page');
+      } else {
+        await scrollSettingsDrilldownToBottom(page);
+      }
     },
   });
 }

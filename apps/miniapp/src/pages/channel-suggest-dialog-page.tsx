@@ -33,10 +33,7 @@ import {
   type MaxMarkdownTool,
 } from '../components/max-markdown-editor';
 import { PublicDialogUnavailableState } from '../components/public-dialog-unavailable-state';
-import {
-  MaxRichTextEditor,
-  type MaxRichTextEditorHandle,
-} from '../components/max-rich-text-editor';
+import type { MaxRichTextEditorHandle } from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import type { ApiTransport } from '../lib/api/transport';
@@ -112,6 +109,15 @@ const loadChannelSuggestionHistory = () => import('../components/channel-suggest
 const LazyChannelSuggestionHistory = lazySuggestionComponent(
   loadChannelSuggestionHistory,
   'ChannelSuggestionHistory',
+  true,
+);
+const loadMaxRichTextEditor = () =>
+  import('../components/max-rich-text-editor').then((module) => ({
+    default: module.MaxRichTextEditor,
+  }));
+const LazyMaxRichTextEditor = lazySuggestionComponent(
+  loadMaxRichTextEditor,
+  'MaxRichTextEditor',
   true,
 );
 
@@ -275,6 +281,7 @@ export function ChannelSuggestDialogPage({
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const [draft, setDraft] = useState('');
+  const [editorReady, setEditorReady] = useState(false);
   const [draftAttachments, setDraftAttachments] = useState<SuggestDraftAttachment[]>([]);
   const [preparingImageState, setPreparingImageState] = useState<PreparingImageState | null>(null);
   const [terminalDialogErrorState, setTerminalDialogErrorState] =
@@ -953,8 +960,8 @@ export function ChannelSuggestDialogPage({
   });
 
   const isSubmitPending = sendMutation.isPending;
-  const isComposerBusy = isSubmitPending || isPreparingImage;
-  const submitDisabled = !canSubmitMessage || isSubmitPending;
+  const isComposerBusy = isSubmitPending || isPreparingImage || !editorReady;
+  const submitDisabled = !canSubmitMessage || isSubmitPending || !editorReady;
 
   const applySuggestTextModifier = (tool: MaxMarkdownTool) => {
     if (isComposerBusy) {
@@ -1273,17 +1280,29 @@ export function ChannelSuggestDialogPage({
                     ) : null}
 
                     <div className="channel-suggest-composer__field">
-                      <MaxRichTextEditor
-                        ref={richTextEditorRef}
-                        value={draft}
-                        onChange={setDraft}
-                        placeholder="Текст идеи или подпись к фото"
-                        maxLength={SUGGEST_DRAFT_MAX_LENGTH}
-                        disabled={isSubmitPending}
-                        ariaLabel="Текст предложки"
-                        className="channel-suggest-composer__rich-editor"
-                        onPasteFiles={canUploadImages ? prepareDraftImagesFromFiles : undefined}
-                      />
+                      <Suspense
+                        fallback={
+                          <div
+                            className="channel-suggest-composer__rich-editor"
+                            role="textbox"
+                            aria-label="Текст предложки"
+                            aria-busy="true"
+                          />
+                        }
+                      >
+                        <LazyMaxRichTextEditor
+                          ref={richTextEditorRef}
+                          value={draft}
+                          onChange={setDraft}
+                          placeholder="Текст идеи или подпись к фото"
+                          maxLength={SUGGEST_DRAFT_MAX_LENGTH}
+                          disabled={isSubmitPending}
+                          onNormalizationReadyChange={setEditorReady}
+                          ariaLabel="Текст предложки"
+                          className="channel-suggest-composer__rich-editor"
+                          onPasteFiles={canUploadImages ? prepareDraftImagesFromFiles : undefined}
+                        />
+                      </Suspense>
                     </div>
 
                     <span className="channel-suggest-composer__tail" aria-hidden />

@@ -1,4 +1,8 @@
-import { type BroadcastImage, type BroadcastLinkButton } from '@maxim/contracts';
+import {
+  type BroadcastImage,
+  type BroadcastLinkButton,
+  type BroadcastTextFormat,
+} from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
 import { useRef, useState } from 'react';
 import './broadcast-content-composer.css';
@@ -41,6 +45,7 @@ function isBroadcastSystemButtonPreview(
 type BroadcastContentComposerProps = {
   className?: string;
   text: string;
+  sourceFormat?: BroadcastTextFormat;
   maxLength: number;
   image?: BroadcastContentComposerImage;
   images?: BroadcastImage[];
@@ -71,6 +76,7 @@ type BroadcastContentComposerProps = {
 export function BroadcastContentComposer({
   className,
   text,
+  sourceFormat = 'markdown',
   maxLength,
   image,
   images,
@@ -100,6 +106,7 @@ export function BroadcastContentComposer({
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const [formatToolsOpen, setFormatToolsOpen] = useState(false);
+  const [normalizationReady, setNormalizationReady] = useState(true);
   const [preparingImages, setPreparingImages] = useState<PreparingImagesState>({
     done: 0,
     total: 0,
@@ -150,7 +157,8 @@ export function BroadcastContentComposer({
     remainingLength >= 0 && remainingLength <= Math.min(120, maxLength * 0.08);
   const showTextCounter = text.length > 0 && (isNearTextLimit || remainingLength < 0);
   const isPreparingImage = pendingImageSlots > 0;
-  const isBusy = disabled || isPreparingImage;
+  const editorDisabled = disabled || isPreparingImage;
+  const isBusy = editorDisabled || !normalizationReady;
   const useNativeTapFileInput =
     resolveFileInputActivationMode(
       typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
@@ -364,10 +372,12 @@ export function BroadcastContentComposer({
                 <MaxRichTextEditor
                   ref={richTextEditorRef}
                   value={text}
+                  sourceFormat={sourceFormat}
                   onChange={onTextChange}
                   maxLength={maxLength}
                   placeholder={textPlaceholder}
-                  disabled={isBusy}
+                  disabled={editorDisabled}
+                  onNormalizationReadyChange={setNormalizationReady}
                   ariaLabel={textAriaLabel}
                   className="broadcast-message-card__rich-editor"
                   onPasteFiles={(files) => void handleImageFiles(files)}

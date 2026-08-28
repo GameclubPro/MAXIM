@@ -551,13 +551,22 @@
     font-weight: 680;
   }
 
-  .publisher-suggestion-row p {
+  .publisher-suggestion-row__text {
     max-height: 6.6em;
     margin: 0;
     overflow: hidden;
     color: var(--color-ink);
     font-size: 0.78rem;
     line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .publisher-suggestion-row__error {
+    margin: 0;
+    color: var(--color-danger);
+    font-size: 0.7rem;
+    font-weight: 650;
+    line-height: 1.4;
     overflow-wrap: anywhere;
   }
 
@@ -630,6 +639,14 @@
   .publisher-suggestions-load-more svg {
     width: 17px;
     height: 17px;
+  }
+
+  .publisher-suggestions-load-more svg.is-refreshing {
+    animation: publisher-entity-modules-spin 0.9s linear infinite;
+  }
+
+  .publisher-suggestions-load-more:disabled {
+    opacity: 0.62;
   }
 
   .publisher-suggestion-confirm__text {
@@ -777,6 +794,7 @@
   @media (prefers-reduced-motion: reduce) {
     .publisher-entity-modules-page__refresh.is-refreshing svg,
     .publisher-entity-modules-page__state > svg.is-refreshing,
+    .publisher-suggestions-load-more svg.is-refreshing,
     .publisher-entity-vk-module__loading svg {
       animation-duration: 1.8s;
     }

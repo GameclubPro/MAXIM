@@ -379,6 +379,17 @@ test('builds managed broadcast agenda entries by day', () => {
   assert.equal(entries[0]?.timeSlots.length, 2);
 });
 
+test('agenda titles hide legacy multiline markdown markers', () => {
+  const entries = buildAgendaEntries(
+    [createManagedBroadcast({ textPreview: '**Первая\nВторая**' })],
+    'Текущий чат',
+    null,
+  );
+
+  assert.equal(entries[0]?.title, 'Первая Вторая');
+  assert.doesNotMatch(entries[0]?.title ?? '', /\*\*/u);
+});
+
 test('builds target-aware agenda entries from calendar slots', () => {
   const entries = buildAgendaEntriesFromCalendarSlots(
     [

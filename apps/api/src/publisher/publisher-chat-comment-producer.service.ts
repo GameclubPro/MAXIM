@@ -13,7 +13,10 @@ import {
   buildChatAutoCommentAuditId,
   ReplacementAttachMarkerStore,
 } from '../moderation/replacement-attach-marker.store';
-import { extractHttpStatusCode } from '../common/http-error.util';
+import {
+  WEBHOOK_PREPARATION_DEFER_DEFAULT_MS,
+  WebhookPreparationDeferredError,
+} from '../common/webhook-preparation-deferred.error';
 import { buildPublisherBotDescriptor } from './publisher-bot-descriptor';
 import {
   PublisherChatCommentAdmissionError,
@@ -21,6 +24,17 @@ import {
 } from './publisher-chat-comment.queue';
 
 const PUBLISHER_ACCESS_LEGACY_GRACE_MS = 7 * 24 * 60 * 60_000;
+
+export class PublisherChatCommentClaimPendingError extends WebhookPreparationDeferredError {
+  constructor(cause?: unknown) {
+    super(
+      'Publisher chat-comment durable job is not confirmed yet',
+      WEBHOOK_PREPARATION_DEFER_DEFAULT_MS,
+      cause,
+    );
+    this.name = 'PublisherChatCommentClaimPendingError';
+  }
+}
 
 @Injectable()
 export class PublisherChatCommentProducerService {
@@ -73,18 +87,22 @@ export class PublisherChatCommentProducerService {
               in: [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER],
             },
             botAccessExpiresAt: { gt: now },
-            OR: [
-              { sendRouteQuarantinedUntil: null },
-              { sendRouteQuarantinedUntil: { lte: now } },
-            ],
+            OR: [{ sendRouteQuarantinedUntil: null }, { sendRouteQuarantinedUntil: { lte: now } }],
           },
         },
       },
       select: {
+        publicationPolicy: {
+          select: {
+            publikEnabled: true,
+            revision: true,
+          },
+        },
         publisherSettings: {
           select: {
             chatCommentsEnabled: true,
             chatCommentsAdminsEnabled: true,
+            revision: true,
           },
         },
         accessEdges: {
@@ -118,13 +136,39 @@ export class PublisherChatCommentProducerService {
     ) {
       return;
     }
+    const publicationPolicyRevision = entity.publicationPolicy?.revision ?? 0;
 
     const claim = await this.markerStore.claimChatAutoComment({
       chatId,
       messageId,
       source: 'webhook',
       botId: this.publisherBotId,
+      publisherSettingsRevision: entity.publisherSettings.revision,
+      publicationPolicyRevision,
     });
+    if (claim.status === 'in_progress') {
+      try {
+        const identity = await this.markerStore.readChatAutoCommentPendingJobIdentity({
+          chatId,
+          messageId,
+        });
+        if (
+          identity &&
+          (await this.queue.hasMatchingAttachJob({
+            ...identity,
+            chatId,
+            messageId,
+            senderId,
+            dialogBotId: this.publisherBotId,
+          }))
+        ) {
+          return;
+        }
+      } catch (error: unknown) {
+        throw new PublisherChatCommentClaimPendingError(error);
+      }
+      throw new PublisherChatCommentClaimPendingError();
+    }
     if (claim.status !== 'claimed') {
       return;
     }
@@ -151,6 +195,8 @@ export class PublisherChatCommentProducerService {
         messageId,
         senderId,
         dialogBotId: this.publisherBotId,
+        publisherSettingsRevision: entity.publisherSettings.revision,
+        publicationPolicyRevision,
       });
     } catch (error: unknown) {
       if (error instanceof PublisherChatCommentAdmissionError) {
@@ -164,20 +210,15 @@ export class PublisherChatCommentProducerService {
         });
         return;
       }
-      await this.markerStore.releaseChatAutoComment({
-        chatId,
-        messageId,
-        lockToken: claim.lockToken,
-        source: 'webhook',
-        botId: this.publisherBotId,
-        lastError: this.errorSummary(error),
-        lastStatusCode: extractHttpStatusCode(error),
-      });
       this.logger.warn(
         { chatId, messageId, err: this.errorSummary(error) },
-        'Failed to enqueue Publisher chat-comment attach',
+        'Deferred Publisher chat-comment until its durable job can be confirmed',
       );
-      throw error;
+      throw new WebhookPreparationDeferredError(
+        'Publisher chat-comment durable enqueue is unavailable',
+        WEBHOOK_PREPARATION_DEFER_DEFAULT_MS,
+        error,
+      );
     }
   }
 

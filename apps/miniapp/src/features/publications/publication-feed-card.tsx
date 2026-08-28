@@ -12,6 +12,7 @@ type PublicationFeedCardProps = {
   id: string;
   title: string;
   preview: string;
+  previewFormat: 'plain' | 'markdown';
   fallback?: string | null;
   eyebrow: string;
   meta: string[];
@@ -46,6 +47,7 @@ export function PublicationFeedCard({
   id,
   title,
   preview,
+  previewFormat,
   fallback = null,
   eyebrow,
   meta,
@@ -197,6 +199,7 @@ export function PublicationFeedCard({
       <strong className="publication-feed-card__title">{title}</strong>
       <MaxMarkdownPreview
         value={preview}
+        sourceFormat={previewFormat}
         normalizeWhitespace
         fallback={fallback}
         className="publication-feed-card__preview max-markdown-preview--clamp-2"
