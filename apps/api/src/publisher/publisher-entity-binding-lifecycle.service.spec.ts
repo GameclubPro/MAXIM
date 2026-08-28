@@ -257,6 +257,201 @@ describe('PublisherEntityBindingLifecycleService', () => {
     expect(transactionClient.chat.update).not.toHaveBeenCalled();
   });
 
+  it('keeps ordinary messages on the fresh binding fast path without refresh jobs', async () => {
+    const observedAt = new Date();
+    const binding = {
+      publisherBotId: 'publik_bot',
+      status: ChatBotMembershipStatus.ACTIVE,
+      botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+      botAccessCheckedAt: new Date(observedAt.getTime() - 60_000),
+      botAccessExpiresAt: new Date(observedAt.getTime() + 10 * 60_000),
+      sendRouteQuarantinedUntil: null,
+      lifecycleEventAt: new Date(observedAt.getTime() - 2_000),
+      lifecycleEventType: 'message_created',
+    };
+    const updateMany = jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      Object.assign(binding, data);
+      return { count: 1 };
+    });
+    const prisma = {
+      publisherEntityBinding: {
+        findUnique: jest.fn(async () => ({ ...binding })),
+        updateMany,
+      },
+      managedBotChatCatalog: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          title: 'Чат Публика',
+          status: 'ACTIVE',
+        }),
+      },
+      $transaction: jest.fn(),
+    };
+    const refreshQueue = { enqueue: jest.fn() };
+    const service = new PublisherEntityBindingLifecycleService(
+      prisma as never,
+      refreshQueue as never,
+      { get: () => 'publik_bot' } as never,
+      createBotRegistry() as never,
+    );
+
+    const ordinaryTypes = [
+      'message_created',
+      'message_edited',
+      'message_callback',
+      'message_removed',
+    ] as const;
+    for (const [index, type] of ordinaryTypes.entries()) {
+      await expect(
+        service.observeWebhook({
+          updateId: `ordinary-${type}`,
+          botId: 'publik_bot',
+          type,
+          eventTimestampSource: type === 'message_callback' ? 'ingress' : 'payload',
+          message: {
+            messageId: `message-${type}`,
+            chatId: 'chat-1',
+            senderId: 'member-1',
+            text: `Сообщение ${type}`,
+            createdAt: new Date(observedAt.getTime() + index * 1_000).toISOString(),
+          },
+          raw: {},
+        } as never),
+      ).resolves.toBe('applied');
+    }
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledTimes(ordinaryTypes.length);
+    expect(updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          publisherBotId: 'publik_bot',
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        }),
+        data: expect.objectContaining({
+          lifecycleEventType: 'message_removed',
+          lifecycleSource: 'webhook',
+        }),
+      }),
+    );
+  });
+
+  it('falls through to durable refresh when an ordinary message sees stale access', async () => {
+    const observedAt = new Date();
+    const prisma = {
+      publisherEntityBinding: {
+        findUnique: jest.fn().mockResolvedValue({
+          publisherBotId: 'publik_bot',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+          botAccessCheckedAt: new Date(observedAt.getTime() - 20 * 60_000),
+          botAccessExpiresAt: new Date(observedAt.getTime() - 1),
+          sendRouteQuarantinedUntil: null,
+          lifecycleEventAt: new Date(observedAt.getTime() - 1_000),
+          lifecycleEventType: 'message_created',
+        }),
+        updateMany: jest.fn(),
+      },
+      managedBotChatCatalog: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          title: 'Чат Публика',
+          status: 'ACTIVE',
+        }),
+      },
+      $transaction: jest.fn().mockResolvedValue('applied'),
+    };
+    const refreshQueue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherEntityBindingLifecycleService(
+      prisma as never,
+      refreshQueue as never,
+      { get: () => 'publik_bot' } as never,
+      createBotRegistry() as never,
+    );
+
+    await expect(
+      service.observeWebhook({
+        updateId: 'ordinary-stale-access',
+        botId: 'publik_bot',
+        type: 'message_created',
+        eventTimestampSource: 'payload',
+        message: {
+          messageId: 'message-stale-access',
+          chatId: 'chat-1',
+          senderId: 'member-1',
+          text: 'Обычное сообщение',
+          createdAt: observedAt.toISOString(),
+        },
+        raw: {},
+      } as never),
+    ).resolves.toBe('applied');
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(refreshQueue.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        publisherBotId: 'publik_bot',
+        reason: 'webhook_observed',
+      }),
+    );
+  });
+
+  it('falls back to the ordered lifecycle path when the fresh binding CAS loses a race', async () => {
+    const observedAt = new Date();
+    const prisma = {
+      publisherEntityBinding: {
+        findUnique: jest.fn().mockResolvedValue({
+          publisherBotId: 'publik_bot',
+          status: ChatBotMembershipStatus.ACTIVE,
+          botAccessState: ChatBotAccessState.CONFIRMED_OWNER,
+          botAccessCheckedAt: new Date(observedAt.getTime() - 60_000),
+          botAccessExpiresAt: new Date(observedAt.getTime() + 10 * 60_000),
+          sendRouteQuarantinedUntil: null,
+          lifecycleEventAt: new Date(observedAt.getTime() - 1_000),
+          lifecycleEventType: 'message_created',
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      managedBotChatCatalog: {
+        findUnique: jest.fn().mockResolvedValue({
+          entityType: ChatEntityType.CHAT,
+          title: 'Чат Публика',
+          status: 'ACTIVE',
+        }),
+      },
+      $transaction: jest.fn().mockResolvedValue('stale'),
+    };
+    const refreshQueue = { enqueue: jest.fn() };
+    const service = new PublisherEntityBindingLifecycleService(
+      prisma as never,
+      refreshQueue as never,
+      { get: () => 'publik_bot' } as never,
+      createBotRegistry() as never,
+    );
+
+    await expect(
+      service.observeWebhook({
+        updateId: 'ordinary-cas-race',
+        botId: 'publik_bot',
+        type: 'message_created',
+        eventTimestampSource: 'payload',
+        message: {
+          messageId: 'message-cas-race',
+          chatId: 'chat-1',
+          senderId: 'member-1',
+          text: 'Обычное сообщение',
+          createdAt: observedAt.toISOString(),
+        },
+        raw: {},
+      } as never),
+    ).resolves.toBe('stale');
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(refreshQueue.enqueue).not.toHaveBeenCalled();
+  });
+
   it('keeps the exact Publisher catalog missing after an ordinary observation of a removed binding', async () => {
     const removedAt = new Date('2026-08-26T12:00:00.000Z');
     let binding = {
@@ -290,6 +485,13 @@ describe('PublisherEntityBindingLifecycleService', () => {
       publisherEntityBinding,
     };
     const prisma = {
+      publisherEntityBinding: {
+        findUnique: publisherEntityBinding.findUnique,
+        updateMany: jest.fn(),
+      },
+      managedBotChatCatalog: {
+        findUnique: transactionClient.managedBotChatCatalog.findUnique,
+      },
       $transaction: jest.fn(async (callback: (tx: typeof transactionClient) => unknown) =>
         callback(transactionClient),
       ),
@@ -373,6 +575,13 @@ describe('PublisherEntityBindingLifecycleService', () => {
       chat: { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn() },
     };
     const prisma = {
+      publisherEntityBinding: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        updateMany: jest.fn(),
+      },
+      managedBotChatCatalog: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn(async (callback: (tx: typeof transactionClient) => unknown) =>
         callback(transactionClient),
       ),

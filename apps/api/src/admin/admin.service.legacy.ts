@@ -370,6 +370,11 @@ import { PublisherSuggestionPublicationQueueService } from './publisher-suggesti
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
 import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
+import {
+  countPublisherChatComments,
+  toggleDialogCommentReactionForProfile,
+  updateDialogCommentForProfile,
+} from './publisher-chat-comment-store';
 import { AdminDialogAdminAccessRuntime } from './admin-dialog-admin-access-runtime';
 import {
   createCommentsButtonPosition,
@@ -15617,35 +15622,26 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Редактирование доступно только в комментариях.');
     }
 
-    const target = await this.resolveEntityDialogMessageTarget(params);
-    if (target.row.actorUserId !== params.userId) {
-      throw new ForbiddenException('Редактировать можно только свои комментарии.');
-    }
-
-    const text = params.text.trim();
-    const existingAttachments = this.readChannelDialogAttachmentAssets(target.payload.attachments);
-    if (!text && existingAttachments.length === 0) {
-      throw new BadRequestException('Введите текст комментария или добавьте вложение.');
-    }
-
-    const updated = await this.prisma.auditLog.update({
-      where: {
-        id: target.row.id,
-      },
-      data: {
-        payload: {
-          ...target.payload,
-          text,
-          editedAt: new Date().toISOString(),
-        } as Prisma.InputJsonValue,
-      },
-      select: {
-        id: true,
-        actorUserId: true,
-        payload: true,
-        createdAt: true,
-      },
+    const updated = await updateDialogCommentForProfile({
+      prisma: this.prisma,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      dialogProfile: params.dialogProfile,
+      userId: params.userId,
+      text: params.text,
+      resolvePublisherThreadId: () =>
+        this.publisherDialogProfileRuntime.resolveChatThreadId(
+          params.chatId,
+          params.dialogType,
+          params.token,
+          'publisher',
+        ),
+      resolveLegacyTarget: () => this.resolveEntityDialogMessageTarget(params),
+      hasAttachments: (value) => this.readChannelDialogAttachmentAssets(value).length > 0,
     });
+    if (!updated) {
+      throw new BadRequestException('Комментарий не найден.');
+    }
     const adminUserIds =
       params.dialogProfile === 'publisher'
         ? await this.publisherDialogProfileRuntime.readAdminUserIds(params.chatId)
@@ -15720,28 +15716,27 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Реакции доступны только в комментариях.');
     }
 
-    const target = await this.resolveEntityDialogMessageTarget(params);
-    const updated = await this.prisma.auditLog.update({
-      where: {
-        id: target.row.id,
-      },
-      data: {
-        payload: {
-          ...target.payload,
-          reactions: this.toggleDialogReactionEntries(
-            target.payload.reactions,
-            params.emoji,
-            params.userId,
-          ),
-        } as Prisma.InputJsonValue,
-      },
-      select: {
-        id: true,
-        actorUserId: true,
-        payload: true,
-        createdAt: true,
-      },
+    const updated = await toggleDialogCommentReactionForProfile({
+      prisma: this.prisma,
+      chatId: params.chatId,
+      messageId: params.messageId,
+      dialogProfile: params.dialogProfile,
+      userId: params.userId,
+      emoji: params.emoji,
+      resolvePublisherThreadId: () =>
+        this.publisherDialogProfileRuntime.resolveChatThreadId(
+          params.chatId,
+          params.dialogType,
+          params.token,
+          'publisher',
+        ),
+      resolveLegacyTarget: () => this.resolveEntityDialogMessageTarget(params),
+      toggleReactions: (value, emoji, userId) =>
+        this.toggleDialogReactionEntries(value, emoji, userId),
     });
+    if (!updated) {
+      throw new BadRequestException('Комментарий не найден.');
+    }
     const adminUserIds =
       params.dialogType !== 'comments'
         ? new Set<string>()
@@ -17188,16 +17183,19 @@ export class AdminService implements OnModuleDestroy {
     const { chatId, entityType, threadId } = params;
 
     try {
-      const count = await this.prisma.auditLog.count({
-        where: {
-          chatId,
-          action: resolveDialogAuditAction('comments', params.dialogProfile),
-          payload: {
-            path: ['threadId'],
-            equals: threadId,
-          },
-        },
-      });
+      const count =
+        params.dialogProfile === 'publisher'
+          ? await countPublisherChatComments(this.prisma, chatId, threadId)
+          : await this.prisma.auditLog.count({
+              where: {
+                chatId,
+                action: resolveDialogAuditAction('comments', params.dialogProfile),
+                payload: {
+                  path: ['threadId'],
+                  equals: threadId,
+                },
+              },
+            });
 
       if (entityType === 'channel') {
         await this.syncChannelCommentsButtonCount(chatId, threadId, count);

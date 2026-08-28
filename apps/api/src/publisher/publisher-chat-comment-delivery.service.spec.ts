@@ -184,6 +184,7 @@ function createHarness() {
     () => publicationPolicy,
   );
   const prisma = {
+    $queryRaw: jest.fn().mockResolvedValue([{ count: 9n }]),
     chatAutoCommentAttachMarker: marker,
     chat: {
       findUnique: jest.fn(async () => ({
@@ -203,7 +204,6 @@ function createHarness() {
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue(undefined),
-      count: jest.fn().mockResolvedValue(9),
     },
   };
   const maxClient = {
@@ -574,6 +574,10 @@ describe('PublisherChatCommentDeliveryService', () => {
     });
 
     expect(harness.readiness.assertEntityReady).toHaveBeenCalledTimes(3);
+    expect(harness.prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const countSql = harness.prisma.$queryRaw.mock.calls[0]?.[0]?.sql ?? '';
+    expect(countSql).toContain("audit.action = 'PUBLISHER_CHAT_DIALOG_COMMENT'");
+    expect(countSql).toContain("audit.payload->>'threadId' =");
     expect(harness.maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'chat-1',
       'publisher-message-1',

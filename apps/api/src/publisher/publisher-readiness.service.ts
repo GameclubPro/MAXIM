@@ -254,28 +254,7 @@ export class PublisherReadinessService {
     if (!source) {
       throw new PublisherSetupRequiredException([chatId], 'bot_not_connected');
     }
-    const policy = this.resolvePolicy(source.publicationPolicy);
-    const readiness = this.resolveReadiness(source, {
-      runtimeAvailable: await this.isRuntimeAvailable(),
-    });
-    const allowed =
-      feature === 'chat_comments'
-        ? readiness.canUseChatComments
-        : feature === 'suggestion_publish'
-          ? readiness.canPublishSuggestions
-          : readiness.canPublish;
-    if (!allowed) {
-      throw new PublisherSetupRequiredException(
-        [chatId],
-        readiness.blockerCode ?? 'module_disabled',
-      );
-    }
-    return {
-      chatId,
-      entityType: source.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
-      requiredBotId: this.publisherBotId,
-      policyRevision: policy.revision,
-    };
+    return this.assertSourceReady(source, feature, await this.isRuntimeAvailable());
   }
 
   async assertTargetsReady(
@@ -283,11 +262,38 @@ export class PublisherReadinessService {
     feature: PublisherFeature = 'publication',
   ): Promise<PublisherReadyRoute[]> {
     const uniqueTargets = Array.from(
-      new Map(targets.map((target) => [target.chatId.trim(), target])).values(),
-    ).filter((target) => target.chatId.trim().length > 0);
-    const routes = await Promise.all(
-      uniqueTargets.map((target) => this.assertEntityReady(target.chatId, feature)),
-    );
+      new Map(
+        targets.map((target) => [
+          target.chatId.trim(),
+          { ...target, chatId: target.chatId.trim() },
+        ]),
+      ).values(),
+    ).filter((target) => target.chatId.length > 0);
+    if (uniqueTargets.length === 0) {
+      return [];
+    }
+
+    const [sources, runtimeAvailable] = await Promise.all([
+      this.prisma.chat.findMany({
+        where: { id: { in: uniqueTargets.map((target) => target.chatId) } },
+        select: {
+          id: true,
+          entityType: true,
+          publicationPolicy: true,
+          publisherSettings: true,
+          publisherBinding: true,
+        },
+      }),
+      this.isRuntimeAvailable(),
+    ]);
+    const sourcesById = new Map(sources.map((source) => [source.id, source]));
+    const routes = uniqueTargets.map((target) => {
+      const source = sourcesById.get(target.chatId);
+      if (!source) {
+        throw new PublisherSetupRequiredException([target.chatId], 'bot_not_connected');
+      }
+      return this.assertSourceReady(source, feature, runtimeAvailable);
+    });
     const mismatched = routes.find(
       (route) =>
         uniqueTargets.find((target) => target.chatId === route.chatId)?.entityType !==
@@ -297,6 +303,33 @@ export class PublisherReadinessService {
       throw new PublisherSetupRequiredException([mismatched.chatId], 'bot_not_connected');
     }
     return routes;
+  }
+
+  private assertSourceReady(
+    source: PublisherReadinessSource,
+    feature: PublisherFeature,
+    runtimeAvailable: boolean,
+  ): PublisherReadyRoute {
+    const policy = this.resolvePolicy(source.publicationPolicy);
+    const readiness = this.resolveReadiness(source, { runtimeAvailable });
+    const allowed =
+      feature === 'chat_comments'
+        ? readiness.canUseChatComments
+        : feature === 'suggestion_publish'
+          ? readiness.canPublishSuggestions
+          : readiness.canPublish;
+    if (!allowed) {
+      throw new PublisherSetupRequiredException(
+        [source.id],
+        readiness.blockerCode ?? 'module_disabled',
+      );
+    }
+    return {
+      chatId: source.id,
+      entityType: source.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+      requiredBotId: this.publisherBotId,
+      policyRevision: policy.revision,
+    };
   }
 
   isRuntimeAvailable(): Promise<boolean> {

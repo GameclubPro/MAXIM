@@ -46,6 +46,19 @@ test('blocked Publik modules explain readiness and run one bounded targeted rech
 test('channel suggestions confirm terminal actions and page both server views independently', () => {
   assert.match(modulesSource, /<LazyPublisherSuggestionsInbox/u);
   assert.match(modulesSource, /await import\('\.\/publisher-suggestions-inbox'\)/u);
+  assert.match(
+    modulesSource,
+    /entity\.moduleSettings\.channelSuggestionsEnabled === true \? \([\s\S]*?<LazyPublisherSuggestionsInbox/u,
+  );
+  assert.match(
+    suggestionsSource,
+    /enabled: shouldLoadPublisherSuggestions\(\{[\s\S]*?requestView: 'pending'/u,
+  );
+  assert.match(
+    suggestionsSource,
+    /enabled: shouldLoadPublisherSuggestions\(\{[\s\S]*?requestView: 'history'/u,
+  );
+  assert.match(suggestionsSource, /if \(!enabled\) \{\s*return null;/u);
   assert.match(suggestionsSource, /<LazyActionConfirmSheet/u);
   assert.match(suggestionsSource, /await import\('\.\.\/components\/ui\/action-confirm-sheet'\)/u);
   assert.match(suggestionsSource, /'Опубликовать предложку\?'/u);
@@ -71,8 +84,8 @@ test('channel suggestions confirm terminal actions and page both server views in
     /onClick=\{\(\) =>\s*reviewMutation\.mutate\(\{ suggestionId: suggestion\.id/u,
   );
   assert.match(suggestionsSource, /useInfiniteQuery/u);
-  assert.match(suggestionsSource, /view: 'pending'/u);
-  assert.match(suggestionsSource, /view: 'history'/u);
+  assert.match(suggestionsSource, /requestView: 'pending'/u);
+  assert.match(suggestionsSource, /requestView: 'history'/u);
   assert.match(suggestionsSource, /pendingQuery\.data\?\.pages\[0\]\?\.total/u);
   assert.match(suggestionsSource, /historyQuery\.data\?\.pages\[0\]\?\.total/u);
   assert.match(suggestionsSource, /activeQuery\.fetchNextPage\(\)/u);

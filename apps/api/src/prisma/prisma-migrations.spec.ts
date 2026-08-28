@@ -758,6 +758,20 @@ describe('Prisma migrations', () => {
     expect(`${publishing}\n${ledger}`).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
   });
 
+  it('indexes Publisher chat comments by exact thread and newest first', () => {
+    const migration = readMigration('20260828120000_index_publisher_chat_dialog_comments');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+
+    expect(compact).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "audit_logs_publisher_chat_comment_thread_created_idx"',
+    );
+    expect(compact).toContain(
+      'ON "audit_logs"("chat_id", (("payload"->>\'threadId\')), "created_at" DESC)',
+    );
+    expect(compact).toContain('WHERE "action" = \'PUBLISHER_CHAT_DIALOG_COMMENT\'');
+    expect(compact).not.toMatch(/\bBEGIN\b|\bCOMMIT\b|\b(?:DROP|TRUNCATE|DELETE)\b/i);
+  });
+
   it('serializes suggestion ledger inserts with stale claim release at the audit row', () => {
     const migration = readMigration(
       '20260821122000_guard_channel_suggestion_publication_ledger_insert',

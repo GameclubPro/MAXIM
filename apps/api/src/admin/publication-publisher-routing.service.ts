@@ -231,7 +231,7 @@ export class PublicationPublisherRoutingService {
           entityType: target.entityType,
           dialogBotId: requiredBotId!,
           customButtons,
-          includeManagedDialogs: target.entityType === 'chat',
+          includeManagedDialogs: true,
         }),
       }),
     );

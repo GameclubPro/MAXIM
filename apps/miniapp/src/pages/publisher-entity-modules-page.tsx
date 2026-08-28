@@ -107,7 +107,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
   const vkCapabilityQuery = useQuery({
     queryKey: ['publisher-vk-capability', entityType, entityId],
     queryFn: () => getVkParsingCapability(api, entityType!, entityId),
-    enabled: entityType !== null && entityId.length > 0 && Boolean(entityQuery.data),
+    enabled: vkOpen && entityType !== null && entityId.length > 0 && Boolean(entityQuery.data),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -284,14 +284,8 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
   const chatComments = entity.moduleSettings.chatComments;
   const vkCapability = vkCapabilityQuery.data;
   const vkAvailable = vkCapability?.canUse === true;
-  const vkStatus = vkCapabilityQuery.isLoading
-    ? 'Проверка'
-    : vkCapabilityQuery.isError
-      ? 'Недоступен'
-      : vkAvailable
-        ? 'Доступен'
-        : (vkCapability?.reason ?? 'Недоступен');
-  const busy = mutation.isPending || entityQuery.isFetching || entityRecheckPhase !== null;
+  const refreshing = entityQuery.isFetching || (vkOpen && vkCapabilityQuery.isFetching);
+  const busy = mutation.isPending || refreshing || entityRecheckPhase !== null;
 
   return (
     <section className="publisher-entity-modules-page" aria-busy={busy || undefined}>
@@ -318,14 +312,16 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         </span>
         <button
           type="button"
-          className={cn(
-            'publisher-entity-modules-page__refresh',
-            entityQuery.isFetching && 'is-refreshing',
-          )}
+          className={cn('publisher-entity-modules-page__refresh', refreshing && 'is-refreshing')}
           aria-label="Перезагрузить данные модулей"
           title="Перезагрузить данные"
           disabled={busy}
-          onClick={() => void Promise.all([entityQuery.refetch(), vkCapabilityQuery.refetch()])}
+          onClick={() =>
+            void Promise.all([
+              entityQuery.refetch(),
+              ...(vkOpen ? [vkCapabilityQuery.refetch()] : []),
+            ])
+          }
         >
           <Refresh aria-hidden />
         </button>
@@ -369,7 +365,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           </span>
           <span className="publisher-entity-module__copy">
             <strong>Постинг</strong>
-            <small>{entity.readiness.canPublish ? 'Доступен' : 'Недоступен'}</small>
           </span>
           {entity.readiness.canPublish ? (
             <Link
@@ -380,9 +375,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               <span>Создать</span>
               <NavArrowRight aria-hidden />
             </Link>
-          ) : (
-            <span className="publisher-entity-module__blocked">Недоступен</span>
-          )}
+          ) : null}
         </article>
 
         {entity.entityType === 'chat' && chatComments ? (
@@ -393,7 +386,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Комментарии</strong>
-                <small>{chatComments.commentsEnabled ? 'Вкл' : 'Выкл'}</small>
               </span>
               <ModuleSwitch
                 checked={chatComments.commentsEnabled}
@@ -409,7 +401,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 <span>Сообщения администраторов</span>
                 <ModuleSwitch
                   checked={chatComments.commentsAdminsEnabled}
-                  disabled={mutation.isPending}
+                  disabled={mutation.isPending || !chatComments.commentsEnabled}
                   label="Комментарии для сообщений администраторов"
                   onChange={(enabled) =>
                     saveChatCommentSetting(chatComments, 'commentsAdminsEnabled', enabled)
@@ -420,7 +412,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 <span>Посты Публика</span>
                 <ModuleSwitch
                   checked={chatComments.commentsChatBroadcastsEnabled}
-                  disabled={mutation.isPending}
+                  disabled={mutation.isPending || !chatComments.commentsEnabled}
                   label="Комментарии для постов Публика"
                   onChange={(enabled) =>
                     saveChatCommentSetting(chatComments, 'commentsChatBroadcastsEnabled', enabled)
@@ -439,7 +431,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Предложки</strong>
-                <small>{entity.moduleSettings.channelSuggestionsEnabled ? 'Вкл' : 'Выкл'}</small>
               </span>
               <ModuleSwitch
                 checked={entity.moduleSettings.channelSuggestionsEnabled === true}
@@ -451,20 +442,18 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               />
             </article>
 
-            <Suspense
-              fallback={
-                <div className="publisher-suggestions-state" role="status">
-                  <Refresh className="is-refreshing" aria-hidden />
-                  <span>Загружаю предложки</span>
-                </div>
-              }
-            >
-              <LazyPublisherSuggestionsInbox
-                api={api}
-                entityId={entity.id}
-                enabled={entity.moduleSettings.channelSuggestionsEnabled === true}
-              />
-            </Suspense>
+            {entity.moduleSettings.channelSuggestionsEnabled === true ? (
+              <Suspense
+                fallback={
+                  <div className="publisher-suggestions-state" role="status">
+                    <Refresh className="is-refreshing" aria-hidden />
+                    <span>Загружаю предложки</span>
+                  </div>
+                }
+              >
+                <LazyPublisherSuggestionsInbox api={api} entityId={entity.id} enabled />
+              </Suspense>
+            ) : null}
           </section>
         ) : null}
 
@@ -475,7 +464,6 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             </span>
             <span className="publisher-entity-module__copy">
               <strong>Посты из VK</strong>
-              <small>{vkStatus}</small>
             </span>
             <button
               type="button"
@@ -483,34 +471,51 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               aria-label={vkOpen ? 'Закрыть посты из VK' : 'Открыть посты из VK'}
               aria-expanded={vkOpen}
               aria-controls="publisher-vk-workspace"
-              disabled={!vkAvailable}
               onClick={() => setVkOpen((current) => !current)}
             >
               <span>{vkOpen ? 'Закрыть' : 'Открыть'}</span>
               <NavArrowRight aria-hidden />
             </button>
           </div>
-          {vkOpen && vkAvailable ? (
+          {vkOpen ? (
             <div
               id="publisher-vk-workspace"
               className="publisher-entity-vk-module__workspace vk-parsing-surface"
             >
-              <Suspense
-                fallback={
-                  <div className="publisher-entity-vk-module__loading" role="status">
-                    <Refresh className="is-refreshing" aria-hidden />
-                    <span>Загружаю VK</span>
-                  </div>
-                }
-              >
-                <LazyVkParsingCard
-                  api={api}
-                  chatId={entity.id}
-                  entityType={entity.entityType}
-                  active={vkOpen && vkAvailable}
-                  channelLinkUrl={entity.entityUrl ?? undefined}
-                />
-              </Suspense>
+              {vkCapabilityQuery.isPending ? (
+                <div className="publisher-entity-vk-module__state" role="status">
+                  <Refresh className="is-refreshing" aria-hidden />
+                  <span>Проверяю доступ к VK</span>
+                </div>
+              ) : vkCapabilityQuery.isError ? (
+                <div className="publisher-entity-vk-module__state has-error" role="alert">
+                  <span>Не удалось проверить VK</span>
+                  <button type="button" onClick={() => void vkCapabilityQuery.refetch()}>
+                    Повторить
+                  </button>
+                </div>
+              ) : !vkAvailable ? (
+                <div className="publisher-entity-vk-module__state" role="status">
+                  <span>{vkCapability?.reason ?? 'VK недоступен для этого чата'}</span>
+                </div>
+              ) : (
+                <Suspense
+                  fallback={
+                    <div className="publisher-entity-vk-module__state" role="status">
+                      <Refresh className="is-refreshing" aria-hidden />
+                      <span>Открываю VK</span>
+                    </div>
+                  }
+                >
+                  <LazyVkParsingCard
+                    api={api}
+                    chatId={entity.id}
+                    entityType={entity.entityType}
+                    active
+                    channelLinkUrl={entity.entityUrl ?? undefined}
+                  />
+                </Suspense>
+              )}
             </div>
           ) : null}
         </section>

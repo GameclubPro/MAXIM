@@ -10,6 +10,10 @@ const publicationWorkbenchCss = readFileSync(
   new URL('../src/features/publications/publication-workbench.css', import.meta.url),
   'utf8',
 );
+const publicationsCss = readFileSync(
+  new URL('../src/styles/publications-page.css', import.meta.url),
+  'utf8',
+);
 const broadcastStudioCss = readFileSync(
   new URL('../src/styles/broadcast-studio.css', import.meta.url),
   'utf8',
@@ -28,6 +32,30 @@ test('publication editor grid tracks stay contained on narrow native viewports',
     publicationWorkbenchCss,
     /\.publications-editor,\s*\.publication-editor-section \{\s*min-width: 0;\s*grid-template-columns: minmax\(0, 1fr\);/u,
   );
+});
+
+test('publication editor keeps its action dock in a separate layout row', () => {
+  assert.match(
+    publicationWorkbenchCss,
+    /body\.publications-editor-open \.app-shell:has\(\.publications-page\.is-editor\) \{[\s\S]*?height: var\(--publication-editor-shell-height\);[\s\S]*?overflow: hidden;/u,
+  );
+  assert.match(
+    publicationWorkbenchCss,
+    /\.publications-page\.is-editor \{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\) auto;[\s\S]*?overflow: hidden;/u,
+  );
+  assert.match(
+    publicationWorkbenchCss,
+    /\.publications-page\.is-editor > \.publications-editor \{[\s\S]*?overflow-y: auto;[\s\S]*?touch-action: pan-y;/u,
+  );
+  assert.match(
+    publicationWorkbenchCss,
+    /\.publications-page\.is-editor > \.publications-publish-bar \{[\s\S]*?position: static;[\s\S]*?transform: none;/u,
+  );
+  assert.match(
+    publicationWorkbenchCss,
+    /html\[data-max-keyboard-open='true'\][\s\S]*?\.publications-publish-bar \{\s*display: none;/u,
+  );
+  assert.doesNotMatch(publicationsCss, /\.publications-publish-bar \{\s*position: fixed;/u);
 });
 
 test('broadcast composer owns the base preview button layout', () => {

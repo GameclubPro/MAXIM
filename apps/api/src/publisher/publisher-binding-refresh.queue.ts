@@ -30,6 +30,7 @@ export type PublisherBindingRefreshJob = {
 
 const PUBLISHER_REFRESH_JOB_BUCKET_MS = 60_000;
 const PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS = 5_000;
+const PUBLISHER_WEBHOOK_OBSERVED_DEDUPLICATION_MS = 60_000;
 
 function resolveRefreshPriority(reason: PublisherBindingRefreshReason): number {
   switch (reason) {
@@ -77,11 +78,15 @@ export class PublisherBindingRefreshQueueService {
     const candidateVersion = params.candidateVersion?.trim() || null;
     const replyChatId = params.replyChatId?.trim() || null;
     const manualRecheck = params.reason === 'manual_recheck';
+    const coalescedWebhookObservation =
+      params.reason === 'webhook_observed' && candidateUserId === null;
     const discriminator = manualRecheck
       ? requestedAt.getTime()
-      : params.eventAt
-        ? params.eventAt.getTime()
-        : Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS);
+      : coalescedWebhookObservation
+        ? Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS)
+        : params.eventAt
+          ? params.eventAt.getTime()
+          : Math.floor(requestedAt.getTime() / PUBLISHER_REFRESH_JOB_BUCKET_MS);
     const entityHash = createHash('sha256')
       .update(`${publisherBotId}\0${chatId}`)
       .digest('hex')
@@ -120,7 +125,14 @@ export class PublisherBindingRefreshQueueService {
                 ttl: PUBLISHER_MANUAL_RECHECK_DEDUPLICATION_MS,
               },
             }
-          : {}),
+          : coalescedWebhookObservation
+            ? {
+                deduplication: {
+                  id: `publisher-binding-refresh-observed-${entityHash}`,
+                  ttl: PUBLISHER_WEBHOOK_OBSERVED_DEDUPLICATION_MS,
+                },
+              }
+            : {}),
         attempts: 6,
         backoff: {
           type: 'exponential',

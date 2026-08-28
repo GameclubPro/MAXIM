@@ -8,6 +8,7 @@ import {
   createChatContextCacheMock,
   createConfigMock,
   createPrismaMock,
+  extractSqlText,
 } from './admin-service-test-support';
 import { PublisherDialogProfileRuntime } from './publisher-dialog-profile-runtime';
 
@@ -60,8 +61,17 @@ function createHarness() {
   const publisherRow = commentRow('publisher-comment', 'Комментарий Публика');
   prisma.auditLog.findMany.mockImplementation(async ({ where }: any) => {
     if (where?.action === CHANNEL_DIALOG_ACTION_COMMENT) return [majorRow];
-    if (where?.action === PUBLISHER_CHAT_DIALOG_ACTION_COMMENT) return [publisherRow];
     return [];
+  });
+  prisma.$queryRaw.mockImplementation(async (query: any) => {
+    const sql = extractSqlText(query);
+    if (!sql.includes(PUBLISHER_CHAT_DIALOG_ACTION_COMMENT)) {
+      return [];
+    }
+    if (sql.includes('FOR UPDATE OF audit') && !query.values?.includes(publisherRow.id)) {
+      return [];
+    }
+    return [publisherRow];
   });
   prisma.auditLog.create.mockImplementation(async ({ data }: any) => ({
     id: 'publisher-created',
@@ -110,14 +120,12 @@ describe('Publisher chat dialog profile ownership', () => {
 
     expect(major.messages.map((message) => message.id)).toEqual(['major-comment']);
     expect(publisher.messages.map((message) => message.id)).toEqual(['publisher-comment']);
-    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          action: PUBLISHER_CHAT_DIALOG_ACTION_COMMENT,
-          payload: { path: ['threadId'], equals: THREAD_ID },
-        }),
-      }),
-    );
+    const publisherQuery = prisma.$queryRaw.mock.calls
+      .map((call: unknown[]) => call[0])
+      .find((query: unknown) =>
+        extractSqlText(query).includes(PUBLISHER_CHAT_DIALOG_ACTION_COMMENT),
+      );
+    expect(extractSqlText(publisherQuery)).toContain("audit.payload->>'threadId' =");
   });
 
   it('stores Publisher comments under their own action and profile marker', async () => {
@@ -139,11 +147,11 @@ describe('Publisher chat dialog profile ownership', () => {
         }),
       }),
     );
-    expect(prisma.auditLog.count).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ action: PUBLISHER_CHAT_DIALOG_ACTION_COMMENT }),
-      }),
-    );
+    const countQueries = prisma.$queryRaw.mock.calls
+      .map((call: unknown[]) => extractSqlText(call[0]))
+      .filter((sql: string) => sql.includes('COUNT(*)::bigint'));
+    expect(countQueries).toHaveLength(1);
+    expect(countQueries[0]).toContain("audit.action = 'PUBLISHER_CHAT_DIALOG_COMMENT'");
   });
 
   it.each([
@@ -185,18 +193,25 @@ describe('Publisher chat dialog profile ownership', () => {
           dialogProfile: 'publisher',
         }),
     ],
-  ] as const)('rejects cross-profile %s against a Major row', async (_name, operation) => {
+  ] as const)('rejects cross-profile %s against a Major row', async (name, operation) => {
     const { majorRow, prisma, service } = createHarness();
     prisma.auditLog.findFirst.mockImplementation(async ({ where }: any) =>
       where?.action === CHANNEL_DIALOG_ACTION_COMMENT ? majorRow : null,
     );
 
     await expect(operation(service)).rejects.toThrow('Комментарий не найден.');
-    expect(prisma.auditLog.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ action: PUBLISHER_CHAT_DIALOG_ACTION_COMMENT }),
-      }),
-    );
+    if (name === 'delete') {
+      expect(prisma.auditLog.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ action: PUBLISHER_CHAT_DIALOG_ACTION_COMMENT }),
+        }),
+      );
+    } else {
+      const lockSql = prisma.$queryRaw.mock.calls
+        .map((call: unknown[]) => extractSqlText(call[0]))
+        .find((sql: string) => sql.includes('FOR UPDATE OF audit'));
+      expect(lockSql).toContain("audit.action = 'PUBLISHER_CHAT_DIALOG_COMMENT'");
+    }
     expect(prisma.auditLog.update).not.toHaveBeenCalled();
     expect(prisma.auditLog.delete).not.toHaveBeenCalled();
   });

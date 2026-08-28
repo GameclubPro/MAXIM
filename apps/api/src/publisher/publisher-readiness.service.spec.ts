@@ -108,6 +108,38 @@ describe('PublisherReadinessService', () => {
     });
   });
 
+  it('checks the maximum publication audience with one database query and one heartbeat read', async () => {
+    const sources = Array.from({ length: 500 }, (_, index) => readySource({ id: `chat-${index}` }));
+    const findMany = jest.fn().mockResolvedValue(sources);
+    const findUnique = jest.fn();
+    const read = jest.fn().mockResolvedValue({ dispatchEnabled: true });
+    const service = new PublisherReadinessService(
+      { chat: { findMany, findUnique } } as never,
+      { read } as never,
+      {
+        get: jest.fn((key: string, fallback?: unknown) => {
+          if (key === 'MAX_PUBLISHER_BOT_ID') return 'publik-bot';
+          if (key === 'MAX_PUBLISHER_DISPATCH_ENABLED') return true;
+          return fallback;
+        }),
+      } as unknown as ConfigService,
+    );
+
+    const routes = await service.assertTargetsReady(
+      sources.map((source) => ({ chatId: source.id, entityType: 'chat' })),
+    );
+
+    expect(routes).toHaveLength(500);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: sources.map((source) => source.id) } },
+      }),
+    );
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     [
       'chat comments',

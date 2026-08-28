@@ -25,16 +25,29 @@ test('VK module is capability-gated, lazy, and inactive while its workspace is c
   assert.match(pageSource, /lazy\(async \(\) =>/u);
   assert.match(pageSource, /import\('\.\.\/components\/vk-parsing-card'\)/u);
   assert.match(pageSource, /getVkParsingCapability\(api, entityType!, entityId\)/u);
-  assert.match(pageSource, /active=\{vkOpen && vkAvailable\}/u);
-  assert.match(pageSource, /vkOpen && vkAvailable \? \(/u);
+  assert.match(pageSource, /enabled: vkOpen && entityType !== null && entityId\.length > 0/u);
+  assert.match(pageSource, /active\s*\n\s*channelLinkUrl/u);
+  assert.match(pageSource, /\{vkOpen \? \(/u);
+  assert.match(pageSource, /vkCapabilityQuery\.isPending/u);
+  assert.match(pageSource, /vkCapabilityQuery\.isError/u);
+  assert.match(pageSource, /Не удалось проверить VK/u);
   assert.match(
     pageSource,
     /aria-label=\{vkOpen \? 'Закрыть посты из VK' : 'Открыть посты из VK'\}/u,
   );
-  assert.match(
-    pageSource,
-    /publisher-entity-vk-module__workspace vk-parsing-surface/u,
+  assert.match(pageSource, /publisher-entity-vk-module__workspace vk-parsing-surface/u);
+});
+
+test('comment child settings follow the master switch and module rows avoid duplicate statuses', () => {
+  const dependentSwitches = pageSource.match(
+    /disabled=\{mutation\.isPending \|\| !chatComments\.commentsEnabled\}/gu,
   );
+
+  assert.equal(dependentSwitches?.length, 2);
+  assert.doesNotMatch(pageSource, /<small>\{entity\.readiness\.canPublish \? 'Доступен'/u);
+  assert.doesNotMatch(pageSource, /publisher-entity-module__blocked/u);
+  assert.doesNotMatch(pageSource, /<small>\{chatComments\.commentsEnabled/u);
+  assert.doesNotMatch(pageSource, /<small>\{entity\.moduleSettings\.channelSuggestionsEnabled/u);
 });
 
 test('module controls keep stable mobile touch targets without nested module cards', () => {

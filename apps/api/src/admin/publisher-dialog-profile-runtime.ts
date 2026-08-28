@@ -26,10 +26,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PublisherDialogLinkService } from '../publisher/publisher-dialog-link.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
+import { buildPublisherChatCommentsQuery } from './publisher-chat-comment-store';
 import {
   CHANNEL_DIALOG_MESSAGES_LIMIT,
   MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
-  PUBLISHER_CHAT_DIALOG_ACTION_COMMENT,
   PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
 } from './admin.service.support';
 
@@ -176,15 +176,9 @@ export class PublisherDialogProfileRuntime {
     const threadId = this.resolveChatThreadId(params.chatId, dialogType, params.token, 'publisher');
     const [chatSettings, rows, adminUserIds] = await Promise.all([
       this.readChatCommentSettings(params.chatId),
-      this.context.prisma.auditLog.findMany({
-        where: {
-          chatId: params.chatId,
-          action: PUBLISHER_CHAT_DIALOG_ACTION_COMMENT,
-          ...(threadId ? { payload: { path: ['threadId'], equals: threadId } } : {}),
-        },
-        orderBy: { createdAt: 'desc' },
-        take: CHANNEL_DIALOG_MESSAGES_LIMIT,
-      }),
+      this.context.prisma.$queryRaw<DialogAuditLogRow[]>(
+        buildPublisherChatCommentsQuery(params.chatId, threadId),
+      ),
       this.readAdminUserIds(params.chatId),
     ]);
     if (!chatSettings.commentsEnabled) {

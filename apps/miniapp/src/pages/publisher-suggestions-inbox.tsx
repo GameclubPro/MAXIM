@@ -8,11 +8,15 @@ import { CheckCircle, NavArrowDown, Refresh, Xmark } from 'iconoir-react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { useToast } from '../components/ui/toast';
-import { listPublisherSuggestions, reviewPublisherSuggestion } from '../lib/api/publisher-client';
+import { reviewPublisherSuggestion } from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { getPublisherSuggestionStatusLabel } from './publisher-entity-modules-page-model';
+import {
+  loadPublisherSuggestionsPage,
+  shouldLoadPublisherSuggestions,
+} from './publisher-suggestions-inbox-model';
 
 const LazyActionConfirmSheet = lazy(async () => {
   const module = await import('../components/ui/action-confirm-sheet');
@@ -24,7 +28,6 @@ type PublisherSuggestionConfirmation = {
   action: 'publish' | 'cancel';
 };
 
-const PUBLISHER_SUGGESTIONS_PAGE_SIZE = 25;
 const PUBLISHER_SUGGESTIONS_POLL_INTERVAL_MS = 4_000;
 
 function mergePublisherSuggestionPages(
@@ -69,14 +72,22 @@ export function PublisherSuggestionsInbox({
     queryKey: pendingQueryKey,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) =>
-      listPublisherSuggestions(api, entityId, {
-        view: 'pending',
-        limit: PUBLISHER_SUGGESTIONS_PAGE_SIZE,
+      loadPublisherSuggestionsPage({
+        api,
+        enabled,
+        entityId,
+        activeView: view,
+        requestView: 'pending',
         cursor: pageParam,
         signal,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: entityId.length > 0,
+    enabled: shouldLoadPublisherSuggestions({
+      enabled,
+      entityId,
+      activeView: view,
+      requestView: 'pending',
+    }),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     refetchInterval: (query) =>
@@ -88,14 +99,22 @@ export function PublisherSuggestionsInbox({
     queryKey: historyQueryKey,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) =>
-      listPublisherSuggestions(api, entityId, {
-        view: 'history',
-        limit: PUBLISHER_SUGGESTIONS_PAGE_SIZE,
+      loadPublisherSuggestionsPage({
+        api,
+        enabled,
+        entityId,
+        activeView: view,
+        requestView: 'history',
         cursor: pageParam,
         signal,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: entityId.length > 0,
+    enabled: shouldLoadPublisherSuggestions({
+      enabled,
+      entityId,
+      activeView: view,
+      requestView: 'history',
+    }),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
@@ -154,7 +173,7 @@ export function PublisherSuggestionsInbox({
     setConfirmation(null);
   }, [entityId]);
 
-  if (pendingTotal === 0 && historyTotal === 0 && !enabled) {
+  if (!enabled) {
     return null;
   }
 

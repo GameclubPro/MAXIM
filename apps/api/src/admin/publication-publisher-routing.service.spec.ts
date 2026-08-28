@@ -54,7 +54,7 @@ describe('PublicationPublisherRoutingService', () => {
     });
   });
 
-  it('does not import Major channel dialogs into PUBLIK_V1 channel posts', async () => {
+  it('allows Publisher-owned channel suggestions in PUBLIK_V1 channel posts', async () => {
     const prepare = jest.fn().mockImplementation(async (params) => ({
       version: 1,
       dialogBotId: params.dialogBotId,
@@ -89,7 +89,7 @@ describe('PublicationPublisherRoutingService', () => {
     expect(prepare).toHaveBeenCalledWith(
       expect.objectContaining({
         dialogBotId: 'publisher-bot',
-        includeManagedDialogs: false,
+        includeManagedDialogs: true,
       }),
     );
     expect(result.deliveryDataByChatId.get('channel-1')).toMatchObject({
@@ -194,6 +194,48 @@ describe('PublicationPublisherRoutingService', () => {
 });
 
 describe('PublisherDialogContextService', () => {
+  it.each([
+    [true, 1],
+    [false, 0],
+  ] as const)(
+    'applies the Publisher channel suggestion toggle (%s)',
+    async (channelSuggestionsEnabled, expectedButtonCount) => {
+      const buildChannelDialogButton = jest.fn().mockReturnValue({
+        type: 'link',
+        text: '📰 Предложить пост',
+        url: 'https://max.ru/publik_bot?start=suggestion',
+      });
+      const service = new PublisherDialogContextService(
+        {
+          publisherEntitySettings: {
+            upsert: jest.fn().mockResolvedValue({ channelSuggestionsEnabled }),
+          },
+        } as never,
+        { buildChannelDialogButton } as never,
+      );
+
+      const context = await service.prepare({
+        chatId: 'channel-1',
+        entityType: 'channel',
+        dialogBotId: 'publisher-bot',
+        customButtons: [],
+        includeManagedDialogs: true,
+      });
+
+      expect(context.buttons).toHaveLength(expectedButtonCount);
+      if (channelSuggestionsEnabled) {
+        expect(context.reference).toMatchObject({
+          entityType: 'channel',
+          includeSuggestButton: true,
+          dialogBotId: 'publisher-bot',
+        });
+      } else {
+        expect(context.reference).toBeNull();
+      }
+      expect(buildChannelDialogButton).toHaveBeenCalledTimes(expectedButtonCount);
+    },
+  );
+
   it('builds custom-only buttons without reading Major chat or channel settings', async () => {
     const chatSettingsUpsert = jest.fn();
     const channelSettingsUpsert = jest.fn();

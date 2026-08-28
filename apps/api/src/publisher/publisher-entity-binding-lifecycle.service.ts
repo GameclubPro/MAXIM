@@ -38,6 +38,12 @@ const PUBLISHER_FORWARDED_RATE_LIMIT_MAX_KEYS = 2_048;
 const PUBLISHER_HISTORICAL_ACTOR_LOOKBACK_MS = 7 * 24 * 60 * 60_000;
 const PUBLISHER_HISTORICAL_ACTOR_SCAN_LIMIT = 500;
 const PUBLISHER_HISTORICAL_ACTOR_BATCH_SIZE = 25;
+const PUBLISHER_ORDINARY_ACTIVITY_TYPES = new Set([
+  'message_callback',
+  'message_created',
+  'message_edited',
+  'message_removed',
+]);
 
 type HistoricalPublisherActorScanRow = {
   webhookEventId: string | null;
@@ -163,6 +169,23 @@ export class PublisherEntityBindingLifecycleService {
     }
 
     const receivedAt = new Date();
+    if (
+      kind === 'observed' &&
+      !accessHandshake &&
+      PUBLISHER_ORDINARY_ACTIVITY_TYPES.has(normalizedType)
+    ) {
+      const fastPathResult = await this.observeFreshBindingActivity({
+        chatId,
+        explicitEntityType,
+        title: update.message?.chatTitle?.trim() ?? '',
+        eventType: normalizedType,
+        eventAt,
+        receivedAt,
+      });
+      if (fastPathResult) {
+        return fastPathResult;
+      }
+    }
     const entityType =
       explicitEntityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
     const title =
@@ -401,6 +424,99 @@ export class PublisherEntityBindingLifecycleService {
       });
     }
     return result;
+  }
+
+  private async observeFreshBindingActivity(params: {
+    chatId: string;
+    explicitEntityType: 'chat' | 'channel' | undefined;
+    title: string;
+    eventType: string;
+    eventAt: Date | null;
+    receivedAt: Date;
+  }): Promise<PublisherWebhookObservationResult | null> {
+    const [binding, catalog] = await Promise.all([
+      this.prisma.publisherEntityBinding.findUnique({
+        where: { chatId: params.chatId },
+        select: {
+          publisherBotId: true,
+          status: true,
+          botAccessState: true,
+          botAccessCheckedAt: true,
+          botAccessExpiresAt: true,
+          sendRouteQuarantinedUntil: true,
+          lifecycleEventAt: true,
+          lifecycleEventType: true,
+        },
+      }),
+      this.prisma.managedBotChatCatalog.findUnique({
+        where: { botId_chatId: { botId: this.publisherBotId, chatId: params.chatId } },
+        select: { entityType: true, title: true, status: true },
+      }),
+    ]);
+    const expectedEntityType =
+      params.explicitEntityType === 'channel'
+        ? ChatEntityType.CHANNEL
+        : params.explicitEntityType === 'chat'
+          ? ChatEntityType.CHAT
+          : null;
+    if (
+      binding?.publisherBotId !== this.publisherBotId ||
+      binding.status !== ChatBotMembershipStatus.ACTIVE ||
+      (binding.botAccessState !== ChatBotAccessState.CONFIRMED_ADMIN &&
+        binding.botAccessState !== ChatBotAccessState.CONFIRMED_OWNER) ||
+      !binding.botAccessExpiresAt ||
+      binding.botAccessExpiresAt <= params.receivedAt ||
+      (binding.sendRouteQuarantinedUntil !== null &&
+        binding.sendRouteQuarantinedUntil > params.receivedAt) ||
+      catalog?.status !== 'ACTIVE' ||
+      (expectedEntityType !== null && catalog.entityType !== expectedEntityType) ||
+      (params.title.length > 0 && (catalog.title?.trim() ?? '') !== params.title)
+    ) {
+      return null;
+    }
+
+    const exactBindingWhere = {
+      chatId: params.chatId,
+      publisherBotId: this.publisherBotId,
+      status: binding.status,
+      botAccessState: binding.botAccessState,
+      botAccessCheckedAt: binding.botAccessCheckedAt,
+      botAccessExpiresAt: binding.botAccessExpiresAt,
+      sendRouteQuarantinedUntil: binding.sendRouteQuarantinedUntil,
+      lifecycleEventAt: binding.lifecycleEventAt,
+      lifecycleEventType: binding.lifecycleEventType,
+    } satisfies Prisma.PublisherEntityBindingWhereInput;
+    if (!params.eventAt) {
+      const updated = await this.prisma.publisherEntityBinding.updateMany({
+        where: exactBindingWhere,
+        data: { lastWebhookAt: params.receivedAt },
+      });
+      return updated.count === 1 ? 'applied' : null;
+    }
+
+    const advancesLifecycle = shouldApplyPublisherObservation(binding, {
+      eventAt: params.eventAt,
+      eventType: params.eventType,
+    });
+    if (!advancesLifecycle) {
+      await this.prisma.publisherEntityBinding.updateMany({
+        where: exactBindingWhere,
+        data: { lastWebhookAt: params.receivedAt },
+      });
+      return 'stale';
+    }
+
+    const updated = await this.prisma.publisherEntityBinding.updateMany({
+      where: exactBindingWhere,
+      data: {
+        lastSeenAt: params.eventAt,
+        lastWebhookAt: params.receivedAt,
+        lifecycleEventAt: params.eventAt,
+        lifecycleEventType: params.eventType,
+        lifecycleSource: 'webhook',
+      },
+    });
+    return updated.count === 1 ? 'applied' : null;
   }
 
   async recoverHistoricalActorCandidates(

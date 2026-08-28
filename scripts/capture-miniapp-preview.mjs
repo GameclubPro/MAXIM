@@ -1901,6 +1901,8 @@ async function assertConfiguredChecks(page, scenario) {
     await assertAppHasVisibleContent(page, scenario);
     await assertViewportBounds(page, scenario);
     await assertNoUnexpectedHorizontalOverflow(page, scenario);
+    await assertPublisherComposerDockSeparated(page, scenario);
+    await assertVkSourceSummariesSeparated(page, scenario);
     await assertFavoriteCategoryIndicatorsContained(page, scenario);
     await assertPrimaryControlsReachable(page, scenario);
     await assertTimeFieldOptionsReachable(page, scenario);
@@ -1916,6 +1918,145 @@ async function assertConfiguredChecks(page, scenario) {
   if (strictAccessibility) {
     await assertCriticalAccessibility(page, scenario);
     await assertPublicationTouchTargets(page, scenario);
+  }
+}
+
+async function assertPublisherComposerDockSeparated(page, scenario) {
+  if (!scenario.name.startsWith('publications-publisher-compose') || simulateKeyboard) {
+    return;
+  }
+
+  const result = await page.evaluate(() => {
+    const editor = document.querySelector('.publications-page.is-editor > .publications-editor');
+    const dock = document.querySelector('.publications-page.is-editor > .publications-publish-bar');
+    if (!(editor instanceof HTMLElement) || !(dock instanceof HTMLElement)) {
+      return { ok: false, reason: 'editor or action dock is missing' };
+    }
+
+    const editorRect = editor.getBoundingClientRect();
+    const dockRect = dock.getBoundingClientRect();
+    const dockStyle = getComputedStyle(dock);
+    if (dockStyle.position === 'fixed' || dockStyle.position === 'absolute') {
+      return { ok: false, reason: `action dock uses overlay position ${dockStyle.position}` };
+    }
+    if (editorRect.bottom > dockRect.top + 1) {
+      return {
+        ok: false,
+        reason: `editor bottom ${editorRect.bottom.toFixed(1)} crosses dock top ${dockRect.top.toFixed(1)}`,
+      };
+    }
+    if (dockRect.bottom > window.innerHeight + 2) {
+      return {
+        ok: false,
+        reason: `dock bottom ${dockRect.bottom.toFixed(1)} leaves viewport ${window.innerHeight}`,
+      };
+    }
+    return { ok: true, reason: '' };
+  });
+
+  if (!result.ok) {
+    throw new Error(`Publisher composer action layout failed: ${result.reason}.`);
+  }
+}
+
+async function assertVkSourceSummariesSeparated(page, scenario) {
+  if (!scenario.name.startsWith('publisher-entity-modules-vk')) {
+    return;
+  }
+
+  const issues = await page.evaluate(() => {
+    const tolerance = 0.5;
+    const overlaps = (left, right) =>
+      Math.min(left.right, right.right) - Math.max(left.left, right.left) > tolerance &&
+      Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > tolerance;
+    const isContained = (inner, outer) =>
+      inner.left >= outer.left - tolerance &&
+      inner.top >= outer.top - tolerance &&
+      inner.right <= outer.right + tolerance &&
+      inner.bottom <= outer.bottom + tolerance;
+
+    return Array.from(
+      document.querySelectorAll('.publisher-entity-vk-module .vk-source-card'),
+    ).flatMap((card, cardIndex) => {
+      if (!(card instanceof HTMLElement)) {
+        return [];
+      }
+
+      const summary = card.querySelector('.vk-source-card__summary-row');
+      const mode = summary?.querySelector('.vk-source-mode-control');
+      const metrics = summary?.querySelector('.vk-source-card__metrics');
+      if (
+        !(summary instanceof HTMLElement) ||
+        !(mode instanceof HTMLElement) ||
+        !(metrics instanceof HTMLElement)
+      ) {
+        return [{ cardIndex, reason: 'summary controls are missing' }];
+      }
+
+      const summaryRect = summary.getBoundingClientRect();
+      const modeRect = mode.getBoundingClientRect();
+      const metricsRect = metrics.getBoundingClientRect();
+      const controls = [...mode.children, ...metrics.children].filter(
+        (element) => element instanceof HTMLElement,
+      );
+      const textNodes = [
+        ...mode.querySelectorAll('button'),
+        ...metrics.querySelectorAll('b, small'),
+      ];
+      const title = card.querySelector('.vk-source-card__title strong')?.textContent?.trim() ?? '';
+
+      if (!isContained(modeRect, summaryRect) || !isContained(metricsRect, summaryRect)) {
+        return [{ cardIndex, title, reason: 'summary group leaves its row' }];
+      }
+
+      if (overlaps(modeRect, metricsRect)) {
+        return [{ cardIndex, title, reason: 'mode and metrics overlap' }];
+      }
+
+      for (let leftIndex = 0; leftIndex < controls.length; leftIndex += 1) {
+        const left = controls[leftIndex];
+        if (!(left instanceof HTMLElement)) {
+          continue;
+        }
+        for (let rightIndex = leftIndex + 1; rightIndex < controls.length; rightIndex += 1) {
+          const right = controls[rightIndex];
+          if (
+            right instanceof HTMLElement &&
+            overlaps(left.getBoundingClientRect(), right.getBoundingClientRect())
+          ) {
+            return [{ cardIndex, title, reason: 'summary controls overlap' }];
+          }
+        }
+      }
+
+      const clippedText = textNodes.find(
+        (element) =>
+          element instanceof HTMLElement && element.scrollWidth > element.clientWidth + 1,
+      );
+      if (clippedText instanceof HTMLElement) {
+        return [
+          {
+            cardIndex,
+            title,
+            reason: `summary text is clipped: ${clippedText.textContent?.trim() ?? ''}`,
+          },
+        ];
+      }
+
+      if (card.clientWidth <= 432 && modeRect.bottom > metricsRect.top + tolerance) {
+        return [{ cardIndex, title, reason: 'narrow summary is not vertically separated' }];
+      }
+
+      return [];
+    });
+  });
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has an invalid VK source summary at card ${first.cardIndex}` +
+        `${first.title ? ` (${first.title})` : ''}: ${first.reason}.`,
+    );
   }
 }
 

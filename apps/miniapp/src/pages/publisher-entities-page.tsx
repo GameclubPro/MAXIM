@@ -35,7 +35,7 @@ import './publisher-entities-page.css';
 
 const PUBLISHER_ENTITIES_QUERY_ROOT = ['publications', 'sources', 'publisher'] as const;
 const PUBLISHER_ENTITY_PAGE_SIZE = 30;
-const PUBLISHER_ENTITY_ROW_HEIGHT = 154;
+const PUBLISHER_ENTITY_ROW_HEIGHT = 120;
 const PUBLISHER_ENTITY_LIST_INITIAL_HEIGHT = 680;
 const PUBLISHER_ENTITY_VIRTUALIZATION_THRESHOLD = 60;
 const PUBLISHER_ENTITY_LIST_OVERSCAN = 4;
@@ -66,7 +66,7 @@ const READINESS_FILTERS: Array<{
 }> = [
   { value: 'all', label: 'Все' },
   { value: 'ready', label: 'Готовы' },
-  { value: 'attention', label: 'Требуют внимания' },
+  { value: 'attention', label: 'Внимание' },
 ];
 
 function formatEntityListStatus(
@@ -158,6 +158,8 @@ export function PublisherEntitiesPage({
   const activeTypeCount = summary[view];
   const otherView = view === 'channel' ? 'chat' : 'channel';
   const otherTypeCount = summary[otherView];
+  const hasCatalogControls =
+    summary.total > 0 || query.trim().length > 0 || readinessFilter !== 'all';
   const shouldVirtualize = entities.length > PUBLISHER_ENTITY_VIRTUALIZATION_THRESHOLD;
   const virtualRange = useMemo(
     () =>
@@ -443,65 +445,65 @@ export function PublisherEntitiesPage({
         aria-posinset={absoluteIndex + 1}
         aria-setsize={filteredTotal}
       >
-        <div className="publisher-entity-row__identity">
+        <Link
+          to={buildPublisherEntityModulesRoute(entity)}
+          className="publisher-entity-row__main"
+          aria-label={`Открыть модули для ${
+            entity.title || (entity.entityType === 'channel' ? 'канала' : 'чата')
+          }`}
+        >
           <EntityAvatar
             title={entity.title}
             entityType={entity.entityType}
             avatarUrl={entity.avatarUrl}
             className="publisher-entity-row__avatar"
           />
-          <span className="publisher-entity-row__title">
-            <strong>
-              {entity.title.trim() || (entity.entityType === 'channel' ? 'Канал' : 'Чат')}
-            </strong>
-            <small>{entity.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
+          <span className="publisher-entity-row__copy">
+            <span className="publisher-entity-row__title">
+              <strong>
+                {entity.title.trim() || (entity.entityType === 'channel' ? 'Канал' : 'Чат')}
+              </strong>
+              <small>{entity.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
+            </span>
+            <span className="publisher-entity-row__status">
+              {entity.readiness.canPublish ? (
+                <CheckCircle aria-hidden />
+              ) : (
+                <WarningCircle aria-hidden />
+              )}
+              <span>{presentation.label}</span>
+            </span>
+            {refreshPhase || !entity.readiness.canPublish ? (
+              <span
+                className="publisher-entity-row__detail"
+                aria-live={refreshing ? 'polite' : undefined}
+              >
+                {refreshPhase === 'enqueueing'
+                  ? 'Запускаю проверку'
+                  : refreshPhase === 'polling'
+                    ? 'Жду новый статус от MAX'
+                    : presentation.detail}
+              </span>
+            ) : null}
           </span>
-          <span className="publisher-entity-row__status">
-            {entity.readiness.canPublish ? (
-              <CheckCircle aria-hidden />
-            ) : (
-              <WarningCircle aria-hidden />
-            )}
-            <span>{presentation.label}</span>
-          </span>
-        </div>
-
-        {refreshPhase || !entity.readiness.canPublish ? (
-          <p className="publisher-entity-row__detail" aria-live={refreshing ? 'polite' : undefined}>
-            {refreshPhase === 'enqueueing'
-              ? 'Ставлю проверку в очередь…'
-              : refreshPhase === 'polling'
-                ? 'Проверка в очереди. Жду новый статус от MAX.'
-                : presentation.detail}
-          </p>
-        ) : null}
-
-        <div className="publisher-entity-row__actions">
-          <Link
-            to={buildPublisherEntityModulesRoute(entity)}
-            className="publisher-entity-row__module-action"
-            aria-label={`Открыть модули для ${entity.title || entity.id}`}
+          <NavArrowRight className="publisher-entity-row__arrow" aria-hidden />
+        </Link>
+        {canRecheck ? (
+          <button
+            type="button"
+            className={cn('publisher-entity-row__refresh', refreshing && 'is-refreshing')}
+            aria-label={
+              refreshing
+                ? `Проверяется доступ для ${entity.title || entity.id}`
+                : `Обновить доступ для ${entity.title || entity.id}`
+            }
+            title={refreshing ? 'Проверяю доступ' : 'Обновить доступ'}
+            disabled={Boolean(entityRefresh || bulkRefresh)}
+            onClick={() => void handleRefreshEntity(entity)}
           >
-            <span>Модули</span>
-            <NavArrowRight aria-hidden />
-          </Link>
-          {canRecheck ? (
-            <button
-              type="button"
-              className={cn('publisher-entity-row__refresh', refreshing && 'is-refreshing')}
-              aria-label={
-                refreshing
-                  ? `Проверяется доступ для ${entity.title || entity.id}`
-                  : `Обновить доступ для ${entity.title || entity.id}`
-              }
-              title={refreshing ? 'Проверяю доступ' : 'Обновить доступ'}
-              disabled={Boolean(entityRefresh || bulkRefresh)}
-              onClick={() => void handleRefreshEntity(entity)}
-            >
-              <Refresh aria-hidden />
-            </button>
-          ) : null}
-        </div>
+            <Refresh aria-hidden />
+          </button>
+        ) : null}
       </article>
     );
   }
@@ -521,7 +523,9 @@ export function PublisherEntitiesPage({
         <div className="publisher-entities-page__brand">
           <span>
             <strong>Публик</strong>
-            <small>{view === 'channel' ? 'Каналы' : 'Чаты'}</small>
+            <small>
+              {view === 'channel' ? 'Каналы' : 'Чаты'} · {summary[view]}
+            </small>
           </span>
           <button
             type="button"
@@ -540,25 +544,6 @@ export function PublisherEntitiesPage({
         </div>
       </header>
 
-      <nav className="publisher-entities-page__views" aria-label="Получатели Публика">
-        <Link
-          to={buildPublisherEntityViewRoute('chat', searchParams.toString())}
-          className={cn(view === 'chat' && 'is-active')}
-          aria-current={view === 'chat' ? 'page' : undefined}
-        >
-          <span>Чаты</span>
-          <strong>{summary.chat}</strong>
-        </Link>
-        <Link
-          to={buildPublisherEntityViewRoute('channel', searchParams.toString())}
-          className={cn(view === 'channel' && 'is-active')}
-          aria-current={view === 'channel' ? 'page' : undefined}
-        >
-          <span>Каналы</span>
-          <strong>{summary.channel}</strong>
-        </Link>
-      </nav>
-
       {bulkRefresh ? (
         <div className="publisher-entities-page__refresh-status" role="status" aria-live="polite">
           <Refresh className="is-refreshing" aria-hidden />
@@ -570,45 +555,49 @@ export function PublisherEntitiesPage({
         </div>
       ) : null}
 
-      <label className="publisher-entities-page__search">
-        <Search aria-hidden />
-        <input
-          type="search"
-          value={query}
-          maxLength={120}
-          placeholder={view === 'channel' ? 'Найти канал' : 'Найти чат'}
-          aria-label={view === 'channel' ? 'Найти канал' : 'Найти чат'}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-        />
-        {query ? (
-          <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
-            <Xmark aria-hidden />
-          </button>
-        ) : null}
-      </label>
+      {hasCatalogControls ? (
+        <>
+          <label className="publisher-entities-page__search">
+            <Search aria-hidden />
+            <input
+              type="search"
+              value={query}
+              maxLength={120}
+              placeholder={view === 'channel' ? 'Найти канал' : 'Найти чат'}
+              aria-label={view === 'channel' ? 'Найти канал' : 'Найти чат'}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+            {query ? (
+              <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
+                <Xmark aria-hidden />
+              </button>
+            ) : null}
+          </label>
 
-      <div className="publisher-entities-page__filter-row">
-        <div className="publisher-entities-page__filters" role="group" aria-label="Готовность">
-          {READINESS_FILTERS.map((filter) => (
-            <button
-              key={filter.value}
-              type="button"
-              className={cn(readinessFilter === filter.value && 'is-active')}
-              aria-pressed={readinessFilter === filter.value}
-              onClick={() => setReadinessFilter(filter.value)}
-            >
-              {filter.label}
-            </button>
-          ))}
-        </div>
-        <span role="status">
-          {formatEntityListStatus(
-            entities.length,
-            filteredTotal,
-            entitiesQuery.isLoading || searchSettling,
-          )}
-        </span>
-      </div>
+          <div className="publisher-entities-page__filter-row">
+            <div className="publisher-entities-page__filters" role="group" aria-label="Готовность">
+              {READINESS_FILTERS.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  className={cn(readinessFilter === filter.value && 'is-active')}
+                  aria-pressed={readinessFilter === filter.value}
+                  onClick={() => setReadinessFilter(filter.value)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            <span role="status">
+              {formatEntityListStatus(
+                entities.length,
+                filteredTotal,
+                entitiesQuery.isLoading || searchSettling,
+              )}
+            </span>
+          </div>
+        </>
+      ) : null}
 
       {!searchSettling && entitiesQuery.isError && entities.length > 0 ? (
         <div className="publisher-entities-page__inline-error" role="alert">
@@ -679,11 +668,7 @@ export function PublisherEntitiesPage({
             Добавьте Публик администратором, затем перешлите ему сообщение или пост из нужного чата
             или канала.
           </span>
-          <button
-            type="button"
-            disabled={openingBotDialog || !botDialogUrl}
-            onClick={handleOpenBotDialog}
-          >
+          <button type="button" disabled={openingBotDialog} onClick={handleOpenBotDialog}>
             <span>{openingBotDialog ? 'Открываю...' : 'Открыть диалог Публика'}</span>
             <NavArrowRight aria-hidden />
           </button>

@@ -146,11 +146,14 @@
     padding: 0 8px;
     border: 0;
     border-radius: 6px;
+    overflow: hidden;
     color: var(--vk-muted-strong);
     background: transparent;
     font: inherit;
     font-size: 0.78rem;
     font-weight: 720;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
   }
 
@@ -727,6 +730,8 @@
   .vk-source-card {
     position: relative;
     min-width: 0;
+    container-name: vk-source-card;
+    container-type: inline-size;
     display: grid;
     gap: 6px;
     padding: 8px;
@@ -2243,7 +2248,8 @@
     }
 
     .vk-source-card__summary-row {
-      grid-template-columns: minmax(104px, 0.58fr) minmax(0, 1.42fr);
+      grid-template-columns: minmax(0, 1fr);
+      gap: 7px;
     }
 
     .vk-source-status {
@@ -2305,6 +2311,28 @@
     }
   }
 
+  @container vk-source-card (max-width: 430px) {
+    .vk-source-card__summary-row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 7px;
+    }
+
+    .vk-source-mode-control,
+    .vk-source-card__metrics {
+      width: 100%;
+    }
+
+    .vk-source-card__metrics {
+      min-height: 40px;
+      padding-inline: 4px;
+    }
+
+    .vk-source-card__metrics span {
+      align-content: center;
+      text-align: center;
+    }
+  }
+
   @media (max-width: 380px) {
     .vk-parsing-editor__format-tools {
       min-height: 97px;
@@ -2346,8 +2374,7 @@
     }
   }
 
-  html[data-max-theme='dark']
-    :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) {
+  html[data-max-theme='dark'] :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) {
     color-scheme: dark;
 
     --settings-panel-accent: #6ab8ff;
@@ -2552,8 +2579,7 @@
     box-shadow: 0 0 0 3px var(--app-focus-ring);
   }
 
-  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
-    .vk-parsing-filter-more select {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) .vk-parsing-filter-more select {
     min-width: 0;
     width: 100%;
     border: 0;
@@ -2566,8 +2592,7 @@
     font-weight: 740;
   }
 
-  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface)
-    .vk-parsing-filter-more > svg {
+  :is(.settings-drilldown__panel--vk-parsing, .vk-parsing-surface) .vk-parsing-filter-more > svg {
     width: 14px;
     height: 14px;
     pointer-events: none;

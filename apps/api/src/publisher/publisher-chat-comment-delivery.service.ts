@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
-import { PUBLISHER_CHAT_DIALOG_ACTION_COMMENT } from '../admin/admin.service.support';
+import { countPublisherChatComments } from '../admin/publisher-chat-comment-store';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { extractHttpStatusCode } from '../common/http-error.util';
 import {
@@ -375,16 +375,8 @@ export class PublisherChatCommentDeliveryService {
     let route = await this.assertReady(job.chatId, job.readinessFeature);
     this.assertKeyboardIdentity(job, route);
 
-    const currentCount = await this.prisma.auditLog.count({
-      where: {
-        chatId: job.chatId,
-        action: PUBLISHER_CHAT_DIALOG_ACTION_COMMENT,
-        payload: {
-          path: ['threadId'],
-          equals: job.threadId,
-        },
-      },
-    });
+    // Re-read at execution time so a delayed or retried job cannot restore a stale snapshot.
+    const currentCount = await countPublisherChatComments(this.prisma, job.chatId, job.threadId);
     const buttons = job.buttons.map((row) => row.map((button) => ({ ...button })));
     const commentsButton = buttons[job.commentsButton.rowIndex]?.[job.commentsButton.columnIndex];
     if (!commentsButton) {

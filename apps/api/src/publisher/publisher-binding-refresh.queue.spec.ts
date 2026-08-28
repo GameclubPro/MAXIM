@@ -122,5 +122,42 @@ describe('PublisherBindingRefreshQueueService', () => {
     expect(oldJobId).toEqual(expect.any(String));
     expect(newJobId).toEqual(expect.any(String));
     expect(newJobId).not.toBe(oldJobId);
+    expect(queue.add.mock.calls[0]?.[2]).not.toHaveProperty('deduplication');
+    expect(queue.add.mock.calls[1]?.[2]).not.toHaveProperty('deduplication');
+  });
+
+  it('coalesces stale ordinary webhook observations without delaying actor handshakes', async () => {
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new PublisherBindingRefreshQueueService(queue as never);
+    const requestedAt = new Date('2026-08-27T12:00:30.000Z');
+
+    for (let index = 0; index < 10; index += 1) {
+      await service.enqueue({
+        chatId: 'chat-1',
+        publisherBotId: 'publik-bot',
+        reason: 'webhook_observed',
+        requestedAt,
+        eventAt: new Date(requestedAt.getTime() + index),
+      });
+    }
+    await service.enqueue({
+      chatId: 'chat-1',
+      publisherBotId: 'publik-bot',
+      candidateUserId: 'admin-1',
+      candidateVersion: 'direct:start-1',
+      reason: 'webhook_observed',
+      requestedAt,
+      eventAt: requestedAt,
+    });
+
+    const ordinaryOptions = queue.add.mock.calls.slice(0, 10).map((call) => call[2]);
+    expect(new Set(ordinaryOptions.map((options) => options.jobId)).size).toBe(1);
+    expect(new Set(ordinaryOptions.map((options) => options.deduplication?.id)).size).toBe(1);
+    expect(ordinaryOptions[0]?.deduplication).toEqual({
+      id: expect.stringMatching(/^publisher-binding-refresh-observed-[a-f0-9]{24}$/u),
+      ttl: 60_000,
+    });
+    expect(queue.add.mock.calls[10]?.[2]).not.toHaveProperty('deduplication');
+    expect(queue.add.mock.calls[10]?.[2]?.jobId).not.toBe(ordinaryOptions[0]?.jobId);
   });
 });

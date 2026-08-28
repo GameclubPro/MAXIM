@@ -31,22 +31,28 @@ test('publisher virtual list uses the same stable row height in TypeScript and C
     )?.[1],
   );
 
-  assert.equal(sourceHeight, 154);
+  assert.equal(sourceHeight, 120);
   assert.equal(cssHeight, sourceHeight);
+  assert.match(pageCss, /-webkit-line-clamp: 2;/u);
   assert.match(pageCss, /overflow-y: auto;[\s\S]*?touch-action: pan-y;/u);
-  assert.match(
-    pageCss,
-    /padding-bottom: calc\([\s\S]*?var\(--bottom-nav-height\)[\s\S]*?scroll-padding-bottom: calc\(/u,
-  );
+  const listBlock = pageCss.match(/\.publisher-entities-page__list \{[\s\S]*?\n {2}\}/u)?.[0] ?? '';
+  assert.match(listBlock, /max-height: clamp\(/u);
+  assert.match(listBlock, /scroll-padding-bottom: 12px;/u);
+  assert.doesNotMatch(listBlock, /(?:^|\n)\s*(?:height|padding-bottom):/u);
+  assert.match(pageCss, /\.publisher-entities-page__list\.is-virtual \{\s*height: clamp\(/u);
 });
 
 test('publisher entity actions keep native touch targets at least 44px tall', () => {
-  assert.match(pageCss, /\.publisher-entity-row__module-action \{[\s\S]*?min-height: 44px;/u);
+  assert.match(pageCss, /\.publisher-entity-row__main \{[\s\S]*?min-height: 72px;/u);
   assert.match(
     pageCss,
     /\.publisher-entity-row__refresh \{\s*width: 44px;\s*min-width: 44px;\s*height: 44px;/u,
   );
-  assert.match(pageCss, /\.publisher-entities-page__views a \{[\s\S]*?min-height: 44px;/u);
+  assert.match(
+    pageSource,
+    /className="publisher-entity-row__main"[\s\S]*?<NavArrowRight[\s\S]*?<\/Link>[\s\S]*?\{canRecheck \? \(/u,
+  );
+  assert.doesNotMatch(pageSource, /publisher-entity-row__module-action|<span>Модули<\/span>/u);
 });
 
 test('publisher searches hide stale rows and next-page retries preserve loaded pages', () => {
@@ -72,12 +78,10 @@ test('expanded target picker removes the fixed publish dock from mobile hit test
   );
 });
 
-test('publisher catalog keeps counted type views aligned with bottom navigation', () => {
-  assert.match(pageSource, /publisher-entities-page__views/u);
-  assert.match(pageSource, /buildPublisherEntityViewRoute\('chat'/u);
-  assert.match(pageSource, /buildPublisherEntityViewRoute\('channel'/u);
-  assert.match(pageSource, /<strong>\{summary\.chat\}<\/strong>/u);
-  assert.match(pageSource, /<strong>\{summary\.channel\}<\/strong>/u);
+test('publisher catalog leaves entity switching to bottom navigation and keeps a compact count', () => {
+  assert.doesNotMatch(pageSource, /publisher-entities-page__views/u);
+  assert.match(pageSource, /buildPublisherEntityViewRoute\(otherView/u);
+  assert.match(pageSource, /summary\[view\]/u);
   assert.match(pageSource, /view === 'channel' \? 'Каналы' : 'Чаты'/u);
   assert.match(pageSource, /shouldAutoOpenChannels/u);
   assert.match(pageSource, /buildPublisherEntityModulesRoute\(entity\)/u);
@@ -90,6 +94,10 @@ test('publisher home runs a real bounded MAX recheck and exposes forwarding onbo
   assert.match(pageSource, /await entitiesQuery\.refetch\(\)/u);
   assert.match(pageSource, /openMaxBotLinkAndClose\(botDialogUrl\)/u);
   assert.match(pageSource, /перешлите ему сообщение или пост/u);
+  assert.match(pageSource, /const hasCatalogControls =/u);
+  assert.match(pageSource, /\{hasCatalogControls \? \(/u);
+  assert.match(pageSource, /disabled=\{openingBotDialog\}/u);
+  assert.doesNotMatch(pageSource, /disabled=\{openingBotDialog \|\| !botDialogUrl\}/u);
   assert.doesNotMatch(
     pageSource,
     /aria-label="Обновить чаты и каналы"[\s\S]*?resetQueries\(\{ queryKey: entitiesQueryKey/u,

@@ -203,6 +203,10 @@ function buildPreviewPublisherEntity(
         ? 'write_permission_missing'
         : null;
   const runtimeUnavailable = entityId === 'preview-channel-2';
+  const channelSuggestionsEnabled =
+    entityType === 'channel' &&
+    (getPreviewPublisherChannelSuggestions(state)[entityId] ??
+      state.publisherSuggestionsVariant !== 'empty');
   const readiness = !policy.publikEnabled
     ? {
         state: 'disabled' as const,
@@ -239,9 +243,7 @@ function buildPreviewPublisherEntity(
             canUseChatComments:
               entityType === 'chat' &&
               getPreviewPublisherChatComments(state)[entityId]?.commentsEnabled === true,
-            canPublishSuggestions:
-              entityType === 'channel' &&
-              getPreviewPublisherChannelSuggestions(state)[entityId] === true,
+            canPublishSuggestions: channelSuggestionsEnabled,
             blockerCode: null,
             checkedAt,
             retryAt: null,
@@ -263,10 +265,7 @@ function buildPreviewPublisherEntity(
               commentsChatBroadcastsEnabled: false,
             })
           : null,
-      channelSuggestionsEnabled:
-        entityType === 'channel'
-          ? (getPreviewPublisherChannelSuggestions(state)[entityId] ?? false)
-          : null,
+      channelSuggestionsEnabled: entityType === 'channel' ? channelSuggestionsEnabled : null,
     },
     readiness,
   });

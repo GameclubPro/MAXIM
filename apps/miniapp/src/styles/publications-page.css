@@ -31,14 +31,9 @@
     --publication-row-border: var(--publication-ui-row-border);
     --publication-selected-bg: var(--publication-ui-selected);
     min-height: 100%;
-    padding: 12px 12px
-      calc(var(--bottom-nav-height, 68px) + var(--app-safe-bottom, 0px) + 34px);
+    padding: 12px 12px calc(var(--bottom-nav-height, 68px) + var(--app-safe-bottom, 0px) + 34px);
     background: var(--surface-page);
     color: var(--color-ink);
-  }
-
-  .publications-page.is-editor {
-    padding-bottom: calc(96px + var(--app-safe-bottom, 0px));
   }
 
   body.publications-editor-open .bottom-nav {
@@ -771,7 +766,7 @@
   .publication-target-picker {
     display: grid;
     gap: 9px;
-    scroll-margin-block: 12px calc(var(--publication-dock-space, 0px) + 12px);
+    scroll-margin-block: 12px;
   }
 
   .publication-target-picker__selected {
@@ -1087,12 +1082,7 @@
   }
 
   .publications-publish-bar {
-    position: fixed;
-    left: 50%;
-    bottom: calc(var(--app-safe-bottom, 0px) + 8px);
-    z-index: 24;
-    width: min(calc(100% - 16px), 640px);
-    transform: translateX(-50%);
+    width: 100%;
   }
 
   .publications-page .broadcast-publish-bar {
@@ -1617,21 +1607,6 @@
   }
 
   /* The publication workspace stays intentionally plain: authoring comes before decoration. */
-  .publications-page.is-editor {
-    --publication-dock-keyboard-offset: min(var(--app-keyboard-overlap, 0px), 320px);
-    --publication-dock-bottom: calc(
-      var(--app-safe-bottom, 0px) + var(--publication-dock-keyboard-offset)
-    );
-    --publication-dock-space: calc(86px + var(--publication-dock-bottom));
-    padding-bottom: var(--publication-dock-space);
-    scroll-padding-bottom: calc(var(--publication-dock-space) + 12px);
-  }
-
-  .publications-page.is-editor:has(.broadcast-publish-bar.has-issues) {
-    --publication-dock-space: calc(122px + var(--publication-dock-bottom));
-    padding-bottom: var(--publication-dock-space);
-  }
-
   .publications-header,
   .publications-editor-header {
     min-height: 48px;
@@ -1863,7 +1838,7 @@
     display: grid;
     gap: 8px;
     padding: 2px 0 0;
-    scroll-margin-bottom: calc(var(--publication-dock-space, 0px) + 12px);
+    scroll-margin-bottom: 12px;
   }
 
   .publication-target-picker__list {
@@ -2023,8 +1998,7 @@
   }
 
   .publications-publish-bar {
-    bottom: calc(var(--publication-dock-bottom, var(--app-safe-bottom, 0px)) + 6px);
-    width: min(calc(100% - 20px), 640px);
+    width: 100%;
   }
 
   .publications-page .broadcast-publish-bar {
