@@ -12,6 +12,15 @@ import {
 } from '../moderation/private-control-markup-importer';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import {
+  MAX_IMAGE_UPLOAD_NORMALIZATION_ERROR_CODES,
+  MaxImageUploadNormalizationError,
+  normalizeUnsupportedMaxImageUpload,
+} from '../max/max-image-upload-normalization';
+import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+} from '../max/max-media-upload-validation';
+import {
   PublicationAudienceMode,
   PublicationAudienceSelection,
   PublicationDispatchProfile,
@@ -37,11 +46,29 @@ const POST_IMPORT_FETCH_TIMEOUT_MS = 20_000;
 const POST_IMPORT_ALLOWED_MEDIA_HOSTS = ['max.ru', 'oneme.ru', 'mycdn.me', 'okcdn.ru'] as const;
 
 type ProcessResult = 'ready' | 'failed' | 'noop';
+type PublisherPostImportSnapshotSource = 'webhook_receipt' | 'remote_exact';
+type PublisherPostImportRejectionKind =
+  | PublisherPostImportFailureCode
+  | 'content_validation'
+  | 'image_decode_budget_exceeded'
+  | 'image_dimensions_exceeded'
+  | 'image_format_unsupported_after_normalization'
+  | 'image_invalid_payload'
+  | 'image_normalization_dimensions_exceeded'
+  | 'image_normalization_input_pixel_limit_exceeded'
+  | 'image_normalization_output_too_large'
+  | 'image_transcode_failed'
+  | 'receipt_bot_mismatch'
+  | 'receipt_identity_missing'
+  | 'receipt_normalized_identity_mismatch'
+  | 'receipt_payload_invalid'
+  | 'receipt_raw_identity_mismatch';
 
 class PublisherPostImportTerminalError extends Error {
   constructor(
     readonly code: PublisherPostImportFailureCode,
     message: string,
+    readonly rejectionKind: PublisherPostImportRejectionKind = code,
   ) {
     super(message);
     this.name = 'PublisherPostImportTerminalError';
@@ -91,6 +118,7 @@ export class PublisherPostImportProcessingService {
     if (!session) {
       return 'noop';
     }
+    let snapshotSource: PublisherPostImportSnapshotSource = 'remote_exact';
 
     try {
       if (session.expiresAt <= now) {
@@ -107,19 +135,25 @@ export class PublisherPostImportProcessingService {
           'Exact forwarded message identity is unavailable',
         );
       }
-      const exactMessage = incomingMessageId.startsWith('message_created:')
-        ? await this.loadPersistedPureForward({
-            sourceWebhookEventId: session.sourceWebhookEventId,
-            publisherBotId: session.publisherBotId,
-            actorUserId: session.actorUserId,
-            privateChatId,
-            incomingMessageId,
-          })
-        : await this.loadRemoteIncomingMessage(
-            privateChatId,
-            incomingMessageId,
-            session.publisherBotId,
-          );
+      let exactMessage: Record<string, unknown> | null = null;
+      if (session.sourceWebhookEventId?.trim()) {
+        snapshotSource = 'webhook_receipt';
+        exactMessage = await this.loadPersistedForwardReceipt({
+          sourceWebhookEventId: session.sourceWebhookEventId,
+          publisherBotId: session.publisherBotId,
+          actorUserId: session.actorUserId,
+          privateChatId,
+          incomingMessageId,
+        });
+      }
+      if (!exactMessage) {
+        snapshotSource = 'remote_exact';
+        exactMessage = await this.loadRemoteIncomingMessage(
+          privateChatId,
+          incomingMessageId,
+          session.publisherBotId,
+        );
+      }
       this.assertExactSender(exactMessage, session.actorUserId);
       const linkedMessage = this.extractLinkedForward(exactMessage);
       if (!linkedMessage) {
@@ -205,7 +239,10 @@ export class PublisherPostImportProcessingService {
         }
         return publication.id as string;
       });
-      this.logger.log({ sessionId, publicationId }, 'Publisher forwarded post import completed');
+      this.logger.log(
+        { sessionId, publicationId, snapshotSource },
+        'Publisher forwarded post import completed',
+      );
       return 'ready';
     } catch (error: unknown) {
       if (error instanceof PublisherPostImportSupersededError) {
@@ -213,13 +250,18 @@ export class PublisherPostImportProcessingService {
       }
       if (error instanceof PublisherPostImportTerminalError) {
         if (await this.fail(session.id, lockToken, error.code)) {
-          this.logTerminalFailure(session.id, error.code);
+          this.logTerminalFailure(session.id, error.code, error.rejectionKind, snapshotSource);
         }
         return 'failed';
       }
       if (error instanceof BadRequestException) {
         if (await this.fail(session.id, lockToken, 'unsupported_content')) {
-          this.logTerminalFailure(session.id, 'unsupported_content');
+          this.logTerminalFailure(
+            session.id,
+            'unsupported_content',
+            'content_validation',
+            snapshotSource,
+          );
         }
         return 'failed';
       }
@@ -330,7 +372,8 @@ export class PublisherPostImportProcessingService {
               'Forwarded image has no durable download URL',
             );
           }
-          return this.downloadMedia(url, PUBLICATION_MAX_IMAGE_BYTES, 'image');
+          const downloaded = await this.downloadMedia(url, PUBLICATION_MAX_IMAGE_BYTES, 'image');
+          return this.prepareImportedImage(downloaded);
         },
       );
       const totalBytes = downloadedImages.reduce(
@@ -348,7 +391,7 @@ export class PublisherPostImportProcessingService {
           type: 'image',
           base64: downloaded.bytes.toString('base64'),
           mimeType: downloaded.mimeType,
-          fileName: `forwarded-image-${index + 1}.${this.extensionForMime(downloaded.mimeType, 'jpg')}`,
+          fileName: `forwarded-image-${index + 1}.${downloaded.extension}`,
         });
       });
     } else if (videoAttachments.length === 1) {
@@ -414,6 +457,84 @@ export class PublisherPostImportProcessingService {
       media,
       omissions: [...new Set(omissions)],
     };
+  }
+
+  private async prepareImportedImage(downloaded: {
+    bytes: Buffer;
+    mimeType: string;
+  }): Promise<{ bytes: Buffer; mimeType: string; extension: string }> {
+    try {
+      const validated = await this.maxClient.validateMediaUploadPayload('image', downloaded.bytes);
+      return {
+        bytes: downloaded.bytes,
+        mimeType: validated.mimeType,
+        extension: validated.extension,
+      };
+    } catch (error: unknown) {
+      if (!(error instanceof MaxMediaUploadValidationError)) {
+        throw error;
+      }
+      if (error.code !== MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.UNSUPPORTED_FORMAT) {
+        throw this.mapImageValidationFailure(error);
+      }
+    }
+
+    try {
+      return await normalizeUnsupportedMaxImageUpload(
+        downloaded.bytes,
+        PUBLICATION_MAX_IMAGE_BYTES,
+      );
+    } catch (error: unknown) {
+      if (error instanceof MaxMediaUploadValidationError) {
+        throw this.mapImageValidationFailure(error);
+      }
+      if (error instanceof MaxImageUploadNormalizationError) {
+        if (error.code !== MAX_IMAGE_UPLOAD_NORMALIZATION_ERROR_CODES.TRANSCODE_FAILED) {
+          const rejectionKind: PublisherPostImportRejectionKind =
+            error.code === MAX_IMAGE_UPLOAD_NORMALIZATION_ERROR_CODES.DIMENSIONS_EXCEEDED
+              ? 'image_normalization_dimensions_exceeded'
+              : error.code ===
+                  MAX_IMAGE_UPLOAD_NORMALIZATION_ERROR_CODES.INPUT_PIXEL_LIMIT_EXCEEDED
+                ? 'image_normalization_input_pixel_limit_exceeded'
+                : 'image_normalization_output_too_large';
+          throw new PublisherPostImportTerminalError(
+            'image_too_large',
+            'Forwarded image cannot be normalized within the image limits',
+            rejectionKind,
+          );
+        }
+        throw new PublisherPostImportTerminalError(
+          'media_download_failed',
+          'Forwarded image could not be normalized',
+          'image_transcode_failed',
+        );
+      }
+      throw error;
+    }
+  }
+
+  private mapImageValidationFailure(
+    error: MaxMediaUploadValidationError,
+  ): PublisherPostImportTerminalError {
+    if (
+      error.code === MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.IMAGE_DIMENSIONS_EXCEEDED ||
+      error.code === MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.IMAGE_DECODE_BUDGET_EXCEEDED
+    ) {
+      return new PublisherPostImportTerminalError(
+        'image_too_large',
+        'Forwarded image exceeds the decode or dimension limit',
+        error.code === MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.IMAGE_DIMENSIONS_EXCEEDED
+          ? 'image_dimensions_exceeded'
+          : 'image_decode_budget_exceeded',
+      );
+    }
+    return new PublisherPostImportTerminalError(
+      'media_download_failed',
+      'Forwarded image bytes are invalid or unsupported after normalization',
+      error.code === MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.UNSUPPORTED_FORMAT
+        ? 'image_format_unsupported_after_normalization'
+        : 'image_invalid_payload',
+    );
   }
 
   private async downloadMedia(
@@ -669,35 +790,41 @@ export class PublisherPostImportProcessingService {
     return this.resolveExactMessage(exactResponse, incomingMessageId);
   }
 
-  private async loadPersistedPureForward(params: {
+  private async loadPersistedForwardReceipt(params: {
     sourceWebhookEventId: string | null;
     publisherBotId: string;
     actorUserId: string;
     privateChatId: string;
     incomingMessageId: string;
-  }): Promise<Record<string, unknown>> {
+  }): Promise<Record<string, unknown> | null> {
     const sourceWebhookEventId = params.sourceWebhookEventId?.trim() ?? '';
     if (!sourceWebhookEventId) {
       throw new PublisherPostImportTerminalError(
         'message_unavailable',
-        'Pure forward receipt identity is unavailable',
+        'Forward receipt identity is unavailable',
+        'receipt_identity_missing',
       );
     }
     const receipt = await this.prisma.webhookEvent.findUnique({
       where: { id: sourceWebhookEventId },
       select: { botId: true, normalizedPayload: true },
     });
-    if (!receipt || receipt.botId?.trim() !== params.publisherBotId) {
+    if (!receipt) {
+      return null;
+    }
+    if (receipt.botId?.trim() !== params.publisherBotId) {
       throw new PublisherPostImportTerminalError(
         'message_unavailable',
-        'Pure forward receipt does not belong to Publisher',
+        'Forward receipt does not belong to Publisher',
+        'receipt_bot_mismatch',
       );
     }
     const parsed = maxUpdateSchema.safeParse(receipt.normalizedPayload);
     if (!parsed.success) {
       throw new PublisherPostImportTerminalError(
         'message_unavailable',
-        'Pure forward receipt payload is invalid',
+        'Forward receipt payload is invalid',
+        'receipt_payload_invalid',
       );
     }
     const update = parsed.data;
@@ -705,14 +832,14 @@ export class PublisherPostImportProcessingService {
     if (
       update.botId?.trim() !== params.publisherBotId ||
       update.type.trim().toLowerCase() !== 'message_created' ||
-      params.incomingMessageId !== `message_created:${update.updateId}` ||
       normalizedMessage?.messageId !== params.incomingMessageId ||
       normalizedMessage.chatId !== params.privateChatId ||
       normalizedMessage.senderId !== params.actorUserId
     ) {
       throw new PublisherPostImportTerminalError(
         'message_unavailable',
-        'Pure forward receipt identity does not match the import session',
+        'Forward receipt identity does not match the import session',
+        'receipt_normalized_identity_mismatch',
       );
     }
     const raw = this.asRecord(update.raw);
@@ -721,17 +848,23 @@ export class PublisherPostImportProcessingService {
     const recipient = this.asRecord(rawMessage?.recipient);
     const sender = this.asRecord(rawMessage?.sender);
     const link = this.asRecord(rawMessage?.link);
+    const rawMessageId = rawMessage ? this.readMessageId(rawMessage) : null;
+    const rawMessageIdMatches = rawMessageId
+      ? rawMessageId === params.incomingMessageId
+      : params.incomingMessageId === `message_created:${update.updateId}`;
     if (
       rawType !== 'message_created' ||
       this.readString(recipient?.chat_id ?? recipient?.chatId) !== params.privateChatId ||
       this.readString(recipient?.chat_type ?? recipient?.chatType)?.toLowerCase() !== 'dialog' ||
       this.readString(sender?.user_id ?? sender?.userId ?? sender?.id) !== params.actorUserId ||
+      !rawMessageIdMatches ||
       this.readString(link?.type)?.toLowerCase() !== 'forward' ||
       !this.asRecord(link?.message)
     ) {
       throw new PublisherPostImportTerminalError(
         'message_unavailable',
-        'Pure forward raw identity does not match the authenticated receipt',
+        'Forward raw identity does not match the authenticated receipt',
+        'receipt_raw_identity_mismatch',
       );
     }
     return rawMessage!;
@@ -850,8 +983,16 @@ export class PublisherPostImportProcessingService {
     return failed.count > 0;
   }
 
-  private logTerminalFailure(sessionId: string, failureCode: PublisherPostImportFailureCode): void {
-    this.logger.log({ sessionId, failureCode }, 'Publisher forwarded post import rejected');
+  private logTerminalFailure(
+    sessionId: string,
+    failureCode: PublisherPostImportFailureCode,
+    rejectionKind: PublisherPostImportRejectionKind,
+    snapshotSource: PublisherPostImportSnapshotSource,
+  ): void {
+    this.logger.log(
+      { sessionId, failureCode, rejectionKind, snapshotSource },
+      'Publisher forwarded post import rejected',
+    );
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

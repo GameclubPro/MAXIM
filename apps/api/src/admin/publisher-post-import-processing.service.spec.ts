@@ -1,4 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
+import sharp from 'sharp';
+import {
+  MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
+  MaxMediaUploadValidationError,
+  validateMaxMediaUploadPayload,
+} from '../max/max-media-upload-validation';
 import { PublisherPostImportStatus } from '../prisma/prisma-client';
 import { PublisherPostImportProcessingService } from './publisher-post-import-processing.service';
 
@@ -38,6 +44,41 @@ function exactForwardedMessage(linkedMessage: Record<string, unknown>) {
     link: {
       type: 'forward',
       message: linkedMessage,
+    },
+  };
+}
+
+function persistedForwardReceipt(params: {
+  incomingMessageId: string;
+  linkedMessage: Record<string, unknown>;
+  rawMessageId?: string | null;
+}) {
+  const body =
+    params.rawMessageId === null
+      ? null
+      : { mid: params.rawMessageId ?? params.incomingMessageId, text: '' };
+  return {
+    botId: 'publik_bot',
+    normalizedPayload: {
+      updateId: 'update-forward-1',
+      botId: 'publik_bot',
+      type: 'message_created',
+      message: {
+        messageId: params.incomingMessageId,
+        chatId: '42',
+        senderId: '42',
+        text: '',
+        createdAt: NOW.toISOString(),
+      },
+      raw: {
+        update_type: 'message_created',
+        message: {
+          sender: { user_id: 42 },
+          recipient: { chat_id: 42, chat_type: 'dialog' },
+          body,
+          link: { type: 'forward', message: params.linkedMessage },
+        },
+      },
     },
   };
 }
@@ -83,6 +124,10 @@ function createFixture(
       },
     ),
     getVideoDownloadUrl: jest.fn(),
+    validateMediaUploadPayload: jest.fn().mockResolvedValue({
+      extension: 'jpg',
+      mimeType: 'image/jpeg',
+    }),
   };
   const contentService = {
     prepareContentRevision: jest.fn(async (content: Record<string, unknown>) => ({
@@ -114,7 +159,7 @@ describe('PublisherPostImportProcessingService', () => {
     jest.useRealTimers();
   });
 
-  it('imports strictly from link.message and preserves structured UTF-16 markup', async () => {
+  it('falls back to remote exact lookup and preserves structured UTF-16 markup', async () => {
     const { service, maxClient, contentService, tx } = createFixture();
 
     await expect(service.process('session-1')).resolves.toBe('ready');
@@ -141,6 +186,64 @@ describe('PublisherPostImportProcessingService', () => {
         resultingVersion: 1,
       }),
     });
+  });
+
+  it('prefers an authenticated receipt for an ordinary forwarded message id', async () => {
+    const linkedMessage = { text: 'Пост из сохраненного webhook', attachments: [] };
+    const { service, prisma, maxClient, contentService } = createFixture(undefined, {
+      sourceWebhookEventId: 'webhook-event-real-mid-1',
+    });
+    prisma.webhookEvent.findUnique.mockResolvedValue(
+      persistedForwardReceipt({ incomingMessageId: 'incoming-mid-1', linkedMessage }),
+    );
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Пост из сохраненного webhook' }),
+    );
+  });
+
+  it('falls back to remote exact lookup when the referenced receipt is missing', async () => {
+    const { service, prisma, maxClient } = createFixture(undefined, {
+      sourceWebhookEventId: 'webhook-event-missing-1',
+    });
+    prisma.webhookEvent.findUnique.mockResolvedValue(null);
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledWith(
+      '42',
+      'incoming-mid-1',
+      expect.objectContaining({ botId: 'publik_bot' }),
+    );
+  });
+
+  it('rejects a receipt whose raw message id differs from the normalized captured id', async () => {
+    const { service, prisma, maxClient, contentService } = createFixture(undefined, {
+      sourceWebhookEventId: 'webhook-event-mismatched-mid-1',
+    });
+    prisma.webhookEvent.findUnique.mockResolvedValue(
+      persistedForwardReceipt({
+        incomingMessageId: 'incoming-mid-1',
+        rawMessageId: 'another-mid',
+        linkedMessage: { text: 'Не должен импортироваться', attachments: [] },
+      }),
+    );
+
+    await expect(service.process('session-1')).resolves.toBe('failed');
+
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(contentService.prepareContentRevision).not.toHaveBeenCalled();
+    expect(prisma.publisherPostImportSession.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          failureCode: 'message_unavailable',
+          status: PublisherPostImportStatus.FAILED,
+        }),
+      }),
+    );
   });
 
   it('treats a share attachment as supplemental when the forwarded post has text', async () => {
@@ -268,7 +371,12 @@ describe('PublisherPostImportProcessingService', () => {
       }),
     );
     expect(terminalLog).toHaveBeenCalledWith(
-      { sessionId: 'session-1', failureCode: 'unsupported_content' },
+      {
+        sessionId: 'session-1',
+        failureCode: 'unsupported_content',
+        rejectionKind: 'unsupported_content',
+        snapshotSource: 'remote_exact',
+      },
       'Publisher forwarded post import rejected',
     );
     expect(JSON.stringify(terminalLog.mock.calls)).not.toContain('private-document');
@@ -407,8 +515,114 @@ describe('PublisherPostImportProcessingService', () => {
     );
   });
 
+  it('normalizes an opaque forwarded WebP while preserving its text', async () => {
+    const webp = await sharp({
+      create: {
+        width: 8,
+        height: 6,
+        channels: 3,
+        background: { r: 20, g: 80, b: 160 },
+      },
+    })
+      .webp()
+      .toBuffer();
+    const { service, maxClient } = createFixture();
+    maxClient.validateMediaUploadPayload.mockImplementation(validateMaxMediaUploadPayload);
+    const internal = service as unknown as {
+      buildContent: (
+        message: Record<string, unknown>,
+        botId: string,
+      ) => Promise<{
+        text: string;
+        media: Array<{ base64: string; mimeType: string; fileName: string }>;
+      }>;
+      downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    internal.downloadMedia = jest.fn().mockResolvedValue({ bytes: webp, mimeType: 'image/webp' });
+
+    const content = await internal.buildContent(
+      {
+        text: 'Подпись к фото',
+        attachments: [{ type: 'image', payload: { url: 'https://i.oneme.ru/webp' } }],
+      },
+      'publik_bot',
+    );
+
+    expect(content.text).toBe('Подпись к фото');
+    expect(content.media).toEqual([
+      expect.objectContaining({ mimeType: 'image/jpeg', fileName: 'forwarded-image-1.jpg' }),
+    ]);
+    await expect(
+      validateMaxMediaUploadPayload('image', Buffer.from(content.media[0]!.base64, 'base64')),
+    ).resolves.toMatchObject({ format: 'jpeg' });
+  });
+
+  it('normalizes an image-only AVIF with alpha into PNG', async () => {
+    const avif = await sharp({
+      create: {
+        width: 7,
+        height: 5,
+        channels: 4,
+        background: { r: 40, g: 120, b: 200, alpha: 0.5 },
+      },
+    })
+      .avif()
+      .toBuffer();
+    const { service, maxClient } = createFixture();
+    maxClient.validateMediaUploadPayload.mockImplementation(validateMaxMediaUploadPayload);
+    const internal = service as unknown as {
+      buildContent: (
+        message: Record<string, unknown>,
+        botId: string,
+      ) => Promise<{
+        text: string;
+        media: Array<{ base64: string; mimeType: string; fileName: string }>;
+      }>;
+      downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    internal.downloadMedia = jest.fn().mockResolvedValue({ bytes: avif, mimeType: 'image/avif' });
+
+    const content = await internal.buildContent(
+      { attachments: [{ type: 'image', payload: { url: 'https://i.oneme.ru/avif' } }] },
+      'publik_bot',
+    );
+
+    expect(content.text).toBe('');
+    expect(content.media).toEqual([
+      expect.objectContaining({ mimeType: 'image/png', fileName: 'forwarded-image-1.png' }),
+    ]);
+  });
+
+  it.each([
+    [MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.INVALID_PAYLOAD, 'media_download_failed'],
+    [MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.IMAGE_DIMENSIONS_EXCEEDED, 'image_too_large'],
+    [MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES.IMAGE_DECODE_BUDGET_EXCEEDED, 'image_too_large'],
+  ] as const)('maps image validation code %s to %s', async (validationCode, failureCode) => {
+    const { service, maxClient } = createFixture();
+    maxClient.validateMediaUploadPayload.mockRejectedValue(
+      new MaxMediaUploadValidationError(validationCode, 'image'),
+    );
+    const internal = service as unknown as {
+      buildContent: (message: Record<string, unknown>, botId: string) => Promise<unknown>;
+      downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    internal.downloadMedia = jest.fn().mockResolvedValue({
+      bytes: Buffer.from('invalid-image'),
+      mimeType: 'image/jpeg',
+    });
+
+    await expect(
+      internal.buildContent(
+        { attachments: [{ type: 'image', payload: { url: 'https://i.oneme.ru/invalid' } }] },
+        'publik_bot',
+      ),
+    ).rejects.toMatchObject({ code: failureCode });
+  });
+
   it('terminalizes downloaded MIME spoof validation instead of retrying until timeout', async () => {
     const { service, contentService, prisma } = createFixture();
+    const logger = (service as unknown as { logger: { log: (...args: unknown[]) => void } }).logger;
+    const terminalLog = jest.spyOn(logger, 'log').mockImplementation(() => undefined);
     contentService.prepareContentRevision.mockRejectedValue(
       new BadRequestException('Видео повреждено.'),
     );
@@ -422,6 +636,15 @@ describe('PublisherPostImportProcessingService', () => {
           failureCode: 'unsupported_content',
         }),
       }),
+    );
+    expect(terminalLog).toHaveBeenCalledWith(
+      {
+        sessionId: 'session-1',
+        failureCode: 'unsupported_content',
+        rejectionKind: 'content_validation',
+        snapshotSource: 'remote_exact',
+      },
+      'Publisher forwarded post import rejected',
     );
   });
 
@@ -468,10 +691,10 @@ describe('PublisherPostImportProcessingService', () => {
       '4',
     ]);
     expect(content.media.map((item) => item.fileName)).toEqual([
-      'forwarded-image-1.jpeg',
-      'forwarded-image-2.jpeg',
-      'forwarded-image-3.jpeg',
-      'forwarded-image-4.jpeg',
+      'forwarded-image-1.jpg',
+      'forwarded-image-2.jpg',
+      'forwarded-image-3.jpg',
+      'forwarded-image-4.jpg',
     ]);
   });
 
