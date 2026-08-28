@@ -9,10 +9,12 @@ import {
   listLegacyPublicationsQuerySchema,
   listPublicationDeliveriesQuerySchema,
   listPublicationsQuerySchema,
+  MAX_PUBLICATION_EXPLICIT_SLOTS,
   MAX_PUBLICATION_IMAGES_TOTAL_BASE64_LENGTH,
   MAX_PUBLICATION_TEXT_LENGTH,
   publicationContentInputSchema,
   publicationDeliverySchema,
+  publicationSlotsScheduleSchema,
   publicationSummarySchema,
   retryPublicationOccurrenceRequestSchema,
 } from '@maxim/contracts/publication';
@@ -155,6 +157,40 @@ describe('publication contracts', () => {
         media: [],
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts 300 explicit schedule slots and reports the shared limit at 301', () => {
+    expect(MAX_PUBLICATION_EXPLICIT_SLOTS).toBe(300);
+
+    const slots = Array.from({ length: MAX_PUBLICATION_EXPLICIT_SLOTS + 1 }, (_, index) =>
+      new Date(Date.UTC(2026, 7, 28, 18, index)).toISOString(),
+    );
+
+    expect(
+      publicationSlotsScheduleSchema.safeParse({
+        mode: 'slots',
+        timezone: 'Europe/Moscow',
+        slots: slots.slice(0, MAX_PUBLICATION_EXPLICIT_SLOTS),
+      }).success,
+    ).toBe(true);
+
+    const overLimit = publicationSlotsScheduleSchema.safeParse({
+      mode: 'slots',
+      timezone: 'Europe/Moscow',
+      slots,
+    });
+
+    expect(overLimit.success).toBe(false);
+    if (!overLimit.success) {
+      expect(overLimit.error.issues).toContainEqual(
+        expect.objectContaining({
+          code: 'too_big',
+          maximum: MAX_PUBLICATION_EXPLICIT_SLOTS,
+          path: ['slots'],
+          message: `Можно запланировать не более ${MAX_PUBLICATION_EXPLICIT_SLOTS} отправок.`,
+        }),
+      );
+    }
   });
 
   it('requires optimistic revisions only when retrying the latest content', () => {

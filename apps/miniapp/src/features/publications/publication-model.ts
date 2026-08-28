@@ -7,6 +7,7 @@ import type {
   ManagedEntityType,
 } from '@maxim/contracts';
 import {
+  MAX_PUBLICATION_EXPLICIT_SLOTS,
   MAX_PUBLICATION_TEXT_LENGTH,
   type CreatePublicationRequest,
   type PublicationAsset,
@@ -899,6 +900,25 @@ export function buildPublicationSchedule(
     timezone: draft.scheduleTimezone,
     slots: sortAndUniqueBroadcastSlots(draft.scheduledSlots),
     replaceConflicts,
+  };
+}
+
+export function getPublicationExplicitSlotsLimitFeedback(
+  draft: Pick<PublicationDraft, 'timingMode' | 'scheduleKind' | 'scheduledSlots'>,
+): PublicationSaveFeedback | null {
+  if (draft.timingMode !== 'schedule' || draft.scheduleKind !== 'slots') {
+    return null;
+  }
+
+  const slotCount = sortAndUniqueBroadcastSlots(draft.scheduledSlots).length;
+  if (slotCount <= MAX_PUBLICATION_EXPLICIT_SLOTS) {
+    return null;
+  }
+
+  return {
+    tone: 'danger',
+    title: `Можно запланировать не более ${MAX_PUBLICATION_EXPLICIT_SLOTS} отправок.`,
+    notification: 'error',
   };
 }
 

@@ -12,6 +12,7 @@ import {
   filterFuturePublicationSlots,
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
+  getPublicationExplicitSlotsLimitFeedback,
   getPublicationListPollingInterval,
   getPublicationPrimaryActionLabel,
   getPublicationRecurrenceIntervalNotice,
@@ -75,6 +76,24 @@ test('isolates edit and duplicate drafts from the persisted create draft', () =>
   assert.equal(shouldPersistPublicationDraft('duplicate'), false);
   assert.equal(isIsolatedPublicationEditor('edit'), true);
   assert.equal(isIsolatedPublicationEditor('duplicate'), true);
+});
+
+test('reports the explicit schedule limit only after 300 unique sends', () => {
+  const draft = createEmptyPublicationDraft([chatTarget]);
+  draft.timingMode = 'schedule';
+  draft.scheduleKind = 'slots';
+  draft.scheduledSlots = Array.from({ length: 300 }, (_, index) =>
+    new Date(Date.UTC(2030, 0, 1, index)).toISOString(),
+  );
+
+  assert.equal(getPublicationExplicitSlotsLimitFeedback(draft), null);
+
+  draft.scheduledSlots.push(new Date(Date.UTC(2030, 0, 1, 300)).toISOString());
+  assert.deepEqual(getPublicationExplicitSlotsLimitFeedback(draft), {
+    tone: 'danger',
+    title: 'Можно запланировать не более 300 отправок.',
+    notification: 'error',
+  });
 });
 
 test('labels publisher actions from validation and timing state', () => {

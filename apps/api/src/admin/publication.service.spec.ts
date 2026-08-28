@@ -13,6 +13,7 @@ import {
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
+import { MAX_PUBLICATION_EXPLICIT_SLOTS } from '@maxim/contracts/publication';
 import {
   BadRequestException,
   ConflictException,
@@ -833,6 +834,79 @@ describe('PublicationService', () => {
     expect(prepareSpy.mock.invocationCallOrder[0]).toBeLessThan(
       transaction.mock.invocationCallOrder[0],
     );
+  });
+
+  it('persists all 300 accepted explicit schedule slots as publication occurrences', async () => {
+    const now = new Date('2026-08-28T14:30:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    try {
+      const occurrenceCreateMany = jest.fn().mockResolvedValue({
+        count: MAX_PUBLICATION_EXPLICIT_SLOTS,
+      });
+      const tx = {
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        publication: {
+          create: jest.fn().mockResolvedValue({ id: 'publication-300-slots' }),
+          update: jest.fn().mockResolvedValue({}),
+        },
+        publicationSchedule: {
+          create: jest.fn().mockResolvedValue({ id: 'schedule-300-slots', revision: 1 }),
+        },
+        publicationOccurrence: {
+          findMany: jest.fn().mockResolvedValue([]),
+          createMany: occurrenceCreateMany,
+        },
+        managedBroadcastCalendarReservation: {
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        publicationMutationRecord: { create: jest.fn().mockResolvedValue({}) },
+      };
+      const { service, contentService } = createService({
+        publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+        publicationOccurrence: { findMany: jest.fn().mockResolvedValue([]) },
+        $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+      });
+      jest
+        .spyOn(contentService, 'persistPreparedContentRevision')
+        .mockResolvedValue({ id: 'content-300-slots' } as never);
+      jest.spyOn(service, 'get').mockResolvedValue({ id: 'publication-300-slots' } as never);
+      const slots = Array.from({ length: MAX_PUBLICATION_EXPLICIT_SLOTS }, (_, index) =>
+        new Date(now.getTime() + (index + 1) * 30 * 60_000).toISOString(),
+      );
+
+      await service.create(
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'create_300_slots_001',
+          title: 'Расписание на 300 отправок',
+          content: { text: 'Текст', textFormat: 'plain', buttons: [], media: [] },
+          audience: {
+            selection: 'SELECTED',
+            mode: 'SNAPSHOT',
+            targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+          },
+          schedule: {
+            mode: 'slots',
+            timezone: 'Europe/Moscow',
+            slots,
+            replaceConflicts: false,
+          },
+          intent: 'publish',
+        },
+      );
+
+      expect(occurrenceCreateMany).toHaveBeenCalledTimes(1);
+      const [createManyInput] = occurrenceCreateMany.mock.calls[0] as unknown as [
+        { data: Array<{ scheduledAt: Date }> },
+      ];
+      const persistedSlots = createManyInput.data;
+      expect(persistedSlots).toHaveLength(MAX_PUBLICATION_EXPLICIT_SLOTS);
+      expect(
+        new Set(persistedSlots.map((row: { scheduledAt: Date }) => row.scheduledAt.getTime())).size,
+      ).toBe(MAX_PUBLICATION_EXPLICIT_SLOTS);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('rejects a new publication root when the publisher bot is not configured', async () => {

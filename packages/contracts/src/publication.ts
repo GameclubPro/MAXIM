@@ -8,6 +8,7 @@ export const MAX_PUBLICATION_VIDEO_BASE64_LENGTH = 32_000_000;
 export const MAX_PUBLICATION_BUTTONS = 8;
 export const MAX_PUBLICATION_TARGETS = 500;
 export const MAX_PUBLICATION_RECURRENCE_OCCURRENCES = 365;
+export const MAX_PUBLICATION_EXPLICIT_SLOTS = 300;
 export const MAX_PUBLICATION_LIST_CURSOR_LENGTH = 1_024;
 export const MAX_PUBLICATION_CALENDAR_WINDOW_DAYS = 62;
 export const MAX_LEGACY_PUBLICATION_LIST_LIMIT = 30;
@@ -257,7 +258,13 @@ export const publicationOnceScheduleSchema = z.object({
 export const publicationSlotsScheduleSchema = z.object({
   mode: z.literal('slots'),
   timezone: publicationTimezoneSchema,
-  slots: z.array(publicationDateTimeSchema).min(1).max(186),
+  slots: z
+    .array(publicationDateTimeSchema)
+    .min(1)
+    .max(
+      MAX_PUBLICATION_EXPLICIT_SLOTS,
+      `Можно запланировать не более ${MAX_PUBLICATION_EXPLICIT_SLOTS} отправок.`,
+    ),
   replaceConflicts: z.boolean().default(false),
 });
 export const publicationRecurrenceScheduleSchema = z

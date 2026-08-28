@@ -66,6 +66,7 @@ import {
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
   getPublicationEditActionLabel,
+  getPublicationExplicitSlotsLimitFeedback,
   getPublicationLifecycleLabel,
   getPublicationListPollingInterval,
   getPublicationPrimaryActionLabel,
@@ -883,6 +884,7 @@ export function PublicationsPage({
     videoPreparing;
   const anyBusy = isBusy || resolveAmbiguousMutation.isPending;
   const recurrenceError = getRecurrenceError(draft);
+  const explicitSlotsLimitFeedback = getPublicationExplicitSlotsLimitFeedback(draft);
   const validationIssues = useMemo<BroadcastPublishIssueAction[]>(() => {
     const issues: BroadcastPublishIssueAction[] = [];
     if (videoNeedsReselection) {
@@ -923,7 +925,12 @@ export function PublicationsPage({
           ),
       });
     }
-    if (
+    if (explicitSlotsLimitFeedback) {
+      issues.push({
+        label: 'Расписание',
+        onClick: () => focusEditorSection('timing', explicitSlotsLimitFeedback.title),
+      });
+    } else if (
       (draft.timingMode === 'once' ||
         (draft.timingMode === 'schedule' && draft.scheduleKind === 'slots')) &&
       !hasFuturePublicationSlot(draft.scheduledSlots)
@@ -951,6 +958,7 @@ export function PublicationsPage({
     return issues;
   }, [
     draft,
+    explicitSlotsLimitFeedback,
     hasButtonErrors,
     hasContent,
     recurrenceError,
@@ -1358,6 +1366,9 @@ export function PublicationsPage({
       return false;
     }
     if (!options.ignoreSchedule) {
+      if (reportExplicitSlotsLimit()) {
+        return false;
+      }
       const needsFutureSlots =
         draft.timingMode === 'once' ||
         (draft.timingMode === 'schedule' && draft.scheduleKind === 'slots');
@@ -1376,6 +1387,27 @@ export function PublicationsPage({
     }
     setFieldError('');
     return true;
+  }
+
+  function reportExplicitSlotsLimit(): boolean {
+    if (!explicitSlotsLimitFeedback) {
+      return false;
+    }
+
+    setValidationStarted(true);
+    setPendingReview(false);
+    setPendingConflict(false);
+    focusEditorSection('timing', explicitSlotsLimitFeedback.title);
+    pushToast(explicitSlotsLimitFeedback);
+    maxNotify(explicitSlotsLimitFeedback.notification);
+    return true;
+  }
+
+  function submitPublication(replaceConflicts: boolean) {
+    if (reportExplicitSlotsLimit()) {
+      return;
+    }
+    saveMutation.mutate({ replaceConflicts });
   }
 
   function handlePrimaryAction() {
@@ -2679,7 +2711,7 @@ export function PublicationsPage({
           onClose={() => !saveMutation.isPending && setPendingReview(false)}
           onConfirm={() => {
             setPendingReview(false);
-            saveMutation.mutate({ replaceConflicts: false });
+            submitPublication(false);
           }}
         />
       </>
@@ -2762,7 +2794,7 @@ export function PublicationsPage({
         }}
         onConfirm={() => {
           setPendingConflict(false);
-          saveMutation.mutate({ replaceConflicts: true });
+          submitPublication(true);
         }}
       />
 
