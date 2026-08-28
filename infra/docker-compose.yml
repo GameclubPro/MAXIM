@@ -70,6 +70,7 @@ services:
       MAX_API_CHAT_SNAPSHOT_CACHE_SEC: 300
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
       MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
+      PUBLISHER_POST_IMPORT_ENABLED: ${PUBLISHER_POST_IMPORT_ENABLED:-true}
       MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: /run/secrets/max_publisher_webhook_credentials
     secrets:
       - max_publisher_webhook_credentials
@@ -105,6 +106,7 @@ services:
       MAX_API_CHAT_SNAPSHOT_CACHE_SEC: 300
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
       MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
+      PUBLISHER_POST_IMPORT_ENABLED: ${PUBLISHER_POST_IMPORT_ENABLED:-true}
       MAX_PUBLISHER_INIT_DATA_KEYS_FILE: /run/secrets/max_publisher_init_data_keys
       MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: /run/secrets/max_publisher_dialog_signing_keys
     secrets:
@@ -580,6 +582,7 @@ services:
       MAX_PUBLISHER_WEBHOOK_CREDENTIALS_FILE: /run/secrets/max_publisher_webhook_credentials
       MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: /run/secrets/max_publisher_dialog_signing_keys
       MAX_PUBLISHER_DISPATCH_ENABLED: ${MAX_PUBLISHER_DISPATCH_ENABLED:-false}
+      PUBLISHER_POST_IMPORT_ENABLED: ${PUBLISHER_POST_IMPORT_ENABLED:-true}
       MAX_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
       MAX_BOT_LABEL: Публик
       MAX_BOT_CHARACTER_NAME: Публик

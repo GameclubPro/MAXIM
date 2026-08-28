@@ -11,6 +11,9 @@ import {
   publisherEntitySchema,
   publisherEntityModuleSettingsSchema,
   publisherEntityRefreshResponseSchema,
+  publisherPostImportCreateRequestSchema,
+  publisherPostImportCurrentResponseSchema,
+  publisherPostImportSessionSchema,
   publisherSuggestionSchema,
   publisherSuggestionsQuerySchema,
   publisherSuggestionsResponseSchema,
@@ -374,6 +377,87 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
   method,
   init,
 }) => {
+  if (url.pathname === '/publisher/post-imports' && method === 'POST') {
+    publisherPostImportCreateRequestSchema.parse(parseJsonBody(init));
+    const session = publisherPostImportSessionSchema.parse({
+      id: 'preview-import-session-123456',
+      status: 'waiting',
+      expiresAt: new Date(state.clock.now().getTime() + 10 * 60_000).toISOString(),
+      publicationId: null,
+      botUrl: 'https://max.ru/se14088825_bot?start=pi_preview_import_token_123456',
+      failureCode: null,
+      omissions: [],
+    });
+    state.publisherPostImportSession = session;
+    return session;
+  }
+  if (
+    (url.pathname === '/publisher/post-imports/active' ||
+      url.pathname === '/publisher/post-imports') &&
+    method === 'GET'
+  ) {
+    return publisherPostImportCurrentResponseSchema.parse({
+      session: state.publisherPostImportSession,
+    });
+  }
+  if (
+    segments[0] === 'publisher' &&
+    segments[1] === 'post-imports' &&
+    segments[2] === 'by-token' &&
+    segments[3] &&
+    segments.length === 4 &&
+    method === 'GET'
+  ) {
+    return publisherPostImportCurrentResponseSchema.parse({
+      session:
+        decodeURIComponent(segments[3]) === 'preview_import_token_123456'
+          ? state.publisherPostImportSession
+          : null,
+    });
+  }
+  if (url.pathname === '/publisher/post-imports' && method === 'DELETE') {
+    if (!state.publisherPostImportSession) {
+      throw new ApiRequestError(404, '', 'Preview publisher import not found');
+    }
+    const session = publisherPostImportSessionSchema.parse({
+      ...state.publisherPostImportSession,
+      status: 'canceled',
+      publicationId: null,
+      botUrl: null,
+      failureCode: null,
+    });
+    state.publisherPostImportSession = null;
+    return session;
+  }
+  if (
+    segments[0] === 'publisher' &&
+    segments[1] === 'post-imports' &&
+    segments[2] &&
+    segments[3] === 'assets' &&
+    segments[4] &&
+    segments.length === 5 &&
+    method === 'GET'
+  ) {
+    const session = state.publisherPostImportSession;
+    const publication = session?.publicationId
+      ? state.publications.find((item) => item.id === session.publicationId)
+      : null;
+    const assetId = decodeURIComponent(segments[4]);
+    if (
+      !session ||
+      session.status !== 'ready' ||
+      session.id !== decodeURIComponent(segments[2]) ||
+      !publication?.content.media.some((asset) => asset.id === assetId && asset.type === 'image')
+    ) {
+      throw new ApiRequestError(404, '', 'Preview publisher import asset not found');
+    }
+    const binary = globalThis.atob(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    );
+    return new Blob([Uint8Array.from(binary, (character) => character.charCodeAt(0))], {
+      type: 'image/png',
+    });
+  }
   if (url.pathname === '/publisher/entities' && method === 'GET') {
     if (state.publisherEntitiesVariant === 'error') {
       throw new ApiRequestError(503, '', 'Preview publisher entities unavailable');

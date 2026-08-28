@@ -328,3 +328,67 @@ export const updatePublisherEntityModuleSettingsRequestSchema = z
 export type UpdatePublisherEntityModuleSettingsRequest = z.infer<
   typeof updatePublisherEntityModuleSettingsRequestSchema
 >;
+
+export const publisherPostImportCreateRequestSchema = z
+  .object({
+    requestId: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{8,128}$/u),
+  })
+  .strict();
+export type PublisherPostImportCreateRequest = z.infer<
+  typeof publisherPostImportCreateRequestSchema
+>;
+
+export const publisherPostImportStatusSchema = z.enum([
+  'waiting',
+  'processing',
+  'ready',
+  'failed',
+  'canceled',
+  'expired',
+]);
+export type PublisherPostImportStatus = z.infer<typeof publisherPostImportStatusSchema>;
+
+export const publisherPostImportFailureCodeSchema = z.enum([
+  'invalid_forward',
+  'message_unavailable',
+  'unsupported_content',
+  'text_too_long',
+  'too_many_images',
+  'image_too_large',
+  'media_too_large',
+  'media_download_failed',
+  'processing_timeout',
+  'internal_error',
+]);
+export type PublisherPostImportFailureCode = z.infer<typeof publisherPostImportFailureCodeSchema>;
+
+export const publisherPostImportOmissionSchema = z.enum([
+  'buttons_not_imported',
+  'formatting_not_preserved',
+]);
+export type PublisherPostImportOmission = z.infer<typeof publisherPostImportOmissionSchema>;
+
+export const publisherPostImportSessionSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    status: publisherPostImportStatusSchema,
+    expiresAt: z.string().datetime(),
+    publicationId: z.string().trim().min(1).nullable(),
+    botUrl: z.string().url().nullable(),
+    failureCode: publisherPostImportFailureCodeSchema.nullable(),
+    omissions: z.array(publisherPostImportOmissionSchema),
+  })
+  .strict();
+export type PublisherPostImportSession = z.infer<typeof publisherPostImportSessionSchema>;
+
+export const publisherPostImportCurrentResponseSchema = z
+  .object({
+    session: publisherPostImportSessionSchema.nullable(),
+  })
+  .strict();
+export type PublisherPostImportCurrentResponse = z.infer<
+  typeof publisherPostImportCurrentResponseSchema
+>;

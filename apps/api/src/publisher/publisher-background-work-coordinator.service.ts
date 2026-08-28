@@ -4,7 +4,8 @@ export type PublisherBackgroundWorkLane =
   | 'binding_refresh'
   | 'chat_comment_recovery'
   | 'publication_deadline'
-  | 'suggestion_recovery';
+  | 'suggestion_recovery'
+  | 'post_import_recovery';
 
 export class PublisherBackgroundWorkCoordinatorClosedError extends Error {
   constructor() {

@@ -67,6 +67,7 @@ import {
 } from './publication-delivery-verification-state';
 import { PublicationContentService } from './publication-content.service';
 import { selectCurrentRevisionFailedPublicationPage } from './publication-failed-page-query';
+import { isImportedEmptyPublicationDraft } from './publication-imported-draft';
 import {
   PublicationPublisherRoutingService,
   type ResolvedPublicationTarget,
@@ -770,20 +771,15 @@ export class PublicationService {
     const audienceChanged =
       request.audience !== undefined &&
       !this.isPublicationAudienceEquivalent(request.audience, existing);
+    const rootProfile = existing.dispatchProfile;
     let targets: ResolvedPublicationTarget[];
     if (audienceChanged && request.audience) {
-      await this.resolvePersistedPublicationTargets(
-        user,
-        existing.targets,
-        existing.dispatchProfile,
-      );
-      targets = await this.resolveAudienceTargets(user, request.audience, existing.dispatchProfile);
+      if (!isImportedEmptyPublicationDraft(existing)) {
+        await this.resolvePersistedPublicationTargets(user, existing.targets, rootProfile);
+      }
+      targets = await this.resolveAudienceTargets(user, request.audience, rootProfile);
     } else {
-      targets = await this.resolvePersistedPublicationTargets(
-        user,
-        existing.targets,
-        existing.dispatchProfile,
-      );
+      targets = await this.resolvePersistedPublicationTargets(user, existing.targets, rootProfile);
     }
 
     const now = new Date();

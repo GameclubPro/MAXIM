@@ -145,6 +145,11 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   { method: 'POST', pattern: /^\/publications(?:\/test)?$/u },
   { method: 'POST', pattern: /^\/publications\/calendar-availability$/u },
   {
+    method: 'POST',
+    pattern: /^\/publisher\/post-imports$/u,
+  },
+  { method: 'DELETE', pattern: /^\/publisher\/post-imports$/u },
+  {
     method: 'PATCH',
     pattern: new RegExp(`^/publisher/entities/(chat|channel)/${ENTITY_ID_SEGMENT}/policy$`),
   },

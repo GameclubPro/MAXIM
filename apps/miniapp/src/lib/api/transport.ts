@@ -12,6 +12,7 @@ const API_FALLBACKS_ENABLED =
 
 export type ApiRequestInit = RequestInit & {
   timeoutMs?: number;
+  responseType?: 'json' | 'blob';
   retryMutationOnTransportError?: boolean;
 };
 
@@ -175,6 +176,7 @@ export function createApiTransport(
     const requestedTimeoutMs = init.timeoutMs;
     const fetchInit = { ...init };
     delete fetchInit.timeoutMs;
+    delete fetchInit.responseType;
     delete fetchInit.retryMutationOnTransportError;
     const timeoutMs =
       typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
@@ -409,6 +411,10 @@ export function createApiTransport(
 
       if (response.status === 204 || response.status === 205) {
         return null;
+      }
+
+      if (init.responseType === 'blob') {
+        return response.blob();
       }
 
       const payload = await response.text();

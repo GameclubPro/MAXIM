@@ -74,7 +74,7 @@ test('Major keeps legacy-routed management but cannot enter the publication edit
 test('Major drops direct composer and target routes without changing list filters', () => {
   const sanitized = stripPublisherOnlyPublicationRouteParams(
     new URLSearchParams(
-      'compose=1&entityType=chat&entityId=chat-1&view=schedules&status=paused&legacy=1',
+      'compose=1&draft=draft-1&import=import_token_123456&entityType=chat&entityId=chat-1&view=schedules&status=paused&legacy=1',
     ),
   );
 

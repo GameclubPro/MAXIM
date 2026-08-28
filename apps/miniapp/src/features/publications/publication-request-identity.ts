@@ -7,7 +7,12 @@ import {
 
 export type PublicationSaveRequestContext =
   | { kind: 'create' | 'duplicate' }
-  | { kind: 'edit'; publicationId: string; expectedRevision: number };
+  | {
+      kind: 'edit' | 'import';
+      publicationId: string;
+      expectedRevision: number;
+      sessionId?: string | null;
+    };
 
 export type PublicationRetryRequestKeyInput =
   | { publicationId: string; occurrenceId: string; contentMode: 'original' }
@@ -95,7 +100,7 @@ export function buildPublicationSaveRequestKey(
   replaceConflicts: boolean,
 ): PublicationRequestKey {
   const request =
-    context.kind === 'edit'
+    context.kind === 'edit' || context.kind === 'import'
       ? buildUpdatePublicationRequest(
           draft,
           context.expectedRevision,
@@ -105,7 +110,7 @@ export function buildPublicationSaveRequestKey(
       : buildCreatePublicationRequest(draft, REQUEST_KEY_PLACEHOLDER, { replaceConflicts });
 
   return createRequestKey({
-    operation: context.kind === 'edit' ? 'update' : 'create',
+    operation: context.kind === 'edit' || context.kind === 'import' ? 'update' : 'create',
     context,
     replaceConflicts,
     payload: withoutRequestId(request),

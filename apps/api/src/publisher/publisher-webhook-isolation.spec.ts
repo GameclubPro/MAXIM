@@ -116,4 +116,95 @@ describe('publisher webhook isolation', () => {
       } as never),
     ).rejects.toThrow('Publisher webhook lifecycle boundary is unavailable');
   });
+
+  it('short-circuits publisher lifecycle when the import boundary consumes a forward', async () => {
+    const update = {
+      updateId: 'publisher-forward-1',
+      botId: 'publik_bot',
+      type: 'message_created',
+      message: {
+        messageId: 'incoming-mid-1',
+        chatId: '42',
+        senderId: '42',
+        text: '',
+        createdAt: '2026-08-28T12:00:00.000Z',
+      },
+      raw: {},
+    };
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'receipt-forward-1',
+          dedupKey: 'publik_bot:publisher-forward-1',
+          botId: 'publik_bot',
+          status: WebhookStatus.RECEIVED,
+          normalizedPayload: update,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn((key: string, fallback: unknown) =>
+        key === 'MAX_PUBLISHER_BOT_ID' ? 'publik_bot' : fallback,
+      ),
+    };
+    const lifecycle = { observeWebhook: jest.fn() };
+    const importBoundary = { observeWebhook: jest.fn().mockResolvedValue(true) };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      lifecycle as never,
+      undefined,
+      importBoundary as never,
+    );
+
+    await service.preparePersistedWebhookEvent('receipt-forward-1');
+
+    expect(importBoundary.observeWebhook).toHaveBeenCalledWith(update, 'receipt-forward-1', {
+      duplicate: false,
+    });
+    expect(lifecycle.observeWebhook).not.toHaveBeenCalled();
+  });
+
+  it('passes duplicate context to the import fence before publisher lifecycle repair', async () => {
+    const update = {
+      updateId: 'publisher-forward-duplicate-1',
+      botId: 'publik_bot',
+      type: 'message_created',
+      raw: {},
+    };
+    const config = {
+      get: jest.fn((key: string, fallback: unknown) =>
+        key === 'MAX_PUBLISHER_BOT_ID' ? 'publik_bot' : fallback,
+      ),
+    };
+    const lifecycle = { observeWebhook: jest.fn() };
+    const importBoundary = { observeWebhook: jest.fn().mockResolvedValue(true) };
+    const service = new WebhookService(
+      {} as never,
+      config as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      lifecycle as never,
+      undefined,
+      importBoundary as never,
+    );
+
+    await service.repairDuplicateReceiptReadModels(update as never);
+
+    expect(importBoundary.observeWebhook).toHaveBeenCalledWith(update, null, { duplicate: true });
+    expect(lifecycle.observeWebhook).not.toHaveBeenCalled();
+  });
 });

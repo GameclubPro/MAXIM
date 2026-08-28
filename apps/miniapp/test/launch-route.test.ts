@@ -497,6 +497,17 @@ test('resolves the publications workspace with compose target parameters', () =>
   );
 });
 
+test('resolves a bounded Publik forwarded-post return payload', () => {
+  assignWindow('https://maxim.play-team.ru/app/?startapp=pi_import_token_1234567890');
+
+  assert.equal(resolveLaunchRoute(''), '/publications?import=import_token_1234567890');
+});
+
+test('rejects an oversized Publik import payload', () => {
+  assignWindow(`https://maxim.play-team.ru/app/?startapp=pi_${'a'.repeat(257)}`);
+  assert.equal(resolveLaunchRoute(''), null);
+});
+
 test('resolves the legacy publications workspace only for the supported flag', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(

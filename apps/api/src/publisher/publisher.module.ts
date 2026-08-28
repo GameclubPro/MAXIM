@@ -29,6 +29,12 @@ import { PublisherWebhookSubscriptionReconcilerService } from './publisher-webho
 import { PublisherDialogLinkService } from './publisher-dialog-link.service';
 import { PublisherChatCommentProducerService } from './publisher-chat-comment-producer.service';
 import { PublisherDialogSigningKeyService } from './publisher-dialog-signing-key.service';
+import {
+  PUBLISHER_POST_IMPORT_QUEUE,
+  PublisherPostImportQueueService,
+} from './publisher-post-import.queue';
+import { PublisherPostImportService } from './publisher-post-import.service';
+import { PublisherPostImportRecoveryService } from './publisher-post-import-recovery.service';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -40,6 +46,7 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherBindingRefreshProcessor,
       PublisherBindingRefreshSchedulerService,
       PublisherWebhookSubscriptionReconcilerService,
+      PublisherPostImportRecoveryService,
     ]
   : [];
 
@@ -53,6 +60,8 @@ const sharedPublisherProviders = [
   PublisherDialogSigningKeyService,
   PublisherDialogLinkService,
   PublisherChatCommentProducerService,
+  PublisherPostImportQueueService,
+  PublisherPostImportService,
 ];
 
 @Global()
@@ -62,6 +71,7 @@ const sharedPublisherProviders = [
     BullModule.registerQueue(
       { name: PUBLISHER_BINDING_REFRESH_QUEUE },
       { name: PUBLISHER_CHAT_COMMENT_QUEUE },
+      { name: PUBLISHER_POST_IMPORT_QUEUE },
     ),
   ],
   providers: [...sharedPublisherProviders, ...publisherRuntimeProviders],

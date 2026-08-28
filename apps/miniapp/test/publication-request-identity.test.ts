@@ -92,6 +92,18 @@ test('reuses a save request ID until payload, context, or replacement intent cha
     ),
   );
   assert.notEqual(changedEndpoint.requestId, changedPayload.requestId);
+
+  const importedDraftKey = buildPublicationSaveRequestKey(
+    draft,
+    {
+      kind: 'import',
+      publicationId: 'publication-imported',
+      expectedRevision: 1,
+      sessionId: 'session-1',
+    },
+    false,
+  );
+  assert.match(JSON.stringify(importedDraftKey), /"operation":"update"/u);
 });
 
 test('rotates the request ID after a confirmed success clears the current identity', () => {

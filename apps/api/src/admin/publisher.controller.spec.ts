@@ -16,6 +16,20 @@ describe('PublisherController', () => {
       [PublisherController.prototype.listEntities, 'entities', RequestMethod.GET],
       [PublisherController.prototype.resolveEntities, 'entities/resolve', RequestMethod.POST],
       [PublisherController.prototype.refreshEntities, 'entities/refresh', RequestMethod.POST],
+      [PublisherController.prototype.createPostImport, 'post-imports', RequestMethod.POST],
+      [PublisherController.prototype.getPostImport, 'post-imports', RequestMethod.GET],
+      [PublisherController.prototype.getActivePostImport, 'post-imports/active', RequestMethod.GET],
+      [
+        PublisherController.prototype.getPostImportByToken,
+        'post-imports/by-token/:startToken',
+        RequestMethod.GET,
+      ],
+      [PublisherController.prototype.cancelPostImport, 'post-imports', RequestMethod.DELETE],
+      [
+        PublisherController.prototype.getPostImportAsset,
+        'post-imports/:sessionId/assets/:assetId',
+        RequestMethod.GET,
+      ],
       [
         PublisherController.prototype.listSuggestions,
         'entities/channel/:entityId/suggestions',
@@ -110,10 +124,12 @@ describe('PublisherController', () => {
       list: jest.fn().mockResolvedValue({ items: [] }),
       review: jest.fn().mockResolvedValue({ suggestion: { id: 'suggestion-1' } }),
     };
+    const postImportService = {};
     const controller = new PublisherController(
       policyService as never,
       entityRefreshService as never,
       suggestionService as never,
+      postImportService as never,
     );
     const body = { expectedRevision: 1, publikEnabled: false };
     const listQuery = { pagination: 'cursor', limit: '25' };
@@ -171,10 +187,12 @@ describe('PublisherController', () => {
     };
     const entityRefreshService = { requestRefresh: jest.fn() };
     const suggestionService = { list: jest.fn(), review: jest.fn() };
+    const postImportService = {};
     const controller = new PublisherController(
       policyService as never,
       entityRefreshService as never,
       suggestionService as never,
+      postImportService as never,
     );
 
     expect(() => controller.getEntity('group', 'group-1', user)).toThrow(BadRequestException);

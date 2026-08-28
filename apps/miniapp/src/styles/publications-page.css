@@ -683,6 +683,28 @@
     height: 18px;
   }
 
+  .publication-retained-media.has-previews {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .publication-retained-media__previews {
+    min-width: 0;
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+    gap: 4px;
+  }
+
+  .publication-retained-media__previews img {
+    width: 100%;
+    aspect-ratio: 1;
+    display: block;
+    object-fit: cover;
+    border-radius: 6px;
+    background: var(--color-surface-muted);
+  }
+
   .publications-inline-notice.is-warning {
     border-color: color-mix(in srgb, var(--publication-warning-accent) 32%, transparent);
     background: var(--publication-warning-bg);

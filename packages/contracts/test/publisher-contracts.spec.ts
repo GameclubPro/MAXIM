@@ -13,6 +13,9 @@ import {
   publisherEntitiesResponseSchema,
   publisherEntityRefreshResponseSchema,
   publisherEntitySchema,
+  publisherPostImportCreateRequestSchema,
+  publisherPostImportCurrentResponseSchema,
+  publisherPostImportSessionSchema,
   publisherSuggestionSchema,
   publisherSuggestionsQuerySchema,
   publisherSuggestionsResponseSchema,
@@ -418,5 +421,35 @@ describe('publisher contracts', () => {
         generatedAt: '2026-08-26T00:00:00.000Z',
       }).publisherEnabled,
     ).toBe(true);
+  });
+
+  it('keeps publisher post import identity and state responses bounded', () => {
+    expect(publisherPostImportCreateRequestSchema.parse({ requestId: 'import_123456' })).toEqual({
+      requestId: 'import_123456',
+    });
+    expect(publisherPostImportCreateRequestSchema.safeParse({ requestId: 'short' }).success).toBe(
+      false,
+    );
+
+    const session = publisherPostImportSessionSchema.parse({
+      id: 'session-1',
+      status: 'ready',
+      expiresAt: '2026-08-29T12:00:00.000Z',
+      publicationId: 'publication-1',
+      botUrl: null,
+      failureCode: null,
+      omissions: ['buttons_not_imported'],
+    });
+    expect(session.status).toBe('ready');
+    expect(publisherPostImportCurrentResponseSchema.parse({ session })).toEqual({ session });
+    expect(publisherPostImportCurrentResponseSchema.parse({ session: null })).toEqual({
+      session: null,
+    });
+    expect(
+      publisherPostImportSessionSchema.safeParse({
+        ...session,
+        sourceMessageId: 'must-not-leak',
+      }).success,
+    ).toBe(false);
   });
 });

@@ -69,13 +69,15 @@ const channelTarget = {
   },
 };
 
-test('isolates edit and duplicate drafts from the persisted create draft', () => {
+test('isolates server, edit, and duplicate drafts from the persisted create draft', () => {
   assert.equal(shouldPersistPublicationDraft(null), true);
   assert.equal(shouldPersistPublicationDraft('create'), true);
   assert.equal(shouldPersistPublicationDraft('edit'), false);
   assert.equal(shouldPersistPublicationDraft('duplicate'), false);
+  assert.equal(shouldPersistPublicationDraft('import'), false);
   assert.equal(isIsolatedPublicationEditor('edit'), true);
   assert.equal(isIsolatedPublicationEditor('duplicate'), true);
+  assert.equal(isIsolatedPublicationEditor('import'), true);
 });
 
 test('reports the explicit schedule limit only after 300 unique sends', () => {

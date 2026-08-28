@@ -1379,6 +1379,70 @@ describe('PublicationService', () => {
     expect(tx.publicationTarget.createMany).not.toHaveBeenCalled();
   });
 
+  it('allows an imported empty-target draft to select its first audience', async () => {
+    const tx = createPublicationUpdateTransaction();
+    tx.publicationOccurrence.findMany.mockResolvedValue([]);
+    const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
+    const { service, publisherRouting } = createService({
+      publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'imported-draft',
+          actorUserId: 'user-1',
+          version: 1,
+          lifecycle: PublicationLifecycle.DRAFT,
+          title: '',
+          audienceSelection: PublicationAudienceSelection.SELECTED,
+          audienceMode: PublicationAudienceMode.SNAPSHOT,
+          canonicalContentRevisionId: 'content-1',
+          canonicalContentRevision: { id: 'content-1' },
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          requiredBotId: 'publisher-bot',
+          schedule: null,
+          targets: [],
+        }),
+      },
+      $transaction: transaction,
+    });
+    publisherRouting.resolvePersistedTargets.mockRejectedValue(
+      new Error('empty imported targets must not be resolved before replacement'),
+    );
+    publisherRouting.resolveAudienceTargets.mockResolvedValue([
+      { chatId: 'chat-1', entityType: 'chat', title: 'Чат 1', avatarUrl: null, link: null },
+    ]);
+    jest.spyOn(service, 'get').mockResolvedValue({ id: 'imported-draft' } as never);
+
+    await expect(
+      service.update(
+        'imported-draft',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'imported-draft-update-001',
+          expectedRevision: 1,
+          audience: {
+            selection: 'SELECTED',
+            mode: 'SNAPSHOT',
+            targets: [{ chatId: 'chat-1', entityType: 'chat' }],
+          },
+          intent: 'draft',
+        },
+      ),
+    ).resolves.toEqual({ id: 'imported-draft' });
+
+    expect(publisherRouting.resolvePersistedTargets).not.toHaveBeenCalled();
+    expect(publisherRouting.resolveAudienceTargets).toHaveBeenCalledTimes(1);
+    expect(tx.publicationTarget.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          publicationId: 'imported-draft',
+          targetChatId: 'chat-1',
+          entityType: ChatEntityType.CHAT,
+          position: 0,
+        },
+      ],
+    });
+  });
+
   it('fails closed before content preparation and persistence on a transient live access error', async () => {
     const transaction = jest.fn();
     const { service, contentService, managedEntitiesService, publisherPolicyService } =

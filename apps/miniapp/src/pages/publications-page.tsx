@@ -53,6 +53,8 @@ import {
   stripPublisherOnlyPublicationRouteParams,
 } from '../features/publications/publication-page-options';
 import { PublicationFeedCard } from '../features/publications/publication-feed-card';
+import { PublicationCreateSheet } from '../features/publications/publication-create-sheet';
+import { PublicationRetainedMedia } from '../features/publications/publication-retained-media';
 import { PublicationRecurrenceIntervalField } from '../features/publications/publication-recurrence-interval-field';
 import {
   buildCreatePublicationRequest,
@@ -88,6 +90,7 @@ import {
   shouldReviewPublicationScheduleConflict,
   shouldPersistPublicationDraft,
   type PublicationDraft,
+  type PublicationEditorContext,
   type PublicationEditScope,
   type PublicationEntityFilter,
   type PublicationStatusFilter,
@@ -107,6 +110,7 @@ import {
   isPublicationTestResultPendingError,
 } from '../features/publications/publication-request-identity';
 import { PublicationRetrySheet } from '../features/publications/publication-retry-sheet';
+import { PublisherPostImportStatus } from '../features/publications/publisher-post-import-status';
 import { PublicationTargetNotices } from '../features/publications/publication-target-notices';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
 import { usePublicationEditorAutofocus } from '../features/publications/use-publication-editor-autofocus';
@@ -119,6 +123,9 @@ import {
   usePublisherDraftTargetHydration,
 } from '../features/publications/use-publisher-draft-target-hydration';
 import { usePublisherTargetErrorFeedback } from '../features/publications/use-publisher-target-error-feedback';
+import { usePublisherPostImportAssetPreviews } from '../features/publications/use-publisher-post-import-asset-previews';
+import { usePublisherPostImportController } from '../features/publications/use-publisher-post-import-controller';
+import { isPublisherDraftRouteId } from '../features/publications/publisher-post-import-route';
 import {
   createPublication,
   cancelPublication,
@@ -162,11 +169,6 @@ const LazyBroadcastSchedulePlanner = lazy(() =>
     default: module.BroadcastSchedulePlanner,
   })),
 );
-
-type PublicationEditorContext =
-  | { kind: 'create' }
-  | { kind: 'edit'; publicationId: string; expectedRevision: number }
-  | { kind: 'duplicate' };
 
 type PublicationActionTarget = {
   publication: PublicationSummary;
@@ -334,6 +336,11 @@ export function PublicationsPage({
   const timingSectionRef = useRef<HTMLElement | null>(null);
 
   const targetSources = usePublicationTargetSources(api, isPublisherProfile);
+  const importedAssetPreviews = usePublisherPostImportAssetPreviews(
+    api,
+    editorContext?.kind === 'import' ? editorContext.sessionId : null,
+    draft.retainedAssets,
+  );
   const {
     targets,
     loading: sourcesLoading,
@@ -371,7 +378,9 @@ export function PublicationsPage({
     [draft.targets],
   );
   const calendarExcludePublicationId =
-    editorContext?.kind === 'edit' ? editorContext.publicationId : null;
+    editorContext?.kind === 'edit' || editorContext?.kind === 'import'
+      ? editorContext.publicationId
+      : null;
   const calendarAvailabilityQuery = useQuery({
     queryKey: queryKeys.calendar(
       calendarTargetsKey,
@@ -590,7 +599,7 @@ export function PublicationsPage({
         editorContext ?? { kind: 'create' },
         replaceConflicts,
       );
-      if (editorContext?.kind === 'edit') {
+      if (editorContext?.kind === 'edit' || editorContext?.kind === 'import') {
         return updatePublication(
           api,
           editorContext.publicationId,
@@ -609,6 +618,9 @@ export function PublicationsPage({
     },
     onSuccess: async (publication) => {
       requestIds.confirmSaveSuccess();
+      if (editorContext?.kind === 'import') {
+        await postImport.finishPublishedImport();
+      }
       await invalidatePublicationQueries();
       const feedback = buildPublicationSaveFeedback(publication, {
         editScope:
@@ -630,7 +642,10 @@ export function PublicationsPage({
         setPendingConflict(true);
         return;
       }
-      if (editorContext?.kind === 'edit' && isPublicationRevisionConflictError(error)) {
+      if (
+        (editorContext?.kind === 'edit' || editorContext?.kind === 'import') &&
+        isPublicationRevisionConflictError(error)
+      ) {
         setRevisionConflictPublicationId(editorContext.publicationId);
         void invalidatePublicationQueries();
         return;
@@ -668,13 +683,21 @@ export function PublicationsPage({
   });
   const openPublicationMutation = useMutation({
     mutationFn: ({
-      publication,
+      publicationId,
       mode,
+      sessionId,
     }: {
-      publication: PublicationSummary;
-      mode: 'edit' | 'duplicate';
-    }) => getPublication(api, publication.id).then((details) => ({ details, mode })),
-    onSuccess: ({ details, mode }) => {
+      publicationId: string;
+      mode: 'edit' | 'duplicate' | 'import';
+      sessionId?: string | null;
+    }) =>
+      getPublication(api, publicationId).then((details) => {
+        if (mode === 'import' && details.lifecycle !== 'DRAFT') {
+          throw new Error('Этот черновик уже опубликован');
+        }
+        return { details, mode, sessionId: sessionId ?? null };
+      }),
+    onSuccess: ({ details, mode, sessionId }) => {
       savedCreateDraftRef.current = draft;
       const sourceDraft = createPublicationDraftFromDetails(details);
       const isolatedDraft =
@@ -684,7 +707,14 @@ export function PublicationsPage({
       setEditorContext(
         mode === 'edit'
           ? { kind: 'edit', publicationId: details.id, expectedRevision: details.version }
-          : { kind: 'duplicate' },
+          : mode === 'import'
+            ? {
+                kind: 'import',
+                publicationId: details.id,
+                expectedRevision: details.version,
+                sessionId,
+              }
+            : { kind: 'duplicate' },
       );
       setButtonErrors(
         validateBroadcastLinkButtons(
@@ -695,9 +725,14 @@ export function PublicationsPage({
       setPendingEditorClose(false);
       setFieldError('');
       setValidationStarted(false);
-      setComposeRoute(true);
+      setComposeRoute(true, {
+        importDraftId: mode === 'import' ? details.id : null,
+      });
     },
-    onError: (error) => {
+    onError: (error, variables) => {
+      if (variables.mode === 'import') {
+        postImport.dismissStaleImport();
+      }
       editorReturnFocusRef.current = null;
       editorReturnPublicationIdRef.current = null;
       pushToast({
@@ -705,6 +740,16 @@ export function PublicationsPage({
         title: describeUserFacingError(error, 'Не удалось открыть публикацию'),
       });
     },
+  });
+  const postImport = usePublisherPostImportController({
+    api,
+    enabled: isPublisherProfile,
+    editorOpen: isEditor,
+    hydrated,
+    openingDraft: openPublicationMutation.isPending,
+    searchParams,
+    setSearchParams,
+    onOpenDraft: openImportedDraft,
   });
   const refreshEditedPublicationMutation = useMutation({
     mutationFn: (publicationId: string) => getPublication(api, publicationId),
@@ -715,11 +760,19 @@ export function PublicationsPage({
         baseline ? rebasePublicationDraft(baseline, current, latestDraft) : latestDraft,
       );
       isolatedDraftBaselineRef.current = latestDraft;
-      setEditorContext({
-        kind: 'edit',
-        publicationId: details.id,
-        expectedRevision: details.version,
-      });
+      setEditorContext((current) =>
+        current?.kind === 'import'
+          ? {
+              ...current,
+              publicationId: details.id,
+              expectedRevision: details.version,
+            }
+          : {
+              kind: 'edit',
+              publicationId: details.id,
+              expectedRevision: details.version,
+            },
+      );
       setButtonErrors(
         validateBroadcastLinkButtons(
           details.content.buttons.map(({ text, url }) => ({ text, url })),
@@ -995,10 +1048,10 @@ export function PublicationsPage({
       return;
     }
     initialComposeRouteAppliedRef.current = true;
-    if (searchParams.get('compose') === '1') {
+    if (searchParams.get('compose') === '1' && !postImport.hasImportRoute) {
       setEditorContext({ kind: 'create' });
     }
-  }, [hydrated, isPublisherProfile, searchParams]);
+  }, [hydrated, isPublisherProfile, postImport.hasImportRoute, searchParams]);
 
   useEffect(() => {
     const next = isPublisherProfile ? null : stripPublisherOnlyPublicationRouteParams(searchParams);
@@ -1070,8 +1123,14 @@ export function PublicationsPage({
     ]);
   }
 
-  function setComposeRoute(open: boolean) {
+  function setComposeRoute(open: boolean, options: { importDraftId?: string | null } = {}) {
     const next = new URLSearchParams(searchParams);
+    if (!open) {
+      next.delete('import');
+      next.delete('draft');
+    } else if (isPublisherDraftRouteId(options.importDraftId)) {
+      next.set('draft', options.importDraftId);
+    }
     if (open) {
       next.set('compose', '1');
     } else {
@@ -1260,14 +1319,43 @@ export function PublicationsPage({
       return;
     }
     rememberEditorReturnFocus(publication.id);
-    openPublicationMutation.mutate({ publication, mode });
+    openPublicationMutation.mutate({ publicationId: publication.id, mode });
+  }
+
+  function openImportedDraft(publicationId: string, sessionId: string | null = null) {
+    if (!isPublisherProfile || !hydrated || openPublicationMutation.isPending) {
+      return;
+    }
+    if (!editorReturnFocusRef.current) {
+      rememberEditorReturnFocus(publicationId);
+    }
+    openPublicationMutation.mutate({ publicationId, mode: 'import', sessionId });
+  }
+
+  function requestCreateEditor() {
+    if (!isPublisherProfile) {
+      return;
+    }
+    rememberEditorReturnFocus();
+    postImport.showCreateSheet();
+  }
+
+  function closeCreateSheet() {
+    if (!postImport.closeCreateSheet()) {
+      return;
+    }
+    editorReturnFocusRef.current = null;
+    editorReturnPublicationIdRef.current = null;
   }
 
   function openCreateEditor() {
     if (!isPublisherProfile) {
       return;
     }
-    rememberEditorReturnFocus();
+    if (!editorReturnFocusRef.current) {
+      rememberEditorReturnFocus();
+    }
+    postImport.hideCreateSheet();
     setEditorContext({ kind: 'create' });
     setButtonErrors(validateBroadcastLinkButtons(draft.buttons));
     setFieldError('');
@@ -1676,7 +1764,7 @@ export function PublicationsPage({
     const pending =
       (actionMutation.isPending && actionMutation.variables?.publication.id === publication.id) ||
       (openPublicationMutation.isPending &&
-        openPublicationMutation.variables?.publication.id === publication.id);
+        openPublicationMutation.variables?.publicationId === publication.id);
     return (
       <PublicationFeedCard
         key={publication.id}
@@ -1762,7 +1850,7 @@ export function PublicationsPage({
                     : 'Текущих постов нет'}
             </strong>
             {isPublisherProfile && view !== 'history' && !query.trim() && publisherCanCreate ? (
-              <button type="button" className="publications-primary" onClick={openCreateEditor}>
+              <button type="button" className="publications-primary" onClick={requestCreateEditor}>
                 <Plus aria-hidden />
                 <span>Новая публикация</span>
               </button>
@@ -1800,7 +1888,7 @@ export function PublicationsPage({
           sourcesLoading={sourcesLoading}
           sourcesFetching={sourcesFetching}
           sourcesHaveError={sourcesHaveError}
-          onCreate={openCreateEditor}
+          onCreate={requestCreateEditor}
           onRefresh={() => {
             void targetSources.recheck().catch((error) =>
               pushToast({
@@ -1810,6 +1898,8 @@ export function PublicationsPage({
             );
           }}
         />
+
+        {isPublisherProfile ? <PublisherPostImportStatus {...postImport.statusProps} /> : null}
 
         <div className="publications-tabs" role="group" aria-label="Раздел постов">
           {VIEW_OPTIONS.map((option) =>
@@ -2372,7 +2462,7 @@ export function PublicationsPage({
     setButtonErrors([]);
     setFieldError('');
     setValidationStarted(false);
-    if (editorContext?.kind === 'duplicate') {
+    if (editorContext?.kind === 'duplicate' || editorContext?.kind === 'import') {
       setDraft(createEmptyPublicationDraft());
       return;
     }
@@ -2381,19 +2471,20 @@ export function PublicationsPage({
 
   function renderEditor() {
     const editing = editorContext?.kind === 'edit';
+    const importing = editorContext?.kind === 'import';
     const editScope: PublicationEditScope | null = editing
       ? draft.timingMode === 'now'
         ? 'retry'
         : 'future'
       : null;
-    const editorTitle =
-      editScope === 'retry'
+    const editorTitle = importing
+      ? 'Черновик'
+      : editScope === 'retry'
         ? 'Версия для повтора'
         : editScope === 'future'
           ? 'Будущие отправки'
           : 'Новый пост';
     const retainedVideo = draft.retainedAssets.some((asset) => asset.type === 'video');
-    const retainedImages = draft.retainedAssets.filter((asset) => asset.type === 'image').length;
     const primaryLabel = getPublicationPrimaryActionLabel({
       hasValidationIssues: validationIssues.length > 0,
       editing,
@@ -2505,21 +2596,12 @@ export function PublicationsPage({
                 disabled={isBusy}
               />
             ) : null}
-            {draft.retainedAssets.length > 0 ? (
-              <div className="publication-retained-media">
-                <span>
-                  {retainedVideo ? 'Сохранено видео' : `Сохранено фото: ${retainedImages}`}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setDraft((current) => ({ ...current, retainedAssets: [] }))}
-                  disabled={isBusy}
-                  aria-label="Убрать сохранённое медиа"
-                >
-                  <Xmark aria-hidden />
-                </button>
-              </div>
-            ) : null}
+            <PublicationRetainedMedia
+              assets={draft.retainedAssets}
+              previews={importedAssetPreviews}
+              disabled={isBusy}
+              onClear={() => setDraft((current) => ({ ...current, retainedAssets: [] }))}
+            />
             <label
               className={cn(
                 'publication-video-picker',
@@ -2732,6 +2814,14 @@ export function PublicationsPage({
       )}
     >
       {isEditor ? renderEditor() : isLegacyView ? renderLegacyHub() : renderHub()}
+
+      <PublicationCreateSheet
+        open={postImport.createSheetOpen}
+        busy={postImport.createPending}
+        onClose={closeCreateSheet}
+        onWrite={openCreateEditor}
+        onForward={postImport.startImport}
+      />
 
       <ActionConfirmSheet
         id="publication-editor-close"

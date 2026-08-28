@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260828120000_index_publisher_chat_dialog_comments",
-  "baselineNamesSha256": "c1e964e8c2c47ba02485fc42242bd72d9c18237988cd74cee1d66e83b9c9d8e2",
-  "baselineContentsSha256": "01813378a851e136957c2182cc960aae6c5e6156a7c8e2ad8146f49b7db9965a",
+  "baselineThrough": "20260828130000_add_publisher_post_import_sessions",
+  "baselineNamesSha256": "cb2eb50cffdd278c56e5ca278a4628d36087dbec4c2554b5fb80cdff5b0fc401",
+  "baselineContentsSha256": "95ff60722dd6ec6e9f9a37fa7fca59479817fb5ecd9749c4e27f43d355250e55",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -82,6 +82,9 @@
     },
     "20260826120000_add_publisher_dispatch_foundation": {
       "reason": "All non-concurrent indexes in this migration are created on the two new empty publisher policy/binding tables before they receive rows. Existing publication-table claim indexes are isolated in the following concurrent-index migration."
+    },
+    "20260828130000_add_publisher_post_import_sessions": {
+      "reason": "All indexes are created with the new empty post-import session table before it can receive rows. Keeping its active-session uniqueness and recovery indexes atomic avoids exposing an unfenced capture state, and there is no existing table workload to block."
     }
   }
 }

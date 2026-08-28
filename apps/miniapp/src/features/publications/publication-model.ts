@@ -34,7 +34,17 @@ import {
 } from '../../lib/broadcast-system-buttons';
 
 export type PublicationView = 'current' | 'schedules' | 'history';
-export type PublicationEditorKind = 'create' | 'edit' | 'duplicate';
+export type PublicationEditorKind = 'create' | 'edit' | 'duplicate' | 'import';
+export type PublicationEditorContext =
+  | { kind: 'create' }
+  | { kind: 'edit'; publicationId: string; expectedRevision: number }
+  | { kind: 'duplicate' }
+  | {
+      kind: 'import';
+      publicationId: string;
+      expectedRevision: number;
+      sessionId: string | null;
+    };
 export type PublicationTimingMode = 'now' | 'once' | 'schedule';
 
 export function getPublicationPrimaryActionLabel(options: {
@@ -194,7 +204,7 @@ const PUBLICATION_VIDEO_MIME_ALIASES: Record<string, string> = {
 };
 
 export function isIsolatedPublicationEditor(kind: PublicationEditorKind | null): boolean {
-  return kind === 'edit' || kind === 'duplicate';
+  return kind === 'edit' || kind === 'duplicate' || kind === 'import';
 }
 
 export function shouldPersistPublicationDraft(kind: PublicationEditorKind | null): boolean {

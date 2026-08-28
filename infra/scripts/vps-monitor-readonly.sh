@@ -345,6 +345,7 @@ queues=(
   admin-super-ban
   publisher-binding-refresh
   publisher-chat-comments
+  publisher-post-import
   publisher-suggestion-publication
   vk-parsing-sync
   vk-parsing-publish

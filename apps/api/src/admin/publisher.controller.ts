@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -9,8 +10,10 @@ import {
   Patch,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { FastifyReply } from 'fastify';
 import type { ManagedEntityType } from '@maxim/contracts/publisher';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { MiniappProfiles } from '../auth/miniapp-profile';
@@ -18,6 +21,7 @@ import { CurrentUser, type AuthUser } from '../common/decorators/current-user.de
 import { PublisherEntityRefreshService } from './publisher-entity-refresh.service';
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
+import { PublisherPostImportService } from '../publisher/publisher-post-import.service';
 
 @Controller('v1/publisher')
 @UseGuards(InitDataGuard)
@@ -27,7 +31,47 @@ export class PublisherController {
     private readonly policyService: PublisherPolicyService,
     private readonly entityRefreshService: PublisherEntityRefreshService,
     private readonly suggestionService: PublisherSuggestionService,
+    private readonly postImportService: PublisherPostImportService,
   ) {}
+
+  @Post('post-imports')
+  createPostImport(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.postImportService.create(user, body);
+  }
+
+  @Get('post-imports')
+  getPostImport(@CurrentUser() user: AuthUser) {
+    return this.postImportService.getCurrent(user);
+  }
+
+  @Get('post-imports/active')
+  getActivePostImport(@CurrentUser() user: AuthUser) {
+    return this.postImportService.getCurrent(user);
+  }
+
+  @Get('post-imports/by-token/:startToken')
+  getPostImportByToken(@Param('startToken') startToken: string, @CurrentUser() user: AuthUser) {
+    return this.postImportService.getByToken(user, startToken);
+  }
+
+  @Delete('post-imports')
+  cancelPostImport(@CurrentUser() user: AuthUser) {
+    return this.postImportService.cancel(user);
+  }
+
+  @Get('post-imports/:sessionId/assets/:assetId')
+  async getPostImportAsset(
+    @Param('sessionId') sessionId: string,
+    @Param('assetId') assetId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const asset = await this.postImportService.getImageAsset(sessionId, assetId, user);
+    reply.header('Cache-Control', 'private, no-store');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.type(asset.mimeType);
+    reply.send(asset.bytes);
+  }
 
   @Get('entities')
   listEntities(@CurrentUser() user: AuthUser, @Query() query?: unknown) {

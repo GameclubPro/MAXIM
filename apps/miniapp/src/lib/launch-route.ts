@@ -3,6 +3,7 @@ import type { ChannelDialogType } from '@maxim/contracts';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const GIVEAWAY_START_PARAM_PREFIX = 'gg-';
 const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
+const PUBLISHER_POST_IMPORT_START_PARAM_PATTERN = /^pi_([A-Za-z0-9_-]{16,256})$/u;
 
 const CHAT_SETTINGS_FOCUS = new Set([
   'broadcast',
@@ -460,6 +461,11 @@ export function resolveLaunchRoute(
   const routeLaunch = parseMiniappRouteStartParam(startParam);
   if (routeLaunch) {
     return routeLaunch;
+  }
+
+  const publisherPostImportToken = PUBLISHER_POST_IMPORT_START_PARAM_PATTERN.exec(startParam)?.[1];
+  if (publisherPostImportToken) {
+    return `/publications?import=${encodeURIComponent(publisherPostImportToken)}`;
   }
 
   const giveawayLaunch = parseGiveawayStartParam(startParam);

@@ -344,6 +344,15 @@ enum PublicationDispatchProfile {
   PUBLIK_V1
 }
 
+enum PublisherPostImportStatus {
+  WAITING
+  PROCESSING
+  READY
+  FAILED
+  CANCELED
+  EXPIRED
+}
+
 enum VkParsingOwnerProfile {
   MAJOR
   PUBLISHER
@@ -2162,11 +2171,52 @@ model Publication {
   schedule                 PublicationSchedule?
   occurrences              PublicationOccurrence[]
   mutationRecords          PublicationMutationRecord[]
+  postImportSession        PublisherPostImportSession?
 
   @@unique([actorUserId, requestId], map: "publications_actor_request_key")
   @@index([actorUserId, lifecycle, updatedAt(sort: Desc), id(sort: Desc)], map: "publications_actor_lifecycle_updated_idx")
   @@index([lifecycle, updatedAt(sort: Desc)], map: "publications_lifecycle_updated_idx")
   @@map("publications")
+}
+
+model PublisherPostImportSession {
+  id                            String                    @id @default(cuid())
+  publisherBotId                String                    @map("publisher_bot_id")
+  actorUserId                   String                    @map("actor_user_id")
+  requestId                     String                    @map("request_id")
+  startToken                    String                    @unique(map: "publisher_post_import_sessions_start_token_key") @map("start_token")
+  status                        PublisherPostImportStatus @default(WAITING)
+  privateChatId                 String?                   @map("private_chat_id")
+  incomingMessageId             String?                   @map("incoming_message_id")
+  sourceWebhookEventId          String?                   @map("source_webhook_event_id")
+  botStatusMessageId            String?                   @map("bot_status_message_id")
+  lastNotifiedStatus            String?                   @map("last_notified_status")
+  notificationKind              String?                   @map("notification_kind")
+  notificationPending           Boolean                   @default(false) @map("notification_pending")
+  notificationLockedAt          DateTime?                 @map("notification_locked_at")
+  notificationLockToken         String?                   @map("notification_lock_token")
+  notificationDispatchStartedAt DateTime?                 @map("notification_dispatch_started_at")
+  callbackId                    String?                   @map("callback_id")
+  publicationId                 String?                   @unique(map: "publisher_post_import_sessions_publication_id_key") @map("publication_id")
+  failureCode                   String?                   @map("failure_code")
+  omissions                     Json                      @default("[]")
+  capturedAt                    DateTime?                 @map("captured_at")
+  captureGuardUntil             DateTime?                 @map("capture_guard_until")
+  lockedAt                      DateTime?                 @map("locked_at")
+  lockToken                     String?                   @map("lock_token")
+  expiresAt                     DateTime                  @map("expires_at")
+  createdAt                     DateTime                  @default(now()) @map("created_at")
+  updatedAt                     DateTime                  @updatedAt @map("updated_at")
+
+  publication Publication? @relation(fields: [publicationId], references: [id], onDelete: SetNull)
+
+  @@unique([publisherBotId, actorUserId, requestId], map: "publisher_post_import_sessions_bot_actor_request_key")
+  @@unique([publisherBotId, incomingMessageId], map: "publisher_post_import_sessions_bot_incoming_message_key")
+  @@index([publisherBotId, actorUserId, createdAt(sort: Desc)], map: "publisher_post_import_sessions_actor_created_idx")
+  @@index([status, lockedAt, updatedAt], map: "publisher_post_import_sessions_recovery_idx")
+  @@index([status, expiresAt], map: "publisher_post_import_sessions_expiry_idx")
+  @@index([notificationPending, notificationLockedAt, updatedAt], map: "publisher_post_import_sessions_notification_idx")
+  @@map("publisher_post_import_sessions")
 }
 
 model PublicationMutationRecord {

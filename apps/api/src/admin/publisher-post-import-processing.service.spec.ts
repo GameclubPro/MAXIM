@@ -1,0 +1,441 @@
+import { BadRequestException } from '@nestjs/common';
+import { PublisherPostImportStatus } from '../prisma/prisma-client';
+import { PublisherPostImportProcessingService } from './publisher-post-import-processing.service';
+
+const NOW = new Date('2026-08-28T12:00:00.000Z');
+
+function processingSession(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'session-1',
+    publisherBotId: 'publik_bot',
+    actorUserId: '42',
+    requestId: 'request_123456',
+    startToken: 'start-token-1',
+    status: PublisherPostImportStatus.PROCESSING,
+    privateChatId: '42',
+    incomingMessageId: 'incoming-mid-1',
+    sourceWebhookEventId: null,
+    publicationId: null,
+    failureCode: null,
+    omissions: [],
+    capturedAt: NOW,
+    captureGuardUntil: new Date(NOW.getTime() + 60_000),
+    lockedAt: null,
+    lockToken: null,
+    expiresAt: new Date(NOW.getTime() + 15 * 60_000),
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+function createFixture(
+  exactMessage?: Record<string, unknown>,
+  sessionOverrides: Record<string, unknown> = {},
+) {
+  const tx = {
+    publication: {
+      create: jest.fn().mockResolvedValue({ id: 'publication-1' }),
+      update: jest.fn().mockResolvedValue({}),
+    },
+    publicationMutationRecord: { create: jest.fn().mockResolvedValue({}) },
+    publisherPostImportSession: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+  };
+  const prisma = {
+    publisherPostImportSession: {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      findFirst: jest.fn().mockResolvedValue(processingSession(sessionOverrides)),
+    },
+    webhookEvent: { findUnique: jest.fn() },
+    $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+  };
+  const maxClient = {
+    getExactMessageRow: jest.fn().mockResolvedValue(
+      exactMessage ?? {
+        mid: 'incoming-mid-1',
+        sender: { user_id: 42 },
+        recipient: { chat_id: 42, chat_type: 'dialog' },
+        body: { text: 'outer **text**' },
+        link: {
+          type: 'forward',
+          message: {
+            mid: 'source-mid-1',
+            body: {
+              text: 'Привет мир',
+              markup: [{ type: 'strong', from: 0, length: 6 }],
+            },
+            attachments: [],
+          },
+        },
+      },
+    ),
+    getVideoDownloadUrl: jest.fn(),
+  };
+  const contentService = {
+    prepareContentRevision: jest.fn(async (content: Record<string, unknown>) => ({
+      ...content,
+      assets: [],
+    })),
+    assertPublisherCompatibleContent: jest.fn().mockResolvedValue(undefined),
+    persistPreparedContentRevision: jest.fn().mockResolvedValue({ id: 'content-1' }),
+  };
+  return {
+    service: new PublisherPostImportProcessingService(
+      prisma as never,
+      maxClient as never,
+      contentService as never,
+    ),
+    prisma,
+    tx,
+    maxClient,
+    contentService,
+  };
+}
+
+describe('PublisherPostImportProcessingService', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('imports strictly from link.message and preserves structured UTF-16 markup', async () => {
+    const { service, maxClient, contentService, tx } = createFixture();
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(maxClient.getExactMessageRow).toHaveBeenCalledWith(
+      '42',
+      'incoming-mid-1',
+      expect.objectContaining({ botId: 'publik_bot' }),
+    );
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '**Привет** мир',
+        textFormat: 'markdown',
+        buttons: [],
+      }),
+    );
+    expect(contentService.prepareContentRevision).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('outer') }),
+    );
+    expect(tx.publicationMutationRecord.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: '42',
+        publicationId: 'publication-1',
+        resultingVersion: 1,
+      }),
+    });
+  });
+
+  it('recovers an official body=null pure forward from its exact authenticated receipt', async () => {
+    const incomingMessageId = 'message_created:update-pure-1';
+    const { service, prisma, maxClient, contentService } = createFixture(undefined, {
+      incomingMessageId,
+      sourceWebhookEventId: 'webhook-event-pure-1',
+    });
+    prisma.webhookEvent.findUnique.mockResolvedValue({
+      botId: 'publik_bot',
+      normalizedPayload: {
+        updateId: 'update-pure-1',
+        botId: 'publik_bot',
+        type: 'message_created',
+        message: {
+          messageId: incomingMessageId,
+          chatId: '42',
+          senderId: '42',
+          text: 'Пересланный пост',
+          createdAt: NOW.toISOString(),
+        },
+        raw: {
+          update_type: 'message_created',
+          message: {
+            sender: { user_id: 42 },
+            recipient: { chat_id: 42, chat_type: 'dialog' },
+            body: null,
+            link: {
+              type: 'forward',
+              chat_id: -100500,
+              message: {
+                mid: 'source-mid-pure-1',
+                text: 'Пересланный пост',
+                attachments: [],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(prisma.webhookEvent.findUnique).toHaveBeenCalledWith({
+      where: { id: 'webhook-event-pure-1' },
+      select: { botId: true, normalizedPayload: true },
+    });
+    expect(maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Пересланный пост', textFormat: 'plain' }),
+    );
+  });
+
+  it('falls back to plain source text when markup cannot be serialized', async () => {
+    const exactMessage = {
+      mid: 'incoming-mid-1',
+      sender: { user_id: 42 },
+      recipient: { chat_id: 42, chat_type: 'dialog' },
+      link: {
+        type: 'forward',
+        message: {
+          body: {
+            text: 'a`b',
+            markup: [{ type: 'monospaced', from: 0, length: 3 }],
+          },
+          attachments: [],
+        },
+      },
+    };
+    const { service, contentService, tx } = createFixture(exactMessage);
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'a`b', textFormat: 'plain' }),
+    );
+    expect(tx.publisherPostImportSession.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ omissions: ['formatting_not_preserved'] }),
+      }),
+    );
+  });
+
+  it('falls back to bounded plain text when Markdown escaping expands past 4 000', async () => {
+    const sourceText = '*'.repeat(3_998);
+    const exactMessage = {
+      mid: 'incoming-mid-1',
+      sender: { user_id: 42 },
+      recipient: { chat_id: 42, chat_type: 'dialog' },
+      link: {
+        type: 'forward',
+        message: {
+          body: {
+            text: sourceText,
+            markup: [{ type: 'strong', from: 0, length: 1 }],
+          },
+          attachments: [],
+        },
+      },
+    };
+    const { service, contentService, tx } = createFixture(exactMessage);
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ text: sourceText, textFormat: 'plain' }),
+    );
+    expect(tx.publisherPostImportSession.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ omissions: ['formatting_not_preserved'] }),
+      }),
+    );
+  });
+
+  it('terminalizes downloaded MIME spoof validation instead of retrying until timeout', async () => {
+    const { service, contentService, prisma } = createFixture();
+    contentService.prepareContentRevision.mockRejectedValue(
+      new BadRequestException('Видео повреждено.'),
+    );
+
+    await expect(service.process('session-1')).resolves.toBe('failed');
+
+    expect(prisma.publisherPostImportSession.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: PublisherPostImportStatus.FAILED,
+          failureCode: 'unsupported_content',
+        }),
+      }),
+    );
+  });
+
+  it('downloads image batches concurrently while preserving source order', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      buildContent: (
+        message: Record<string, unknown>,
+        botId: string,
+      ) => Promise<{ media: Array<{ base64: string; fileName: string }> }>;
+      downloadMedia: (
+        url: string,
+        maxBytes: number,
+        type: 'image' | 'video',
+      ) => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    let active = 0;
+    let maxActive = 0;
+    internal.downloadMedia = jest.fn(async (url: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => setTimeout(resolve, url.endsWith('/1') ? 30 : 10));
+      active -= 1;
+      return { bytes: Buffer.from(url.at(-1)!), mimeType: 'image/jpeg' };
+    });
+    const contentPromise = internal.buildContent(
+      {
+        text: '',
+        attachments: [1, 2, 3, 4].map((id) => ({
+          type: 'image',
+          payload: { url: `https://i.max.ru/${id}` },
+        })),
+      },
+      'publik_bot',
+    );
+    await jest.advanceTimersByTimeAsync(50);
+    const content = await contentPromise;
+
+    expect(maxActive).toBe(3);
+    expect(content.media.map((item) => Buffer.from(item.base64, 'base64').toString())).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+    ]);
+    expect(content.media.map((item) => item.fileName)).toEqual([
+      'forwarded-image-1.jpeg',
+      'forwarded-image-2.jpeg',
+      'forwarded-image-3.jpeg',
+      'forwarded-image-4.jpeg',
+    ]);
+  });
+
+  it('checks the cumulative image limit after concurrent downloads', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      buildContent: (message: Record<string, unknown>, botId: string) => Promise<unknown>;
+      downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    internal.downloadMedia = jest.fn(async () => ({
+      bytes: Buffer.alloc(7_000_000),
+      mimeType: 'image/jpeg',
+    }));
+
+    await expect(
+      internal.buildContent(
+        {
+          attachments: [1, 2, 3, 4].map((id) => ({
+            type: 'image',
+            payload: { url: `https://i.max.ru/${id}` },
+          })),
+        },
+        'publik_bot',
+      ),
+    ).rejects.toMatchObject({ code: 'media_too_large' });
+  });
+
+  it('resolves token-only forwarded video through the Publisher bot', async () => {
+    const { service, maxClient } = createFixture();
+    maxClient.getVideoDownloadUrl.mockResolvedValue('https://video.max.ru/download.mp4');
+    const internal = service as unknown as {
+      buildContent: (
+        message: Record<string, unknown>,
+        botId: string,
+      ) => Promise<{ media: Array<{ type: string }> }>;
+      downloadMedia: () => Promise<{ bytes: Buffer; mimeType: string }>;
+    };
+    internal.downloadMedia = jest.fn(async () => ({
+      bytes: Buffer.from('video'),
+      mimeType: 'video/mp4',
+    }));
+
+    const content = await internal.buildContent(
+      { attachments: [{ type: 'video', payload: { token: 'video-token-1' } }] },
+      'publik_bot',
+    );
+
+    expect(maxClient.getVideoDownloadUrl).toHaveBeenCalledWith(
+      'video-token-1',
+      expect.objectContaining({ botId: 'publik_bot' }),
+    );
+    expect(content.media).toEqual([expect.objectContaining({ type: 'video' })]);
+  });
+
+  it('rejects unsafe media origins, credentials, ports and redirects', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      parseAllowedMediaUrl: (url: string) => URL;
+      downloadMedia: (url: string, maxBytes: number, type: 'image' | 'video') => Promise<unknown>;
+    };
+    for (const url of [
+      'http://i.oneme.ru/photo.jpg',
+      'https://user:secret@i.oneme.ru/photo.jpg',
+      'https://i.oneme.ru:8443/photo.jpg',
+      'https://example.com/photo.jpg',
+    ]) {
+      expect(() => internal.parseAllowedMediaUrl(url)).toThrow('Unsafe MAX media URL');
+    }
+
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: 'https://example.com/private' },
+      }),
+    ) as typeof fetch;
+    try {
+      await expect(
+        internal.downloadMedia('https://i.oneme.ru/photo.jpg', 1024, 'image'),
+      ).rejects.toThrow('Unsafe MAX media URL');
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('retries transient media transport while keeping 404 terminal', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      downloadMedia: (
+        url: string,
+        maxBytes: number,
+        type: 'image' | 'video',
+      ) => Promise<{ bytes: Buffer }>;
+    };
+    const originalFetch = global.fetch;
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(Buffer.from('image'), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' },
+        }),
+      ) as typeof fetch;
+    try {
+      await expect(
+        internal.downloadMedia('https://i.oneme.ru/photo.jpg', 1024, 'image'),
+      ).rejects.toMatchObject({ name: 'PublisherPostImportTransientError' });
+      await expect(
+        internal.downloadMedia('https://i.oneme.ru/photo.jpg', 1024, 'image'),
+      ).resolves.toMatchObject({ bytes: Buffer.from('image') });
+
+      global.fetch = jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('request aborted'), { name: 'AbortError' }),
+        ) as typeof fetch;
+      await expect(
+        internal.downloadMedia('https://i.oneme.ru/photo.jpg', 1024, 'image'),
+      ).rejects.toMatchObject({ name: 'PublisherPostImportTransientError' });
+
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(new Response(null, { status: 404 })) as typeof fetch;
+      await expect(
+        internal.downloadMedia('https://i.oneme.ru/photo.jpg', 1024, 'image'),
+      ).rejects.toMatchObject({ code: 'media_download_failed' });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});

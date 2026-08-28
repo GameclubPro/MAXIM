@@ -183,6 +183,7 @@ const envSchema = z.object({
     z.string().trim().min(1).optional(),
   ),
   MAX_PUBLISHER_DISPATCH_ENABLED: envBoolean(false),
+  PUBLISHER_POST_IMPORT_ENABLED: envBoolean(false),
   MAX_API_BASE_URL: z.string().url().default('https://platform-api2.max.ru'),
   MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: envBoolean(true),
   MAX_JOIN_DENY_CHAT_IDS: z.string().optional(),

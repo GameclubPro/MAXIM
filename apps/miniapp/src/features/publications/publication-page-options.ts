@@ -68,8 +68,10 @@ export const PUBLICATION_WEEKDAYS = [
 
 const PUBLISHER_ONLY_PUBLICATION_ROUTE_PARAMS = [
   'compose',
+  'draft',
   'entityId',
   'entityType',
+  'import',
   'sourceId',
   'sourceType',
 ] as const;

@@ -36,6 +36,11 @@ import {
 } from '@maxim/contracts/poll';
 import { type PublicationDelivery, type PublicationDetails } from '@maxim/contracts/publication';
 import {
+  publisherPostImportSessionSchema,
+  type PublisherPostImportSession,
+  type PublisherPostImportStatus,
+} from '@maxim/contracts/publisher';
+import {
   PREVIEW_CHANNEL_ID,
   PREVIEW_CHANNEL_TITLE,
   PREVIEW_CHAT_ID,
@@ -55,7 +60,10 @@ import {
   type PreviewApiTransportOptions,
   type PreviewClock,
 } from './preview-transport-runtime';
-import { createPreviewPublications } from './preview-transport-publications';
+import {
+  buildPreviewPublicationDetails,
+  createPreviewPublications,
+} from './preview-transport-publications';
 import {
   addDays,
   addHours,
@@ -119,6 +127,8 @@ export type PreviewState = {
   publisherEntitiesVariant: 'mixed' | 'channel-only' | 'large' | 'empty' | 'error';
   publisherPolicyVariant: 'normal' | 'setup' | 'error';
   publisherSuggestionsVariant: 'empty' | 'mixed' | 'large';
+  publisherPostImportVariant: 'none' | PublisherPostImportStatus;
+  publisherPostImportSession: PublisherPostImportSession | null;
 };
 
 export type PreviewDialogBucket = {
@@ -145,6 +155,16 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   const publisherState = searchParams.get('publisherState');
   const publisherPolicyState = searchParams.get('publisherPolicyState');
   const publisherSuggestionsState = searchParams.get('publisherSuggestions');
+  const publisherPostImportState = searchParams.get('publisherImport');
+  const publisherPostImportVariant: PreviewState['publisherPostImportVariant'] =
+    publisherPostImportState === 'waiting' ||
+    publisherPostImportState === 'processing' ||
+    publisherPostImportState === 'ready' ||
+    publisherPostImportState === 'failed' ||
+    publisherPostImportState === 'canceled' ||
+    publisherPostImportState === 'expired'
+      ? publisherPostImportState
+      : 'none';
   const chatSettings = chatSettingsSchema.parse({
     greetingEnabled: false,
     greetingBotMessageEnabled: false,
@@ -937,6 +957,8 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
       publisherSuggestionsState === 'mixed' || publisherSuggestionsState === 'large'
         ? publisherSuggestionsState
         : 'empty',
+    publisherPostImportVariant,
+    publisherPostImportSession: null,
   };
 
   state.autopostRules = [
@@ -1009,6 +1031,54 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   const publicationFixtures = createPreviewPublications(state, now);
   state.publications = publicationFixtures.publications;
   state.publicationDeliveries = publicationFixtures.deliveries;
+
+  if (publisherPostImportVariant === 'ready') {
+    const imported = buildPreviewPublicationDetails(
+      state,
+      {
+        title: 'Черновик',
+        content: {
+          text: 'В субботу встречаемся в парке. Начало в 12:00.',
+          textFormat: 'plain',
+          buttons: [],
+          media: [
+            {
+              type: 'image',
+              base64:
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+              mimeType: 'image/png',
+              fileName: 'park.png',
+            },
+          ],
+        },
+        audience: { selection: 'ALL_MANAGED', mode: 'SNAPSHOT', targets: [] },
+        schedule: null,
+        intent: 'draft',
+      },
+      {
+        id: 'publication-imported-draft',
+        now,
+        createdAt: addHours(now, -1).toISOString(),
+        updatedAt: addHours(now, -1).toISOString(),
+      },
+    );
+    state.publications = [imported.publication, ...state.publications];
+  }
+
+  if (publisherPostImportVariant !== 'none') {
+    state.publisherPostImportSession = publisherPostImportSessionSchema.parse({
+      id: 'preview-import-session-123456',
+      status: publisherPostImportVariant,
+      expiresAt: addHours(now, 1).toISOString(),
+      publicationId: publisherPostImportVariant === 'ready' ? 'publication-imported-draft' : null,
+      botUrl:
+        publisherPostImportVariant === 'waiting'
+          ? 'https://max.ru/se14088825_bot?start=pi_preview_import_token_123456'
+          : null,
+      failureCode: publisherPostImportVariant === 'failed' ? 'unsupported_content' : null,
+      omissions: [],
+    });
+  }
 
   return state;
 }

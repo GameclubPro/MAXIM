@@ -51,6 +51,7 @@ import {
   MAX_IMAGE_UPLOAD_MAX_BYTES,
   MAX_VIDEO_UPLOAD_MAX_BYTES,
 } from './max-video-upload.constants';
+import { extractMaxVideoDownloadUrl } from './max-video-download-url.util';
 import { MaxMediaUploadValidationCache } from './max-media-upload-validation-cache';
 import type {
   MaxValidatedImageUpload,
@@ -545,6 +546,7 @@ export const MAX_API_SOURCE_TAGS = {
   CALLBACK_ANSWER: 'callback_answer',
   KARAVAN_STOREFRONT_RELAY: 'karavan_storefront_relay',
   VK_PARSING: 'vk_parsing',
+  PUBLISHER_POST_IMPORT: 'publisher_post_import',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
   REQUIRED_SUBSCRIPTION_MEMBERSHIP: 'required_subscription_membership',
@@ -1686,6 +1688,25 @@ export class MaxClientService implements OnModuleDestroy {
       );
     }
     return message;
+  }
+
+  async getVideoDownloadUrl(
+    videoToken: string,
+    options: MaxApiRequestOptions | MaxApiTrafficClass = {},
+  ): Promise<string | null> {
+    const normalizedToken = videoToken.trim();
+    if (!normalizedToken || normalizedToken.length > 512) {
+      return null;
+    }
+    const response = await this.executeGlobalRequest(
+      () =>
+        this.request<Record<string, unknown>>(
+          'get',
+          `/videos/${encodeURIComponent(normalizedToken)}`,
+        ),
+      options,
+    );
+    return extractMaxVideoDownloadUrl(response);
   }
 
   async getExactChannelDialogButtonIdentities(

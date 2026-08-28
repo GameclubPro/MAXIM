@@ -92,6 +92,9 @@ import { PublisherReadinessService } from '../publisher/publisher-readiness.serv
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherSuggestionPublicationProcessor } from './publisher-suggestion-publication.processor';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-publication.queue';
+import { PublisherPostImportProcessingService } from './publisher-post-import-processing.service';
+import { PublisherPostImportDeliveryService } from './publisher-post-import-delivery.service';
+import { PublisherPostImportProcessor } from './publisher-post-import.processor';
 
 @Module({
   imports: [
@@ -174,6 +177,13 @@ import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-p
     PublisherReadinessService,
     PublisherSuggestionPublicationQueueService,
     ...(roleRunsPublisher(getAppRole()) ? [PublisherSuggestionPublicationProcessor] : []),
+    ...(roleRunsPublisher(getAppRole())
+      ? [
+          PublisherPostImportProcessingService,
+          PublisherPostImportDeliveryService,
+          PublisherPostImportProcessor,
+        ]
+      : []),
     ManagedGiveawayRunnerService,
     VkParsingRateLimitService,
     VkApiClientService,
