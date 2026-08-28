@@ -27,16 +27,49 @@ function createQueueMock(counts: {
   completed: number;
 }) {
   return {
-    getWaitingCount: jest.fn().mockResolvedValue(counts.waiting),
-    getPrioritizedCount: jest.fn().mockResolvedValue(counts.prioritized),
-    getActiveCount: jest.fn().mockResolvedValue(counts.active),
-    getDelayedCount: jest.fn().mockResolvedValue(counts.delayed),
-    getFailedCount: jest.fn().mockResolvedValue(counts.failed),
-    getCompletedCount: jest.fn().mockResolvedValue(counts.completed),
+    getJobCounts: jest.fn().mockResolvedValue({
+      waiting: counts.waiting,
+      paused: 0,
+      prioritized: counts.prioritized,
+      active: counts.active,
+      delayed: counts.delayed,
+      failed: counts.failed,
+      completed: counts.completed,
+    }),
   };
 }
 
 describe('QueueMetricsService', () => {
+  it('reads every BullMQ counter in one call and includes paused jobs in waiting', async () => {
+    const getJobCounts = jest.fn().mockResolvedValue({
+      waiting: 2,
+      paused: 3,
+      prioritized: 4,
+      active: 5,
+      delayed: 6,
+      failed: 7,
+      completed: 8,
+    });
+    const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
+
+    await expect((service as any).readQueueCounters({ getJobCounts })).resolves.toEqual({
+      waiting: 5,
+      prioritized: 4,
+      active: 5,
+      delayed: 6,
+      failed: 7,
+      completed: 8,
+    });
+    expect(getJobCounts).toHaveBeenCalledWith(
+      'waiting',
+      'prioritized',
+      'active',
+      'delayed',
+      'failed',
+      'completed',
+    );
+  });
+
   it('returns queue counters, webhook status metrics, and action health in one snapshot', async () => {
     const prisma = {
       webhookEvent: {
@@ -281,6 +314,14 @@ describe('QueueMetricsService', () => {
 
     const snapshot = await service.getSnapshot();
 
+    expect(defaultQueues[DEFAULT_WEBHOOK_QUEUE_NAMES[0]]?.getJobCounts).toHaveBeenCalledWith(
+      'waiting',
+      'prioritized',
+      'active',
+      'delayed',
+      'failed',
+      'completed',
+    );
     expect(snapshot.moderation).toEqual({
       waiting: 3,
       prioritized: 2,

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { getAppRole, roleRunsIngress } from '../runtime/app-role';
 
 const DEFAULT_WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS = 100;
 
@@ -24,7 +25,7 @@ return {1, secondCount, windowCount}
 @Injectable()
 export class WebhookRateLimitService implements OnModuleDestroy {
   private readonly logger = new Logger(WebhookRateLimitService.name);
-  private readonly redis: Redis;
+  private readonly redis: Redis | null;
   private readonly globalLimit: number;
   private readonly burstLimit: number;
   private readonly fallbackCounters = new Map<
@@ -37,6 +38,13 @@ export class WebhookRateLimitService implements OnModuleDestroy {
   private lastFallbackLogAtMs = 0;
 
   constructor(private readonly configService: ConfigService) {
+    this.globalLimit = this.configService.get<number>('WEBHOOK_GLOBAL_RPS_LIMIT', 300);
+    this.burstLimit = this.configService.get<number>('WEBHOOK_BURST_LIMIT', 450);
+    if (!roleRunsIngress(getAppRole())) {
+      this.redis = null;
+      return;
+    }
+
     const commandTimeout = this.readPositiveInt(
       this.configService.get('WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS'),
       DEFAULT_WEBHOOK_RATE_LIMIT_REDIS_TIMEOUT_MS,
@@ -46,12 +54,11 @@ export class WebhookRateLimitService implements OnModuleDestroy {
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
     });
-    this.globalLimit = this.configService.get<number>('WEBHOOK_GLOBAL_RPS_LIMIT', 300);
-    this.burstLimit = this.configService.get<number>('WEBHOOK_BURST_LIMIT', 450);
+    this.redis.on('error', (error) => this.logRedisFallback(error));
   }
 
   async onModuleDestroy() {
-    await this.redis.quit();
+    await this.redis?.quit();
   }
 
   async isAllowed(_sourceIp: string): Promise<boolean> {
@@ -60,6 +67,9 @@ export class WebhookRateLimitService implements OnModuleDestroy {
     const avgWindowKey = `webhook:rps:avg:${Math.floor(nowSec / 20)}`;
 
     try {
+      if (!this.redis) {
+        return this.reserveFallbackCapacity(secKey, avgWindowKey);
+      }
       const result = await this.redis.eval(
         WEBHOOK_RATE_LIMIT_SCRIPT,
         2,
@@ -77,13 +87,17 @@ export class WebhookRateLimitService implements OnModuleDestroy {
       return allowed === 1;
     } catch (error: unknown) {
       this.logRedisFallback(error);
-      const secCount = this.incrementFallbackCounterWithTtl(secKey, 2);
-      if (secCount > this.burstLimit) {
-        return false;
-      }
-      const avgWindowCount = this.incrementFallbackCounterWithTtl(avgWindowKey, 21);
-      return avgWindowCount <= this.globalLimit * 20;
+      return this.reserveFallbackCapacity(secKey, avgWindowKey);
     }
+  }
+
+  private reserveFallbackCapacity(secKey: string, avgWindowKey: string): boolean {
+    const secCount = this.incrementFallbackCounterWithTtl(secKey, 2);
+    if (secCount > this.burstLimit) {
+      return false;
+    }
+    const avgWindowCount = this.incrementFallbackCounterWithTtl(avgWindowKey, 21);
+    return avgWindowCount <= this.globalLimit * 20;
   }
 
   private incrementFallbackCounterWithTtl(key: string, ttlSec: number): number {

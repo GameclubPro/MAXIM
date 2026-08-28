@@ -335,40 +335,67 @@ queues=(
   max-actions-background
   night-mode-transitions
   moderation-delete-intents
+  global-spammer-denorm
+  photo-duplicates
   commercial-image-ocr
-  managed-broadcast
   admin-managed-entities-refresh
   max-chat-admin-roster-sync
   admin-suggestion-delivery
   admin-manual-fanout
   admin-super-ban
+  publisher-binding-refresh
+  publisher-chat-comments
+  publisher-suggestion-publication
   vk-parsing-sync
   vk-parsing-publish
+  vk-parsing-publisher
 )
 docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T redis sh -lc '
-redis_count() {
-  key="$1"
-  type="$(redis-cli --raw type "$key" 2>/dev/null || true)"
-  case "$type" in
-    none) printf "0\n" ;;
-    list) redis-cli --raw llen "$key" ;;
-    zset) redis-cli --raw zcard "$key" ;;
-    set) redis-cli --raw scard "$key" ;;
-    stream) redis-cli --raw xlen "$key" ;;
-    hash) redis-cli --raw hlen "$key" ;;
-    string) redis-cli --raw strlen "$key" ;;
-    *) printf "unsupported:%s\n" "$type" ;;
-  esac
-}
 now_ms="$(($(date +%s) * 1000))"
 due_score="$((now_ms * 4096 + 4095))"
+queue_counts_script="
+local function listCountWithoutMarker(key)
+  local count = redis.call(\"LLEN\", key)
+  local marker = redis.call(\"LINDEX\", key, -1)
+  if marker and string.sub(marker, 1, 2) == \"0:\" then
+    return math.max(0, count - 1)
+  end
+  return count
+end
+local waiting = listCountWithoutMarker(KEYS[1]) + listCountWithoutMarker(KEYS[2])
+local prioritized = redis.call(\"ZCARD\", KEYS[3])
+local active = redis.call(\"LLEN\", KEYS[4])
+local failed = redis.call(\"ZCARD\", KEYS[5])
+local delayed = redis.call(\"ZCARD\", KEYS[6])
+local dueNow = redis.call(\"ZCOUNT\", KEYS[6], \"-inf\", ARGV[1])
+return string.format(
+  \"wait=%d\\nprioritized=%d\\nactive=%d\\nfailed=%d\\ndelayed=%d\\ndueNow=%d\",
+  waiting,
+  prioritized,
+  active,
+  failed,
+  delayed,
+  dueNow
+)
+"
 for q in "$@"; do
-  printf "%s wait=" "$q"; redis_count "bull:$q:wait"
-  printf "%s prioritized=" "$q"; redis_count "bull:$q:prioritized"
-  printf "%s active=" "$q"; redis_count "bull:$q:active"
-  printf "%s failed=" "$q"; redis_count "bull:$q:failed"
-  printf "%s delayed=" "$q"; redis_count "bull:$q:delayed"
-  printf "%s dueNow=" "$q"; redis-cli --raw zcount "bull:$q:delayed" -inf "$due_score" 2>/dev/null || printf "0\n"
+  counts="$(redis-cli --raw eval "$queue_counts_script" 6 \
+    "bull:$q:wait" \
+    "bull:$q:paused" \
+    "bull:$q:prioritized" \
+    "bull:$q:active" \
+    "bull:$q:failed" \
+    "bull:$q:delayed" \
+    "$due_score" 2>/dev/null || true)"
+  if [ -z "$counts" ]; then
+    printf "%s counts=unavailable\n" "$q"
+    continue
+  fi
+  while IFS= read -r count; do
+    printf "%s %s\n" "$q" "$count"
+  done <<EOF
+$counts
+EOF
 done
 ' sh "${queues[@]}"
 REMOTE

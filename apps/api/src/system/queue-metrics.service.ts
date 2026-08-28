@@ -565,16 +565,23 @@ export class QueueMetricsService {
       return EMPTY_COUNTERS;
     }
 
-    const [waiting, prioritized, active, delayed, failed, completed] = await Promise.all([
-      queue.getWaitingCount(),
-      queue.getPrioritizedCount(),
-      queue.getActiveCount(),
-      queue.getDelayedCount(),
-      queue.getFailedCount(),
-      queue.getCompletedCount(),
-    ]);
+    const counts = await queue.getJobCounts(
+      'waiting',
+      'prioritized',
+      'active',
+      'delayed',
+      'failed',
+      'completed',
+    );
 
-    return { waiting, prioritized, active, delayed, failed, completed };
+    return {
+      waiting: (counts.waiting ?? 0) + (counts.paused ?? 0),
+      prioritized: counts.prioritized ?? 0,
+      active: counts.active ?? 0,
+      delayed: counts.delayed ?? 0,
+      failed: counts.failed ?? 0,
+      completed: counts.completed ?? 0,
+    };
   }
 
   private sumQueueCounters(...counters: QueueCounters[]): QueueCounters {

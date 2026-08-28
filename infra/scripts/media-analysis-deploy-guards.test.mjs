@@ -581,6 +581,25 @@ test('read-only BullMQ monitor includes commercial image OCR', () => {
   assert.equal([...monitor.matchAll(/^ {2}commercial-image-ocr$/gmu)].length, 1);
 });
 
+test('read-only BullMQ monitor batches counters and includes every Publisher queue', () => {
+  const monitor = read('infra/scripts/vps-monitor-readonly.sh');
+
+  for (const queue of [
+    'publisher-binding-refresh',
+    'publisher-chat-comments',
+    'publisher-suggestion-publication',
+    'vk-parsing-publisher',
+  ]) {
+    assert.equal([...monitor.matchAll(new RegExp(`^ {2}${queue}$`, 'gmu'))].length, 1);
+  }
+  assert.doesNotMatch(monitor, /^ {2}managed-broadcast$/mu);
+  assert.match(monitor, /redis-cli --raw eval "\$queue_counts_script"/u);
+  assert.match(monitor, /local marker = redis\.call\(\\"LINDEX\\", key, -1\)/u);
+  assert.match(monitor, /string\.sub\(marker, 1, 2\) == \\"0:\\"/u);
+  assert.doesNotMatch(monitor, /RPOP/u);
+  assert.doesNotMatch(monitor, /redis_count/u);
+});
+
 test('production media-analysis roles are singleton init-managed OCR sandboxes', () => {
   for (const [name, path] of [
     ['main', 'infra/docker-compose.yml'],
