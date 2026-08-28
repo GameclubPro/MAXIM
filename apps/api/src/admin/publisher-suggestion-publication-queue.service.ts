@@ -18,10 +18,7 @@ import {
 import { PublisherDispatchHealthService } from '../publisher/publisher-dispatch-health.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { readChannelSuggestionPublicationClaimV1 } from './admin-channel-suggestion-publication-protocol';
-import {
-  CHANNEL_DIALOG_ACTION_SUGGEST,
-  PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
-} from './admin.service.support';
+import { PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST } from './admin.service.support';
 import {
   isPublisherSuggestionReviewProtocol,
   PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
@@ -45,6 +42,71 @@ type PublisherSuggestionRecoveryCursor = {
   createdAt: Date;
   id: string;
 };
+
+type PublisherSuggestionRecoveryRow = {
+  id: string;
+  payload: Prisma.JsonValue;
+  createdAt: Date;
+};
+
+function buildPublisherSuggestionRecoveryCursorPredicate(
+  cursor: PublisherSuggestionRecoveryCursor | null,
+): Prisma.Sql {
+  return cursor
+    ? Prisma.sql`AND (created_at, id) > (${cursor.createdAt}, ${cursor.id}::text)`
+    : Prisma.empty;
+}
+
+// FLAG: Keep these literals aligned with the audit-log partial indexes; parameters or OR
+// predicates prevent PostgreSQL from proving the partial-index predicates during planning.
+function buildPublisherSuggestionRecoveryQuery(
+  cursor: PublisherSuggestionRecoveryCursor | null,
+): Prisma.Sql {
+  const cursorPredicate = buildPublisherSuggestionRecoveryCursorPredicate(cursor);
+  // FLAG: Keep these predicates literal and aligned with the production partial indexes.
+  // Parameterizing the action/status OR shape turns this bounded recovery into a table scan.
+  return Prisma.sql`
+    SELECT id, payload, created_at AS "createdAt"
+    FROM (
+      (
+        SELECT id, payload, created_at
+        FROM audit_logs
+        WHERE action = 'CHANNEL_DIALOG_SUGGESTION'
+          AND payload->>'type' = 'suggest'
+          AND payload->>'reviewStatus' = 'publishing'
+          AND payload->>'reviewDispatchProfile' = 'PUBLIK_V1'
+          ${cursorPredicate}
+        ORDER BY created_at ASC, id ASC
+        LIMIT 100
+      )
+      UNION ALL
+      (
+        SELECT id, payload, created_at
+        FROM audit_logs
+        WHERE action = 'CHANNEL_DIALOG_SUGGESTION'
+          AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending'
+          AND payload->>'reviewStatus' = 'pending'
+          AND payload->>'reviewDispatchProfile' = 'PUBLIK_V1'
+          ${cursorPredicate}
+        ORDER BY created_at ASC, id ASC
+        LIMIT 100
+      )
+      UNION ALL
+      (
+        SELECT id, payload, created_at
+        FROM audit_logs
+        WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'
+          AND payload->>'reviewStatus' IN ('publishing', 'pending')
+          AND payload->>'reviewDispatchProfile' = 'PUBLIK_V1'
+          ${cursorPredicate}
+        ORDER BY created_at ASC, id ASC
+        LIMIT 100
+      )
+    ) AS publisher_suggestion_recovery_candidates
+    ORDER BY created_at ASC, id ASC
+    LIMIT 100
+  `;
+}
 
 @Injectable()
 export class PublisherSuggestionPublicationQueueService implements OnModuleInit, OnModuleDestroy {
@@ -153,35 +215,9 @@ export class PublisherSuggestionPublicationQueueService implements OnModuleInit,
       let failedClaims = 0;
       let firstFailure: unknown = null;
       for (let page = 0; page < PUBLISHER_SUGGESTION_RECOVERY_MAX_PAGES; page += 1) {
-        const rows = await this.prisma.auditLog.findMany({
-          where: {
-            action: {
-              in: [CHANNEL_DIALOG_ACTION_SUGGEST, PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST],
-            },
-            AND: [
-              {
-                OR: [
-                  { payload: { path: ['reviewStatus'], equals: 'publishing' } },
-                  { payload: { path: ['reviewStatus'], equals: 'pending' } },
-                ],
-              },
-              { payload: { path: ['reviewDispatchProfile'], equals: 'PUBLIK_V1' } },
-              ...(cursor
-                ? [
-                    {
-                      OR: [
-                        { createdAt: { gt: cursor.createdAt } },
-                        { createdAt: cursor.createdAt, id: { gt: cursor.id } },
-                      ],
-                    },
-                  ]
-                : []),
-            ],
-          },
-          select: { id: true, payload: true, createdAt: true },
-          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-          take: PUBLISHER_SUGGESTION_RECOVERY_PAGE_SIZE,
-        });
+        const rows = await this.prisma.$queryRaw<PublisherSuggestionRecoveryRow[]>(
+          buildPublisherSuggestionRecoveryQuery(cursor),
+        );
         if (rows.length === 0) {
           this.recoveryCursor = null;
           break;

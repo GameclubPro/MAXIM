@@ -10,8 +10,28 @@ import {
   PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
 } from './publisher-suggestion-review-protocol';
 
-function sqlText(query: { strings?: readonly string[] }): string {
+type SqlQuery = {
+  strings?: readonly string[];
+  values?: readonly unknown[];
+};
+
+function sqlText(query: SqlQuery): string {
   return query.strings?.join('?').replace(/\s+/gu, ' ').trim() ?? '';
+}
+
+function recoveryScanCalls(queryRaw: jest.Mock): Array<[SqlQuery]> {
+  return queryRaw.mock.calls.filter(([query]: [SqlQuery]) =>
+    sqlText(query).includes('publisher_suggestion_recovery_candidates'),
+  );
+}
+
+function mockRecoveryPages(queryRaw: jest.Mock, pages: unknown[][]): void {
+  const remaining = [...pages];
+  queryRaw.mockImplementation(async (query: SqlQuery) =>
+    sqlText(query).includes('publisher_suggestion_recovery_candidates')
+      ? (remaining.shift() ?? [])
+      : [],
+  );
 }
 
 describe('PublisherSuggestionPublicationQueueService', () => {
@@ -36,9 +56,6 @@ describe('PublisherSuggestionPublicationQueueService', () => {
       add: jest.fn(),
     };
     const prisma = {
-      auditLog: {
-        findMany: jest.fn().mockResolvedValue([]),
-      },
       $queryRaw: jest.fn().mockResolvedValue([]),
     };
     const dispatchHealth = {
@@ -63,6 +80,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
       id,
       createdAt: new Date(Date.UTC(2026, 7, 26, 10, 0, 0, index)),
       payload: {
+        type: 'suggest',
         reviewStatus: 'publishing',
         reviewDispatchProfile: 'PUBLIK_V1',
         reviewAction: 'publish',
@@ -83,7 +101,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     await jest.advanceTimersByTimeAsync(120_000);
 
     expect(dispatchHealth.isGloballyPaused).not.toHaveBeenCalled();
-    expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
     service.onModuleDestroy();
@@ -95,7 +113,23 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     service.onModuleInit();
     await (service as any).recover();
 
-    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 100 }));
+    const recoveryCalls = recoveryScanCalls(prisma.$queryRaw);
+    expect(recoveryCalls).toHaveLength(1);
+    const scanSql = sqlText(recoveryCalls[0]![0]);
+    expect(scanSql).toContain(
+      "WHERE action = 'CHANNEL_DIALOG_SUGGESTION' AND payload->>'type' = 'suggest' AND payload->>'reviewStatus' = 'publishing'",
+    );
+    expect(scanSql).toContain(
+      "WHERE action = 'CHANNEL_DIALOG_SUGGESTION' AND COALESCE(NULLIF(payload->>'reviewStatus', ''), 'pending') = 'pending' AND payload->>'reviewStatus' = 'pending'",
+    );
+    expect(scanSql).toContain(
+      "WHERE action = 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION' AND payload->>'reviewStatus' IN ('publishing', 'pending')",
+    );
+    expect(scanSql.match(/FROM audit_logs/gu)).toHaveLength(3);
+    expect(scanSql.match(/LIMIT 100/gu)).toHaveLength(4);
+    expect(scanSql.match(/UNION ALL/gu)).toHaveLength(2);
+    expect(scanSql).not.toMatch(/\bOR\b/gu);
+    expect(scanSql).not.toContain('action IN');
     service.onModuleDestroy();
   });
 
@@ -106,7 +140,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     service.onModuleInit();
     await jest.advanceTimersByTimeAsync(60_000);
 
-    expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
 
@@ -114,7 +148,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     await jest.advanceTimersByTimeAsync(60_000);
 
     expect(dispatchHealth.isGloballyPaused).toHaveBeenCalledTimes(3);
-    expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(1);
+    expect(recoveryScanCalls(prisma.$queryRaw)).toHaveLength(1);
     service.onModuleDestroy();
   });
 
@@ -126,7 +160,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
     service.onModuleDestroy();
@@ -135,31 +169,35 @@ describe('PublisherSuggestionPublicationQueueService', () => {
   it('coalesces overlapping recovery ticks before they can duplicate DB work', async () => {
     const { prisma, service } = createHarness(true);
     let resolveRows!: (rows: []) => void;
-    prisma.auditLog.findMany.mockReturnValue(
-      new Promise<[]>((resolve) => {
+    prisma.$queryRaw.mockImplementation((query: SqlQuery) => {
+      if (!sqlText(query).includes('publisher_suggestion_recovery_candidates')) {
+        return Promise.resolve([]);
+      }
+      return new Promise<[]>((resolve) => {
         resolveRows = resolve;
-      }),
-    );
+      });
+    });
 
     const first = (service as any).recover() as Promise<void>;
     const second = (service as any).recover() as Promise<void>;
-    while (prisma.auditLog.findMany.mock.calls.length === 0) await Promise.resolve();
+    while (recoveryScanCalls(prisma.$queryRaw).length === 0) await Promise.resolve();
 
-    expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(1);
+    expect(recoveryScanCalls(prisma.$queryRaw)).toHaveLength(1);
     resolveRows([]);
     await Promise.all([first, second]);
 
-    expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(1);
+    expect(recoveryScanCalls(prisma.$queryRaw)).toHaveLength(1);
   });
 
   it('advances a bounded keyset cursor past more than 100 failed claims', async () => {
     const { prisma, queue, service } = createHarness(true);
     const blockedClaims = Array.from({ length: 200 }, (_, index) => createClaimRow(index));
     const readyClaim = createClaimRow(200);
-    prisma.auditLog.findMany
-      .mockResolvedValueOnce(blockedClaims.slice(0, 100))
-      .mockResolvedValueOnce(blockedClaims.slice(100))
-      .mockResolvedValueOnce([readyClaim]);
+    mockRecoveryPages(prisma.$queryRaw, [
+      blockedClaims.slice(0, 100),
+      blockedClaims.slice(100),
+      [readyClaim],
+    ]);
     queue.getJob.mockImplementation(async () => {
       if (queue.getJob.mock.calls.length <= blockedClaims.length) {
         return {
@@ -173,7 +211,7 @@ describe('PublisherSuggestionPublicationQueueService', () => {
 
     await (service as any).recover();
 
-    expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(2);
+    expect(recoveryScanCalls(prisma.$queryRaw)).toHaveLength(2);
     expect(queue.add).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ failedClaims: 200, err: 'permanent blocker' }),
@@ -182,26 +220,20 @@ describe('PublisherSuggestionPublicationQueueService', () => {
 
     await (service as any).recover();
 
-    expect(prisma.auditLog.findMany).toHaveBeenCalledTimes(3);
-    expect(prisma.auditLog.findMany.mock.calls[2]?.[0]).toEqual(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          AND: expect.arrayContaining([
-            {
-              OR: [
-                { createdAt: { gt: blockedClaims[199]!.createdAt } },
-                {
-                  createdAt: blockedClaims[199]!.createdAt,
-                  id: { gt: blockedClaims[199]!.id },
-                },
-              ],
-            },
-          ]),
-        }),
-        select: { id: true, payload: true, createdAt: true },
-        take: 100,
-      }),
+    const recoveryCalls = recoveryScanCalls(prisma.$queryRaw);
+    expect(recoveryCalls).toHaveLength(3);
+    const cursorQuery = recoveryCalls[2]![0];
+    expect(sqlText(cursorQuery).match(/AND \(created_at, id\) > \(\?, \?::text\)/gu)).toHaveLength(
+      3,
     );
+    expect(cursorQuery.values).toEqual([
+      blockedClaims[199]!.createdAt,
+      blockedClaims[199]!.id,
+      blockedClaims[199]!.createdAt,
+      blockedClaims[199]!.id,
+      blockedClaims[199]!.createdAt,
+      blockedClaims[199]!.id,
+    ]);
     expect(queue.add).toHaveBeenCalledWith(
       'publish-approved-suggestion',
       expect.objectContaining({
@@ -214,50 +246,47 @@ describe('PublisherSuggestionPublicationQueueService', () => {
     );
   });
 
-  it('recovers durable claims created by the Publisher inbox pipeline', async () => {
-    const { prisma, queue, service } = createHarness(true);
-    const suggestionId = 'publisher-suggestion-1';
-    prisma.auditLog.findMany.mockResolvedValueOnce([
-      {
-        id: suggestionId,
-        createdAt: new Date('2026-08-27T10:00:00.000Z'),
-        payload: {
-          reviewStatus: 'publishing',
-          reviewAction: 'publish',
-          reviewDispatchProfile: PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
-          reviewPublicationProtocol: PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
-          reviewPublicationRequestId: buildPublisherSuggestionPublicationRequestId(
-            suggestionId,
-            'publisher-claim-1',
-          ),
-          reviewClaimToken: 'publisher-claim-1',
-          reviewClaimedAt: '2026-08-27T09:59:00.000Z',
-          reviewClaimedByUserId: 'admin-1',
-        },
-      },
-    ]);
-    queue.getJob.mockResolvedValue(null);
-
-    await (service as any).recover();
-
-    expect(queue.add).toHaveBeenCalledWith(
-      'publish-approved-suggestion',
-      expect.objectContaining({
-        suggestionId,
-        claimToken: 'publisher-claim-1',
-      }),
-      expect.objectContaining({ jobId: expect.stringMatching(/^publik-suggestion-/u) }),
-    );
-    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          action: {
-            in: ['CHANNEL_DIALOG_SUGGESTION', 'PUBLISHER_CHANNEL_DIALOG_SUGGESTION'],
+  it.each(['publishing', 'pending'] as const)(
+    'recovers %s durable claims created by the Publisher inbox pipeline',
+    async (reviewStatus) => {
+      const { prisma, queue, service } = createHarness(true);
+      const suggestionId = 'publisher-suggestion-1';
+      mockRecoveryPages(prisma.$queryRaw, [
+        [
+          {
+            id: suggestionId,
+            createdAt: new Date('2026-08-27T10:00:00.000Z'),
+            payload: {
+              reviewStatus,
+              reviewAction: 'publish',
+              reviewDispatchProfile: PUBLISHER_SUGGESTION_DISPATCH_PROFILE,
+              reviewPublicationProtocol: PUBLISHER_SUGGESTION_REVIEW_PROTOCOL,
+              reviewPublicationRequestId: buildPublisherSuggestionPublicationRequestId(
+                suggestionId,
+                'publisher-claim-1',
+              ),
+              reviewClaimToken: 'publisher-claim-1',
+              reviewClaimedAt: '2026-08-27T09:59:00.000Z',
+              reviewClaimedByUserId: 'admin-1',
+            },
           },
+        ],
+      ]);
+      queue.getJob.mockResolvedValue(null);
+
+      await (service as any).recover();
+
+      expect(queue.add).toHaveBeenCalledWith(
+        'publish-approved-suggestion',
+        expect.objectContaining({
+          suggestionId,
+          claimToken: 'publisher-claim-1',
         }),
-      }),
-    );
-  });
+        expect.objectContaining({ jobId: expect.stringMatching(/^publik-suggestion-/u) }),
+      );
+      expect(recoveryScanCalls(prisma.$queryRaw)).toHaveLength(1);
+    },
+  );
 
   it('recreates a completed new-protocol job consumed by an older rolling worker', async () => {
     const { queue, service } = createHarness(true);
@@ -285,8 +314,13 @@ describe('PublisherSuggestionPublicationQueueService', () => {
   it('migrates stale inline-v0 claims before the normal durable recovery scan', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-08-27T12:00:00.000Z'));
     const { prisma, queue, service } = createHarness(true);
-    prisma.$queryRaw
-      .mockResolvedValueOnce([
+    prisma.$queryRaw.mockImplementation(async (query: SqlQuery) => {
+      const queryText = sqlText(query);
+      if (queryText.includes('publisher_suggestion_recovery_candidates')) return [];
+      if (queryText.startsWith('UPDATE audit_logs')) {
+        return [{ id: 'legacy-inline-suggestion-1' }];
+      }
+      return [
         {
           id: 'legacy-inline-suggestion-1',
           createdAt: new Date('2026-08-27T10:00:00.000Z'),
@@ -297,8 +331,8 @@ describe('PublisherSuggestionPublicationQueueService', () => {
             reviewedByUserId: 'admin-1',
           },
         },
-      ])
-      .mockResolvedValueOnce([{ id: 'legacy-inline-suggestion-1' }]);
+      ];
+    });
     queue.getJob.mockResolvedValue(null);
 
     await (service as any).recover();
@@ -308,7 +342,10 @@ describe('PublisherSuggestionPublicationQueueService', () => {
       expect.objectContaining({ suggestionId: 'legacy-inline-suggestion-1' }),
       expect.objectContaining({ jobId: expect.stringMatching(/^publik-suggestion-/u) }),
     );
-    const migrationSql = sqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
+    const migrationCall = prisma.$queryRaw.mock.calls.find(([query]: [SqlQuery]) =>
+      sqlText(query).startsWith('UPDATE audit_logs'),
+    );
+    const migrationSql = sqlText(migrationCall?.[0]);
     expect(migrationSql).toContain("payload->>'reviewStatus' = 'publishing'");
     expect(migrationSql).toContain("payload->>'reviewPublicationProtocol' IS NULL");
     expect(migrationSql).toContain("payload->>'reviewedAt' <= ?::text");
