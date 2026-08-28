@@ -15,7 +15,7 @@ test('keeps the original markdown intact while the multiline normalizer loads', 
         finishLoad = resolve;
       }),
   );
-  const source = '**Первая\nВторая**';
+  const source = '**Первая\nВторая\nТретья**';
   const pending = resource.load();
 
   assert.equal(resource.getStatus(), 'loading');
@@ -25,11 +25,11 @@ test('keeps the original markdown intact while the multiline normalizer loads', 
   });
 
   assert.ok(finishLoad);
-  finishLoad({ normalizeLegacyMultilineMarkdown: (value) => value.replace('\n', '**\n**') });
+  finishLoad({ normalizeLegacyMultilineMarkdown: (value) => value.replaceAll('\n', '**\n**') });
   await pending;
   assert.deepEqual(resolveNormalizedMarkdownSource(resource, source, true), {
     status: 'ready',
-    value: '**Первая**\n**Вторая**',
+    value: '**Первая**\n**Вторая**\n**Третья**',
   });
 });
 
@@ -40,7 +40,7 @@ test('preserves the original source after rejection and supports a clean retry',
     attempts += 1;
     if (attempts === 1) throw new Error('chunk unavailable');
     return {
-      normalizeLegacyMultilineMarkdown: (value: string) => value.replace('\n', '**\n**'),
+      normalizeLegacyMultilineMarkdown: (value: string) => value.replaceAll('\n', '**\n**'),
     };
   });
   const unsubscribe = resource.subscribe(() => statuses.push(resource.getStatus()));
