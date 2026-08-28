@@ -78,7 +78,7 @@
       "label": "Publisher entities",
       "entries": ["src/pages/publisher-entities-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 45056, "cssGzipBytes": 12288 }
+      "limits": { "jsGzipBytes": 45312, "cssGzipBytes": 12288 }
     },
     {
       "id": "publisher-entity-modules",

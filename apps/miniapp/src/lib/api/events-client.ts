@@ -24,6 +24,8 @@ import type {
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
+export const MANUAL_MODERATION_ACTION_TIMEOUT_MS = 55_000;
+
 export type ChatStatisticsIdentity = {
   id: string;
   title: string;
@@ -373,6 +375,8 @@ export async function applyManualModerationAction(
     {
       method: 'POST',
       body: JSON.stringify(requestBody),
+      timeoutMs: MANUAL_MODERATION_ACTION_TIMEOUT_MS,
+      retryMutationOnTransportError: false,
     },
   );
   return response as ManualModerationActionResult;

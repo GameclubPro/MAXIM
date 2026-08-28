@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Delete,
   Get,
@@ -12,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
+import { ModerationSanctionStateLockBusyError } from '../moderation/moderation-sanction-state-lock.service';
 import { ManualModerationService } from './manual-moderation.service';
 
 @Controller('v1')
@@ -171,13 +173,28 @@ export class AdminManualModerationController {
   }
 
   @Post('chats/:chatId/members/:userId/moderation-action')
-  applyManualModerationAction(
+  async applyManualModerationAction(
     @Param('chatId') chatId: string,
     @Param('userId') targetUserId: string,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.moderationService.applyManualModerationAction(chatId, targetUserId, user, body);
+    try {
+      return await this.moderationService.applyManualModerationAction(
+        chatId,
+        targetUserId,
+        user,
+        body,
+      );
+    } catch (error: unknown) {
+      if (error instanceof ModerationSanctionStateLockBusyError) {
+        throw new ConflictException({
+          code: 'MODERATION_ACTION_IN_PROGRESS',
+          message: 'Действие для этого участника уже выполняется. Дождитесь результата.',
+        });
+      }
+      throw error;
+    }
   }
 
   @Post('chats/:chatId/admin-allowlist')

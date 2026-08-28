@@ -12,6 +12,7 @@ const API_FALLBACKS_ENABLED =
 
 export type ApiRequestInit = RequestInit & {
   timeoutMs?: number;
+  retryMutationOnTransportError?: boolean;
 };
 
 export type ApiTransport = {
@@ -171,7 +172,10 @@ export function createApiTransport(
     authInitData: string,
     init: ApiRequestInit = {},
   ): Promise<FetchAttemptResult> => {
-    const { timeoutMs: requestedTimeoutMs, ...fetchInit } = init;
+    const requestedTimeoutMs = init.timeoutMs;
+    const fetchInit = { ...init };
+    delete fetchInit.timeoutMs;
+    delete fetchInit.retryMutationOnTransportError;
     const timeoutMs =
       typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
         ? Math.max(1, Math.trunc(requestedTimeoutMs))
@@ -234,6 +238,7 @@ export function createApiTransport(
   ): Promise<FetchAttemptResult> => {
     const attemptBases = resolveAttemptBases();
     const method = (init.method ?? 'GET').toUpperCase();
+    const retryMutationOnTransportError = init.retryMutationOnTransportError !== false;
 
     if (!API_FALLBACKS_ENABLED || attemptBases.length <= 1) {
       if (!['GET', 'HEAD'].includes(method) && isMutationTunnelPreferredHost(attemptBases[0])) {
@@ -271,7 +276,11 @@ export function createApiTransport(
         preferredApiBase = result.apiBase;
         return result;
       } catch (error: unknown) {
-        if (init.signal?.aborted || ['GET', 'HEAD'].includes(method)) {
+        if (
+          init.signal?.aborted ||
+          ['GET', 'HEAD'].includes(method) ||
+          !retryMutationOnTransportError
+        ) {
           throw error;
         }
 
@@ -300,6 +309,7 @@ export function createApiTransport(
         authInitData,
         init,
         fetchWithTimeout,
+        { retryOnTransportError: retryMutationOnTransportError },
       );
       preferredApiBase = result.apiBase;
       return result;

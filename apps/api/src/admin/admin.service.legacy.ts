@@ -64,6 +64,7 @@ import {
   type ManagedEntitiesResponseDiff,
   type ManagedEntitiesResponseSnapshot,
   type ManagedEntitiesRefreshState,
+  type ManualModerationActionRequest,
   type SendBroadcastResult,
   type SendBroadcastTestResult,
   type ChatSummary,
@@ -8923,6 +8924,29 @@ export class AdminService implements OnModuleDestroy {
     const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user, {
       skipActorAdminCheck: options.actorAlreadyVerified === true,
     });
+    const parsed = manualModerationActionRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const actionRequest = parsed.data;
+    const resolvedBotId =
+      actionRequest.action === 'UNMUTE'
+        ? undefined
+        : await this.resolveManualModerationActionBotAssignment(
+            chatId,
+            this.resolveManualModerationBotAction(actionRequest.action),
+            {
+              preferredBotId: options.preferredBotId,
+            },
+          );
+    const targetDisplayName =
+      normalizeMaxUserDisplayName(options.targetDisplayNameHint, targetUserId) ??
+      (await this.resolveManualModerationTargetDisplayName(chatId, targetUserId, {
+        botId: resolvedBotId,
+        allowRemoteLookup:
+          options.allowTargetDisplayNameRemoteLookup ??
+          (actionRequest.action !== 'UNBAN' && actionRequest.action !== 'UNMUTE'),
+      }));
 
     let memberMutationConfirmed = false;
     try {
@@ -8933,7 +8957,9 @@ export class AdminService implements OnModuleDestroy {
             chatId,
             targetUserId,
             user,
-            body,
+            actionRequest,
+            resolvedBotId,
+            targetDisplayName,
             source,
             options,
             leaseGuard,
@@ -8951,39 +8977,19 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     targetUserId: string,
     user: AuthUser,
-    body: unknown,
+    actionRequest: ManualModerationActionRequest,
+    resolvedBotId: string | undefined,
+    targetDisplayName: string | null,
     source: AdminActionSource,
     options: ManualModerationExecutionOptions,
     leaseGuard: ModerationSanctionStateLeaseGuard,
     onMemberMutationConfirmed: () => void,
   ): Promise<ManualModerationActionResult> {
-    const parsed = manualModerationActionRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-    const resolvedBotId =
-      parsed.data.action === 'UNMUTE'
-        ? undefined
-        : await this.resolveManualModerationActionBotAssignment(
-            chatId,
-            this.resolveManualModerationBotAction(parsed.data.action),
-            {
-              preferredBotId: options.preferredBotId,
-            },
-          );
-    const targetDisplayName =
-      normalizeMaxUserDisplayName(options.targetDisplayNameHint, targetUserId) ??
-      (await this.resolveManualModerationTargetDisplayName(chatId, targetUserId, {
-        botId: resolvedBotId,
-        allowRemoteLookup:
-          options.allowTargetDisplayNameRemoteLookup ??
-          (parsed.data.action !== 'UNBAN' && parsed.data.action !== 'UNMUTE'),
-      }));
     const expectedSanctionEventId = this.readTrimmedString(options.expectedSanctionEventId);
     await this.assertExpectedManualModerationSanctionState({
       chatId,
       targetUserId,
-      releaseAction: parsed.data.action,
+      releaseAction: actionRequest.action,
       expectedSanctionEventId,
     });
     const sourceLedgerRootKey = this.readTrimmedString(options.fanoutLedgerJobId);
@@ -8997,16 +9003,16 @@ export class AdminService implements OnModuleDestroy {
       ...releasedSanctionMetadata,
     } as const;
     const requestedScope =
-      parsed.data.scope ??
-      (source === 'miniapp' && parsed.data.action === 'BAN' ? 'all_chats' : 'current_chat');
+      actionRequest.scope ??
+      (source === 'miniapp' && actionRequest.action === 'BAN' ? 'all_chats' : 'current_chat');
     const shouldFanoutManualAction = requestedScope === 'all_chats';
     const shouldFanoutCommandMute =
       shouldFanoutManualAction && (source === 'group_command' || source === 'private_command');
     const shouldFanoutMiniappMute = source === 'miniapp' && shouldFanoutManualAction;
 
-    if (parsed.data.action === 'MUTE') {
-      const mutePermanent = parsed.data.mutePermanent === true;
-      const muteDurationHours = parsed.data.muteDurationHours ?? null;
+    if (actionRequest.action === 'MUTE') {
+      const mutePermanent = actionRequest.mutePermanent === true;
+      const muteDurationHours = actionRequest.muteDurationHours ?? null;
       if (!mutePermanent && !muteDurationHours) {
         throw new BadRequestException('Укажите длительность мута в часах.');
       }
@@ -9182,7 +9188,7 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
-    if (parsed.data.action === 'BAN') {
+    if (actionRequest.action === 'BAN') {
       let executionMode: ManualBanExecutionMode;
       try {
         await this.assertManualMemberModerationPreconditions(
@@ -9369,13 +9375,14 @@ export class AdminService implements OnModuleDestroy {
             })
           : source === 'miniapp'
             ? {
-                sourceMessageCleanup: this.summarizeManualModerationCleanup(
-                  await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId, {
-                    botId: resolvedBotId,
-                    leaseGuard,
-                    logMessage: 'Failed to run recent message cleanup after miniapp manual ban',
-                  }),
-                ),
+                sourceMessageCleanup: await this.resolveManualBanSourceCleanupSummary({
+                  sourceChatId: chatId,
+                  targetUserId,
+                  actor: user,
+                  source,
+                  botId: resolvedBotId,
+                  leaseGuard,
+                }),
                 crossChatFanout: this.summarizeManualBanFanout({
                   removedChatIds: [],
                   skippedChatIds: [],
@@ -9478,7 +9485,7 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    if (parsed.data.action === 'UNMUTE') {
+    if (actionRequest.action === 'UNMUTE') {
       const sanctionFence = await this.prepareManualSanctionStateFence({
         chatId,
         targetUserId,
@@ -10989,6 +10996,10 @@ export class AdminService implements OnModuleDestroy {
     throw new ServiceUnavailableException(
       `Не удалось применить часть fanout-операций (${retryableFailedChatIds.length}). Повторите попытку.`,
     );
+  }
+
+  private isRetryableManualFanoutPreparationError(error: unknown): boolean {
+    return !(error instanceof BadRequestException || error instanceof ForbiddenException);
   }
 
   private async processManualGroupModerationCommandJob(
@@ -12585,10 +12596,19 @@ export class AdminService implements OnModuleDestroy {
         await sleepIfNeeded(this.manualFanoutLookupSpacingMs);
       }
 
-      const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
-        chat.id,
-        'moderate_member',
-      );
+      let resolvedBotId: string | undefined;
+      try {
+        resolvedBotId = await this.resolveManualModerationActionBotAssignment(chat.id, 'moderate_member');
+      } catch (error: unknown) {
+        const retryable = this.isRetryableManualFanoutPreparationError(error);
+        this.logger.warn({ chatId: chat.id, targetUserId, err: String(error) }, 'Manual ban fanout has no eligible bot route');
+        result.failedChatIds.push(chat.id);
+        if (retryable) {
+          result.retryableFailedChatIds.push(chat.id);
+        }
+        continue;
+      }
+
       const operationKey = this.buildManualModerationFanoutOperationKey({
         operation: 'FANOUT_BAN_MEMBER',
         sourceChatId,
@@ -12629,10 +12649,13 @@ export class AdminService implements OnModuleDestroy {
       try {
         await this.assertBotCanManageMembers(chat.id, 'BAN', resolvedBotId);
       } catch (error: unknown) {
+        const retryable = this.isRetryableManualFanoutPreparationError(error);
         await this.markManualModerationFanoutLedgerFailed({
           operationKey,
           lockToken: claim.lockToken,
-          status: PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE,
+          status: retryable
+            ? PrismaManualModerationFanoutLedgerStatus.FAILED_RETRYABLE
+            : PrismaManualModerationFanoutLedgerStatus.FAILED_TERMINAL,
           error,
           botId: resolvedBotId ?? null,
           metadata: banMetadataBase,
@@ -12647,7 +12670,9 @@ export class AdminService implements OnModuleDestroy {
           'Skipped manual ban fanout because the bot cannot manage members in chat',
         );
         result.failedChatIds.push(chat.id);
-        result.retryableFailedChatIds.push(chat.id);
+        if (retryable) {
+          result.retryableFailedChatIds.push(chat.id);
+        }
         continue;
       }
 

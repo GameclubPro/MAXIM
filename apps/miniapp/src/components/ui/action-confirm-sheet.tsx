@@ -14,6 +14,7 @@ type ActionConfirmSheetProps = {
   previewMeta?: ReactNode;
   confirmLabel: string;
   confirmBusyLabel?: string;
+  confirmBusy?: boolean;
   cancelLabel?: string;
   tone?: 'danger' | 'accent';
   isBusy?: boolean;
@@ -37,6 +38,7 @@ export function ActionConfirmSheet({
   previewMeta,
   confirmLabel,
   confirmBusyLabel = 'Сохраняем...',
+  confirmBusy,
   cancelLabel = 'Отмена',
   tone = 'danger',
   isBusy = false,
@@ -120,6 +122,7 @@ export function ActionConfirmSheet({
 
   const titleId = `${id}-title`;
   const summaryId = summary ? `${id}-summary` : undefined;
+  const isConfirmBusy = confirmBusy ?? isBusy;
   const extraActionButton =
     extraActionLabel && onExtraAction ? (
       <button
@@ -157,7 +160,7 @@ export function ActionConfirmSheet({
       onClick={onConfirm}
       disabled={isBusy}
     >
-      {isBusy ? confirmBusyLabel : confirmLabel}
+      {isConfirmBusy ? confirmBusyLabel : confirmLabel}
     </button>
   );
 

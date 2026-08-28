@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getChatParticipantsPage, getChatStatisticsIdentity } from '../src/lib/api/events-client';
+import {
+  MANUAL_MODERATION_ACTION_TIMEOUT_MS,
+  applyManualModerationAction,
+  getChatParticipantsPage,
+  getChatStatisticsIdentity,
+} from '../src/lib/api/events-client';
 import type { ApiTransport } from '../src/lib/api/transport';
 
 test('participant requests keep the selected period and role filter server-side', async () => {
@@ -25,6 +30,40 @@ test('participant requests keep the selected period and role filter server-side'
   assert.equal(url.searchParams.get('range'), '30d');
   assert.equal(url.searchParams.get('roleFilter'), 'admins');
   assert.equal(url.searchParams.get('search'), 'Иван');
+});
+
+test('manual moderation sends one bounded non-replayable mutation', async () => {
+  let requestedPath = '';
+  let requestedInit: Parameters<ApiTransport['request']>[1];
+  const api: ApiTransport = {
+    async request(path, init) {
+      requestedPath = path;
+      requestedInit = init;
+      return {
+        ok: true,
+        action: 'BAN',
+        userId: 'user/2',
+        muteDurationHours: null,
+        muteExpiresAt: null,
+        message: 'Бан включён.',
+      };
+    },
+    requestKeepalive() {},
+  };
+
+  await applyManualModerationAction(api, 'chat-1', 'user/2', {
+    action: 'BAN',
+    scope: 'all_chats',
+  });
+
+  assert.equal(requestedPath, '/chats/chat-1/members/user%2F2/moderation-action');
+  assert.equal(requestedInit?.method, 'POST');
+  assert.equal(requestedInit?.timeoutMs, MANUAL_MODERATION_ACTION_TIMEOUT_MS);
+  assert.equal(requestedInit?.retryMutationOnTransportError, false);
+  assert.deepEqual(JSON.parse(String(requestedInit?.body)), {
+    action: 'BAN',
+    scope: 'all_chats',
+  });
 });
 
 test('participant requests reject unknown role filters before transport', async () => {

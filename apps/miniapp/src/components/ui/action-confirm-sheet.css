@@ -120,10 +120,10 @@
       background-color 140ms ease,
       border-color 140ms ease;
   }
-
   .action-confirm-sheet__button:active {
     transform: translateY(1px) scale(0.99);
   }
+  .action-confirm-sheet__button:disabled { opacity: 0.58; }
 
   .action-confirm-sheet__button--ghost {
     border: 1px solid rgba(62, 96, 127, 0.14);

@@ -18,11 +18,15 @@ type FetchAttemptResult = {
   response: Response;
 };
 
+type RequestInitWithTimeout = RequestInit & {
+  timeoutMs?: number;
+};
+
 type FetchWithTimeout = (
   apiBase: string,
   path: string,
   authInitData: string,
-  init?: RequestInit,
+  init?: RequestInitWithTimeout,
 ) => Promise<FetchAttemptResult>;
 
 function createChunkedTunnelUploadId(): string {
@@ -53,7 +57,7 @@ async function encodeGzipBody(value: string): Promise<string | null> {
 
 export async function buildMutationTunnelPath(
   path: string,
-  init: RequestInit = {},
+  init: RequestInitWithTimeout = {},
 ): Promise<string | null> {
   const method = (init.method ?? 'GET').toUpperCase();
   if (
@@ -87,7 +91,7 @@ async function fetchChunkedMutationWithTunnel(
   apiBase: string,
   path: string,
   authInitData: string,
-  init: RequestInit,
+  init: RequestInitWithTimeout,
   fetchWithTimeout: FetchWithTimeout,
 ): Promise<FetchAttemptResult | null> {
   const method = (init.method ?? 'GET').toUpperCase();
@@ -131,6 +135,7 @@ async function fetchChunkedMutationWithTunnel(
     const chunkResult = await fetchWithTimeout(apiBase, tunnelPath, authInitData, {
       headers: init.headers,
       signal: init.signal,
+      timeoutMs: init.timeoutMs,
     });
 
     return chunkResult.response.ok ? null : chunkResult;
@@ -173,6 +178,7 @@ async function fetchChunkedMutationWithTunnel(
   return fetchWithTimeout(apiBase, tunnelPath, authInitData, {
     headers: init.headers,
     signal: init.signal,
+    timeoutMs: init.timeoutMs,
   });
 }
 
@@ -180,7 +186,7 @@ export async function fetchMutationWithTunnel(
   apiBase: string,
   path: string,
   authInitData: string,
-  init: RequestInit,
+  init: RequestInitWithTimeout,
   fetchWithTimeout: FetchWithTimeout,
 ): Promise<FetchAttemptResult | null> {
   const tunnelPath = await buildMutationTunnelPath(path, init);
@@ -188,6 +194,7 @@ export async function fetchMutationWithTunnel(
     const tunnelResult = await fetchWithTimeout(apiBase, tunnelPath, authInitData, {
       headers: init.headers,
       signal: init.signal,
+      timeoutMs: init.timeoutMs,
     });
     if (![405, 413, 414].includes(tunnelResult.response.status)) {
       return tunnelResult;
@@ -201,8 +208,9 @@ export async function fetchMutationWithTunnelFallback(
   attemptBases: readonly string[],
   path: string,
   authInitData: string,
-  init: RequestInit,
+  init: RequestInitWithTimeout,
   fetchWithTimeout: FetchWithTimeout,
+  options: { retryOnTransportError?: boolean } = {},
 ): Promise<FetchAttemptResult> {
   const replayableBody =
     !init.body ||
@@ -234,7 +242,7 @@ export async function fetchMutationWithTunnelFallback(
 
       return result;
     } catch (error: unknown) {
-      if (init.signal?.aborted) {
+      if (init.signal?.aborted || options.retryOnTransportError === false) {
         throw error;
       }
 

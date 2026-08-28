@@ -116,6 +116,105 @@ function installSanctionStateHarness(service: AdminService) {
 }
 
 describe('AdminService sanction state ordering', () => {
+  it('queues current-chat miniapp ban cleanup when the background queue is available', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ message_id: 'mid-source-1' }]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members', 'read_all_messages', 'write'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminManualFanoutQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminManualFanoutQueue as never,
+    );
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'BAN', scope: 'current_chat' },
+    );
+
+    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
+      'execute-admin-manual-fanout',
+      expect.objectContaining({
+        kind: 'manual_ban_source_cleanup',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-3',
+        source: 'miniapp',
+      }),
+      expect.objectContaining({ priority: 20 }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            scope: 'current_chat',
+            sourceMessageCleanup: expect.objectContaining({
+              mode: 'queued',
+              candidateCount: 0,
+              deletedCount: 0,
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('resolves the MAX action route before acquiring the sanction lock', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createBanMaxClient();
+    const service = createService(prisma, maxClient);
+    const resolveBot = jest
+      .spyOn(service as any, 'resolveManualModerationActionBotAssignment')
+      .mockResolvedValue('bot-1');
+    const harness = installSanctionStateHarness(service);
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      ADMIN_ACTOR,
+      { action: 'BAN', scope: 'current_chat' },
+      'group_command',
+      VERIFIED_COMMAND_OPTIONS,
+    );
+
+    expect(resolveBot).toHaveBeenCalledTimes(1);
+    expect(harness.sanctionStateLock.runExclusive).toHaveBeenCalledTimes(1);
+    expect(resolveBot.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.sanctionStateLock.runExclusive.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it('rejects a sanction event invalidated by a newer fence before release side effects', async () => {
     const prisma = createPrismaMock();
     const expectedEventCreatedAt = new Date('2026-04-12T10:00:00.000Z');

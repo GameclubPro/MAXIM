@@ -686,6 +686,43 @@ test('aborts hanging requests after the configured timeout', async () => {
   }
 });
 
+test('does not replay a non-replayable mutation through the tunnel after timeout', async () => {
+  const calls: FetchCall[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    await new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    });
+  }) as typeof fetch;
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+    originalSetTimeout(handler, Math.min(Number(timeout) || 0, 5), ...args)) as typeof setTimeout;
+
+  try {
+    const api = createApiTransport('auth_date=1&hash=first', {
+      apiBases: ['https://major-maksimov.ru/api/v1'],
+    });
+
+    await assert.rejects(
+      () =>
+        api.request('/chats/chat-1/members/user-1/moderation-action', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'BAN', scope: 'all_chats' }),
+          retryMutationOnTransportError: false,
+        }),
+      /Сервис не отвечает\. Повторите\./u,
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(matchesRequestUrl(calls[0].input, MAJOR_API_ORIGIN, MUTATION_TUNNEL_PATH), false);
+    assert.equal('retryMutationOnTransportError' in (calls[0].init ?? {}), false);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test('honors a request-specific timeout without forwarding it to fetch', async () => {
   const calls: FetchCall[] = [];
   const timeoutValues: number[] = [];
@@ -1055,6 +1092,41 @@ test('prefers the mutation tunnel for a single CDN API base', async () => {
   assert.equal(new URL(String(calls[0].input)).searchParams.get('method'), 'PUT');
   assert.equal(new URL(String(calls[0].input)).searchParams.get('path'), '/chats/chat-1/settings');
   assert.equal(calls[0].init?.method ?? 'GET', 'GET');
+});
+
+test('preserves a request-specific timeout on a preferred mutation tunnel', async () => {
+  const calls: FetchCall[] = [];
+  const timeoutValues: number[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    return createResponse({ ok: true, status: 204, text: '', contentType: null });
+  }) as typeof fetch;
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    timeoutValues.push(Number(timeout));
+    return originalSetTimeout(handler, timeout, ...args);
+  }) as typeof setTimeout;
+
+  try {
+    const api = createApiTransport('auth_date=1&hash=first', {
+      apiBases: ['https://api-cdn.flex-craft.ru/api/v1'],
+    });
+
+    await api.request('/chats/chat-1/members/user-1/moderation-action', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'BAN', scope: 'all_chats' }),
+      timeoutMs: 55_000,
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(matchesRequestUrl(calls[0].input, CDN_API_ORIGIN, MUTATION_TUNNEL_PATH), true);
+    assert.equal(timeoutValues.includes(55_000), true);
+    assert.equal(timeoutValues.includes(25_000), false);
+    assert.equal('timeoutMs' in (calls[0].init ?? {}), false);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
 });
 
 test('prefers the mutation tunnel for the production CDN API hostname', async () => {

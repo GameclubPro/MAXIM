@@ -2042,6 +2042,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
     useState<SpammerDiagnosticsTarget | null>(null);
   const [pendingScopeAction, setPendingScopeAction] = useState<PendingScopeAction | null>(null);
+  const [pendingScopeChoice, setPendingScopeChoice] =
+    useState<ManualModerationScopeChoice | null>(null);
   const [spammerDiagnosticsFullEnabledFor, setSpammerDiagnosticsFullEnabledFor] = useState<
     string | null
   >(null);
@@ -2668,6 +2670,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: normalizeActionErrorMessage(error),
       });
     },
+    onSettled: () => setPendingScopeChoice(null),
   });
   const cleanupUnavailableParticipantsMutation = useMutation({
     mutationFn: () =>
@@ -2718,6 +2721,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         description: normalizeActionErrorMessage(error),
       });
     },
+    onSettled: () => setPendingScopeChoice(null),
   });
   const spammerReviewMutation = useMutation({
     mutationFn: ({
@@ -2837,18 +2841,22 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [participantsFeed.items.length, selectedParticipant, selectedParticipantId]);
 
   const openPendingScopeAction = (action: PendingScopeAction) => {
+    setPendingScopeChoice(null);
     setPendingScopeAction(action);
   };
   const closePendingScopeAction = () => {
     if (participantModerationMutation.isPending || spammerDiagnosticsBanMutation.isPending) {
       return;
     }
+    setPendingScopeChoice(null);
     setPendingScopeAction(null);
   };
   const applyPendingScopeAction = (scope: ManualModerationScopeChoice) => {
     if (!pendingScopeAction) {
       return;
     }
+
+    setPendingScopeChoice(scope);
 
     if (pendingScopeAction.source === 'spammer-diagnostics') {
       spammerDiagnosticsBanMutation.mutate({
@@ -3669,8 +3677,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         cancelLabel="Отмена"
         tone={pendingScopeAction?.action === 'BAN' ? 'danger' : 'accent'}
         isBusy={participantModerationMutation.isPending || spammerDiagnosticsBanMutation.isPending}
+        confirmBusy={
+          (participantModerationMutation.isPending || spammerDiagnosticsBanMutation.isPending) &&
+          pendingScopeChoice === 'current_chat'
+        }
         extraActionLabel="Во всех чатах"
         extraActionBusyLabel="Применяем..."
+        extraActionBusy={
+          (participantModerationMutation.isPending || spammerDiagnosticsBanMutation.isPending) &&
+          pendingScopeChoice === 'all_chats'
+        }
         extraActionTone={pendingScopeAction?.action === 'BAN' ? 'danger' : 'accent'}
         actionOrder="confirm-extra-cancel"
         onExtraAction={() => applyPendingScopeAction('all_chats')}

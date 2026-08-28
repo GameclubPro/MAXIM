@@ -6895,6 +6895,98 @@ describe('AdminService.applyManualSystemBan', () => {
     });
   });
 
+  it('continues queued ban fanout after a chat has no eligible bot route', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Недоступная группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        userId: 'admin-1',
+        chatId: 'chat-3',
+        chat: {
+          id: 'chat-3',
+          title: 'Доступная группа',
+          createdAt: new Date('2026-03-03T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-3',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members', 'read_all_messages', 'write'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service as any, 'resolveManualModerationActionBotAssignment')
+      .mockImplementation(async (...args: unknown[]) => {
+        const [chatId, action] = args as [string, string];
+        if (chatId === 'chat-2' && action === 'moderate_member') {
+          throw new ForbiddenException(
+            'Не найден бот MAX с подтвержденным правом выполнить действие модерации в этом чате.',
+          );
+        }
+        return chatId === 'chat-3' ? 'bot-3' : 'bot-1';
+      });
+
+    await expect(
+      service.processManualModerationFanoutJob({
+        kind: 'manual_ban_fanout',
+        jobId: 'job-partial-route-1',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-3',
+        actor: {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: null,
+          chatTitle: null,
+        },
+        source: 'miniapp',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(maxClient.banMember).toHaveBeenCalledWith(
+      'chat-3',
+      'user-3',
+      expectImmediateMemberMutationOptions({ botId: 'bot-3' }),
+    );
+    await expect(
+      prisma.manualModerationFanoutLedgerEntry.findMany({
+        where: { operation: 'FANOUT_BAN_MEMBER' },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ targetChatId: 'chat-3', status: 'SUCCEEDED' }),
+    ]);
+  });
+
   it('does not repeat a succeeded queued manual ban fanout target on replay', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
