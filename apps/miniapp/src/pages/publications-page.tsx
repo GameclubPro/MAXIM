@@ -1125,6 +1125,7 @@ export function PublicationsPage({
 
   function setComposeRoute(open: boolean, options: { importDraftId?: string | null } = {}) {
     const next = new URLSearchParams(searchParams);
+    next.delete('create');
     if (!open) {
       next.delete('import');
       next.delete('draft');

@@ -150,6 +150,12 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   assert.deepEqual(scenarios.get('publications-publisher')?.searchParams, {
     profile: 'publisher',
   });
+  assert.deepEqual(scenarios.get('publications-publisher-create')?.searchParams, {
+    profile: 'publisher',
+    create: '1',
+    entityType: 'channel',
+    entityId: 'preview-channel',
+  });
   assert.deepEqual(scenarios.get('publications-publisher-schedules')?.searchParams, {
     profile: 'publisher',
     view: 'schedules',
@@ -163,6 +169,7 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     profile: 'publisher',
   });
   assert.ok(scenarios.get('publications-publisher')?.features.includes('publisher'));
+  assert.ok(scenarios.get('publications-publisher-create')?.features.includes('publisher'));
   assert.ok(scenarios.get('chat-dialog-comments-publisher')?.features.includes('publisher'));
   assert.deepEqual(scenarios.get('publications-publisher-compose')?.searchParams, {
     profile: 'publisher',

@@ -438,9 +438,10 @@ describe('publisher contracts', () => {
       publicationId: 'publication-1',
       botUrl: null,
       failureCode: null,
-      omissions: ['buttons_not_imported'],
+      omissions: ['buttons_not_imported', 'attachments_not_imported'],
     });
     expect(session.status).toBe('ready');
+    expect(session.omissions).toEqual(['buttons_not_imported', 'attachments_not_imported']);
     expect(publisherPostImportCurrentResponseSchema.parse({ session })).toEqual({ session });
     expect(publisherPostImportCurrentResponseSchema.parse({ session: null })).toEqual({
       session: null,

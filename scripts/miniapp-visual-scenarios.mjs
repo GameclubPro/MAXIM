@@ -447,6 +447,18 @@ const baseScenarios = [
     'publications',
     ['publications-publisher', { searchParams: { profile: 'publisher' }, features: ['publisher'] }],
     [
+      'publications-publisher-create',
+      {
+        searchParams: {
+          profile: 'publisher',
+          create: '1',
+          entityType: 'channel',
+          entityId: 'preview-channel',
+        },
+        features: ['publisher'],
+      },
+    ],
+    [
       'publications-publisher-schedules',
       { searchParams: { profile: 'publisher', view: 'schedules' }, features: ['publisher'] },
     ],

@@ -114,10 +114,10 @@ export function normalizePublisherReadinessFilter(
   return value === 'ready' || value === 'attention' ? value : 'all';
 }
 
-export function buildPublisherComposeRoute(
+export function buildPublisherCreateRoute(
   entity: Pick<PublisherEntity, 'entityType' | 'id'>,
 ): string {
-  return `/publications?compose=1&entityType=${entity.entityType}&entityId=${encodeURIComponent(
+  return `/publications?create=1&entityType=${entity.entityType}&entityId=${encodeURIComponent(
     entity.id,
   )}`;
 }

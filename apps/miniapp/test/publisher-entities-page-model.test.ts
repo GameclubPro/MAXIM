@@ -6,7 +6,7 @@ import {
   type PublisherReadinessBlockerCode,
 } from '@maxim/contracts/publisher';
 import {
-  buildPublisherComposeRoute,
+  buildPublisherCreateRoute,
   buildPublisherEntityViewRoute,
   fingerprintPublisherEntities,
   isPublisherEntityRefreshObserved,
@@ -120,11 +120,11 @@ test('publisher entity fingerprints observe access updates without depending on 
   );
 });
 
-test('publisher cabinet builds an encoded compose deep link', () => {
+test('publisher cabinet builds an encoded create chooser deep link', () => {
   const entity = publisherEntity('channel/with?symbols', 'channel');
   assert.equal(
-    buildPublisherComposeRoute(entity),
-    '/publications?compose=1&entityType=channel&entityId=channel%2Fwith%3Fsymbols',
+    buildPublisherCreateRoute(entity),
+    '/publications?create=1&entityType=channel&entityId=channel%2Fwith%3Fsymbols',
   );
 });
 

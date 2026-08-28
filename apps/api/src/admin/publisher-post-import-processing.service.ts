@@ -1,5 +1,8 @@
 import type { PublicationContentInput, PublicationMediaInput } from '@maxim/contracts/publication';
-import type { PublisherPostImportFailureCode } from '@maxim/contracts/publisher';
+import type {
+  PublisherPostImportFailureCode,
+  PublisherPostImportOmission,
+} from '@maxim/contracts/publisher';
 import { maxUpdateSchema } from '@maxim/contracts';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
@@ -209,11 +212,15 @@ export class PublisherPostImportProcessingService {
         return 'noop';
       }
       if (error instanceof PublisherPostImportTerminalError) {
-        await this.fail(session.id, lockToken, error.code);
+        if (await this.fail(session.id, lockToken, error.code)) {
+          this.logTerminalFailure(session.id, error.code);
+        }
         return 'failed';
       }
       if (error instanceof BadRequestException) {
-        await this.fail(session.id, lockToken, 'unsupported_content');
+        if (await this.fail(session.id, lockToken, 'unsupported_content')) {
+          this.logTerminalFailure(session.id, 'unsupported_content');
+        }
         return 'failed';
       }
       await this.prisma.publisherPostImportSession.updateMany({
@@ -255,14 +262,14 @@ export class PublisherPostImportProcessingService {
   private async buildContent(
     linkedMessage: Record<string, unknown>,
     publisherBotId: string,
-  ): Promise<PublicationContentInput & { omissions: string[] }> {
+  ): Promise<PublicationContentInput & { omissions: PublisherPostImportOmission[] }> {
     const sourceText = this.extractText(linkedMessage);
     if (sourceText.length > POST_IMPORT_MAX_TEXT_LENGTH) {
       throw new PublisherPostImportTerminalError('text_too_long', 'Forwarded text is too long');
     }
     const markup = extractIncomingMessageMarkup(linkedMessage);
     let rendered = markup.length > 0 ? renderIncomingMarkupAsMarkdown(sourceText, markup) : null;
-    const omissions: string[] = [];
+    const omissions: PublisherPostImportOmission[] = [];
     if (markup.length > 0 && rendered === null) {
       omissions.push('formatting_not_preserved');
     }
@@ -275,21 +282,26 @@ export class PublisherPostImportProcessingService {
     if (rawAttachments.some((item) => this.readAttachmentType(item) === 'inline_keyboard')) {
       omissions.push('buttons_not_imported');
     }
-    const attachments = rawAttachments.filter(
-      (item) => this.readAttachmentType(item) !== 'inline_keyboard',
+    const shareAttachments = rawAttachments.filter(
+      (item) => this.readAttachmentType(item) === 'share',
     );
+    const attachments = rawAttachments.filter((item) => {
+      const type = this.readAttachmentType(item);
+      return type !== 'inline_keyboard' && type !== 'share';
+    });
     const types = attachments.map((item) => this.readAttachmentType(item));
     if (types.some((type) => type !== 'image' && type !== 'photo' && type !== 'video')) {
-      throw new PublisherPostImportTerminalError(
-        'unsupported_content',
-        'Forward contains an unsupported attachment',
-      );
+      omissions.push('attachments_not_imported');
     }
-    const imageAttachments = attachments.filter((item) => {
+    const transferableAttachments = attachments.filter((item) => {
+      const type = this.readAttachmentType(item);
+      return type === 'image' || type === 'photo' || type === 'video';
+    });
+    const imageAttachments = transferableAttachments.filter((item) => {
       const type = this.readAttachmentType(item);
       return type === 'image' || type === 'photo';
     });
-    const videoAttachments = attachments.filter(
+    const videoAttachments = transferableAttachments.filter(
       (item) => this.readAttachmentType(item) === 'video',
     );
     if (imageAttachments.length > POST_IMPORT_MAX_IMAGES) {
@@ -381,12 +393,23 @@ export class PublisherPostImportProcessingService {
       });
     }
 
-    if (sourceText.trim().length === 0 && media.length === 0) {
+    let importedText = rendered ?? sourceText;
+    let textFormat: PublicationContentInput['textFormat'] = rendered ? 'markdown' : 'plain';
+    if (importedText.trim().length === 0 && media.length === 0) {
+      const shareUrl = shareAttachments
+        .map((attachment) => this.extractSafeShareUrl(attachment))
+        .find((candidate): candidate is string => candidate !== null);
+      if (shareUrl) {
+        importedText = shareUrl;
+        textFormat = 'plain';
+      }
+    }
+    if (importedText.trim().length === 0 && media.length === 0) {
       throw new PublisherPostImportTerminalError('unsupported_content', 'Forwarded post is empty');
     }
     return {
-      text: rendered ?? sourceText,
-      textFormat: rendered ? 'markdown' : 'plain',
+      text: importedText,
+      textFormat,
       buttons: [],
       media,
       omissions: [...new Set(omissions)],
@@ -573,6 +596,28 @@ export class PublisherPostImportProcessingService {
     return this.readString(
       payload.token ?? payload.video_token ?? payload.videoToken ?? payload.id,
     );
+  }
+
+  private extractSafeShareUrl(attachment: Record<string, unknown>): string | null {
+    const payload = this.asRecord(attachment.payload);
+    const candidate = this.readString(payload?.url);
+    if (!candidate || candidate.length > POST_IMPORT_MAX_TEXT_LENGTH) {
+      return null;
+    }
+    try {
+      const parsed = new URL(candidate);
+      if (
+        (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+        parsed.username ||
+        parsed.password
+      ) {
+        return null;
+      }
+      const normalized = parsed.toString();
+      return normalized.length <= POST_IMPORT_MAX_TEXT_LENGTH ? normalized : null;
+    } catch {
+      return null;
+    }
   }
 
   private async mapWithConcurrency<T, R>(
@@ -781,8 +826,8 @@ export class PublisherPostImportProcessingService {
     sessionId: string,
     lockToken: string,
     failureCode: PublisherPostImportFailureCode,
-  ): Promise<void> {
-    await this.prisma.publisherPostImportSession.updateMany({
+  ): Promise<boolean> {
+    const failed = await this.prisma.publisherPostImportSession.updateMany({
       where: {
         id: sessionId,
         status: PublisherPostImportStatus.PROCESSING,
@@ -802,6 +847,11 @@ export class PublisherPostImportProcessingService {
         expiresAt: new Date(Date.now() + PUBLISHER_POST_IMPORT_RESULT_TTL_MS),
       },
     });
+    return failed.count > 0;
+  }
+
+  private logTerminalFailure(sessionId: string, failureCode: PublisherPostImportFailureCode): void {
+    this.logger.log({ sessionId, failureCode }, 'Publisher forwarded post import rejected');
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

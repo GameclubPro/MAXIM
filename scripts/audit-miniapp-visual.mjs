@@ -15,6 +15,7 @@ const DEFAULT_SCENARIOS = [
   'home-favorite-categories',
   'publications',
   'publications-publisher',
+  'publications-publisher-create',
   'publications-publisher-schedules',
   'publications-publisher-history',
   'publications-publisher-empty',

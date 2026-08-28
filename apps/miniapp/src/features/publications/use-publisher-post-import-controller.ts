@@ -104,6 +104,19 @@ export function usePublisherPostImportController({
     [serverDraftsQuery.data?.pages],
   );
 
+  useEffect(() => {
+    if (
+      enabled &&
+      hydrated &&
+      !editorOpen &&
+      searchParams.get('create') === '1' &&
+      !searchParams.has('import') &&
+      !searchParams.has('draft')
+    ) {
+      setCreateSheetOpen(true);
+    }
+  }, [editorOpen, enabled, hydrated, searchParams]);
+
   const createMutation = useMutation({
     mutationFn: (requestId: string) => createPublisherPostImport(api, { requestId }),
     onSuccess: (session) => {
@@ -231,6 +244,7 @@ export function usePublisherPostImportController({
     }
     setCreateSheetOpen(false);
     pendingRequestIdRef.current = null;
+    clearCreateRoute();
     return true;
   }
 
@@ -240,8 +254,15 @@ export function usePublisherPostImportController({
     }
     const requestId = pendingRequestIdRef.current ?? createPublicationRequestId();
     pendingRequestIdRef.current = requestId;
+    clearCreateRoute();
     createMutation.mutate(requestId);
     maxImpact('soft');
+  }
+
+  function clearCreateRoute() {
+    if (searchParams.has('create')) {
+      removeRouteParams(searchParams, setSearchParams, ['create']);
+    }
   }
 
   async function finishPublishedImport() {

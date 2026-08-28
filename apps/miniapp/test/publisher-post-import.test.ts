@@ -218,9 +218,12 @@ test('publication import stays isolated and reloadable without replacing the man
   assert.match(controllerSource, /getPublisherPostImportByToken\(api, validRouteToken/u);
   assert.match(controllerSource, /enabled: enabled && !editorOpen && routeToken === null/u);
   assert.match(
-    pageSource,
-    /searchParams\.get\('compose'\) === '1' && !postImport\.hasImportRoute/u,
+    controllerSource,
+    /searchParams\.get\('create'\) === '1'[\s\S]*?setCreateSheetOpen\(true\)/u,
   );
+  assert.match(pageSource, /function setComposeRoute[\s\S]*?next\.delete\('create'\)/u);
+  assert.match(controllerSource, /function closeCreateSheet[\s\S]*?clearCreateRoute\(\)/u);
+  assert.match(controllerSource, /function startImport[\s\S]*?clearCreateRoute\(\)/u);
   assert.match(pageSource, /restoreCreateDraftAndClose/u);
   assert.match(assetPreviewsSource, /Math\.min\(3, imageAssetIds\.length\)/u);
   assert.match(assetPreviewsSource, /loaded\[index\] = \{ assetId, url \}/u);

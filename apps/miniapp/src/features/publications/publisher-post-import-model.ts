@@ -34,13 +34,20 @@ function describeImportFailure(code: PublisherPostImportSession['failureCode']):
 function describeImportOmissions(
   omissions: PublisherPostImportSession['omissions'],
 ): string | null {
-  if (omissions.includes('buttons_not_imported')) {
-    return 'Кнопки не перенесены';
+  const buttonsOmitted = omissions.includes('buttons_not_imported');
+  const attachmentsOmitted = omissions.includes('attachments_not_imported');
+  const details: string[] = [];
+  if (attachmentsOmitted && buttonsOmitted) {
+    details.push('Не перенесены: часть вложений, кнопки');
+  } else if (attachmentsOmitted) {
+    details.push('Часть вложений не перенесена');
+  } else if (buttonsOmitted) {
+    details.push('Кнопки не перенесены');
   }
   if (omissions.includes('formatting_not_preserved')) {
-    return 'Форматирование упрощено';
+    details.push('Форматирование упрощено');
   }
-  return null;
+  return details.length > 0 ? details.join(' · ') : null;
 }
 
 export function resolvePublisherPostImportPresentation(

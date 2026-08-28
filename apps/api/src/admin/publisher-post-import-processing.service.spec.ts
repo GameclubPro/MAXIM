@@ -29,6 +29,19 @@ function processingSession(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function exactForwardedMessage(linkedMessage: Record<string, unknown>) {
+  return {
+    mid: 'incoming-mid-1',
+    sender: { user_id: 42 },
+    recipient: { chat_id: 42, chat_type: 'dialog' },
+    body: { text: '' },
+    link: {
+      type: 'forward',
+      message: linkedMessage,
+    },
+  };
+}
+
 function createFixture(
   exactMessage?: Record<string, unknown>,
   sessionOverrides: Record<string, unknown> = {},
@@ -128,6 +141,158 @@ describe('PublisherPostImportProcessingService', () => {
         resultingVersion: 1,
       }),
     });
+  });
+
+  it('treats a share attachment as supplemental when the forwarded post has text', async () => {
+    const previewUrl = 'https://preview.example/hidden-card';
+    const { service, contentService } = createFixture(
+      exactForwardedMessage({
+        text: 'Текст публикации',
+        attachments: [
+          {
+            type: 'share',
+            title: 'Карточка предпросмотра',
+            payload: { url: previewUrl },
+          },
+        ],
+      }),
+    );
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'Текст публикации',
+        textFormat: 'plain',
+        media: [],
+        omissions: [],
+      }),
+    );
+    expect(contentService.prepareContentRevision).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining(previewUrl) }),
+    );
+  });
+
+  it('imports a share-only post as its safe HTTP URL', async () => {
+    const shareUrl = 'http://example.com/shared-post?source=max';
+    const { service, contentService } = createFixture(
+      exactForwardedMessage({
+        text: '',
+        attachments: [{ type: 'share', payload: { url: shareUrl } }],
+      }),
+    );
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: shareUrl,
+        textFormat: 'plain',
+        media: [],
+        omissions: [],
+      }),
+    );
+  });
+
+  it.each([
+    ['credential-bearing URL', { payload: { url: 'https://user:secret@example.com/post' } }],
+    ['non-HTTP URL', { payload: { url: 'javascript:alert(1)' } }],
+    ['malformed URL', { payload: { url: 'not a url' } }],
+    ['root-level URL', { url: 'https://example.com/not-in-payload' }],
+    [
+      'URL that exceeds the text limit after normalization',
+      { payload: { url: `https://example.com/?q=${'a b'.repeat(1_300)}` } },
+    ],
+  ])('rejects a share-only post with %s', async (_case, shareFields) => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      buildContent: (message: Record<string, unknown>, botId: string) => Promise<unknown>;
+    };
+
+    await expect(
+      internal.buildContent({ attachments: [{ type: 'share', ...shareFields }] }, 'publik_bot'),
+    ).rejects.toMatchObject({ code: 'unsupported_content' });
+  });
+
+  it('keeps transferable text and reports omitted unsupported attachments', async () => {
+    const { service, contentService, tx } = createFixture(
+      exactForwardedMessage({
+        text: 'Сохраните этот текст',
+        attachments: [
+          { type: 'audio', payload: { token: 'audio-token' } },
+          { type: 'file', payload: { token: 'file-token' }, filename: 'details.pdf' },
+        ],
+      }),
+    );
+
+    await expect(service.process('session-1')).resolves.toBe('ready');
+
+    expect(contentService.prepareContentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'Сохраните этот текст',
+        media: [],
+        omissions: ['attachments_not_imported'],
+      }),
+    );
+    expect(tx.publisherPostImportSession.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ omissions: ['attachments_not_imported'] }),
+      }),
+    );
+  });
+
+  it('rejects an unsupported-only post and logs no content or user metadata', async () => {
+    const { service, contentService, prisma } = createFixture(
+      exactForwardedMessage({
+        attachments: [
+          {
+            type: 'file',
+            payload: { url: 'https://private.example/sensitive-document' },
+            filename: 'private-document.pdf',
+          },
+        ],
+      }),
+    );
+    const logger = (service as unknown as { logger: { log: (...args: unknown[]) => void } }).logger;
+    const terminalLog = jest.spyOn(logger, 'log').mockImplementation(() => undefined);
+
+    await expect(service.process('session-1')).resolves.toBe('failed');
+
+    expect(contentService.prepareContentRevision).not.toHaveBeenCalled();
+    expect(prisma.publisherPostImportSession.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: PublisherPostImportStatus.FAILED,
+          failureCode: 'unsupported_content',
+        }),
+      }),
+    );
+    expect(terminalLog).toHaveBeenCalledWith(
+      { sessionId: 'session-1', failureCode: 'unsupported_content' },
+      'Publisher forwarded post import rejected',
+    );
+    expect(JSON.stringify(terminalLog.mock.calls)).not.toContain('private-document');
+    expect(JSON.stringify(terminalLog.mock.calls)).not.toContain('private.example');
+    expect(JSON.stringify(terminalLog.mock.calls)).not.toContain('actorUserId');
+  });
+
+  it('keeps mixed photo and video posts terminal', async () => {
+    const { service } = createFixture();
+    const internal = service as unknown as {
+      buildContent: (message: Record<string, unknown>, botId: string) => Promise<unknown>;
+    };
+
+    await expect(
+      internal.buildContent(
+        {
+          attachments: [
+            { type: 'image', payload: { url: 'https://i.max.ru/photo' } },
+            { type: 'video', payload: { token: 'video-token' } },
+          ],
+        },
+        'publik_bot',
+      ),
+    ).rejects.toMatchObject({ code: 'unsupported_content' });
   });
 
   it('recovers an official body=null pure forward from its exact authenticated receipt', async () => {

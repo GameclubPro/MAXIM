@@ -367,6 +367,7 @@ export type PublisherPostImportFailureCode = z.infer<typeof publisherPostImportF
 
 export const publisherPostImportOmissionSchema = z.enum([
   'buttons_not_imported',
+  'attachments_not_imported',
   'formatting_not_preserved',
 ]);
 export type PublisherPostImportOmission = z.infer<typeof publisherPostImportOmissionSchema>;

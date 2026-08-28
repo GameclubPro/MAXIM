@@ -28,7 +28,7 @@ import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import { getPublisherReadinessPresentation } from '../lib/publisher-readiness';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import {
-  buildPublisherComposeRoute,
+  buildPublisherCreateRoute,
   pollPublisherEntityRefresh,
   PUBLISHER_ENTITY_REFRESH_POLL_DELAYS_MS,
   shouldOfferPublisherRecheck,
@@ -368,7 +368,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           </span>
           {entity.readiness.canPublish ? (
             <Link
-              to={buildPublisherComposeRoute(entity)}
+              to={buildPublisherCreateRoute(entity)}
               className="publisher-entity-module__action"
               aria-label={`Создать пост для ${entity.title || entity.id}`}
             >

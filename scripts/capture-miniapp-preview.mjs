@@ -531,6 +531,15 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-create',
+    beforeShot: async (page) => {
+      const dialog = page.getByRole('dialog', { name: 'Новый пост' });
+      await dialog.waitFor({ state: 'visible' });
+      await dialog.getByRole('button', { name: 'Написать' }).waitFor({ state: 'visible' });
+      await dialog.getByRole('button', { name: 'Переслать' }).waitFor({ state: 'visible' });
+    },
+  },
+  {
     name: 'publications-publisher-schedules',
     beforeShot: async (page) => {
       await page.locator('.publications-tabs button.is-active').getByText('Расписания').waitFor();
