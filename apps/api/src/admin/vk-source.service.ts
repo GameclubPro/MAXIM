@@ -15,7 +15,10 @@ import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkApiClientService } from './vk-api-client.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
-import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
+import {
+  type VkParsingOwnerScope,
+  VkParsingOwnershipService,
+} from './vk-parsing-ownership.service';
 import {
   VK_PARSING_SYNC_QUEUE,
   VK_PARSING_SYNC_RETRY_POLICY,
@@ -51,6 +54,7 @@ const VK_SOURCE_SYNC_STATUS_QUEUED = 'QUEUED';
 const VK_SOURCE_SYNC_STATUS_SYNCING = 'SYNCING';
 const VK_SOURCE_SYNC_STATUS_ERROR = 'ERROR';
 const VK_SOURCE_PUBLISH_MODE_QUEUE = 'QUEUE';
+const VK_SOURCE_PUBLISH_MODE_REVIEW = 'REVIEW';
 const VK_SOURCE_PRIORITY_NORMAL = 'NORMAL';
 const VK_SYNC_JOB_NAME = 'sync-vk-source';
 const VK_PARSING_AVAILABLE_CAPABILITY: VkParsingCapability = {
@@ -93,52 +97,101 @@ export class VkSourceService {
     const wall = await this.fetchWall({ domain: normalized.domain, count: 1 });
     const sourceInfo = this.resolveSourceInfo(normalized, wall);
     const ownerScope = this.ownership.getPublisherScope();
-    const source = await this.prisma.vkParsingSource.upsert({
-      where: {
-        chatId_ownerProfile_ownerBotId_wallOwnerId: {
-          chatId,
-          ...ownerScope,
-          wallOwnerId: sourceInfo.wallOwnerId,
-        },
-      },
-      create: {
+    const uniqueSourceWhere = {
+      chatId_ownerProfile_ownerBotId_wallOwnerId: {
         chatId,
         ...ownerScope,
-        ownerId: sourceInfo.ownerId,
         wallOwnerId: sourceInfo.wallOwnerId,
-        screenName: sourceInfo.screenName,
-        title: sourceInfo.title,
-        url: sourceInfo.url,
-        status: VK_SOURCE_STATUS_ACTIVE,
-        importEnabled: true,
-        syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
-        nextSyncAt: new Date(),
-        createdByUserId: user.userId,
       },
-      update: {
-        ownerId: sourceInfo.ownerId,
-        screenName: sourceInfo.screenName,
-        title: sourceInfo.title,
-        url: sourceInfo.url,
-        status: VK_SOURCE_STATUS_ACTIVE,
-        importEnabled: true,
-        syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
-        nextSyncAt: new Date(),
-        syncLockedAt: null,
-        syncLockedBy: null,
-        syncLockDeadlineAt: null,
-        syncHeartbeatAt: null,
-        terminalFailureCount: 0,
-        circuitOpenedAt: null,
-        circuitReasonCode: null,
-        circuitReason: null,
-        circuitRetryAt: null,
-        lastError: null,
-        lastErrorCode: null,
-      },
+    } as const;
+    const result = await this.prisma.$transaction(async (tx) => {
+      const lockedChats = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${chatId}
+        FOR UPDATE OF chat
+      `;
+      if (lockedChats.length !== 1) {
+        throw new NotFoundException('Чат или канал не найден.');
+      }
+
+      const existingSource = await tx.vkParsingSource.findUnique({ where: uniqueSourceWhere });
+      if (existingSource?.status === VK_SOURCE_STATUS_ACTIVE) {
+        return { source: existingSource, shouldQueue: false };
+      }
+
+      const settings = await tx.vkParsingSettings.findUnique({
+        where: {
+          chatId_ownerProfile_ownerBotId: {
+            chatId,
+            ...ownerScope,
+          },
+        },
+        select: {
+          autoPublishEnabled: true,
+        },
+      });
+      const now = new Date();
+      const autoPublishEnabled = settings?.autoPublishEnabled === true;
+      const sourceAutomation = autoPublishEnabled
+        ? {
+            autoPublishEnabled: true,
+            autoPublishEnabledAt: now,
+            autoPublishPausedAt: null,
+            autoPublishPausedReason: null,
+          }
+        : {
+            autoPublishEnabled: false,
+            autoPublishEnabledAt: null,
+            autoPublishPausedAt: now,
+            autoPublishPausedReason: 'manual',
+          };
+      const source = await tx.vkParsingSource.upsert({
+        where: uniqueSourceWhere,
+        create: {
+          chatId,
+          ...ownerScope,
+          ownerId: sourceInfo.ownerId,
+          wallOwnerId: sourceInfo.wallOwnerId,
+          screenName: sourceInfo.screenName,
+          title: sourceInfo.title,
+          url: sourceInfo.url,
+          status: VK_SOURCE_STATUS_ACTIVE,
+          importEnabled: true,
+          ...sourceAutomation,
+          syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
+          nextSyncAt: now,
+          createdByUserId: user.userId,
+        },
+        update: {
+          ownerId: sourceInfo.ownerId,
+          screenName: sourceInfo.screenName,
+          title: sourceInfo.title,
+          url: sourceInfo.url,
+          status: VK_SOURCE_STATUS_ACTIVE,
+          importEnabled: true,
+          ...sourceAutomation,
+          syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
+          nextSyncAt: now,
+          syncLockedAt: null,
+          syncLockedBy: null,
+          syncLockDeadlineAt: null,
+          syncHeartbeatAt: null,
+          terminalFailureCount: 0,
+          circuitOpenedAt: null,
+          circuitReasonCode: null,
+          circuitReason: null,
+          circuitRetryAt: null,
+          lastError: null,
+          lastErrorCode: null,
+        },
+      });
+      return { source, shouldQueue: true };
     });
 
-    const queued = await this.enqueueSourceSync(source.id, 'source-added');
+    const queued = result.shouldQueue
+      ? await this.enqueueSourceSync(result.source.id, 'source-added')
+      : 0;
     const feed = await this.feedService.buildFeed(
       chatId,
       VK_PARSING_AVAILABLE_CAPABILITY,
@@ -159,69 +212,86 @@ export class VkSourceService {
       throw new BadRequestException(parsed.error.format());
     }
     const ownerScope = this.ownership.getPublisherScope();
+    const result = await this.prisma.$transaction(async (tx) => {
+      await this.lockChat(tx, chatId);
+      const source = await tx.vkParsingSource.findFirst({
+        where: { id: sourceId, chatId, status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
+      });
+      if (!source) {
+        throw new NotFoundException('VK-источник не найден.');
+      }
 
-    const source = await this.prisma.vkParsingSource.findFirst({
-      where: { id: sourceId, chatId, status: VK_SOURCE_STATUS_ACTIVE, ...ownerScope },
-    });
-    if (!source) {
-      throw new NotFoundException('VK-источник не найден.');
-    }
-
-    const now = new Date();
-    const autoPublishEnabledAt =
-      typeof parsed.data.autoPublishEnabled === 'boolean'
-        ? parsed.data.autoPublishEnabled
-          ? source.autoPublishEnabled
-            ? (source.autoPublishEnabledAt ?? now)
-            : now
-          : null
-        : undefined;
-    const importEnabled = parsed.data.importEnabled ?? source.importEnabled;
-    const shouldQueueSync = parsed.data.importEnabled === true && !source.importEnabled;
-    await this.prisma.vkParsingSource.update({
-      where: { id: source.id },
-      data: {
-        ...parsed.data,
-        status: VK_SOURCE_STATUS_ACTIVE,
-        importEnabled,
-        ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
-        ...(parsed.data.autoPublishEnabled === true
-          ? { autoPublishPausedAt: null, autoPublishPausedReason: null }
-          : {}),
-        ...(parsed.data.autoPublishEnabled === false
-          ? { autoPublishPausedAt: now, autoPublishPausedReason: 'manual' }
-          : {}),
-        ...(importEnabled
-          ? shouldQueueSync
-            ? {
-                syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
-                nextSyncAt: now,
+      const now = new Date();
+      const autoPublishEnabledAt =
+        typeof parsed.data.autoPublishEnabled === 'boolean'
+          ? parsed.data.autoPublishEnabled
+            ? source.autoPublishEnabled
+              ? (source.autoPublishEnabledAt ?? now)
+              : now
+            : null
+          : undefined;
+      const importEnabled = parsed.data.importEnabled ?? source.importEnabled;
+      const shouldQueueSync = parsed.data.importEnabled === true && !source.importEnabled;
+      await tx.vkParsingSource.update({
+        where: { id: source.id },
+        data: {
+          ...parsed.data,
+          status: VK_SOURCE_STATUS_ACTIVE,
+          importEnabled,
+          ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
+          ...(parsed.data.autoPublishEnabled === true
+            ? { autoPublishPausedAt: null, autoPublishPausedReason: null }
+            : {}),
+          ...(parsed.data.autoPublishEnabled === false
+            ? { autoPublishPausedAt: now, autoPublishPausedReason: 'manual' }
+            : {}),
+          ...(importEnabled
+            ? shouldQueueSync
+              ? {
+                  syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
+                  nextSyncAt: now,
+                  syncLockedAt: null,
+                  syncLockedBy: null,
+                  syncLockDeadlineAt: null,
+                  syncHeartbeatAt: null,
+                }
+              : {}
+            : {
+                syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
+                nextSyncAt: null,
                 syncLockedAt: null,
                 syncLockedBy: null,
                 syncLockDeadlineAt: null,
                 syncHeartbeatAt: null,
-              }
-            : {}
-          : {
-              syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
-              nextSyncAt: null,
-              syncLockedAt: null,
-              syncLockedBy: null,
-              syncLockDeadlineAt: null,
-              syncHeartbeatAt: null,
-            }),
-      },
+              }),
+        },
+      });
+      if (
+        parsed.data.autoPublishEnabled === false ||
+        parsed.data.importEnabled === false ||
+        parsed.data.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
+      ) {
+        await this.clearQueuedAutoPublishForSources(tx, chatId, [source.id], ownerScope);
+      }
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'VK_PARSING_UPDATE_SOURCE',
+          payload: this.toJsonInput({
+            ...ownerScope,
+            sourceId: source.id,
+            before: this.pickAuditedSourceSettings(source),
+            after: parsed.data,
+          }),
+        },
+      });
+      return { sourceId: source.id, shouldQueueSync };
     });
 
-    if (shouldQueueSync) {
-      await this.enqueueSourceSync(source.id, 'manual');
+    if (result.shouldQueueSync) {
+      await this.enqueueSourceSync(result.sourceId, 'manual');
     }
-    await this.writeAuditLog(chatId, user.userId, 'VK_PARSING_UPDATE_SOURCE', {
-      ...ownerScope,
-      sourceId: source.id,
-      before: this.pickAuditedSourceSettings(source),
-      after: parsed.data,
-    });
 
     return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY, {}, ownerScope);
   }
@@ -239,94 +309,122 @@ export class VkSourceService {
 
     const sourceIds = [...new Set(parsed.data.sourceIds)];
     const preset = this.resolvePresetSettings(parsed.data.preset);
-    const now = new Date();
-    await this.prisma.vkParsingSource.updateMany({
-      where: {
+    const sources = await this.prisma.$transaction(async (tx) => {
+      await this.lockChat(tx, chatId);
+      const now = new Date();
+      const sourceWhere = {
         chatId,
         ...ownerScope,
         id: { in: sourceIds },
         status: VK_SOURCE_STATUS_ACTIVE,
-      },
-      data: {
-        ...preset,
-        ...(preset.importEnabled
-          ? {
+      } as const;
+      const syncUpdate = preset.importEnabled
+        ? {
+            status: VK_SOURCE_STATUS_ACTIVE,
+            syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
+            nextSyncAt: now,
+            syncLockedAt: null,
+            syncLockedBy: null,
+            syncLockDeadlineAt: null,
+            syncHeartbeatAt: null,
+          }
+        : {
+            syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
+            nextSyncAt: null,
+            syncLockedAt: null,
+            syncLockedBy: null,
+            syncLockDeadlineAt: null,
+            syncHeartbeatAt: null,
+          };
+      if (preset.autoPublishEnabled) {
+        await tx.vkParsingSource.updateMany({
+          where: { ...sourceWhere, autoPublishEnabled: true },
+          data: { ...preset, ...syncUpdate },
+        });
+        await tx.vkParsingSource.updateMany({
+          where: { ...sourceWhere, autoPublishEnabled: false },
+          data: {
+            ...preset,
+            ...syncUpdate,
+            autoPublishEnabledAt: now,
+            autoPublishPausedAt: null,
+            autoPublishPausedReason: null,
+          },
+        });
+      } else {
+        await tx.vkParsingSource.updateMany({
+          where: sourceWhere,
+          data: {
+            ...preset,
+            ...syncUpdate,
+            autoPublishEnabledAt: null,
+            autoPublishPausedAt: now,
+            autoPublishPausedReason: 'preset',
+          },
+        });
+      }
+      const updatedSources = preset.importEnabled
+        ? await tx.vkParsingSource.findMany({
+            where: {
+              chatId,
+              id: { in: sourceIds },
               status: VK_SOURCE_STATUS_ACTIVE,
-              syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
-              nextSyncAt: now,
-              syncLockedAt: null,
-              syncLockedBy: null,
-              syncLockDeadlineAt: null,
-              syncHeartbeatAt: null,
-            }
-          : {
-              syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
-              nextSyncAt: null,
-              syncLockedAt: null,
-              syncLockedBy: null,
-              syncLockDeadlineAt: null,
-              syncHeartbeatAt: null,
-            }),
-        ...(preset.autoPublishEnabled
-          ? {
-              autoPublishEnabledAt: now,
-              autoPublishPausedAt: null,
-              autoPublishPausedReason: null,
-            }
-          : {
-              autoPublishEnabledAt: null,
-              autoPublishPausedAt: now,
-              autoPublishPausedReason: 'preset',
-            }),
-      },
-    });
-    if (preset.importEnabled) {
-      const sources = await this.prisma.vkParsingSource.findMany({
-        where: {
+              ...ownerScope,
+            },
+          })
+        : [];
+      if (parsed.data.preset === 'REVIEW') {
+        await this.clearQueuedAutoPublishForSources(tx, chatId, sourceIds, ownerScope);
+      }
+      await tx.auditLog.create({
+        data: {
           chatId,
-          id: { in: sourceIds },
-          status: VK_SOURCE_STATUS_ACTIVE,
-          ...ownerScope,
+          actorUserId: user.userId,
+          action: 'VK_PARSING_APPLY_PRESET',
+          payload: this.toJsonInput({
+            ...ownerScope,
+            preset: parsed.data.preset,
+            sourceIds,
+            settings: preset,
+          }),
         },
       });
-      await this.enqueueSources(sources, 'manual');
-    }
-
-    await this.writeAuditLog(chatId, user.userId, 'VK_PARSING_APPLY_PRESET', {
-      ...ownerScope,
-      preset: parsed.data.preset,
-      sourceIds,
-      settings: preset,
+      return updatedSources;
     });
+    await this.enqueueSources(sources, 'manual');
     return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY, {}, ownerScope);
   }
 
   async removeSource(chatId: string, sourceId: string): Promise<VkParsingFeed> {
     const ownerScope = this.ownership.getPublisherScope();
-    const source = await this.prisma.vkParsingSource.findFirst({
-      where: { id: sourceId, chatId, ...ownerScope },
-    });
-    if (!source) {
-      throw new NotFoundException('VK-источник не найден.');
-    }
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockChat(tx, chatId);
+      const source = await tx.vkParsingSource.findFirst({
+        where: { id: sourceId, chatId, ...ownerScope },
+      });
+      if (!source) {
+        throw new NotFoundException('VK-источник не найден.');
+      }
 
-    await this.prisma.vkParsingSource.update({
-      where: { id: source.id },
-      data: {
-        status: VK_SOURCE_STATUS_DISABLED,
-        importEnabled: false,
-        autoPublishEnabled: false,
-        autoPublishEnabledAt: null,
-        autoPublishPausedAt: new Date(),
-        autoPublishPausedReason: 'removed',
-        syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
-        nextSyncAt: null,
-        syncLockedAt: null,
-        syncLockedBy: null,
-        syncLockDeadlineAt: null,
-        syncHeartbeatAt: null,
-        circuitRetryAt: null,
-      },
+      await tx.vkParsingSource.update({
+        where: { id: source.id },
+        data: {
+          status: VK_SOURCE_STATUS_DISABLED,
+          importEnabled: false,
+          autoPublishEnabled: false,
+          autoPublishEnabledAt: null,
+          autoPublishPausedAt: new Date(),
+          autoPublishPausedReason: 'removed',
+          syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
+          nextSyncAt: null,
+          syncLockedAt: null,
+          syncLockedBy: null,
+          syncLockDeadlineAt: null,
+          syncHeartbeatAt: null,
+          circuitRetryAt: null,
+        },
+      });
+      await this.clearQueuedAutoPublishForSources(tx, chatId, [source.id], ownerScope);
     });
     return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY, {}, ownerScope);
   }
@@ -427,6 +525,8 @@ export class VkSourceService {
     const updated = await this.prisma.vkParsingSource.updateMany({
       where: {
         id: sourceId,
+        status: VK_SOURCE_STATUS_ACTIVE,
+        importEnabled: true,
         OR: [
           { syncStatus: { not: VK_SOURCE_SYNC_STATUS_SYNCING } },
           {
@@ -596,21 +696,49 @@ export class VkSourceService {
     };
   }
 
-  private async writeAuditLog(
+  private async lockChat(tx: Prisma.TransactionClient, chatId: string): Promise<void> {
+    const lockedChats = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT chat."id"
+      FROM "chats" AS chat
+      WHERE chat."id" = ${chatId}
+      FOR UPDATE OF chat
+    `;
+    if (lockedChats.length !== 1) {
+      throw new NotFoundException('Чат или канал не найден.');
+    }
+  }
+
+  private async clearQueuedAutoPublishForSources(
+    tx: Prisma.TransactionClient,
     chatId: string,
-    actorUserId: string,
-    action: string,
-    payload: Record<string, unknown>,
+    sourceIds: string[],
+    ownerScope: VkParsingOwnerScope,
   ): Promise<void> {
-    if (!this.prisma.auditLog?.create) {
+    const uniqueSourceIds = [...new Set(sourceIds.filter(Boolean))];
+    if (uniqueSourceIds.length === 0) {
       return;
     }
-    await this.prisma.auditLog.create({
-      data: {
+    await tx.vkParsingPost.updateMany({
+      where: {
         chatId,
-        actorUserId,
-        action,
-        payload: this.toJsonInput(payload),
+        ...ownerScope,
+        sourceId: { in: uniqueSourceIds },
+        status: { in: ['NEW', 'FAILED'] },
+        publishReason: 'autopublish',
+        OR: [
+          { publishQueuedAt: { not: null } },
+          { publishLockedAt: { not: null } },
+          { publishIdempotencyKey: { not: null } },
+          { publishReason: { not: null } },
+          { publishScheduledAt: { not: null } },
+        ],
+      },
+      data: {
+        publishQueuedAt: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
+        publishReason: null,
+        publishScheduledAt: null,
       },
     });
   }

@@ -4,6 +4,7 @@ import type {
   BulkUpdateVkParsingSourcesRequest,
   UpdateVkParsingSettingsRequest,
   UpdateVkParsingSourceRequest,
+  VkParsingFeed,
   VkParsingFeedQuery,
   VkParsingPost,
   VkParsingPostFilterStatus,
@@ -32,7 +33,9 @@ import { queryKeys } from '../../lib/query-keys';
 import { useToast } from '../ui/toast';
 import { normalizeApiError, toggleValue } from './format';
 import { resolveVkParsingInitialLinkSelection } from './link-selection';
+import { buildVkParsingSourceConnectionToast, mergeVkParsingMutationFeed } from './model';
 import {
+  VK_PARSING_INITIAL_STATUS_FILTER,
   VK_PARSING_PAGE_SIZE,
   type PublishPayload,
   type VkParsingHintKey,
@@ -46,6 +49,16 @@ type UseVkParsingCardParams = {
   entityType: VkParsingEntityType;
 };
 
+function normalizeVkSourceUrl(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//u, '')
+    .replace(/^(?:www\.|m\.)/u, '')
+    .split(/[?#]/u, 1)[0]!
+    .replace(/\/+$/u, '');
+}
+
 export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsingCardParams) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -57,7 +70,9 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   const [selectedVideoUrls, setSelectedVideoUrls] = useState<string[]>([]);
   const [selectedLinkUrls, setSelectedLinkUrls] = useState<string[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<VkParsingPostFilterStatus>('ALL');
+  const [statusFilter, setStatusFilter] = useState<VkParsingPostFilterStatus>(
+    VK_PARSING_INITIAL_STATUS_FILTER,
+  );
   const [pageOffset, setPageOffset] = useState(0);
   const [openHintKey, setOpenHintKey] = useState<VkParsingHintKey | null>(null);
   const [selectedBulkSourceIds, setSelectedBulkSourceIds] = useState<string[]>([]);
@@ -85,15 +100,31 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     refetchOnWindowFocus: false,
   });
 
+  function updateScopedFeedCache(nextFeed: VkParsingFeed) {
+    queryClient.setQueryData<VkParsingFeed>(
+      queryKeys.vkParsing(entityType, chatId, feedQueryScope),
+      (currentFeed) => mergeVkParsingMutationFeed(currentFeed, nextFeed),
+    );
+  }
+
   const addSourceMutation = useMutation({
     mutationFn: (url: string) => addVkParsingSource(api, entityType, chatId, url),
-    onSuccess: () => {
+    onSuccess: (result, requestedUrl) => {
+      const previousSourceIds = new Set(feedQuery.data?.sources.map((source) => source.id) ?? []);
+      const connectedSource =
+        result.sources.find((source) => !previousSourceIds.has(source.id)) ??
+        result.sources.find(
+          (source) => normalizeVkSourceUrl(source.url) === normalizeVkSourceUrl(requestedUrl),
+        );
+      const alreadyConnected =
+        result.queued === 0 &&
+        connectedSource !== undefined &&
+        previousSourceIds.has(connectedSource.id);
       setSourceUrl('');
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({
         tone: 'success',
-        title: 'Источник добавлен',
-        description: 'Обновление запущено',
+        ...buildVkParsingSourceConnectionToast(connectedSource, alreadyConnected),
       });
       maxNotify('success');
     },
@@ -150,7 +181,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     mutationFn: (payload: UpdateVkParsingSettingsRequest) =>
       updateVkParsingSettings(api, entityType, chatId, payload),
     onSuccess: (nextFeed) => {
-      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'success', title: 'Настройки сохранены' });
       maxNotify('success');
@@ -174,7 +205,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       payload: UpdateVkParsingSourceRequest;
     }) => updateVkParsingSource(api, entityType, chatId, sourceId, payload),
     onSuccess: (nextFeed) => {
-      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'success', title: 'Источник сохранён' });
       maxNotify('success');
@@ -207,7 +238,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       return nextFeed;
     },
     onSuccess: (nextFeed) => {
-      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'success', title: 'Источники сохранены' });
       maxNotify('success');
@@ -230,7 +261,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       applyVkParsingSourcePreset(api, entityType, chatId, payload),
     onSuccess: (nextFeed) => {
       setSelectedBulkSourceIds([]);
-      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'success', title: 'Настройки применены' });
       maxNotify('success');
@@ -304,7 +335,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       }),
     onSuccess: (nextFeed) => {
       setEditingPostId(null);
-      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      updateScopedFeedCache(nextFeed);
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'success', title: 'Сохранено на модерации' });
       maxNotify('success');

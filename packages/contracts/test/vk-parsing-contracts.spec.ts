@@ -10,6 +10,7 @@ import {
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
   rollbackVkParsingResultSchema,
+  updateVkParsingSettingsRequestSchema,
   vkParsingFeedSchema,
 } from '@maxim/contracts/vk-parsing';
 
@@ -65,5 +66,24 @@ describe('VK parsing contracts', () => {
         textFormat: 'markdown',
       }).success,
     ).toBe(true);
+  });
+
+  it('models autopublish mode changes as one explicit command', () => {
+    expect(
+      updateVkParsingSettingsRequestSchema.parse({
+        autoPublishMode: 'AUTO',
+      }),
+    ).toEqual({
+      autoPublishMode: 'AUTO',
+    });
+    expect(
+      updateVkParsingSettingsRequestSchema.safeParse({ autoPublishMode: 'PAUSED' }).success,
+    ).toBe(true);
+    expect(
+      updateVkParsingSettingsRequestSchema.safeParse({
+        autoPublishMode: 'MANUAL',
+        autoPublishEnabled: false,
+      }).success,
+    ).toBe(false);
   });
 });

@@ -74,90 +74,170 @@ export class VkParsingService {
     }
 
     const ownerScope = this.ownership.getPublisherScope();
-    const existingSettings = await this.prisma.vkParsingSettings.findUnique({
-      where: {
-        chatId_ownerProfile_ownerBotId: {
-          chatId,
-          ...ownerScope,
-        },
-      },
-    });
-    const now = new Date();
-    const nextAutoPublishEnabled =
-      parsed.data.autoPublishEnabled ?? existingSettings?.autoPublishEnabled ?? false;
-    const nextAppendChannelLinkEnabled =
-      parsed.data.appendChannelLinkEnabled ?? existingSettings?.appendChannelLinkEnabled ?? false;
-    const nextChannelLinkText =
-      parsed.data.channelLinkText ??
-      existingSettings?.channelLinkText ??
-      VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT;
-    if (nextAppendChannelLinkEnabled && !nextChannelLinkText.trim()) {
-      throw new BadRequestException('Укажите текст ссылки на канал.');
-    }
-    if (parsed.data.appendChannelLinkEnabled === true) {
+    const { autoPublishMode, ...rawSettingsPatch } = parsed.data;
+    const resolvedAutoPublishMode =
+      autoPublishMode ??
+      (typeof rawSettingsPatch.autoPublishEnabled === 'boolean'
+        ? rawSettingsPatch.autoPublishEnabled
+          ? rawSettingsPatch.autoPublishKillSwitchEnabled === true
+            ? 'PAUSED'
+            : 'AUTO'
+          : 'MANUAL'
+        : undefined);
+    const settingsPatch = {
+      ...rawSettingsPatch,
+      ...(resolvedAutoPublishMode === 'AUTO'
+        ? { autoPublishEnabled: true, autoPublishKillSwitchEnabled: false }
+        : resolvedAutoPublishMode === 'MANUAL'
+          ? { autoPublishEnabled: false, autoPublishKillSwitchEnabled: false }
+          : resolvedAutoPublishMode === 'PAUSED'
+            ? { autoPublishKillSwitchEnabled: true }
+            : {}),
+    };
+    if (settingsPatch.appendChannelLinkEnabled === true) {
       await this.publishService.assertChannelLinkAvailable(chatId, 'interactive');
     }
-    const autoPublishEnabledAt =
-      typeof parsed.data.autoPublishEnabled === 'boolean'
-        ? parsed.data.autoPublishEnabled
-          ? existingSettings?.autoPublishEnabled
-            ? (existingSettings.autoPublishEnabledAt ?? now)
-            : now
-          : null
-        : undefined;
-    const updateData = {
-      ...parsed.data,
-      ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
-    };
+    await this.prisma.$transaction(async (tx) => {
+      const lockedChats = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT chat."id"
+        FROM "chats" AS chat
+        WHERE chat."id" = ${chatId}
+        FOR UPDATE OF chat
+      `;
+      if (lockedChats.length !== 1) {
+        throw new NotFoundException('Чат или канал не найден.');
+      }
 
-    await this.prisma.vkParsingSettings.upsert({
-      where: {
-        chatId_ownerProfile_ownerBotId: {
+      const existingSettings = await tx.vkParsingSettings.findUnique({
+        where: {
+          chatId_ownerProfile_ownerBotId: {
+            chatId,
+            ...ownerScope,
+          },
+        },
+      });
+      const now = new Date();
+      const nextAutoPublishEnabled =
+        settingsPatch.autoPublishEnabled ?? existingSettings?.autoPublishEnabled ?? false;
+      const nextAppendChannelLinkEnabled =
+        settingsPatch.appendChannelLinkEnabled ??
+        existingSettings?.appendChannelLinkEnabled ??
+        false;
+      const nextChannelLinkText =
+        settingsPatch.channelLinkText ??
+        existingSettings?.channelLinkText ??
+        VK_PARSING_DEFAULT_CHANNEL_LINK_TEXT;
+      if (nextAppendChannelLinkEnabled && !nextChannelLinkText.trim()) {
+        throw new BadRequestException('Укажите текст ссылки на канал.');
+      }
+      const autoPublishEnabledAt =
+        typeof settingsPatch.autoPublishEnabled === 'boolean'
+          ? settingsPatch.autoPublishEnabled
+            ? existingSettings?.autoPublishEnabled
+              ? (existingSettings.autoPublishEnabledAt ?? now)
+              : now
+            : null
+          : undefined;
+      const updateData = {
+        ...settingsPatch,
+        ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
+      };
+
+      await tx.vkParsingSettings.upsert({
+        where: {
+          chatId_ownerProfile_ownerBotId: {
+            chatId,
+            ...ownerScope,
+          },
+        },
+        create: {
           chatId,
           ...ownerScope,
+          autoPublishEnabled: nextAutoPublishEnabled,
+          autoPublishEnabledAt: nextAutoPublishEnabled ? (autoPublishEnabledAt ?? now) : null,
+          autoPublishKillSwitchEnabled: settingsPatch.autoPublishKillSwitchEnabled ?? false,
+          stripLinksEnabled: settingsPatch.stripLinksEnabled ?? false,
+          skipAdsEnabled: settingsPatch.skipAdsEnabled ?? false,
+          appendChannelLinkEnabled: nextAppendChannelLinkEnabled,
+          channelLinkText: nextChannelLinkText,
+          schedulerTimezone: settingsPatch.schedulerTimezone ?? 'Europe/Moscow',
+          quietHoursStart: settingsPatch.quietHoursStart ?? null,
+          quietHoursEnd: settingsPatch.quietHoursEnd ?? null,
+          workHoursStart: settingsPatch.workHoursStart ?? '09:00',
+          workHoursEnd: settingsPatch.workHoursEnd ?? '22:00',
+          distributeEvenlyEnabled: settingsPatch.distributeEvenlyEnabled ?? true,
+          roundRobinEnabled: settingsPatch.roundRobinEnabled ?? true,
+          circuitBreakerEnabled: settingsPatch.circuitBreakerEnabled ?? true,
+          circuitBreakerWindowMinutes: settingsPatch.circuitBreakerWindowMinutes ?? 10,
+          circuitBreakerPostLimit: settingsPatch.circuitBreakerPostLimit ?? 10,
         },
-      },
-      create: {
-        chatId,
-        ...ownerScope,
-        autoPublishEnabled: nextAutoPublishEnabled,
-        autoPublishEnabledAt: nextAutoPublishEnabled ? (autoPublishEnabledAt ?? now) : null,
-        autoPublishKillSwitchEnabled: parsed.data.autoPublishKillSwitchEnabled ?? false,
-        stripLinksEnabled: parsed.data.stripLinksEnabled ?? false,
-        skipAdsEnabled: parsed.data.skipAdsEnabled ?? false,
-        appendChannelLinkEnabled: nextAppendChannelLinkEnabled,
-        channelLinkText: nextChannelLinkText,
-        schedulerTimezone: parsed.data.schedulerTimezone ?? 'Europe/Moscow',
-        quietHoursStart: parsed.data.quietHoursStart ?? null,
-        quietHoursEnd: parsed.data.quietHoursEnd ?? null,
-        workHoursStart: parsed.data.workHoursStart ?? '09:00',
-        workHoursEnd: parsed.data.workHoursEnd ?? '22:00',
-        distributeEvenlyEnabled: parsed.data.distributeEvenlyEnabled ?? true,
-        roundRobinEnabled: parsed.data.roundRobinEnabled ?? true,
-        circuitBreakerEnabled: parsed.data.circuitBreakerEnabled ?? true,
-        circuitBreakerWindowMinutes: parsed.data.circuitBreakerWindowMinutes ?? 10,
-        circuitBreakerPostLimit: parsed.data.circuitBreakerPostLimit ?? 10,
-      },
-      update: updateData,
+        update: updateData,
+      });
+
+      if (
+        resolvedAutoPublishMode === 'AUTO' &&
+        !(
+          existingSettings?.autoPublishEnabled === true &&
+          existingSettings.autoPublishKillSwitchEnabled === true
+        )
+      ) {
+        await tx.vkParsingSource.updateMany({
+          where: {
+            chatId,
+            ...ownerScope,
+            status: 'ACTIVE',
+            importEnabled: true,
+            autoPublishEnabled: false,
+            publishMode: { not: 'REVIEW' },
+            syncStatus: { not: 'ERROR' },
+            terminalFailureCount: 0,
+            circuitOpenedAt: null,
+            OR: [
+              { autoPublishPausedReason: null },
+              { autoPublishPausedReason: { in: ['manual', 'preset'] } },
+            ],
+          },
+          data: {
+            autoPublishEnabled: true,
+            autoPublishEnabledAt: now,
+            autoPublishPausedAt: null,
+            autoPublishPausedReason: null,
+          },
+        });
+      } else if (resolvedAutoPublishMode === 'MANUAL') {
+        await tx.vkParsingSource.updateMany({
+          where: {
+            chatId,
+            ...ownerScope,
+            status: 'ACTIVE',
+          },
+          data: {
+            autoPublishEnabled: false,
+            autoPublishEnabledAt: null,
+            autoPublishPausedAt: now,
+            autoPublishPausedReason: 'manual',
+          },
+        });
+      }
+
+      if (
+        resolvedAutoPublishMode === 'MANUAL' ||
+        (resolvedAutoPublishMode === undefined && settingsPatch.autoPublishEnabled === false)
+      ) {
+        await this.publishService.clearQueuedAutoPublishForChat(chatId, ownerScope, tx);
+      }
+
+      await tx.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'VK_PARSING_UPDATE_SETTINGS',
+          payload: JSON.parse(JSON.stringify({ ...ownerScope, changed: parsed.data })),
+        },
+      });
     });
 
-    if (
-      parsed.data.autoPublishEnabled === false ||
-      parsed.data.autoPublishKillSwitchEnabled === true
-    ) {
-      await this.publishService.clearQueuedAutoPublishForChat(chatId, ownerScope);
-    }
-    await this.writeAuditLog(chatId, user.userId, 'VK_PARSING_UPDATE_SETTINGS', {
-      ...ownerScope,
-      changed: parsed.data,
-    });
-
-    return this.feedService.buildFeed(
-      chatId,
-      VK_PARSING_AVAILABLE_CAPABILITY,
-      {},
-      ownerScope,
-    );
+    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY, {}, ownerScope);
   }
 
   async getHealthSummary(chatId: string, user: AuthUser): Promise<VkParsingHealthSummary> {
@@ -172,11 +252,6 @@ export class VkParsingService {
 
   async removeSource(chatId: string, sourceId: string, user: AuthUser): Promise<VkParsingFeed> {
     await this.accessService.assertAccess(chatId, user);
-    await this.publishService.clearQueuedAutoPublishForSource(
-      chatId,
-      sourceId,
-      this.ownership.getPublisherScope(),
-    );
     return this.sourceService.removeSource(chatId, sourceId);
   }
 
@@ -191,19 +266,7 @@ export class VkParsingService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const feed = await this.sourceService.updateSource(chatId, sourceId, user, parsed.data);
-    if (
-      parsed.data.autoPublishEnabled === false ||
-      parsed.data.importEnabled === false ||
-      parsed.data.publishMode === 'REVIEW'
-    ) {
-      await this.publishService.clearQueuedAutoPublishForSource(
-        chatId,
-        sourceId,
-        this.ownership.getPublisherScope(),
-      );
-    }
-    return feed;
+    return this.sourceService.updateSource(chatId, sourceId, user, parsed.data);
   }
 
   async applySourcePreset(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
@@ -213,13 +276,6 @@ export class VkParsingService {
       throw new BadRequestException(parsed.error.format());
     }
     const feed = await this.sourceService.applyBulkPreset(chatId, user, parsed.data);
-    if (parsed.data.preset === 'REVIEW') {
-      await this.publishService.clearQueuedAutoPublishForSources(
-        chatId,
-        parsed.data.sourceIds,
-        this.ownership.getPublisherScope(),
-      );
-    }
     if (parsed.data.preset === 'CLEAN') {
       return this.updateSettings(chatId, user, {
         stripLinksEnabled: true,

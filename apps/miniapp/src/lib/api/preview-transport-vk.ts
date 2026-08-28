@@ -19,6 +19,7 @@ import {
   type VkParsingSettings,
   type VkParsingSource,
 } from '@maxim/contracts';
+import { ApiRequestError } from '../api-request-error';
 import {
   addDays,
   addHours,
@@ -33,6 +34,34 @@ import {
   resolvePreviewEntityRequest,
   type PreviewRequestHandler,
 } from './preview-transport-runtime';
+
+type DisconnectedPreviewVkSource = {
+  source: VkParsingSource;
+  posts: VkParsingPost[];
+};
+
+const disconnectedVkSources = new WeakMap<PreviewState, Map<string, DisconnectedPreviewVkSource>>();
+
+function normalizePreviewVkSourceUrl(value: string): { identity: string; url: URL } {
+  const trimmed = value.trim();
+  const url = new URL(/^https?:\/\//iu.test(trimmed) ? trimmed : `https://${trimmed}`);
+  const hostname = url.hostname.toLowerCase().replace(/^(?:www\.|m\.)/u, '');
+  const pathname = url.pathname.replace(/\/+$/u, '') || '/';
+  return {
+    identity: `${hostname}${pathname}`.toLowerCase(),
+    url,
+  };
+}
+
+function readDisconnectedVkSources(state: PreviewState): Map<string, DisconnectedPreviewVkSource> {
+  const current = disconnectedVkSources.get(state);
+  if (current) {
+    return current;
+  }
+  const created = new Map<string, DisconnectedPreviewVkSource>();
+  disconnectedVkSources.set(state, created);
+  return created;
+}
 
 export function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
   const createdAt = addDays(now, -18).toISOString();
@@ -457,14 +486,84 @@ export function handleVkParsingPreviewRequest(
 
   if (tail[1] === 'settings' && method === 'PATCH') {
     const payload = updateVkParsingSettingsRequestSchema.parse(parseJsonBody(init));
+    const { autoPublishMode, ...rawSettingsPatch } = payload;
+    const currentFeed = readFeed();
+    const nowIso = readPreviewClock(state.clock).toISOString();
+    const resolvedAutoPublishMode =
+      autoPublishMode ??
+      (typeof rawSettingsPatch.autoPublishEnabled === 'boolean'
+        ? rawSettingsPatch.autoPublishEnabled
+          ? rawSettingsPatch.autoPublishKillSwitchEnabled === true
+            ? 'PAUSED'
+            : 'AUTO'
+          : 'MANUAL'
+        : undefined);
+    const resumesPausedAuto =
+      resolvedAutoPublishMode === 'AUTO' &&
+      currentFeed.settings.autoPublishKillSwitchEnabled &&
+      currentFeed.settings.autoPublishEnabled;
+    const settingsPatch = {
+      ...rawSettingsPatch,
+      ...(resolvedAutoPublishMode === 'AUTO'
+        ? { autoPublishEnabled: true, autoPublishKillSwitchEnabled: false }
+        : resolvedAutoPublishMode === 'MANUAL'
+          ? { autoPublishEnabled: false, autoPublishKillSwitchEnabled: false }
+          : resolvedAutoPublishMode === 'PAUSED'
+            ? { autoPublishKillSwitchEnabled: true }
+            : {}),
+    };
+    const autoPublishEnabledAt =
+      typeof settingsPatch.autoPublishEnabled === 'boolean'
+        ? settingsPatch.autoPublishEnabled
+          ? (currentFeed.settings.autoPublishEnabledAt ?? nowIso)
+          : null
+        : currentFeed.settings.autoPublishEnabledAt;
     const feed = vkParsingFeedSchema.parse({
-      ...readFeed(),
+      ...currentFeed,
       settings: {
-        ...readFeed().settings,
-        ...payload,
+        ...currentFeed.settings,
+        ...settingsPatch,
+        autoPublishEnabledAt,
         chatId,
-        updatedAt: readPreviewClock(state.clock).toISOString(),
+        updatedAt: nowIso,
       },
+      sources:
+        resolvedAutoPublishMode === undefined ||
+        resolvedAutoPublishMode === 'PAUSED' ||
+        resumesPausedAuto
+          ? currentFeed.sources
+          : currentFeed.sources.map((source) => {
+              const sourceCanEnable =
+                source.importEnabled &&
+                !source.autoPublishEnabled &&
+                source.publishMode !== 'REVIEW' &&
+                source.syncStatus !== 'ERROR' &&
+                source.terminalFailureCount === 0 &&
+                source.circuitOpenedAt === null &&
+                (source.autoPublishPausedReason === null ||
+                  source.autoPublishPausedReason === 'manual' ||
+                  source.autoPublishPausedReason === 'preset');
+              if (resolvedAutoPublishMode === 'AUTO' && !sourceCanEnable) {
+                return source;
+              }
+              return resolvedAutoPublishMode === 'AUTO'
+                ? {
+                    ...source,
+                    autoPublishEnabled: true,
+                    autoPublishEnabledAt: nowIso,
+                    autoPublishPausedAt: null,
+                    autoPublishPausedReason: null,
+                    updatedAt: nowIso,
+                  }
+                : {
+                    ...source,
+                    autoPublishEnabled: false,
+                    autoPublishEnabledAt: null,
+                    autoPublishPausedAt: nowIso,
+                    autoPublishPausedReason: 'manual',
+                    updatedAt: nowIso,
+                  };
+            }),
     });
     writeFeed(feed);
     return { handled: true, value: cloneJson(feed) };
@@ -476,6 +575,13 @@ export function handleVkParsingPreviewRequest(
     const sources = sourceId
       ? feed.sources.filter((source) => source.id === sourceId)
       : feed.sources;
+    if (sourceId && sources.length === 0) {
+      throw new ApiRequestError(
+        404,
+        JSON.stringify({ statusCode: 404, message: 'VK-источник не найден.' }),
+        'VK-источник не найден.',
+      );
+    }
     return {
       handled: true,
       value: {
@@ -541,7 +647,24 @@ export function handleVkParsingPreviewRequest(
               ...source,
               importEnabled: true,
               autoPublishEnabled: payload.preset !== 'REVIEW',
-              autoPublishEnabledAt: payload.preset !== 'REVIEW' ? nowIso : null,
+              autoPublishEnabledAt:
+                payload.preset === 'REVIEW'
+                  ? null
+                  : source.autoPublishEnabled
+                    ? source.autoPublishEnabledAt
+                    : nowIso,
+              autoPublishPausedAt:
+                payload.preset === 'REVIEW'
+                  ? nowIso
+                  : source.autoPublishEnabled
+                    ? source.autoPublishPausedAt
+                    : null,
+              autoPublishPausedReason:
+                payload.preset === 'REVIEW'
+                  ? 'preset'
+                  : source.autoPublishEnabled
+                    ? source.autoPublishPausedReason
+                    : null,
               publishMode: payload.preset === 'REVIEW' ? 'REVIEW' : 'QUEUE',
               priority: payload.preset === 'NEWS' ? 'HIGH' : 'NORMAL',
               publishIntervalMinutes:
@@ -559,63 +682,124 @@ export function handleVkParsingPreviewRequest(
   if (tail[1] === 'sources' && tail.length === 2 && method === 'POST') {
     const payload = addVkParsingSourceRequestSchema.parse(parseJsonBody(init));
     const now = readPreviewClock(state.clock);
-    const parsedUrl = new URL(payload.url);
+    const nowIso = now.toISOString();
+    const currentFeed = readFeed();
+    const normalizedSource = normalizePreviewVkSourceUrl(payload.url);
+    const activeSource = currentFeed.sources.find(
+      (source) => normalizePreviewVkSourceUrl(source.url).identity === normalizedSource.identity,
+    );
+    if (activeSource) {
+      return {
+        handled: true,
+        value: vkParsingRefreshResultSchema.parse({
+          ...currentFeed,
+          imported: 0,
+          queued: 0,
+        }),
+      };
+    }
+
+    const parsedUrl = normalizedSource.url;
     const screenName = parsedUrl.pathname.split('/').filter(Boolean)[0] ?? 'vk_source';
-    const source: VkParsingSource = {
-      id: `preview-vk-source-${readPreviewClock(state.clock).getTime()}`,
-      chatId,
-      ownerId: 200900,
-      wallOwnerId: -200900,
-      screenName,
-      title: screenName.replace(/[_-]+/gu, ' ') || 'VK источник',
-      url: parsedUrl.toString(),
-      status: 'ACTIVE',
-      importEnabled: true,
-      autoPublishEnabled: false,
-      autoPublishEnabledAt: null,
-      autoPublishPausedAt: null,
-      autoPublishPausedReason: null,
-      publishIntervalMinutes: 60,
-      dailyLimit: 3,
-      minPublishIntervalMinutes: 30,
-      publishMode: 'QUEUE',
-      priority: 'NORMAL',
-      quietHoursStart: null,
-      quietHoursEnd: null,
-      lastAutoPublishedAt: null,
-      newPostCount: 0,
-      queuedPostCount: 0,
-      publishedPostCount: 0,
-      skippedPostCount: 0,
-      failedPostCount: 0,
-      syncStatus: 'QUEUED',
-      nextSyncAt: null,
-      nextRetryAt: null,
-      lastSyncAt: null,
-      lastSuccessAt: null,
-      syncStartedAt: null,
-      consecutiveFailures: 0,
-      terminalFailureCount: 0,
-      circuitOpenedAt: null,
-      circuitReasonCode: null,
-      circuitReason: null,
-      circuitRetryAt: null,
-      lastErrorCode: null,
-      lastImportedCount: 0,
-      lastFetchedCount: 0,
-      lastFetchedPages: 0,
-      lastFetchedOffsets: [],
-      lastVkNewestPostId: null,
-      lastVkNewestPublishedAt: null,
-      adaptiveIntervalMs: null,
-      lastSyncDurationMs: null,
-      lastError: null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    };
+    const autoPublishEnabled = currentFeed.settings.autoPublishEnabled;
+    const sourceAutomation = autoPublishEnabled
+      ? {
+          autoPublishEnabled: true,
+          autoPublishEnabledAt: nowIso,
+          autoPublishPausedAt: null,
+          autoPublishPausedReason: null,
+        }
+      : {
+          autoPublishEnabled: false,
+          autoPublishEnabledAt: null,
+          autoPublishPausedAt: nowIso,
+          autoPublishPausedReason: 'manual',
+        };
+    const disconnected = readDisconnectedVkSources(state).get(normalizedSource.identity);
+    const source: VkParsingSource = disconnected
+      ? {
+          ...disconnected.source,
+          screenName,
+          title: screenName.replace(/[_-]+/gu, ' ') || 'VK источник',
+          url: parsedUrl.toString(),
+          status: 'ACTIVE',
+          importEnabled: true,
+          ...sourceAutomation,
+          syncStatus: 'QUEUED',
+          nextSyncAt: nowIso,
+          nextRetryAt: null,
+          syncStartedAt: null,
+          consecutiveFailures: 0,
+          terminalFailureCount: 0,
+          circuitOpenedAt: null,
+          circuitReasonCode: null,
+          circuitReason: null,
+          circuitRetryAt: null,
+          lastErrorCode: null,
+          lastError: null,
+          updatedAt: nowIso,
+        }
+      : {
+          id: `preview-vk-source-${screenName}-${now.getTime()}`,
+          chatId,
+          ownerId: 200900,
+          wallOwnerId: -200900,
+          screenName,
+          title: screenName.replace(/[_-]+/gu, ' ') || 'VK источник',
+          url: parsedUrl.toString(),
+          status: 'ACTIVE',
+          importEnabled: true,
+          ...sourceAutomation,
+          publishIntervalMinutes: 60,
+          dailyLimit: 3,
+          minPublishIntervalMinutes: 30,
+          publishMode: 'QUEUE',
+          priority: 'NORMAL',
+          quietHoursStart: null,
+          quietHoursEnd: null,
+          lastAutoPublishedAt: null,
+          newPostCount: 0,
+          queuedPostCount: 0,
+          publishedPostCount: 0,
+          skippedPostCount: 0,
+          failedPostCount: 0,
+          syncStatus: 'QUEUED',
+          nextSyncAt: nowIso,
+          nextRetryAt: null,
+          lastSyncAt: null,
+          lastSuccessAt: null,
+          syncStartedAt: null,
+          consecutiveFailures: 0,
+          terminalFailureCount: 0,
+          circuitOpenedAt: null,
+          circuitReasonCode: null,
+          circuitReason: null,
+          circuitRetryAt: null,
+          lastErrorCode: null,
+          lastImportedCount: 0,
+          lastFetchedCount: 0,
+          lastFetchedPages: 0,
+          lastFetchedOffsets: [],
+          lastVkNewestPostId: null,
+          lastVkNewestPublishedAt: null,
+          adaptiveIntervalMs: null,
+          lastSyncDurationMs: null,
+          lastError: null,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+    const restoredPosts = disconnected?.posts ?? [];
+    readDisconnectedVkSources(state).delete(normalizedSource.identity);
     const feed = vkParsingFeedSchema.parse({
-      ...readFeed(),
-      sources: [source, ...readFeed().sources],
+      ...currentFeed,
+      sources: [...currentFeed.sources, source].sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt),
+      ),
+      posts: [...currentFeed.posts, ...restoredPosts].sort((left, right) =>
+        (right.vkPublishedAt ?? right.createdAt).localeCompare(
+          left.vkPublishedAt ?? left.createdAt,
+        ),
+      ),
     });
     writeFeed(feed);
     return {
@@ -681,10 +865,31 @@ export function handleVkParsingPreviewRequest(
 
   if (tail[1] === 'sources' && tail[2] && method === 'DELETE') {
     const sourceId = decodeURIComponent(tail[2]);
+    const currentFeed = readFeed();
+    const source = currentFeed.sources.find((item) => item.id === sourceId);
+    if (!source) {
+      throw new ApiRequestError(
+        404,
+        JSON.stringify({ statusCode: 404, message: 'VK-источник не найден.' }),
+        'VK-источник не найден.',
+      );
+    }
+    readDisconnectedVkSources(state).set(normalizePreviewVkSourceUrl(source.url).identity, {
+      source,
+      posts: currentFeed.posts
+        .filter((post) => post.sourceId === sourceId)
+        .map((post) => ({
+          ...post,
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishLockedAt: null,
+        })),
+    });
     const feed = vkParsingFeedSchema.parse({
-      ...readFeed(),
-      sources: readFeed().sources.filter((source) => source.id !== sourceId),
-      posts: readFeed().posts.filter((post) => post.sourceId !== sourceId),
+      ...currentFeed,
+      sources: currentFeed.sources.filter((item) => item.id !== sourceId),
+      posts: currentFeed.posts.filter((post) => post.sourceId !== sourceId),
+      queue: currentFeed.queue.filter((post) => post.sourceId !== sourceId),
     });
     writeFeed(feed);
     return { handled: true, value: cloneJson(feed) };

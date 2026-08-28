@@ -1,10 +1,10 @@
 import {
   Clock,
+  LinkSlash,
   OpenNewWindow,
   PlusCircle,
   RefreshCircle,
   Settings,
-  Trash,
   WarningCircle,
   Xmark,
 } from 'iconoir-react';
@@ -18,6 +18,7 @@ import { cn } from '../../lib/cn';
 import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
 import { formatVkSourceProblem } from './format';
+import { buildVkParsingSourceMetrics } from './model';
 
 type SourceDashboardProps = {
   sourceUrl: string;
@@ -178,18 +179,6 @@ function resolveSourceLabel(source: VkParsingSource): string {
   return 'Активно';
 }
 
-function formatSourceNextRun(source: VkParsingSource): string {
-  const value = source.nextRetryAt ?? source.nextSyncAt;
-  if (!value) {
-    return 'Сейчас';
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
-}
-
 function resolveFrequencyPreset(minutes: number): FrequencyPresetValue {
   const preset = FREQUENCY_PRESETS.find((item) => item.minutes === minutes);
   return preset?.value ?? 'CUSTOM';
@@ -317,8 +306,8 @@ export function SourceDashboard({
             const bulkSelected = selectedBulkSourceIds.includes(source.id);
             const frequencyPreset = resolveFrequencyPreset(source.publishIntervalMinutes);
             const problem = formatVkSourceProblem(source);
-            const nextRun = formatSourceNextRun(source);
-            const workCount = source.newPostCount + source.queuedPostCount;
+            const sourceMetrics = buildVkParsingSourceMetrics(source);
+            const [incomingMetric, queuedMetric, failedMetric] = sourceMetrics;
             const statusLabel = resolveSourceLabel(source);
             return (
               <article
@@ -373,19 +362,19 @@ export function SourceDashboard({
                     }
                   />
                   <div className="vk-source-card__metrics" aria-label="Сводка источника">
-                    <span title="Следующее обновление">
-                      <b>{nextRun}</b>
-                      <small>Следующее</small>
+                    <span title={incomingMetric.label}>
+                      <b>{incomingMetric.value}</b>
+                      <small>Входящие</small>
                     </span>
-                    <span title="Новые посты и очередь">
-                      <b>{workCount}</b>
-                      <small>В работе</small>
+                    <span title={queuedMetric.label}>
+                      <b>{queuedMetric.value}</b>
+                      <small>Очередь</small>
                     </span>
                     <span
-                      className={source.failedPostCount > 0 ? 'is-danger' : undefined}
-                      title="Ошибки публикации"
+                      className={failedMetric.danger ? 'is-danger' : undefined}
+                      title={failedMetric.label}
                     >
-                      <b>{source.failedPostCount}</b>
+                      <b>{failedMetric.value}</b>
                       <small>Ошибки</small>
                     </span>
                   </div>
@@ -424,12 +413,12 @@ export function SourceDashboard({
                       <button
                         type="button"
                         className="vk-parsing-icon-button vk-parsing-icon-button--danger"
-                        aria-label="Удалить"
-                        title="Удалить"
+                        aria-label="Отключить источник"
+                        title="Отключить источник"
                         disabled={isRemoving}
                         onClick={() => onRemoveSource(source.id)}
                       >
-                        <Trash aria-hidden />
+                        <LinkSlash aria-hidden />
                       </button>
                     </div>
 

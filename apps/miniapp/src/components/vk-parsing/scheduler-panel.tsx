@@ -9,6 +9,11 @@ import type {
 import { cn } from '../../lib/cn';
 import { AsyncRadioGroup } from '../ui/async-radio-group';
 import { TimeField } from '../ui/time-field';
+import {
+  buildVkParsingAutopostModeUpdate,
+  resolveVkParsingAutopostMode,
+  type VkParsingAutopostMode,
+} from './model';
 
 type SchedulerPanelProps = {
   settings: VkParsingSettings;
@@ -31,9 +36,7 @@ export type AutopostStatusModel = {
   tone: AutopostStatusTone;
 };
 
-type AutopostMode = 'manual' | 'auto' | 'pause';
-
-const AUTOPOST_MODES: ReadonlyArray<{ value: AutopostMode; label: string }> = [
+const AUTOPOST_MODES: ReadonlyArray<{ value: VkParsingAutopostMode; label: string }> = [
   { value: 'manual', label: 'Ручной' },
   { value: 'auto', label: 'Авто' },
   { value: 'pause', label: 'Пауза' },
@@ -156,11 +159,7 @@ export function SchedulerPanel({
   const customInterval = commonInterval ?? CUSTOM_FREQUENCY_MINUTES;
   const sourceControlsDisabled = sourceIds.length === 0 || isSavingSource;
   const presetDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
-  const autopostMode: AutopostMode = settings.autoPublishKillSwitchEnabled
-    ? 'pause'
-    : settings.autoPublishEnabled
-      ? 'auto'
-      : 'manual';
+  const autopostMode: VkParsingAutopostMode = resolveVkParsingAutopostMode(settings, sources);
 
   return (
     <section
@@ -193,12 +192,7 @@ export function SchedulerPanel({
           value={autopostMode}
           options={AUTOPOST_MODES}
           disabled={isSaving}
-          onChange={(mode) =>
-            onUpdateSetting({
-              autoPublishEnabled: mode !== 'manual',
-              autoPublishKillSwitchEnabled: mode === 'pause',
-            })
-          }
+          onChange={(mode) => onUpdateSetting(buildVkParsingAutopostModeUpdate(mode))}
         />
       </div>
 
@@ -215,11 +209,11 @@ export function SchedulerPanel({
                   disabled={presetDisabled}
                   title={preset.title}
                   onClick={() => {
-                    onUpdateSetting({
-                      autoPublishEnabled: true,
-                      autoPublishKillSwitchEnabled: false,
+                    void onUpdateSetting(buildVkParsingAutopostModeUpdate('auto')).then((saved) => {
+                      if (saved) {
+                        onApplyPreset(preset.value);
+                      }
                     });
-                    onApplyPreset(preset.value);
                   }}
                 >
                   {preset.label}

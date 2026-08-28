@@ -16,7 +16,7 @@ test('VK source summary keeps run mode and operational metrics in separate group
   assert.match(dashboardSource, /className="vk-source-card__summary-row"/u);
   assert.match(dashboardSource, /<SourceModeControl[\s\S]*?className="vk-source-card__metrics"/u);
   assert.match(dashboardSource, /aria-label="Сводка источника"/u);
-  assert.equal(dashboardSource.match(/<small>(Следующее|В работе|Ошибки)<\/small>/gu)?.length, 3);
+  assert.equal(dashboardSource.match(/<small>(Входящие|Очередь|Ошибки)<\/small>/gu)?.length, 3);
 });
 
 test('VK source cards stack their summary by card width with a mobile fallback', () => {

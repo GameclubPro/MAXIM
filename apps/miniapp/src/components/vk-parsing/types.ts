@@ -13,13 +13,14 @@ export type VkParsingSettingKey = 'autoPublishEnabled' | 'stripLinksEnabled' | '
 export type VkParsingHintKey = VkParsingSettingKey | 'source';
 
 export const VK_PARSING_PAGE_SIZE = 50;
+export const VK_PARSING_INITIAL_STATUS_FILTER: VkParsingPostFilterStatus = 'NEW';
 
 export const VK_PARSING_STATUS_FILTERS: Array<{
   value: VkParsingPostFilterStatus;
   label: string;
 }> = [
   { value: 'ALL', label: 'Все' },
-  { value: 'NEW', label: 'Новые' },
+  { value: 'NEW', label: 'Входящие' },
   { value: 'QUEUED', label: 'Очередь' },
   { value: 'FAILED', label: 'Ошибки' },
   { value: 'PUBLISHED', label: 'Опубликовано' },

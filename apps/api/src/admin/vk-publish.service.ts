@@ -224,6 +224,7 @@ const MAX_SEND_AMBIGUOUS_RETRY_BLOCK_MESSAGE =
 const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
 const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
 const VK_PUBLISH_SCHEDULE_DRIFT_TOLERANCE_MS = 5_000;
+const VK_AUTOPUBLISH_PAUSE_RETRY_MS = 60_000;
 // FLAG: One missed daily cycle may catch up; older automatic output stays available for admin review.
 const VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS = 24 * 60 * 60_000;
 const VK_VIDEO_MAX_BYTES = MAX_VIDEO_UPLOAD_MAX_BYTES;
@@ -358,21 +359,6 @@ export class VkPublishService {
       const reason = post.publishReason;
       const recoverablePost = post;
 
-      if (
-        reason === 'autopublish' &&
-        this.isBeyondAutoPublishRecoveryFreshnessHorizon(recoverablePost, now)
-      ) {
-        const cleared = await this.clearRecoverableQueuedAutoPublishPost(
-          recoverablePost.id,
-          idempotencyKey,
-          recoverablePost,
-        );
-        if (cleared) {
-          expiredAutoPublishRecoveries += 1;
-        }
-        continue;
-      }
-
       const ownerScope = this.ownerScopeFromRow(recoverablePost);
       const settingsKey = this.ownerScopeKey(recoverablePost.chatId, ownerScope);
       let settings = settingsByScope.get(settingsKey);
@@ -387,6 +373,21 @@ export class VkPublishService {
           idempotencyKey,
           recoverablePost,
         );
+        continue;
+      }
+      if (
+        reason === 'autopublish' &&
+        !settings.autoPublishKillSwitchEnabled &&
+        this.isBeyondAutoPublishRecoveryFreshnessHorizon(recoverablePost, now)
+      ) {
+        const cleared = await this.clearRecoverableQueuedAutoPublishPost(
+          recoverablePost.id,
+          idempotencyKey,
+          recoverablePost,
+        );
+        if (cleared) {
+          expiredAutoPublishRecoveries += 1;
+        }
         continue;
       }
 
@@ -420,6 +421,16 @@ export class VkPublishService {
     return (
       effectiveDueAt !== null &&
       now.getTime() - effectiveDueAt.getTime() > VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS
+    );
+  }
+
+  private isBeyondPausedAutoPublishRetention(
+    post: Pick<VkParsingPostWithSource, 'publishQueuedAt'>,
+    now: Date,
+  ): boolean {
+    return (
+      post.publishQueuedAt !== null &&
+      now.getTime() - post.publishQueuedAt.getTime() > VK_AUTOPUBLISH_RECOVERY_FRESHNESS_HORIZON_MS
     );
   }
 
@@ -899,6 +910,9 @@ export class VkPublishService {
         ...(sourceId ? { id: sourceId } : {}),
       },
     });
+    if (sourceId && sources.length === 0) {
+      throw new NotFoundException('VK-источник не найден.');
+    }
 
     let eligibleNow = 0;
     let latestImportedVkPublishedAt: Date | null = null;
@@ -1493,29 +1507,40 @@ export class VkPublishService {
     ) {
       return;
     }
-    if (
-      params.reason === 'autopublish' &&
-      this.isBeyondAutoPublishRecoveryFreshnessHorizon(post, now)
-    ) {
-      const cleared = await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
-      if (cleared) {
-        this.logger.warn(
-          { postId: post.id, chatId: post.chatId },
-          'Cleared historical VK autopublish at the worker boundary',
-        );
-      }
-      return;
-    }
-    if (
-      params.reason === 'autopublish' &&
-      post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
-    ) {
-      await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
-      return;
-    }
-
     try {
+      const settings = await this.getSettingsForChat(post.chatId, this.ownerScopeFromRow(post));
       if (params.reason === 'autopublish') {
+        if (!this.canAutoPublishPost(post, settings)) {
+          await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
+          return;
+        }
+        if (settings.autoPublishKillSwitchEnabled) {
+          if (this.isBeyondPausedAutoPublishRetention(post, now)) {
+            await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
+            return;
+          }
+          await this.deferQueuedPost(
+            post,
+            params.reason,
+            params.idempotencyKey,
+            new Date(now.getTime() + VK_AUTOPUBLISH_PAUSE_RETRY_MS),
+          );
+          return;
+        }
+        if (this.isBeyondAutoPublishRecoveryFreshnessHorizon(post, now)) {
+          const cleared = await this.clearQueuedAutoPublishPost(
+            post.id,
+            params.idempotencyKey,
+            post,
+          );
+          if (cleared) {
+            this.logger.warn(
+              { postId: post.id, chatId: post.chatId },
+              'Cleared historical VK autopublish at the worker boundary',
+            );
+          }
+          return;
+        }
         const governorDecision = await this.decideBackgroundAutoPublish();
         if (governorDecision?.action === 'pause') {
           await this.deferQueuedPost(
@@ -1528,12 +1553,7 @@ export class VkPublishService {
         }
       }
 
-      const settings = await this.getSettingsForChat(post.chatId, this.ownerScopeFromRow(post));
       if (params.reason === 'autopublish') {
-        if (!this.canAutoPublishPost(post, settings)) {
-          await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey, post);
-          return;
-        }
         const deferredUntil = await this.resolveDeferredPublishAt(post, settings, now);
         if (deferredUntil.getTime() > now.getTime() + 1_000) {
           await this.deferQueuedPost(post, params.reason, params.idempotencyKey, deferredUntil);
@@ -1618,11 +1638,7 @@ export class VkPublishService {
       throw new Error('VK autopublish candidates cross an ownership scope');
     }
     const settings = await this.getSettingsForChat(chatId, ownerScope);
-    if (
-      !settings.autoPublishEnabled ||
-      !settings.autoPublishEnabledAt ||
-      settings.autoPublishKillSwitchEnabled
-    ) {
+    if (!settings.autoPublishEnabled || !settings.autoPublishEnabledAt) {
       return;
     }
 
@@ -1638,11 +1654,9 @@ export class VkPublishService {
         continue;
       }
       const queuedForSource = queuedBySourceId.get(post.sourceId) ?? 0;
-      const circuitOpen = await this.shouldOpenAutoPublishCircuit(
-        post,
-        settings,
-        queuedForSource + 1,
-      );
+      const circuitOpen = settings.autoPublishKillSwitchEnabled
+        ? false
+        : await this.shouldOpenAutoPublishCircuit(post, settings, queuedForSource + 1);
       if (circuitOpen) {
         await this.pauseSourceAutoPublishForCircuit(post.source, settings);
         queuedBySourceId.set(post.sourceId, 0);
@@ -1670,8 +1684,9 @@ export class VkPublishService {
   async clearQueuedAutoPublishForChat(
     chatId: string,
     ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+    prisma: Pick<PrismaService, 'vkParsingPost'> = this.prisma,
   ): Promise<void> {
-    await this.prisma.vkParsingPost.updateMany({
+    await prisma.vkParsingPost.updateMany({
       where: {
         chatId,
         ...ownerScope,
@@ -2789,11 +2804,7 @@ export class VkPublishService {
     post: VkParsingPostWithSource,
     settings: VkParsingSettingsLike,
   ): boolean {
-    if (
-      !settings.autoPublishEnabled ||
-      !settings.autoPublishEnabledAt ||
-      settings.autoPublishKillSwitchEnabled
-    ) {
+    if (!settings.autoPublishEnabled || !settings.autoPublishEnabledAt) {
       return false;
     }
     if (
@@ -4649,9 +4660,7 @@ export class VkPublishService {
     row: Pick<VkParsingPostWithSource, 'ownerProfile' | 'ownerBotId'>,
     ownerScope: VkParsingOwnerScope,
   ): boolean {
-    return (
-      row.ownerProfile === ownerScope.ownerProfile && row.ownerBotId === ownerScope.ownerBotId
-    );
+    return row.ownerProfile === ownerScope.ownerProfile && row.ownerBotId === ownerScope.ownerBotId;
   }
 
   private ownerScopeKey(chatId: string, ownerScope: VkParsingOwnerScope): string {

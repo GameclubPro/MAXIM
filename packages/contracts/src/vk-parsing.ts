@@ -316,6 +316,7 @@ export type VkParsingFeedQuery = z.infer<typeof vkParsingFeedQuerySchema>;
 
 export const updateVkParsingSettingsRequestSchema = z
   .object({
+    autoPublishMode: z.enum(['AUTO', 'MANUAL', 'PAUSED']).optional(),
     autoPublishEnabled: z.boolean().optional(),
     autoPublishKillSwitchEnabled: z.boolean().optional(),
     stripLinksEnabled: z.boolean().optional(),
@@ -335,6 +336,21 @@ export const updateVkParsingSettingsRequestSchema = z
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: 'Передайте хотя бы одну настройку.',
+  })
+  .superRefine((value, ctx) => {
+    if (value.autoPublishMode === undefined) {
+      return;
+    }
+    if (
+      value.autoPublishEnabled !== undefined ||
+      value.autoPublishKillSwitchEnabled !== undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['autoPublishMode'],
+        message: 'Передайте либо готовый режим автопубликации, либо отдельные флаги.',
+      });
+    }
   });
 export type UpdateVkParsingSettingsRequest = z.infer<typeof updateVkParsingSettingsRequestSchema>;
 
