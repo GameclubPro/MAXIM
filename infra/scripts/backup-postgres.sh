@@ -282,7 +282,8 @@ watch_dump_health() {
 
 DUMP_STARTED=1
 set -m
-# shellcheck disable=SC2016 -- positional parameters expand inside the container shell.
+# Positional parameters expand inside the container shell.
+# shellcheck disable=SC2016
 timeout --signal=TERM --kill-after=30s "${MAX_DURATION_SEC}s" \
   docker compose -f "$COMPOSE_FILE" exec -T postgres \
     sh -lc 'exec env PGAPPNAME="$3" ionice -c2 -n7 nice -n19 pg_dump \
