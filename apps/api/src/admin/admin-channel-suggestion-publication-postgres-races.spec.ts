@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 
+import { buildPublisherSuggestionRecoveryQuery } from './publisher-suggestion-publication-queue.service';
+
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgresRace = databaseUrl ? describe : describe.skip;
 
@@ -35,6 +37,18 @@ async function waitForBackendBlock(pool: Pool, backendPid: number): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`PostgreSQL backend ${backendPid} did not become lock-blocked`);
+}
+
+function collectExplainNodes(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) {
+    return value.flatMap(collectExplainNodes);
+  }
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  return [record, ...Object.values(record).flatMap(collectExplainNodes)];
 }
 
 describePostgresRace('PostgreSQL channel suggestion publication ledger races', () => {
@@ -121,6 +135,38 @@ describePostgresRace('PostgreSQL channel suggestion publication ledger races', (
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it('keeps Publisher recovery on the reviewed action-scoped indexes', async () => {
+    const query = buildPublisherSuggestionRecoveryQuery(null);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN READ ONLY');
+      await client.query('SET LOCAL enable_seqscan = off');
+      await client.query('SET LOCAL enable_bitmapscan = off');
+      const plan = await client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON, COSTS FALSE) ${query.text}`,
+        query.values,
+      );
+      const nodes = collectExplainNodes(plan.rows[0]?.['QUERY PLAN']);
+      const indexNames = new Set(
+        nodes.flatMap((node) =>
+          typeof node['Index Name'] === 'string' ? [node['Index Name']] : [],
+        ),
+      );
+
+      expect([...indexNames]).toEqual(
+        expect.arrayContaining([
+          'audit_logs_channel_suggestion_publishing_review_created_idx',
+          'audit_logs_channel_suggestion_pending_review_created_idx',
+          'audit_logs_action_created_at_idx',
+        ]),
+      );
+      expect(nodes.filter((node) => node['Node Type'] === 'Limit')).toHaveLength(4);
+    } finally {
+      await rollbackQuietly(client);
+      client.release();
+    }
   });
 
   it('rejects an insert started between the null ledger read and claim reset, then permits cancel', async () => {

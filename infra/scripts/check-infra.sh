@@ -25,8 +25,13 @@ node --test infra/scripts/*.test.mjs
 
 if command -v shellcheck >/dev/null 2>&1; then
   find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+elif command -v npx >/dev/null 2>&1; then
+  echo "shellcheck not installed; using pinned shellcheck@4.1.0 fallback" >&2
+  mapfile -d '' -t shell_scripts < <(find infra/scripts -type f -name '*.sh' -print0)
+  npx --yes --package=shellcheck@4.1.0 -- shellcheck "${shell_scripts[@]}"
 else
-  echo "shellcheck not installed; syntax and Compose checks completed" >&2
+  echo "shellcheck is required for infrastructure validation." >&2
+  exit 1
 fi
 
 if command -v actionlint >/dev/null 2>&1; then

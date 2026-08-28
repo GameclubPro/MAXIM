@@ -43,8 +43,8 @@ if ! is_positive_integer "$TAIL_LINES"; then
   exit 2
 fi
 
-if ! is_positive_integer "$SIGNAL_WINDOW_MIN"; then
-  echo "MAXIM_MONITOR_SIGNAL_WINDOW_MIN must be a positive integer, got: $SIGNAL_WINDOW_MIN" >&2
+if ! is_positive_integer "$SIGNAL_WINDOW_MIN" || ((SIGNAL_WINDOW_MIN > 1440)); then
+  echo "MAXIM_MONITOR_SIGNAL_WINDOW_MIN must be an integer between 1 and 1440, got: $SIGNAL_WINDOW_MIN" >&2
   exit 2
 fi
 
@@ -297,75 +297,8 @@ NODE
 }
 
 summarize_real_chat_signals() {
-  local remote_command
-
-  remote_command=$(cat <<REMOTE
-docker compose --env-file .env -p infra -f infra/docker-compose.yml exec -T postgres \\
-  psql -U maxim -d maxim -v window_min="$SIGNAL_WINDOW_MIN" -P pager=off <<'SQL'
-\\echo webhook_status_last_window
-select status, count(*) as count
-from webhook_events
-where created_at >= now() - make_interval(mins => :window_min)
-group by 1
-order by 1;
-
-\\echo webhook_failed_last_window
-select count(*) as failed, max(created_at) as last_failed_at
-from webhook_events
-where status = 'FAILED'
-  and created_at >= now() - make_interval(mins => :window_min);
-
-\\echo night_mode_close_duplicates_last_window
-with close_events as (
-  select id, chat_id, metadata->>'sessionKey' as session_key, message_id, created_at,
-         row_number() over (
-           partition by chat_id, metadata->>'sessionKey'
-           order by created_at desc, id desc
-         ) as newest_rank,
-         count(*) over (partition by chat_id, metadata->>'sessionKey') as group_count
-  from moderation_events
-  where rule_code = 'NIGHT_MODE_CLOSE_NOTICE'
-    and created_at >= now() - make_interval(mins => :window_min)
-    and metadata->>'sessionKey' is not null
-), unrecovered_extras as (
-  select *
-  from close_events
-  where group_count > 1
-    and newest_rank > 1
-    and not exists (
-      select 1
-      from moderation_events recovery
-      where recovery.chat_id = close_events.chat_id
-        and recovery.rule_code = 'NIGHT_MODE_CLOSE_NOTICE_RECOVERY_DELETE'
-        and recovery.created_at >= close_events.created_at
-        and (
-          recovery.message_id = close_events.message_id
-          or recovery.metadata->>'originalEventId' = close_events.id
-        )
-    )
-)
-select count(distinct (chat_id, session_key)) as duplicate_groups,
-       count(*) as duplicate_extra_events
-from unrecovered_extras;
-
-\\echo night_mode_events_last_window
-select rule_code,
-       count(*) as events,
-       count(distinct (chat_id, metadata->>'sessionKey')) as chat_sessions
-from moderation_events
-where rule_code in (
-    'NIGHT_MODE_CLOSE_NOTICE',
-    'NIGHT_MODE_OPEN_NOTICE',
-    'NIGHT_MODE_CLOSE_NOTICE_RECOVERY_DELETE'
-  )
-  and created_at >= now() - make_interval(mins => :window_min)
-group by 1
-order by 1;
-SQL
-REMOTE
-)
-
-  ./infra/scripts/vps-connect.sh exec "$remote_command"
+  ./infra/scripts/vps-connect.sh exec \
+    ./infra/scripts/vps-postgres-audit.sh monitor-signals "$SIGNAL_WINDOW_MIN"
 }
 
 summarize_bullmq_state() {

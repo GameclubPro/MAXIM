@@ -5,7 +5,7 @@ This is the active production entrypoint. Historical delivery/cloud experiments 
 
 ## Production Shape
 
-- Main stack: `infra/docker-compose.yml` with Postgres, Redis, twelve shared-image API roles,
+- Main stack: `infra/docker-compose.yml` with Postgres, Redis, thirteen shared-image API roles,
   `miniapp-major-static`, legacy support `miniapp-static`, and `admin-static`.
 - Canonical mini app: `https://major-maksimov.ru/app/`, served by `miniapp-major-static`.
 - Closed Safety Desk: `https://admin.major-maksimov.ru/`, served by `admin-static` behind Basic Auth.
@@ -49,14 +49,37 @@ mutating direct invocation without the expected full SHA is rejected; only `--pl
 ## Routine Access
 
 ```bash
-./infra/scripts/vps-connect.sh shell
 ./infra/scripts/vps-connect.sh health
 ./infra/scripts/vps-connect.sh ps
 ./infra/scripts/vps-connect.sh logs api-ingress
 ./infra/scripts/vps-connect.sh monitor-readonly 300 15
+./infra/scripts/vps-connect.sh postgres-audit all
 ```
 
 `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper.
+
+An interactive VPS shell and direct PostgreSQL CLIs are reviewed break-glass paths, not routine
+diagnostics. Keep the authorization in the invoking process only and supply a non-empty reason:
+
+```bash
+MAXIM_VPS_DATABASE_BREAK_GLASS=1 \
+  MAXIM_VPS_DATABASE_BREAK_GLASS_REASON='reviewed incident recovery' \
+  ./infra/scripts/vps-connect.sh shell
+```
+
+Never persist those variables in `.env.vps`. Use `postgres-audit` for queue and activity evidence.
+
+Provision or re-harden the dedicated audit role after the reviewed source is synchronized to a VPS.
+The first command is preview-only; `--apply` is the explicit database mutation:
+
+```bash
+./infra/scripts/vps-connect.sh postgres-audit-provision
+./infra/scripts/vps-connect.sh postgres-audit-provision --apply
+./infra/scripts/vps-connect.sh postgres-audit all
+```
+
+The role has exact table grants, aggregate activity visibility, read-only resource defaults, and a
+single connection. It does not receive `pg_read_all_data`.
 
 If direct SSH is blocked after an IP change and Yandex security-group configuration is present:
 
@@ -104,7 +127,7 @@ the rollout if its post-sync `HEAD` differs. An emergency bypass is not routine:
 Contract changes normally require all API roles plus affected public/admin clients. Do not deploy
 `miniapp-static` for ordinary Major work.
 
-Any API role expands to all twelve roles. Static-only `miniapp-major-static` or `admin-static`
+Any API role expands to all thirteen roles. Static-only `miniapp-major-static` or `admin-static`
 deploys do not start the API build or run Prisma migrations. The deploy compares each active
 component's recorded source SHA with the target and adds unreleased affected components, so an
 explicit service list cannot silently leave known component impact behind.
@@ -161,7 +184,7 @@ API role. A version transition intentionally rejects older queued jobs and inval
 delete bindings instead of evaluating them under different recognition behavior.
 
 Deploy and both rollback paths read that behavior identity from the target API source, export it
-over any `.env` value, and verify it on all 12 effective and running API roles. They stop the old
+over any `.env` value, and verify it on all 13 effective and running API roles. They stop the old
 `api-media-analysis` before producer roles change and start the target worker last, so a `v1`/`v2`
 transition cannot send new-version jobs to the old worker. A target that predates the OCR role
 removes that role instead. Treat any missing or non-literal target version, role mismatch, or
@@ -314,7 +337,7 @@ their content in process arguments or logs. The verifier runs from the exact act
 image and rejects an expired, failed, unsigned, untrusted, reprofiled, source/image-mismatched,
 behavior-mismatched, malformed, settings-set-mismatched, or digest-mismatched certification before
 any rollout mutation. The wrapper then takes the shared deploy lock and checks the active release
-manifest/image/SHA/version across all 12 API roles.
+manifest/image/SHA/version across all 13 API roles.
 Promotion additionally requires an empty OCR queue across waiting, active, delayed, prioritized,
 paused, and waiting-children states, plus zero admission units and no held reservations. The
 read-only preflight checks that state once. An applied promotion checks it again only after all seven
@@ -356,16 +379,16 @@ not restore the environment ceiling: first run guarded downgrade with the expire
 then read status again and use the incremented missing revision for a later promotion. Promotion
 atomically patches the production environment file with the OCR mode and canary allowlist, then
 recreates and verifies every role; the OCR-specific delete-intent lane derives its authority from
-those same two OCR variables. It recreates the 11 non-media roles in the reviewed
+those same two OCR variables. It recreates the 12 non-media roles in the reviewed
 order, starts `api-media-analysis` last, and verifies readiness and identity/mode/image parity for
-all 12 roles. The HTTP-serving `api-ingress`, `api-admin`, and `api-media-analysis` roles must answer
+all 13 roles. The HTTP-serving `api-ingress`, `api-admin`, and `api-media-analysis` roles must answer
 their internal ready endpoint twice across a five-second stability window. Every role, including
-the nine headless queue workers, must keep exactly one running container with the same container ID
+the ten headless queue workers, must keep exactly one running container with the same container ID
 and restart count across that window. Every readiness `docker compose ps`, `docker exec`, and
 `docker inspect` call has a host-side timeout
 clamped to the same absolute readiness deadline, including its kill grace. Promotion
 then stops the exact seven OCR producer roles, proves the queue and admission state drained again,
-performs the runtime-control CAS, restarts those producers, and repeats the 12-role
+performs the runtime-control CAS, restarts those producers, and repeats the 13-role
 readiness/parity/stability check. A CAS conflict means another operator changed the control; stop
 and review status instead of retrying blindly. The wrapper also re-reads the control after producer
 restart and refuses to complete if its revision, cohort, logical expiry, or minimum remaining
@@ -397,15 +420,15 @@ environment mutation. Recovery is armed before a clear can be dispatched, so a R
 that boundary conservatively patches the environment back to shadow and may recreate API roles even
 when the clear outcome is unknown. The wrapper never restarts or recreates Redis. If a later
 promotion step fails after `.env` mutation, it attempts the same full shadow recovery and reports a
-critical error unless all 12 roles are proven ready and shadowed.
+critical error unless all 13 roles are proven ready and shadowed.
 
 Recovery is armed before either set or clear can be dispatched to Redis. If a mutation outcome is
-ambiguous, the wrapper restores and verifies shadow ceilings across all 12 roles before returning an
+ambiguous, the wrapper restores and verifies shadow ceilings across all 13 roles before returning an
 error. Recovery first quiesces `api-action`, all seven OCR producers, and only detected unreviewed API
 containers with proven `infra` ownership. Foreign or ambiguous API-like containers remain untouched
 and prevent quiescence from being proven. Recovery must prove that stopped inventory before patching
 `.env` or recreating anything; after that boundary, it attempts every role even when one recreation
-fails. It reports success only after all 12 roles pass readiness, restart stability, image, identity,
+fails. It reports success only after all 13 roles pass readiness, restart stability, image, identity,
 version, and shadow parity; otherwise it proves the enforcement-capable roles stopped again or
 reports that quiescence could not be established.
 
@@ -558,7 +581,8 @@ not bypass the preflight or attempt an ad hoc destructive migration rollback.
 - Do not recreate Postgres or Redis during ordinary application deployment.
 - API deploy requires both services to be already running and ready; it fails closed instead of
   starting either service.
-- Use indexed, bounded production queries; avoid broad webhook/ledger aggregates during incidents.
+- Use `postgres-audit` for fixed, indexed, bounded production diagnostics; never improvise broad
+  webhook/ledger aggregates during incidents.
 - After any Redis data restore, audit delayed/waiting/active/failed queues before starting workers.
 - Backup/restore timers remain disabled until their separate volumes and capacity preflights have
   completed successfully.

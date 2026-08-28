@@ -42,6 +42,13 @@ filtered role logs without reconciling webhooks or sending bot messages.
    ./infra/scripts/vps-connect.sh exec 'curl -fsS --max-time 15 http://127.0.0.1:3002/api/health/ready'
    ```
 
+   Read bounded database evidence only through the fixed audit catalog:
+
+   ```bash
+   ./infra/scripts/vps-connect.sh postgres-audit queue
+   ./infra/scripts/vps-connect.sh postgres-audit activity
+   ```
+
 2. Inspect queue-owner logs:
 
    ```bash
@@ -53,8 +60,9 @@ filtered role logs without reconciling webhooks or sending bot messages.
 
 3. Determine whether lag is ingress/enqueue, a moderation shard, action dispatch, Redis, Postgres, or
    MAX API pressure before changing concurrency.
-4. Prefer bounded event/status-index samples and health snapshots. Do not run broad
-   `webhook_events` or ledger aggregates during live pressure.
+4. Prefer the fixed catalog and health snapshots. Do not run raw `psql`, broad `webhook_events` or
+   ledger aggregates during live pressure. A new diagnostic shape is code to review and test, not
+   an inline incident command.
 5. Quarantine or reprocess stale events only after root cause and exact IDs are reviewed. Queue/data
    mutation is a separate authorized repair, not a diagnostic step.
 6. Ready can lag live while queues drain after deploy. Confirm that effective lag and oldest queued

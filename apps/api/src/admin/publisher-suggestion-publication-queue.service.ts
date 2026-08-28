@@ -59,7 +59,7 @@ function buildPublisherSuggestionRecoveryCursorPredicate(
 
 // FLAG: Keep these literals aligned with the audit-log partial indexes; parameters or OR
 // predicates prevent PostgreSQL from proving the partial-index predicates during planning.
-function buildPublisherSuggestionRecoveryQuery(
+export function buildPublisherSuggestionRecoveryQuery(
   cursor: PublisherSuggestionRecoveryCursor | null,
 ): Prisma.Sql {
   const cursorPredicate = buildPublisherSuggestionRecoveryCursorPredicate(cursor);

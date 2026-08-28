@@ -105,6 +105,15 @@ test('validates Compose with the public env while keeping the runtime env defaul
   assert.match(infraCheck, /docker compose --env-file \.env\.example/u);
 });
 
+test('runs ShellCheck locally through a pinned fail-closed fallback', () => {
+  const infraCheck = read('infra/scripts/check-infra.sh');
+
+  assert.match(infraCheck, /command -v shellcheck/u);
+  assert.match(infraCheck, /--package=shellcheck@4\.1\.0/u);
+  assert.match(infraCheck, /shellcheck is required for infrastructure validation/u);
+  assert.doesNotMatch(infraCheck, /syntax and Compose checks completed/u);
+});
+
 test('caps json-file logs for stateful services in both Compose topologies', () => {
   for (const path of ['infra/docker-compose.yml', 'infra/docker-compose.scale.yml']) {
     const compose = read(path);
@@ -282,10 +291,7 @@ test('ref rollback never recreates Publik for a pre-feature target', () => {
     rollback,
     /non_webhook_services=\(api-action\)[\s\S]*if \[\[ "\$TARGET_HAS_PUBLISHER" -eq 1 \]\]; then[\s\S]*non_webhook_services\+=\(api-publisher\)[\s\S]*recreate_runtime_api_wave non-webhook "\$\{non_webhook_services\[@\]\}"/u,
   );
-  assert.doesNotMatch(
-    rollback,
-    /recreate_runtime_api_wave non-webhook api-action api-publisher/u,
-  );
+  assert.doesNotMatch(rollback, /recreate_runtime_api_wave non-webhook api-action api-publisher/u);
 });
 
 test('keeps backup preflight read-only and reclaims only manifest-aware release images', () => {

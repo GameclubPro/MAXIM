@@ -41,6 +41,15 @@
 - In hot paths prefer targeted `getCurrentChatMemberAccess` or `getChatMembersAccess`; fetch a full admin roster only when the feature needs it.
 - For `GET /chats/{chatId}/members`, send multiple IDs as one comma-separated `user_ids` value; repeated parameters can collapse to the first user.
 
+## Live MAX Test Entities
+
+- The only default targets for live bot, moderation, and publication smokes are:
+  - `CHAT` `Тест Коде`: `https://max.ru/join/dDW5RpVS-CNwz9H7SqhbQRIOtrBeQXhW8jeoNjMdwz4`
+  - `CHANNEL` `Тест Кодекс`: `https://max.ru/join/rd2t2ZcjHfg48edf4won7Ur_8s6wUIyDYRoW_dfuM9c`
+- Treat the join links as stable operator anchors, not entity IDs. Resolve the managed entity through the normal MAX discovery/binding flow and confirm its `CHAT` or `CHANNEL` type before any mutation.
+- Run live mutations only while production is healthy. Use uniquely marked, agent-created test content and clean up only that same content after verification; never sanction real participants, delete pre-existing messages, or change unrelated settings.
+- Do not use any other real chat or channel for agent-initiated live mutations unless the user explicitly designates it for that test.
+
 ## Webhooks And Deletion Safety
 
 - `POST /subscriptions` is transport source of truth: public HTTPS on port 443, trusted full-chain TLS, HTTP 200 within 30 seconds, and `X-Max-Bot-Api-Secret` validation when configured.
@@ -83,6 +92,7 @@
 - Publication `NOW` is user-triggered even when recovered by the action poller: materialize it ahead of background work and dispatch through the immediate lane.
 - Keep DB-only publication rollups outside governor pauses; ambiguous sends require manual review.
 - A message-send timeout is ambiguous. Never auto-retry an attempted send without `remoteMessageId`; uploads/preparation may retry transport timeouts.
+- Publisher suggestion recovery keeps literal action/status branches as separately limited `UNION ALL` queries with `(created_at, id)` keyset bounds aligned to their partial indexes. `OR`, `action IN`, or parameterized partial-index predicates are regressions and require both query-shape and representative PostgreSQL-plan coverage.
 - KICK/BAN ledger rows are crash-fenced: never reclaim a stalled `IN_PROGRESS` row and retry only a proven pre-dispatch failure. Resolve an executable route before recording dispatch start; a confirmed UNBAN clears prior terminal BAN idempotency state so a later ban remains possible.
 - Retries preserve the recorded content revision. Latest-content retry requires optimistic publication/content revision guards; never rewrite `SENT` or `AMBIGUOUS` attribution.
 - Publication video input remains capped at 24 MB because it crosses base64 JSON, `bytea`, and in-memory buffers. Outbound resumable upload is not a reason to raise ingestion limits.

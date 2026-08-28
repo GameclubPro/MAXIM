@@ -41,6 +41,7 @@ function fixture() {
   const readyCounter = join(directory, 'ready-counter');
   const dumpPid = join(directory, 'dump.pid');
   const lock = join(directory, 'backup.lock');
+  const deployLock = join(directory, 'deploy.lock');
   mkdirSync(bin);
   mkdirSync(backup);
 
@@ -124,6 +125,7 @@ exec "\${MOCK_REAL_NODE}" "$@"
     readyCounter,
     dumpPid,
     lock,
+    deployLock,
   };
 }
 
@@ -136,6 +138,7 @@ function helperEnv(data, extraEnv = {}) {
     MAXIM_BACKUP_MIN_FREE_BYTES: '1',
     MAXIM_BACKUP_REQUIRE_DEDICATED_FILESYSTEM: '0',
     MAXIM_BACKUP_LOCK_FILE: data.lock,
+    MAXIM_DEPLOY_LOCK_DIR: data.deployLock,
     MAXIM_BACKUP_MAX_DURATION_SEC: '5',
     MOCK_READY_JSON: READY_JSON,
     MOCK_DOCKER_LOG: data.dockerLog,
@@ -181,6 +184,7 @@ test('creates a rate-limited low-priority dump and publishes the validated pair 
   assert.match(dockerLog, /--lock-wait-timeout=10s/u);
   assert.match(dockerLog, /maxim-postgres-backup-[0-9TZ]+-[0-9]+/u);
   assert.equal(existsSync(data.cleanupMarker), true);
+  assert.equal(existsSync(data.deployLock), false);
   assert.doesNotMatch(names.join('\n'), /\.tmp$/u);
 });
 
@@ -219,6 +223,19 @@ test('uses a nonblocking lock and does not enter readiness while another run own
   const result = runHelper(data);
   assert.equal(result.status, 75, result.stderr);
   assert.match(result.stderr, /already running/u);
+  assert.equal(existsSync(data.dockerLog), false);
+});
+
+test('refuses to overlap a live deploy lock before touching PostgreSQL', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  mkdirSync(data.deployLock);
+  writeFileSync(join(data.deployLock, 'pid'), `${process.pid}\n`);
+
+  const result = runHelper(data);
+
+  assert.equal(result.status, 75, result.stderr);
+  assert.match(result.stderr, /deployment or maintenance operation is active/u);
   assert.equal(existsSync(data.dockerLog), false);
 });
 

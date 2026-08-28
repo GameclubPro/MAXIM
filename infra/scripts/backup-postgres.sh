@@ -16,7 +16,9 @@ WATCHDOG_INTERVAL_SEC="${MAXIM_BACKUP_WATCHDOG_INTERVAL_SEC:-30}"
 WATCHDOG_FAILURE_THRESHOLD="${MAXIM_BACKUP_WATCHDOG_FAILURE_THRESHOLD:-2}"
 LOCK_FILE="${MAXIM_BACKUP_LOCK_FILE:-$BACKUP_DIR/.maxim-postgres-backup.lock}"
 RATE_LIMITER="$ROOT_DIR/infra/scripts/rate-limit-stream.mjs"
+DEPLOY_LOCK_HELPER="$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 MODE="${1:-}"
+DEPLOY_LOCK_ACQUIRED=0
 
 validate_non_negative_integer() {
   local name="$1"
@@ -83,6 +85,10 @@ if [[ "$MODE" != "--preflight-only" ]]; then
     echo "PostgreSQL backup stream rate limiter is missing." >&2
     exit 1
   fi
+  if [[ ! -r "$DEPLOY_LOCK_HELPER" ]]; then
+    echo "Shared deploy lock helper is missing." >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$BACKUP_DIR"
@@ -123,6 +129,18 @@ probe_runtime_ready() {
 if ! probe_runtime_ready; then
   echo "Refusing PostgreSQL backup while readiness or raw queue lag is degraded." >&2
   exit 75
+fi
+
+if [[ "$MODE" != "--preflight-only" ]]; then
+  # A logical dump reads the primary for hours, so it must not overlap any deploy,
+  # rollback, image preload, or other operation protected by the shared lock.
+  # shellcheck source=/dev/null
+  source "$DEPLOY_LOCK_HELPER"
+  if ! acquire_deploy_lock; then
+    echo "Refusing PostgreSQL backup while a deployment or maintenance operation is active." >&2
+    exit 75
+  fi
+  DEPLOY_LOCK_ACQUIRED=1
 fi
 
 if [[ "$REQUIRE_DEDICATED_FILESYSTEM" == "1" ]] && \
@@ -250,6 +268,10 @@ cleanup() {
   if ((PUBLISH_STARTED == 1)); then
     rm -f -- "$TARGET" "$CHECKSUM_TARGET"
   fi
+  if ((DEPLOY_LOCK_ACQUIRED == 1)); then
+    release_deploy_lock || true
+    DEPLOY_LOCK_ACQUIRED=0
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -349,6 +371,8 @@ mv -- "$TEMP_DUMP" "$TARGET"
 mv -- "$TEMP_CHECKSUM" "$CHECKSUM_TARGET"
 PUBLISH_STARTED=0
 rm -f -- "$WATCHDOG_ABORT_MARKER"
+release_deploy_lock
+DEPLOY_LOCK_ACQUIRED=0
 trap - EXIT HUP INT TERM
 
 echo "Validated PostgreSQL backup saved to $TARGET"

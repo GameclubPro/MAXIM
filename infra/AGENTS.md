@@ -19,6 +19,7 @@
   - `api-action`
   - `api-publisher`
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
+- The domain-separated Publisher dialog signing key is mounted only in `api-admin`, `api-action`, and `api-publisher`. Keep the Publisher bot token exclusive to `api-publisher` and init-data verification keys exclusive to `api-admin`.
 - `miniapp-major-static` serves `https://major-maksimov.ru/app/` on local port 3003. `miniapp-static` serves legacy support host `maxim.play-team.ru` on port 3000 and is not a routine target.
 - `admin-static` serves the closed Safety Desk on local port 3004 behind `admin.major-maksimov.ru` Basic Auth.
 - Current canonical user host is `https://major-maksimov.ru`; `/app/` is the only routine production mini app path.
@@ -30,7 +31,8 @@
 - Portable setup:
   - copy `infra/env/vps.env.example` to ignored root `.env.vps`;
   - run `./infra/scripts/vps-connect.sh doctor`;
-  - use `shell`, `health`, `ps`, `logs <service>`, `deploy main [services...]`, or `monitor-readonly [duration-sec] [interval-sec]`.
+  - use `health`, `ps`, `logs <service>`, `deploy main [services...]`, `monitor-readonly [duration-sec] [interval-sec]`, or `postgres-audit [queue|activity|all]`.
+- Interactive `shell` is break-glass, not routine access. It requires caller-only `MAXIM_VPS_DATABASE_BREAK_GLASS=1` and a non-empty `MAXIM_VPS_DATABASE_BREAK_GLASS_REASON`; never persist either value in `.env.vps`.
 - `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper.
 - If SSH access changed with the client IP, `./infra/scripts/vps-connect.sh ensure-ssh` can authorize the configured `/32`/CIDR and run doctor.
 - If SSH stalls before the banner, check Yandex security-group `22/tcp` reachability first and use `yc compute ssh` as the recovery path when configured.
@@ -115,7 +117,17 @@
 - Keep Postgres `shm_size` comfortably above `shared_buffers` (currently 512m versus 128MB). Reducing it can trigger `53100` errors under admin/suggestion load.
 - Keep production Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`. Prefer lower concurrency/batches and governor controls before raising connection caps.
 - Live audits use indexed, bounded queries and short samples. Broad `webhook_events`/ledger aggregates can saturate I/O despite connection headroom.
+- Run routine production database diagnostics only through `./infra/scripts/vps-connect.sh postgres-audit [queue|activity|all]`. The catalog accepts no SQL, file path, or stdin from the operator and runs through the bounded audit role/session.
+- Never pass ad hoc SQL or raw `psql`/`pg_dump`/`pg_restore` through `vps-connect.sh exec` or an agent shell. Reviewed human break-glass use requires caller-only `MAXIM_VPS_DATABASE_BREAK_GLASS=1` plus a non-empty `MAXIM_VPS_DATABASE_BREAK_GLASS_REASON`; the privileged SSH/Docker principal is not a database safety boundary.
+- Production audit queries stay read-only, output-bounded, index-compatible, single-session, and guarded by server and wall-clock timeouts, `max_parallel_workers_per_gather=0`, a unique `application_name`, and exact-backend cleanup. `LIMIT` does not bound the scan or sort required to find rows. Use plain `EXPLAIN`, never `EXPLAIN ANALYZE`, for a new live query shape.
+- Never run whole-table `COUNT`, `DISTINCT`, `GROUP BY`, JSON `OR`/`IN`, or unbounded ordering over `webhook_events`, `audit_logs`, delivery, or ledger tables on the sole primary. Prefer health snapshots and fixed catalog reports. Add a reviewed catalog query when existing reports are insufficient.
 - Full backup and restore-smoke timers are disabled by default. Configure `/etc/maxim-postgres-backup.env` with separate persistent/disposable volumes and enough capacity, then run each service successfully before enabling timers.
+- On the current VPS, the persistent MAXIM backup root is `/mnt/maxim-cold/backups/maxim` and the disposable restore root is `/mnt/maxim-cold/restore-smoke/maxim`; keep both on the dedicated cold filesystem. The backup service may run as `maximadmin`, but the restore-smoke service must run as `root` because the disposable PostgreSQL container creates root-owned host files that otherwise survive cleanup.
+- Operator copies use `infra/scripts/pull-latest-backup-to-local.sh` with age-encrypted `.age`, `.sha256`, and `.ack` pairs. Its remote ACK fast path trusts only a canonical sidecar plus size/publication metadata; any new or changed candidate falls back to full sidecar/content verification in `pull-backup-to-local.sh`. The local scheduler lock is an advisory `flock` file descriptor, so an interrupted task cannot leave a stale lock.
+- A direct live PostgreSQL stream is a reviewed maintenance path, not an unattended timer on the sole primary: require the readiness guard, low I/O priority, a unique `application_name` cleanup path, and an external lag watchdog; a standby or an approved maintenance window is required before replacing the cold-volume producer.
+- PostgreSQL backup and deploy/rollback/preload operations serialize through the shared deploy lock. Keep backup readiness-gated, rate-limited, low-priority, time-bounded, and exact-`application_name` cleaned; stop the backup service normally before an urgent deploy instead of bypassing either lock.
+- After one rollout readiness timeout, inspect queue trend, active PostgreSQL backends, backup services, and host I/O before retrying or extending the timeout. Recover through the typed transition journal and reviewed queue-fence adoption path; never hand-write the release manifest.
+- `npm run check:infra` must execute ShellCheck and fail closed. When a system binary is unavailable it uses the pinned `shellcheck@4.1.0` fallback. Put a ShellCheck directive alone on the line immediately before its command; explanatory prose belongs in a separate comment.
 - Never place a full restore in Docker's production root filesystem.
 - Redis persists BullMQ queues, delayed jobs, locks, and snapshots in named `redis_data:/data`. Avoid routine recreation; preserve/check RDB/AOF and queues first.
 - Scale deploy preflights `infra-scale_redis_data` before stopping main.

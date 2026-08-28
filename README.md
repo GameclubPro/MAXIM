@@ -132,10 +132,10 @@ $EDITOR .env.vps
 Routine commands:
 
 ```bash
-./infra/scripts/vps-connect.sh shell
 ./infra/scripts/vps-connect.sh health
 ./infra/scripts/vps-connect.sh ps
 ./infra/scripts/vps-connect.sh monitor-readonly 300 15
+./infra/scripts/vps-connect.sh postgres-audit all
 ./infra/scripts/vps-connect.sh deploy main miniapp-major-static
 ./infra/scripts/vps-connect.sh deploy main admin-static
 ./infra/scripts/vps-connect.sh deploy main api-ingress
@@ -143,6 +143,10 @@ Routine commands:
 
 Any requested API role expands to all shared-image roles. `npm run vps -- <command>` and
 `npm run prod -- <command>` call the same wrapper.
+
+Interactive VPS shells and direct PostgreSQL CLIs are break-glass operations. Routine database
+diagnostics use the fixed `postgres-audit` catalog; see `docs/runbook.md` for the reviewed emergency
+invocation.
 
 The local deploy wrapper requires successful `Required` and `Analyze JavaScript and TypeScript`
 checks from GitHub Actions for the exact selected commit, then requires the synchronized VPS `HEAD` to match that SHA. Active component images use

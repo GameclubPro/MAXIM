@@ -7,6 +7,8 @@ cd "$ROOT_DIR"
 export YC_CLI_INITIALIZATION_SILENCE="${YC_CLI_INITIALIZATION_SILENCE:-true}"
 
 ENV_FILE="${MAXIM_VPS_ENV_FILE:-$ROOT_DIR/.env.vps}"
+DATABASE_BREAK_GLASS_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS:-}"
+DATABASE_BREAK_GLASS_REASON_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS_REASON:-}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -26,7 +28,7 @@ Usage:
 
 Commands:
   doctor                      Check local SSH config and remote VPS basics
-  shell                       Open an interactive shell in the remote repo
+  shell                       Break-glass interactive shell; requires flag and reason
   exec <command...>           Run a command in the remote repo
   deploy [branch] [services|--plan|--auto|--full]
                               Run or plan a manifest-aware production deploy
@@ -42,6 +44,10 @@ Commands:
   health                      Check local-on-VPS and public health endpoints
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
+  postgres-audit [queue|activity|all]
+                              Run fixed, bounded, privacy-safe PostgreSQL diagnostics
+  postgres-audit-provision [--apply]
+                              Preview or provision the dedicated PostgreSQL audit role
   commercial-ocr-promote <chat-ids-file> <certification-file> <reviewed-certification-sha256> <none|revision> [--apply]
                               Guarded OCR canary promotion; uploads private inputs via stdin
   commercial-ocr-downgrade <revision> [--apply]
@@ -58,7 +64,7 @@ Commands:
                               Install initial Publik credentials over SSH stdin
   ps [services...]            Show main production docker compose status
   logs <service> [tail]       Show main production service logs, default tail=200
-  yc-shell                    Open a Yandex Cloud CLI SSH shell, if configured
+  yc-shell                    Break-glass Yandex CLI shell; requires flag and reason
 
 Per-device config:
   cp infra/env/vps.env.example .env.vps
@@ -242,11 +248,74 @@ remote_from_args() {
     exit 1
   fi
 
+  guard_raw_database_exec "$@"
+
   if [[ $# -eq 1 ]]; then
     remote_exec "$1"
   else
     remote_exec "$(shell_quote_args "$@")"
   fi
+}
+
+guard_raw_database_exec() {
+  local command_text="$*"
+  local docker_postgres_pattern='(^|[[:space:];|&])docker[[:space:]][^;|&]*(exec|run)[[:space:]][^;|&]*postgres[^[:space:];|&]*($|[[:space:];|&])'
+
+  command_text="${command_text//$'\n'/ }"
+  if [[ ! "$command_text" =~ (^|[^[:alnum:]_])(psql|pg_dump|pg_restore)($|[^[:alnum:]_]) ]] &&
+    [[ ! "$command_text" =~ $docker_postgres_pattern ]]; then
+    return 0
+  fi
+
+  require_database_break_glass 'Direct production PostgreSQL CLI command' || return
+}
+
+require_database_break_glass() {
+  local operation="$1"
+
+  if [[ "$DATABASE_BREAK_GLASS_FROM_CALLER" != '1' ]] ||
+    [[ -z "${DATABASE_BREAK_GLASS_REASON_FROM_CALLER//[[:space:]]/}" ]]; then
+    cat <<'ERROR' >&2
+Direct production PostgreSQL CLIs and interactive VPS shells are break-glass operations.
+Use `postgres-audit` for routine queue/activity diagnostics. A reviewed operation
+requires both MAXIM_VPS_DATABASE_BREAK_GLASS=1 and a non-empty
+MAXIM_VPS_DATABASE_BREAK_GLASS_REASON supplied in the invoking process environment.
+ERROR
+    return 2
+  fi
+
+  printf 'WARNING: reviewed break-glass operation accepted (%s); reason supplied locally.\n' \
+    "$operation" >&2
+}
+
+postgres_audit() {
+  local mode="${1:-all}"
+
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: $0 postgres-audit [queue|activity|all]" >&2
+    exit 2
+  fi
+
+  case "$mode" in
+    queue|activity|all)
+      ;;
+    *)
+      echo "Unknown PostgreSQL audit mode: $mode" >&2
+      echo "Usage: $0 postgres-audit [queue|activity|all]" >&2
+      exit 2
+      ;;
+  esac
+
+  remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$mode")"
+}
+
+postgres_audit_provision() {
+  if [[ $# -gt 1 ]] || [[ $# -eq 1 && "$1" != '--apply' ]]; then
+    echo "Usage: $0 postgres-audit-provision [--apply]" >&2
+    exit 2
+  fi
+
+  remote_exec "$(shell_quote_args ./infra/scripts/vps-provision-postgres-audit-role.sh "$@")"
 }
 
 prepend_webhook_rollout_recovery_env() {
@@ -975,6 +1044,7 @@ case "$command" in
     doctor
     ;;
   shell)
+    require_database_break_glass 'interactive VPS shell'
     open_shell
     ;;
   exec)
@@ -1006,6 +1076,12 @@ case "$command" in
     ;;
   monitor-readonly)
     "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" "$@"
+    ;;
+  postgres-audit)
+    postgres_audit "$@"
+    ;;
+  postgres-audit-provision)
+    postgres_audit_provision "$@"
     ;;
   commercial-ocr-promote)
     commercial_ocr_promote "$@"
@@ -1044,6 +1120,7 @@ case "$command" in
     remote_exec "$(shell_quote_args docker compose --env-file .env -p infra -f infra/docker-compose.yml logs --tail "$tail" "$service")"
     ;;
   yc-shell)
+    require_database_break_glass 'interactive Yandex VPS shell'
     yc_shell
     ;;
   -h|--help|help|'')
