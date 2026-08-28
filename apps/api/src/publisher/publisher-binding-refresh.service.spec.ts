@@ -2,6 +2,7 @@ import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
+  ManagedEntityAccessRole,
   ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import {
@@ -949,6 +950,81 @@ describe('PublisherBindingRefreshService', () => {
         }),
       }),
     );
+  });
+
+  it.each([403, 404])(
+    'terminalizes a stale user-access HTTP %s without exhausting queue retries',
+    async (statusCode) => {
+      const { service, tx, edgeState, maxClient, bindingState } = createHarness({
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write'],
+        permissionsKnown: true,
+      });
+      const candidateVersion = `publisher-edge-${statusCode}`;
+      edgeState.source = 'publisher_targeted_user_access';
+      edgeState.sourceVersion = candidateVersion;
+      const failure = Object.assign(new Error(`HTTP ${statusCode}`), {
+        response: { status: statusCode },
+      });
+      maxClient.getChatMemberAccess.mockRejectedValueOnce(failure);
+
+      await expect(
+        service.refresh({
+          ...job,
+          candidateUserId: `admin-${statusCode}`,
+          candidateVersion,
+          reason: 'stale_user_access',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            state: ManagedEntityAccessState.USER_DENIED,
+            userRole: ManagedEntityAccessRole.UNKNOWN,
+            botRole: ManagedEntityAccessRole.ADMIN,
+            deniedReason: 'publisher_user_access_unavailable',
+            lastMaxErrorCode: `HTTP_${statusCode}`,
+            lastMaxErrorMessage: null,
+            lastMaxStatusCode: statusCode,
+          }),
+          update: expect.objectContaining({
+            state: ManagedEntityAccessState.USER_DENIED,
+            userRole: ManagedEntityAccessRole.UNKNOWN,
+            botRole: ManagedEntityAccessRole.ADMIN,
+            deniedReason: 'publisher_user_access_unavailable',
+            lastMaxErrorCode: `HTTP_${statusCode}`,
+            lastMaxErrorMessage: null,
+            lastMaxStatusCode: statusCode,
+          }),
+        }),
+      );
+      expect(bindingState.botAccessState).toBe(ChatBotAccessState.CONFIRMED_ADMIN);
+    },
+  );
+
+  it('keeps retryable stale user-access failures in the queue retry path', async () => {
+    const { service, edgeState, maxClient } = createHarness({
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+      permissionsKnown: true,
+    });
+    const candidateVersion = 'publisher-edge-retryable';
+    edgeState.source = 'publisher_targeted_user_access';
+    edgeState.sourceVersion = candidateVersion;
+    const failure = Object.assign(new Error('MAX unavailable'), { response: { status: 503 } });
+    maxClient.getChatMemberAccess.mockRejectedValueOnce(failure);
+
+    await expect(
+      service.refresh({
+        ...job,
+        candidateUserId: 'admin-retryable',
+        candidateVersion,
+        reason: 'stale_user_access',
+      }),
+    ).rejects.toBe(failure);
   });
 
   it('replays the original forwarded job as an ordinary refresh after the staged edge was granted', async () => {

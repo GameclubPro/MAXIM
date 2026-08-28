@@ -699,14 +699,25 @@ export class PublisherBindingRefreshService {
     committedBotAccessState: ChatBotAccessState;
     interactive: boolean;
   }): Promise<{ committed: boolean; state: ManagedEntityAccessState }> {
-    const userAccess = await this.maxClient.getChatMemberAccess(params.chatId, params.userId, {
-      botId: this.publisherBotId,
-      trafficClass: params.interactive ? 'interactive' : 'background',
-      sourceTag: 'publisher_user_access',
-      bypassCache: true,
-      timeoutMs: 5_000,
-      ignoreFailureMetricStatuses: [403, 404],
-    });
+    let userAccess: MaxChatMemberAccess | null;
+    let terminalStatusCode: number | null = null;
+    try {
+      userAccess = await this.maxClient.getChatMemberAccess(params.chatId, params.userId, {
+        botId: this.publisherBotId,
+        trafficClass: params.interactive ? 'interactive' : 'background',
+        sourceTag: 'publisher_user_access',
+        bypassCache: true,
+        timeoutMs: 5_000,
+        ignoreFailureMetricStatuses: [403, 404],
+      });
+    } catch (error: unknown) {
+      const statusCode = extractPublisherMaxStatusCode(error);
+      if (statusCode !== 403 && statusCode !== 404) {
+        throw error;
+      }
+      userAccess = null;
+      terminalStatusCode = statusCode;
+    }
     const checkedAt = new Date();
     const userIsBot = userAccess?.isBot === true;
     const userHasUnverifiedBotType =
@@ -723,11 +734,13 @@ export class PublisherBindingRefreshService {
     const deniedReason = granted
       ? null
       : botHasAdminAccess
-        ? userIsBot
-          ? 'publisher_actor_is_bot'
-          : userHasUnverifiedBotType
-            ? 'publisher_actor_type_unverified'
-            : 'publisher_user_not_admin'
+        ? terminalStatusCode
+          ? 'publisher_user_access_unavailable'
+          : userIsBot
+            ? 'publisher_actor_is_bot'
+            : userHasUnverifiedBotType
+              ? 'publisher_actor_type_unverified'
+              : 'publisher_user_not_admin'
         : 'publisher_bot_not_admin';
     const userRole = this.toAccessRole(userAccess);
     const botRole = this.toAccessRole(params.botAccess);
@@ -798,6 +811,9 @@ export class PublisherBindingRefreshService {
                 : PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
           ),
           deniedReason,
+          lastMaxErrorCode: terminalStatusCode ? `HTTP_${terminalStatusCode}` : null,
+          lastMaxErrorMessage: null,
+          lastMaxStatusCode: terminalStatusCode,
           source: 'publisher_targeted_user_access',
           sourceVersion: params.candidateVersion,
         },
@@ -814,9 +830,9 @@ export class PublisherBindingRefreshService {
                 : PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
           ),
           deniedReason,
-          lastMaxErrorCode: null,
+          lastMaxErrorCode: terminalStatusCode ? `HTTP_${terminalStatusCode}` : null,
           lastMaxErrorMessage: null,
-          lastMaxStatusCode: null,
+          lastMaxStatusCode: terminalStatusCode,
           source: 'publisher_targeted_user_access',
           sourceVersion: params.candidateVersion,
         },
