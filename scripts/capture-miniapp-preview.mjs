@@ -1936,6 +1936,11 @@ async function assertPublisherComposerDockSeparated(page, scenario) {
     const editorRect = editor.getBoundingClientRect();
     const dockRect = dock.getBoundingClientRect();
     const dockStyle = getComputedStyle(dock);
+    const previewScreen = document.querySelector('.design-preview__device-screen');
+    const viewportBottom =
+      previewScreen instanceof HTMLElement
+        ? previewScreen.getBoundingClientRect().bottom
+        : window.innerHeight;
     if (dockStyle.position === 'fixed' || dockStyle.position === 'absolute') {
       return { ok: false, reason: `action dock uses overlay position ${dockStyle.position}` };
     }
@@ -1945,10 +1950,10 @@ async function assertPublisherComposerDockSeparated(page, scenario) {
         reason: `editor bottom ${editorRect.bottom.toFixed(1)} crosses dock top ${dockRect.top.toFixed(1)}`,
       };
     }
-    if (dockRect.bottom > window.innerHeight + 2) {
+    if (dockRect.bottom > viewportBottom + 2) {
       return {
         ok: false,
-        reason: `dock bottom ${dockRect.bottom.toFixed(1)} leaves viewport ${window.innerHeight}`,
+        reason: `dock bottom ${dockRect.bottom.toFixed(1)} leaves viewport ${viewportBottom.toFixed(1)}`,
       };
     }
     return { ok: true, reason: '' };
