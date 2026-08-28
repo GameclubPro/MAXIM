@@ -512,7 +512,7 @@ psql_command=(
 )
 
 # Reached through the EXIT/signal cleanup path.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup_backend() {
   local cleanup_sql
 
@@ -551,7 +551,7 @@ SQL
 AUDIT_PROCESS_PID=''
 
 # Reached through the EXIT/signal cleanup path.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 terminate_local_audit() {
   local pid="$AUDIT_PROCESS_PID"
 
@@ -575,7 +575,7 @@ terminate_local_audit() {
 }
 
 # Invoked indirectly by the shell traps below.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   local status=$?
 
