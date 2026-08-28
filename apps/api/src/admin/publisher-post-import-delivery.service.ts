@@ -116,7 +116,9 @@ export class PublisherPostImportDeliveryService {
       }
     }
 
-    if (session.botStatusMessageId) {
+    const shouldSendTerminalMessage =
+      job.notification === 'ready' || job.notification === 'failed';
+    if (session.botStatusMessageId && !shouldSendTerminalMessage) {
       try {
         await this.maxClient.editMessageInlineKeyboard(
           privateChatId,
@@ -242,7 +244,7 @@ export class PublisherPostImportDeliveryService {
       case 'need_forward':
         return 'Нужно переслать готовый пост';
       case 'processing':
-        return 'Готовлю черновик';
+        return 'Пост принят';
       case 'ready':
         return 'Черновик готов';
       case 'failed':
