@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260829123000_align_publisher_auto_reply_authoring_fk_names",
-  "baselineNamesSha256": "267d2385f010700346f3ef7c80d837e2618c29869fcfa65e5b46943624bec72e",
-  "baselineContentsSha256": "2a048d60254f6ea4f8871869c3530d7a894279d6ae931333096d7a0a5524d151",
+  "baselineThrough": "20260829130000_restrict_vk_parsing_to_publisher",
+  "baselineNamesSha256": "26f7f1564aeeb275628b9e8460c110beb39fc4d25ceed8efd2f1ab45a6a6ae9f",
+  "baselineContentsSha256": "c0c37befe02bcec60901c7849f5bdb8700dbf073c5e829cbed54b519f027b370",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -71,6 +71,11 @@
       "reason": "Manual review approved one static delivery-route immutability trigger. The policy parser treats CREATE TRIGGER EXECUTE FUNCTION as dynamic and destructive, but this additive migration contains no dynamic EXECUTE and drops no schema object or column.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "The migration adds one nullable JSONB column to an existing delivery table, validates existing LEGACY_ROUTED rows through a lower-lock NOT VALID plus VALIDATE sequence, and requires a bounded main-signed context only for future PUBLIK_V1 deliveries. Old runtime cannot create PUBLIK_V1 routes, and publisher dispatch remains disabled until every API role runs the compatible client."
+    },
+    "20260829130000_restrict_vk_parsing_to_publisher": {
+      "reason": "Delete retired Major-owned VK settings, sources, and posts, including cross-owner child posts attached to a Major source, then make every persisted VK owner scope Publisher-only with an explicit nonblank bot id.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Compatible runtime release a5ef2537ebb96bde30ce30a5c33586d41248d8ca was deployed and verified on every production API role before this migration; it no longer creates, recovers, schedules, or publishes Major-owned VK parsing work and supplies explicit Publisher ownership on every surviving write."
     }
   },
   "nonConcurrentIndexExceptions": {

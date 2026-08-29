@@ -145,17 +145,6 @@ function createFixture() {
   const accessService = {
     resolvePublicationEntityType: jest.fn().mockResolvedValue(ChatEntityType.CHANNEL),
   };
-  const adminService = {
-    buildChannelPublicationEngagementContext: jest.fn().mockResolvedValue({
-      buttons: [],
-      threadId: null,
-      includeCommentsButton: false,
-      includeSuggestButton: false,
-      suggestButtonText: null,
-      suggestionEntryMode: 'BOT',
-    }),
-    recordChannelPublicationEngagement: jest.fn(),
-  };
   const maxClient = {
     deleteMessage: jest.fn().mockResolvedValue(undefined),
     sendMessageImmediateWithResolvedLink: jest.fn(),
@@ -163,10 +152,6 @@ function createFixture() {
       entityType: 'channel',
       link: 'https://max.ru/channel/publisher-owned',
     }),
-  };
-  const maxBotLinkService = {
-    resolveBotIdForSend: jest.fn().mockResolvedValue('main-dialog-bot'),
-    resolveBotIdForModerationAction: jest.fn().mockResolvedValue('main-fallback-bot'),
   };
   const feedService = {
     mapPost: jest.fn((value: any) => ({
@@ -190,7 +175,6 @@ function createFixture() {
       updatedAt: value.updatedAt.toISOString(),
     })),
   };
-  const legacyQueue = { add: jest.fn(), getJob: jest.fn().mockResolvedValue(null) };
   const publisherQueue = {
     add: jest.fn().mockResolvedValue(undefined),
     getJob: jest.fn().mockResolvedValue(null),
@@ -218,14 +202,6 @@ function createFixture() {
     }),
   };
   const maxRoutedPublicationService = { publish: jest.fn() };
-  const channelPostSignatureService = {
-    preparePostText: jest.fn().mockResolvedValue({
-      text: 'Major signature',
-      textFormat: 'html',
-      engagementText: 'Major signature',
-      signatureApplied: true,
-    }),
-  };
   const configService = {
     get: jest.fn((key: string) => {
       if (key === 'MAX_PUBLISHER_BOT_ID') return 'publisher-bot';
@@ -239,17 +215,13 @@ function createFixture() {
   const service = new VkPublishService(
     prisma as never,
     accessService as never,
-    adminService as never,
     maxClient as never,
-    maxBotLinkService as never,
     {} as never,
     feedService as never,
     configService,
     ownership,
     undefined,
-    undefined,
     maxRoutedPublicationService as never,
-    channelPostSignatureService as never,
     publisherQueue as never,
     readiness as never,
     runtimeBoundary as never,
@@ -260,21 +232,30 @@ function createFixture() {
     service,
     prisma,
     accessService,
-    adminService,
     maxClient,
-    maxBotLinkService,
-    legacyQueue,
     publisherQueue,
     readiness,
     runtimeBoundary,
     health,
+    ownership,
     publisherDialogContextService,
     maxRoutedPublicationService,
-    channelPostSignatureService,
   };
 }
 
 describe('VK Publik routing', () => {
+  it.each([
+    [VkParsingOwnerProfile.MAJOR, '', 'Major scope'],
+    [VkParsingOwnerProfile.PUBLISHER, '', 'blank Publisher bot'],
+    [VkParsingOwnerProfile.PUBLISHER, '   ', 'whitespace Publisher bot'],
+  ])('fails closed when reading %s/%s (%s)', (ownerProfile, ownerBotId, _label) => {
+    const fixture = createFixture();
+
+    expect(() => fixture.ownership.fromRow({ ownerProfile, ownerBotId })).toThrow(
+      'Publisher-owned VK scope is required',
+    );
+  });
+
   it('does not scan any VK recovery work while Publisher dispatch is paused', async () => {
     const fixture = createFixture();
     fixture.health.isGloballyPaused.mockResolvedValue(true);
@@ -282,7 +263,6 @@ describe('VK Publik routing', () => {
     await expect(fixture.service.recoverStalePublishJobs()).resolves.toBe(0);
 
     expect(fixture.prisma.vkParsingPost.findMany).not.toHaveBeenCalled();
-    expect(fixture.legacyQueue.add).not.toHaveBeenCalled();
     expect(fixture.publisherQueue.add).not.toHaveBeenCalled();
   });
 
@@ -308,7 +288,6 @@ describe('VK Publik routing', () => {
         ]),
       );
     }
-    expect(fixture.legacyQueue.add).not.toHaveBeenCalled();
   });
 
   it('queues a new manual intent with one immutable Publisher-owned bot route', async () => {
@@ -370,7 +349,6 @@ describe('VK Publik routing', () => {
       }),
       expect.any(Object),
     );
-    expect(fixture.legacyQueue.add).not.toHaveBeenCalled();
     expect(fixture.maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(fixture.publisherDialogContextService.prepare).toHaveBeenCalledWith({
       chatId: 'channel-1',
@@ -378,7 +356,6 @@ describe('VK Publik routing', () => {
       dialogBotId: 'publisher-bot',
       customButtons: [],
     });
-    expect(fixture.maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
   });
 
   it('resolves Publisher channel links only from the exact Publisher catalog or token', async () => {
@@ -400,8 +377,41 @@ describe('VK Publik routing', () => {
         }),
       }),
     );
-    expect(fixture.maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
     expect(fixture.maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('uses only the exact Publisher token when the Publisher catalog has no channel link', async () => {
+    const fixture = createFixture();
+
+    await expect(
+      (fixture.service as any).resolveChannelLink('channel-1', 'interactive', 'publisher-bot'),
+    ).resolves.toBe('https://max.ru/channel/publisher-owned');
+
+    expect(fixture.maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      botId: 'publisher-bot',
+      trafficClass: 'interactive',
+      sourceTag: 'vk_parsing',
+    });
+  });
+
+  it('rejects a moderation bot before routed VK publication can execute', async () => {
+    const fixture = createFixture();
+
+    await expect(
+      (fixture.service as any).sendMessageWithAttachmentRetry({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        logicalIdempotencyKey: 'vk-parsing:publish:post-1:moderation-route',
+        text: 'VK post',
+        baseOptions: {},
+        trafficClass: 'background',
+        videoAttachment: false,
+        publisherExactBotId: 'moderation-bot',
+        prepareAttempt: jest.fn(),
+      }),
+    ).rejects.toThrow('requires the exact Publisher bot');
+
+    expect(fixture.maxRoutedPublicationService.publish).not.toHaveBeenCalled();
   });
 
   it('keeps an already-persisted Publisher intent with its old distinct dialog route executable', async () => {
@@ -453,15 +463,14 @@ describe('VK Publik routing', () => {
         reason: 'manual-schedule',
         idempotencyKey: 'legacy-intent',
         dispatchProfile: 'LEGACY_ROUTED',
-      }),
-    ).rejects.toThrow('Legacy VK publish execution is disabled');
+      } as never),
+    ).rejects.toThrow('requires an exact Publisher route');
 
     expect(fixture.prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
     expect(fixture.prisma.vkParsingPost.findFirst).not.toHaveBeenCalled();
     expect(fixture.maxRoutedPublicationService.publish).not.toHaveBeenCalled();
     expect(fixture.readiness.assertEntityReady).not.toHaveBeenCalled();
     expect(fixture.runtimeBoundary.assertDispatchEnabled).not.toHaveBeenCalled();
-    expect(fixture.channelPostSignatureService.preparePostText).not.toHaveBeenCalled();
   });
 
   it('sends a publisher job and its dialog only through the exact Publisher bot', async () => {
@@ -506,8 +515,6 @@ describe('VK Publik routing', () => {
     expect(fixture.maxRoutedPublicationService.publish).toHaveBeenCalledWith(
       expect.objectContaining({ publisherExactBotId: 'publisher-bot' }),
     );
-    expect(fixture.adminService.buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
-    expect(fixture.channelPostSignatureService.preparePostText).not.toHaveBeenCalled();
     expect(preparedOptions).toEqual(
       expect.objectContaining({
         buttons: expect.arrayContaining([
@@ -784,7 +791,6 @@ describe('VK Publik routing', () => {
       expect.any(Object),
     );
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(fixture.maxBotLinkService.resolveBotIdForModerationAction).not.toHaveBeenCalled();
   });
 
   it('reports a conflicting active publisher rollback owner without replacing it', async () => {

@@ -33,10 +33,13 @@ export type VkParsingSyncJob = QueueJobEnvelope<
   }
 >;
 
-export type VkParsingPublishJob = QueueJobEnvelope<
+export type VkParsingPublisherPublishJob = QueueJobEnvelope<
   {
+    kind: 'publish';
     postId: string;
     chatId: string;
+    requiredBotId: string;
+    dispatchProfile: 'PUBLIK_V1';
     reason: VkParsingPublishReason;
   },
   {
@@ -46,15 +49,13 @@ export type VkParsingPublishJob = QueueJobEnvelope<
   }
 >;
 
-export type VkParsingPublisherJob = QueueJobEnvelope<
+export type VkParsingPublisherRollbackJob = QueueJobEnvelope<
   {
-    kind: 'publish' | 'rollback-delete';
+    kind: 'rollback-delete';
     postId: string;
     chatId: string;
     requiredBotId: string;
-    dispatchProfile?: 'PUBLIK_V1';
-    reason?: VkParsingPublishReason;
-    messageId?: string;
+    messageId: string;
   },
   {
     idempotencyKey: string;
@@ -63,14 +64,4 @@ export type VkParsingPublisherJob = QueueJobEnvelope<
   }
 >;
 
-export type VkParsingPublisherPublishJob = VkParsingPublisherJob & {
-  kind: 'publish';
-  dispatchProfile: 'PUBLIK_V1';
-  reason: VkParsingPublishReason;
-  requiredBotId: string;
-};
-
-export type VkParsingPublisherRollbackJob = VkParsingPublisherJob & {
-  kind: 'rollback-delete';
-  messageId: string;
-};
+export type VkParsingPublisherJob = VkParsingPublisherPublishJob | VkParsingPublisherRollbackJob;

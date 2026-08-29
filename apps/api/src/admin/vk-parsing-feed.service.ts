@@ -11,16 +11,13 @@ import {
 } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, VkParsingOwnerProfile } from '../prisma/prisma-client';
+import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveEffectiveVkParsingTextFormat } from './vk-parsing-content';
 import { VK_MEDIA_STATUS_FAILED } from './vk-parsing-media-cache.service';
 import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 import type { VkParsingUnsupportedAttachmentSummary } from './vk-parsing-attachments';
-import {
-  MAJOR_VK_OWNER_SCOPE,
-  type VkParsingOwnerScope,
-} from './vk-parsing-ownership.service';
+import type { VkParsingOwnerScope } from './vk-parsing-ownership.service';
 
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
 type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }>;
@@ -89,14 +86,9 @@ export class VkParsingFeedService {
 
   async buildFeed(
     chatId: string,
-    capabilities: VkParsingCapability = {
-      enabled: false,
-      canUse: false,
-      reasonCode: null,
-      reason: null,
-    },
-    rawQuery: unknown = {},
-    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+    capabilities: VkParsingCapability,
+    rawQuery: unknown,
+    ownerScope: VkParsingOwnerScope,
   ): Promise<VkParsingFeed> {
     const parsedQuery = vkParsingFeedQuerySchema.safeParse(rawQuery);
     const query: VkParsingFeedQuery = parsedQuery.success
@@ -158,24 +150,20 @@ export class VkParsingFeedService {
           where: {
             chatId,
             action: { startsWith: 'VK_PARSING_' },
-            ...(ownerScope.ownerProfile === VkParsingOwnerProfile.PUBLISHER
-              ? {
-                  AND: [
-                    {
-                      payload: {
-                        path: ['ownerProfile'],
-                        equals: ownerScope.ownerProfile,
-                      },
-                    },
-                    {
-                      payload: {
-                        path: ['ownerBotId'],
-                        equals: ownerScope.ownerBotId,
-                      },
-                    },
-                  ],
-                }
-              : {}),
+            AND: [
+              {
+                payload: {
+                  path: ['ownerProfile'],
+                  equals: ownerScope.ownerProfile,
+                },
+              },
+              {
+                payload: {
+                  path: ['ownerBotId'],
+                  equals: ownerScope.ownerBotId,
+                },
+              },
+            ],
           },
           orderBy: [{ createdAt: 'desc' }],
           take: 12,
@@ -204,7 +192,7 @@ export class VkParsingFeedService {
 
   async buildHealthSummary(
     chatId: string,
-    ownerScope: VkParsingOwnerScope = MAJOR_VK_OWNER_SCOPE,
+    ownerScope: VkParsingOwnerScope,
   ): Promise<VkParsingHealthSummary> {
     const now = new Date();
     const staleBefore = new Date(now.getTime() - this.maxSyncIntervalMs * 2);

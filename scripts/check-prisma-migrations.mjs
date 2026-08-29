@@ -269,6 +269,7 @@ function hasUnisolatedConcurrentDropIndex(tokens) {
 function analyzeTokenStream(tokens) {
   const result = {
     destructive: false,
+    deletesRows: false,
     dropsColumn: false,
     dynamicSql: false,
     nonConcurrentIndex: false,
@@ -285,6 +286,10 @@ function analyzeTokenStream(tokens) {
       const token = statement[index];
       if (isWord(token, 'TRUNCATE')) {
         result.destructive = true;
+      }
+      if (isWord(token, 'DELETE') && isWord(statement[index + 1], 'FROM')) {
+        result.destructive = true;
+        result.deletesRows = true;
       }
       if (
         isWord(token, 'DROP') &&
@@ -384,6 +389,7 @@ function mergeSqlAnalysis(target, source) {
 export function analyzePrismaMigrationSql(sql) {
   const result = {
     destructive: false,
+    deletesRows: false,
     dropsColumn: false,
     dynamicSql: false,
     nonConcurrentIndex: false,
@@ -484,10 +490,13 @@ export function findPrismaMigrationViolations(
         violations.push(`${name} contains destructive SQL without an approved policy record.`);
       }
       if (
-        analysis.dropsColumn &&
+        (analysis.dropsColumn || analysis.deletesRows) &&
         (!approval?.twoPhaseRelease || !approval?.runtimeCompatibilityEvidence?.trim())
       ) {
-        violations.push(`${name} drops a column without two-phase release compatibility evidence.`);
+        const destructiveAction = analysis.dropsColumn ? 'drops a column' : 'deletes rows';
+        violations.push(
+          `${name} ${destructiveAction} without two-phase release compatibility evidence.`,
+        );
       }
     }
     if (analysis.dynamicSql && !approval?.reason?.trim()) {

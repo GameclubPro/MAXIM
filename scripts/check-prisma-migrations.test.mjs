@@ -54,7 +54,7 @@ function fixture() {
   };
 }
 
-function writePolicy(root, names, policyRulesAfter) {
+function writePolicy(root, names, policyRulesAfter, approvedDestructive = {}) {
   write(
     root,
     'config/prisma-migration-policy.json',
@@ -64,7 +64,7 @@ function writePolicy(root, names, policyRulesAfter) {
       baselineThrough: names.at(-1),
       baselineNamesSha256: digest(names),
       baselineContentsSha256: digestContents(root, names),
-      approvedDestructive: {},
+      approvedDestructive,
       nonConcurrentIndexExceptions: {},
     }),
   );
@@ -156,6 +156,48 @@ test('requires two-phase evidence for a new column drop', () => {
   const messages = findPrismaMigrationViolations(root, immutablePolicyPrefix).join('\n');
   assert.match(messages, /without an approved policy record/u);
   assert.match(messages, /without two-phase release compatibility evidence/u);
+});
+
+test('requires two-phase evidence for a row deletion', () => {
+  const { root, immutablePolicyPrefix } = fixture();
+  const migration = `${futureMigrationPrefix}_delete_retired_rows`;
+  write(
+    root,
+    `apps/api/prisma/migrations/${migration}/migration.sql`,
+    `DELETE FROM "Example" WHERE "owner" = 'RETIRED';\n`,
+  );
+
+  const unapprovedMessages = findPrismaMigrationViolations(root, immutablePolicyPrefix).join('\n');
+  assert.match(unapprovedMessages, /contains destructive SQL without an approved policy record/u);
+
+  writePolicy(
+    root,
+    [immutablePolicyPrefix.rulesAfter, migration],
+    immutablePolicyPrefix.rulesAfter,
+    {
+      [migration]: { reason: 'Remove retired rows after the compatible runtime release.' },
+    },
+  );
+  const reasonOnlyMessages = findPrismaMigrationViolations(root, immutablePolicyPrefix).join('\n');
+  assert.doesNotMatch(reasonOnlyMessages, /without an approved policy record/u);
+  assert.match(
+    reasonOnlyMessages,
+    /deletes rows without two-phase release compatibility evidence/u,
+  );
+
+  writePolicy(
+    root,
+    [immutablePolicyPrefix.rulesAfter, migration],
+    immutablePolicyPrefix.rulesAfter,
+    {
+      [migration]: {
+        reason: 'Remove retired rows after the compatible runtime release.',
+        twoPhaseRelease: true,
+        runtimeCompatibilityEvidence: 'Compatible runtime release was deployed first.',
+      },
+    },
+  );
+  assert.deepEqual(findPrismaMigrationViolations(root, immutablePolicyPrefix), []);
 });
 
 test('recognizes optional COLUMN and TABLE keywords in PostgreSQL destructive grammar', () => {

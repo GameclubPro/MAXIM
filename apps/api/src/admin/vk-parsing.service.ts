@@ -21,7 +21,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import { VkParsingOwnershipService } from './vk-parsing-ownership.service';
-import { type VkParsingPublishReason, type VkParsingSyncReason } from './vk-parsing.queue';
+import type { VkParsingSyncReason } from './vk-parsing.queue';
 import { VkPublishService } from './vk-publish.service';
 import { VkSourceService } from './vk-source.service';
 import { VkSyncService } from './vk-sync.service';
@@ -469,28 +469,15 @@ export class VkParsingService {
     return this.syncService.processSyncSourceJob(sourceId, reason);
   }
 
-  async processPublishPostJob(params: {
-    postId: string;
-    chatId: string;
-    reason: VkParsingPublishReason;
-    idempotencyKey: string;
-    dispatchProfile?: 'LEGACY_ROUTED' | 'PUBLIK_V1';
-    requiredBotId?: string;
-    attemptsMade?: number;
-    maxAttempts?: number;
-  }): Promise<void> {
+  async processPublishPostJob(
+    params: Parameters<VkPublishService['processPublishPostJob']>[0],
+  ): Promise<void> {
     return this.publishService.processPublishPostJob(params);
   }
 
-  async processPublisherRollbackJob(params: {
-    postId: string;
-    chatId: string;
-    messageId: string;
-    requiredBotId: string;
-    idempotencyKey: string;
-    attemptsMade?: number;
-    maxAttempts?: number;
-  }): Promise<void> {
+  async processPublisherRollbackJob(
+    params: Parameters<VkPublishService['processPublisherRollbackJob']>[0],
+  ): Promise<void> {
     return this.publishService.processPublisherRollbackJob(params);
   }
 

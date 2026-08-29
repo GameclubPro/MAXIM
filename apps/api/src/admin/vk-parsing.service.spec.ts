@@ -31,6 +31,18 @@ type MockFetchResponse = {
   arrayBuffer?: () => Promise<ArrayBuffer>;
 };
 
+type VkParsingServiceTestHarness = Omit<VkParsingService, 'processPublishPostJob'> & {
+  processPublishPostJob(
+    params: Omit<
+      Parameters<VkParsingService['processPublishPostJob']>[0],
+      'dispatchProfile' | 'requiredBotId'
+    > & {
+      dispatchProfile?: 'PUBLIK_V1';
+      requiredBotId?: string;
+    },
+  ): Promise<void>;
+};
+
 function createConfig(values: Record<string, unknown> = {}) {
   return {
     get: jest.fn((key: string) => values[key]),
@@ -240,11 +252,6 @@ describe('VkParsingService', () => {
       sendMessageImmediateWithResolvedLink: jest.fn(),
       getChatSnapshot: jest.fn(),
     };
-    const maxBotLinkService = {
-      resolveBotId: jest.fn().mockResolvedValue('bot-1'),
-      resolveBotIdForSend: jest.fn().mockResolvedValue('bot-1'),
-      resolveBotIdForModerationAction: jest.fn().mockResolvedValue('bot-1'),
-    };
     const vkRateLimitService = {
       reserveVkApiSlot: jest.fn().mockResolvedValue(undefined),
       recordVkApiOutcome: jest.fn().mockResolvedValue(undefined),
@@ -261,9 +268,6 @@ describe('VkParsingService', () => {
     const publishQueue = {
       add: jest.fn().mockResolvedValue(undefined),
       getJob: jest.fn().mockResolvedValue(null),
-    };
-    const managedEntityAccessLossService = {
-      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
     };
     const configService = createConfig({
       MAX_PUBLISHER_BOT_ID: 'publisher-bot',
@@ -369,17 +373,13 @@ describe('VkParsingService', () => {
     const publishService = new VkPublishService(
       prisma as never,
       accessService,
-      adminService as never,
       maxClient as never,
-      maxBotLinkService as never,
       mediaCache,
       feedService,
       configService as never,
       ownership,
       undefined,
-      managedEntityAccessLossService as never,
       maxRoutedPublicationService as never,
-      undefined,
       publishQueue as never,
       publisherReadiness as never,
       publisherRuntimeBoundary as never,
@@ -414,15 +414,13 @@ describe('VkParsingService', () => {
       } as never);
 
     return {
-      service,
+      service: service as VkParsingServiceTestHarness,
       prisma,
       adminService,
       maxClient,
-      maxBotLinkService,
       vkRateLimitService,
       syncQueue,
       publishQueue,
-      managedEntityAccessLossService,
       mediaCache,
       postImportRepository,
       accessService,
@@ -1104,7 +1102,7 @@ describe('VkParsingService', () => {
   });
 
   it('enables the Publisher VK channel link only from the exact Publisher catalog', async () => {
-    const { service, prisma, maxClient, maxBotLinkService } = createFixture({
+    const { service, prisma, maxClient } = createFixture({
       MAX_PUBLISHER_BOT_ID: 'publisher-bot',
     });
     prisma.managedBotChatCatalog.findFirst.mockResolvedValue({
@@ -1141,7 +1139,6 @@ describe('VkParsingService', () => {
         where: expect.objectContaining({ botId: 'publisher-bot' }),
       }),
     );
-    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
   });
 
@@ -4085,11 +4082,11 @@ describe('VkParsingService', () => {
           text: 'VK publication',
           baseOptions: {},
           trafficClass: 'background',
+          videoAttachment: false,
+          publisherExactBotId: 'publisher-bot',
           prepareAttempt: jest.fn(),
         }),
-      ).rejects.toThrow(
-        'Routed MAX publication service is required for Publik VK publications',
-      );
+      ).rejects.toThrow('Routed MAX publication service is required for Publik VK publications');
       expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
@@ -4107,8 +4104,8 @@ describe('VkParsingService', () => {
       .mockRejectedValueOnce(notReady)
       .mockResolvedValue({
         messageId: 'mid-video-ready',
-        botId: 'bot-1',
-        candidateBotIds: ['bot-1'],
+        botId: 'publisher-bot',
+        candidateBotIds: ['publisher-bot'],
         routingVersion: 1,
       });
     const { publishService } = createFixture({}, { maxRoutedPublicationService: { publish } });
@@ -4123,6 +4120,7 @@ describe('VkParsingService', () => {
         baseOptions: {},
         trafficClass: 'background',
         videoAttachment: true,
+        publisherExactBotId: 'publisher-bot',
         prepareAttempt: jest.fn(),
       }),
     ).resolves.toEqual(expect.objectContaining({ messageId: 'mid-video-ready' }));
@@ -4150,6 +4148,7 @@ describe('VkParsingService', () => {
         baseOptions: {},
         trafficClass: 'background',
         videoAttachment: true,
+        publisherExactBotId: 'publisher-bot',
         prepareAttempt: jest.fn(),
       }),
     ).rejects.toBe(timeout);
@@ -4182,17 +4181,10 @@ describe('VkParsingService', () => {
     ).toBeNull();
   });
 
-  it('keeps Publisher access loss out of generic Major runtime cleanup', async () => {
+  it('handles Publisher access loss only through Publisher dispatch health', async () => {
     const maxSendAttemptStartedAt = new Date('2026-08-20T12:00:00.123Z');
     jest.useFakeTimers().setSystemTime(maxSendAttemptStartedAt);
-    const {
-      service,
-      prisma,
-      maxClient,
-      publishQueue,
-      managedEntityAccessLossService,
-      publisherDispatchHealth,
-    } = createFixture();
+    const { service, prisma, maxClient, publishQueue, publisherDispatchHealth } = createFixture();
     const source = createSource();
     const post = createPostRow({
       source,
@@ -4213,31 +4205,6 @@ describe('VkParsingService', () => {
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
     });
-    managedEntityAccessLossService.recordIfManagedEntityAccessLost.mockResolvedValue({
-      classification: {
-        kind: 'managed_entity_access_lost',
-        reason: 'bot_denied',
-        statusCode: 403,
-        code: 'chat.denied',
-        message: 'request failed with status code 403',
-      },
-      reason: 'bot_denied',
-      recorded: {
-        chatId: 'channel-1',
-        botId: 'bot-1',
-        nextOwnerBotId: null,
-        updatedAccessEdges: 1,
-        cleanup: {
-          nightModeJobsCleared: false,
-          canceledBroadcasts: 0,
-          canceledBroadcastDeliveries: 0,
-          canceledBroadcastOccurrences: 0,
-          clearedVkPublishPosts: 1,
-          pausedVkSources: 1,
-          removedRosterSyncJobs: 0,
-        },
-      },
-    });
     maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(error);
 
     await expect(
@@ -4249,7 +4216,6 @@ describe('VkParsingService', () => {
       }),
     ).rejects.toBe(error);
 
-    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
     expect(publisherDispatchHealth.recordSendFailure).toHaveBeenCalledWith(
       'channel-1',
       error,
@@ -4997,13 +4963,16 @@ describe('VkParsingService', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
     try {
       const publish = jest.fn().mockImplementation(async (request: any) => {
-        const prepared = await request.prepareAttempt({ botId: 'bot-1', job: {} });
-        request.onDispatchAttempt({ botId: 'bot-1', job: { options: prepared.options } });
+        const prepared = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+        request.onDispatchAttempt({
+          botId: 'publisher-bot',
+          job: { options: prepared.options },
+        });
         return {
           messageId: 'mid-manual-schedule',
           url: 'https://max.ru/channels/channel-1/message/mid-manual-schedule',
-          botId: 'bot-1',
-          candidateBotIds: ['bot-1'],
+          botId: 'publisher-bot',
+          candidateBotIds: ['publisher-bot'],
           routingVersion: 1,
         };
       });
@@ -6926,7 +6895,7 @@ describe('VkParsingService', () => {
   });
 
   it('queues an edited VK post with selected photos and links for Publisher', async () => {
-    const { service, prisma, maxClient, maxBotLinkService, publishQueue } = createFixture();
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const post = {
       id: 'post-1',
       sourceId: 'source-1',
@@ -6998,7 +6967,6 @@ describe('VkParsingService', () => {
       },
     );
 
-    expect(maxBotLinkService.resolveBotIdForSend).not.toHaveBeenCalled();
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(publishQueue.add).toHaveBeenCalledWith(
@@ -7321,7 +7289,6 @@ describe('VkParsingService', () => {
       { text: exactText, textFormat: 'plain', photoUrls: [], videoUrls: [], linkUrls: [] },
       { appendChannelLinkEnabled: true, channelLinkText: 'Наш канал' },
       'background',
-      PublicationDispatchProfile.PUBLIK_V1,
       'publisher-bot',
     );
 
@@ -7333,7 +7300,6 @@ describe('VkParsingService', () => {
         { text: `${exactText}x`, textFormat: 'plain', photoUrls: [], videoUrls: [], linkUrls: [] },
         { appendChannelLinkEnabled: true, channelLinkText: 'Наш канал' },
         'background',
-        PublicationDispatchProfile.PUBLIK_V1,
         'publisher-bot',
       ),
     ).rejects.toThrow('Текст вместе со ссылкой слишком длинный');
@@ -7350,15 +7316,12 @@ describe('VkParsingService', () => {
         { text: '**Важное**', textFormat: 'markdown', photoUrls: [], videoUrls: [], linkUrls: [] },
         { appendChannelLinkEnabled: true, channelLinkText: 'Наш канал' },
         'background',
-        PublicationDispatchProfile.PUBLIK_V1,
         'publisher-bot',
       ),
-    ).resolves.toMatchObject(
-      {
-        text: '<strong>Важное</strong>\n\n<a href="https://max.ru/our-channel">Наш канал</a>',
-        textFormat: 'html',
-      },
-    );
+    ).resolves.toMatchObject({
+      text: '<strong>Важное</strong>\n\n<a href="https://max.ru/our-channel">Наш канал</a>',
+      textFormat: 'html',
+    });
   });
 
   it('renders selected URLs after markdown without interpreting URL punctuation', async () => {
@@ -7377,15 +7340,12 @@ describe('VkParsingService', () => {
         },
         { appendChannelLinkEnabled: false, channelLinkText: '' },
         'background',
-        PublicationDispatchProfile.PUBLIK_V1,
         'publisher-bot',
       ),
-    ).resolves.toMatchObject(
-      {
-        text: `<strong>Смотрите</strong>\n<a href="${selectedUrl}">${selectedUrl}</a>`,
-        textFormat: 'html',
-      },
-    );
+    ).resolves.toMatchObject({
+      text: `<strong>Смотрите</strong>\n<a href="${selectedUrl}">${selectedUrl}</a>`,
+      textFormat: 'html',
+    });
   });
 
   it('does not append a selected URL already present as Markdown-escaped text', async () => {
@@ -7404,12 +7364,9 @@ describe('VkParsingService', () => {
         },
         { appendChannelLinkEnabled: false, channelLinkText: '' },
         'background',
-        PublicationDispatchProfile.PUBLIK_V1,
         'publisher-bot',
       ),
-    ).resolves.toMatchObject(
-      { text: 'Смотрите https://example.com/a_b', textFormat: 'html' },
-    );
+    ).resolves.toMatchObject({ text: 'Смотрите https://example.com/a_b', textFormat: 'html' });
   });
 
   it('queues chat VK posts through Publisher without Major engagement buttons', async () => {
@@ -7799,13 +7756,16 @@ describe('VkParsingService', () => {
 
   it('recovers an armed review-mode manual send through its original ledger key', async () => {
     const publish = jest.fn().mockImplementation(async (request: any) => {
-      const prepared = await request.prepareAttempt({ botId: 'bot-1', job: {} });
-      request.onDispatchAttempt({ botId: 'bot-1', job: { options: prepared.options } });
+      const prepared = await request.prepareAttempt({ botId: 'publisher-bot', job: {} });
+      request.onDispatchAttempt({
+        botId: 'publisher-bot',
+        job: { options: prepared.options },
+      });
       return {
         messageId: 'mid-review-recovery',
         url: 'https://max.ru/channels/channel-1/message/mid-review-recovery',
-        botId: 'bot-1',
-        candidateBotIds: ['bot-1'],
+        botId: 'publisher-bot',
+        candidateBotIds: ['publisher-bot'],
         routingVersion: 1,
       };
     });

@@ -4,14 +4,14 @@ import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descript
 import { VkParsingOwnerProfile } from '../prisma/prisma-client';
 
 export type VkParsingOwnerScope = Readonly<{
-  ownerProfile: VkParsingOwnerProfile;
+  ownerProfile: typeof VkParsingOwnerProfile.PUBLISHER;
   ownerBotId: string;
 }>;
 
-export const MAJOR_VK_OWNER_SCOPE: VkParsingOwnerScope = Object.freeze({
-  ownerProfile: VkParsingOwnerProfile.MAJOR,
-  ownerBotId: '',
-});
+type VkParsingOwnerRow = Readonly<{
+  ownerProfile: VkParsingOwnerProfile;
+  ownerBotId: string;
+}>;
 
 @Injectable()
 export class VkParsingOwnershipService {
@@ -31,19 +31,18 @@ export class VkParsingOwnershipService {
     return this.publisherScope;
   }
 
-  fromRow(row: Pick<VkParsingOwnerScope, 'ownerProfile' | 'ownerBotId'>): VkParsingOwnerScope {
-    return row.ownerProfile === VkParsingOwnerProfile.PUBLISHER
-      ? Object.freeze({
-          ownerProfile: VkParsingOwnerProfile.PUBLISHER,
-          ownerBotId: row.ownerBotId.trim(),
-        })
-      : MAJOR_VK_OWNER_SCOPE;
+  fromRow(row: VkParsingOwnerRow): VkParsingOwnerScope {
+    const ownerBotId = row.ownerBotId.trim();
+    if (row.ownerProfile !== VkParsingOwnerProfile.PUBLISHER || !ownerBotId) {
+      throw new Error('Publisher-owned VK scope is required');
+    }
+    return Object.freeze({
+      ownerProfile: VkParsingOwnerProfile.PUBLISHER,
+      ownerBotId,
+    });
   }
 
-  isExactScope(
-    row: Pick<VkParsingOwnerScope, 'ownerProfile' | 'ownerBotId'>,
-    scope: VkParsingOwnerScope,
-  ): boolean {
+  isExactScope(row: VkParsingOwnerRow, scope: VkParsingOwnerScope): boolean {
     return row.ownerProfile === scope.ownerProfile && row.ownerBotId === scope.ownerBotId;
   }
 }

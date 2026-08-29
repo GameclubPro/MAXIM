@@ -1020,4 +1020,62 @@ describe('Prisma migrations', () => {
       'DROP INDEX CONCURRENTLY IF EXISTS "vk_parsing_posts_chat_vk_post_key";',
     );
   });
+
+  it('deletes Major VK data and restricts every owner scope to Publisher', () => {
+    const migration = readMigration('20260829130000_restrict_vk_parsing_to_publisher');
+    const compact = migration.replace(/\s+/g, ' ').trim();
+    const schema = readSchema();
+
+    expect(compact).toContain(
+      `DELETE FROM "vk_parsing_posts" AS posts WHERE posts."owner_profile" = 'MAJOR'::"VkParsingOwnerProfile"`,
+    );
+    expect(compact).toContain(
+      `DELETE FROM "vk_parsing_posts" AS posts USING "vk_parsing_sources" AS sources WHERE posts."source_id" = sources."id" AND sources."owner_profile" = 'MAJOR'::"VkParsingOwnerProfile"`,
+    );
+    expect(compact).toContain(
+      `DELETE FROM "vk_parsing_sources" WHERE "owner_profile" = 'MAJOR'::"VkParsingOwnerProfile"`,
+    );
+    expect(compact).toContain(
+      `DELETE FROM "vk_parsing_settings" WHERE "owner_profile" = 'MAJOR'::"VkParsingOwnerProfile"`,
+    );
+    const firstDeleteIndex = compact.indexOf('DELETE FROM "vk_parsing_posts"');
+    const lastDeleteIndex = compact.indexOf('DELETE FROM "vk_parsing_settings"');
+
+    for (const [model, table] of [
+      ['VkParsingSettings', 'vk_parsing_settings'],
+      ['VkParsingSource', 'vk_parsing_sources'],
+      ['VkParsingPost', 'vk_parsing_posts'],
+    ]) {
+      const modelBody = new RegExp(`model ${model} \\{([\\s\\S]*?)\\n\\}`, 'u').exec(schema)?.[1];
+      expect(modelBody).toBeDefined();
+      expect(modelBody).toMatch(/ownerProfile\s+VkParsingOwnerProfile\s+@map\("owner_profile"\)/u);
+      expect(modelBody).toMatch(/ownerBotId\s+String\s+@map\("owner_bot_id"\)/u);
+      expect(modelBody).not.toMatch(/owner(?:Profile|BotId)[^\n]*@default/u);
+
+      expect(compact).toContain(`DROP CONSTRAINT "${table}_owner_scope_check"`);
+      expect(compact).toContain('ALTER COLUMN "owner_profile" DROP DEFAULT');
+      expect(compact).toContain('ALTER COLUMN "owner_bot_id" DROP DEFAULT');
+      expect(compact).toContain(
+        `ADD CONSTRAINT "${table}_publisher_only_check" CHECK ( "owner_profile" = 'PUBLISHER'::"VkParsingOwnerProfile" AND BTRIM("owner_bot_id") <> '' ) NOT VALID`,
+      );
+      expect(compact).toContain(`VALIDATE CONSTRAINT "${table}_publisher_only_check"`);
+      expect(compact).toContain(
+        `RENAME CONSTRAINT "${table}_publisher_only_check" TO "${table}_owner_scope_check"`,
+      );
+
+      const addFenceIndex = compact.indexOf(`ADD CONSTRAINT "${table}_publisher_only_check"`);
+      const validateFenceIndex = compact.indexOf(
+        `VALIDATE CONSTRAINT "${table}_publisher_only_check"`,
+      );
+      const dropOldIndex = compact.indexOf(`DROP CONSTRAINT "${table}_owner_scope_check"`);
+      const renameFenceIndex = compact.indexOf(`RENAME CONSTRAINT "${table}_publisher_only_check"`);
+      expect(addFenceIndex).toBeLessThan(firstDeleteIndex);
+      expect(validateFenceIndex).toBeGreaterThan(lastDeleteIndex);
+      expect(dropOldIndex).toBeGreaterThan(validateFenceIndex);
+      expect(renameFenceIndex).toBeGreaterThan(dropOldIndex);
+    }
+
+    expect(migration.match(/NOT VALID/gu)).toHaveLength(3);
+    expect(migration.match(/VALIDATE CONSTRAINT/gu)).toHaveLength(3);
+  });
 });
