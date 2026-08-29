@@ -7,6 +7,29 @@ export type PublisherPostImportPresentation = {
   action: 'open-bot' | 'open-draft' | 'retry' | null;
 };
 
+export type PublisherPostImportDraftContext = {
+  sessionId: string | null;
+  omissions: PublisherPostImportSession['omissions'];
+};
+
+export function resolvePublisherPostImportDraftContext(
+  session: PublisherPostImportSession | null | undefined,
+  publicationId: string,
+): PublisherPostImportDraftContext {
+  if (session?.status !== 'ready' || session.publicationId !== publicationId) {
+    return { sessionId: null, omissions: [] };
+  }
+
+  return { sessionId: session.id, omissions: [...session.omissions] };
+}
+
+export function shouldOfferPublisherButtonRecovery(
+  omissions: PublisherPostImportSession['omissions'],
+  customButtonCount: number,
+): boolean {
+  return customButtonCount === 0 && omissions.includes('buttons_not_imported');
+}
+
 function describeImportFailure(code: PublisherPostImportSession['failureCode']): string {
   switch (code) {
     case 'invalid_forward':

@@ -7,7 +7,7 @@ import {
   type PublicationOccurrenceSummary,
   type PublicationSummary,
 } from '@maxim/contracts/publication';
-import type { MiniappProfile } from '@maxim/contracts/publisher';
+import type { MiniappProfile, PublisherPostImportOmission } from '@maxim/contracts/publisher';
 import {
   FilterList,
   NavArrowLeft,
@@ -20,7 +20,6 @@ import {
 } from 'iconoir-react';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { BroadcastButtonsSheet } from '../components/broadcast-buttons-sheet';
 import { BroadcastContentComposer } from '../components/broadcast-content-composer';
 import {
   BroadcastPublishBar,
@@ -54,6 +53,8 @@ import {
 } from '../features/publications/publication-page-options';
 import { PublicationFeedCard } from '../features/publications/publication-feed-card';
 import { PublicationCreateSheet } from '../features/publications/publication-create-sheet';
+import { PublicationButtonsSheet } from '../features/publications/publication-buttons-sheet';
+import { PublicationImportButtonsNotice } from '../features/publications/publication-import-buttons-notice';
 import { PublicationRetainedMedia } from '../features/publications/publication-retained-media';
 import { PublicationRecurrenceIntervalField } from '../features/publications/publication-recurrence-interval-field';
 import {
@@ -145,7 +146,6 @@ import {
   hasBroadcastLinkButtonErrors,
   trimBroadcastLinkButtons,
   validateBroadcastLinkButtons,
-  type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
 import { readBlobAsBase64 } from '../lib/broadcast-image';
 import { parseLocalDateTimeInputValue } from '../lib/broadcast-schedule';
@@ -314,7 +314,7 @@ export function PublicationsPage({
   );
   const [legacyFiltersOpen, setLegacyFiltersOpen] = useState(false);
   const [buttonsOpen, setButtonsOpen] = useState(false);
-  const [buttonErrors, setButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
+  const [importOmissions, setImportOmissions] = useState<PublisherPostImportOmission[]>([]);
   const [fieldError, setFieldError] = useState('');
   const [validationStarted, setValidationStarted] = useState(false);
   const [videoPreparing, setVideoPreparing] = useState(false);
@@ -686,18 +686,20 @@ export function PublicationsPage({
       publicationId,
       mode,
       sessionId,
+      omissions,
     }: {
       publicationId: string;
       mode: 'edit' | 'duplicate' | 'import';
       sessionId?: string | null;
+      omissions?: PublisherPostImportOmission[];
     }) =>
       getPublication(api, publicationId).then((details) => {
         if (mode === 'import' && details.lifecycle !== 'DRAFT') {
           throw new Error('Этот черновик уже опубликован');
         }
-        return { details, mode, sessionId: sessionId ?? null };
+        return { details, mode, sessionId: sessionId ?? null, omissions: omissions ?? [] };
       }),
-    onSuccess: ({ details, mode, sessionId }) => {
+    onSuccess: ({ details, mode, sessionId, omissions }) => {
       savedCreateDraftRef.current = draft;
       const sourceDraft = createPublicationDraftFromDetails(details);
       const isolatedDraft =
@@ -716,11 +718,7 @@ export function PublicationsPage({
               }
             : { kind: 'duplicate' },
       );
-      setButtonErrors(
-        validateBroadcastLinkButtons(
-          details.content.buttons.map(({ text, url }) => ({ text, url })),
-        ),
-      );
+      setImportOmissions(mode === 'import' ? omissions : []);
       setDetailsTarget(null);
       setPendingEditorClose(false);
       setFieldError('');
@@ -772,11 +770,6 @@ export function PublicationsPage({
               publicationId: details.id,
               expectedRevision: details.version,
             },
-      );
-      setButtonErrors(
-        validateBroadcastLinkButtons(
-          details.content.buttons.map(({ text, url }) => ({ text, url })),
-        ),
       );
       setRevisionConflictPublicationId(null);
       setFieldError('');
@@ -902,7 +895,7 @@ export function PublicationsPage({
     view === 'history' ? historyQuery : view === 'schedules' ? schedulesQuery : currentQuery;
   const visibleCustomButtons = draft.buttonEnabled ? trimBroadcastLinkButtons(draft.buttons) : [];
   const systemButtons = buildPublicationSystemButtons(draft.targets);
-  const visibleButtonCount = visibleCustomButtons.length + systemButtons.length;
+  const visibleCustomButtonCount = visibleCustomButtons.length;
   const videoNeedsReselection = publicationDraftNeedsVideoReselection(draft);
   const hasSelectedVideo =
     draft.mediaType === 'video' && Boolean(draft.mediaBase64 || draft.mediaPayload);
@@ -1050,6 +1043,7 @@ export function PublicationsPage({
     initialComposeRouteAppliedRef.current = true;
     if (searchParams.get('compose') === '1' && !postImport.hasImportRoute) {
       setEditorContext({ kind: 'create' });
+      setImportOmissions([]);
     }
   }, [hydrated, isPublisherProfile, postImport.hasImportRoute, searchParams]);
 
@@ -1323,14 +1317,18 @@ export function PublicationsPage({
     openPublicationMutation.mutate({ publicationId: publication.id, mode });
   }
 
-  function openImportedDraft(publicationId: string, sessionId: string | null = null) {
+  function openImportedDraft(
+    publicationId: string,
+    sessionId: string | null = null,
+    omissions: PublisherPostImportOmission[] = [],
+  ) {
     if (!isPublisherProfile || !hydrated || openPublicationMutation.isPending) {
       return;
     }
     if (!editorReturnFocusRef.current) {
       rememberEditorReturnFocus(publicationId);
     }
-    openPublicationMutation.mutate({ publicationId, mode: 'import', sessionId });
+    openPublicationMutation.mutate({ publicationId, mode: 'import', sessionId, omissions });
   }
 
   function requestCreateEditor() {
@@ -1358,7 +1356,7 @@ export function PublicationsPage({
     }
     postImport.hideCreateSheet();
     setEditorContext({ kind: 'create' });
-    setButtonErrors(validateBroadcastLinkButtons(draft.buttons));
+    setImportOmissions([]);
     setFieldError('');
     setValidationStarted(false);
     setComposeRoute(true);
@@ -1387,6 +1385,7 @@ export function PublicationsPage({
       return;
     }
     setEditorContext(null);
+    setImportOmissions([]);
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
@@ -1410,6 +1409,7 @@ export function PublicationsPage({
     savedCreateDraftRef.current = null;
     isolatedDraftBaselineRef.current = null;
     setEditorContext(null);
+    setImportOmissions([]);
     setButtonsOpen(false);
     setPendingReview(false);
     setPendingConflict(false);
@@ -1425,7 +1425,6 @@ export function PublicationsPage({
   function validateDraft(options: { ignoreSchedule?: boolean } = {}): boolean {
     setValidationStarted(true);
     const nextButtonErrors = validateBroadcastLinkButtons(draft.buttons);
-    setButtonErrors(nextButtonErrors);
     if (videoNeedsReselection) {
       setFieldError('Выберите видео снова.');
       return false;
@@ -2460,10 +2459,12 @@ export function PublicationsPage({
 
   function confirmDraftClear() {
     setPendingDraftClear(false);
-    setButtonErrors([]);
     setFieldError('');
     setValidationStarted(false);
     if (editorContext?.kind === 'duplicate' || editorContext?.kind === 'import') {
+      if (editorContext.kind === 'import') {
+        setImportOmissions([]);
+      }
       setDraft(createEmptyPublicationDraft());
       return;
     }
@@ -2597,6 +2598,12 @@ export function PublicationsPage({
                 disabled={isBusy}
               />
             ) : null}
+            <PublicationImportButtonsNotice
+              omissions={editorContext?.kind === 'import' ? importOmissions : []}
+              customButtonCount={visibleCustomButtonCount}
+              disabled={isBusy}
+              onAdd={() => setButtonsOpen(true)}
+            />
             <PublicationRetainedMedia
               assets={draft.retainedAssets}
               previews={importedAssetPreviews}
@@ -2643,9 +2650,10 @@ export function PublicationsPage({
               buttons={visibleCustomButtons}
               systemButtons={systemButtons}
               buttonsPerRow={1}
-              buttonsStatusLabel="Кнопки"
-              buttonsActive={visibleButtonCount > 0}
+              buttonsStatusLabel="Кнопка"
+              buttonsActive={visibleCustomButtonCount > 0}
               buttonsError={hasButtonErrors}
+              showButtonsLabel={isPublisherProfile}
               videoLabel={
                 draft.mediaType === 'video'
                   ? draft.mediaFileName || 'Видео'
@@ -2708,26 +2716,17 @@ export function PublicationsPage({
           ) : null}
         </div>
 
-        <BroadcastButtonsSheet
+        <PublicationButtonsSheet
           open={buttonsOpen}
-          api={api}
-          enabled={draft.buttonEnabled}
-          buttons={draft.buttons}
-          errors={buttonErrors}
+          buttons={draft.buttonEnabled ? draft.buttons : []}
           disabled={isBusy}
-          onEnabledChange={(buttonEnabled) =>
+          onApply={(buttons) => {
             setDraft((current) => ({
               ...current,
-              buttonEnabled,
-              buttons:
-                buttonEnabled && current.buttons.length === 0
-                  ? [{ text: 'Открыть', url: '' }]
-                  : current.buttons,
-            }))
-          }
-          onChange={(buttons) => {
-            setDraft((current) => ({ ...current, buttons }));
-            setButtonErrors(validateBroadcastLinkButtons(buttons));
+              buttonEnabled: buttons.length > 0,
+              buttons,
+            }));
+            setButtonsOpen(false);
           }}
           onClose={() => setButtonsOpen(false)}
         />
@@ -2775,7 +2774,7 @@ export function PublicationsPage({
             editScope === 'retry'
               ? 'Отправка · после ручного повтора'
               : `Когда · ${formatDraftTiming(draft)}`,
-            visibleButtonCount > 0 ? `Кнопки · ${visibleButtonCount}` : 'Кнопки · нет',
+            visibleCustomButtonCount > 0 ? `Кнопки · ${visibleCustomButtonCount}` : 'Кнопки · нет',
             hasMedia
               ? draft.retainedAssets.some((asset) => asset.type === 'video')
                 ? 'Видео'

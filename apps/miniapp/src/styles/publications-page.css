@@ -1947,6 +1947,17 @@
     box-shadow: none;
   }
 
+  .publications-page .publication-content-composer .broadcast-content-composer__tool.has-label {
+    width: auto;
+    min-width: 44px;
+    padding-inline: 10px;
+  }
+
+  .publications-page .publication-content-composer .broadcast-content-composer__media-actions {
+    min-width: 0;
+    gap: 6px;
+  }
+
   .publications-page
     .publication-content-composer
     :is(.broadcast-content-composer__button-label, .broadcast-content-composer__modifier) {

@@ -65,6 +65,7 @@ type BroadcastContentComposerProps = {
   textPlaceholder?: string;
   textAriaLabel?: string;
   showToolLabels?: boolean;
+  showButtonsLabel?: boolean;
   onTextChange: (value: string) => void;
   onImageChange?: (image: BroadcastContentComposerImage) => void;
   onImagesChange?: (images: BroadcastImage[]) => void;
@@ -97,6 +98,7 @@ export function BroadcastContentComposer({
   textPlaceholder = 'Текст',
   textAriaLabel = textPlaceholder,
   showToolLabels = false,
+  showButtonsLabel = false,
   onTextChange,
   onImageChange,
   onImagesChange,
@@ -152,8 +154,12 @@ export function BroadcastContentComposer({
     ...previewButtons,
     ...previewSystemButtons,
   ]);
+  const customButtonLabel = formatBroadcastButtonsPreview(previewButtons);
+  const openButtonsCount = showButtonsLabel ? previewButtons.length : previewButtonCount;
   const openButtonsLabel =
-    previewButtonCount > 0 ? `Кнопки: ${previewButtonLabel}` : buttonsStatusLabel;
+    openButtonsCount > 0
+      ? `Кнопки: ${showButtonsLabel ? customButtonLabel : previewButtonLabel}`
+      : buttonsStatusLabel;
   const hasPreview = Boolean(normalizedText || imagePreviewItems.length > 0 || videoLabel);
   const remainingLength = maxLength - text.length;
   const isNearTextLimit =
@@ -520,6 +526,7 @@ export function BroadcastContentComposer({
                   type="button"
                   className={cn(
                     'broadcast-content-composer__tool',
+                    (showToolLabels || showButtonsLabel) && 'has-label',
                     buttonsActive && 'is-active',
                     buttonsError && 'is-danger',
                   )}
@@ -529,6 +536,13 @@ export function BroadcastContentComposer({
                   title={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
                 >
                   <IconoirLink aria-hidden focusable="false" />
+                  {showToolLabels || showButtonsLabel ? (
+                    <span className="broadcast-content-composer__tool-label">
+                      {buttonsActive && previewButtons.length > 0
+                        ? `Кнопки · ${previewButtons.length}`
+                        : 'Кнопка'}
+                    </span>
+                  ) : null}
                 </button>
               ) : null}
             </div>
@@ -545,7 +559,7 @@ export function BroadcastContentComposer({
                         : videoLabel}
                 </span>
               ) : null}
-              {onOpenButtons && buttonsActive ? (
+              {onOpenButtons && buttonsActive && !showToolLabels && !showButtonsLabel ? (
                 <button
                   type="button"
                   className={cn(

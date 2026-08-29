@@ -66,6 +66,7 @@ const normalizedKeyboardOverlapPx = Number.isFinite(keyboardOverlapPx)
 const KEYBOARD_MIN_VISIBLE_HEIGHT_PX = 280;
 const KEYBOARD_MIN_REDUCTION_PX = 80;
 const PUBLISHER_COMPOSER_KEYBOARD_SCENARIO = 'publications-publisher-compose';
+const PUBLISHER_BUTTONS_KEYBOARD_SCENARIO = 'publications-publisher-buttons-keyboard';
 const PUBLISHER_AUTO_REPLY_KEYBOARD_SCENARIO = 'publisher-auto-replies-editor-keyboard';
 const KEYBOARD_SCENARIO_PROFILES = Object.freeze({
   [PUBLISHER_COMPOSER_KEYBOARD_SCENARIO]: Object.freeze({
@@ -80,6 +81,19 @@ const KEYBOARD_SCENARIO_PROFILES = Object.freeze({
     actionBarLabel: 'Publisher publish bar',
     primaryFailure: 'Publisher primary publish action does not contain its label at keyboard size.',
     pickerFailure: 'Publisher recipient picker remained open after keyboard focus-flow checks.',
+  }),
+  [PUBLISHER_BUTTONS_KEYBOARD_SCENARIO]: Object.freeze({
+    flow: 'publisher-buttons',
+    focusSelector: ".publication-buttons-sheet input[type='url']",
+    focusReport: 'publisher-button-url',
+    actionBarSelector: '.publication-buttons-sheet__footer',
+    primarySelector: '.publication-buttons-sheet__done',
+    pickerSheetSelector: null,
+    focusFailure: 'Publisher button URL did not keep keyboard focus.',
+    focusLabel: 'Publisher button URL',
+    actionBarLabel: 'Publisher button actions',
+    primaryFailure: 'Publisher button Done action does not contain its label at keyboard size.',
+    pickerFailure: null,
   }),
   [PUBLISHER_AUTO_REPLY_KEYBOARD_SCENARIO]: Object.freeze({
     flow: 'publisher-auto-reply-editor',
@@ -208,6 +222,90 @@ async function openPublisherAutoReplyEditor(page) {
     .fill('Каталог готов. Выберите нужный раздел.');
   await page.waitForTimeout(250);
   return editor;
+}
+
+async function openPublisherButtonsSheet(page) {
+  const editor = page.locator('.publications-editor');
+  await editor.waitFor({ state: 'visible' });
+  const composer = editor.locator('.publication-content-composer');
+  const trigger = composer.getByRole('button', { name: /кнопк/iu }).first();
+  await trigger.waitFor({ state: 'visible' });
+  await trigger.getByText('Кнопка', { exact: true }).waitFor({ state: 'visible' });
+  await trigger.click();
+
+  const sheet = page.locator('.publication-buttons-sheet');
+  await sheet.waitFor({ state: 'visible' });
+  await sheet.getByRole('dialog', { name: 'Кнопки', exact: true }).waitFor({ state: 'visible' });
+  return { sheet, trigger };
+}
+
+async function assertPublisherButtonsSheetIsDirect(sheet) {
+  if ((await sheet.getByRole('checkbox').count()) !== 0) {
+    throw new Error('Publisher buttons sheet restored the obsolete enable toggle.');
+  }
+  if ((await sheet.getByText(/^(?:Включены|Выключены)$/u).count()) !== 0) {
+    throw new Error('Publisher buttons sheet restored obsolete enable-state copy.');
+  }
+  await sheet.getByLabel('Название', { exact: true }).first().waitFor({ state: 'visible' });
+  await sheet.getByLabel('Ссылка', { exact: true }).first().waitFor({ state: 'visible' });
+  await sheet.getByRole('button', { name: 'Ещё', exact: true }).waitFor({ state: 'visible' });
+  await sheet.getByRole('button', { name: 'Готово', exact: true }).waitFor({ state: 'visible' });
+  const crowdedField = await sheet
+    .locator('.publication-buttons-sheet__field')
+    .evaluateAll((labels) =>
+      labels
+        .map((label, index) => {
+          const caption = label.querySelector('span');
+          const input = label.querySelector('input');
+          if (!(caption instanceof HTMLElement) || !(input instanceof HTMLInputElement)) {
+            return null;
+          }
+          return {
+            index,
+            gap: input.getBoundingClientRect().top - caption.getBoundingClientRect().bottom,
+          };
+        })
+        .find((field) => field && field.gap < 4),
+    );
+  if (crowdedField) {
+    throw new Error(
+      `Publisher button field ${crowdedField.index + 1} label touches its input ` +
+        `(gap=${crowdedField.gap.toFixed(1)}px).`,
+    );
+  }
+}
+
+async function assertPublisherButtonsSheetHasDefaultButton(sheet, stage = 'open') {
+  const name = sheet.getByLabel('Название', { exact: true }).first();
+  const url = sheet.getByLabel('Ссылка', { exact: true }).first();
+  const values = { name: await name.inputValue(), url: await url.inputValue() };
+  if (values.name !== 'Открыть' || values.url !== '') {
+    throw new Error(
+      `Publisher buttons sheet did not restore its default first button at ${stage}: ` +
+        JSON.stringify(values),
+    );
+  }
+}
+
+async function assertPublisherButtonTriggerIsEmpty(page, trigger) {
+  await trigger.getByText('Кнопка', { exact: true }).waitFor({ state: 'visible' });
+  if (
+    (await page
+      .locator('.publication-content-composer .broadcast-message-card__button')
+      .count()) !== 0
+  ) {
+    throw new Error('Discarded publisher button leaked into the publication preview.');
+  }
+}
+
+async function waitForPublisherButtonsSheetClosed(page, sheet) {
+  await sheet.waitFor({ state: 'detached' });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))),
+      ),
+  );
 }
 
 async function publishPreviewPoll(page) {
@@ -692,6 +790,164 @@ const scenarioBehaviors = [
       }
       await summary.click();
       await page.locator('.publication-target-picker__list').waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-buttons-empty',
+    beforeShot: async (page) => {
+      const { sheet, trigger } = await openPublisherButtonsSheet(page);
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      await assertPublisherButtonsSheetHasDefaultButton(sheet, 'initial open');
+      await sheet.getByLabel('Название', { exact: true }).first().fill('Не сохранять');
+      await sheet.getByLabel('Ссылка', { exact: true }).first().fill('https://max.ru/discard');
+      await page.keyboard.press('Escape');
+      await waitForPublisherButtonsSheetClosed(page, sheet);
+      await assertPublisherButtonTriggerIsEmpty(page, trigger);
+
+      await trigger.click();
+      await sheet.waitFor({ state: 'visible' });
+      await assertPublisherButtonsSheetHasDefaultButton(sheet, 'reopen after Escape');
+      await sheet.getByLabel('Название', { exact: true }).first().fill('Тоже не сохранять');
+      await sheet.getByLabel('Ссылка', { exact: true }).first().fill('https://max.ru/discard-2');
+      await sheet
+        .locator('.publication-buttons-sheet__backdrop')
+        .click({ position: { x: 2, y: 2 } });
+      await waitForPublisherButtonsSheetClosed(page, sheet);
+      await assertPublisherButtonTriggerIsEmpty(page, trigger);
+
+      await trigger.click();
+      await sheet.waitFor({ state: 'visible' });
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      await assertPublisherButtonsSheetHasDefaultButton(sheet, 'reopen after backdrop');
+    },
+  },
+  {
+    name: 'publications-publisher-buttons-filled',
+    beforeShot: async (page) => {
+      const { sheet, trigger } = await openPublisherButtonsSheet(page);
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      await sheet.getByLabel('Название', { exact: true }).first().fill('Подробнее');
+      await sheet.getByLabel('Ссылка', { exact: true }).first().fill('https://max.ru/publik');
+      await sheet.getByRole('button', { name: 'Готово', exact: true }).click();
+      await waitForPublisherButtonsSheetClosed(page, sheet);
+      await trigger.getByText('Кнопки · 1', { exact: true }).waitFor({ state: 'visible' });
+      const previewButton = page
+        .locator('.publication-content-composer .broadcast-message-card__button')
+        .filter({ hasText: 'Подробнее' });
+      await previewButton.waitFor({ state: 'visible' });
+      await trigger.click();
+      await sheet.waitFor({ state: 'visible' });
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      if (
+        (await sheet.getByLabel('Название', { exact: true }).first().inputValue()) !==
+          'Подробнее' ||
+        (await sheet.getByLabel('Ссылка', { exact: true }).first().inputValue()) !==
+          'https://max.ru/publik'
+      ) {
+        throw new Error('Publisher button values did not survive Done and reopening.');
+      }
+      await sheet.getByRole('button', { name: 'Убрать кнопку 1', exact: true }).click();
+      await sheet.getByRole('button', { name: 'Готово', exact: true }).click();
+      await waitForPublisherButtonsSheetClosed(page, sheet);
+      await assertPublisherButtonTriggerIsEmpty(page, trigger);
+
+      await trigger.click();
+      await sheet.waitFor({ state: 'visible' });
+      await assertPublisherButtonsSheetHasDefaultButton(sheet, 'reopen after removing last');
+      await sheet.getByLabel('Название', { exact: true }).first().fill('Подробнее');
+      await sheet.getByLabel('Ссылка', { exact: true }).first().fill('https://max.ru/publik');
+      await sheet.getByRole('button', { name: 'Готово', exact: true }).click();
+      await waitForPublisherButtonsSheetClosed(page, sheet);
+      await trigger.getByText('Кнопки · 1', { exact: true }).waitFor({ state: 'visible' });
+      await previewButton.waitFor({ state: 'visible' });
+      await trigger.click();
+      await sheet.waitFor({ state: 'visible' });
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      if (
+        (await sheet.getByLabel('Название', { exact: true }).first().inputValue()) !==
+          'Подробнее' ||
+        (await sheet.getByLabel('Ссылка', { exact: true }).first().inputValue()) !==
+          'https://max.ru/publik'
+      ) {
+        throw new Error('Restored publisher button values did not survive reopening.');
+      }
+      await page.keyboard.press('Escape');
+      await waitForPublisherButtonsSheetClosed(page, sheet);
+      await trigger.getByText('Кнопки · 1', { exact: true }).waitFor({ state: 'visible' });
+      await previewButton.waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-buttons-error',
+    beforeShot: async (page) => {
+      const { sheet } = await openPublisherButtonsSheet(page);
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      const url = sheet.locator('input[type="url"]').first();
+      await url.fill('max.ru/publik');
+      await sheet.getByRole('button', { name: 'Готово', exact: true }).click();
+      await sheet.waitFor({ state: 'visible' });
+      if ((await url.getAttribute('aria-invalid')) !== 'true') {
+        throw new Error('Publisher button URL error is not exposed through aria-invalid.');
+      }
+      if (
+        (await sheet
+          .getByLabel('Название', { exact: true })
+          .first()
+          .getAttribute('aria-invalid')) === 'true'
+      ) {
+        throw new Error('Publisher button URL error incorrectly marks the name field invalid.');
+      }
+      const describedBy = (await url.getAttribute('aria-describedby'))?.trim();
+      if (!describedBy) {
+        throw new Error('Publisher button URL error is not associated through aria-describedby.');
+      }
+      const associatedAlertVisible = await sheet.locator('[role="alert"]').evaluateAll(
+        (alerts, ids) =>
+          alerts.some((alert) => {
+            const style = getComputedStyle(alert);
+            const rect = alert.getBoundingClientRect();
+            return (
+              ids.includes(alert.id) &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          }),
+        describedBy.split(/\s+/u),
+      );
+      if (!associatedAlertVisible) {
+        throw new Error('Publisher button URL error does not point to a visible alert.');
+      }
+    },
+  },
+  {
+    name: PUBLISHER_BUTTONS_KEYBOARD_SCENARIO,
+    beforeShot: async (page) => {
+      const { sheet } = await openPublisherButtonsSheet(page);
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      await sheet.getByLabel('Название', { exact: true }).first().fill('Подробнее');
+    },
+  },
+  {
+    name: 'publications-publisher-import-buttons-omitted',
+    beforeShot: async (page) => {
+      await page.locator('.publications-editor').waitFor({ state: 'visible' });
+      const notice = page.locator('.publication-import-buttons-notice');
+      await notice.waitFor({ state: 'visible' });
+      await notice.getByText('Кнопки не перенесены', { exact: true }).waitFor({ state: 'visible' });
+      await notice.getByRole('button', { name: 'Добавить', exact: true }).click();
+      const sheet = page.locator('.publication-buttons-sheet');
+      await sheet.waitFor({ state: 'visible' });
+      await assertPublisherButtonsSheetIsDirect(sheet);
+      await assertPublisherButtonsSheetHasDefaultButton(sheet, 'import recovery open');
+      await page.keyboard.press('Escape');
+      await waitForPublisherButtonsSheetClosed(page, sheet);
+      await notice.waitFor({ state: 'visible' });
+      await notice.getByText('Кнопки не перенесены', { exact: true }).waitFor({ state: 'visible' });
+      await notice.getByRole('button', { name: 'Добавить', exact: true }).waitFor({
+        state: 'visible',
+      });
     },
   },
   {
@@ -1880,8 +2136,8 @@ async function assertFocusedLocator(locator, label) {
   }
 }
 
-async function assertLocatorWithinViewport(locator, label) {
-  const metrics = await locator.evaluate((element) => {
+async function readLocatorViewportMetrics(locator) {
+  return locator.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return {
       top: rect.top,
@@ -1892,6 +2148,9 @@ async function assertLocatorWithinViewport(locator, label) {
       viewportHeight: window.innerHeight,
     };
   });
+}
+
+function assertViewportMetrics(metrics, label) {
   if (
     metrics.left < -2 ||
     metrics.right > metrics.viewportWidth + 2 ||
@@ -1905,6 +2164,12 @@ async function assertLocatorWithinViewport(locator, label) {
         `viewport=${metrics.viewportWidth}x${metrics.viewportHeight}.`,
     );
   }
+}
+
+async function assertLocatorWithinViewport(locator, label) {
+  const metrics = await readLocatorViewportMetrics(locator);
+  assertViewportMetrics(metrics, label);
+  return metrics;
 }
 
 async function exercisePublisherComposerKeyboardFlow(page) {
@@ -1964,6 +2229,77 @@ async function exercisePublisherAutoReplyEditorKeyboardFlow(page) {
   await assertLocatorWithinViewport(textEditor, 'Auto-reply text editor');
 }
 
+async function exercisePublisherButtonsKeyboardFlow(page) {
+  const sheet = page.locator('.publication-buttons-sheet');
+  await sheet.waitFor({ state: 'visible' });
+  const name = sheet.getByLabel('Название', { exact: true }).first();
+  const url = sheet.getByLabel('Ссылка', { exact: true }).first();
+  const done = sheet.getByRole('button', { name: 'Готово', exact: true });
+  await name.waitFor({ state: 'visible' });
+  await url.waitFor({ state: 'visible' });
+  await url.evaluate((element) =>
+    element.scrollIntoView({ block: 'nearest', behavior: 'instant' }),
+  );
+  await url.focus();
+  await assertFocusedLocator(url, 'Publisher button URL');
+  await assertLocatorWithinViewport(name, 'Publisher button name');
+  await assertLocatorWithinViewport(url, 'Publisher button URL');
+  await assertLocatorWithinViewport(done, 'Publisher button Done action');
+}
+
+async function assertPublisherButtonsKeyboardFinalLayout(page) {
+  const sheet = page.locator('.publication-buttons-sheet');
+  const name = sheet.getByLabel('Название', { exact: true }).first();
+  const url = sheet.getByLabel('Ссылка', { exact: true }).first();
+  const done = sheet.getByRole('button', { name: 'Готово', exact: true });
+  const nameMetrics = await assertLocatorWithinViewport(name, 'Publisher button name after reflow');
+  const urlMetrics = await assertLocatorWithinViewport(url, 'Publisher button URL after reflow');
+  const doneMetrics = await readLocatorViewportMetrics(done);
+  const frame = await sheet.evaluate((element) => {
+    const panel = element.querySelector('.publication-buttons-sheet__panel');
+    const footer = element.querySelector('.publication-buttons-sheet__footer');
+    const toRect = (target) => {
+      if (!(target instanceof HTMLElement)) {
+        return null;
+      }
+      const rect = target.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, height: rect.height };
+    };
+    const rootStyle = getComputedStyle(document.documentElement);
+    const sheetStyle = getComputedStyle(element);
+    const panelStyle = panel instanceof HTMLElement ? getComputedStyle(panel) : null;
+    return {
+      keyboardOpen: document.documentElement.dataset.maxKeyboardOpen === 'true',
+      appViewportHeight: rootStyle.getPropertyValue('--app-viewport-height').trim(),
+      visualViewportTop: rootStyle.getPropertyValue('--app-visual-viewport-top').trim(),
+      sheet: toRect(element),
+      panel: toRect(panel),
+      footer: toRect(footer),
+      sheetHeight: sheetStyle.height,
+      sheetPadding: sheetStyle.padding,
+      sheetAlignItems: sheetStyle.alignItems,
+      panelHeight: panelStyle?.height ?? null,
+      panelMarginTop: panelStyle?.marginTop ?? null,
+    };
+  });
+  const bottomClearance = doneMetrics.viewportHeight - doneMetrics.bottom;
+  if (bottomClearance < 8) {
+    throw new Error(
+      'Publisher button Done action is clipped or flush with the keyboard viewport ' +
+        `(bottom=${doneMetrics.bottom.toFixed(1)}, viewport=${doneMetrics.viewportHeight}, ` +
+        `clearance=${bottomClearance.toFixed(1)}px, frame=${JSON.stringify(frame)}).`,
+    );
+  }
+  assertViewportMetrics(doneMetrics, 'Publisher button Done action after reflow');
+  return {
+    nameTop: nameMetrics.top,
+    urlBottom: urlMetrics.bottom,
+    doneBottom: doneMetrics.bottom,
+    bottomClearance,
+    frame,
+  };
+}
+
 async function simulateKeyboardViewport(page, scenario) {
   if (!shouldSimulateKeyboardScenario(scenario)) {
     return null;
@@ -2005,6 +2341,8 @@ async function simulateKeyboardViewport(page, scenario) {
 
   if (keyboardProfile?.flow === 'publisher-composer') {
     await exercisePublisherComposerKeyboardFlow(page);
+  } else if (keyboardProfile?.flow === 'publisher-buttons') {
+    await exercisePublisherButtonsKeyboardFlow(page);
   } else if (keyboardProfile?.flow === 'publisher-auto-reply-editor') {
     await exercisePublisherAutoReplyEditorKeyboardFlow(page);
   }
@@ -2018,13 +2356,19 @@ async function simulateKeyboardViewport(page, scenario) {
     },
     { originalHeight: viewport.height, viewportHeight: reducedHeight },
   );
-  await page.waitForTimeout(180);
+  await page.waitForTimeout(260);
+
+  const controls =
+    keyboardProfile?.flow === 'publisher-buttons'
+      ? await assertPublisherButtonsKeyboardFinalLayout(page)
+      : null;
 
   return {
     originalHeight: viewport.height,
     viewportHeight: reducedHeight,
     coveredHeight: viewport.height - reducedHeight,
     focus: keyboardProfile?.focusReport ?? null,
+    ...(controls ? { controls } : {}),
   };
 }
 
@@ -2701,6 +3045,8 @@ async function assertPublicationTouchTargets(page, scenario) {
       '.toast__close',
       '.broadcast-buttons-sheet__close',
       '.broadcast-buttons-sheet__empty-action',
+      '.publication-buttons-sheet button',
+      '.publication-buttons-sheet input',
     ];
     const controls = Array.from(
       new Set(selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)))),
@@ -3394,6 +3740,14 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir, repo
       }
 
       await assertConfiguredChecks(page, scenario);
+
+      if (resolveKeyboardScenarioProfile(scenario)?.flow === 'publisher-buttons') {
+        await page.waitForTimeout(220);
+        const controls = await assertPublisherButtonsKeyboardFinalLayout(page);
+        if (reportEntry.keyboard) {
+          reportEntry.keyboard.controls = controls;
+        }
+      }
 
       const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
       const locator = resolveScreenshotLocator(page);

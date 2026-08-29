@@ -1076,7 +1076,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
           ? 'https://max.ru/se14088825_bot?start=pi_preview_import_token_123456'
           : null,
       failureCode: publisherPostImportVariant === 'failed' ? 'unsupported_content' : null,
-      omissions: [],
+      omissions: publisherPostImportVariant === 'ready' ? ['buttons_not_imported'] : [],
     });
   }
 

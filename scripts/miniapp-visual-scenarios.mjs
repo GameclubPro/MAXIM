@@ -48,6 +48,8 @@ const FEATURE_SOURCE_GLOBS = {
   ],
   publications: [
     'apps/miniapp/src/pages/publications-page.tsx',
+    'apps/miniapp/src/features/publications/publication-buttons-sheet.*',
+    'apps/miniapp/src/features/publications/publication-import-buttons-notice.*',
     'apps/miniapp/src/styles/publications-page.css',
     'apps/miniapp/src/lib/api/publication-client.ts',
     'apps/miniapp/src/lib/publication-*.ts',
@@ -525,6 +527,46 @@ const baseScenarios = [
       'publications-publisher-compose',
       {
         searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-buttons-empty',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-buttons-filled',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-buttons-error',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-buttons-keyboard',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+        keyboard: true,
+      },
+    ],
+    [
+      'publications-publisher-import-buttons-omitted',
+      {
+        searchParams: {
+          profile: 'publisher',
+          publisherImport: 'ready',
+          import: 'preview_import_token_123456',
+        },
         features: ['publisher', 'broadcast'],
       },
     ],

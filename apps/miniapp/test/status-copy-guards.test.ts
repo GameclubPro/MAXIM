@@ -18,6 +18,10 @@ const publicationsSource = readFileSync(
   new URL('../src/pages/publications-page.tsx', import.meta.url),
   'utf8',
 );
+const broadcastComposerSource = readFileSync(
+  new URL('../src/components/broadcast-content-composer.tsx', import.meta.url),
+  'utf8',
+);
 const shellSource = readFileSync(new URL('../src/components/shell.tsx', import.meta.url), 'utf8');
 const chatsPageCss = readFileSync(new URL('../src/pages/chats-page.css', import.meta.url), 'utf8');
 const chatsPageNativeCss = readFileSync(
@@ -64,7 +68,15 @@ test('publication previews include saved channel system buttons', () => {
   assert.match(publicationsSource, /systemButtons=\{systemButtons\}/u);
   assert.match(
     publicationsSource,
-    /const visibleButtonCount = visibleCustomButtons\.length \+ systemButtons\.length/u,
+    /const visibleCustomButtonCount = visibleCustomButtons\.length/u,
+  );
+  assert.match(
+    broadcastComposerSource,
+    /const previewButtonLabel = formatBroadcastButtonsPreview\(\[[\s\S]*?\.\.\.previewSystemButtons/u,
+  );
+  assert.match(
+    broadcastComposerSource,
+    /const openButtonsCount = showButtonsLabel \? previewButtons\.length : previewButtonCount/u,
   );
   assert.match(
     channelSettingsSource,

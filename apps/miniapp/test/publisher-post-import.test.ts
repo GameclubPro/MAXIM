@@ -34,6 +34,10 @@ const controllerSource = readFileSync(
   new URL('../src/features/publications/use-publisher-post-import-controller.ts', import.meta.url),
   'utf8',
 );
+const importButtonsNoticeSource = readFileSync(
+  new URL('../src/features/publications/publication-import-buttons-notice.tsx', import.meta.url),
+  'utf8',
+);
 const assetPreviewsSource = readFileSync(
   new URL(
     '../src/features/publications/use-publisher-post-import-asset-previews.ts',
@@ -224,6 +228,15 @@ test('publication import stays isolated and reloadable without replacing the man
   assert.match(pageSource, /function setComposeRoute[\s\S]*?next\.delete\('create'\)/u);
   assert.match(controllerSource, /function closeCreateSheet[\s\S]*?clearCreateRoute\(\)/u);
   assert.match(controllerSource, /function startImport[\s\S]*?clearCreateRoute\(\)/u);
+  assert.match(controllerSource, /session\.omissions/u);
+  assert.match(controllerSource, /routeToken === null && activeImportQuery\.isPending/u);
+  assert.match(
+    controllerSource,
+    /resolvePublisherPostImportDraftContext\(session, publicationId\)/u,
+  );
+  assert.match(pageSource, /PublicationImportButtonsNotice/u);
+  assert.match(importButtonsNoticeSource, /publication-import-buttons-notice/u);
+  assert.match(importButtonsNoticeSource, /shouldOfferPublisherButtonRecovery\(omissions/u);
   assert.match(pageSource, /restoreCreateDraftAndClose/u);
   assert.match(assetPreviewsSource, /Math\.min\(3, imageAssetIds\.length\)/u);
   assert.match(assetPreviewsSource, /loaded\[index\] = \{ assetId, url \}/u);

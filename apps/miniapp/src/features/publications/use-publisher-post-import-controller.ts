@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { PublisherPostImportOmission } from '@maxim/contracts/publisher';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
@@ -12,6 +13,7 @@ import { describeUserFacingError } from '../../lib/user-facing-error';
 import { useToast } from '../../components/ui/toast';
 import { createPublicationRequestId } from './publication-request-identity';
 import { mergePublicationPages } from './publication-pagination';
+import { resolvePublisherPostImportDraftContext } from './publisher-post-import-model';
 import type { PublisherPostImportStatusProps } from './publisher-post-import-status';
 import { listPublications } from '../../lib/api/publication-client';
 import {
@@ -34,7 +36,11 @@ type PublisherPostImportControllerOptions = {
   openingDraft: boolean;
   searchParams: URLSearchParams;
   setSearchParams: ReplaceSearchParams;
-  onOpenDraft: (publicationId: string, sessionId: string | null) => void;
+  onOpenDraft: (
+    publicationId: string,
+    sessionId: string | null,
+    omissions: PublisherPostImportOmission[],
+  ) => void;
 };
 
 function tokenQueryKey(token: string) {
@@ -128,7 +134,7 @@ export function usePublisherPostImportController({
           pushToast({ tone: 'danger', title: 'Не удалось открыть диалог Публика' });
         }
       } else if (session.status === 'ready' && session.publicationId) {
-        onOpenDraftRef.current(session.publicationId, session.id);
+        onOpenDraftRef.current(session.publicationId, session.id, session.omissions);
       }
     },
     onError: (error) => {
@@ -189,7 +195,7 @@ export function usePublisherPostImportController({
       autoOpenedImportRef.current = null;
       return;
     }
-    const session = routeToken ? routeImportQuery.data?.session : null;
+    const session = displayedSession;
     const cleanupKeys = resolvePublisherPostImportRouteCleanup({
       draftId,
       exactQueryResolved: routeImportQuery.isSuccess,
@@ -198,6 +204,13 @@ export function usePublisherPostImportController({
     });
     if (cleanupKeys.length > 0) {
       removeRouteParams(searchParams, setSearchParams, cleanupKeys);
+      return;
+    }
+    const importLookupPending =
+      isPublisherDraftRouteId(draftId) &&
+      ((validRouteToken !== null && routeImportQuery.isPending) ||
+        (routeToken === null && activeImportQuery.isPending));
+    if (importLookupPending) {
       return;
     }
     const publicationId = isPublisherDraftRouteId(draftId)
@@ -213,20 +226,21 @@ export function usePublisherPostImportController({
       return;
     }
     autoOpenedImportRef.current = autoOpenKey;
-    onOpenDraftRef.current(
-      publicationId,
-      session?.publicationId === publicationId ? session.id : null,
-    );
+    const context = resolvePublisherPostImportDraftContext(session, publicationId);
+    onOpenDraftRef.current(publicationId, context.sessionId, context.omissions);
   }, [
+    activeImportQuery.isPending,
     editorOpen,
     enabled,
     hydrated,
     openingDraft,
-    routeImportQuery.data?.session,
+    displayedSession,
+    routeImportQuery.isPending,
     routeImportQuery.isSuccess,
     routeToken,
     searchParams,
     setSearchParams,
+    validRouteToken,
   ]);
 
   function showCreateSheet() {
@@ -293,10 +307,8 @@ export function usePublisherPostImportController({
       }
     },
     onOpenDraft(publicationId) {
-      onOpenDraftRef.current(
-        publicationId,
-        displayedSession?.publicationId === publicationId ? displayedSession.id : null,
-      );
+      const context = resolvePublisherPostImportDraftContext(displayedSession, publicationId);
+      onOpenDraftRef.current(publicationId, context.sessionId, context.omissions);
     },
     onLoadMoreDrafts: () => void serverDraftsQuery.fetchNextPage(),
     onRetry: startImport,

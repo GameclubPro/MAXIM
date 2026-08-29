@@ -1,0 +1,45 @@
+@layer components {
+  .publication-import-buttons-notice {
+    min-width: 0;
+    min-height: 52px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-tint);
+    color: var(--color-ink);
+    padding: 4px 5px 4px 10px;
+  }
+
+  .publication-import-buttons-notice > svg {
+    width: 19px;
+    height: 19px;
+    color: var(--color-accent);
+  }
+
+  .publication-import-buttons-notice > span {
+    min-width: 0;
+    font-size: 0.78rem;
+    font-weight: 760;
+    line-height: 1.25;
+  }
+
+  .publication-import-buttons-notice > button {
+    min-width: 44px;
+    min-height: 44px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--color-accent);
+    color: var(--publication-ui-on-accent);
+    padding: 0 12px;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 820;
+  }
+
+  .publication-import-buttons-notice > button:disabled {
+    opacity: 0.58;
+  }
+}

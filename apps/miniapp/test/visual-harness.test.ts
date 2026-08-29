@@ -257,6 +257,75 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   assert.ok(scenarios.get('channel-settings-publisher-policy')?.features.includes('publisher'));
 });
 
+test('publisher publication buttons cover direct empty, filled, error, and keyboard states', () => {
+  const scenarioNames = [
+    'publications-publisher-buttons-empty',
+    'publications-publisher-buttons-filled',
+    'publications-publisher-buttons-error',
+    'publications-publisher-buttons-keyboard',
+  ];
+  const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
+
+  for (const name of scenarioNames) {
+    const scenario = scenarios.get(name);
+    assert.equal(scenario?.routeId, 'publications');
+    assert.deepEqual(scenario?.searchParams, { profile: 'publisher', compose: '1' });
+    assert.ok(scenario?.features.includes('publisher'));
+    assert.ok(scenario?.features.includes('broadcast'));
+  }
+  assert.equal(scenarios.get('publications-publisher-buttons-keyboard')?.keyboard, true);
+
+  const selection = selectMiniappVisualScenarios({
+    changedFiles: ['apps/miniapp/src/features/publications/publication-buttons-sheet.tsx'],
+  });
+  const selectedNames = selection.scenarios.map((scenario) => scenario.name);
+  for (const name of scenarioNames) {
+    assert.ok(selectedNames.includes(name), name);
+  }
+
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(captureSource, /\.publication-buttons-sheet/u);
+  assert.match(captureSource, /Publisher buttons sheet restored the obsolete enable toggle/u);
+  assert.match(captureSource, /getByLabel\('Название'/u);
+  assert.match(captureSource, /getByLabel\('Ссылка'/u);
+  assert.match(captureSource, /name: 'Ещё'/u);
+  assert.match(captureSource, /name: 'Готово'/u);
+  assert.match(captureSource, /locator\('\.publication-buttons-sheet__field'\)/u);
+  assert.doesNotMatch(captureSource, /locator\('label\.field'\)/u);
+  assert.match(captureSource, /page\.keyboard\.press\('Escape'\)/u);
+  assert.match(captureSource, /\.publication-buttons-sheet__backdrop/u);
+  assert.match(captureSource, /name: 'Убрать кнопку 1'/u);
+  assert.match(captureSource, /aria-invalid/u);
+  assert.match(captureSource, /aria-describedby/u);
+  assert.match(captureSource, /exercisePublisherButtonsKeyboardFlow/u);
+  assert.match(captureSource, /assertPublisherButtonsKeyboardFinalLayout/u);
+});
+
+test('publisher imported draft exposes omitted buttons recovery in the visual harness', () => {
+  const scenario = MINIAPP_VISUAL_SCENARIOS.find(
+    (candidate) => candidate.name === 'publications-publisher-import-buttons-omitted',
+  );
+  assert.equal(scenario?.routeId, 'publications');
+  assert.deepEqual(scenario?.searchParams, {
+    profile: 'publisher',
+    publisherImport: 'ready',
+    import: 'preview_import_token_123456',
+  });
+  assert.ok(scenario?.features.includes('publisher'));
+  assert.ok(scenario?.features.includes('broadcast'));
+
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(captureSource, /\.publication-import-buttons-notice/u);
+  assert.match(captureSource, /Кнопки не перенесены/u);
+  assert.match(captureSource, /name: 'Добавить'/u);
+});
+
 test('publisher auto replies cover cold list, create sheet, editor bottom, and keyboard states', () => {
   const scenarioNames = [
     'publisher-auto-replies-cold',
