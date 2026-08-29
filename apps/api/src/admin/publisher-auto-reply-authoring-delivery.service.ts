@@ -89,56 +89,14 @@ export class PublisherAutoReplyAuthoringDeliveryService {
         await this.maxClient.answerCallback(
           job.callbackId,
           'Готово',
-          session.botStatusMessageId
-            ? {
-                messageId: session.botStatusMessageId,
-                text,
-                options: { buttons },
-              }
-            : undefined,
+          undefined,
           { ...requestOptions, rateLimitEntityId: privateChatId },
         );
-        if (session.botStatusMessageId) {
-          await this.complete(
-            session.id,
-            session.state,
-            job.notification,
-            notificationRevision,
-            lockToken,
-          );
-          return;
-        }
       } catch {
         this.logger.warn(
           { sessionId: session.id, notification: job.notification },
-          'Publisher auto-reply callback answer failed; falling back to status message',
+          'Publisher auto-reply callback answer failed; continuing with a new status message',
         );
-      }
-    }
-
-    if (session.botStatusMessageId) {
-      try {
-        await this.maxClient.editMessageInlineKeyboard(
-          privateChatId,
-          session.botStatusMessageId,
-          text,
-          {
-            buttons,
-            debugContext: { screen: 'publisher_auto_reply_authoring', action: job.notification },
-          },
-          requestOptions,
-        );
-        await this.complete(
-          session.id,
-          session.state,
-          job.notification,
-          notificationRevision,
-          lockToken,
-        );
-        return;
-      } catch (error: unknown) {
-        await this.release(session.id, lockToken);
-        throw error;
       }
     }
 
@@ -243,7 +201,7 @@ export class PublisherAutoReplyAuthoringDeliveryService {
         }
         return 'Отправьте кодовую фразу для автоответа.';
       case 'prompt_content':
-        return `Фраза «${session.phrase ?? ''}» сохранена. Теперь отправьте ответ одним сообщением или перешлите готовое: форматированный текст и до 10 фото.`;
+        return `Фраза «${session.phrase ?? ''}» сохранена. Пришлите одним сообщением ответ, который Публик будет отправлять участникам. Можно использовать форматирование и добавить до 10 фото. Готовое сообщение можно переслать.`;
       case 'processing':
         return 'Готовлю автоответ и сохраняю фотографии.';
       case 'ready': {
