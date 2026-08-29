@@ -203,7 +203,7 @@ function resolveScreenInfo(
 }
 
 export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) {
-  const { chatId = '' } = useParams();
+  const { chatId = '', entityId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const managedEntityNavigation = useOptionalManagedEntityNavigation();
@@ -232,7 +232,12 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     typeof location.state.chatTitle === 'string'
       ? location.state.chatTitle.trim()
       : '';
+  const isPublisherAutoRepliesRoute =
+    profile === 'publisher' &&
+    /^\/publisher\/chat\/[^/]+\/auto-replies\/?$/u.test(location.pathname);
   const isManagedEntityRoute = isManagedEntityWorkspacePath(location.pathname);
+  const isManagedEntityWorkspaceRoute = isManagedEntityRoute || isPublisherAutoRepliesRoute;
+  const routeEntityId = chatId || (isPublisherAutoRepliesRoute ? entityId : '');
 
   useEffect(() => {
     if (!chatId || !isManagedEntityRoute) {
@@ -278,23 +283,26 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
 
   const resolvedEntityType: LastEntityType = isChatsRoute
     ? selectedRootEntityType
-    : isManagedEntityRoute
+    : isManagedEntityWorkspaceRoute
       ? routeEntityType
       : lastEntityType;
-  const resolvedChatId = chatId;
+  const resolvedChatId = routeEntityId;
   const homeRoute = profile === 'publisher' ? '/' : buildManagedEntitiesRoute(resolvedEntityType);
+  const managedEntityBackRoute = isPublisherAutoRepliesRoute
+    ? `/publisher/chat/${encodeURIComponent(entityId)}`
+    : homeRoute;
 
   const resolvedChatTitle = useMemo(() => {
     if (!resolvedChatId) {
       return '';
     }
 
-    if (chatId && routeChatTitle) {
+    if (routeEntityId && routeChatTitle) {
       return routeChatTitle;
     }
 
     return readChatTitle(resolvedChatId);
-  }, [chatId, resolvedChatId, routeChatTitle]);
+  }, [resolvedChatId, routeChatTitle, routeEntityId]);
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
   const isLegalRoute = location.pathname.startsWith('/legal/');
   const isDialogRoute =
@@ -319,6 +327,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     !isDialogRoute &&
     !isChannelStatsRoute &&
     !isPublisherEntityModulesRoute &&
+    !isPublisherAutoRepliesRoute &&
     !isGiveawayRoute &&
     !isLegalRoute;
 
@@ -359,6 +368,15 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
         return;
       }
 
+      if (isPublisherAutoRepliesRoute) {
+        if (managedEntityNavigation) {
+          managedEntityNavigation.requestBack(managedEntityBackRoute);
+        } else {
+          navigate(managedEntityBackRoute, { replace: true });
+        }
+        return;
+      }
+
       navigate(homeRoute, { replace: true });
     });
 
@@ -371,7 +389,9 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     homeRoute,
     isProfileHomeRoute,
     isManagedEntityRoute,
+    isPublisherAutoRepliesRoute,
     managedEntityNavigation,
+    managedEntityBackRoute,
     navigate,
     shouldCloseMiniAppOnBack,
   ]);

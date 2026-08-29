@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20260828130000_add_publisher_post_import_sessions",
-  "baselineNamesSha256": "cb2eb50cffdd278c56e5ca278a4628d36087dbec4c2554b5fb80cdff5b0fc401",
-  "baselineContentsSha256": "95ff60722dd6ec6e9f9a37fa7fca59479817fb5ecd9749c4e27f43d355250e55",
+  "baselineThrough": "20260829120000_add_publisher_auto_replies",
+  "baselineNamesSha256": "33f14cb71770ecb401526341f0b9474f45f6b559b30382955055bdfe2b54f4bc",
+  "baselineContentsSha256": "65cee441ad900cce2f8643612a914bf86f79d89464ff8c404d758ad7b3690900",
   "approvedDestructive": {
     "20260301150000_drop_commercial_phrase_tables": {
       "reason": "Historical migration recorded before the executable policy guard."
@@ -85,6 +85,9 @@
     },
     "20260828130000_add_publisher_post_import_sessions": {
       "reason": "All indexes are created with the new empty post-import session table before it can receive rows. Keeping its active-session uniqueness and recovery indexes atomic avoids exposing an unfenced capture state, and there is no existing table workload to block."
+    },
+    "20260829120000_add_publisher_auto_replies": {
+      "reason": "All non-concurrent indexes are created with new empty auto-reply, asset, delivery, authoring-message, and lease tables. Keeping partial uniqueness, draft provenance, deduplication, and recovery indexes atomic prevents unfenced matcher or authoring states, and the only existing-table change is an additive boolean column with a constant default."
     }
   }
 }

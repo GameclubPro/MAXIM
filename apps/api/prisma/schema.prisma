@@ -353,6 +353,40 @@ enum PublisherPostImportStatus {
   EXPIRED
 }
 
+enum PublisherAutoReplyDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  AMBIGUOUS
+  CANCELED
+}
+
+enum PublisherAutoReplyAssetUploadStatus {
+  PENDING
+  UPLOADING
+  READY
+  FAILED
+}
+
+enum PublisherAutoReplyAuthoringState {
+  AWAITING_START
+  AWAITING_PHRASE
+  AWAITING_CONTENT
+  PROCESSING
+  REVIEW
+  SAVING
+  COMPLETED
+  CANCELED
+  FAILED
+  EXPIRED
+}
+
+enum PublisherPrivateFlowType {
+  POST_IMPORT
+  AUTO_REPLY_AUTHORING
+}
+
 enum VkParsingOwnerProfile {
   MAJOR
   PUBLISHER
@@ -417,6 +451,10 @@ model Chat {
   botMemberships                    ChatBotMembership[]
   publisherBinding                  PublisherEntityBinding?
   publisherSettings                 PublisherEntitySettings?
+  publisherAutoReplyRules           PublisherAutoReplyRule[]
+  publisherAutoReplyAssets          PublisherAutoReplyAsset[]
+  publisherAutoReplyDeliveries      PublisherAutoReplyDelivery[]
+  publisherAutoReplySessions        PublisherAutoReplyAuthoringSession[]
   publicationPolicy                 ManagedEntityPublicationPolicy?
   accessEdges                       ManagedEntityAccessEdge[]
   adminMembers                      ManagedEntityAdminMember[]
@@ -509,19 +547,277 @@ model PublisherEntityBinding {
 }
 
 model PublisherEntitySettings {
-  chatId                       String   @id @map("chat_id")
-  chatCommentsEnabled          Boolean  @default(false) @map("chat_comments_enabled")
-  chatCommentsAdminsEnabled    Boolean  @default(false) @map("chat_comments_admins_enabled")
-  chatCommentsPostsEnabled     Boolean  @default(false) @map("chat_comments_posts_enabled")
-  channelSuggestionsEnabled    Boolean  @default(false) @map("channel_suggestions_enabled")
-  revision                     Int      @default(0)
-  updatedByUserId              String?  @map("updated_by_user_id")
-  createdAt                    DateTime @default(now()) @map("created_at")
-  updatedAt                    DateTime @updatedAt @map("updated_at")
+  chatId                    String   @id @map("chat_id")
+  chatCommentsEnabled       Boolean  @default(false) @map("chat_comments_enabled")
+  chatCommentsAdminsEnabled Boolean  @default(false) @map("chat_comments_admins_enabled")
+  chatCommentsPostsEnabled  Boolean  @default(false) @map("chat_comments_posts_enabled")
+  channelSuggestionsEnabled Boolean  @default(false) @map("channel_suggestions_enabled")
+  autoRepliesEnabled        Boolean  @default(false) @map("auto_replies_enabled")
+  revision                  Int      @default(0)
+  updatedByUserId           String?  @map("updated_by_user_id")
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("publisher_entity_settings")
+}
+
+model PublisherAutoReplyRule {
+  id                       String    @id @default(cuid())
+  chatId                   String    @map("chat_id")
+  phrase                   String
+  normalizedPhrase         String    @map("normalized_phrase")
+  enabled                  Boolean   @default(true)
+  cooldownSeconds          Int       @default(30) @map("cooldown_seconds")
+  version                  Int       @default(1)
+  currentContentRevisionId String?   @unique(map: "publisher_auto_reply_rules_current_content_revision_id_key") @map("current_content_revision_id")
+  authoringSessionId       String?   @map("authoring_session_id")
+  createdByUserId          String    @map("created_by_user_id")
+  updatedByUserId          String    @map("updated_by_user_id")
+  archivedAt               DateTime? @map("archived_at")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @updatedAt @map("updated_at")
+
+  chat                   Chat                                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  currentContentRevision PublisherAutoReplyContentRevision?   @relation("PublisherAutoReplyCurrentContentRevision", fields: [currentContentRevisionId], references: [id], onDelete: SetNull)
+  contentRevisions       PublisherAutoReplyContentRevision[]  @relation("PublisherAutoReplyContentRevisions")
+  deliveries             PublisherAutoReplyDelivery[]
+  cooldowns              PublisherAutoReplyCooldown[]
+  mutationRecords        PublisherAutoReplyMutationRecord[]
+  authoringSessions      PublisherAutoReplyAuthoringSession[]
+
+  @@index([chatId, archivedAt, updatedAt(sort: Desc), id], map: "publisher_auto_reply_rules_chat_archived_updated_idx")
+  @@index([chatId, normalizedPhrase], map: "publisher_auto_reply_rules_chat_normalized_phrase_idx")
+  @@index([chatId, enabled, archivedAt], map: "publisher_auto_reply_rules_chat_enabled_archived_idx")
+  @@index([authoringSessionId, archivedAt], map: "publisher_auto_reply_rules_authoring_session_archived_idx")
+  @@map("publisher_auto_reply_rules")
+}
+
+model PublisherAutoReplyContentRevision {
+  id              String                   @id @default(cuid())
+  ruleId          String                   @map("rule_id")
+  revision        Int
+  text            String                   @default("")
+  textFormat      PublicationContentFormat @default(PLAIN) @map("text_format")
+  createdByUserId String                   @map("created_by_user_id")
+  createdAt       DateTime                 @default(now()) @map("created_at")
+
+  rule              PublisherAutoReplyRule               @relation("PublisherAutoReplyContentRevisions", fields: [ruleId], references: [id], onDelete: Cascade)
+  currentForRule    PublisherAutoReplyRule?              @relation("PublisherAutoReplyCurrentContentRevision")
+  assets            PublisherAutoReplyContentAsset[]
+  deliveries        PublisherAutoReplyDelivery[]
+  authoringSessions PublisherAutoReplyAuthoringSession[]
+
+  @@unique([ruleId, revision], map: "publisher_auto_reply_content_revisions_rule_revision_key")
+  @@index([ruleId, createdAt(sort: Desc)], map: "publisher_auto_reply_content_revisions_rule_created_idx")
+  @@map("publisher_auto_reply_content_revisions")
+}
+
+model PublisherAutoReplyAsset {
+  id              String   @id @default(cuid())
+  chatId          String   @map("chat_id")
+  sha256          String
+  mimeType        String   @map("mime_type")
+  fileName        String   @default("") @map("file_name")
+  sizeBytes       Int      @map("size_bytes")
+  bytes           Bytes
+  createdByUserId String   @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  chat         Chat                             @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  contentLinks PublisherAutoReplyContentAsset[]
+  uploads      PublisherAutoReplyAssetUpload[]
+
+  @@unique([chatId, sha256], map: "publisher_auto_reply_assets_chat_sha256_key")
+  @@index([chatId, createdAt(sort: Desc)], map: "publisher_auto_reply_assets_chat_created_idx")
+  @@map("publisher_auto_reply_assets")
+}
+
+model PublisherAutoReplyContentAsset {
+  contentRevisionId String @map("content_revision_id")
+  assetId           String @map("asset_id")
+  position          Int
+
+  contentRevision PublisherAutoReplyContentRevision @relation(fields: [contentRevisionId], references: [id], onDelete: Cascade)
+  asset           PublisherAutoReplyAsset           @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@id([contentRevisionId, assetId], map: "publisher_auto_reply_content_assets_pkey")
+  @@unique([contentRevisionId, position], map: "publisher_auto_reply_content_assets_revision_position_key")
+  @@index([assetId], map: "publisher_auto_reply_content_assets_asset_id_idx")
+  @@map("publisher_auto_reply_content_assets")
+}
+
+model PublisherAutoReplyMutationRecord {
+  id               String   @id @default(cuid())
+  actorUserId      String   @map("actor_user_id")
+  requestId        String   @map("request_id")
+  requestHash      String   @map("request_hash")
+  operation        String
+  ruleId           String   @map("rule_id")
+  resultingVersion Int      @map("resulting_version")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  rule PublisherAutoReplyRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([actorUserId, requestId], map: "publisher_auto_reply_mutations_actor_request_key")
+  @@index([ruleId, createdAt(sort: Desc)], map: "publisher_auto_reply_mutations_rule_created_idx")
+  @@map("publisher_auto_reply_mutation_records")
+}
+
+model PublisherAutoReplyCooldown {
+  ruleId              String   @map("rule_id")
+  sourceUserId        String   @map("source_user_id")
+  nextAllowedAt       DateTime @map("next_allowed_at")
+  lastSourceMessageId String   @map("last_source_message_id")
+  version             Int      @default(1)
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  rule PublisherAutoReplyRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@id([ruleId, sourceUserId], map: "publisher_auto_reply_cooldowns_pkey")
+  @@index([nextAllowedAt], map: "publisher_auto_reply_cooldowns_next_allowed_idx")
+  @@map("publisher_auto_reply_cooldowns")
+}
+
+model PublisherAutoReplyDelivery {
+  id                        String                           @id @default(cuid())
+  chatId                    String                           @map("chat_id")
+  ruleId                    String                           @map("rule_id")
+  contentRevisionId         String                           @map("content_revision_id")
+  publisherBotId            String                           @map("publisher_bot_id")
+  sourceMessageId           String                           @map("source_message_id")
+  sourceUserId              String?                          @map("source_user_id")
+  sourceWebhookEventId      String?                          @map("source_webhook_event_id")
+  matchedRuleVersion        Int                              @map("matched_rule_version")
+  matchedNormalizedPhrase   String                           @map("matched_normalized_phrase")
+  publisherSettingsRevision Int                              @map("publisher_settings_revision")
+  publicationPolicyRevision Int                              @map("publication_policy_revision")
+  status                    PublisherAutoReplyDeliveryStatus @default(PENDING)
+  dueAt                     DateTime                         @map("due_at")
+  attemptCount              Int                              @default(0) @map("attempt_count")
+  lockedAt                  DateTime?                        @map("locked_at")
+  lockToken                 String?                          @map("lock_token")
+  dispatchStartedAt         DateTime?                        @map("dispatch_started_at")
+  remoteMessageId           String?                          @map("remote_message_id")
+  failureCode               String?                          @map("failure_code")
+  failureMessage            String?                          @map("failure_message")
+  canceledAt                DateTime?                        @map("canceled_at")
+  createdAt                 DateTime                         @default(now()) @map("created_at")
+  updatedAt                 DateTime                         @updatedAt @map("updated_at")
+
+  chat            Chat                              @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  rule            PublisherAutoReplyRule            @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  contentRevision PublisherAutoReplyContentRevision @relation(fields: [contentRevisionId], references: [id], onDelete: Restrict)
+
+  @@unique([chatId, sourceMessageId], map: "publisher_auto_reply_deliveries_chat_source_message_key")
+  @@index([status, dueAt, lockedAt, id], map: "publisher_auto_reply_deliveries_status_due_locked_idx")
+  @@index([ruleId, createdAt(sort: Desc)], map: "publisher_auto_reply_deliveries_rule_created_idx")
+  @@index([contentRevisionId], map: "publisher_auto_reply_deliveries_content_revision_idx")
+  @@map("publisher_auto_reply_deliveries")
+}
+
+model PublisherAutoReplyAssetUpload {
+  id             String                              @id @default(cuid())
+  assetId        String                              @map("asset_id")
+  publisherBotId String                              @map("publisher_bot_id")
+  status         PublisherAutoReplyAssetUploadStatus @default(PENDING)
+  payload        Json?
+  expiresAt      DateTime?                           @map("expires_at")
+  attemptCount   Int                                 @default(0) @map("attempt_count")
+  lockedAt       DateTime?                           @map("locked_at")
+  lockToken      String?                             @map("lock_token")
+  failureCode    String?                             @map("failure_code")
+  createdAt      DateTime                            @default(now()) @map("created_at")
+  updatedAt      DateTime                            @updatedAt @map("updated_at")
+
+  asset PublisherAutoReplyAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, publisherBotId], map: "publisher_auto_reply_asset_uploads_asset_bot_key")
+  @@index([status, lockedAt, updatedAt], map: "publisher_auto_reply_asset_uploads_recovery_idx")
+  @@map("publisher_auto_reply_asset_uploads")
+}
+
+model PublisherAutoReplyAuthoringSession {
+  id                                String                           @id @default(cuid())
+  publisherBotId                    String                           @map("publisher_bot_id")
+  actorUserId                       String                           @map("actor_user_id")
+  requestId                         String                           @map("request_id")
+  startToken                        String                           @unique(map: "publisher_auto_reply_sessions_start_token_key") @map("start_token")
+  state                             PublisherAutoReplyAuthoringState @default(AWAITING_START)
+  stageRevision                     Int                              @default(0) @map("stage_revision")
+  privateChatId                     String?                          @map("private_chat_id")
+  targetChatId                      String                           @map("target_chat_id")
+  phrase                            String?
+  normalizedPhrase                  String?                          @map("normalized_phrase")
+  phraseMessageId                   String?                          @map("phrase_message_id")
+  contentMessageId                  String?                          @map("content_message_id")
+  sourceWebhookEventId              String?                          @map("source_webhook_event_id")
+  botStatusMessageId                String?                          @map("bot_status_message_id")
+  notificationPending               Boolean                          @default(false) @map("notification_pending")
+  notificationKind                  String?                          @map("notification_kind")
+  notificationRevision              Int                              @default(0) @map("notification_revision")
+  notificationLockedAt              DateTime?                        @map("notification_locked_at")
+  notificationLockToken             String?                          @map("notification_lock_token")
+  notificationClaimRevision         Int?                             @map("notification_claim_revision")
+  notificationLastAmbiguousRevision Int?                             @map("notification_last_ambiguous_revision")
+  notificationDispatchStartedAt     DateTime?                        @map("notification_dispatch_started_at")
+  callbackId                        String?                          @map("callback_id")
+  ruleId                            String?                          @map("rule_id")
+  contentRevisionId                 String?                          @map("content_revision_id")
+  failureCode                       String?                          @map("failure_code")
+  omissions                         Json                             @default("[]")
+  captureGuardUntil                 DateTime?                        @map("capture_guard_until")
+  lockedAt                          DateTime?                        @map("locked_at")
+  lockToken                         String?                          @map("lock_token")
+  expiresAt                         DateTime                         @map("expires_at")
+  createdAt                         DateTime                         @default(now()) @map("created_at")
+  updatedAt                         DateTime                         @updatedAt @map("updated_at")
+
+  targetChat       Chat                                 @relation(fields: [targetChatId], references: [id], onDelete: Cascade)
+  rule             PublisherAutoReplyRule?              @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  contentRevision  PublisherAutoReplyContentRevision?   @relation(fields: [contentRevisionId], references: [id], onDelete: SetNull)
+  consumedMessages PublisherAutoReplyAuthoringMessage[]
+
+  @@unique([publisherBotId, actorUserId, requestId], map: "publisher_auto_reply_sessions_bot_actor_request_key")
+  @@unique([publisherBotId, phraseMessageId], map: "publisher_auto_reply_sessions_bot_phrase_message_key")
+  @@unique([publisherBotId, contentMessageId], map: "publisher_auto_reply_sessions_bot_content_message_key")
+  @@index([publisherBotId, actorUserId, createdAt(sort: Desc)], map: "publisher_auto_reply_sessions_actor_created_idx")
+  @@index([state, lockedAt, updatedAt], map: "publisher_auto_reply_sessions_recovery_idx")
+  @@index([state, expiresAt], map: "publisher_auto_reply_sessions_expiry_idx")
+  @@index([notificationPending, notificationLockedAt, updatedAt], map: "publisher_auto_reply_sessions_notification_idx")
+  @@map("publisher_auto_reply_authoring_sessions")
+}
+
+model PublisherAutoReplyAuthoringMessage {
+  id             String   @id @default(cuid())
+  sessionId      String   @map("session_id")
+  publisherBotId String   @map("publisher_bot_id")
+  messageId      String   @map("message_id")
+  kind           String
+  stageRevision  Int      @map("stage_revision")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  session PublisherAutoReplyAuthoringSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([publisherBotId, messageId], map: "publisher_auto_reply_authoring_messages_bot_message_key")
+  @@index([sessionId, createdAt], map: "publisher_auto_reply_authoring_messages_session_created_idx")
+  @@map("publisher_auto_reply_authoring_messages")
+}
+
+model PublisherPrivateFlowLease {
+  publisherBotId String                   @map("publisher_bot_id")
+  actorUserId    String                   @map("actor_user_id")
+  flowType       PublisherPrivateFlowType @map("flow_type")
+  flowId         String                   @map("flow_id")
+  leaseToken     String                   @map("lease_token")
+  expiresAt      DateTime                 @map("expires_at")
+  createdAt      DateTime                 @default(now()) @map("created_at")
+  updatedAt      DateTime                 @updatedAt @map("updated_at")
+
+  @@id([publisherBotId, actorUserId], map: "publisher_private_flow_leases_pkey")
+  @@index([expiresAt], map: "publisher_private_flow_leases_expires_idx")
+  @@map("publisher_private_flow_leases")
 }
 
 model ManagedEntityPublicationPolicy {

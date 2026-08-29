@@ -52,6 +52,7 @@ function publisherEntity(
               commentsChatBroadcastsEnabled: false,
             }
           : null,
+      autoRepliesEnabled: entityType === 'chat' ? false : null,
       channelSuggestionsEnabled:
         entityType === 'channel' ? (options.channelSuggestionsEnabled ?? false) : null,
     },

@@ -21,6 +21,8 @@ module.exports = {
     '^@maxim/contracts/poll$': '<rootDir>/../../packages/contracts/src/poll.ts',
     '^@maxim/contracts/publication$': '<rootDir>/../../packages/contracts/src/publication.ts',
     '^@maxim/contracts/publisher$': '<rootDir>/../../packages/contracts/src/publisher.ts',
+    '^@maxim/contracts/publisher-auto-replies$':
+      '<rootDir>/../../packages/contracts/src/publisher-auto-replies.ts',
     '^@maxim/contracts/safety-desk$': '<rootDir>/../../packages/contracts/src/safety-desk.ts',
     '^@maxim/contracts/settings$': '<rootDir>/../../packages/contracts/src/settings.ts',
     '^@maxim/contracts/support-requests$':

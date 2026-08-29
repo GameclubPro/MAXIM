@@ -88,6 +88,32 @@ test('resolves chat activity route from startapp payload', () => {
   assert.equal(resolveLaunchRoute(''), '/chat/-68085832859751/events');
 });
 
+test('resolves the Publisher auto-replies workspace from a route startapp payload', () => {
+  assignWindow(
+    `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publisher/chat/-68085832859751/auto-replies'),
+    )}`,
+  );
+
+  assert.equal(resolveLaunchRoute(''), '/publisher/chat/-68085832859751/auto-replies');
+});
+
+test('rejects widened Publisher auto-reply route payloads', () => {
+  assignWindow(
+    `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publisher/chat/-68085832859751/auto-replies?admin=1'),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
+
+  assignWindow(
+    `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/publisher/channel/-68085832859751/auto-replies'),
+    )}`,
+  );
+  assert.equal(resolveLaunchRoute(''), null);
+});
+
 test('prefers signed initData start_param over bridge and URL fallbacks', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(

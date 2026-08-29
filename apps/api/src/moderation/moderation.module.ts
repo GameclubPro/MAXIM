@@ -84,6 +84,13 @@ import { CommercialOcrProcessor } from './commercial-ocr/commercial-ocr.processo
 import { CommercialOcrQueueProducer } from './commercial-ocr/commercial-ocr-queue.producer';
 import { COMMERCIAL_OCR_QUEUE } from './commercial-ocr/commercial-ocr.queue';
 import { NativeTesseractOcrAdapter } from './commercial-ocr/native-tesseract-ocr.adapter';
+import { PublisherAutoReplyDeliveryService } from '../publisher/publisher-auto-reply-delivery.service';
+import { PublisherAutoReplyProcessor } from '../publisher/publisher-auto-reply.processor';
+import { PublisherAutoReplyRecoveryService } from '../publisher/publisher-auto-reply-recovery.service';
+import {
+  PUBLISHER_AUTO_REPLY_QUEUE,
+  PublisherAutoReplyQueueService,
+} from '../publisher/publisher-auto-reply.queue';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
@@ -119,6 +126,7 @@ const moderationProviders = [
   WebhookCanonicalExecutionService,
   LinkHistoryRecoveryService,
   PublisherChatCommentQueueService,
+  PublisherAutoReplyQueueService,
   PhotoDuplicateEnqueueService,
   ...(moderationRoleEnabled ? [PhotoDuplicateOrderingStore] : []),
   ...(commercialOcrEnqueueEnabled || commercialOcrWorkerEnabled
@@ -195,6 +203,9 @@ const moderationProviders = [
         PublisherChatCommentDeliveryService,
         PublisherChatCommentProcessor,
         PublisherChatCommentRecoveryService,
+        PublisherAutoReplyDeliveryService,
+        PublisherAutoReplyProcessor,
+        PublisherAutoReplyRecoveryService,
       ]
     : []),
 ];
@@ -205,6 +216,7 @@ const moderationProviders = [
     BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
     BullModule.registerQueue({ name: PHOTO_DUPLICATE_QUEUE }),
     BullModule.registerQueue({ name: PUBLISHER_CHAT_COMMENT_QUEUE }),
+    BullModule.registerQueue({ name: PUBLISHER_AUTO_REPLY_QUEUE }),
     ...(commercialOcrWorkerEnabled
       ? [BullModule.registerQueue({ name: COMMERCIAL_OCR_QUEUE })]
       : []),

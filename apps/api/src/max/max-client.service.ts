@@ -547,6 +547,7 @@ export const MAX_API_SOURCE_TAGS = {
   KARAVAN_STOREFRONT_RELAY: 'karavan_storefront_relay',
   VK_PARSING: 'vk_parsing',
   PUBLISHER_POST_IMPORT: 'publisher_post_import',
+  PUBLISHER_AUTO_REPLY: 'publisher_auto_reply',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
   REQUIRED_SUBSCRIPTION_MEMBERSHIP: 'required_subscription_membership',

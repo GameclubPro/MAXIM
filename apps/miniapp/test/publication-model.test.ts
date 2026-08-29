@@ -566,6 +566,7 @@ test('previews Publisher-owned channel suggestions without importing Major chann
     moduleSettings: {
       revision: 3,
       chatComments: null,
+      autoRepliesEnabled: null,
       channelSuggestionsEnabled: true,
     },
     readiness: {

@@ -1,8 +1,10 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -15,12 +17,17 @@ import {
   type PublisherPostImportSession,
 } from '@maxim/contracts/publisher';
 import type { MaxUpdate } from '@maxim/contracts';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { PublicationLifecycle, PublisherPostImportStatus } from '../prisma/prisma-client';
+import {
+  PublicationLifecycle,
+  PublisherPostImportStatus,
+  PublisherPrivateFlowType,
+} from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildPublisherBotDescriptor } from './publisher-bot-descriptor';
 import { PublisherPostImportQueueService } from './publisher-post-import.queue';
+import { PublisherPrivateFlowLeaseService } from './publisher-private-flow-lease.service';
 
 const POST_IMPORT_WAITING_TTL_MS = 10 * 60_000;
 const POST_IMPORT_PROCESSING_TTL_MS = 15 * 60_000;
@@ -60,6 +67,7 @@ export class PublisherPostImportService {
     private readonly prisma: PrismaService,
     private readonly queue: PublisherPostImportQueueService,
     configService: ConfigService,
+    @Optional() private readonly privateFlows?: PublisherPrivateFlowLeaseService,
   ) {
     this.publisherBotId = buildPublisherBotDescriptor({
       id: configService.get<string>('MAX_PUBLISHER_BOT_ID'),
@@ -92,42 +100,43 @@ export class PublisherPostImportService {
       },
     });
     if (replay) {
+      await this.ensurePrivateFlow(replay);
       return this.present(replay);
     }
 
     const active = await this.findActiveSession(actorUserId);
     if (active) {
+      await this.ensurePrivateFlow(active);
       return this.present(active);
     }
 
     try {
-      const created = await this.prisma.publisherPostImportSession.create({
-        data: {
-          publisherBotId: this.publisherBotId,
-          actorUserId,
-          requestId: parsed.data.requestId,
-          startToken: randomBytes(18).toString('base64url'),
-          expiresAt: new Date(now.getTime() + POST_IMPORT_WAITING_TTL_MS),
-        },
+      const created = await this.createSessionWithPrivateFlow({
+        actorUserId,
+        requestId: parsed.data.requestId,
+        expiresAt: new Date(now.getTime() + POST_IMPORT_WAITING_TTL_MS),
       });
       return this.present(created);
     } catch (error: unknown) {
-      if (!this.isUniqueConflict(error)) {
-        throw error;
-      }
-      const concurrent =
-        (await this.prisma.publisherPostImportSession.findUnique({
-          where: {
-            publisherBotId_actorUserId_requestId: {
-              publisherBotId: this.publisherBotId,
-              actorUserId,
-              requestId: parsed.data.requestId,
-            },
+      const exactReplay = await this.prisma.publisherPostImportSession.findUnique({
+        where: {
+          publisherBotId_actorUserId_requestId: {
+            publisherBotId: this.publisherBotId,
+            actorUserId,
+            requestId: parsed.data.requestId,
           },
-        })) ?? (await this.findActiveSession(actorUserId));
+        },
+      });
+      if (exactReplay) {
+        await this.ensurePrivateFlow(exactReplay);
+        return this.present(exactReplay);
+      }
+      if (!this.isUniqueConflict(error)) throw error;
+      const concurrent = await this.findActiveSession(actorUserId);
       if (!concurrent) {
         throw error;
       }
+      await this.ensurePrivateFlow(concurrent);
       return this.present(concurrent);
     }
   }
@@ -210,19 +219,21 @@ export class PublisherPostImportService {
         expiresAt: new Date(now.getTime() + POST_IMPORT_RESULT_TTL_MS),
       },
     });
-    const current =
-      updated.count > 0
-        ? await this.prisma.publisherPostImportSession.findUnique({ where: { id: active.id } })
-        : await this.prisma.publisherPostImportSession.findUnique({ where: { id: active.id } });
+    const current = await this.prisma.publisherPostImportSession.findUnique({
+      where: { id: active.id },
+    });
     if (!current) {
       throw new NotFoundException('Активный импорт не найден.');
     }
-    await this.enqueueNotificationSafe({
-      sessionId: current.id,
-      notification: 'canceled',
-      privateChatId: current.privateChatId,
-      dedupeKey: `api-${current.updatedAt.getTime()}`,
-    });
+    if (updated.count === 1) {
+      await this.releasePrivateFlow(current);
+      await this.enqueueNotificationSafe({
+        sessionId: current.id,
+        notification: 'canceled',
+        privateChatId: current.privateChatId,
+        dedupeKey: `api-${current.updatedAt.getTime()}`,
+      });
+    }
     return this.present(current);
   }
 
@@ -311,6 +322,13 @@ export class PublisherPostImportService {
         return true;
       }
     }
+    const activeFlow = await this.privateFlows?.read(
+      this.publisherBotId,
+      privateMessage.actorUserId,
+    );
+    if (activeFlow && activeFlow.flowType !== PublisherPrivateFlowType.POST_IMPORT) {
+      return false;
+    }
     const session = await this.prisma.publisherPostImportSession.findFirst({
       where: {
         publisherBotId: this.publisherBotId,
@@ -328,6 +346,9 @@ export class PublisherPostImportService {
     });
     if (!session) {
       return false;
+    }
+    if (session.status === PublisherPostImportStatus.WAITING) {
+      await this.ensurePrivateFlow(session);
     }
     const importActive =
       session.status === PublisherPostImportStatus.WAITING ||
@@ -408,6 +429,7 @@ export class PublisherPostImportService {
       }),
       this.enqueueProcessSafe(session.id),
     ]);
+    await this.releasePrivateFlow(session);
     return true;
   }
 
@@ -428,6 +450,7 @@ export class PublisherPostImportService {
     if (!session) {
       return;
     }
+    await this.ensurePrivateFlow(session);
     await this.prisma.publisherPostImportSession.updateMany({
       where: { id: session.id, status: PublisherPostImportStatus.WAITING },
       data: {
@@ -463,7 +486,7 @@ export class PublisherPostImportService {
       return;
     }
     const now = new Date();
-    await this.prisma.publisherPostImportSession.updateMany({
+    const canceled = await this.prisma.publisherPostImportSession.updateMany({
       where: {
         id: session.id,
         publisherBotId: this.publisherBotId,
@@ -481,13 +504,16 @@ export class PublisherPostImportService {
         expiresAt: new Date(now.getTime() + POST_IMPORT_RESULT_TTL_MS),
       },
     });
-    await this.enqueueNotificationSafe({
-      sessionId: session.id,
-      notification: 'canceled',
-      privateChatId: session.privateChatId ?? update.message?.chatId,
-      callbackId: callback.callbackId,
-      dedupeKey: callback.callbackId ?? update.updateId,
-    });
+    if (canceled.count === 1) {
+      await this.enqueueNotificationSafe({
+        sessionId: session.id,
+        notification: 'canceled',
+        privateChatId: session.privateChatId ?? update.message?.chatId,
+        callbackId: callback.callbackId,
+        dedupeKey: callback.callbackId ?? update.updateId,
+      });
+      await this.releasePrivateFlow(session);
+    }
   }
 
   private extractImportStartToken(update: MaxUpdate): string | null {
@@ -606,6 +632,77 @@ export class PublisherPostImportService {
         },
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  }
+
+  private async ensurePrivateFlow(session: SessionRow): Promise<void> {
+    if (!this.privateFlows) return;
+    if (session.status !== PublisherPostImportStatus.WAITING) {
+      return;
+    }
+    const acquired = await this.privateFlows.acquire({
+      publisherBotId: session.publisherBotId,
+      actorUserId: session.actorUserId,
+      flowType: PublisherPrivateFlowType.POST_IMPORT,
+      flowId: session.id,
+      leaseToken: session.id,
+      expiresAt: session.expiresAt,
+    });
+    if (!acquired) {
+      throw new ConflictException({
+        code: 'PUBLISHER_PRIVATE_FLOW_CONFLICT',
+        message: 'Сначала завершите текущую операцию в диалоге Публика.',
+      });
+    }
+  }
+
+  private async createSessionWithPrivateFlow(params: {
+    actorUserId: string;
+    requestId: string;
+    expiresAt: Date;
+  }) {
+    const id = randomUUID();
+    const data = {
+      id,
+      publisherBotId: this.publisherBotId,
+      actorUserId: params.actorUserId,
+      requestId: params.requestId,
+      startToken: randomBytes(18).toString('base64url'),
+      expiresAt: params.expiresAt,
+    };
+    const privateFlows = this.privateFlows;
+    if (!privateFlows) {
+      return this.prisma.publisherPostImportSession.create({ data });
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const lease = await privateFlows.acquire(
+        {
+          publisherBotId: this.publisherBotId,
+          actorUserId: params.actorUserId,
+          flowType: PublisherPrivateFlowType.POST_IMPORT,
+          flowId: id,
+          leaseToken: id,
+          expiresAt: params.expiresAt,
+        },
+        tx,
+      );
+      if (!lease) {
+        throw new ConflictException({
+          code: 'PUBLISHER_PRIVATE_FLOW_CONFLICT',
+          message: 'Сначала завершите текущую операцию в диалоге Публика.',
+        });
+      }
+      return tx.publisherPostImportSession.create({ data });
+    });
+  }
+
+  private async releasePrivateFlow(session: SessionRow): Promise<void> {
+    await this.privateFlows?.release({
+      publisherBotId: session.publisherBotId,
+      actorUserId: session.actorUserId,
+      flowType: PublisherPrivateFlowType.POST_IMPORT,
+      flowId: session.id,
+      leaseToken: session.id,
     });
   }
 

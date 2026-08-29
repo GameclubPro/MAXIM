@@ -23,6 +23,7 @@ test('route budget config covers new route CSS surfaces', () => {
   for (const id of [
     'publications',
     'publisher-entity-modules',
+    'publisher-auto-replies',
     'events',
     'suggest',
     'legal',

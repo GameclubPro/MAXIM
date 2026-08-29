@@ -8,7 +8,7 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 124032,
+        "jsGzipBytes": 126080,
         "cssGzipBytes": 43008
       },
       "allowances": [
@@ -36,7 +36,7 @@
       "label": "Channel settings",
       "entries": ["src/pages/channel-settings-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 106496, "cssGzipBytes": 77824 }
+      "limits": { "jsGzipBytes": 107520, "cssGzipBytes": 77824 }
     },
     {
       "id": "comments",
@@ -85,7 +85,14 @@
       "label": "Publisher entity modules",
       "entries": ["src/pages/publisher-entity-modules-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 49152, "cssGzipBytes": 6144 }
+      "limits": { "jsGzipBytes": 51200, "cssGzipBytes": 6144 }
+    },
+    {
+      "id": "publisher-auto-replies",
+      "label": "Publisher auto replies",
+      "entries": ["src/pages/publisher-auto-replies-page.tsx"],
+      "baseline": "startup",
+      "limits": { "jsGzipBytes": 104448, "cssGzipBytes": 10240 }
     },
     {
       "id": "giveaway",

@@ -587,6 +587,8 @@ test('read-only BullMQ monitor batches counters and includes every Publisher que
   for (const queue of [
     'publisher-binding-refresh',
     'publisher-chat-comments',
+    'publisher-auto-replies',
+    'publisher-auto-reply-authoring',
     'publisher-post-import',
     'publisher-suggestion-publication',
     'vk-parsing-publisher',

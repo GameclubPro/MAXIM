@@ -35,6 +35,20 @@ import {
 } from './publisher-post-import.queue';
 import { PublisherPostImportService } from './publisher-post-import.service';
 import { PublisherPostImportRecoveryService } from './publisher-post-import-recovery.service';
+import {
+  PUBLISHER_AUTO_REPLY_QUEUE,
+  PublisherAutoReplyQueueService,
+} from './publisher-auto-reply.queue';
+import { PublisherAutoReplyProducerService } from './publisher-auto-reply-producer.service';
+import {
+  PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE,
+  PublisherAutoReplyAuthoringQueueService,
+} from './publisher-auto-reply-authoring.queue';
+import { PublisherAutoReplyAuthoringService } from './publisher-auto-reply-authoring.service';
+import { PublisherAutoReplyAuthoringRecoveryService } from './publisher-auto-reply-authoring-recovery.service';
+import { PublisherAutoReplyContentCaptureService } from './publisher-auto-reply-content-capture.service';
+import { PublisherPrivateDialogFlowRouterService } from './publisher-private-dialog-flow-router.service';
+import { PublisherPrivateFlowLeaseService } from './publisher-private-flow-lease.service';
 
 const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
   ? [
@@ -47,6 +61,8 @@ const publisherRuntimeProviders = roleRunsPublisher(getAppRole())
       PublisherBindingRefreshSchedulerService,
       PublisherWebhookSubscriptionReconcilerService,
       PublisherPostImportRecoveryService,
+      PublisherAutoReplyAuthoringRecoveryService,
+      PublisherAutoReplyContentCaptureService,
     ]
   : [];
 
@@ -62,6 +78,12 @@ const sharedPublisherProviders = [
   PublisherChatCommentProducerService,
   PublisherPostImportQueueService,
   PublisherPostImportService,
+  PublisherAutoReplyQueueService,
+  PublisherAutoReplyProducerService,
+  PublisherAutoReplyAuthoringQueueService,
+  PublisherAutoReplyAuthoringService,
+  PublisherPrivateFlowLeaseService,
+  PublisherPrivateDialogFlowRouterService,
 ];
 
 @Global()
@@ -72,6 +94,8 @@ const sharedPublisherProviders = [
       { name: PUBLISHER_BINDING_REFRESH_QUEUE },
       { name: PUBLISHER_CHAT_COMMENT_QUEUE },
       { name: PUBLISHER_POST_IMPORT_QUEUE },
+      { name: PUBLISHER_AUTO_REPLY_QUEUE },
+      { name: PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE },
     ),
   ],
   providers: [...sharedPublisherProviders, ...publisherRuntimeProviders],

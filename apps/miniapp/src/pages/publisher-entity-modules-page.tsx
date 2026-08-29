@@ -7,6 +7,7 @@ import {
   ChatBubble,
   CheckCircle,
   Download,
+  Key,
   NavArrowLeft,
   NavArrowRight,
   Post,
@@ -35,6 +36,7 @@ import {
   waitForPublisherRefresh,
 } from './publisher-entities-page-model';
 import {
+  buildPublisherAutoRepliesRoute,
   buildPublisherEntityListRoute,
   updatePublisherChatCommentSetting,
   type PublisherChatCommentSettingKey,
@@ -420,6 +422,26 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 />
               </div>
             </div>
+          </article>
+        ) : null}
+
+        {entity.entityType === 'chat' ? (
+          <article className="publisher-entity-module">
+            <span className="publisher-entity-module__icon is-auto-replies" aria-hidden>
+              <Key />
+            </span>
+            <span className="publisher-entity-module__copy">
+              <strong>Автоответы</strong>
+            </span>
+            <Link
+              to={buildPublisherAutoRepliesRoute(entity.id)}
+              state={{ chatTitle: entity.title }}
+              className="publisher-entity-module__action"
+              aria-label={`Открыть автоответы для ${entity.title || entity.id}`}
+            >
+              <span>Открыть</span>
+              <NavArrowRight aria-hidden />
+            </Link>
           </article>
         ) : null}
 

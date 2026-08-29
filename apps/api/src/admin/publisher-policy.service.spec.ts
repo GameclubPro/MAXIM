@@ -97,6 +97,7 @@ function createListEntity(
     chatCommentsAdminsEnabled: boolean;
     chatCommentsPostsEnabled: boolean;
     channelSuggestionsEnabled: boolean;
+    autoRepliesEnabled: boolean;
   } | null;
   publicationPolicy: {
     publikEnabled: boolean;
@@ -245,6 +246,7 @@ function createPolicyMutationFixture(
     chatCommentsAdminsEnabled: false,
     chatCommentsPostsEnabled: true,
     channelSuggestionsEnabled: true,
+    autoRepliesEnabled: false,
     revision: 1,
     updatedByUserId: user.userId,
     createdAt: updatedAt,
@@ -833,6 +835,7 @@ describe('PublisherPolicyService', () => {
         chatCommentsAdminsEnabled: false,
         chatCommentsPostsEnabled: true,
         channelSuggestionsEnabled: false,
+        autoRepliesEnabled: true,
       },
       publicationPolicy: null,
       publisherBinding: createConnectedPublisherBinding(),
@@ -893,6 +896,7 @@ describe('PublisherPolicyService', () => {
               commentsAdminsEnabled: false,
               commentsChatBroadcastsEnabled: true,
             },
+            autoRepliesEnabled: true,
             channelSuggestionsEnabled: null,
           },
         }),
@@ -902,6 +906,7 @@ describe('PublisherPolicyService', () => {
           moduleSettings: {
             revision: 0,
             chatComments: null,
+            autoRepliesEnabled: null,
             channelSuggestionsEnabled: false,
           },
         }),
@@ -1473,6 +1478,7 @@ describe('PublisherPolicyService', () => {
     ).resolves.toEqual({
       revision: 1,
       chatComments: null,
+      autoRepliesEnabled: null,
       channelSuggestionsEnabled: true,
     });
 
@@ -1522,6 +1528,7 @@ describe('PublisherPolicyService', () => {
     ).resolves.toEqual({
       revision: 5,
       chatComments,
+      autoRepliesEnabled: false,
       channelSuggestionsEnabled: null,
     });
 
@@ -1547,6 +1554,55 @@ describe('PublisherPolicyService', () => {
           changed: { chatComments },
           revision: 5,
         },
+      },
+    });
+  });
+
+  it('updates the chat auto-reply module switch with the same optimistic revision', async () => {
+    const fixture = createPolicyMutationFixture({
+      storedEntityType: ChatEntityType.CHAT,
+      publisherSettings: { revision: 2, autoRepliesEnabled: false },
+    });
+    fixture.tx.publisherEntitySettings.findUniqueOrThrow.mockResolvedValue({
+      revision: 3,
+      chatCommentsEnabled: true,
+      chatCommentsAdminsEnabled: false,
+      chatCommentsPostsEnabled: true,
+      channelSuggestionsEnabled: true,
+      autoRepliesEnabled: true,
+    });
+    jest.spyOn(fixture.service, 'getEntity').mockResolvedValue({ id: 'chat-1' } as never);
+
+    await expect(
+      fixture.service.updateModuleSettings('chat', 'chat-1', user, {
+        expectedRevision: 2,
+        autoRepliesEnabled: true,
+      }),
+    ).resolves.toEqual({
+      revision: 3,
+      chatComments: {
+        commentsEnabled: true,
+        commentsAdminsEnabled: false,
+        commentsChatBroadcastsEnabled: true,
+      },
+      autoRepliesEnabled: true,
+      channelSuggestionsEnabled: null,
+    });
+
+    expect(fixture.tx.publisherEntitySettings.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1', revision: 2 },
+      data: {
+        autoRepliesEnabled: true,
+        revision: { increment: 1 },
+        updatedByUserId: user.userId,
+      },
+    });
+    expect(fixture.tx.auditLog.create).toHaveBeenCalledWith({
+      data: {
+        chatId: 'chat-1',
+        actorUserId: user.userId,
+        action: 'UPDATE_PUBLISHER_MODULE_SETTINGS',
+        payload: { changed: { autoRepliesEnabled: true }, revision: 3 },
       },
     });
   });
@@ -1597,6 +1653,20 @@ describe('PublisherPolicyService', () => {
           commentsAdminsEnabled: false,
           commentsChatBroadcastsEnabled: false,
         },
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(fixture.prisma.chat.findUnique).not.toHaveBeenCalled();
+    expect(fixture.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects auto-reply module writes for channels before access checks', async () => {
+    const fixture = createPolicyMutationFixture();
+
+    await expect(
+      fixture.service.updateModuleSettings('channel', 'channel-1', user, {
+        expectedRevision: 0,
+        autoRepliesEnabled: true,
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
 

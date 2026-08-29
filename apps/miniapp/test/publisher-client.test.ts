@@ -242,6 +242,7 @@ test('publisher client sends all chat comment module settings as one revisioned 
           commentsAdminsEnabled: false,
           commentsChatBroadcastsEnabled: true,
         },
+        autoRepliesEnabled: false,
         channelSuggestionsEnabled: null,
       };
     },

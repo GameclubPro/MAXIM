@@ -1,0 +1,85 @@
+import { ConfigService } from '@nestjs/config';
+import type { MaxUpdate } from '@maxim/contracts';
+import { WebhookService } from './webhook.service';
+
+const update: MaxUpdate = {
+  updateId: 'update-1',
+  botId: 'publisher-bot',
+  type: 'message_created',
+  message: {
+    messageId: 'message-1',
+    chatId: '-100',
+    entityType: 'chat',
+    senderId: 'user-1',
+    text: 'прайс',
+    createdAt: '2026-08-29T12:00:00.000Z',
+  },
+};
+
+function createService(options: { consumed?: boolean; matched?: boolean } = {}) {
+  const lifecycle = { observeWebhook: jest.fn().mockResolvedValue(undefined) };
+  const comments = { observeWebhook: jest.fn().mockResolvedValue(undefined) };
+  const postImport = {
+    observeWebhook: jest.fn().mockResolvedValue(options.consumed ?? false),
+  };
+  const autoReplies = {
+    observeWebhook: jest.fn().mockResolvedValue({ matched: options.matched ?? true }),
+  };
+  const service = new WebhookService(
+    {} as never,
+    {
+      get: jest.fn((key: string, fallback?: unknown) =>
+        key === 'MAX_PUBLISHER_BOT_ID' ? 'publisher-bot' : fallback,
+      ),
+    } as unknown as ConfigService,
+    {} as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    lifecycle as never,
+    comments as never,
+    postImport as never,
+    autoReplies as never,
+  );
+  return { service, lifecycle, comments, postImport, autoReplies };
+}
+
+describe('Publisher auto-reply webhook ordering', () => {
+  it('keeps post import first and lifecycle before trigger matching', async () => {
+    const { service, lifecycle, comments, postImport, autoReplies } = createService();
+
+    await (service as any).observePublisherWebhook(update, 'webhook-1', false);
+
+    expect(postImport.observeWebhook).toHaveBeenCalledTimes(1);
+    expect(lifecycle.observeWebhook).toHaveBeenCalledTimes(1);
+    expect(autoReplies.observeWebhook).toHaveBeenCalledWith(update, 'webhook-1');
+    expect(postImport.observeWebhook.mock.invocationCallOrder[0]).toBeLessThan(
+      lifecycle.observeWebhook.mock.invocationCallOrder[0]!,
+    );
+    expect(lifecycle.observeWebhook.mock.invocationCallOrder[0]).toBeLessThan(
+      autoReplies.observeWebhook.mock.invocationCallOrder[0]!,
+    );
+    expect(comments.observeWebhook).not.toHaveBeenCalled();
+  });
+
+  it('does not let a private authoring/import flow fall through to lifecycle or triggers', async () => {
+    const { service, lifecycle, comments, autoReplies } = createService({ consumed: true });
+
+    await (service as any).observePublisherWebhook(update, 'webhook-1', false);
+
+    expect(lifecycle.observeWebhook).not.toHaveBeenCalled();
+    expect(autoReplies.observeWebhook).not.toHaveBeenCalled();
+    expect(comments.observeWebhook).not.toHaveBeenCalled();
+  });
+
+  it('allows chat-comments only when no auto-reply rule matched', async () => {
+    const { service, comments } = createService({ matched: false });
+
+    await (service as any).observePublisherWebhook(update, 'webhook-1', false);
+
+    expect(comments.observeWebhook).toHaveBeenCalledWith(update);
+  });
+});

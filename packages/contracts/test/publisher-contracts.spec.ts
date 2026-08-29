@@ -81,6 +81,7 @@ describe('publisher contracts', () => {
       moduleSettings: {
         revision: 0,
         chatComments: null,
+        autoRepliesEnabled: null,
         channelSuggestionsEnabled: null,
       },
     });
@@ -177,6 +178,7 @@ describe('publisher contracts', () => {
           commentsAdminsEnabled: false,
           commentsChatBroadcastsEnabled: true,
         },
+        autoRepliesEnabled: true,
         channelSuggestionsEnabled: null,
       },
       readiness: {
@@ -195,6 +197,7 @@ describe('publisher contracts', () => {
       commentsAdminsEnabled: false,
       commentsChatBroadcastsEnabled: true,
     });
+    expect(entity.moduleSettings.autoRepliesEnabled).toBe(true);
     expect(entity).not.toHaveProperty('settingsHandoffUrl');
     expect(entity).not.toHaveProperty('channelOverview');
   });

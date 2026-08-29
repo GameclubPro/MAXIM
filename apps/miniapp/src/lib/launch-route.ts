@@ -260,6 +260,10 @@ function normalizeRouteLaunchPath(value: string): string | null {
       return pathname;
     }
 
+    if (/^\/publisher\/chat\/[^/?#]+\/auto-replies$/u.test(pathname) && !parsed.search) {
+      return pathname;
+    }
+
     if (/^\/channel\/[^/?#]+\/stats$/u.test(pathname) && !parsed.search) {
       return pathname;
     }

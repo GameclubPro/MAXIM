@@ -1,0 +1,924 @@
+import {
+  archivePublisherAutoReplyRequestSchema,
+  archivePublisherAutoReplyResponseSchema,
+  createPublisherAutoReplyRequestSchema,
+  MAX_PUBLISHER_AUTO_REPLY_IMAGES,
+  MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH,
+  MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH,
+  normalizePublisherAutoReplyPhrase,
+  normalizePublisherAutoReplyPhraseDisplay,
+  publisherAutoReplyListResponseSchema,
+  publisherAutoReplyRequestIdSchema,
+  publisherAutoReplyRuleSchema,
+  updatePublisherAutoReplyRequestSchema,
+  type ArchivePublisherAutoReplyResponse,
+  type PublisherAutoReplyContentInput,
+  type PublisherAutoReplyListResponse,
+  type PublisherAutoReplyRule,
+} from '@maxim/contracts/publisher-auto-replies';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { MaxClientService } from '../max/max-client.service';
+import { MaxMediaUploadValidationError } from '../max/max-media-upload-validation';
+import { Prisma, PublicationContentFormat } from '../prisma/prisma-client';
+import { PrismaService } from '../prisma/prisma.service';
+import { canonicalizeAdminMaxMediaFileName } from './admin-max-media-file-name';
+import { isPrismaKnownError } from './admin-legacy-utils';
+import {
+  PUBLICATION_MAX_IMAGE_BYTES,
+  PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
+} from './publication-media-limits';
+import { PublisherPolicyService } from './publisher-policy.service';
+
+const AUTO_REPLY_RULE_INCLUDE = {
+  currentContentRevision: {
+    include: {
+      assets: {
+        orderBy: { position: 'asc' as const },
+        include: { asset: true },
+      },
+    },
+  },
+} satisfies Prisma.PublisherAutoReplyRuleInclude;
+
+type AutoReplyRuleRow = Prisma.PublisherAutoReplyRuleGetPayload<{
+  include: typeof AUTO_REPLY_RULE_INCLUDE;
+}>;
+
+export type PreparedPublisherAutoReplyImage =
+  | { kind: 'reference'; assetId: string }
+  | {
+      kind: 'prepared';
+      sha256: string;
+      mimeType: string;
+      fileName: string;
+      sizeBytes: number;
+      bytes: Buffer;
+    };
+
+export type PreparedPublisherAutoReplyContent = {
+  text: string;
+  textFormat: 'plain' | 'markdown';
+  images: PreparedPublisherAutoReplyImage[];
+};
+
+export type PersistPublisherAutoReplyContentParams = {
+  ruleId: string;
+  chatId: string;
+  revision: number;
+  actorUserId: string;
+  content: PreparedPublisherAutoReplyContent;
+};
+
+export type CreatePublisherAutoReplyFromPreparedContentParams = {
+  chatId: string;
+  actorUserId: string;
+  requestId: string;
+  sessionId: string;
+  phrase: string;
+  normalizedPhrase: string;
+  content: PreparedPublisherAutoReplyContent;
+};
+
+type PersistedContentSummary = {
+  id: string;
+  revision: number;
+  textLength: number;
+  textSha256: string;
+  textFormat: 'plain' | 'markdown';
+  images: Array<{
+    position: number;
+    assetId: string;
+    sha256: string;
+    mimeType: string;
+    sizeBytes: number;
+  }>;
+};
+
+@Injectable()
+export class PublisherAutoReplyService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly policy: PublisherPolicyService,
+    private readonly maxClient: MaxClientService,
+  ) {}
+
+  async list(chatId: string, user: AuthUser): Promise<PublisherAutoReplyListResponse> {
+    await this.policy.getEntity('chat', chatId, user);
+    const where = { chatId, archivedAt: null, currentContentRevisionId: { not: null } };
+    const [rows, total] = await Promise.all([
+      this.prisma.publisherAutoReplyRule.findMany({
+        where,
+        include: AUTO_REPLY_RULE_INCLUDE,
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      }),
+      this.prisma.publisherAutoReplyRule.count({ where }),
+    ]);
+    return publisherAutoReplyListResponseSchema.parse({
+      items: rows.map((row) => this.presentRule(row)),
+      total,
+    });
+  }
+
+  async get(chatId: string, ruleId: string, user: AuthUser): Promise<PublisherAutoReplyRule> {
+    await this.policy.getEntity('chat', chatId, user);
+    return this.presentRule(await this.requireRule(chatId, ruleId));
+  }
+
+  async create(chatId: string, user: AuthUser, body: unknown): Promise<PublisherAutoReplyRule> {
+    const parsed = createPublisherAutoReplyRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const entity = await this.policy.getEntity('chat', chatId, user);
+    const request = parsed.data;
+    const requestHash = this.hashMutationRequest({ operation: 'CREATE', chatId, request });
+    const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
+    if (replay) {
+      return this.presentRule(await this.requireRuleById(replay.ruleId, chatId, true));
+    }
+
+    const content = await this.prepareContent(request.content);
+    const normalizedPhrase = normalizePublisherAutoReplyPhrase(request.phrase);
+    let createdRuleId: string;
+    try {
+      createdRuleId = await this.prisma.$transaction(async (tx) => {
+        const rule = await tx.publisherAutoReplyRule.create({
+          data: {
+            chatId,
+            phrase: request.phrase,
+            normalizedPhrase,
+            enabled: request.enabled,
+            cooldownSeconds: request.cooldownSeconds,
+            createdByUserId: user.userId,
+            updatedByUserId: user.userId,
+          },
+          select: { id: true, version: true },
+        });
+        const persistedContent = await this.persistPreparedContentRevision(tx, {
+          ruleId: rule.id,
+          chatId,
+          revision: 1,
+          actorUserId: user.userId,
+          content,
+        });
+        await tx.publisherAutoReplyRule.update({
+          where: { id: rule.id },
+          data: { currentContentRevisionId: persistedContent.id },
+        });
+        const moduleEnable = await this.enableModuleIfNeeded(
+          tx,
+          chatId,
+          user.userId,
+          request.enabled && entity.moduleSettings.autoRepliesEnabled !== true,
+        );
+        if (moduleEnable) {
+          await this.auditModuleEnable(tx, chatId, user.userId, moduleEnable.revision);
+        }
+        await tx.publisherAutoReplyMutationRecord.create({
+          data: {
+            actorUserId: user.userId,
+            requestId: request.requestId,
+            requestHash,
+            operation: 'CREATE',
+            ruleId: rule.id,
+            resultingVersion: rule.version,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            chatId,
+            actorUserId: user.userId,
+            action: 'CREATE_PUBLISHER_AUTO_REPLY',
+            payload: {
+              ruleId: rule.id,
+              version: rule.version,
+              enabled: request.enabled,
+              cooldownSeconds: request.cooldownSeconds,
+              phrase: this.auditText(request.phrase),
+              content: persistedContent,
+              ...(moduleEnable
+                ? { autoRepliesModuleEnabled: true, moduleSettingsRevision: moduleEnable.revision }
+                : {}),
+            } satisfies Prisma.InputJsonValue,
+          },
+        });
+        return rule.id;
+      });
+    } catch (error: unknown) {
+      if (isPrismaKnownError(error, 'P2002')) {
+        const concurrentReplay = await this.findMutationReplay(
+          user.userId,
+          request.requestId,
+          requestHash,
+        );
+        if (concurrentReplay) {
+          return this.presentRule(
+            await this.requireRuleById(concurrentReplay.ruleId, chatId, true),
+          );
+        }
+        throw this.phraseConflict();
+      }
+      throw error;
+    }
+    return this.presentRule(await this.requireRule(chatId, createdRuleId));
+  }
+
+  async update(
+    chatId: string,
+    ruleId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<PublisherAutoReplyRule> {
+    const parsed = updatePublisherAutoReplyRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const entity = await this.policy.getEntity('chat', chatId, user);
+    const request = parsed.data;
+    const requestHash = this.hashMutationRequest({ operation: 'UPDATE', chatId, ruleId, request });
+    const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
+    if (replay) {
+      this.assertReplayRule(replay.ruleId, ruleId);
+      return this.presentRule(await this.requireRuleById(ruleId, chatId, true));
+    }
+
+    const existing = await this.requireRule(chatId, ruleId);
+    const content = request.content ? await this.prepareContent(request.content) : null;
+    const nextVersion = request.expectedVersion + 1;
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const changed = await tx.publisherAutoReplyRule.updateMany({
+          where: { id: ruleId, chatId, archivedAt: null, version: request.expectedVersion },
+          data: {
+            ...(request.phrase !== undefined
+              ? {
+                  phrase: request.phrase,
+                  normalizedPhrase: normalizePublisherAutoReplyPhrase(request.phrase),
+                }
+              : {}),
+            ...(request.enabled !== undefined ? { enabled: request.enabled } : {}),
+            ...(request.cooldownSeconds !== undefined
+              ? { cooldownSeconds: request.cooldownSeconds }
+              : {}),
+            updatedByUserId: user.userId,
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1) {
+          throw this.versionConflict();
+        }
+
+        let persistedContent: PersistedContentSummary | null = null;
+        if (content) {
+          persistedContent = await this.persistPreparedContentRevision(tx, {
+            ruleId,
+            chatId,
+            revision: existing.currentContentRevision!.revision + 1,
+            actorUserId: user.userId,
+            content,
+          });
+          await tx.publisherAutoReplyRule.update({
+            where: { id: ruleId },
+            data: { currentContentRevisionId: persistedContent.id },
+          });
+        }
+        const moduleEnable = await this.enableModuleIfNeeded(
+          tx,
+          chatId,
+          user.userId,
+          request.enabled === true && entity.moduleSettings.autoRepliesEnabled !== true,
+        );
+        if (moduleEnable) {
+          await this.auditModuleEnable(tx, chatId, user.userId, moduleEnable.revision);
+        }
+        await tx.publisherAutoReplyMutationRecord.create({
+          data: {
+            actorUserId: user.userId,
+            requestId: request.requestId,
+            requestHash,
+            operation: 'UPDATE',
+            ruleId,
+            resultingVersion: nextVersion,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            chatId,
+            actorUserId: user.userId,
+            action: 'UPDATE_PUBLISHER_AUTO_REPLY',
+            payload: {
+              ruleId,
+              version: nextVersion,
+              changed: {
+                ...(request.phrase !== undefined ? { phrase: this.auditText(request.phrase) } : {}),
+                ...(request.enabled !== undefined ? { enabled: request.enabled } : {}),
+                ...(request.cooldownSeconds !== undefined
+                  ? { cooldownSeconds: request.cooldownSeconds }
+                  : {}),
+                ...(persistedContent ? { content: persistedContent } : {}),
+              },
+              ...(moduleEnable
+                ? { autoRepliesModuleEnabled: true, moduleSettingsRevision: moduleEnable.revision }
+                : {}),
+            } satisfies Prisma.InputJsonValue,
+          },
+        });
+      });
+    } catch (error: unknown) {
+      if (isPrismaKnownError(error, 'P2002')) {
+        const concurrentReplay = await this.findMutationReplay(
+          user.userId,
+          request.requestId,
+          requestHash,
+        );
+        if (concurrentReplay) {
+          this.assertReplayRule(concurrentReplay.ruleId, ruleId);
+          return this.presentRule(await this.requireRuleById(ruleId, chatId, true));
+        }
+        throw this.phraseConflict();
+      }
+      throw error;
+    }
+    return this.presentRule(await this.requireRule(chatId, ruleId));
+  }
+
+  async archive(
+    chatId: string,
+    ruleId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ArchivePublisherAutoReplyResponse> {
+    const parsed = archivePublisherAutoReplyRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    await this.policy.getEntity('chat', chatId, user);
+    const request = parsed.data;
+    const requestHash = this.hashMutationRequest({ operation: 'ARCHIVE', chatId, ruleId, request });
+    const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
+    if (replay) {
+      this.assertReplayRule(replay.ruleId, ruleId);
+      return this.presentArchive(await this.requireRuleById(ruleId, chatId, true));
+    }
+
+    const archivedAt = new Date();
+    const nextVersion = request.expectedVersion + 1;
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const changed = await tx.publisherAutoReplyRule.updateMany({
+          where: { id: ruleId, chatId, archivedAt: null, version: request.expectedVersion },
+          data: {
+            archivedAt,
+            enabled: false,
+            updatedByUserId: user.userId,
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1) {
+          const exists = await tx.publisherAutoReplyRule.findFirst({
+            where: { id: ruleId, chatId },
+            select: { id: true },
+          });
+          if (!exists) {
+            throw new NotFoundException('Автоответ не найден.');
+          }
+          throw this.versionConflict();
+        }
+        await tx.publisherAutoReplyMutationRecord.create({
+          data: {
+            actorUserId: user.userId,
+            requestId: request.requestId,
+            requestHash,
+            operation: 'ARCHIVE',
+            ruleId,
+            resultingVersion: nextVersion,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            chatId,
+            actorUserId: user.userId,
+            action: 'ARCHIVE_PUBLISHER_AUTO_REPLY',
+            payload: { ruleId, version: nextVersion } satisfies Prisma.InputJsonValue,
+          },
+        });
+      });
+    } catch (error: unknown) {
+      if (isPrismaKnownError(error, 'P2002')) {
+        const concurrentReplay = await this.findMutationReplay(
+          user.userId,
+          request.requestId,
+          requestHash,
+        );
+        if (concurrentReplay) {
+          this.assertReplayRule(concurrentReplay.ruleId, ruleId);
+          return this.presentArchive(await this.requireRuleById(ruleId, chatId, true));
+        }
+      }
+      throw error;
+    }
+    return archivePublisherAutoReplyResponseSchema.parse({
+      id: ruleId,
+      archived: true,
+      version: nextVersion,
+      archivedAt: archivedAt.toISOString(),
+    });
+  }
+
+  async getAsset(
+    chatId: string,
+    ruleId: string,
+    assetId: string,
+    user: AuthUser,
+  ): Promise<{ bytes: Buffer; mimeType: string }> {
+    await this.policy.getEntity('chat', chatId, user);
+    const asset = await this.prisma.publisherAutoReplyAsset.findFirst({
+      where: {
+        id: assetId,
+        chatId,
+        contentLinks: { some: { contentRevision: { ruleId } } },
+      },
+      select: { bytes: true, mimeType: true },
+    });
+    if (!asset) {
+      throw new NotFoundException('Фото автоответа не найдено.');
+    }
+    return { bytes: Buffer.from(asset.bytes), mimeType: asset.mimeType };
+  }
+
+  /** Persists an archived bot-authoring draft after the caller has fenced its authoring session. */
+  async createFromPreparedContent(
+    params: CreatePublisherAutoReplyFromPreparedContentParams,
+  ): Promise<{ ruleId: string; contentRevisionId: string; version: number }> {
+    const requestId = publisherAutoReplyRequestIdSchema.parse(params.requestId);
+    const phrase = normalizePublisherAutoReplyPhraseDisplay(params.phrase);
+    if (!phrase || phrase.length > MAX_PUBLISHER_AUTO_REPLY_PHRASE_LENGTH) {
+      throw new BadRequestException('Кодовая фраза должна содержать от 1 до 80 символов.');
+    }
+    const normalizedPhrase = normalizePublisherAutoReplyPhrase(phrase);
+    if (params.normalizedPhrase !== normalizedPhrase) {
+      throw new BadRequestException('Нормализованная кодовая фраза не совпадает с исходной.');
+    }
+    if (!params.chatId.trim() || !params.actorUserId.trim() || !params.sessionId.trim()) {
+      throw new BadRequestException('Сценарий создания автоответа повреждён.');
+    }
+    this.assertPreparedContent(params.content);
+    const requestHash = this.hashMutationRequest({
+      operation: 'CREATE_DRAFT',
+      chatId: params.chatId,
+      sessionId: params.sessionId,
+      phrase,
+      normalizedPhrase,
+      content: this.preparedContentFingerprint(params.content),
+    });
+    const replay = await this.findMutationReplay(params.actorUserId, requestId, requestHash);
+    if (replay) {
+      const rule = await this.requireRuleById(replay.ruleId, params.chatId, true);
+      return {
+        ruleId: rule.id,
+        contentRevisionId: rule.currentContentRevision!.id,
+        version: rule.version,
+      };
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const archivedAt = new Date();
+        const rule = await tx.publisherAutoReplyRule.create({
+          data: {
+            chatId: params.chatId,
+            phrase,
+            normalizedPhrase,
+            enabled: false,
+            archivedAt,
+            authoringSessionId: params.sessionId,
+            createdByUserId: params.actorUserId,
+            updatedByUserId: params.actorUserId,
+          },
+          select: { id: true, version: true },
+        });
+        const persistedContent = await this.persistPreparedContentRevision(tx, {
+          ruleId: rule.id,
+          chatId: params.chatId,
+          revision: 1,
+          actorUserId: params.actorUserId,
+          content: params.content,
+        });
+        await tx.publisherAutoReplyRule.update({
+          where: { id: rule.id },
+          data: { currentContentRevisionId: persistedContent.id },
+        });
+        await tx.publisherAutoReplyMutationRecord.create({
+          data: {
+            actorUserId: params.actorUserId,
+            requestId,
+            requestHash,
+            operation: 'CREATE',
+            ruleId: rule.id,
+            resultingVersion: rule.version,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            chatId: params.chatId,
+            actorUserId: params.actorUserId,
+            action: 'CREATE_PUBLISHER_AUTO_REPLY_DRAFT',
+            payload: {
+              ruleId: rule.id,
+              sessionId: params.sessionId,
+              version: rule.version,
+              phrase: this.auditText(phrase),
+              content: persistedContent,
+            } satisfies Prisma.InputJsonValue,
+          },
+        });
+        return {
+          ruleId: rule.id,
+          contentRevisionId: persistedContent.id,
+          version: rule.version,
+        };
+      });
+    } catch (error: unknown) {
+      if (isPrismaKnownError(error, 'P2002')) {
+        const concurrentReplay = await this.findMutationReplay(
+          params.actorUserId,
+          requestId,
+          requestHash,
+        );
+        if (concurrentReplay) {
+          const rule = await this.requireRuleById(concurrentReplay.ruleId, params.chatId, true);
+          return {
+            ruleId: rule.id,
+            contentRevisionId: rule.currentContentRevision!.id,
+            version: rule.version,
+          };
+        }
+      }
+      throw error;
+    }
+  }
+
+  async prepareContent(
+    content: PublisherAutoReplyContentInput,
+  ): Promise<PreparedPublisherAutoReplyContent> {
+    const images: PreparedPublisherAutoReplyImage[] = [];
+    let totalBytes = 0;
+    for (const image of content.images) {
+      if (image.type === 'image-ref') {
+        images.push({ kind: 'reference', assetId: image.assetId });
+        continue;
+      }
+      const bytes = this.decodeImageBase64(image.base64);
+      if (bytes.length > PUBLICATION_MAX_IMAGE_BYTES) {
+        throw new BadRequestException('Фото слишком большое. Максимум 8 МБ.');
+      }
+      const validated = await this.validateImage(bytes);
+      totalBytes += bytes.length;
+      images.push({
+        kind: 'prepared',
+        sha256: this.sha256(bytes),
+        mimeType: validated.mimeType,
+        fileName: canonicalizeAdminMaxMediaFileName(
+          image.fileName,
+          validated.extension,
+          'auto-reply-image',
+        ),
+        sizeBytes: bytes.length,
+        bytes,
+      });
+    }
+    if (totalBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
+      throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
+    }
+    return { text: content.text, textFormat: content.textFormat, images };
+  }
+
+  async persistPreparedContentRevision(
+    tx: Prisma.TransactionClient,
+    params: PersistPublisherAutoReplyContentParams,
+  ): Promise<PersistedContentSummary> {
+    const contentRevision = await tx.publisherAutoReplyContentRevision.create({
+      data: {
+        ruleId: params.ruleId,
+        revision: params.revision,
+        text: params.content.text,
+        textFormat:
+          params.content.textFormat === 'markdown'
+            ? PublicationContentFormat.MARKDOWN
+            : PublicationContentFormat.PLAIN,
+        createdByUserId: params.actorUserId,
+      },
+      select: { id: true },
+    });
+    const linkedAssetIds = new Set<string>();
+    let totalBytes = 0;
+    const images: PersistedContentSummary['images'] = [];
+    for (const [position, image] of params.content.images.entries()) {
+      let asset: {
+        id: string;
+        sha256: string;
+        mimeType: string;
+        sizeBytes: number;
+      };
+      if (image.kind === 'reference') {
+        const retained = await tx.publisherAutoReplyAsset.findFirst({
+          where: { id: image.assetId, chatId: params.chatId },
+          select: { id: true, sha256: true, mimeType: true, sizeBytes: true },
+        });
+        if (!retained) {
+          throw new BadRequestException('Сохранённое фото автоответа больше недоступно.');
+        }
+        asset = retained;
+      } else {
+        asset = await tx.publisherAutoReplyAsset.upsert({
+          where: { chatId_sha256: { chatId: params.chatId, sha256: image.sha256 } },
+          create: {
+            chatId: params.chatId,
+            sha256: image.sha256,
+            mimeType: image.mimeType,
+            fileName: image.fileName,
+            sizeBytes: image.sizeBytes,
+            bytes: Uint8Array.from(image.bytes),
+            createdByUserId: params.actorUserId,
+          },
+          update: {},
+          select: { id: true, sha256: true, mimeType: true, sizeBytes: true },
+        });
+      }
+      if (linkedAssetIds.has(asset.id)) {
+        throw new BadRequestException('Одно и то же фото добавлено несколько раз.');
+      }
+      linkedAssetIds.add(asset.id);
+      totalBytes += asset.sizeBytes;
+      if (totalBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
+        throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
+      }
+      await tx.publisherAutoReplyContentAsset.create({
+        data: { contentRevisionId: contentRevision.id, assetId: asset.id, position },
+      });
+      images.push({ position, assetId: asset.id, ...asset });
+    }
+    return {
+      id: contentRevision.id,
+      revision: params.revision,
+      textLength: params.content.text.length,
+      textSha256: this.sha256(params.content.text),
+      textFormat: params.content.textFormat,
+      images,
+    };
+  }
+
+  private async requireRule(chatId: string, ruleId: string): Promise<AutoReplyRuleRow> {
+    return this.requireRuleById(ruleId, chatId, false);
+  }
+
+  private async requireRuleById(
+    ruleId: string,
+    chatId: string,
+    includeArchived: boolean,
+  ): Promise<AutoReplyRuleRow> {
+    const rule = await this.prisma.publisherAutoReplyRule.findFirst({
+      where: { id: ruleId, chatId, ...(includeArchived ? {} : { archivedAt: null }) },
+      include: AUTO_REPLY_RULE_INCLUDE,
+    });
+    if (!rule || !rule.currentContentRevision) {
+      throw new NotFoundException('Автоответ не найден.');
+    }
+    return rule;
+  }
+
+  private presentRule(rule: AutoReplyRuleRow): PublisherAutoReplyRule {
+    const content = rule.currentContentRevision;
+    if (!content) {
+      throw new NotFoundException('Контент автоответа не найден.');
+    }
+    return publisherAutoReplyRuleSchema.parse({
+      id: rule.id,
+      chatId: rule.chatId,
+      phrase: rule.phrase,
+      enabled: rule.enabled,
+      cooldownSeconds: rule.cooldownSeconds,
+      version: rule.version,
+      currentContentRevisionId: content.id,
+      content: {
+        id: content.id,
+        revision: content.revision,
+        text: content.text,
+        textFormat: content.textFormat === PublicationContentFormat.MARKDOWN ? 'markdown' : 'plain',
+        images: content.assets.map(({ asset }) => ({
+          id: asset.id,
+          mimeType: asset.mimeType,
+          fileName: asset.fileName,
+          sizeBytes: asset.sizeBytes,
+          previewUrl: this.assetPreviewUrl(rule.chatId, rule.id, asset.id),
+        })),
+        createdAt: content.createdAt.toISOString(),
+      },
+      createdByUserId: rule.createdByUserId,
+      updatedByUserId: rule.updatedByUserId,
+      createdAt: rule.createdAt.toISOString(),
+      updatedAt: rule.updatedAt.toISOString(),
+      archivedAt: rule.archivedAt?.toISOString() ?? null,
+    });
+  }
+
+  private presentArchive(rule: AutoReplyRuleRow): ArchivePublisherAutoReplyResponse {
+    if (!rule.archivedAt) {
+      throw this.versionConflict();
+    }
+    return archivePublisherAutoReplyResponseSchema.parse({
+      id: rule.id,
+      archived: true,
+      version: rule.version,
+      archivedAt: rule.archivedAt.toISOString(),
+    });
+  }
+
+  private assetPreviewUrl(chatId: string, ruleId: string, assetId: string): string {
+    return `/api/v1/publisher/entities/chat/${encodeURIComponent(chatId)}/auto-replies/${encodeURIComponent(ruleId)}/assets/${encodeURIComponent(assetId)}`;
+  }
+
+  private async findMutationReplay(actorUserId: string, requestId: string, requestHash: string) {
+    const record = await this.prisma.publisherAutoReplyMutationRecord.findUnique({
+      where: { actorUserId_requestId: { actorUserId, requestId } },
+      select: { ruleId: true, requestHash: true },
+    });
+    if (!record) {
+      return null;
+    }
+    if (record.requestHash !== requestHash) {
+      throw new BadRequestException('Ключ повтора уже использован для другого изменения.');
+    }
+    return record;
+  }
+
+  private async enableModuleIfNeeded(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    actorUserId: string,
+    shouldEnable: boolean,
+  ): Promise<{ revision: number } | null> {
+    if (!shouldEnable) {
+      return null;
+    }
+    return tx.publisherEntitySettings.upsert({
+      where: { chatId },
+      create: { chatId, autoRepliesEnabled: true, updatedByUserId: actorUserId },
+      update: {
+        autoRepliesEnabled: true,
+        revision: { increment: 1 },
+        updatedByUserId: actorUserId,
+      },
+      select: { revision: true },
+    });
+  }
+
+  private async auditModuleEnable(
+    tx: Prisma.TransactionClient,
+    chatId: string,
+    actorUserId: string,
+    revision: number,
+  ): Promise<void> {
+    await tx.auditLog.create({
+      data: {
+        chatId,
+        actorUserId,
+        action: 'UPDATE_PUBLISHER_MODULE_SETTINGS',
+        payload: {
+          changed: { autoRepliesEnabled: true },
+          revision,
+          source: 'publisher_auto_reply_rule',
+        } satisfies Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  private assertReplayRule(actualRuleId: string, expectedRuleId: string): void {
+    if (actualRuleId !== expectedRuleId) {
+      throw new BadRequestException('Ключ повтора относится к другому автоответу.');
+    }
+  }
+
+  private phraseConflict(): ConflictException {
+    return new ConflictException({
+      statusCode: 409,
+      code: 'PUBLISHER_AUTO_REPLY_PHRASE_CONFLICT',
+      message: 'Автоответ с такой кодовой фразой уже существует.',
+    });
+  }
+
+  private versionConflict(): ConflictException {
+    return new ConflictException({
+      statusCode: 409,
+      code: 'PUBLISHER_AUTO_REPLY_VERSION_CONFLICT',
+      message: 'Автоответ изменился. Обновите данные и повторите действие.',
+    });
+  }
+
+  private decodeImageBase64(value: string): Buffer {
+    const normalized = value.trim().replace(/^data:[^;]+;base64,/u, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized) || normalized.length % 4 !== 0) {
+      throw new BadRequestException('Фото повреждено. Добавьте файл заново.');
+    }
+    const bytes = Buffer.from(normalized, 'base64');
+    if (bytes.length === 0) {
+      throw new BadRequestException('Фото пустое.');
+    }
+    return bytes;
+  }
+
+  private async validateImage(bytes: Buffer) {
+    try {
+      return await this.maxClient.validateMediaUploadPayload('image', bytes);
+    } catch (error: unknown) {
+      if (error instanceof MaxMediaUploadValidationError) {
+        throw new BadRequestException(error.publicMessage);
+      }
+      throw error;
+    }
+  }
+
+  private assertPreparedContent(content: PreparedPublisherAutoReplyContent): void {
+    if (content.text.length > MAX_PUBLISHER_AUTO_REPLY_TEXT_LENGTH) {
+      throw new BadRequestException('Текст автоответа слишком длинный.');
+    }
+    if (content.text.trim().length === 0 && content.images.length === 0) {
+      throw new BadRequestException('Введите текст или добавьте фото.');
+    }
+    if (content.images.length > MAX_PUBLISHER_AUTO_REPLY_IMAGES) {
+      throw new BadRequestException('Можно добавить не больше 10 фото.');
+    }
+    let totalBytes = 0;
+    for (const image of content.images) {
+      if (image.kind === 'reference') {
+        if (!image.assetId.trim()) {
+          throw new BadRequestException('Ссылка на сохранённое фото повреждена.');
+        }
+        continue;
+      }
+      if (
+        image.bytes.length === 0 ||
+        image.bytes.length !== image.sizeBytes ||
+        image.sizeBytes > PUBLICATION_MAX_IMAGE_BYTES ||
+        !image.mimeType.toLowerCase().startsWith('image/') ||
+        image.sha256 !== this.sha256(image.bytes)
+      ) {
+        throw new BadRequestException('Подготовленное фото автоответа повреждено.');
+      }
+      totalBytes += image.sizeBytes;
+    }
+    if (totalBytes > PUBLICATION_MAX_TOTAL_IMAGE_BYTES) {
+      throw new BadRequestException('Суммарный размер фото превышает 24 МБ.');
+    }
+  }
+
+  private preparedContentFingerprint(content: PreparedPublisherAutoReplyContent) {
+    return {
+      text: content.text,
+      textFormat: content.textFormat,
+      images: content.images.map((image) =>
+        image.kind === 'reference'
+          ? { kind: image.kind, assetId: image.assetId }
+          : {
+              kind: image.kind,
+              sha256: image.sha256,
+              mimeType: image.mimeType,
+              fileName: image.fileName,
+              sizeBytes: image.sizeBytes,
+            },
+      ),
+    };
+  }
+
+  private auditText(value: string): { length: number; sha256: string } {
+    return { length: value.length, sha256: this.sha256(value) };
+  }
+
+  private sha256(value: string | Buffer): string {
+    return createHash('sha256').update(value).digest('hex');
+  }
+
+  private hashMutationRequest(value: unknown): string {
+    return this.sha256(this.stableStringify(value));
+  }
+
+  private stableStringify(value: unknown): string {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => this.stableStringify(item)).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+      return `{${Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => `${JSON.stringify(key)}:${this.stableStringify(item)}`)
+        .join(',')}}`;
+    }
+    return JSON.stringify(value);
+  }
+}

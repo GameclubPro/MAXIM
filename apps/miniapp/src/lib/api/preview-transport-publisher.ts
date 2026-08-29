@@ -29,6 +29,20 @@ import {
   type PublisherEntity,
   type PublisherSuggestion,
 } from '@maxim/contracts/publisher';
+import {
+  archivePublisherAutoReplyRequestSchema,
+  archivePublisherAutoReplyResponseSchema,
+  createPublisherAutoReplyAuthoringSessionRequestSchema,
+  createPublisherAutoReplyRequestSchema,
+  publisherAutoReplyAuthoringSessionCurrentResponseSchema,
+  publisherAutoReplyAuthoringSessionResponseSchema,
+  publisherAutoReplyListResponseSchema,
+  publisherAutoReplyRuleSchema,
+  updatePublisherAutoReplyRequestSchema,
+  type PublisherAutoReplyAuthoringSession,
+  type PublisherAutoReplyContentInput,
+  type PublisherAutoReplyRule,
+} from '@maxim/contracts/publisher-auto-replies';
 import { PREVIEW_CHAT_ID } from '../design-preview';
 import { ApiRequestError } from '../api-request-error';
 import { PREVIEW_NOT_HANDLED, type PreviewRequestHandler } from './preview-transport-runtime';
@@ -75,6 +89,83 @@ function getPreviewPublisherChannelSuggestions(state: PreviewState): Record<stri
   };
   extended.publisherChannelSuggestions ??= {};
   return extended.publisherChannelSuggestions;
+}
+
+function getPreviewPublisherAutoRepliesEnabled(state: PreviewState): Record<string, boolean> {
+  const extended = state as PreviewState & {
+    publisherAutoRepliesEnabled?: Record<string, boolean>;
+  };
+  extended.publisherAutoRepliesEnabled ??= {};
+  return extended.publisherAutoRepliesEnabled;
+}
+
+function getPreviewPublisherAutoReplies(
+  state: PreviewState,
+): Record<string, PublisherAutoReplyRule[]> {
+  const extended = state as PreviewState & {
+    publisherAutoReplies?: Record<string, PublisherAutoReplyRule[]>;
+  };
+  extended.publisherAutoReplies ??= {};
+  return extended.publisherAutoReplies;
+}
+
+function getPreviewPublisherAutoReplyAuthoring(
+  state: PreviewState,
+): Record<string, PublisherAutoReplyAuthoringSession | null> {
+  const extended = state as PreviewState & {
+    publisherAutoReplyAuthoring?: Record<string, PublisherAutoReplyAuthoringSession | null>;
+  };
+  extended.publisherAutoReplyAuthoring ??= {};
+  return extended.publisherAutoReplyAuthoring;
+}
+
+function buildPreviewAutoReplyAssetBlob(): Blob {
+  const binary = globalThis.atob(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  );
+  return new Blob([Uint8Array.from(binary, (character) => character.charCodeAt(0))], {
+    type: 'image/png',
+  });
+}
+
+function listPreviewPublisherAutoReplies(
+  state: PreviewState,
+  chatId: string,
+): PublisherAutoReplyRule[] {
+  const store = getPreviewPublisherAutoReplies(state);
+  store[chatId] ??= [
+    publisherAutoReplyRuleSchema.parse({
+      id: `preview-auto-reply-${chatId}-1`,
+      chatId,
+      phrase: 'Прайс',
+      enabled: true,
+      cooldownSeconds: 30,
+      version: 1,
+      currentContentRevisionId: `preview-auto-reply-content-${chatId}-1`,
+      content: {
+        id: `preview-auto-reply-content-${chatId}-1`,
+        revision: 1,
+        text: '**Актуальный прайс** уже готов. Напишите администратору, если нужна помощь.',
+        textFormat: 'markdown',
+        images: [
+          {
+            id: `preview-auto-reply-asset-${chatId}-1`,
+            mimeType: 'image/png',
+            fileName: 'price.png',
+            sizeBytes: 68,
+            previewUrl: `/publisher/entities/chat/${encodeURIComponent(chatId)}/auto-replies/preview-auto-reply-${encodeURIComponent(chatId)}-1/assets/preview-auto-reply-asset-${encodeURIComponent(chatId)}-1`,
+          },
+        ],
+        createdAt: state.clock.now().toISOString(),
+      },
+      createdByUserId: 'preview-user',
+      updatedByUserId: 'preview-user',
+      createdAt: state.clock.now().toISOString(),
+      updatedAt: state.clock.now().toISOString(),
+      archivedAt: null,
+    }),
+  ];
+  return store[chatId];
 }
 
 function getPreviewPublisherSuggestionReviews(
@@ -268,6 +359,10 @@ function buildPreviewPublisherEntity(
               commentsChatBroadcastsEnabled: false,
             })
           : null,
+      autoRepliesEnabled:
+        entityType === 'chat'
+          ? (getPreviewPublisherAutoRepliesEnabled(state)[entityId] ?? true)
+          : null,
       channelSuggestionsEnabled: entityType === 'channel' ? channelSuggestionsEnabled : null,
     },
     readiness,
@@ -368,6 +463,42 @@ function listPreviewPublisherEntitiesPage(state: PreviewState, url: URL) {
     filteredTotal: filtered.length,
     summary: summarizePreviewPublisherEntities(entities),
   });
+}
+
+function buildPreviewPublisherAutoReplyContent(
+  state: PreviewState,
+  chatId: string,
+  ruleId: string,
+  revision: number,
+  input: PublisherAutoReplyContentInput,
+  previous: PublisherAutoReplyRule['content'] | null,
+): PublisherAutoReplyRule['content'] {
+  const previousAssets = new Map(previous?.images.map((asset) => [asset.id, asset]) ?? []);
+  const images = input.images.map((image, index) => {
+    if (image.type === 'image-ref') {
+      const retained = previousAssets.get(image.assetId);
+      if (!retained) {
+        throw new ApiRequestError(400, '', 'Preview auto-reply asset not found');
+      }
+      return retained;
+    }
+    const id = `preview-auto-reply-asset-${ruleId}-${revision}-${index + 1}`;
+    return {
+      id,
+      mimeType: image.mimeType,
+      fileName: image.fileName,
+      sizeBytes: Math.max(1, Math.floor((image.base64.length * 3) / 4)),
+      previewUrl: `/publisher/entities/chat/${encodeURIComponent(chatId)}/auto-replies/${encodeURIComponent(ruleId)}/assets/${encodeURIComponent(id)}`,
+    };
+  });
+  return {
+    id: `preview-auto-reply-content-${ruleId}-${revision}`,
+    revision,
+    text: input.text,
+    textFormat: input.textFormat,
+    images,
+    createdAt: state.clock.now().toISOString(),
+  };
 }
 
 export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
@@ -524,6 +655,147 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
   if (!entity) {
     throw new ApiRequestError(404, '', 'Preview publisher entity not found');
   }
+  if (entityType === 'chat' && segments[4] === 'auto-replies') {
+    const rules = listPreviewPublisherAutoReplies(state, entityId);
+    if (segments.length === 5 && method === 'GET') {
+      return publisherAutoReplyListResponseSchema.parse({ items: rules, total: rules.length });
+    }
+    if (segments.length === 5 && method === 'POST') {
+      const request = createPublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
+      const ruleId = `preview-auto-reply-${entityId}-${rules.length + 1}`;
+      const content = buildPreviewPublisherAutoReplyContent(
+        state,
+        entityId,
+        ruleId,
+        1,
+        request.content,
+        null,
+      );
+      const rule = publisherAutoReplyRuleSchema.parse({
+        id: ruleId,
+        chatId: entityId,
+        phrase: request.phrase,
+        enabled: request.enabled,
+        cooldownSeconds: request.cooldownSeconds,
+        version: 1,
+        currentContentRevisionId: content.id,
+        content,
+        createdByUserId: 'preview-user',
+        updatedByUserId: 'preview-user',
+        createdAt: state.clock.now().toISOString(),
+        updatedAt: state.clock.now().toISOString(),
+        archivedAt: null,
+      });
+      rules.unshift(rule);
+      return rule;
+    }
+    if (segments[5] === 'authoring-sessions') {
+      const sessions = getPreviewPublisherAutoReplyAuthoring(state);
+      if (segments.length === 6 && method === 'POST') {
+        createPublisherAutoReplyAuthoringSessionRequestSchema.parse(parseJsonBody(init));
+        const session = {
+          id: `preview-auto-reply-authoring-${entityId}`,
+          state: 'awaiting_start' as const,
+          targetChatId: entityId,
+          phrase: null,
+          ruleId: null,
+          contentRevisionId: null,
+          expiresAt: new Date(state.clock.now().getTime() + 15 * 60_000).toISOString(),
+        };
+        sessions[entityId] = session;
+        return publisherAutoReplyAuthoringSessionResponseSchema.parse({
+          session,
+          botUrl: `https://max.ru/publik_preview_bot?start=ar_${encodeURIComponent(entityId)}`,
+        });
+      }
+      if (segments.length === 7 && segments[6] === 'current' && method === 'GET') {
+        const session = sessions[entityId] ?? null;
+        return publisherAutoReplyAuthoringSessionCurrentResponseSchema.parse({
+          session,
+          botUrl: session
+            ? `https://max.ru/publik_preview_bot?start=ar_${encodeURIComponent(entityId)}`
+            : null,
+        });
+      }
+      if (segments.length === 7 && segments[6] === 'current' && method === 'DELETE') {
+        sessions[entityId] = null;
+        return publisherAutoReplyAuthoringSessionCurrentResponseSchema.parse({
+          session: null,
+          botUrl: null,
+        });
+      }
+    }
+    if (
+      segments.length === 8 &&
+      segments[5] &&
+      segments[6] === 'assets' &&
+      segments[7] &&
+      method === 'GET'
+    ) {
+      const rule = rules.find((item) => item.id === decodeURIComponent(segments[5]));
+      const assetId = decodeURIComponent(segments[7]);
+      if (!rule?.content.images.some((asset) => asset.id === assetId)) {
+        throw new ApiRequestError(404, '', 'Preview auto-reply asset not found');
+      }
+      return buildPreviewAutoReplyAssetBlob();
+    }
+    if (segments.length === 6 && segments[5] && method === 'PATCH') {
+      const ruleId = decodeURIComponent(segments[5]);
+      const index = rules.findIndex((item) => item.id === ruleId);
+      const current = rules[index];
+      if (!current) {
+        throw new ApiRequestError(404, '', 'Preview auto-reply not found');
+      }
+      const request = updatePublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
+      if (request.expectedVersion !== current.version) {
+        throw new ApiRequestError(409, '', 'Preview auto-reply version conflict');
+      }
+      const version = current.version + 1;
+      const content = request.content
+        ? buildPreviewPublisherAutoReplyContent(
+            state,
+            entityId,
+            ruleId,
+            current.content.revision + 1,
+            request.content,
+            current.content,
+          )
+        : current.content;
+      const updated = publisherAutoReplyRuleSchema.parse({
+        ...current,
+        ...(request.phrase !== undefined ? { phrase: request.phrase } : {}),
+        ...(request.enabled !== undefined ? { enabled: request.enabled } : {}),
+        ...(request.cooldownSeconds !== undefined
+          ? { cooldownSeconds: request.cooldownSeconds }
+          : {}),
+        version,
+        currentContentRevisionId: content.id,
+        content,
+        updatedAt: state.clock.now().toISOString(),
+      });
+      rules[index] = updated;
+      return updated;
+    }
+    if (segments.length === 6 && segments[5] && method === 'DELETE') {
+      const ruleId = decodeURIComponent(segments[5]);
+      const index = rules.findIndex((item) => item.id === ruleId);
+      const current = rules[index];
+      if (!current) {
+        throw new ApiRequestError(404, '', 'Preview auto-reply not found');
+      }
+      const request = archivePublisherAutoReplyRequestSchema.parse(parseJsonBody(init));
+      if (request.expectedVersion !== current.version) {
+        throw new ApiRequestError(409, '', 'Preview auto-reply version conflict');
+      }
+      rules.splice(index, 1);
+      return archivePublisherAutoReplyResponseSchema.parse({
+        id: current.id,
+        archived: true,
+        version: current.version + 1,
+        archivedAt: state.clock.now().toISOString(),
+      });
+    }
+  }
   if (segments.length === 4 && method === 'GET') {
     return entity;
   }
@@ -596,6 +868,9 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
     if (entityType === 'channel' && request.channelSuggestionsEnabled !== undefined) {
       getPreviewPublisherChannelSuggestions(state)[entityId] = request.channelSuggestionsEnabled;
     }
+    if (entityType === 'chat' && request.autoRepliesEnabled !== undefined) {
+      getPreviewPublisherAutoRepliesEnabled(state)[entityId] = request.autoRepliesEnabled;
+    }
     const revision = entity.moduleSettings.revision + 1;
     getPreviewPublisherModuleRevisions(state)[`${entityType}:${entityId}`] = revision;
     return publisherEntityModuleSettingsSchema.parse({
@@ -603,6 +878,11 @@ export const handlePublisherPreviewRequest: PreviewRequestHandler = ({
       chatComments:
         entityType === 'chat'
           ? (getPreviewPublisherChatComments(state)[entityId] ?? entity.moduleSettings.chatComments)
+          : null,
+      autoRepliesEnabled:
+        entityType === 'chat'
+          ? (getPreviewPublisherAutoRepliesEnabled(state)[entityId] ??
+            entity.moduleSettings.autoRepliesEnabled)
           : null,
       channelSuggestionsEnabled:
         entityType === 'channel'

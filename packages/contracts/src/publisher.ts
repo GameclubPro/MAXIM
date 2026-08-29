@@ -61,6 +61,7 @@ export const publisherEntityModuleSettingsSchema = z
   .object({
     revision: z.number().int().min(0),
     chatComments: publisherChatCommentSettingsSchema.nullable(),
+    autoRepliesEnabled: z.boolean().nullable(),
     channelSuggestionsEnabled: z.boolean().nullable(),
   })
   .strict();
@@ -88,6 +89,7 @@ export const publisherEntitySchema = z
     moduleSettings: publisherEntityModuleSettingsSchema.default({
       revision: 0,
       chatComments: null,
+      autoRepliesEnabled: null,
       channelSuggestionsEnabled: null,
     }),
     readiness: publisherEntityReadinessSchema,
@@ -319,10 +321,14 @@ export const updatePublisherEntityModuleSettingsRequestSchema = z
     expectedRevision: z.number().int().min(0),
     channelSuggestionsEnabled: z.boolean().optional(),
     chatComments: publisherChatCommentSettingsSchema.optional(),
+    autoRepliesEnabled: z.boolean().optional(),
   })
   .strict()
   .refine(
-    (value) => value.channelSuggestionsEnabled !== undefined || value.chatComments !== undefined,
+    (value) =>
+      value.channelSuggestionsEnabled !== undefined ||
+      value.chatComments !== undefined ||
+      value.autoRepliesEnabled !== undefined,
     'Specify at least one Publisher module setting',
   );
 export type UpdatePublisherEntityModuleSettingsRequest = z.infer<

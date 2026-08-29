@@ -24,6 +24,8 @@ import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { PUBLISHER_BINDING_REFRESH_QUEUE } from '../publisher/publisher-binding-refresh.queue';
 import { PUBLISHER_CHAT_COMMENT_QUEUE } from '../publisher/publisher-chat-comment.queue';
 import { PUBLISHER_POST_IMPORT_QUEUE } from '../publisher/publisher-post-import.queue';
+import { PUBLISHER_AUTO_REPLY_QUEUE } from '../publisher/publisher-auto-reply.queue';
+import { PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE } from '../publisher/publisher-auto-reply-authoring.queue';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
 import { COMMERCIAL_OCR_QUEUE } from '../moderation/commercial-ocr/commercial-ocr.queue';
 import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
@@ -66,6 +68,8 @@ export const AUXILIARY_QUEUE_NAMES = [
   PUBLISHER_BINDING_REFRESH_QUEUE,
   PUBLISHER_CHAT_COMMENT_QUEUE,
   PUBLISHER_POST_IMPORT_QUEUE,
+  PUBLISHER_AUTO_REPLY_QUEUE,
+  PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE,
   PUBLISHER_SUGGESTION_PUBLICATION_QUEUE,
   NIGHT_MODE_TRANSITION_QUEUE,
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,

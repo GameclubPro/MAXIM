@@ -16,6 +16,8 @@ import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-
 import { PHOTO_DUPLICATE_QUEUE } from '../moderation/photo-duplicate/photo-duplicate.queue';
 import { PUBLISHER_BINDING_REFRESH_QUEUE } from '../publisher/publisher-binding-refresh.queue';
 import { PUBLISHER_CHAT_COMMENT_QUEUE } from '../publisher/publisher-chat-comment.queue';
+import { PUBLISHER_AUTO_REPLY_QUEUE } from '../publisher/publisher-auto-reply.queue';
+import { PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE } from '../publisher/publisher-auto-reply-authoring.queue';
 import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
 
 function createQueueMock(counts: {
@@ -197,6 +199,22 @@ describe('QueueMetricsService', () => {
         delayed: 4,
         failed: 6,
         completed: 31,
+      }),
+      [getQueueToken(PUBLISHER_AUTO_REPLY_QUEUE)]: createQueueMock({
+        waiting: 4,
+        prioritized: 2,
+        active: 1,
+        delayed: 3,
+        failed: 1,
+        completed: 18,
+      }),
+      [getQueueToken(PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE)]: createQueueMock({
+        waiting: 2,
+        prioritized: 1,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 9,
       }),
       [getQueueToken(PUBLISHER_SUGGESTION_PUBLICATION_QUEUE)]: createQueueMock({
         waiting: 9,
@@ -421,6 +439,16 @@ describe('QueueMetricsService', () => {
       waiting: 7,
       active: 2,
       failed: 6,
+    });
+    expect(snapshot.auxiliaryQueues[PUBLISHER_AUTO_REPLY_QUEUE]).toMatchObject({
+      waiting: 4,
+      active: 1,
+      failed: 1,
+    });
+    expect(snapshot.auxiliaryQueues[PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE]).toMatchObject({
+      waiting: 2,
+      active: 1,
+      failed: 0,
     });
     expect(snapshot.auxiliaryQueues[PUBLISHER_SUGGESTION_PUBLICATION_QUEUE]).toMatchObject({
       waiting: 9,

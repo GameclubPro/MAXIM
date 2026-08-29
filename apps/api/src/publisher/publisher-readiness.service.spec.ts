@@ -43,6 +43,7 @@ function readySource(overrides: Partial<PublisherReadinessSource> = {}): Publish
     publisherSettings: {
       chatCommentsEnabled: true,
       channelSuggestionsEnabled: false,
+      autoRepliesEnabled: true,
     },
     publisherBinding: {
       publisherBotId: 'publik-bot',
@@ -99,6 +100,7 @@ describe('PublisherReadinessService', () => {
       publisherSettings: {
         chatCommentsEnabled: false,
         channelSuggestionsEnabled: true,
+        autoRepliesEnabled: false,
       },
     });
     expect(createService().resolveReadiness(source, { runtimeAvailable: true })).toMatchObject({
@@ -148,6 +150,18 @@ describe('PublisherReadinessService', () => {
         publisherSettings: {
           chatCommentsEnabled: false,
           channelSuggestionsEnabled: false,
+          autoRepliesEnabled: false,
+        },
+      }),
+    ],
+    [
+      'auto replies',
+      'auto_replies' as const,
+      readySource({
+        publisherSettings: {
+          chatCommentsEnabled: false,
+          channelSuggestionsEnabled: false,
+          autoRepliesEnabled: false,
         },
       }),
     ],
@@ -159,6 +173,7 @@ describe('PublisherReadinessService', () => {
         publisherSettings: {
           chatCommentsEnabled: false,
           channelSuggestionsEnabled: false,
+          autoRepliesEnabled: false,
         },
       }),
     ],

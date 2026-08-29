@@ -37,7 +37,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { PublisherEntityBindingLifecycleService } from '../publisher/publisher-entity-binding-lifecycle.service';
 import { PublisherChatCommentProducerService } from '../publisher/publisher-chat-comment-producer.service';
-import { PublisherPostImportService } from '../publisher/publisher-post-import.service';
+import { PublisherPrivateDialogFlowRouterService } from '../publisher/publisher-private-dialog-flow-router.service';
+import { PublisherAutoReplyProducerService } from '../publisher/publisher-auto-reply-producer.service';
 import {
   buildWebhookSemanticEventKey,
   readWebhookEventTimestamp,
@@ -231,7 +232,9 @@ export class WebhookService {
     private readonly publisherBindingLifecycle?: PublisherEntityBindingLifecycleService,
     @Optional()
     private readonly publisherChatCommentProducer?: PublisherChatCommentProducerService,
-    @Optional() private readonly publisherPostImport?: PublisherPostImportService,
+    @Optional() private readonly publisherPrivateDialogFlows?: PublisherPrivateDialogFlowRouterService,
+    @Optional()
+    private readonly publisherAutoReplyProducer?: PublisherAutoReplyProducerService,
   ) {
     const configuredPublisherBotId = configService.get<unknown>('MAX_PUBLISHER_BOT_ID');
     this.publisherBotId = buildPublisherBotDescriptor({
@@ -872,14 +875,20 @@ export class WebhookService {
     webhookEventId: string | null,
     duplicate: boolean,
   ): Promise<void> {
-    const consumed = await this.publisherPostImport?.observeWebhook(update, webhookEventId, {
+    const consumed = await this.publisherPrivateDialogFlows?.observeWebhook(update, webhookEventId, {
       duplicate,
     });
     if (consumed) {
       return;
     }
     await this.requirePublisherBindingLifecycle().observeWebhook(update);
-    await this.publisherChatCommentProducer?.observeWebhook(update);
+    const autoReply = await this.publisherAutoReplyProducer?.observeWebhook(
+      update,
+      webhookEventId,
+    );
+    if (!autoReply?.matched) {
+      await this.publisherChatCommentProducer?.observeWebhook(update);
+    }
   }
 
   private async stageManagedEntityPendingBootstrap(update: MaxUpdate): Promise<void> {

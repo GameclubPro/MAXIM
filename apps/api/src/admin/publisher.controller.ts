@@ -22,6 +22,8 @@ import { PublisherEntityRefreshService } from './publisher-entity-refresh.servic
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
 import { PublisherPostImportService } from '../publisher/publisher-post-import.service';
+import { PublisherAutoReplyService } from './publisher-auto-reply.service';
+import { PublisherAutoReplyAuthoringService } from '../publisher/publisher-auto-reply-authoring.service';
 
 @Controller('v1/publisher')
 @UseGuards(InitDataGuard)
@@ -32,6 +34,8 @@ export class PublisherController {
     private readonly entityRefreshService: PublisherEntityRefreshService,
     private readonly suggestionService: PublisherSuggestionService,
     private readonly postImportService: PublisherPostImportService,
+    private readonly autoReplyService: PublisherAutoReplyService,
+    private readonly autoReplyAuthoringService: PublisherAutoReplyAuthoringService,
   ) {}
 
   @Post('post-imports')
@@ -85,6 +89,92 @@ export class PublisherController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.policyService.getEntity(this.parseEntityType(entityType), entityId, user);
+  }
+
+  @Get('entities/chat/:entityId/auto-replies')
+  listAutoReplies(@Param('entityId') entityId: string, @CurrentUser() user: AuthUser) {
+    return this.autoReplyService.list(entityId, user);
+  }
+
+  @Get('entities/chat/:entityId/auto-replies/:ruleId')
+  getAutoReply(
+    @Param('entityId') entityId: string,
+    @Param('ruleId') ruleId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.autoReplyService.get(entityId, ruleId, user);
+  }
+
+  @Post('entities/chat/:entityId/auto-replies/authoring-sessions')
+  async createAutoReplyAuthoringSession(
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    await this.policyService.getEntity('chat', entityId, user);
+    return this.autoReplyAuthoringService.create(user, entityId, body);
+  }
+
+  @Get('entities/chat/:entityId/auto-replies/authoring-sessions/current')
+  async getCurrentAutoReplyAuthoringSession(
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.policyService.getEntity('chat', entityId, user);
+    return this.autoReplyAuthoringService.getCurrent(user, entityId);
+  }
+
+  @Delete('entities/chat/:entityId/auto-replies/authoring-sessions/current')
+  async cancelCurrentAutoReplyAuthoringSession(
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.policyService.getEntity('chat', entityId, user);
+    return this.autoReplyAuthoringService.cancelCurrent(user, entityId);
+  }
+
+  @Post('entities/chat/:entityId/auto-replies')
+  createAutoReply(
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.autoReplyService.create(entityId, user, body);
+  }
+
+  @Patch('entities/chat/:entityId/auto-replies/:ruleId')
+  updateAutoReply(
+    @Param('entityId') entityId: string,
+    @Param('ruleId') ruleId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.autoReplyService.update(entityId, ruleId, user, body);
+  }
+
+  @Delete('entities/chat/:entityId/auto-replies/:ruleId')
+  archiveAutoReply(
+    @Param('entityId') entityId: string,
+    @Param('ruleId') ruleId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.autoReplyService.archive(entityId, ruleId, user, body);
+  }
+
+  @Get('entities/chat/:entityId/auto-replies/:ruleId/assets/:assetId')
+  async getAutoReplyAsset(
+    @Param('entityId') entityId: string,
+    @Param('ruleId') ruleId: string,
+    @Param('assetId') assetId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const asset = await this.autoReplyService.getAsset(entityId, ruleId, assetId, user);
+    reply.header('Cache-Control', 'private, no-store');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.type(asset.mimeType);
+    reply.send(asset.bytes);
   }
 
   @Post('entities/resolve')

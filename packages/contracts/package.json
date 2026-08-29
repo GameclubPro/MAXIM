@@ -66,6 +66,10 @@
       "types": "./dist/publisher.d.ts",
       "default": "./dist/publisher.js"
     },
+    "./publisher-auto-replies": {
+      "types": "./dist/publisher-auto-replies.d.ts",
+      "default": "./dist/publisher-auto-replies.js"
+    },
     "./safety-desk": {
       "types": "./dist/safety-desk.d.ts",
       "default": "./dist/safety-desk.js"

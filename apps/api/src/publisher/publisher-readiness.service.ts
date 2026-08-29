@@ -24,6 +24,7 @@ export type PublisherFeature =
   | 'publication'
   | 'vk_publish'
   | 'chat_comments'
+  | 'auto_replies'
   | 'suggestion_publish';
 
 type PublicationPolicyRow = {
@@ -35,6 +36,7 @@ type PublicationPolicyRow = {
 type PublisherSettingsRow = {
   chatCommentsEnabled: boolean;
   channelSuggestionsEnabled: boolean;
+  autoRepliesEnabled: boolean;
 } | null;
 
 type PublisherBindingRow = {
@@ -315,6 +317,10 @@ export class PublisherReadinessService {
     const allowed =
       feature === 'chat_comments'
         ? readiness.canUseChatComments
+        : feature === 'auto_replies'
+          ? readiness.state === 'ready' &&
+            source.entityType === ChatEntityType.CHAT &&
+            source.publisherSettings?.autoRepliesEnabled === true
         : feature === 'suggestion_publish'
           ? readiness.canPublishSuggestions
           : readiness.canPublish;

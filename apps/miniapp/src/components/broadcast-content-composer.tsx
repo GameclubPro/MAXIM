@@ -50,6 +50,7 @@ type BroadcastContentComposerProps = {
   image?: BroadcastContentComposerImage;
   images?: BroadcastImage[];
   maxImages?: number;
+  allowImages?: boolean;
   buttons?: BroadcastLinkButton[];
   systemButtons?: BroadcastSystemButtonPreview[];
   buttonsStatusLabel?: string;
@@ -81,6 +82,7 @@ export function BroadcastContentComposer({
   image,
   images,
   maxImages,
+  allowImages = true,
   buttons = [],
   systemButtons = [],
   buttonsStatusLabel = 'Без кнопки',
@@ -184,6 +186,11 @@ export function BroadcastContentComposer({
   }
 
   async function handleImageFiles(files: FileList | File[] | null) {
+    if (!allowImages) {
+      onError?.('Сначала уберите одно из добавленных фото.');
+      return;
+    }
+
     const selectedFiles = Array.from(files ?? []);
     if (selectedFiles.length === 0) {
       return;
@@ -450,11 +457,14 @@ export function BroadcastContentComposer({
                     'broadcast-content-composer__tool--native-file',
                     showToolLabels && 'has-label',
                     imagePreviewItems.length > 0 && 'is-active',
-                    (isBusy || imagePreviewItems.length >= maxImageCount) && 'is-disabled',
+                    (!allowImages || isBusy || imagePreviewItems.length >= maxImageCount) &&
+                      'is-disabled',
                   )}
                   aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                   title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-                  aria-disabled={isBusy || imagePreviewItems.length >= maxImageCount}
+                  aria-disabled={
+                    !allowImages || isBusy || imagePreviewItems.length >= maxImageCount
+                  }
                 >
                   <IconoirCamera aria-hidden focusable="false" />
                   {showToolLabels ? (
@@ -466,7 +476,7 @@ export function BroadcastContentComposer({
                     type="file"
                     accept="image/*"
                     multiple={maxImageCount > 1}
-                    disabled={isBusy || imagePreviewItems.length >= maxImageCount}
+                    disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
                     onChange={(event) => void handleImageFiles(event.currentTarget.files)}
                     aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                   />
@@ -481,7 +491,7 @@ export function BroadcastContentComposer({
                       imagePreviewItems.length > 0 && 'is-active',
                     )}
                     onClick={() => openFileInputPicker(imageInputRef.current)}
-                    disabled={isBusy || imagePreviewItems.length >= maxImageCount}
+                    disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
                     aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                     title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                   >
@@ -496,7 +506,7 @@ export function BroadcastContentComposer({
                     type="file"
                     accept="image/*"
                     multiple={maxImageCount > 1}
-                    disabled={isBusy}
+                    disabled={!allowImages || isBusy}
                     onChange={(event) => void handleImageFiles(event.currentTarget.files)}
                     tabIndex={-1}
                   />

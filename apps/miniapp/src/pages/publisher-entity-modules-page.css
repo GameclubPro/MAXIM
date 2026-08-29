@@ -251,6 +251,12 @@
     color: var(--publisher-modules-ready);
   }
 
+  .publisher-entity-module__icon.is-auto-replies {
+    border-color: var(--color-border-strong);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
   .publisher-entity-module__icon.is-suggestions {
     border-color: var(--color-border-strong);
     background: var(--color-surface-muted);

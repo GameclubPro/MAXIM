@@ -67,6 +67,11 @@ const LazyPublisherEntityModulesPage = lazy(async () => {
   return { default: module.PublisherEntityModulesPage };
 });
 
+const LazyPublisherAutoRepliesPage = lazy(async () => {
+  const module = await import('./pages/publisher-auto-replies-page');
+  return { default: module.PublisherAutoRepliesPage };
+});
+
 const LazyManagedEntityNavigationProvider = lazy(async () => {
   const module = await import('./lib/managed-entity-navigation');
   return { default: module.ManagedEntityNavigationProvider };
@@ -577,6 +582,24 @@ function AppRoutes({
               element={<LazyChannelStatsPage api={apiClient} />}
             />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
+          </Route>
+        ) : null}
+        {!moderationProfile ? (
+          <Route
+            element={
+              <AppRouteShell
+                launchInitData={launchInitData}
+                launchRouteAppliedRef={launchRouteAppliedRef}
+                launchRouteResolver={launchRouteResolver}
+                managedEntityWorkspace
+                profile="publisher"
+              />
+            }
+          >
+            <Route
+              path="/publisher/chat/:entityId/auto-replies"
+              element={<LazyPublisherAutoRepliesPage api={apiClient} />}
+            />
           </Route>
         ) : null}
       </Routes>

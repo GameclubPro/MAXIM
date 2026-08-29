@@ -26,6 +26,21 @@ describe('PublisherController', () => {
       ],
       [PublisherController.prototype.cancelPostImport, 'post-imports', RequestMethod.DELETE],
       [
+        PublisherController.prototype.createAutoReplyAuthoringSession,
+        'entities/chat/:entityId/auto-replies/authoring-sessions',
+        RequestMethod.POST,
+      ],
+      [
+        PublisherController.prototype.getCurrentAutoReplyAuthoringSession,
+        'entities/chat/:entityId/auto-replies/authoring-sessions/current',
+        RequestMethod.GET,
+      ],
+      [
+        PublisherController.prototype.cancelCurrentAutoReplyAuthoringSession,
+        'entities/chat/:entityId/auto-replies/authoring-sessions/current',
+        RequestMethod.DELETE,
+      ],
+      [
         PublisherController.prototype.getPostImportAsset,
         'post-imports/:sessionId/assets/:assetId',
         RequestMethod.GET,
@@ -106,6 +121,7 @@ describe('PublisherController', () => {
     const moduleSettings = {
       revision: 2,
       chatComments: null,
+      autoRepliesEnabled: null,
       channelSuggestionsEnabled: true,
     };
     const policyService = {
@@ -125,11 +141,27 @@ describe('PublisherController', () => {
       review: jest.fn().mockResolvedValue({ suggestion: { id: 'suggestion-1' } }),
     };
     const postImportService = {};
+    const autoReplyService = {
+      list: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+      get: jest.fn().mockResolvedValue({ id: 'rule-1' }),
+      create: jest.fn().mockResolvedValue({ id: 'rule-1' }),
+      update: jest.fn().mockResolvedValue({ id: 'rule-1', version: 2 }),
+      archive: jest.fn().mockResolvedValue({ id: 'rule-1', archived: true }),
+    };
+    const autoReplyAuthoringService = {
+      create: jest
+        .fn()
+        .mockResolvedValue({ session: { id: 'session-1' }, botUrl: 'https://max.ru' }),
+      getCurrent: jest.fn().mockResolvedValue({ session: { id: 'session-1' }, botUrl: null }),
+      cancelCurrent: jest.fn().mockResolvedValue({ session: { id: 'session-1' }, botUrl: null }),
+    };
     const controller = new PublisherController(
       policyService as never,
       entityRefreshService as never,
       suggestionService as never,
       postImportService as never,
+      autoReplyService as never,
+      autoReplyAuthoringService as never,
     );
     const body = { expectedRevision: 1, publikEnabled: false };
     const listQuery = { pagination: 'cursor', limit: '25' };
@@ -157,6 +189,17 @@ describe('PublisherController', () => {
     await expect(controller.refreshEntity('chat', 'chat-1', user)).resolves.toEqual({
       accepted: true,
     });
+    await expect(controller.listAutoReplies('chat-1', user)).resolves.toEqual({
+      items: [],
+      total: 0,
+    });
+    await expect(controller.getAutoReply('chat-1', 'rule-1', user)).resolves.toEqual({
+      id: 'rule-1',
+    });
+    const autoReplyBody = { requestId: 'request_123', phrase: 'Прайс', content: { text: 'Да' } };
+    await controller.createAutoReply('chat-1', user, autoReplyBody);
+    await controller.updateAutoReply('chat-1', 'rule-1', user, autoReplyBody);
+    await controller.archiveAutoReply('chat-1', 'rule-1', user, autoReplyBody);
 
     expect(policyService.listEntities).toHaveBeenCalledWith(user, listQuery);
     expect(policyService.resolveEntities).toHaveBeenCalledWith(user, resolveBody);
@@ -177,6 +220,18 @@ describe('PublisherController', () => {
       action: 'publish',
     });
     expect(entityRefreshService.requestRefresh).toHaveBeenCalledWith('chat', 'chat-1', user);
+    expect(autoReplyService.list).toHaveBeenCalledWith('chat-1', user);
+    expect(autoReplyService.get).toHaveBeenCalledWith('chat-1', 'rule-1', user);
+    expect(autoReplyService.create).toHaveBeenCalledWith('chat-1', user, autoReplyBody);
+    expect(autoReplyService.update).toHaveBeenCalledWith('chat-1', 'rule-1', user, autoReplyBody);
+    expect(autoReplyService.archive).toHaveBeenCalledWith('chat-1', 'rule-1', user, autoReplyBody);
+    await controller.createAutoReplyAuthoringSession('chat-1', user, autoReplyBody);
+    await controller.getCurrentAutoReplyAuthoringSession('chat-1', user);
+    await controller.cancelCurrentAutoReplyAuthoringSession('chat-1', user);
+    expect(policyService.getEntity).toHaveBeenCalledWith('chat', 'chat-1', user);
+    expect(autoReplyAuthoringService.create).toHaveBeenCalledWith(user, 'chat-1', autoReplyBody);
+    expect(autoReplyAuthoringService.getCurrent).toHaveBeenCalledWith(user, 'chat-1');
+    expect(autoReplyAuthoringService.cancelCurrent).toHaveBeenCalledWith(user, 'chat-1');
   });
 
   it('rejects unsupported entity types before calling the policy service', () => {
@@ -188,11 +243,14 @@ describe('PublisherController', () => {
     const entityRefreshService = { requestRefresh: jest.fn() };
     const suggestionService = { list: jest.fn(), review: jest.fn() };
     const postImportService = {};
+    const autoReplyService = {};
     const controller = new PublisherController(
       policyService as never,
       entityRefreshService as never,
       suggestionService as never,
       postImportService as never,
+      autoReplyService as never,
+      {} as never,
     );
 
     expect(() => controller.getEntity('group', 'group-1', user)).toThrow(BadRequestException);

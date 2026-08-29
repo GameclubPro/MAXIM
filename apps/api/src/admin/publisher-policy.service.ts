@@ -587,8 +587,11 @@ export class PublisherPolicyService {
     if (entityType === 'chat' && request.channelSuggestionsEnabled !== undefined) {
       throw new BadRequestException('Предложки Публика доступны только для каналов');
     }
-    if (entityType === 'channel' && request.chatComments !== undefined) {
-      throw new BadRequestException('Комментарии Публика доступны только для чатов');
+    if (
+      entityType === 'channel' &&
+      (request.chatComments !== undefined || request.autoRepliesEnabled !== undefined)
+    ) {
+      throw new BadRequestException('Комментарии и автоответы Публика доступны только для чатов');
     }
 
     await this.getEntity(entityType, entityId, user);
@@ -622,6 +625,9 @@ export class PublisherPolicyService {
               ...(request.channelSuggestionsEnabled !== undefined
                 ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
                 : {}),
+              ...(request.autoRepliesEnabled !== undefined
+                ? { autoRepliesEnabled: request.autoRepliesEnabled }
+                : {}),
               updatedByUserId: user.userId,
             },
           });
@@ -638,6 +644,9 @@ export class PublisherPolicyService {
                 : {}),
               ...(request.channelSuggestionsEnabled !== undefined
                 ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
+                : {}),
+              ...(request.autoRepliesEnabled !== undefined
+                ? { autoRepliesEnabled: request.autoRepliesEnabled }
                 : {}),
               revision: { increment: 1 },
               updatedByUserId: user.userId,
@@ -661,6 +670,9 @@ export class PublisherPolicyService {
                   ? { channelSuggestionsEnabled: request.channelSuggestionsEnabled }
                   : {}),
                 ...(request.chatComments ? { chatComments: request.chatComments } : {}),
+                ...(request.autoRepliesEnabled !== undefined
+                  ? { autoRepliesEnabled: request.autoRepliesEnabled }
+                  : {}),
               },
               revision: updated.revision,
             } satisfies Prisma.InputJsonValue,
@@ -685,6 +697,7 @@ export class PublisherPolicyService {
       chatCommentsAdminsEnabled: boolean;
       chatCommentsPostsEnabled: boolean;
       channelSuggestionsEnabled: boolean;
+      autoRepliesEnabled: boolean;
     } | null,
   ): PublisherEntityModuleSettings {
     return {
@@ -697,6 +710,8 @@ export class PublisherPolicyService {
               commentsChatBroadcastsEnabled: settings?.chatCommentsPostsEnabled ?? false,
             }
           : null,
+      autoRepliesEnabled:
+        entityType === ChatEntityType.CHAT ? (settings?.autoRepliesEnabled ?? false) : null,
       channelSuggestionsEnabled:
         entityType === ChatEntityType.CHANNEL
           ? (settings?.channelSuggestionsEnabled ?? false)
@@ -714,6 +729,7 @@ export class PublisherPolicyService {
         chatCommentsAdminsEnabled: boolean;
         chatCommentsPostsEnabled: boolean;
         channelSuggestionsEnabled: boolean;
+        autoRepliesEnabled: boolean;
       } | null;
       publicationPolicy: Parameters<PublisherReadinessService['resolvePolicy']>[0];
       publisherBinding: Parameters<

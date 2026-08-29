@@ -84,6 +84,10 @@ export function buildPublisherEntityListRoute(entityType: ManagedEntityType): st
   return `/?view=${entityType}`;
 }
 
+export function buildPublisherAutoRepliesRoute(chatId: string): string {
+  return `/publisher/chat/${encodeURIComponent(chatId)}/auto-replies`;
+}
+
 export function updatePublisherChatCommentSetting(
   current: PublisherChatCommentSettings,
   key: PublisherChatCommentSettingKey,

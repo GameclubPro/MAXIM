@@ -88,6 +88,7 @@ import { PublisherController } from './publisher.controller';
 import { PublisherEntityRefreshService } from './publisher-entity-refresh.service';
 import { PublisherPolicyService } from './publisher-policy.service';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
+import { PublisherAutoReplyService } from './publisher-auto-reply.service';
 import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 import { PublisherSuggestionPublicationQueueService } from './publisher-suggestion-publication-queue.service';
 import { PublisherSuggestionPublicationProcessor } from './publisher-suggestion-publication.processor';
@@ -95,6 +96,9 @@ import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from './publisher-suggestion-p
 import { PublisherPostImportProcessingService } from './publisher-post-import-processing.service';
 import { PublisherPostImportDeliveryService } from './publisher-post-import-delivery.service';
 import { PublisherPostImportProcessor } from './publisher-post-import.processor';
+import { PublisherAutoReplyAuthoringProcessingService } from './publisher-auto-reply-authoring-processing.service';
+import { PublisherAutoReplyAuthoringDeliveryService } from './publisher-auto-reply-authoring-delivery.service';
+import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-authoring.processor';
 
 @Module({
   imports: [
@@ -173,6 +177,7 @@ import { PublisherPostImportProcessor } from './publisher-post-import.processor'
     ...(roleRunsPublisher(getAppRole()) ? [PublisherPublicationDispatchRunnerService] : []),
     PublisherPolicyService,
     PublisherSuggestionService,
+    PublisherAutoReplyService,
     PublisherEntityRefreshService,
     PublisherReadinessService,
     PublisherSuggestionPublicationQueueService,
@@ -182,6 +187,9 @@ import { PublisherPostImportProcessor } from './publisher-post-import.processor'
           PublisherPostImportProcessingService,
           PublisherPostImportDeliveryService,
           PublisherPostImportProcessor,
+          PublisherAutoReplyAuthoringProcessingService,
+          PublisherAutoReplyAuthoringDeliveryService,
+          PublisherAutoReplyAuthoringProcessor,
         ]
       : []),
     ManagedGiveawayRunnerService,
@@ -229,6 +237,7 @@ import { PublisherPostImportProcessor } from './publisher-post-import.processor'
     ManagedPollService,
     PublicationService,
     PublisherPolicyService,
+    PublisherAutoReplyService,
     PublisherReadinessService,
     VkParsingRateLimitService,
     VkApiClientService,

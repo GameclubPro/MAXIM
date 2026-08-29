@@ -10,3 +10,4 @@ export * from './support-requests.js';
 export * from './system-core.js';
 export * from './karavan-storefront.js';
 export * from './publisher.js';
+export * from './publisher-auto-replies.js';
