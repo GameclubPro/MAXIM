@@ -4,7 +4,7 @@ import {
   type BroadcastTextFormat,
 } from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import './broadcast-content-composer.css';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
@@ -107,6 +107,7 @@ export function BroadcastContentComposer({
 }: BroadcastContentComposerProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
+  const textErrorId = useId();
   const [formatToolsOpen, setFormatToolsOpen] = useState(false);
   const [normalizationReady, setNormalizationReady] = useState(true);
   const [preparingImages, setPreparingImages] = useState<PreparingImagesState>({
@@ -386,6 +387,8 @@ export function BroadcastContentComposer({
                   disabled={editorDisabled}
                   onNormalizationReadyChange={setNormalizationReady}
                   ariaLabel={textAriaLabel}
+                  ariaInvalid={Boolean(textError)}
+                  ariaDescribedBy={textError ? textErrorId : undefined}
                   className="broadcast-message-card__rich-editor"
                   onPasteFiles={(files) => void handleImageFiles(files)}
                 />
@@ -586,8 +589,14 @@ export function BroadcastContentComposer({
         </div>
       </div>
 
-      {textError || imageError ? (
-        <small className="field__hint">{textError || imageError}</small>
+      {textError ? (
+        <small id={textErrorId} className="field__hint" role="alert">
+          {textError}
+        </small>
+      ) : imageError ? (
+        <small className="field__hint" role="alert">
+          {imageError}
+        </small>
       ) : null}
     </div>
   );

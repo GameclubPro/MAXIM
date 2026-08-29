@@ -13,6 +13,29 @@ export function normalizePublisherAutoReplyTrigger(value: string): string {
   return normalizePublisherAutoReplyPhrase(value);
 }
 
+export function isExplicitlyBotAuthoredPublisherGroupMessage(
+  update: MaxUpdate,
+  publisherBotId: string,
+): boolean {
+  if (
+    update.botId?.trim() !== publisherBotId.trim() ||
+    update.type.trim().toLowerCase() !== 'message_created' ||
+    !update.message
+  ) {
+    return false;
+  }
+  const raw = asRecord(update.raw);
+  const rawMessage = raw ? selectMaxMessageCandidate(raw, update.type)?.node : null;
+  return Boolean(
+    rawMessage &&
+    isGroupChatMessage(rawMessage, update.message.entityType) &&
+    (isExplicitlyBotOrServiceAuthored(rawMessage, update.message.senderId) ||
+      (raw !== null &&
+        raw !== rawMessage &&
+        isExplicitlyBotOrServiceAuthored(raw, update.message.senderId))),
+  );
+}
+
 export function extractPublisherAutoReplyMessageCandidate(
   update: MaxUpdate,
   options: {
@@ -46,7 +69,12 @@ export function extractPublisherAutoReplyMessageCandidate(
     return null;
   }
   const rawMessage = selectMaxMessageCandidate(raw, update.type)?.node;
-  if (!rawMessage || !isGroupChatMessage(rawMessage, normalizedMessage.entityType)) {
+  if (
+    !rawMessage ||
+    isExplicitlyBotOrServiceAuthored(rawMessage, senderUserId) ||
+    (raw !== rawMessage && isExplicitlyBotOrServiceAuthored(raw, senderUserId)) ||
+    !isGroupChatMessage(rawMessage, normalizedMessage.entityType)
+  ) {
     return null;
   }
   if (isForwardedMessage(rawMessage) || isServiceMessage(rawMessage)) {
@@ -58,15 +86,63 @@ export function extractPublisherAutoReplyMessageCandidate(
     return null;
   }
   const directText = readString(body.text ?? body.plain ?? body.caption);
-  if (!directText || directText !== normalizedMessage.text) {
+  const normalizedDirectText = normalizeDirectText(directText);
+  if (
+    !normalizedDirectText ||
+    normalizedDirectText !== normalizeDirectText(normalizedMessage.text)
+  ) {
     return null;
   }
-  const normalizedTrigger = normalizePublisherAutoReplyTrigger(directText);
+  const normalizedTrigger = normalizePublisherAutoReplyTrigger(normalizedDirectText);
   if (!normalizedTrigger) {
     return null;
   }
 
   return { chatId, sourceMessageId, senderUserId, normalizedTrigger };
+}
+
+function normalizeDirectText(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : '';
+}
+
+function isExplicitlyBotOrServiceAuthored(
+  message: Record<string, unknown>,
+  resolvedSenderId: string,
+): boolean {
+  for (const sender of [
+    asRecord(message.sender),
+    asRecord(message.from),
+    asRecord(message.user),
+    asRecord(message.actor),
+  ]) {
+    if (!sender) {
+      continue;
+    }
+    const authorId = readIdentity(sender.id ?? sender.user_id ?? sender.userId);
+    if (authorId && authorId.trim() !== resolvedSenderId.trim()) {
+      continue;
+    }
+    const type = readString(sender.type ?? sender.kind)?.toLowerCase();
+    if (type === 'bot' || type === 'service' || hasExplicitBotOrServiceMarker(sender)) {
+      return true;
+    }
+  }
+  const directAuthorId = readIdentity(message.sender_id ?? message.senderId);
+  return Boolean(
+    directAuthorId &&
+      directAuthorId.trim() === resolvedSenderId.trim() &&
+      hasExplicitBotOrServiceMarker(message),
+  );
+}
+
+function hasExplicitBotOrServiceMarker(author: Record<string, unknown>): boolean {
+  return (
+    author.is_bot === true ||
+    author.isBot === true ||
+    author.bot === true ||
+    author.is_service === true ||
+    author.isService === true
+  );
 }
 
 function isGroupChatMessage(
@@ -133,4 +209,11 @@ function readString(value: unknown): string | null {
     return null;
   }
   return value.length > 0 ? value : null;
+}
+
+function readIdentity(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return readString(value);
 }

@@ -74,6 +74,8 @@ function harness(
     cooldownClaimed?: boolean;
     uploadRow?: Record<string, unknown> | null;
     sendError?: Error & { response?: { status: number } };
+    sourceFenceState?: 'admitted' | 'canceled' | 'missing';
+    sourceFenceLockAdmitted?: boolean;
   } = {},
 ) {
   const leased = options.leased ?? delivery();
@@ -127,11 +129,16 @@ function harness(
     recordSendSuccess: jest.fn().mockResolvedValue(undefined),
     recordSendFailure: jest.fn().mockResolvedValue('transient'),
   };
+  const sourceFence = {
+    read: jest.fn().mockResolvedValue(options.sourceFenceState ?? 'admitted'),
+    lockAdmitted: jest.fn().mockResolvedValue(options.sourceFenceLockAdmitted ?? true),
+  };
   const service = new PublisherAutoReplyDeliveryService(
     prisma as never,
     maxClient as never,
     readiness as never,
     dispatchHealth as never,
+    sourceFence as never,
     {
       getBotId: () => 'publisher-bot',
       getRequiredActionToken: jest.fn(() => 'not-a-real-token'),
@@ -144,12 +151,55 @@ function harness(
     maxClient,
     readiness,
     dispatchHealth,
+    sourceFence,
     deliveryUpdateMany,
     uploadUpdateMany,
   };
 }
 
 describe('PublisherAutoReplyDeliveryService', () => {
+  it.each(['canceled', 'missing'] as const)(
+    'cancels before upload or send when the source fence is %s',
+    async (sourceFenceState) => {
+      const { service, maxClient, deliveryUpdateMany } = harness({ sourceFenceState });
+
+      await service.process(job, attempt);
+
+      expect(maxClient.uploadImage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      expect(deliveryUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: PublisherAutoReplyDeliveryStatus.CANCELED,
+            failureCode: 'EPOCH_CHANGED',
+          }),
+        }),
+      );
+    },
+  );
+
+  it('does not cross the send fence when cancellation owns the source row lock first', async () => {
+    const { service, sourceFence, deliveryUpdateMany } = harness({
+      sourceFenceLockAdmitted: false,
+    });
+
+    await service.process(job, attempt);
+
+    expect(sourceFence.lockAdmitted).toHaveBeenCalledTimes(1);
+    expect(deliveryUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { dispatchStartedAt: expect.any(Date) } }),
+    );
+    expect(deliveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: PublisherAutoReplyDeliveryStatus.CANCELED,
+          failureCode: 'SOURCE_OR_RULE_CHANGED',
+        }),
+      }),
+    );
+  });
+
+
   it('cancels before upload or send when the frozen rule revision changed', async () => {
     const leased = delivery({ rule: { ...delivery().rule, version: 4 } });
     const { service, maxClient, deliveryUpdateMany } = harness({ leased });

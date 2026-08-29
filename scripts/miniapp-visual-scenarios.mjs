@@ -73,6 +73,17 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/styles/publications-page.css',
     'packages/contracts/src/publisher.ts',
   ],
+  'auto-replies': [
+    'apps/miniapp/src/components/auto-reply-*.tsx',
+    'apps/miniapp/src/components/auto-reply-*.css',
+    'apps/miniapp/src/lib/api/publisher-auto-replies-client.ts',
+    'apps/miniapp/src/lib/auto-reply-draft.ts',
+    'apps/miniapp/src/lib/use-auto-reply-draft.ts',
+    'apps/miniapp/src/pages/publisher-auto-replies-page.tsx',
+    'apps/miniapp/src/pages/publisher-auto-replies-page.css',
+    'apps/miniapp/src/pages/publisher-auto-replies-page-model.ts',
+    'packages/contracts/src/publisher-auto-replies.ts',
+  ],
   settings: [
     'apps/miniapp/src/pages/settings-page*.ts*',
     'apps/miniapp/src/pages/settings/**/*.ts*',
@@ -138,6 +149,15 @@ const ROUTE_DEFINITIONS = {
     coldScenario: 'publisher-entity-modules-cold',
     features: ['publisher'],
     sourceGlobs: FEATURE_SOURCE_GLOBS.publisher,
+  },
+  'publisher-auto-replies': {
+    pattern: '/publisher/chat/:entityId/auto-replies',
+    previewPath: '/publisher/chat/preview-chat/auto-replies',
+    manifestEntry: 'src/pages/publisher-auto-replies-page.tsx',
+    readySelector: '.publisher-auto-replies-page',
+    coldScenario: 'publisher-auto-replies-cold',
+    features: ['publisher', 'auto-replies'],
+    sourceGlobs: FEATURE_SOURCE_GLOBS['auto-replies'],
   },
   autoposts: {
     pattern: '/autoposts',
@@ -246,6 +266,7 @@ const ROUTE_DEFINITIONS = {
 
 const FEATURE_NAME_MATCHERS = [
   ['activity', /activity/u],
+  ['auto-replies', /auto-repl/u],
   ['broadcast', /broadcast/u],
   ['comments', /comments/u],
   ['duplicates', /duplicates/u],
@@ -441,6 +462,19 @@ const baseScenarios = [
         searchParams: { profile: 'publisher', publisherSuggestions: 'large' },
         features: ['publisher'],
       },
+    ],
+  ]),
+  ...defineRouteScenarios('publisher-auto-replies', [
+    ['publisher-auto-replies-cold', { searchParams: { profile: 'publisher' } }],
+    ['publisher-auto-replies-create-sheet', { searchParams: { profile: 'publisher' } }],
+    ['publisher-auto-replies-editor', { searchParams: { profile: 'publisher' } }],
+    [
+      'publisher-auto-replies-editor-bottom',
+      { searchParams: { profile: 'publisher' }, keyboard: false },
+    ],
+    [
+      'publisher-auto-replies-editor-keyboard',
+      { searchParams: { profile: 'publisher' }, keyboard: true },
     ],
   ]),
   ...defineRouteScenarios('publications', [

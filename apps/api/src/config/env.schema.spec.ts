@@ -243,6 +243,86 @@ describe('validateEnv boolean parsing', () => {
     );
   });
 
+  it('keeps Publisher auto-reply flood and backlog admission strictly bounded', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults).toMatchObject({
+      PUBLISHER_AUTO_REPLY_DELAY_MS: 1_500,
+      PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: 3,
+      PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: 10,
+      PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: 30,
+      PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT: 120,
+      PUBLISHER_AUTO_REPLY_QUEUE_BACKLOG_LIMIT: 200,
+      PUBLISHER_AUTO_REPLY_FLOOD_GATE_REDIS_TIMEOUT_MS: 100,
+    });
+
+    expect(
+      validateEnv(
+        createValidEnv({
+          PUBLISHER_AUTO_REPLY_DELAY_MS: '2500',
+          PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: '5',
+          PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: '20',
+          PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: '50',
+          PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT: '300',
+          PUBLISHER_AUTO_REPLY_QUEUE_BACKLOG_LIMIT: '500',
+          PUBLISHER_AUTO_REPLY_FLOOD_GATE_REDIS_TIMEOUT_MS: '250',
+        }),
+      ),
+    ).toMatchObject({
+      PUBLISHER_AUTO_REPLY_DELAY_MS: 2_500,
+      PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: 5,
+      PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: 20,
+      PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: 50,
+      PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT: 300,
+      PUBLISHER_AUTO_REPLY_QUEUE_BACKLOG_LIMIT: 500,
+      PUBLISHER_AUTO_REPLY_FLOOD_GATE_REDIS_TIMEOUT_MS: 250,
+    });
+
+    for (const [key, value] of [
+      ['PUBLISHER_AUTO_REPLY_DELAY_MS', '60001'],
+      ['PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT', '0'],
+      ['PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT', '1001'],
+      ['PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT', '1001'],
+      ['PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT', '10001'],
+      ['PUBLISHER_AUTO_REPLY_QUEUE_BACKLOG_LIMIT', '9'],
+      ['PUBLISHER_AUTO_REPLY_FLOOD_GATE_REDIS_TIMEOUT_MS', '2001'],
+    ] as const) {
+      expect(() => validateEnv(createValidEnv({ [key]: value }))).toThrow(new RegExp(key, 'u'));
+    }
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: '11',
+          PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: '10',
+        }),
+      ),
+    ).toThrow(/PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: '121',
+          PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT: '120',
+        }),
+      ),
+    ).toThrow(/PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: '31',
+          PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: '31',
+          PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: '30',
+        }),
+      ),
+    ).toThrow(/PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT/u);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: '121',
+          PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT: '120',
+        }),
+      ),
+    ).toThrow(/PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT/u);
+  });
+
   it('defaults canonical webhook execution to shadow with a one-percent canary', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.WEBHOOK_CANONICAL_EXECUTION_MODE).toBe('shadow');

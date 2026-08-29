@@ -8,6 +8,18 @@ const modulesSource = readFileSync(
   new URL('../src/pages/publisher-entity-modules-page.tsx', import.meta.url),
   'utf8',
 );
+const createSheetSource = readFileSync(
+  new URL('../src/components/auto-reply-create-sheet.tsx', import.meta.url),
+  'utf8',
+);
+const composerSource = readFileSync(
+  new URL('../src/components/broadcast-content-composer.tsx', import.meta.url),
+  'utf8',
+);
+const richEditorSource = readFileSync(
+  new URL('../src/components/max-rich-text-editor.tsx', import.meta.url),
+  'utf8',
+);
 const pageSource = readFileSync(
   new URL('../src/pages/publisher-auto-replies-page.tsx', import.meta.url),
   'utf8',
@@ -54,5 +66,29 @@ test('auto-reply controls and fixed media geometry stay usable on narrow WebView
   assert.match(pageCss, /\.publisher-auto-reply-editor__retained-item \{[\s\S]*?aspect-ratio: 1;/u);
   assert.match(pageCss, /@media \(max-width: 340px\)/u);
   assert.match(pageCss, /html\[data-max-theme='dark'\]/u);
+  assert.match(
+    pageCss,
+    /\.max-rich-text-editor__link-panel button \{[\s\S]*?min-width: 44px;[\s\S]*?height: 44px;/u,
+  );
+  assert.match(pageCss, /--auto-reply-primary-ink: var\(--app-page-background\)/u);
   assert.doesNotMatch(pageCss, /font-size:\s*(?:clamp|min|max)\([^;]*vw/u);
+});
+
+test('auto-reply copy and validation stay concise and actionable', () => {
+  assert.match(createSheetSource, />Создать здесь</u);
+  assert.match(createSheetSource, /'Открыть Публика'/u);
+  assert.match(pageSource, /<strong>Автоответы в чате<\/strong>/u);
+  assert.match(pageSource, /aria-invalid=\{Boolean\(issues\.phrase\)\}/u);
+  assert.match(pageSource, /aria-describedby="publisher-auto-reply-phrase-meta"/u);
+  assert.match(pageSource, /role=\{issues\.phrase \? 'alert' : undefined\}/u);
+  assert.match(composerSource, /ariaInvalid=\{Boolean\(textError\)\}/u);
+  assert.match(composerSource, /ariaDescribedBy=\{textError \? textErrorId : undefined\}/u);
+  assert.match(composerSource, /id=\{textErrorId\}[\s\S]*?role="alert"/u);
+  assert.match(richEditorSource, /aria-invalid=\{ariaInvalid\}/u);
+  assert.match(richEditorSource, /aria-describedby=\{ariaDescribedBy\}/u);
+  assert.doesNotMatch(
+    pageSource,
+    /Главный выключатель|Проверить и сохранить|Включить автоответ\?/u,
+  );
+  assert.match(pageCss, /\.publisher-auto-replies-page__add \{[\s\S]*?position: fixed;/u);
 });

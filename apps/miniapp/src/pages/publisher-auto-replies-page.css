@@ -4,11 +4,8 @@
     --auto-reply-danger-surface: color-mix(in srgb, var(--color-danger) 9%, var(--color-surface));
     --auto-reply-media-action-surface: color-mix(in srgb, var(--color-surface) 88%, transparent);
     --auto-reply-save-surface: color-mix(in srgb, var(--color-surface-muted) 92%, transparent);
-    --auto-reply-composer-surface: color-mix(
-      in srgb,
-      var(--color-accent-soft) 35%,
-      var(--color-surface)
-    );
+    --auto-reply-primary-surface: color-mix(in srgb, var(--color-accent) 94%, #000);
+    --auto-reply-primary-ink: #fff;
     width: min(100%, 720px);
     min-width: 0;
     display: grid;
@@ -16,7 +13,7 @@
     align-content: start;
     justify-self: center;
     gap: 10px;
-    padding-bottom: calc(var(--app-safe-bottom, 0px) + 16px);
+    padding-bottom: calc(var(--app-safe-bottom, 0px) + 82px);
   }
 
   .publisher-auto-replies-page.is-editor {
@@ -174,12 +171,12 @@
   .publisher-auto-replies-page__authoring,
   .publisher-auto-replies-page__module-toggle {
     min-width: 0;
-    min-height: 58px;
+    min-height: 54px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    padding: 7px 2px;
+    padding: 5px 2px;
     border-bottom: 1px solid var(--color-border);
   }
 
@@ -407,8 +404,8 @@
   }
 
   .publisher-auto-replies-page__add {
-    position: sticky;
-    right: 0;
+    position: fixed;
+    right: max(var(--app-page-gutter), calc((100vw - var(--app-shell-max-width)) / 2));
     bottom: calc(var(--app-safe-bottom, 0px) + 12px);
     width: 52px;
     min-width: 52px;
@@ -418,11 +415,21 @@
     padding: 0;
     border: 1px solid var(--color-accent-strong);
     border-radius: 8px;
-    background: var(--color-accent);
-    color: var(--color-on-accent);
+    background: var(--auto-reply-primary-surface);
+    color: var(--auto-reply-primary-ink);
     box-shadow: var(--shadow-md);
     place-items: center;
     z-index: var(--z-sticky);
+  }
+
+  .design-preview__device-screen .publisher-auto-replies-page__add {
+    position: absolute;
+    right: 10px;
+  }
+
+  html[data-max-client='native'] .design-preview__device-screen .publisher-auto-replies-page__add {
+    position: fixed;
+    right: max(var(--app-page-gutter), calc((100vw - var(--app-shell-max-width)) / 2));
   }
 
   .publisher-auto-replies-page__add svg {
@@ -502,51 +509,32 @@
     min-width: 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
-    padding: 16px 0;
+    gap: 10px;
+    padding: 14px 0;
     border-bottom: 1px solid var(--color-border);
   }
 
   .publisher-auto-reply-editor__section > header {
     min-width: 0;
-    display: grid;
-    grid-template-columns: 38px minmax(0, 1fr);
+    min-height: 28px;
+    display: flex;
     align-items: center;
-    gap: 9px;
+    justify-content: space-between;
+    gap: 12px;
   }
 
-  .publisher-auto-reply-editor__section > header > span:last-child {
+  .publisher-auto-reply-editor__section > header h2 {
     min-width: 0;
-    display: grid;
-    gap: 2px;
-  }
-
-  .publisher-auto-reply-editor__section > header strong {
+    margin: 0;
     color: var(--color-ink);
-    font-size: 0.84rem;
+    font-size: 0.82rem;
+    font-weight: 850;
   }
 
   .publisher-auto-reply-editor__section > header small {
     color: var(--color-ink-subtle);
-    font-size: 0.69rem;
-    font-weight: 650;
-    line-height: 1.35;
-  }
-
-  .publisher-auto-reply-editor__section-icon {
-    width: 38px;
-    height: 38px;
-    display: grid;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    background: var(--color-surface-muted);
-    color: var(--color-accent);
-    place-items: center;
-  }
-
-  .publisher-auto-reply-editor__section-icon svg {
-    width: 19px;
-    height: 19px;
+    font-size: 0.67rem;
+    font-weight: 720;
   }
 
   .publisher-auto-reply-editor__field,
@@ -637,24 +625,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 5px 0;
-  }
-
-  .publisher-auto-reply-editor__toggle-row > span {
-    min-width: 0;
-    display: grid;
-    gap: 2px;
+    padding: 0 0 8px;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .publisher-auto-reply-editor__toggle-row strong {
     color: var(--color-ink);
     font-size: 0.78rem;
-  }
-
-  .publisher-auto-reply-editor__toggle-row small {
-    color: var(--color-ink-subtle);
-    font-size: 0.68rem;
-    line-height: 1.35;
   }
 
   .publisher-auto-reply-editor__save-bar {
@@ -689,8 +666,8 @@
     min-height: 48px;
     border: 1px solid var(--color-accent-strong);
     border-radius: 8px;
-    background: var(--color-accent);
-    color: var(--color-on-accent);
+    background: var(--auto-reply-primary-surface);
+    color: var(--auto-reply-primary-ink);
     font: inherit;
     font-size: 0.8rem;
     font-weight: 850;
@@ -713,39 +690,46 @@
     gap: 8px;
   }
 
+  .publisher-auto-replies-page .max-rich-text-editor__link-panel input {
+    height: 44px;
+  }
+
+  .publisher-auto-replies-page .max-rich-text-editor__link-panel button {
+    min-width: 44px;
+    height: 44px;
+  }
+
   .publisher-auto-replies-page .broadcast-message-card {
     min-width: 0;
     display: grid;
-    min-height: 168px;
-    padding: 10px;
-    border: 1px solid var(--color-border);
+    min-height: 156px;
+    padding: 0;
+    border: 1px solid var(--color-border-strong);
     border-radius: 8px;
-    background: var(--color-surface-muted);
+    background: var(--color-surface);
   }
 
   .publisher-auto-replies-page .broadcast-message-card__phone {
     min-width: 0;
-    min-height: 144px;
-    display: flex;
-    align-items: flex-end;
-    justify-content: flex-start;
-    padding: 10px;
+    min-height: 154px;
+    display: block;
+    padding: 0;
     border-radius: 7px;
-    background: var(--auto-reply-composer-surface);
+    background: transparent;
   }
 
   .publisher-auto-replies-page .broadcast-message-card__bubble {
     position: relative;
-    width: min(100%, 420px);
+    width: 100%;
     min-width: 0;
-    min-height: 120px;
+    min-height: 154px;
     display: grid;
     align-content: start;
     gap: 7px;
-    padding: 10px;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    background: var(--color-surface);
+    padding: 12px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
     color: var(--color-ink);
   }
 
@@ -788,6 +772,8 @@
 
   html[data-max-theme='dark'] .publisher-auto-replies-page {
     --auto-reply-save-surface: color-mix(in srgb, var(--color-surface-muted) 94%, transparent);
+    --auto-reply-primary-surface: var(--color-accent);
+    --auto-reply-primary-ink: var(--app-page-background);
   }
 
   @media (max-width: 380px) {

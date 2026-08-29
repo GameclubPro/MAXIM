@@ -257,6 +257,62 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
   assert.ok(scenarios.get('channel-settings-publisher-policy')?.features.includes('publisher'));
 });
 
+test('publisher auto replies cover cold list, create sheet, editor bottom, and keyboard states', () => {
+  const scenarioNames = [
+    'publisher-auto-replies-cold',
+    'publisher-auto-replies-create-sheet',
+    'publisher-auto-replies-editor',
+    'publisher-auto-replies-editor-bottom',
+    'publisher-auto-replies-editor-keyboard',
+  ];
+  const scenarios = new Map(MINIAPP_VISUAL_SCENARIOS.map((scenario) => [scenario.name, scenario]));
+  const route = MINIAPP_RUNTIME_ROUTES.find(
+    (candidate) => candidate.id === 'publisher-auto-replies',
+  );
+
+  assert.deepEqual(route, {
+    id: 'publisher-auto-replies',
+    pattern: '/publisher/chat/:entityId/auto-replies',
+    manifestEntry: 'src/pages/publisher-auto-replies-page.tsx',
+    coldScenario: 'publisher-auto-replies-cold',
+  });
+  for (const name of scenarioNames) {
+    const scenario = scenarios.get(name);
+    assert.equal(scenario?.routeId, 'publisher-auto-replies');
+    assert.equal(scenario?.path, '/publisher/chat/preview-chat/auto-replies');
+    assert.deepEqual(scenario?.searchParams, { profile: 'publisher' });
+    assert.ok(scenario?.features.includes('publisher'));
+    assert.ok(scenario?.features.includes('auto-replies'));
+  }
+  assert.equal(scenarios.get('publisher-auto-replies-cold')?.cold, true);
+  assert.equal(scenarios.get('publisher-auto-replies-editor-keyboard')?.keyboard, true);
+  assert.equal(scenarios.get('publisher-auto-replies-editor-bottom')?.keyboard, false);
+  assert.equal(scenarios.get('publisher-auto-replies-editor')?.keyboard, undefined);
+
+  const selection = selectMiniappVisualScenarios({
+    changedFiles: ['apps/miniapp/src/pages/publisher-auto-replies-page.tsx'],
+  });
+  assert.deepEqual(
+    selection.scenarios.map((scenario) => scenario.name),
+    scenarioNames,
+  );
+
+  const captureSource = readFileSync(
+    new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
+    'utf8',
+  );
+  const bottomStart = captureSource.indexOf("name: 'publisher-auto-replies-editor-bottom'");
+  const bottomEnd = captureSource.indexOf(
+    'name: PUBLISHER_AUTO_REPLY_KEYBOARD_SCENARIO',
+    bottomStart,
+  );
+  const bottomBehavior = captureSource.slice(bottomStart, bottomEnd);
+  assert.ok(bottomStart >= 0 && bottomEnd > bottomStart);
+  assert.match(bottomBehavior, /\.publisher-auto-reply-editor__section/u);
+  assert.match(bottomBehavior, /scrollIntoView/u);
+  assert.match(bottomBehavior, /assertLocatorWithinViewport/u);
+});
+
 test('large publisher catalog scenario activates pagination without pointer interception', () => {
   const captureSource = readFileSync(
     new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
@@ -319,6 +375,11 @@ test('keyboard capture reduces geometry and exercises the Publik focus flow', ()
   assert.match(captureSource, /Publisher rich-text editor/u);
   assert.match(captureSource, /activeMatchesPublisherEditor/u);
   assert.match(captureSource, /Publisher primary publish action does not contain its label/u);
+  assert.match(captureSource, /publisher-auto-replies-editor-keyboard/u);
+  assert.match(captureSource, /exercisePublisherAutoReplyEditorKeyboardFlow/u);
+  assert.match(captureSource, /shouldSimulateKeyboardScenario/u);
+  assert.match(captureSource, /Auto-reply text editor/u);
+  assert.match(captureSource, /Текст автоответа/u);
   assert.equal(captureSource.match(/await done\.click\(\)/gu)?.length, 2);
   assert.doesNotMatch(captureSource, /root\.style\.setProperty\('--app-keyboard-overlap'/u);
   assert.doesNotMatch(captureSource, /if \(!\(nav instanceof HTMLElement\)\) \{\s*return null;/u);

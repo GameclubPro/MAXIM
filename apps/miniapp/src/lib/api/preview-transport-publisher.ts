@@ -121,7 +121,7 @@ function getPreviewPublisherAutoReplyAuthoring(
 
 function buildPreviewAutoReplyAssetBlob(): Blob {
   const binary = globalThis.atob(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'iVBORw0KGgoAAAANSUhEUgAAADAAAAAwAgMAAAAqbBEUAAAADFBMVEXC6f6k0/Oz3/iTx+5Xsu0OAAAACXBIWXMAAAPoAAAD6AG1e1JrAAABbElEQVQoz2NgYGB6wAABsgxIIAxMMs0AU7PAJH8ImDIHk3t0gASvgzzDBKCqgyJAjtiOKwxXGBhYhTIYChjMt+cxbGBg0PsiwOjCILv1GEiLMU8AUwgD49VckFmPeQ4wRDAwsM8DcnYeuuwAUsB+HUg8buAGWyDqxMDAuFZFBcyxBcpz51qYgDnqQA4ne9IVhGN/p6vA2YzuoRIMDAkQDr9f0wYGJg8IR7/h9AEGpgCojJY3kFSAcPTWNiAMY70H9BGMY+sBZa8A4h1QQfZwB4Rys1UTwCEFVheUsQUiytvAwHRAKx3C4WRgYL4mwgnhAJWJNzBog5gcIOJyU/MNBj2o2xvjby1n2M3AwAVSeG3p0nugSNkKcrJ6bdQUkGAQOAxkF4LEuFWlwMbXgkhuhygkPzClIXEkvBEcZj9giC+AcpiuTUFwGEQTGJi7kJIAUwZyggD5khFZgBWhEOxFBmQ+wlSQthQIrcDAAADorEXVKBtnwAAAAABJRU5ErkJggg==',
   );
   return new Blob([Uint8Array.from(binary, (character) => character.charCodeAt(0))], {
     type: 'image/png',

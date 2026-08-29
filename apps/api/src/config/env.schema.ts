@@ -22,6 +22,10 @@ import { COMMERCIAL_OCR_DEFAULT_VERSION } from '../moderation/commercial-ocr/com
 import { parseCanonicalCommercialOcrApprovalPublicKeyBase64 } from '../moderation/commercial-ocr/commercial-ocr-approval-key';
 import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
 import {
+  PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS,
+  PUBLISHER_AUTO_REPLY_FLOOD_GATE_DEFAULTS,
+} from '../publisher/publisher-auto-reply-flood-gate.config';
+import {
   readPublisherActionTokenFile,
   readPublisherDialogSigningKeysFile,
   readPublisherWebhookCredentialFile,
@@ -184,6 +188,43 @@ const envSchema = z.object({
   ),
   MAX_PUBLISHER_DISPATCH_ENABLED: envBoolean(false),
   PUBLISHER_POST_IMPORT_ENABLED: envBoolean(false),
+  PUBLISHER_AUTO_REPLY_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1_500),
+  PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.userBurstLimit.min)
+    .max(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.userBurstLimit.max)
+    .default(PUBLISHER_AUTO_REPLY_FLOOD_GATE_DEFAULTS.userBurstLimit),
+  PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.userRollingLimit.min)
+    .max(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.userRollingLimit.max)
+    .default(PUBLISHER_AUTO_REPLY_FLOOD_GATE_DEFAULTS.userRollingLimit),
+  PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.chatBurstLimit.min)
+    .max(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.chatBurstLimit.max)
+    .default(PUBLISHER_AUTO_REPLY_FLOOD_GATE_DEFAULTS.chatBurstLimit),
+  PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.chatRollingLimit.min)
+    .max(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.chatRollingLimit.max)
+    .default(PUBLISHER_AUTO_REPLY_FLOOD_GATE_DEFAULTS.chatRollingLimit),
+  PUBLISHER_AUTO_REPLY_QUEUE_BACKLOG_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.queueBacklogLimit.min)
+    .max(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.queueBacklogLimit.max)
+    .default(PUBLISHER_AUTO_REPLY_FLOOD_GATE_DEFAULTS.queueBacklogLimit),
+  PUBLISHER_AUTO_REPLY_FLOOD_GATE_REDIS_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.redisTimeoutMs.min)
+    .max(PUBLISHER_AUTO_REPLY_FLOOD_GATE_BOUNDS.redisTimeoutMs.max)
+    .default(PUBLISHER_AUTO_REPLY_FLOOD_GATE_DEFAULTS.redisTimeoutMs),
   MAX_API_BASE_URL: z.string().url().default('https://platform-api2.max.ru'),
   MAX_RESUMABLE_VIDEO_UPLOAD_ENABLED: envBoolean(true),
   MAX_JOIN_DENY_CHAT_IDS: z.string().optional(),
@@ -623,6 +664,38 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
     throw new Error(`Environment validation failed: ${details}`);
   }
 
+  if (
+    parsed.data.PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT <
+    parsed.data.PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT
+  ) {
+    throw new Error(
+      'Environment validation failed: PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT must be greater than or equal to PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT',
+    );
+  }
+  if (
+    parsed.data.PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT <
+    parsed.data.PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT
+  ) {
+    throw new Error(
+      'Environment validation failed: PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT must be greater than or equal to PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT',
+    );
+  }
+  if (
+    parsed.data.PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT <
+    parsed.data.PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT
+  ) {
+    throw new Error(
+      'Environment validation failed: PUBLISHER_AUTO_REPLY_CHAT_BURST_LIMIT must be greater than or equal to PUBLISHER_AUTO_REPLY_USER_BURST_LIMIT',
+    );
+  }
+  if (
+    parsed.data.PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT <
+    parsed.data.PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT
+  ) {
+    throw new Error(
+      'Environment validation failed: PUBLISHER_AUTO_REPLY_CHAT_ROLLING_LIMIT must be greater than or equal to PUBLISHER_AUTO_REPLY_USER_ROLLING_LIMIT',
+    );
+  }
   if (
     parsed.data.MODERATION_DELETE_INTENT_LEASE_MS <= parsed.data.MODERATION_DELETE_INTENT_TIMEOUT_MS
   ) {

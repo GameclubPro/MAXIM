@@ -19,6 +19,7 @@ import { PublisherActionCredentialService } from './publisher-action-credential.
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
 import { PublisherReadinessService } from './publisher-readiness.service';
 import type { PublisherAutoReplyJob } from './publisher-auto-reply.queue';
+import { PublisherAutoReplySourceFenceService } from './publisher-auto-reply-source-fence.service';
 
 const DELIVERY_LEASE_MS = 2 * 60_000;
 const UPLOAD_LEASE_MS = 2 * 60_000;
@@ -102,6 +103,7 @@ export class PublisherAutoReplyDeliveryService {
     private readonly maxClient: MaxClientService,
     private readonly readiness: PublisherReadinessService,
     private readonly dispatchHealth: PublisherDispatchHealthService,
+    private readonly sourceFence: PublisherAutoReplySourceFenceService,
     credentials: PublisherActionCredentialService,
   ) {
     this.publisherBotId = credentials.getBotId();
@@ -167,6 +169,7 @@ export class PublisherAutoReplyDeliveryService {
     try {
       delivery = await this.loadLeasedDelivery(job.deliveryId, lockToken);
       this.assertCurrentEpoch(delivery);
+      await this.assertCurrentSource(delivery);
       const route = await this.readiness.assertEntityReady(delivery.chatId, 'auto_replies');
       if (
         route.entityType !== 'chat' ||
@@ -226,6 +229,7 @@ export class PublisherAutoReplyDeliveryService {
               ) {
                 throw new PublisherAutoReplyEpochChangedError('Publisher route changed');
               }
+              await this.assertCurrentSource(delivery);
               await this.recordSendFence(delivery, lockToken);
               fenceActive = true;
             },
@@ -394,6 +398,14 @@ export class PublisherAutoReplyDeliveryService {
 
   private async recordSendFence(delivery: LeasedDelivery, lockToken: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      const sourceAdmitted = await this.sourceFence.lockAdmitted(tx, {
+        publisherBotId: delivery.publisherBotId,
+        chatId: delivery.chatId,
+        sourceMessageId: delivery.sourceMessageId,
+      });
+      if (!sourceAdmitted) {
+        throw new PublisherAutoReplyEpochChangedError('Publisher auto-reply source changed');
+      }
       const current = (await tx.publisherAutoReplyDelivery.findFirst({
         where: {
           id: delivery.id,
@@ -637,6 +649,17 @@ export class PublisherAutoReplyDeliveryService {
       };
     }
     return { text: content.text };
+  }
+
+  private async assertCurrentSource(delivery: LeasedDelivery): Promise<void> {
+    const state = await this.sourceFence.read({
+      publisherBotId: delivery.publisherBotId,
+      chatId: delivery.chatId,
+      sourceMessageId: delivery.sourceMessageId,
+    });
+    if (state !== 'admitted') {
+      throw new PublisherAutoReplyEpochChangedError('Publisher auto-reply source changed');
+    }
   }
 
   private buildMediaOptions(payloads: Record<string, unknown>[]): {

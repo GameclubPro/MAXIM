@@ -95,11 +95,11 @@ export function AutoReplyCreateSheet({
         <div className="auto-reply-create-sheet__actions">
           <button ref={firstActionRef} type="button" onClick={onWrite} disabled={busy}>
             <EditPencil aria-hidden />
-            <span>Написать</span>
+            <span>Создать здесь</span>
           </button>
           <button type="button" onClick={onOpenBot} disabled={busy}>
             <ChatBubble aria-hidden />
-            <span>{busy ? 'Открываю...' : 'Через Публика'}</span>
+            <span>{busy ? 'Открываю...' : 'Открыть Публика'}</span>
           </button>
         </div>
       </section>

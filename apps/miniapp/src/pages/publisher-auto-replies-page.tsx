@@ -7,7 +7,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   EditPencil,
   Key,
-  MediaImage,
   NavArrowLeft,
   Plus,
   Refresh,
@@ -386,8 +385,7 @@ function PublisherAutoReplyEditor({
           <NavArrowLeft aria-hidden />
         </button>
         <span>
-          <strong>{rule ? 'Редактирование' : 'Новый автоответ'}</strong>
-          <small>Точное совпадение фразы</small>
+          <strong>{rule ? 'Изменить автоответ' : 'Новый автоответ'}</strong>
         </span>
       </header>
 
@@ -400,22 +398,19 @@ function PublisherAutoReplyEditor({
 
       <section className="publisher-auto-reply-editor__section">
         <header>
-          <span className="publisher-auto-reply-editor__section-icon" aria-hidden>
-            <Key />
-          </span>
-          <span>
-            <strong>Когда отвечать</strong>
-            <small>Сообщение целиком совпадает с фразой</small>
-          </span>
+          <h2 id="publisher-auto-reply-phrase-title">Кодовая фраза</h2>
+          <small>Точное совпадение</small>
         </header>
-        <label className={cn('publisher-auto-reply-editor__field', issues.phrase && 'has-error')}>
-          <span>Кодовая фраза</span>
+        <div className={cn('publisher-auto-reply-editor__field', issues.phrase && 'has-error')}>
           <input
             value={draft.phrase}
             maxLength={AUTO_REPLY_PHRASE_MAX_LENGTH}
             disabled={saveMutation.isPending}
-            placeholder="Например, прайс"
+            placeholder="Например: прайс"
             autoCapitalize="sentences"
+            aria-labelledby="publisher-auto-reply-phrase-title"
+            aria-describedby="publisher-auto-reply-phrase-meta"
+            aria-invalid={Boolean(issues.phrase)}
             onChange={(event) => {
               updateDraft({ phrase: event.target.value });
               if (issues.phrase) {
@@ -423,21 +418,19 @@ function PublisherAutoReplyEditor({
               }
             }}
           />
-          <small className="publisher-auto-reply-editor__field-meta">
+          <small
+            id="publisher-auto-reply-phrase-meta"
+            className="publisher-auto-reply-editor__field-meta"
+            role={issues.phrase ? 'alert' : undefined}
+          >
             {issues.phrase ?? `${draft.phrase.length}/${AUTO_REPLY_PHRASE_MAX_LENGTH}`}
           </small>
-        </label>
+        </div>
       </section>
 
       <section className="publisher-auto-reply-editor__section is-content">
         <header>
-          <span className="publisher-auto-reply-editor__section-icon" aria-hidden>
-            <MediaImage />
-          </span>
-          <span>
-            <strong>Ответ</strong>
-            <small>Форматированный текст и до {AUTO_REPLY_MAX_IMAGES} фото</small>
-          </span>
+          <h2>Ответ</h2>
         </header>
 
         {rule && draft.retainedAssets.length > 0 ? (
@@ -477,7 +470,7 @@ function PublisherAutoReplyEditor({
           disabled={saveMutation.isPending}
           textError={issues.content}
           messageAriaLabel="Ответ на кодовую фразу"
-          textPlaceholder="Ответ Публика"
+          textPlaceholder="Текст ответа"
           textAriaLabel="Текст автоответа"
           showToolLabels
           onTextChange={(text) => {
@@ -495,23 +488,28 @@ function PublisherAutoReplyEditor({
           onImagePreparationChange={setImagesPreparing}
           onError={(message) => pushToast({ tone: 'danger', title: message })}
         />
-        <small className="publisher-auto-reply-editor__image-count">
-          {totalImages === 0 ? 'Без фото' : `${totalImages} из ${AUTO_REPLY_MAX_IMAGES} фото`}
-        </small>
+        {totalImages > 0 ? (
+          <small className="publisher-auto-reply-editor__image-count">
+            {totalImages} из {AUTO_REPLY_MAX_IMAGES} фото
+          </small>
+        ) : null}
       </section>
 
       <section className="publisher-auto-reply-editor__section">
         <header>
-          <span className="publisher-auto-reply-editor__section-icon" aria-hidden>
-            <Refresh />
-          </span>
-          <span>
-            <strong>Ограничения</strong>
-            <small>Пауза защищает чат от повторных ответов</small>
-          </span>
+          <h2>Настройки</h2>
         </header>
+        <div className="publisher-auto-reply-editor__toggle-row">
+          <strong>Правило включено</strong>
+          <AutoReplySwitch
+            checked={draft.enabled}
+            disabled={saveMutation.isPending}
+            label={draft.enabled ? 'Выключить правило' : 'Включить правило'}
+            onChange={(enabled) => updateDraft({ enabled })}
+          />
+        </div>
         <label className="publisher-auto-reply-editor__select-field">
-          <span>Пауза между ответами</span>
+          <span>Пауза для одного участника</span>
           <select
             value={draft.cooldownSeconds}
             disabled={saveMutation.isPending}
@@ -524,18 +522,6 @@ function PublisherAutoReplyEditor({
             ))}
           </select>
         </label>
-        <div className="publisher-auto-reply-editor__toggle-row">
-          <span>
-            <strong>Правило включено</strong>
-            <small>Можно сохранить выключенным и включить позже</small>
-          </span>
-          <AutoReplySwitch
-            checked={draft.enabled}
-            disabled={saveMutation.isPending}
-            label={draft.enabled ? 'Выключить правило' : 'Включить правило'}
-            onChange={(enabled) => updateDraft({ enabled })}
-          />
-        </div>
       </section>
 
       <footer className="publisher-auto-reply-editor__save-bar">
@@ -544,14 +530,14 @@ function PublisherAutoReplyEditor({
           disabled={saveMutation.isPending || imagesPreparing || conflict}
           onClick={validateAndReview}
         >
-          {saveMutation.isPending ? 'Сохраняю...' : 'Проверить и сохранить'}
+          {saveMutation.isPending ? 'Сохраняю...' : 'Продолжить'}
         </button>
       </footer>
 
       <ActionConfirmSheet
         id="publisher-auto-reply-review"
         open={reviewOpen}
-        title={rule ? 'Сохранить изменения?' : 'Включить автоответ?'}
+        title={rule ? 'Сохранить изменения?' : 'Создать автоответ?'}
         summary={`Фраза «${normalizeAutoReplyDraft(draft).phrase}» сработает только при точном совпадении.`}
         previewTitle={
           <MaxMarkdownPreview
@@ -560,8 +546,10 @@ function PublisherAutoReplyEditor({
             fallback={totalImages > 0 ? 'Ответ без текста' : null}
           />
         }
-        previewMeta={`${totalImages} фото · ${getAutoReplyCooldownLabel(draft.cooldownSeconds)} · ${
-          draft.enabled ? 'включено' : 'выключено'
+        previewMeta={`${
+          totalImages > 0 ? `${totalImages} фото · ` : ''
+        }Пауза: ${getAutoReplyCooldownLabel(draft.cooldownSeconds)} · ${
+          draft.enabled ? 'включён' : 'выключен'
         }`}
         confirmLabel={rule ? 'Сохранить' : 'Создать'}
         confirmBusyLabel="Сохраняю..."
@@ -653,7 +641,7 @@ function AutoReplyRuleRow({
       <footer className="publisher-auto-reply-row__footer">
         <span>
           {rule.content.images.length > 0 ? `${rule.content.images.length} фото · ` : ''}
-          {getAutoReplyCooldownLabel(rule.cooldownSeconds)}
+          Пауза: {getAutoReplyCooldownLabel(rule.cooldownSeconds)}
         </span>
         <span className="publisher-auto-reply-row__actions">
           <button
@@ -968,10 +956,12 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
 
       {authoringQuery.data?.session &&
       isActiveAutoReplyAuthoringState(authoringQuery.data.session.state) ? (
-        <div className="publisher-auto-replies-page__authoring" role="status">
+        <div className="publisher-auto-replies-page__authoring">
           <span>
-            <strong>Создание через Публика</strong>
-            <small>{getAutoReplyAuthoringStateLabel(authoringQuery.data.session.state)}</small>
+            <strong>Черновик в Публике</strong>
+            <small aria-live="polite">
+              {getAutoReplyAuthoringStateLabel(authoringQuery.data.session.state)}
+            </small>
           </span>
           <span className="publisher-auto-replies-page__authoring-actions">
             {authoringQuery.data.botUrl ? (
@@ -998,8 +988,10 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
       {entity ? (
         <div className="publisher-auto-replies-page__module-toggle">
           <span>
-            <strong>Модуль активен</strong>
-            <small>Главный выключатель всех автоответов этого чата</small>
+            <strong>Автоответы в чате</strong>
+            <small>
+              {entity.moduleSettings.autoRepliesEnabled === true ? 'Включены' : 'Выключены'}
+            </small>
           </span>
           <AutoReplySwitch
             checked={entity.moduleSettings.autoRepliesEnabled === true}
@@ -1036,7 +1028,7 @@ export function PublisherAutoRepliesPage({ api }: { api: ApiTransport }) {
           <span aria-hidden>
             <Key />
           </span>
-          <strong>Автоответов пока нет</strong>
+          <strong>Нет автоответов</strong>
           <button type="button" onClick={() => setCreateSheetOpen(true)}>
             <Plus aria-hidden />
             <span>Добавить автоответ</span>

@@ -17,6 +17,11 @@ const update: MaxUpdate = {
 };
 
 function createService(options: { consumed?: boolean; matched?: boolean } = {}) {
+  const prisma = {
+    webhookEvent: {
+      findUnique: jest.fn().mockResolvedValue({ id: 'stored-webhook-1' }),
+    },
+  };
   const lifecycle = { observeWebhook: jest.fn().mockResolvedValue(undefined) };
   const comments = { observeWebhook: jest.fn().mockResolvedValue(undefined) };
   const postImport = {
@@ -26,7 +31,7 @@ function createService(options: { consumed?: boolean; matched?: boolean } = {}) 
     observeWebhook: jest.fn().mockResolvedValue({ matched: options.matched ?? true }),
   };
   const service = new WebhookService(
-    {} as never,
+    prisma as never,
     {
       get: jest.fn((key: string, fallback?: unknown) =>
         key === 'MAX_PUBLISHER_BOT_ID' ? 'publisher-bot' : fallback,
@@ -44,7 +49,7 @@ function createService(options: { consumed?: boolean; matched?: boolean } = {}) 
     postImport as never,
     autoReplies as never,
   );
-  return { service, lifecycle, comments, postImport, autoReplies };
+  return { service, lifecycle, comments, postImport, autoReplies, prisma };
 }
 
 describe('Publisher auto-reply webhook ordering', () => {
@@ -55,7 +60,9 @@ describe('Publisher auto-reply webhook ordering', () => {
 
     expect(postImport.observeWebhook).toHaveBeenCalledTimes(1);
     expect(lifecycle.observeWebhook).toHaveBeenCalledTimes(1);
-    expect(autoReplies.observeWebhook).toHaveBeenCalledWith(update, 'webhook-1');
+    expect(autoReplies.observeWebhook).toHaveBeenCalledWith(update, 'webhook-1', {
+      duplicateRepair: false,
+    });
     expect(postImport.observeWebhook.mock.invocationCallOrder[0]).toBeLessThan(
       lifecycle.observeWebhook.mock.invocationCallOrder[0]!,
     );
@@ -81,5 +88,15 @@ describe('Publisher auto-reply webhook ordering', () => {
     await (service as any).observePublisherWebhook(update, 'webhook-1', false);
 
     expect(comments.observeWebhook).toHaveBeenCalledWith(update);
+  });
+
+  it('passes duplicate repair context to the auto-reply producer', async () => {
+    const { service, autoReplies } = createService();
+
+    await (service as any).observePublisherWebhook(update, null, true);
+
+    expect(autoReplies.observeWebhook).toHaveBeenCalledWith(update, 'stored-webhook-1', {
+      duplicateRepair: true,
+    });
   });
 });

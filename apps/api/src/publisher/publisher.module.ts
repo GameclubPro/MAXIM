@@ -40,6 +40,8 @@ import {
   PublisherAutoReplyQueueService,
 } from './publisher-auto-reply.queue';
 import { PublisherAutoReplyProducerService } from './publisher-auto-reply-producer.service';
+import { PublisherAutoReplyFloodGateService } from './publisher-auto-reply-flood-gate.service';
+import { PublisherAutoReplySourceFenceService } from './publisher-auto-reply-source-fence.service';
 import {
   PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE,
   PublisherAutoReplyAuthoringQueueService,
@@ -79,6 +81,8 @@ const sharedPublisherProviders = [
   PublisherPostImportQueueService,
   PublisherPostImportService,
   PublisherAutoReplyQueueService,
+  PublisherAutoReplyFloodGateService,
+  PublisherAutoReplySourceFenceService,
   PublisherAutoReplyProducerService,
   PublisherAutoReplyAuthoringQueueService,
   PublisherAutoReplyAuthoringService,

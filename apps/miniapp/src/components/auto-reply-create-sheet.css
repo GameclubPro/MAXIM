@@ -95,7 +95,7 @@
     text-align: left;
   }
 
-  .auto-reply-create-sheet__actions button:last-child {
+  .auto-reply-create-sheet__actions button:first-child {
     border-color: var(--color-border-strong);
     background: var(--color-accent-soft);
     color: var(--color-accent);

@@ -37,6 +37,8 @@ export type MaxRichTextEditorProps = {
   preserveCurlyBracePlaceholders?: boolean;
   curlyBracePlaceholderLabels?: Readonly<Record<string, string>>;
   ariaLabel: string;
+  ariaInvalid?: boolean;
+  ariaDescribedBy?: string;
   className?: string;
   onPasteFiles?: (files: File[]) => void;
   onNormalizationReadyChange?: (ready: boolean) => void;
@@ -66,6 +68,8 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       preserveCurlyBracePlaceholders = false,
       curlyBracePlaceholderLabels,
       ariaLabel,
+      ariaInvalid = false,
+      ariaDescribedBy,
       className,
       onPasteFiles,
       onNormalizationReadyChange,
@@ -352,6 +356,8 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           data-placeholder={placeholder}
           role="textbox"
           aria-label={ariaLabel}
+          aria-invalid={ariaInvalid}
+          aria-describedby={ariaDescribedBy}
           aria-multiline="true"
           aria-disabled={!interactive || undefined}
           aria-busy={normalizedValue.status === 'loading' || undefined}

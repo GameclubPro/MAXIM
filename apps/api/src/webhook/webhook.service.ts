@@ -882,13 +882,36 @@ export class WebhookService {
       return;
     }
     await this.requirePublisherBindingLifecycle().observeWebhook(update);
+    const autoReplyWebhookEventId =
+      duplicate && !webhookEventId
+        ? await this.resolveDuplicatePublisherWebhookEventId(update)
+        : webhookEventId;
     const autoReply = await this.publisherAutoReplyProducer?.observeWebhook(
       update,
-      webhookEventId,
+      autoReplyWebhookEventId,
+      { duplicateRepair: duplicate },
     );
     if (!autoReply?.matched) {
       await this.publisherChatCommentProducer?.observeWebhook(update);
     }
+  }
+
+  private async resolveDuplicatePublisherWebhookEventId(update: MaxUpdate): Promise<string | null> {
+    const model = (
+      this.prisma as PrismaService & {
+        webhookEvent?: {
+          findUnique?: (args: unknown) => Promise<{ id?: string | null } | null>;
+        };
+      }
+    ).webhookEvent;
+    if (typeof model?.findUnique !== 'function') {
+      return null;
+    }
+    const event = await model.findUnique({
+      where: { dedupKey: this.buildWebhookDedupKey(update) },
+      select: { id: true },
+    });
+    return event?.id?.trim() || null;
   }
 
   private async stageManagedEntityPendingBootstrap(update: MaxUpdate): Promise<void> {

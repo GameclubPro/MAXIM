@@ -66,6 +66,43 @@ const normalizedKeyboardOverlapPx = Number.isFinite(keyboardOverlapPx)
 const KEYBOARD_MIN_VISIBLE_HEIGHT_PX = 280;
 const KEYBOARD_MIN_REDUCTION_PX = 80;
 const PUBLISHER_COMPOSER_KEYBOARD_SCENARIO = 'publications-publisher-compose';
+const PUBLISHER_AUTO_REPLY_KEYBOARD_SCENARIO = 'publisher-auto-replies-editor-keyboard';
+const KEYBOARD_SCENARIO_PROFILES = Object.freeze({
+  [PUBLISHER_COMPOSER_KEYBOARD_SCENARIO]: Object.freeze({
+    flow: 'publisher-composer',
+    focusSelector: '.publication-content-composer .max-rich-text-editor__surface',
+    focusReport: 'publisher-rich-text-editor',
+    actionBarSelector: '.publications-publish-bar',
+    primarySelector: '.broadcast-publish-bar__primary',
+    pickerSheetSelector: '.publication-target-picker__editor.is-sheet',
+    focusFailure: 'Publisher keyboard scenario did not finish with focus in the rich-text editor.',
+    focusLabel: 'Publisher rich-text editor',
+    actionBarLabel: 'Publisher publish bar',
+    primaryFailure: 'Publisher primary publish action does not contain its label at keyboard size.',
+    pickerFailure: 'Publisher recipient picker remained open after keyboard focus-flow checks.',
+  }),
+  [PUBLISHER_AUTO_REPLY_KEYBOARD_SCENARIO]: Object.freeze({
+    flow: 'publisher-auto-reply-editor',
+    focusSelector: '.publisher-auto-reply-editor [aria-label="Текст автоответа"]',
+    focusReport: 'publisher-auto-reply-text-editor',
+    actionBarSelector: '.publisher-auto-reply-editor__save-bar',
+    primarySelector: 'button',
+    pickerSheetSelector: null,
+    focusFailure: 'Auto-reply keyboard scenario did not finish with focus in the text editor.',
+    focusLabel: 'Auto-reply text editor',
+    actionBarLabel: 'Auto-reply save bar',
+    primaryFailure: 'Auto-reply primary save action does not contain its label at keyboard size.',
+    pickerFailure: null,
+  }),
+});
+
+function resolveKeyboardScenarioProfile(scenario) {
+  return KEYBOARD_SCENARIO_PROFILES[scenario.name] ?? null;
+}
+
+function shouldSimulateKeyboardScenario(scenario) {
+  return scenario.keyboard === false ? false : simulateKeyboard || scenario.keyboard === true;
+}
 
 function parseEnvFlag(name) {
   const value = process.env[name]?.trim().toLowerCase();
@@ -148,6 +185,29 @@ async function openPreviewPollEditor(page, { openSection = false } = {}) {
   const workspace = page.locator('.managed-poll-workspace');
   await workspace.getByRole('button', { name: 'Новый', exact: true }).click();
   await page.locator('.managed-poll-editor').waitFor({ state: 'visible' });
+}
+
+async function openPublisherAutoReplyCreateSheet(page) {
+  await page.getByRole('button', { name: 'Добавить автоответ', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Новый автоответ' });
+  await dialog.waitFor({ state: 'visible' });
+  await dialog.getByRole('button', { name: 'Создать здесь', exact: true }).waitFor({
+    state: 'visible',
+  });
+  return dialog;
+}
+
+async function openPublisherAutoReplyEditor(page) {
+  const dialog = await openPublisherAutoReplyCreateSheet(page);
+  await dialog.getByRole('button', { name: 'Создать здесь', exact: true }).click();
+  const editor = page.locator('.publisher-auto-reply-editor');
+  await editor.waitFor({ state: 'visible' });
+  await editor.getByRole('textbox', { name: /Кодовая фраза/u }).fill('Каталог');
+  await editor
+    .getByRole('textbox', { name: 'Текст автоответа', exact: true })
+    .fill('Каталог готов. Выберите нужный раздел.');
+  await page.waitForTimeout(250);
+  return editor;
 }
 
 async function publishPreviewPoll(page) {
@@ -514,6 +574,50 @@ const scenarioBehaviors = [
         element.dispatchEvent(new Event('scroll'));
       });
       await page.waitForTimeout(120);
+    },
+  },
+  {
+    name: 'publisher-auto-replies-cold',
+    beforeShot: async (page) => {
+      await page.locator('.publisher-auto-replies-page').waitFor({ state: 'visible' });
+      await page.locator('.publisher-auto-reply-row').first().waitFor({ state: 'visible' });
+      await page.waitForTimeout(250);
+    },
+  },
+  {
+    name: 'publisher-auto-replies-create-sheet',
+    beforeShot: async (page) => {
+      await openPublisherAutoReplyCreateSheet(page);
+      await page.waitForTimeout(150);
+    },
+  },
+  {
+    name: 'publisher-auto-replies-editor',
+    beforeShot: async (page) => {
+      await openPublisherAutoReplyEditor(page);
+    },
+  },
+  {
+    name: 'publisher-auto-replies-editor-bottom',
+    beforeShot: async (page) => {
+      const editor = await openPublisherAutoReplyEditor(page);
+      const settings = editor.locator('.publisher-auto-reply-editor__section').last();
+      await settings.waitFor({ state: 'visible' });
+      await settings.evaluate((element) =>
+        element.scrollIntoView({ block: 'center', behavior: 'instant' }),
+      );
+      await page.waitForTimeout(120);
+      await assertLocatorWithinViewport(settings, 'Auto-reply settings section');
+      await assertLocatorWithinViewport(
+        editor.locator('.publisher-auto-reply-editor__save-bar button'),
+        'Auto-reply save action',
+      );
+    },
+  },
+  {
+    name: PUBLISHER_AUTO_REPLY_KEYBOARD_SCENARIO,
+    beforeShot: async (page) => {
+      await openPublisherAutoReplyEditor(page);
     },
   },
   {
@@ -1844,10 +1948,28 @@ async function exercisePublisherComposerKeyboardFlow(page) {
   await assertLocatorWithinViewport(editor, 'Publisher rich-text editor');
 }
 
+async function exercisePublisherAutoReplyEditorKeyboardFlow(page) {
+  const editor = page.locator('.publisher-auto-reply-editor');
+  await editor.waitFor({ state: 'visible' });
+  const textEditor = editor.getByRole('textbox', {
+    name: 'Текст автоответа',
+    exact: true,
+  });
+  await textEditor.waitFor({ state: 'visible' });
+  await textEditor.evaluate((element) =>
+    element.scrollIntoView({ block: 'center', behavior: 'instant' }),
+  );
+  await textEditor.focus();
+  await assertFocusedLocator(textEditor, 'Auto-reply text editor');
+  await assertLocatorWithinViewport(textEditor, 'Auto-reply text editor');
+}
+
 async function simulateKeyboardViewport(page, scenario) {
-  if (!simulateKeyboard) {
+  if (!shouldSimulateKeyboardScenario(scenario)) {
     return null;
   }
+
+  const keyboardProfile = resolveKeyboardScenarioProfile(scenario);
 
   await page.addStyleTag({
     content: `
@@ -1881,8 +2003,10 @@ async function simulateKeyboardViewport(page, scenario) {
   );
   await page.waitForTimeout(120);
 
-  if (scenario.name === PUBLISHER_COMPOSER_KEYBOARD_SCENARIO) {
+  if (keyboardProfile?.flow === 'publisher-composer') {
     await exercisePublisherComposerKeyboardFlow(page);
+  } else if (keyboardProfile?.flow === 'publisher-auto-reply-editor') {
+    await exercisePublisherAutoReplyEditorKeyboardFlow(page);
   }
 
   await page.evaluate(
@@ -1900,8 +2024,7 @@ async function simulateKeyboardViewport(page, scenario) {
     originalHeight: viewport.height,
     viewportHeight: reducedHeight,
     coveredHeight: viewport.height - reducedHeight,
-    focus:
-      scenario.name === PUBLISHER_COMPOSER_KEYBOARD_SCENARIO ? 'publisher-rich-text-editor' : null,
+    focus: keyboardProfile?.focusReport ?? null,
   };
 }
 
@@ -1931,7 +2054,10 @@ async function assertConfiguredChecks(page, scenario) {
 }
 
 async function assertPublisherComposerDockSeparated(page, scenario) {
-  if (!scenario.name.startsWith('publications-publisher-compose') || simulateKeyboard) {
+  if (
+    !scenario.name.startsWith('publications-publisher-compose') ||
+    shouldSimulateKeyboardScenario(scenario)
+  ) {
     return;
   }
 
@@ -2730,7 +2856,7 @@ async function assertViewportBounds(page, scenario) {
           : [];
       }),
     );
-  }, simulateKeyboard);
+  }, shouldSimulateKeyboardScenario(scenario));
 
   if (issues.length > 0) {
     const first = issues[0];
@@ -2876,7 +3002,7 @@ async function assertPrimaryControlsReachable(page, scenario) {
           : [];
       }),
     );
-  }, simulateKeyboard);
+  }, shouldSimulateKeyboardScenario(scenario));
 
   if (issues.length > 0) {
     const first = issues[0];
@@ -2963,17 +3089,24 @@ async function assertChannelStatsContinuousChart(page) {
 }
 
 async function assertKeyboardState(page, scenario) {
-  if (!simulateKeyboard || scenario.preview === false || scenario.name.includes('dialog')) {
+  if (
+    !shouldSimulateKeyboardScenario(scenario) ||
+    scenario.preview === false ||
+    scenario.name.includes('dialog')
+  ) {
     return;
   }
 
-  const state = await page.evaluate((publisherComposerScenario) => {
+  const keyboardProfile = resolveKeyboardScenarioProfile(scenario);
+  const state = await page.evaluate((profile) => {
     const root = document.documentElement;
     const nav = document.querySelector('.bottom-nav');
     const navStyle = nav instanceof HTMLElement ? getComputedStyle(nav) : null;
     const active = document.activeElement;
     const activeRect = active instanceof HTMLElement ? active.getBoundingClientRect() : null;
-    const publishBar = document.querySelector('.publications-publish-bar');
+    const publishBar = profile?.actionBarSelector
+      ? document.querySelector(profile.actionBarSelector)
+      : null;
     const publishBarStyle = publishBar instanceof HTMLElement ? getComputedStyle(publishBar) : null;
     const publishBarVisible = Boolean(
       publishBar instanceof HTMLElement &&
@@ -2986,7 +3119,10 @@ async function assertKeyboardState(page, scenario) {
       publishBarVisible && publishBar instanceof HTMLElement
         ? publishBar.getBoundingClientRect()
         : null;
-    const primary = publishBar?.querySelector('.broadcast-publish-bar__primary');
+    const primary =
+      publishBar && profile?.primarySelector
+        ? publishBar.querySelector(profile.primarySelector)
+        : null;
 
     return {
       keyboardOpen: root.dataset.maxKeyboardOpen === 'true',
@@ -3003,7 +3139,8 @@ async function assertKeyboardState(page, scenario) {
           : null,
       activeMatchesPublisherEditor:
         active instanceof HTMLElement &&
-        active.matches('.publication-content-composer .max-rich-text-editor__surface'),
+        Boolean(profile?.focusSelector) &&
+        active.matches(profile.focusSelector),
       activeRect: activeRect
         ? {
             top: activeRect.top,
@@ -3021,12 +3158,12 @@ async function assertKeyboardState(page, scenario) {
       primaryFits:
         primary instanceof HTMLElement
           ? primary.scrollWidth <= primary.clientWidth + 2
-          : !publisherComposerScenario,
+          : profile === null,
       pickerSheetOpen: Boolean(
-        document.querySelector('.publication-target-picker__editor.is-sheet'),
+        profile?.pickerSheetSelector && document.querySelector(profile.pickerSheetSelector),
       ),
     };
-  }, scenario.name === PUBLISHER_COMPOSER_KEYBOARD_SCENARIO);
+  }, keyboardProfile);
 
   if (
     !state.keyboardOpen ||
@@ -3049,14 +3186,12 @@ async function assertKeyboardState(page, scenario) {
     );
   }
 
-  if (scenario.name !== PUBLISHER_COMPOSER_KEYBOARD_SCENARIO) {
+  if (!keyboardProfile) {
     return;
   }
 
   if (!state.activeMatchesPublisherEditor || !state.activeRect) {
-    throw new Error(
-      'Publisher keyboard scenario did not finish with focus in the rich-text editor.',
-    );
+    throw new Error(keyboardProfile.focusFailure);
   }
   if (
     state.activeRect.left < -2 ||
@@ -3065,7 +3200,7 @@ async function assertKeyboardState(page, scenario) {
     state.activeRect.bottom > state.viewportHeight + 2
   ) {
     throw new Error(
-      `Publisher rich-text editor is unreachable with keyboard open ` +
+      `${keyboardProfile.focusLabel} is unreachable with keyboard open ` +
         `(top=${state.activeRect.top.toFixed(1)}, bottom=${state.activeRect.bottom.toFixed(1)}, ` +
         `viewport=${state.viewportHeight}).`,
     );
@@ -3076,19 +3211,17 @@ async function assertKeyboardState(page, scenario) {
       state.activeRect.bottom > state.publishBarRect.top + 1)
   ) {
     throw new Error(
-      `Publisher publish bar overlaps the focused editor or leaves the keyboard viewport ` +
+      `${keyboardProfile.actionBarLabel} overlaps the focused editor or leaves the keyboard viewport ` +
         `(editorBottom=${state.activeRect.bottom.toFixed(1)}, ` +
         `barTop=${state.publishBarRect.top.toFixed(1)}, ` +
         `barBottom=${state.publishBarRect.bottom.toFixed(1)}, viewport=${state.viewportHeight}).`,
     );
   }
   if (!state.primaryFits) {
-    throw new Error(
-      'Publisher primary publish action does not contain its label at keyboard size.',
-    );
+    throw new Error(keyboardProfile.primaryFailure);
   }
   if (state.pickerSheetOpen) {
-    throw new Error('Publisher recipient picker remained open after keyboard focus-flow checks.');
+    throw new Error(keyboardProfile.pickerFailure ?? 'Keyboard flow left an overlay open.');
   }
 }
 
