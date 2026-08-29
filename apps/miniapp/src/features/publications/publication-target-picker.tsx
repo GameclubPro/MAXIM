@@ -14,6 +14,7 @@ import { cn } from '../../lib/cn';
 import { useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { getPublisherReadinessLabel } from '../../lib/publisher-readiness-label';
+import { formatRussianCountLabel } from '../../lib/broadcast-audience';
 import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
 import { resolveVirtualListRange } from '../../lib/virtual-list';
 import {
@@ -46,6 +47,7 @@ type PublicationTargetPickerProps = {
   error?: string | null;
   notice?: string | null;
   maxTargets?: number;
+  compactSummary?: boolean;
   onChange: (targets: PublicationTarget[]) => void;
   onLimitReached?: () => void;
 };
@@ -68,6 +70,7 @@ export function PublicationTargetPicker({
   error = null,
   notice = null,
   maxTargets = MAX_PUBLICATION_TARGETS,
+  compactSummary = false,
   onChange,
   onLimitReached,
 }: PublicationTargetPickerProps) {
@@ -76,9 +79,7 @@ export function PublicationTargetPicker({
   const [expanded, setExpanded] = useState(false);
   const [shouldRevealEditor, setShouldRevealEditor] = useState(false);
   const [listScrollTop, setListScrollTop] = useState(0);
-  const [listViewportHeight, setListViewportHeight] = useState(
-    TARGET_LIST_INITIAL_VIEWPORT_HEIGHT,
-  );
+  const [listViewportHeight, setListViewportHeight] = useState(TARGET_LIST_INITIAL_VIEWPORT_HEIGHT);
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -131,7 +132,7 @@ export function PublicationTargetPicker({
         ? value[0]
           ? getPublicationTargetTitle(value[0])
           : '1 получатель'
-        : `Выбрано: ${value.length}`;
+        : formatRussianCountLabel(value.length, 'получатель', 'получателя', 'получателей');
   const summaryTitle = collapsedSelectedSummary;
   const summaryMeta = notice
     ? notice
@@ -191,7 +192,8 @@ export function PublicationTargetPicker({
       setListViewportHeight(Math.max(1, list.clientHeight));
     };
     updateHeight();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateHeight);
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateHeight);
     observer?.observe(list);
     window.addEventListener('resize', updateHeight);
     return () => {
@@ -328,7 +330,14 @@ export function PublicationTargetPicker({
   }
 
   return (
-    <div ref={pickerRef} className={cn('publication-target-picker', error && 'has-error')}>
+    <div
+      ref={pickerRef}
+      className={cn(
+        'publication-target-picker',
+        compactSummary && 'is-compact',
+        error && 'has-error',
+      )}
+    >
       <button
         type="button"
         className={cn(
@@ -336,6 +345,7 @@ export function PublicationTargetPicker({
           value.length === 0 && 'is-empty',
           expanded && 'is-expanded',
           notice && 'has-notice',
+          compactSummary && value[0] && 'has-avatar',
         )}
         onClick={toggleEditor}
         disabled={disabled}
@@ -344,13 +354,23 @@ export function PublicationTargetPicker({
         aria-describedby={error ? errorId : undefined}
         aria-invalid={error ? 'true' : undefined}
       >
-        <span>
+        {compactSummary && value[0] ? (
+          <EntityAvatar
+            title={value[0].title}
+            entityType={value[0].entityType}
+            avatarUrl={value[0].avatarUrl}
+            className="publication-target-picker__summary-avatar"
+          />
+        ) : null}
+        <span className="publication-target-picker__summary-copy">
           <strong>{summaryTitle}</strong>
           <small>{summaryMeta}</small>
         </span>
-        <span className="publication-target-picker__summary-action">
-          {expanded ? 'Свернуть' : 'Изменить'}
-        </span>
+        {!compactSummary ? (
+          <span className="publication-target-picker__summary-action">
+            {expanded ? 'Свернуть' : 'Изменить'}
+          </span>
+        ) : null}
         <NavArrowDown aria-hidden />
       </button>
 

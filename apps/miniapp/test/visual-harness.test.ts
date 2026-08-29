@@ -175,6 +175,10 @@ test('publisher profile has dedicated publication and chat comment scenarios', (
     profile: 'publisher',
     compose: '1',
   });
+  assert.deepEqual(scenarios.get('publications-publisher-compose-long')?.searchParams, {
+    profile: 'publisher',
+    compose: '1',
+  });
   assert.deepEqual(scenarios.get('publications-publisher-empty')?.searchParams, {
     profile: 'publisher',
     publisherState: 'empty',
@@ -439,10 +443,25 @@ test('keyboard capture reduces geometry and exercises the Publik focus flow', ()
   );
 
   assert.match(captureSource, /await page\.setViewportSize/u);
+  assert.match(captureSource, /viewport\.height > viewport\.width \? viewport\.width \+ 1 : 0/u);
+  assert.match(captureSource, /cannot preserve viewport orientation while simulating a keyboard/u);
   assert.match(captureSource, /visualKeyboardOriginalHeight/u);
   assert.match(captureSource, /Publisher recipient search after reopening/u);
   assert.match(captureSource, /Publisher rich-text editor/u);
+  assert.match(captureSource, /Publisher button URL after focus handoff/u);
+  assert.match(captureSource, /Publisher button name after keyboard reopening/u);
+  assert.match(captureSource, /Publisher button URL after keyboard reopening/u);
   assert.match(captureSource, /activeMatchesPublisherEditor/u);
+  assert.match(
+    captureSource,
+    /const cycles = keyboardProfile\?\.flow === 'publisher-composer' \? 3 : 1/u,
+  );
+  assert.match(captureSource, /assertPublisherEditorFullBleed/u);
+  assert.match(captureSource, /assertPublisherComposerActionInFlow/u);
+  assert.match(
+    captureSource,
+    /forceKeyboardFlag: keyboardProfile\?\.flow === 'publisher-auto-reply-editor'/u,
+  );
   assert.match(captureSource, /Publisher primary publish action does not contain its label/u);
   assert.match(captureSource, /publisher-auto-replies-editor-keyboard/u);
   assert.match(captureSource, /exercisePublisherAutoReplyEditorKeyboardFlow/u);

@@ -10,6 +10,7 @@ import {
 } from '../../lib/broadcast-link-buttons';
 import { useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
+import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
 import './publication-buttons-sheet.css';
 
 export type PublicationButtonsSheetProps = {
@@ -83,6 +84,7 @@ export function PublicationButtonsSheet({
   const fieldId = useId();
   const [workingButtons, setWorkingButtons] = useState(() => createWorkingButtons(buttons));
   const [touchedFields, setTouchedFields] = useState<TouchedButtonFields[]>([]);
+  const overlayStyle = useVisualViewportOverlayStyle(open);
   const validationErrors = validatePublicationButtons(workingButtons);
   const visibleErrors = revealTouchedErrors(validationErrors, touchedFields);
 
@@ -101,6 +103,10 @@ export function PublicationButtonsSheet({
       return undefined;
     }
     const timeoutId = window.setTimeout(() => {
+      const activeElement = document.activeElement;
+      if (panelRef.current?.contains(activeElement) && activeElement !== closeButtonRef.current) {
+        return;
+      }
       textInputRefs.current[0]?.focus();
       textInputRefs.current[0]?.select();
     }, 80);
@@ -211,7 +217,11 @@ export function PublicationButtonsSheet({
       return;
     }
     const nextIndex = workingButtons.length;
-    setWorkingButtons((current) => [...current, createEmptyBroadcastLinkButton()]);
+    const nextButton = createEmptyBroadcastLinkButton();
+    setWorkingButtons((current) => [
+      ...current,
+      { ...nextButton, text: nextIndex === 0 ? nextButton.text : '' },
+    ]);
     setTouchedFields((current) => [...current, {}]);
     window.setTimeout(() => {
       textInputRefs.current[nextIndex]?.focus();
@@ -225,7 +235,7 @@ export function PublicationButtonsSheet({
   }
 
   return createPortal(
-    <div className="publication-buttons-sheet">
+    <div className="publication-buttons-sheet" style={overlayStyle}>
       <button
         type="button"
         className="publication-buttons-sheet__backdrop"
@@ -242,8 +252,6 @@ export function PublicationButtonsSheet({
         aria-labelledby="publication-buttons-sheet-title"
         tabIndex={-1}
       >
-        <div className="publication-buttons-sheet__grabber" aria-hidden />
-
         <header className="publication-buttons-sheet__header">
           <strong id="publication-buttons-sheet-title">Кнопки</strong>
           <span>
@@ -267,7 +275,7 @@ export function PublicationButtonsSheet({
                       <span className="publication-buttons-sheet__badge">
                         {workingButtons.length === 1 ? 'Кнопка' : index + 1}
                       </span>
-                      <strong>{button.text.trim() || 'Открыть'}</strong>
+                      <strong>{button.text.trim() || `Кнопка ${index + 1}`}</strong>
                       <button
                         type="button"
                         className="publication-buttons-sheet__remove"
@@ -300,7 +308,7 @@ export function PublicationButtonsSheet({
                           event.preventDefault();
                           urlInputRefs.current[index]?.focus();
                         }}
-                        placeholder="Открыть"
+                        placeholder={index === 0 ? 'Открыть' : 'Название кнопки'}
                         disabled={disabled}
                         enterKeyHint="next"
                         aria-label={index === 0 ? 'Название' : `Название кнопки ${index + 1}`}

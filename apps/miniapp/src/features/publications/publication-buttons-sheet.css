@@ -1,15 +1,30 @@
 @layer components {
   .publication-buttons-sheet {
+    --publication-buttons-accent: #0f5c42;
+    --publication-buttons-accent-soft: #e2f3eb;
+    --publication-buttons-on-accent: #ffffff;
+    --publication-ui-surface: #ffffff;
+    --publication-ui-surface-raised: #ffffff;
+    --publication-ui-surface-muted: #f0f4f2;
+    --publication-ui-ink: #14211b;
+    --publication-ui-ink-muted: #43544b;
+    --publication-ui-ink-subtle: #596a61;
+    --publication-ui-border: #dbe3df;
+    --publication-ui-border-strong: #c5d0ca;
+    --publication-ui-row-border: #dbe3df;
+    --publication-ui-scrim: rgba(10, 20, 15, 0.46);
+    --publication-danger-ink: #b4233d;
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
     z-index: 1510;
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    padding: 10px;
-    padding-bottom: calc(
-      10px + env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px)
-    );
+    padding: 8px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
   }
 
   .publication-buttons-sheet__backdrop {
@@ -22,9 +37,9 @@
   .publication-buttons-sheet__panel {
     position: relative;
     width: min(100%, 560px);
-    max-height: min(calc(var(--app-viewport-height, 100dvh) - 20px), 720px);
+    max-height: min(calc(100% - 8px), 720px);
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) minmax(57px, auto);
+    grid-template-rows: auto minmax(0, 1fr) minmax(57px, auto);
     gap: 8px;
     overflow: hidden;
     border: 1px solid var(--publication-ui-border);
@@ -32,14 +47,6 @@
     background: var(--publication-ui-surface-muted);
     box-shadow: var(--shadow-lg);
     padding: 8px 10px 10px;
-  }
-
-  .publication-buttons-sheet__grabber {
-    justify-self: center;
-    width: 40px;
-    height: 4px;
-    border-radius: 999px;
-    background: var(--publication-ui-border-strong);
   }
 
   .publication-buttons-sheet__header {
@@ -217,8 +224,8 @@
     display: inline-grid;
     place-items: center;
     border-radius: 9px;
-    background: var(--publication-ui-accent-soft);
-    color: var(--publication-ui-accent);
+    background: var(--publication-buttons-accent-soft);
+    color: var(--publication-buttons-accent);
   }
 
   .publication-buttons-sheet__add svg {
@@ -242,8 +249,8 @@
     min-height: 48px;
     border: 0;
     border-radius: 10px;
-    background: var(--publication-ui-accent);
-    color: var(--publication-ui-on-accent);
+    background: var(--publication-buttons-accent);
+    color: var(--publication-buttons-on-accent);
     font-size: 0.92rem;
     font-weight: 850;
     line-height: 1;
@@ -262,23 +269,11 @@
 
   html[data-max-keyboard-open='true'] .publication-buttons-sheet__panel {
     min-height: 0;
-    height: calc(100% - 16px);
+    height: 100%;
     max-height: 720px;
-    margin-top: 8px;
+    margin-top: 0;
     gap: 5px;
     padding-top: 6px;
-  }
-
-  html[data-max-keyboard-open='true'] .publication-buttons-sheet {
-    inset: var(--app-visual-viewport-top, 0px) 0 auto;
-    height: var(--app-viewport-height, 100dvh);
-    align-items: flex-start;
-    padding: 0 8px;
-  }
-
-  html[data-max-keyboard-open='true'] .publication-buttons-sheet__grabber,
-  html[data-max-keyboard-open='true'] .publication-buttons-sheet__card-top {
-    display: none;
   }
 
   html[data-max-keyboard-open='true'] .publication-buttons-sheet__body {
@@ -287,59 +282,68 @@
 
   @media (max-width: 520px) {
     .publication-buttons-sheet {
-      padding-inline: 8px;
-      padding-bottom: calc(
-        env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px)
-      );
+      padding: 0;
     }
 
     .publication-buttons-sheet__panel {
+      max-height: 100%;
       border-radius: 14px 14px 0 0;
+      padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
     }
   }
 
   html[data-max-theme='dark'] .publication-buttons-sheet {
+    --publication-buttons-accent: #62c69f;
+    --publication-buttons-accent-soft: #17372b;
+    --publication-buttons-on-accent: #0b1a14;
+    --publication-ui-surface: #171c19;
+    --publication-ui-surface-raised: #1d2420;
+    --publication-ui-surface-muted: #101412;
+    --publication-ui-ink: #f1f5f2;
+    --publication-ui-ink-muted: #bac5bf;
+    --publication-ui-ink-subtle: #8f9e96;
+    --publication-ui-border: #2b342f;
+    --publication-ui-border-strong: #3a4640;
+    --publication-ui-row-border: #2b342f;
+    --publication-ui-scrim: rgba(2, 5, 3, 0.72);
+    --publication-danger-ink: #ff8798;
     color-scheme: dark;
   }
 
   html[data-max-theme='dark'] .publication-buttons-sheet__backdrop {
-    background: var(--color-scrim);
+    background: var(--publication-ui-scrim);
   }
 
   html[data-max-theme='dark'] .publication-buttons-sheet__panel {
-    border-color: var(--color-border-strong);
-    background: var(--color-surface);
+    border-color: var(--publication-ui-border-strong);
+    background: var(--publication-ui-surface-muted);
     box-shadow: var(--shadow-lg);
   }
 
-  html[data-max-theme='dark'] .publication-buttons-sheet__grabber {
-    background: var(--color-border-strong);
-  }
-
   html[data-max-theme='dark'] .publication-buttons-sheet__header > strong {
-    color: var(--text-primary);
+    color: var(--publication-ui-ink);
   }
 
   html[data-max-theme='dark'] .publication-buttons-sheet__header > span {
-    color: var(--text-muted);
+    color: var(--publication-ui-ink-subtle);
   }
 
   html[data-max-theme='dark'] .publication-buttons-sheet__header > button,
   html[data-max-theme='dark'] .publication-buttons-sheet__card,
   html[data-max-theme='dark'] .publication-buttons-sheet__add {
-    border-color: var(--color-border);
-    background: var(--color-surface-tint);
-    color: var(--text-secondary);
+    border-color: var(--publication-ui-border);
+    background: var(--publication-ui-surface-raised);
+    color: var(--publication-ui-ink-muted);
     box-shadow: none;
   }
 
   html[data-max-theme='dark'] .publication-buttons-sheet__footer {
-    border-color: var(--color-border);
+    border-color: var(--publication-ui-border);
   }
 
   html[data-max-theme='dark'] .publication-buttons-sheet__done {
-    background: var(--color-accent);
-    color: var(--publication-ui-on-accent);
+    background: var(--publication-buttons-accent);
+    color: var(--publication-buttons-on-accent);
     box-shadow: none;
   }
 }

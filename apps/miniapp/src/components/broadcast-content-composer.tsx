@@ -4,7 +4,7 @@ import {
   type BroadcastTextFormat,
 } from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState, type ReactNode } from 'react';
 import './broadcast-content-composer.css';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
@@ -66,6 +66,7 @@ type BroadcastContentComposerProps = {
   textAriaLabel?: string;
   showToolLabels?: boolean;
   showButtonsLabel?: boolean;
+  additionalMediaAction?: ReactNode;
   onTextChange: (value: string) => void;
   onImageChange?: (image: BroadcastContentComposerImage) => void;
   onImagesChange?: (images: BroadcastImage[]) => void;
@@ -99,6 +100,7 @@ export function BroadcastContentComposer({
   textAriaLabel = textPlaceholder,
   showToolLabels = false,
   showButtonsLabel = false,
+  additionalMediaAction,
   onTextChange,
   onImageChange,
   onImagesChange,
@@ -521,11 +523,13 @@ export function BroadcastContentComposer({
                   />
                 </>
               )}
+              {additionalMediaAction}
               {onOpenButtons ? (
                 <button
                   type="button"
                   className={cn(
                     'broadcast-content-composer__tool',
+                    'broadcast-content-composer__tool--buttons',
                     (showToolLabels || showButtonsLabel) && 'has-label',
                     buttonsActive && 'is-active',
                     buttonsError && 'is-danger',

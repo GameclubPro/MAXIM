@@ -50,9 +50,14 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/features/publications/publication-buttons-sheet.*',
     'apps/miniapp/src/features/publications/publication-import-buttons-notice.*',
+    'apps/miniapp/src/features/publications/publication-target-picker.*',
+    'apps/miniapp/src/features/publications/publication-video-tool.*',
+    'apps/miniapp/src/features/publications/publication-workbench.css',
     'apps/miniapp/src/styles/publications-page.css',
     'apps/miniapp/src/lib/api/publication-client.ts',
+    'apps/miniapp/src/lib/keyboard-viewport-state.ts',
     'apps/miniapp/src/lib/publication-*.ts',
+    'apps/miniapp/src/lib/use-keyboard-open.ts',
   ],
   publisher: [
     'apps/miniapp/src/app.tsx',
@@ -579,6 +584,13 @@ const baseScenarios = [
     ],
     [
       'publications-publisher-compose-selected',
+      {
+        searchParams: { profile: 'publisher', compose: '1' },
+        features: ['publisher', 'broadcast'],
+      },
+    ],
+    [
+      'publications-publisher-compose-long',
       {
         searchParams: { profile: 'publisher', compose: '1' },
         features: ['publisher', 'broadcast'],

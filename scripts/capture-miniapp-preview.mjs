@@ -75,6 +75,8 @@ const KEYBOARD_SCENARIO_PROFILES = Object.freeze({
     focusReport: 'publisher-rich-text-editor',
     actionBarSelector: '.publications-publish-bar',
     primarySelector: '.broadcast-publish-bar__primary',
+    allowActionBelowViewport: true,
+    expectPageKeyboardState: true,
     pickerSheetSelector: '.publication-target-picker__editor.is-sheet',
     focusFailure: 'Publisher keyboard scenario did not finish with focus in the rich-text editor.',
     focusLabel: 'Publisher rich-text editor',
@@ -88,6 +90,7 @@ const KEYBOARD_SCENARIO_PROFILES = Object.freeze({
     focusReport: 'publisher-button-url',
     actionBarSelector: '.publication-buttons-sheet__footer',
     primarySelector: '.publication-buttons-sheet__done',
+    expectPageKeyboardState: true,
     pickerSheetSelector: null,
     focusFailure: 'Publisher button URL did not keep keyboard focus.',
     focusLabel: 'Publisher button URL',
@@ -978,6 +981,25 @@ const scenarioBehaviors = [
       await page.locator('.publication-target-row').first().click();
       await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
       await summary.getByText('Садоводы Южного', { exact: true }).waitFor({ state: 'visible' });
+    },
+  },
+  {
+    name: 'publications-publisher-compose-long',
+    beforeShot: async (page) => {
+      const summary = page.locator('.publication-target-picker__summary');
+      await summary.click();
+      await page.locator('.publication-target-row').first().click();
+      await page.getByRole('button', { name: 'Завершить выбор получателей' }).click();
+      const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
+      await editor.fill(
+        Array.from(
+          { length: 14 },
+          (_, index) => `Абзац ${index + 1}. Текст длинной публикации для проверки прокрутки.`,
+        ).join('\n\n'),
+      );
+      const viewport = page.locator('.publications-editor');
+      await viewport.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
+      await viewport.locator('.publications-publish-bar').waitFor({ state: 'visible' });
     },
   },
   {
@@ -2237,14 +2259,56 @@ async function exercisePublisherButtonsKeyboardFlow(page) {
   const done = sheet.getByRole('button', { name: 'Готово', exact: true });
   await name.waitFor({ state: 'visible' });
   await url.waitFor({ state: 'visible' });
-  await url.evaluate((element) =>
+  await name.evaluate((element) =>
     element.scrollIntoView({ block: 'nearest', behavior: 'instant' }),
   );
-  await url.focus();
-  await assertFocusedLocator(url, 'Publisher button URL');
+  await name.focus();
+  await assertFocusedLocator(name, 'Publisher button name');
   await assertLocatorWithinViewport(name, 'Publisher button name');
   await assertLocatorWithinViewport(url, 'Publisher button URL');
   await assertLocatorWithinViewport(done, 'Publisher button Done action');
+}
+
+async function exercisePublisherButtonsReducedKeyboardFlow(page) {
+  const sheet = page.locator('.publication-buttons-sheet');
+  const trigger = page
+    .locator('.publication-content-composer')
+    .getByRole('button', { name: /кнопк/iu })
+    .first();
+  const name = sheet.getByLabel('Название', { exact: true }).first();
+  const url = sheet.getByLabel('Ссылка', { exact: true }).first();
+
+  await name.focus();
+  await assertFocusedLocator(name, 'Publisher button name before focus handoff');
+  await url.focus();
+  await assertFocusedLocator(url, 'Publisher button URL after focus handoff');
+  await page.waitForFunction(() =>
+    document.querySelector('.publications-page.is-editor')?.classList.contains('is-keyboard-open'),
+  );
+
+  await page.keyboard.press('Escape');
+  await waitForPublisherButtonsSheetClosed(page, sheet);
+  await assertFocusedLocator(trigger, 'Publisher button trigger after keyboard close');
+  await page.waitForFunction(() =>
+    document.querySelector('.publications-page.is-editor')?.classList.contains('is-keyboard-open'),
+  );
+
+  await trigger.click();
+  await sheet.waitFor({ state: 'visible' });
+  const reopenedName = sheet.getByLabel('Название', { exact: true }).first();
+  const reopenedUrl = sheet.getByLabel('Ссылка', { exact: true }).first();
+  await reopenedName.waitFor({ state: 'visible' });
+  await reopenedUrl.waitFor({ state: 'visible' });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))),
+      ),
+  );
+  await reopenedName.focus();
+  await assertFocusedLocator(reopenedName, 'Publisher button name after keyboard reopening');
+  await reopenedUrl.focus();
+  await assertFocusedLocator(reopenedUrl, 'Publisher button URL after keyboard reopening');
 }
 
 async function assertPublisherButtonsKeyboardFinalLayout(page) {
@@ -2321,9 +2385,20 @@ async function simulateKeyboardViewport(page, scenario) {
   if (!viewport) {
     throw new Error(`Scenario ${scenario.name} has no viewport geometry for keyboard simulation.`);
   }
+  const maximumReducedHeight = viewport.height - KEYBOARD_MIN_REDUCTION_PX;
+  const orientationSafeMinimumHeight = Math.max(
+    KEYBOARD_MIN_VISIBLE_HEIGHT_PX,
+    viewport.height > viewport.width ? viewport.width + 1 : 0,
+  );
+  if (orientationSafeMinimumHeight > maximumReducedHeight) {
+    throw new Error(
+      `Scenario ${scenario.name} cannot preserve viewport orientation while simulating a keyboard ` +
+        `in ${viewport.width}x${viewport.height}.`,
+    );
+  }
   const reducedHeight = Math.min(
-    viewport.height - KEYBOARD_MIN_REDUCTION_PX,
-    Math.max(KEYBOARD_MIN_VISIBLE_HEIGHT_PX, viewport.height - normalizedKeyboardOverlapPx),
+    maximumReducedHeight,
+    Math.max(orientationSafeMinimumHeight, viewport.height - normalizedKeyboardOverlapPx),
   );
   if (reducedHeight <= 0 || reducedHeight >= viewport.height) {
     throw new Error(
@@ -2331,13 +2406,6 @@ async function simulateKeyboardViewport(page, scenario) {
         `for keyboard overlap ${normalizedKeyboardOverlapPx}px.`,
     );
   }
-
-  await page.setViewportSize({ width: viewport.width, height: reducedHeight });
-  await page.waitForFunction(
-    (expectedHeight) => Math.abs(window.innerHeight - expectedHeight) <= 1,
-    reducedHeight,
-  );
-  await page.waitForTimeout(120);
 
   if (keyboardProfile?.flow === 'publisher-composer') {
     await exercisePublisherComposerKeyboardFlow(page);
@@ -2347,14 +2415,71 @@ async function simulateKeyboardViewport(page, scenario) {
     await exercisePublisherAutoReplyEditorKeyboardFlow(page);
   }
 
+  const cycles = keyboardProfile?.flow === 'publisher-composer' ? 3 : 1;
+  for (let cycle = 0; cycle < cycles; cycle += 1) {
+    await page.setViewportSize({ width: viewport.width, height: reducedHeight });
+    await page.waitForFunction(
+      (expectedHeight) => Math.abs(window.innerHeight - expectedHeight) <= 1,
+      reducedHeight,
+    );
+    await page.waitForTimeout(180);
+    if (cycle === 0 && keyboardProfile?.flow === 'publisher-buttons') {
+      await exercisePublisherButtonsReducedKeyboardFlow(page);
+    }
+    if (keyboardProfile?.focusSelector) {
+      await page
+        .locator(keyboardProfile.focusSelector)
+        .first()
+        .evaluate((element) => {
+          element.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        });
+    }
+    if (cycle < cycles - 1) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.waitForFunction(
+        (expectedHeight) => Math.abs(window.innerHeight - expectedHeight) <= 1,
+        viewport.height,
+      );
+      await page.waitForTimeout(180);
+      if (keyboardProfile?.focusSelector) {
+        await assertFocusedLocator(
+          page.locator(keyboardProfile.focusSelector).first(),
+          `${keyboardProfile.focusLabel} after keyboard cycle ${cycle + 1}`,
+        );
+      }
+      if (keyboardProfile?.flow === 'publisher-composer') {
+        await page.waitForFunction(
+          () =>
+            !document
+              .querySelector('.publications-page.is-editor')
+              ?.classList.contains('is-keyboard-open'),
+        );
+        const actionDisplay = await page
+          .locator('.publications-editor > .publications-publish-bar')
+          .evaluate((element) => getComputedStyle(element).display);
+        if (actionDisplay === 'none') {
+          throw new Error(`Publisher action did not return after keyboard cycle ${cycle + 1}.`);
+        }
+      }
+    }
+  }
+
   await page.evaluate(
-    ({ originalHeight, viewportHeight }) => {
+    ({ forceKeyboardFlag, originalHeight, viewportHeight }) => {
       const root = document.documentElement;
-      root.setAttribute('data-max-keyboard-open', 'true');
+      if (forceKeyboardFlag) {
+        root.setAttribute('data-max-keyboard-open', 'true');
+      } else {
+        root.removeAttribute('data-max-keyboard-open');
+      }
       root.dataset.visualKeyboardOriginalHeight = String(originalHeight);
       root.dataset.visualKeyboardViewportHeight = String(viewportHeight);
     },
-    { originalHeight: viewport.height, viewportHeight: reducedHeight },
+    {
+      forceKeyboardFlag: keyboardProfile?.flow === 'publisher-auto-reply-editor',
+      originalHeight: viewport.height,
+      viewportHeight: reducedHeight,
+    },
   );
   await page.waitForTimeout(260);
 
@@ -2367,6 +2492,7 @@ async function simulateKeyboardViewport(page, scenario) {
     originalHeight: viewport.height,
     viewportHeight: reducedHeight,
     coveredHeight: viewport.height - reducedHeight,
+    cycles,
     focus: keyboardProfile?.focusReport ?? null,
     ...(controls ? { controls } : {}),
   };
@@ -2377,7 +2503,8 @@ async function assertConfiguredChecks(page, scenario) {
     await assertAppHasVisibleContent(page, scenario);
     await assertViewportBounds(page, scenario);
     await assertNoUnexpectedHorizontalOverflow(page, scenario);
-    await assertPublisherComposerDockSeparated(page, scenario);
+    await assertPublisherEditorFullBleed(page, scenario);
+    await assertPublisherComposerActionInFlow(page, scenario);
     await assertVkSourceSummariesSeparated(page, scenario);
     await assertFavoriteCategoryIndicatorsContained(page, scenario);
     await assertPrimaryControlsReachable(page, scenario);
@@ -2397,7 +2524,60 @@ async function assertConfiguredChecks(page, scenario) {
   }
 }
 
-async function assertPublisherComposerDockSeparated(page, scenario) {
+async function assertPublisherEditorFullBleed(page, scenario) {
+  if (!scenario.name.startsWith('publications-publisher-compose')) {
+    return;
+  }
+
+  const result = await page.evaluate(() => {
+    const shell = document.querySelector('.app-shell:has(.publications-page.is-editor)');
+    const pageRoot = document.querySelector('.publications-page.is-publisher.is-editor');
+    const header = pageRoot?.querySelector('.publications-editor-header');
+    if (
+      !(shell instanceof HTMLElement) ||
+      !(pageRoot instanceof HTMLElement) ||
+      !(header instanceof HTMLElement)
+    ) {
+      return { ok: false, reason: 'publisher editor shell is missing' };
+    }
+
+    const shellStyle = getComputedStyle(shell);
+    const pageRect = pageRoot.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    const tolerance = 2;
+    if (
+      Math.abs(pageRect.left) > tolerance ||
+      Math.abs(pageRect.right - window.innerWidth) > tolerance ||
+      Math.abs(pageRect.top) > tolerance ||
+      Math.abs(headerRect.top) > tolerance
+    ) {
+      return {
+        ok: false,
+        reason:
+          `editor is inset (page=${pageRect.left.toFixed(1)},${pageRect.top.toFixed(1)},` +
+          `${pageRect.right.toFixed(1)} headerTop=${headerRect.top.toFixed(1)} ` +
+          `viewport=${window.innerWidth}x${window.innerHeight})`,
+      };
+    }
+    if (
+      Number.parseFloat(shellStyle.paddingTop) > tolerance ||
+      Number.parseFloat(shellStyle.paddingLeft) > tolerance ||
+      Number.parseFloat(shellStyle.paddingRight) > tolerance
+    ) {
+      return {
+        ok: false,
+        reason: `shell keeps padding ${shellStyle.padding}`,
+      };
+    }
+    return { ok: true, reason: '' };
+  });
+
+  if (!result.ok) {
+    throw new Error(`Publisher editor full-bleed layout failed: ${result.reason}.`);
+  }
+}
+
+async function assertPublisherComposerActionInFlow(page, scenario) {
   if (
     !scenario.name.startsWith('publications-publisher-compose') ||
     shouldSimulateKeyboardScenario(scenario)
@@ -2405,38 +2585,58 @@ async function assertPublisherComposerDockSeparated(page, scenario) {
     return;
   }
 
-  const result = await page.evaluate(() => {
-    const editor = document.querySelector('.publications-page.is-editor > .publications-editor');
-    const dock = document.querySelector('.publications-page.is-editor > .publications-publish-bar');
-    if (!(editor instanceof HTMLElement) || !(dock instanceof HTMLElement)) {
-      return { ok: false, reason: 'editor or action dock is missing' };
-    }
+  const result = await page.evaluate(
+    (requireNoScroll) => {
+      const editor = document.querySelector('.publications-page.is-editor > .publications-editor');
+      const dock = editor?.querySelector(':scope > .publications-publish-bar');
+      if (!(editor instanceof HTMLElement) || !(dock instanceof HTMLElement)) {
+        return { ok: false, reason: 'editor or in-flow action is missing' };
+      }
 
-    const editorRect = editor.getBoundingClientRect();
-    const dockRect = dock.getBoundingClientRect();
-    const dockStyle = getComputedStyle(dock);
-    const previewScreen = document.querySelector('.design-preview__device-screen');
-    const viewportBottom =
-      previewScreen instanceof HTMLElement
-        ? previewScreen.getBoundingClientRect().bottom
-        : window.innerHeight;
-    if (dockStyle.position === 'fixed' || dockStyle.position === 'absolute') {
-      return { ok: false, reason: `action dock uses overlay position ${dockStyle.position}` };
-    }
-    if (editorRect.bottom > dockRect.top + 1) {
-      return {
-        ok: false,
-        reason: `editor bottom ${editorRect.bottom.toFixed(1)} crosses dock top ${dockRect.top.toFixed(1)}`,
-      };
-    }
-    if (dockRect.bottom > viewportBottom + 2) {
-      return {
-        ok: false,
-        reason: `dock bottom ${dockRect.bottom.toFixed(1)} leaves viewport ${viewportBottom.toFixed(1)}`,
-      };
-    }
-    return { ok: true, reason: '' };
-  });
+      const dockRect = dock.getBoundingClientRect();
+      const dockStyle = getComputedStyle(dock);
+      const previous = dock.previousElementSibling;
+      const previousRect =
+        previous instanceof HTMLElement ? previous.getBoundingClientRect() : null;
+      const previewScreen = document.querySelector('.design-preview__device-screen');
+      const viewportBottom =
+        previewScreen instanceof HTMLElement
+          ? previewScreen.getBoundingClientRect().bottom
+          : window.innerHeight;
+      if (dockStyle.position !== 'static') {
+        return { ok: false, reason: `action uses overlay position ${dockStyle.position}` };
+      }
+      if (previousRect && previousRect.bottom > dockRect.top + 1) {
+        return {
+          ok: false,
+          reason: `content bottom ${previousRect.bottom.toFixed(1)} crosses action top ${dockRect.top.toFixed(1)}`,
+        };
+      }
+      if (editor.scrollHeight <= editor.clientHeight + 2 && dockRect.bottom > viewportBottom + 2) {
+        return {
+          ok: false,
+          reason: `in-flow action bottom ${dockRect.bottom.toFixed(1)} leaves non-scrolling viewport ${viewportBottom.toFixed(1)}`,
+        };
+      }
+      if (requireNoScroll && editor.scrollHeight > editor.clientHeight + 2) {
+        return {
+          ok: false,
+          reason:
+            `default editor scrolls despite a tall viewport ` +
+            `(scroll=${editor.scrollHeight}, client=${editor.clientHeight})`,
+        };
+      }
+      if (requireNoScroll && viewportBottom - dockRect.bottom > 16) {
+        return {
+          ok: false,
+          reason: `default editor leaves ${Math.round(viewportBottom - dockRect.bottom)}px unused below action`,
+        };
+      }
+      return { ok: true, reason: '' };
+    },
+    scenario.name === 'publications-publisher-compose-selected' &&
+      (page.viewportSize()?.height ?? 0) >= 800,
+  );
 
   if (!result.ok) {
     throw new Error(`Publisher composer action layout failed: ${result.reason}.`);
@@ -3444,6 +3644,8 @@ async function assertKeyboardState(page, scenario) {
   }
 
   const keyboardProfile = resolveKeyboardScenarioProfile(scenario);
+  const requiresRootKeyboardFlag =
+    !keyboardProfile || keyboardProfile.flow === 'publisher-auto-reply-editor';
   const state = await page.evaluate((profile) => {
     const root = document.documentElement;
     const nav = document.querySelector('.bottom-nav');
@@ -3472,6 +3674,9 @@ async function assertKeyboardState(page, scenario) {
 
     return {
       keyboardOpen: root.dataset.maxKeyboardOpen === 'true',
+      pageKeyboardOpen: Boolean(
+        document.querySelector('.publications-page.is-editor.is-keyboard-open'),
+      ),
       originalHeight: Number.parseInt(root.dataset.visualKeyboardOriginalHeight ?? '', 10),
       expectedViewportHeight: Number.parseInt(root.dataset.visualKeyboardViewportHeight ?? '', 10),
       viewportWidth: window.innerWidth,
@@ -3512,7 +3717,7 @@ async function assertKeyboardState(page, scenario) {
   }, keyboardProfile);
 
   if (
-    !state.keyboardOpen ||
+    (requiresRootKeyboardFlag && !state.keyboardOpen) ||
     !Number.isFinite(state.originalHeight) ||
     !Number.isFinite(state.expectedViewportHeight) ||
     state.expectedViewportHeight >= state.originalHeight ||
@@ -3530,6 +3735,10 @@ async function assertKeyboardState(page, scenario) {
       `Scenario ${scenario.name} keyboard simulation did not hide bottom nav ` +
         `(opacity=${state.nav.opacity}, pointerEvents=${state.nav.pointerEvents}).`,
     );
+  }
+
+  if (keyboardProfile?.expectPageKeyboardState && !state.pageKeyboardOpen) {
+    throw new Error(`${scenario.name} did not expose its real adjustResize keyboard state.`);
   }
 
   if (!keyboardProfile) {
@@ -3553,8 +3762,10 @@ async function assertKeyboardState(page, scenario) {
   }
   if (
     state.publishBarRect &&
-    (state.publishBarRect.bottom > state.viewportHeight + 2 ||
-      state.activeRect.bottom > state.publishBarRect.top + 1)
+    ((!keyboardProfile.allowActionBelowViewport &&
+      state.publishBarRect.bottom > state.viewportHeight + 2) ||
+      (state.publishBarRect.top < state.viewportHeight &&
+        state.activeRect.bottom > state.publishBarRect.top + 1))
   ) {
     throw new Error(
       `${keyboardProfile.actionBarLabel} overlaps the focused editor or leaves the keyboard viewport ` +

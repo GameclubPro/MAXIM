@@ -42,3 +42,25 @@ test('publication buttons keep primary touch targets at least 44px tall', () => 
   );
   assert.match(sheetCss, /\.publication-buttons-sheet__done \{[\s\S]*?min-height: 48px;/u);
 });
+
+test('publication buttons follow the visual viewport without stealing an existing field focus', () => {
+  assert.match(sheetSource, /useVisualViewportOverlayStyle\(open\)/u);
+  assert.match(sheetSource, /style=\{overlayStyle\}/u);
+  assert.match(sheetSource, /panelRef\.current\?\.contains\(activeElement\)/u);
+  assert.match(sheetSource, /activeElement !== closeButtonRef\.current/u);
+  assert.doesNotMatch(sheetCss, /min\(var\(--app-keyboard-overlap/u);
+});
+
+test('publication buttons are edge-to-edge on phones without a fake drag affordance', () => {
+  assert.doesNotMatch(sheetSource, /publication-buttons-sheet__grabber/u);
+  assert.match(
+    sheetCss,
+    /@media \(max-width: 520px\) \{[\s\S]*?\.publication-buttons-sheet \{\s*padding: 0;/u,
+  );
+  assert.match(sheetCss, /\.publication-buttons-sheet__panel \{[\s\S]*?max-height: 100%;/u);
+});
+
+test('additional publication buttons require an intentional visible name', () => {
+  assert.match(sheetSource, /text: nextIndex === 0 \? nextButton\.text : ''/u);
+  assert.match(sheetSource, /placeholder=\{index === 0 \? 'Открыть' : 'Название кнопки'\}/u);
+});

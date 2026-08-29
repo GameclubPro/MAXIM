@@ -8,16 +8,7 @@ import {
   type PublicationSummary,
 } from '@maxim/contracts/publication';
 import type { MiniappProfile, PublisherPostImportOmission } from '@maxim/contracts/publisher';
-import {
-  FilterList,
-  NavArrowLeft,
-  Plus,
-  Refresh,
-  Search,
-  Trash,
-  VideoCamera,
-  Xmark,
-} from 'iconoir-react';
+import { FilterList, NavArrowLeft, Plus, Refresh, Search, Trash, Xmark } from 'iconoir-react';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { BroadcastContentComposer } from '../components/broadcast-content-composer';
@@ -114,6 +105,7 @@ import { PublicationRetrySheet } from '../features/publications/publication-retr
 import { PublisherPostImportStatus } from '../features/publications/publisher-post-import-status';
 import { PublicationTargetNotices } from '../features/publications/publication-target-notices';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
+import { PublicationVideoTool } from '../features/publications/publication-video-tool';
 import { usePublicationEditorAutofocus } from '../features/publications/use-publication-editor-autofocus';
 import { useInitialPublicationTargetRoute } from '../features/publications/use-initial-publication-target-route';
 import { usePublicationComposer } from '../features/publications/use-publication-composer';
@@ -154,6 +146,7 @@ import { formatRussianCountLabel } from '../lib/broadcast-audience';
 import { cn } from '../lib/cn';
 import { maxImpact, maxNotify } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
+import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/publications-page.css';
 import '../features/publications/publication-draft-resume.css';
@@ -266,6 +259,7 @@ export function PublicationsPage({
   const [searchParams, setSearchParams] = useSearchParams();
   const [editorContext, setEditorContext] = useState<PublicationEditorContext | null>(null);
   const isEditor = isPublisherProfile && editorContext !== null;
+  const isEditorKeyboardOpen = useKeyboardOpen(96, isEditor);
   const legacyRouteRequested = searchParams.get('legacy') === '1';
   const isLegacyView = !isPublisherProfile && legacyRouteRequested && !isEditor;
   const persistenceEnabled = shouldPersistPublicationDraft(editorContext?.kind ?? null);
@@ -2292,14 +2286,14 @@ export function PublicationsPage({
       >
         <div className="publication-editor-section__head">
           <strong>Когда</strong>
-          <small>{formatDraftTiming(draft)}</small>
+          {draft.timingMode === 'now' ? null : <small>{formatDraftTiming(draft)}</small>}
         </div>
         <div className="publication-timing-tabs" role="group" aria-label="Время публикации">
           {(
             [
               { value: 'now', label: 'Сейчас' },
               { value: 'once', label: 'Один раз' },
-              { value: 'schedule', label: 'По расписанию' },
+              { value: 'schedule', label: 'Расписание' },
             ] as Array<{ value: PublicationTimingMode; label: string }>
           ).map((option) => (
             <button
@@ -2520,10 +2514,10 @@ export function PublicationsPage({
         </header>
 
         <div className="publications-editor">
-          <section ref={targetsSectionRef} className="publication-editor-section">
-            <div className="publication-editor-section__head">
-              <strong>Получатели</strong>
-            </div>
+          <section
+            ref={targetsSectionRef}
+            className="publication-editor-section publication-editor-section--targets"
+          >
             <PublicationTargetNotices
               publisherProfile={isPublisherProfile}
               sourcesHaveError={sourcesHaveError}
@@ -2539,6 +2533,7 @@ export function PublicationsPage({
             <PublicationTargetPicker
               choices={targets}
               value={draft.targets}
+              compactSummary={isPublisherProfile}
               notice={
                 selectedPublisherTargetUnavailable
                   ? 'Выбранный получатель недоступен. Удалите его.'
@@ -2610,37 +2605,6 @@ export function PublicationsPage({
               disabled={isBusy}
               onClear={() => setDraft((current) => ({ ...current, retainedAssets: [] }))}
             />
-            <label
-              className={cn(
-                'publication-video-picker',
-                (isBusy || videoPreparing) && 'is-disabled',
-                draft.mediaType === 'video' && 'is-active',
-                videoNeedsReselection && 'needs-reselection',
-              )}
-              aria-disabled={isBusy || videoPreparing}
-            >
-              <VideoCamera aria-hidden />
-              <span>
-                {videoPreparing
-                  ? 'Готовим видео'
-                  : videoNeedsReselection
-                    ? 'Выбрать видео снова'
-                    : 'Добавить видео'}
-              </span>
-              <input
-                type="file"
-                accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.mov,.mkv,.webm"
-                aria-label="Выбрать видео для публикации"
-                aria-invalid={videoNeedsReselection || undefined}
-                disabled={isBusy || videoPreparing}
-                onChange={(event) => {
-                  const input = event.currentTarget;
-                  void handlePublicationVideoFile(input.files?.[0]).finally(() => {
-                    input.value = '';
-                  });
-                }}
-              />
-            </label>
             <BroadcastContentComposer
               className="publication-content-composer"
               text={draft.text}
@@ -2648,12 +2612,21 @@ export function PublicationsPage({
               maxLength={PUBLICATION_TEXT_MAX_LENGTH}
               images={draft.images}
               buttons={visibleCustomButtons}
-              systemButtons={systemButtons}
+              systemButtons={isPublisherProfile ? [] : systemButtons}
               buttonsPerRow={1}
               buttonsStatusLabel="Кнопка"
               buttonsActive={visibleCustomButtonCount > 0}
               buttonsError={hasButtonErrors}
               showButtonsLabel={isPublisherProfile}
+              additionalMediaAction={
+                <PublicationVideoTool
+                  active={draft.mediaType === 'video'}
+                  disabled={isBusy || videoPreparing}
+                  preparing={videoPreparing}
+                  needsReselection={videoNeedsReselection}
+                  onFile={handlePublicationVideoFile}
+                />
+              }
               videoLabel={
                 draft.mediaType === 'video'
                   ? draft.mediaFileName || 'Видео'
@@ -2714,6 +2687,38 @@ export function PublicationsPage({
               {fieldError}
             </p>
           ) : null}
+
+          <div className="publications-publish-bar">
+            <BroadcastPublishBar
+              title={
+                editScope === 'retry'
+                  ? 'Версия для повтора'
+                  : editScope === 'future'
+                    ? 'Будущие отправки'
+                    : draft.timingMode === 'schedule'
+                      ? 'Расписание'
+                      : 'Публикация'
+              }
+              meta={formatTargetSummary(draft.targets)}
+              issues={validationStarted ? validationIssues : []}
+              busy={isBusy}
+              showTest={!isPublisherProfile}
+              testLabel="Отправить себе"
+              compactTestLabel="Тест"
+              testAriaLabel="Отправить публикацию себе"
+              testDisabled={
+                isBusy ||
+                !hasContent ||
+                videoNeedsReselection ||
+                draft.targets.length === 0 ||
+                hasButtonErrors
+              }
+              primaryLabel={primaryLabel}
+              primaryDisabled={isBusy}
+              onTest={handleTest}
+              onPrimary={handlePrimaryAction}
+            />
+          </div>
         </div>
 
         <PublicationButtonsSheet
@@ -2731,38 +2736,6 @@ export function PublicationsPage({
           onClose={() => setButtonsOpen(false)}
         />
 
-        <div className="publications-publish-bar">
-          <BroadcastPublishBar
-            title={
-              editScope === 'retry'
-                ? 'Версия для повтора'
-                : editScope === 'future'
-                  ? 'Будущие отправки'
-                  : draft.timingMode === 'schedule'
-                    ? 'Расписание'
-                    : 'Публикация'
-            }
-            meta={formatTargetSummary(draft.targets)}
-            issues={validationStarted ? validationIssues : []}
-            busy={isBusy}
-            showTest={!isPublisherProfile}
-            testLabel="Отправить себе"
-            compactTestLabel="Тест"
-            testAriaLabel="Отправить публикацию себе"
-            testDisabled={
-              isBusy ||
-              !hasContent ||
-              videoNeedsReselection ||
-              draft.targets.length === 0 ||
-              hasButtonErrors
-            }
-            primaryLabel={primaryLabel}
-            primaryDisabled={isBusy}
-            onTest={handleTest}
-            onPrimary={handlePrimaryAction}
-          />
-        </div>
-
         <BroadcastPublishReviewSheet
           id="publication-review"
           open={pendingReview}
@@ -2775,6 +2748,9 @@ export function PublicationsPage({
               ? 'Отправка · после ручного повтора'
               : `Когда · ${formatDraftTiming(draft)}`,
             visibleCustomButtonCount > 0 ? `Кнопки · ${visibleCustomButtonCount}` : 'Кнопки · нет',
+            isPublisherProfile && systemButtons.length > 0
+              ? `Автокнопки · ${systemButtons.length}`
+              : null,
             hasMedia
               ? draft.retainedAssets.some((asset) => asset.type === 'video')
                 ? 'Видео'
@@ -2811,6 +2787,7 @@ export function PublicationsPage({
         'publications-page',
         isPublisherProfile && 'is-publisher',
         isEditor && 'is-editor',
+        isEditorKeyboardOpen && 'is-keyboard-open',
       )}
     >
       {isEditor ? renderEditor() : isLegacyView ? renderLegacyHub() : renderHub()}

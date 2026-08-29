@@ -1,0 +1,78 @@
+@layer pages {
+  .publication-video-tool {
+    position: relative;
+    flex: 0 0 44px;
+    overflow: hidden;
+    cursor: pointer;
+  }
+
+  .publication-video-tool input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .publication-video-tool__state {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 17px;
+    height: 17px;
+    display: grid;
+    border: 2px solid var(--color-surface-muted);
+    border-radius: 50%;
+    background: var(--color-surface);
+    color: var(--color-accent);
+    pointer-events: none;
+    place-items: center;
+  }
+
+  .publication-video-tool__state.needs-reselection {
+    color: var(--publication-danger-ink);
+  }
+
+  .publication-video-tool__state svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .publication-video-tool__state.is-preparing svg {
+    animation: publication-video-tool-spin 900ms linear infinite;
+  }
+
+  .publication-video-tool__description {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .publication-video-tool:focus-within {
+    outline: 3px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .publication-video-tool.is-disabled,
+  .publication-video-tool input:disabled {
+    cursor: default;
+  }
+
+  @keyframes publication-video-tool-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .publication-video-tool__state.is-preparing svg {
+      animation: none;
+    }
+  }
+}
